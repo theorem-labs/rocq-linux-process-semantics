@@ -26,38 +26,47 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    Sockets: the claims no live run can show
    ------------------------------------------------------------------------- *)
 
-(** WRITING A SOCKET IS NEVER ADMITTED — no execution, no input, no
-    socket state.  This is the most important claim in the socket work,
-    and it is a lemma for two reasons.  It is UNIVERSALLY QUANTIFIED,
-    where a live run exhibits one execution.  And a guest cannot reach
-    the arm on its own: reaching it needs a CONNECTED socket.
-    [connect] (203) is dispatched, but it cannot produce
-    one: [Net.Socket.connect_spec] declines the connection ATTEMPT, so
-    no modeled execution ever holds a connected socket it dialled.  And
-    a guest that took the SIGPIPE this arm exists to avoid dies by
-    signal 13, which says nothing about the write's return.
+(** WRITING A CONNECTED SOCKET IS NEVER ADMITTED — no execution, no
+    input, no buffer.  It is a lemma for two reasons.  It is UNIVERSALLY
+    QUANTIFIED, where a live run exhibits one execution.  And a guest
+    cannot reach the arm on its own: reaching it needs a CONNECTED
+    socket.  [connect] (203) is dispatched, but it cannot produce one:
+    [Net.Socket.connect_spec] declines the connection ATTEMPT, so no
+    modeled execution ever holds a connected socket it dialled.
 
-    Why it matters that the answer is [Unmodeled] and not an errno: on a
-    connection the peer has reset, write(2) returns -EPIPE AND raises
-    SIGPIPE, whose default action kills the thread group
-    (net/core/stream.c:sk_stream_error, kernel/signal.c:get_signal,
-    v6.12).  A spec's outcomes are [Ok] and [Unmodeled] and nothing
-    else, so answering -EPIPE would assert the process SURVIVED — a
-    confidently wrong answer of exactly the class [Equivalence.modeled]
-    cannot see.  A later change that admits ANY write to a socket
-    breaks this lemma, which is the point of stating it. *)
+    What keeps the connected states out is the TRANSFER, not the
+    signal.  On [SkConnected] the send either goes out -- a short count
+    chosen from the gatherable bytes, which is [Net.Socket.send_bytes]'s
+    business -- or reports a pending peer error ONCE and rewrites the
+    descriptor (include/net/sock.h [sock_error]), and neither raises
+    SIGPIPE: [sk_stream_error] replaces the errno with [sock_error]'s
+    before it tests for -EPIPE (net/core/stream.c :192-195, v6.18.46).
+
+    A socket with NO connection ([State.sock_send_dead]: fresh, bound,
+    listening or reset-and-consumed) IS answered, and that is why the
+    hypothesis below is here: [vfs_write]'s [access_ok] gives -EFAULT,
+    and past it [sk_stream_wait_connect] gives -EPIPE and
+    [sk_stream_error] sends SIGPIPE, which [ReadWrite.raise_sigpipe]
+    records as a death ([State.with_killed], [Run.sstep_killed]) or,
+    with signal 13 blocked, as a pending signal and the -EPIPE.  The
+    model used to decline those too, because a spec could not say "the
+    process died"; it can now.  A later change that admits a write to a
+    CONNECTED socket breaks this lemma, which is the point of stating
+    it. *)
 Lemma socket_write_never_admitted : forall fd buf count i m sk o,
   fd_lookup (m_fds m) fd = Some (FdSocket sk) ->
+  sock_send_dead sk = false ->
   write_spec fd buf count i m o -> o = Unmodeled.
 Proof.
-  intros fd buf count i m sk o Hfd Hspec.
+  intros fd buf count i m sk o Hfd Hlive Hspec.
   destruct o as [y m2 evs|]; [|reflexivity]. exfalso.
   unfold write_spec, bind, input, get_model, unmodeled in Hspec.
   destruct Hspec as (x & m1 & evs1 & evs2 & Hin & Hrest & _).
   injection Hin as -> -> ->.
   destruct Hrest as (x' & m1' & evs1' & evs2' & Hgm & Hrest' & _).
   injection Hgm as -> -> ->.
-  rewrite Hfd in Hrest'. cbv iota in Hrest'. discriminate.
+  rewrite Hfd in Hrest'. cbv iota in Hrest'.
+  rewrite Hlive in Hrest'. cbn [negb] in Hrest'. discriminate.
 Qed.
 
 (** The same for the vectored form, AT EVERY COUNT.  There is no bound
@@ -2278,3 +2287,377 @@ Example socketpair_dest_width_is_eight :
        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
      = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
 Proof. split; [|split; [|split]]; check_eq. Qed.
+
+(** PAIR 4 — A WRITE TO A SOCKET WITH NO CONNECTION IS ANSWERED, WHERE
+    IT USED TO BE REFUSED PERMANENTLY, AND A CONNECTED SOCKET IS STILL
+    REFUSED.
+
+    [Sys.Fs.ReadWrite.write_spec]'s socket arm used to answer
+    [unmodeled] for every socket, and its comment said the refusal was
+    PERMANENT: answering -EPIPE and continuing would assert that the
+    process SURVIVED, which is a confidently wrong answer where Linux
+    kills it.  The model can now say the true thing.  net/core/stream.c
+    [sk_stream_wait_connect] :60-88 fails a send on a socket that is
+    not connected, and [sk_stream_error] :190-198 answers -EPIPE and
+    sends SIGPIPE; write(2) cannot suppress it, because MSG_NOSIGNAL
+    reaches net/socket.c [sock_write_iter] only from [IOCB_NOSIGNAL]
+    (:1193-1194), which include/linux/fs.h [iocb_flags] never sets
+    (Linux v6.18.46, commit 1f99e9ab748f).
+
+    The first conjunct is the new answer on a FRESH socket -- one
+    [socket(2)] has minted and nothing has connected --
+    [State.sock_send_dead] true: -EPIPE and a death by signal 13.  The
+    second is the same on a RESET connection, the other shape
+    [sock_send_dead] admits.  The third is the neighbouring case STILL
+    REFUSED, and it is refused for a reason this revision did not
+    touch: on [SkConnected] the send either goes out as a short count
+    or blocks, and the model carries no send buffer to decide which, so
+    it fails closed there as it always did.  The fourth is the
+    discrimination in the other direction: the killing answer is
+    refused on the connected socket, so the arm has not become
+    constantly killing. *)
+Example write_socket_with_no_connection_is_answered :
+  check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model
+  = CheckOk (with_killed (Z_to_bv 64 13) fresh_socket_model) []
+  /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) reset_socket_model
+     = CheckOk (with_killed (Z_to_bv 64 13) reset_socket_model) []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
+       (connected_socket_model NFin)
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) (connected_socket_model NFin)
+     = CheckUnmodeled.
+Proof. split; [|split; [|split]]; check_eq. Qed.
+
+(* =========================================================================
+   THE FOUR USER READS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   bind's address, connect's address, getsockopt's four-byte [optlen] and
+   sendmsg's fifty-six-byte header each called [State.read_bytes_map]
+   bare.  That walk advances in WORD arithmetic and WRAPS at 2^64, so a
+   pointer in the last bytes of the address space read the bytes below
+   the wrap and then the bytes from 0 on, said [Some], and the arm then
+   ANSWERED the call on them — a wrong answer, not a decline.  Each now
+   goes through [State.copy_bytes_map], which is [State.access_okb] and
+   then that same walk, the shape [socketpair_dest_writable] spells for
+   its destination above.
+
+   EACH GROUP IS A PAIR, and both halves are needed.  The wrapping call
+   is refused — and a NEIGHBOURING ordinary call at the top of what
+   [State.access_okb] accepts is still answered, so the guard is not a
+   blanket refusal of every high address.  A third Example per group
+   pins that the walk alone really would have passed, in the form
+   [socketpair_wrap_would_pass_the_bare_walk] takes: without it the
+   refusal would also hold if the memory quietly stopped mapping the
+   range, and the pair would be testing nothing.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE and nothing else, for that
+   reason.  [wmem_open] would answer [Some] at every address and could
+   not tell a wrapping pointer from any other.
+   ========================================================================= *)
+
+(* ---- bind (200): the address ------------------------------------------- *)
+
+(** Eight bytes below the top and eight from 0: the 16-byte
+    [struct sockaddr] walk covers both halves.  The byte at the base is
+    AF_INET (2, host order) and every other is zero, so the address
+    decodes to AF_INET / port 0 / INADDR_ANY — the ONE address
+    [bind_spec] accepts.  That is deliberate: before the guard this call
+    did not merely fault late, it SUCCEEDED and bound the socket. *)
+Definition bind_wrap_addrp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition bind_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (if bv_eqb a bind_wrap_addrp then Z_to_bv 8 2 else Z_to_bv 8 0)
+           else None.
+
+Example bind_wrap_would_pass_the_bare_walk :
+  read_bytes_map bind_wrap_mem bind_wrap_addrp (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example bind_wrap_address_is_not_copyable :
+  copy_bytes_map bind_wrap_mem bind_wrap_addrp 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with nothing copied is the answer, and the success the bare
+    walk admitted is refused.  [move_addr_to_kernel] (net/socket.c,
+    [move_addr_to_kernel]) copies with [copy_from_user], whose
+    [access_ok] refuses this range (include/asm-generic/access_ok.h,
+    [__access_ok]). *)
+Example bind_wrapping_address_is_efault :
+  check_syscall (mkInput 200 [3; bind_wrap_addrp; 16; 0; 0; 0]
+                   bind_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 200 [3; bind_wrap_addrp; 16; 0; 0; 0]
+                     bind_wrap_mem (fun _ => None))
+       (mkEffectU (Z_to_bv 64 0) [] [] [] [] [(bind_wrap_addrp, 16%nat)])
+       fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** THE NEIGHBOUR, and the half that says the rule still works: the last
+    sixteen bytes [State.access_okb] accepts, mapped end to end, with
+    the same address in them.  The call is still judged — the
+    -EADDRINUSE [inet_csk_get_port] can always answer is accepted with
+    the copy-in ledger — and -EFAULT is refused there. *)
+Definition bind_top_addrp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition bind_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if bv_eqb a bind_top_addrp then Z_to_bv 8 2 else Z_to_bv 8 0)
+           else None.
+
+Example bind_at_the_top_still_answers :
+  check_syscall (mkInput 200 [3; bind_top_addrp; 16; 0; 0; 0]
+                   bind_top_mem (fun _ => None))
+    (mkEffectU (errno_ret EADDRINUSE) [] [] [] [] [(bind_top_addrp, 16%nat)])
+    fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 200 [3; bind_top_addrp; 16; 0; 0; 0]
+                     bind_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- connect (203): the address ---------------------------------------- *)
+
+(** The same wrap, with every byte zero: [sa_family] is AF_UNSPEC, which
+    on a fresh socket is [tcp_disconnect] on a socket with nothing to
+    disconnect and RETURNS 0.  So this call too was answered, and
+    answered with a success, before the guard. *)
+Definition connect_wrap_addrp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition connect_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example connect_wrap_would_pass_the_bare_walk :
+  read_bytes_map connect_wrap_mem connect_wrap_addrp (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example connect_wrap_address_is_not_copyable :
+  copy_bytes_map connect_wrap_mem connect_wrap_addrp 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example connect_wrapping_address_is_efault :
+  check_syscall (mkInput 203 [3; connect_wrap_addrp; 16; 0; 0; 0]
+                   connect_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 203 [3; connect_wrap_addrp; 16; 0; 0; 0]
+                     connect_wrap_mem (fun _ => None))
+       (mkEffectU (Z_to_bv 64 0) [] [] [] [] [(connect_wrap_addrp, 16%nat)])
+       fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Definition connect_top_addrp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition connect_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example connect_at_the_top_still_answers :
+  check_syscall (mkInput 203 [3; connect_top_addrp; 16; 0; 0; 0]
+                   connect_top_mem (fun _ => None))
+    (mkEffectU (Z_to_bv 64 0) [] [] [] [] [(connect_top_addrp, 16%nat)])
+    fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 203 [3; connect_top_addrp; 16; 0; 0; 0]
+                     connect_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** ---- connect (203): the ZERO LENGTH, WHICH THE RANGE TEST MUST NOT SEE
+
+    [move_addr_to_kernel] is
+    [if (ulen < 0 || ulen > 128) return -EINVAL;
+     if (ulen == 0) return 0;
+     if (copy_from_user(...)) return -EFAULT;] (net/socket.c), so a
+    zero-length address RETURNS BEFORE [copy_from_user] and the pointer
+    is never looked at: [connect(fd, p, 0)] is never -EFAULT, for any
+    [p].  [State.access_okb a 0] is
+    [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE)], FALSE above
+    the limit, so routing the zero through [State.copy_bytes_map] made
+    this call -EFAULT — a wrong answer, not a decline, and the one the
+    guard itself introduced.  [Net.Socket.move_addr_bytes] is the fix.
+
+    THE PAIR.  The first two conjuncts are the case the model used to
+    get wrong, on a socket and on a channel fd — the two different
+    answers a zero length has, which is why connect cannot borrow
+    [bind_spec]'s single -EINVAL arm — and each refuses -EFAULT beside
+    it.  The last two are the CONTROL at the SAME pointer with ONE byte
+    asked for: there [copy_from_user] really does run, [access_ok]
+    really does refuse the range, and -EFAULT is still the only answer.
+    A fix that dropped the range test instead of ordering the zero
+    ahead of it would pass the first half and fail this one.
+
+    Every arm here is ABOVE the ledger or records nothing, so
+    [connect_answering] is the right spelling throughout: a zero-length
+    address reads no user byte. *)
+(** THE CAUSE, pinned so the repair cannot be undone by accident: the
+    range test REFUSES a zero-length range above the limit, and the
+    unguarded copy therefore answers [None] there, which is why
+    [Net.Socket.move_addr_bytes] has to decide the zero before the pair
+    is consulted.  The control beside it is the same test at the same
+    length one byte below [State.TASK_SIZE], where it passes — so this
+    is a statement about the LIMIT and not about zero lengths. *)
+Example zero_length_range_above_the_limit_is_refused :
+  access_okb connect_wrap_addrp 0 = false
+  /\ copy_bytes_map (fun _ => None) connect_wrap_addrp 0 = None
+  /\ access_okb (Z_to_bv 64 TASK_SIZE) 0 = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example connect_zero_length_never_faults :
+  connect_answering (fun _ => None) listening_socket_model
+    3 connect_wrap_addrp 0 (errno_ret EINVAL) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
+  /\ connect_answering (fun _ => None) listening_socket_model
+       1 connect_wrap_addrp 0 (errno_ret ENOTSOCK) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       1 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 1 (errno_ret EFAULT) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 1 (errno_ret EINVAL) = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** THE ZERO LENGTH IS UNCHANGED WHERE IT WAS ALREADY RIGHT, which is
+    what says the repair is an ORDERING and not a new acceptance: at a
+    readable pointer well below [State.TASK_SIZE] the answer is the same
+    -EINVAL it always was, and a success is still refused. *)
+Example connect_zero_length_below_the_limit_is_unchanged :
+  connect_answering connect_addr_mem listening_socket_model 3 8192 0
+    (errno_ret EINVAL) = CheckOk listening_socket_model []
+  /\ connect_answering connect_addr_mem listening_socket_model 3 8192 0 0
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- getsockopt (209): the four-byte [optlen] --------------------------- *)
+
+(** Two bytes below the top and two from 0.  Here the ERRNO does not
+    move — [do_sock_getsockopt] discards what it read — so what the bare
+    walk got wrong was the LEDGER: it claimed four bytes had left user
+    memory on a call where [copy_from_user]'s [access_ok] refused the
+    range and moved none, and [eff_copyins] charges a first touch
+    against the backing limit. *)
+Definition getsockopt_wrap_optlenp : word := Z_to_bv 64 (2 ^ 64 - 2).
+
+Definition getsockopt_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 2)%Z || (2 ^ 64 - 2 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example getsockopt_wrap_would_pass_the_bare_walk :
+  read_bytes_map getsockopt_wrap_mem getsockopt_wrap_optlenp (Z_to_bv 64 4)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example getsockopt_wrap_optlen_is_not_copyable :
+  copy_bytes_map getsockopt_wrap_mem getsockopt_wrap_optlenp 4 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example getsockopt_wrapping_optlen_records_nothing :
+  check_syscall (mkInput 209 [3; 17; 4; 4096; getsockopt_wrap_optlenp; 0]
+                   getsockopt_wrap_mem (fun _ => None))
+    (mkEffectU (errno_ret EOPNOTSUPP) [] [] [] [] []) fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 209 [3; 17; 4; 4096; getsockopt_wrap_optlenp; 0]
+                     getsockopt_wrap_mem (fun _ => None))
+       (mkEffectU (errno_ret EOPNOTSUPP) [] [] [] []
+                  [(getsockopt_wrap_optlenp, 4%nat)])
+       fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** The neighbour: the last four bytes [State.access_okb] accepts,
+    mapped, where the ledger IS required. *)
+Definition getsockopt_top_optlenp : word := Z_to_bv 64 (TASK_SIZE - 4).
+
+Definition getsockopt_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 4 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example getsockopt_at_the_top_still_records :
+  check_syscall (mkInput 209 [3; 17; 4; 4096; getsockopt_top_optlenp; 0]
+                   getsockopt_top_mem (fun _ => None))
+    (mkEffectU (errno_ret EOPNOTSUPP) [] [] [] []
+               [(getsockopt_top_optlenp, 4%nat)])
+    fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 209 [3; 17; 4; 4096; getsockopt_top_optlenp; 0]
+                     getsockopt_top_mem (fun _ => None))
+       (mkEffectU (errno_ret EOPNOTSUPP) [] [] [] [] []) fresh_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- sendmsg (211): the fifty-six-byte header --------------------------- *)
+
+(** Eight bytes below the top and forty-eight from 0, all zero: the
+    whole [struct user_msghdr] reads back, with a NULL [msg_name], no
+    descriptors and no control block, so before the guard this call was
+    answered as an ordinary zero-length send rather than faulting.
+    [copy_msghdr_from_user] (net/socket.c, [copy_msghdr_from_user])
+    answers -EFAULT instead, because its [copy_from_user] tests
+    [access_ok] over the whole 56 bytes. *)
+Definition sendmsg_wrap_msgp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition sendmsg_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 48)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example sendmsg_wrap_would_pass_the_bare_walk :
+  read_bytes_map sendmsg_wrap_mem sendmsg_wrap_msgp (Z_to_bv 64 MSGHDR_SIZE)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example sendmsg_wrap_header_is_not_copyable :
+  copy_bytes_map sendmsg_wrap_mem sendmsg_wrap_msgp MSGHDR_SIZE = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with an empty ledger is the whole answer, and the
+    zero-length send the bare walk admitted — which would have recorded
+    the header as copied — is refused.  The flags are MSG_NOSIGNAL,
+    which is the only value [send_flags_modeled] admits, so that this
+    example measures the header read and not the flag gate. *)
+Example sendmsg_wrapping_header_is_efault :
+  check_syscall (mkInput 211 [4; sendmsg_wrap_msgp; 16384; 0; 0; 0]
+                   sendmsg_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model
+  = CheckOk accepted_socket_model []
+  /\ check_syscall (mkInput 211 [4; sendmsg_wrap_msgp; 16384; 0; 0; 0]
+                     sendmsg_wrap_mem (fun _ => None))
+       (mkEffectU (Z_to_bv 64 0) [] [] [] []
+                  [(sendmsg_wrap_msgp, Z.to_nat MSGHDR_SIZE)])
+       accepted_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** THE NEIGHBOUR FOR sendmsg IS THE WORKED SEND ABOVE
+    ([sendmsg_gathers_onto_the_same_channel]): an ordinary header at
+    8192 naming one descriptor at 8320 and two payload bytes at 4096 is
+    still answered, with the same three-range ledger.  It is restated
+    here as the positive half of this pair, and it also pins the import:
+    the descriptor array and the payload now go through
+    [State.import_iovecs], which adds the array's own [access_ok] and
+    the per-segment one, and this says those tests cost an ordinary call
+    nothing. *)
+Example sendmsg_ordinary_header_still_sends :
+  check_syscall (mkInput 211 [4; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                   (fun _ => None))
+    (mkEffectU 2 [] [] [] []
+       [(8192, 56%nat); (8320, 16%nat); (4096, 2%nat)]) accepted_socket_model
+  = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98]
+  /\ check_syscall (mkInput 211 [4; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model
+     = CheckReject.
+Proof. split; check_eq. Qed.

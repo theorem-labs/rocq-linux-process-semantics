@@ -43,9 +43,9 @@ Qed.
    mmap (222) / munmap (215) / mprotect (226)
    ========================================================================= *)
 
-(** mmap witness: -EINVAL on a misaligned offset (with a length whose
-    page-rounding does not wrap) or on a zero length in the plain
-    anonymous shape, and -ENOMEM on a MAP_FIXED range whose
+(** mmap witness: -EINVAL on a misaligned offset or on a zero length in
+    the plain anonymous shape, -EBADF on a file-backed request whose fd
+    the process does not hold, and -ENOMEM on a MAP_FIXED range whose
     page-rounded end leaves the address space; for the modeled shapes
     the environment-failure branch (errno 12), available regardless of
     the mapping ledger; [Unmodeled]
@@ -56,10 +56,12 @@ Qed.
 
 Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     : outcome SyscallEffect :=
-  if negb (mmap_off_aligned_b off) then
-    (if mmap_pglen_ok_b len then ret_outcome (errno_ret EINVAL) m
-     else Unmodeled)
-  else if negb (mmap_anon_b flags) then Unmodeled
+  if negb (mmap_off_aligned_b off) then ret_outcome (errno_ret EINVAL) m
+  else if negb (mmap_anon_b flags) then
+    (match fd_lookup (m_fds m) (fd32 fd) with
+     | None => ret_outcome (errno_ret EBADF) m
+     | Some _ => Unmodeled
+     end)
   else if w_is0 len then
     (if mmap_plain_anon_b flags then ret_outcome (errno_ret EINVAL) m
      else Unmodeled)
@@ -168,9 +170,11 @@ Lemma mmap_witness_ok : forall addr len prot flags fd off i m,
 Proof.
   intros. unfold mmap_spec, mmap_witness.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl;
-      [apply pure_ok|apply unmodeled_intro]. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [apply unmodeled_intro|].
+  { apply pure_ok. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+    destruct (fd_lookup (m_fds m) (fd32 fd));
+      [apply unmodeled_intro | apply pure_ok]. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [apply pure_ok|apply unmodeled_intro]. }
@@ -239,9 +243,9 @@ Proof.
 Qed.
 
 (** munmap witness: mirrors the spec's five-way split — -EINVAL on a
-    bad argument or a range leaving the user address space, the removal
+    bad argument or a range leaving the user address space, the cut
     (with its unmap effect) on an exact recorded mapping, the no-op 0 on
-    a free range below the stack band, the cut (with its unmap effect)
+    a free range below the stack band, the same cut (with its unmap effect)
     on a partial unmap below the band, and [Unmodeled] (fail closed) on
     a range touching the image or reaching into the band (see
     [Mmap.munmap_spec]). *)
@@ -259,13 +263,8 @@ Definition munmap_witness (addr len : word) (m : Model)
     let n := Z_to_bv 64 nZ in
     if map_has (vm_maps h) addr n
     then Ok (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] [])
-            (with_mmap_destroyed addr n (mkVmMapsFull (vm_reserved h)
-                            (map_remove (vm_maps h) addr)
-                            (maps_subtract (vm_noaccess h)
-                               (bv_unsigned addr)
-                               (bv_unsigned addr + bv_unsigned n))
-                            (vm_start_brk h) (vm_brk h) (vm_limit h)
-      (vm_mmap_base h) (vm_init_sp h)) m) []
+            (with_mmap_destroyed addr n
+               (mmap_fixed_destroyed_next h addr n) m) []
     else if munmap_free_ok h addr nZ
     then ret_outcome (Z_to_bv 64 0) m
     else if munmap_cut_ok h addr nZ
@@ -287,7 +286,7 @@ Proof.
   destruct (map_has (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hhas.
   - eapply bind_step; [apply get_vmmaps_ok|]. cbv beta zeta.
-    cbv iota. srw Hhas.
+    cbv iota. srw Hhas. apply alt_r.
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - destruct (munmap_free_ok (m_vmmaps m) addr

@@ -101,9 +101,13 @@ Lemma error_free_iff : forall img lim en inp,
   error_free (run img lim en inp) <-> omni_corun img lim en inp never_errors.
 Proof. intros. apply bh_errors_iff. Qed.
 
+(** Over the RUN's segment list ([Run.image_run_segments]), which is
+    the image's own plus the vDSO pair [execve] installs: that is the
+    list the step relation reads, so it is the list
+    [OmniRun.covered] has to be stated over. *)
 Lemma modeled_iff : forall img lim en inp,
   modeled (run img lim en inp)
-  <-> omni_corun img lim en inp (covered (img_segments img)).
+  <-> omni_corun img lim en inp (covered (image_run_segments img en inp)).
 Proof. intros. apply bh_unmodeled_iff. Qed.
 
 (** Trace equivalence of two runs is agreement on every prefix-closed
@@ -181,7 +185,7 @@ Variable target_image : Image.
 Definition omni_strong_equiv (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
   omni_corun source_image source_alloc_limit en_source inp
-    (covered (img_segments source_image))
+    (covered (image_run_segments source_image en_source inp))
   /\ omni_equiv source_image source_alloc_limit en_source
                 target_image target_alloc_limit en_target inp.
 
@@ -211,12 +215,26 @@ Proof.
     apply strong_equiv_iff; apply H; assumption.
 Qed.
 
-(** [Equivalence.strong_equiv_error_free]: both runs never error, and
-    the trace sets agree. *)
+(** [Equivalence.strong_equiv_error_free]: both runs never error, NEITHER
+    DIES BY A SIGNAL, and the trace sets agree.
+
+    THE KILL CLAUSE IS NOT IN OMNI FORM, and that is not an oversight.
+    [omni_corun] quantifies a postcondition over the outcomes a run can
+    reach, and "no execution ever dies" is a property of the TRACE SET
+    rather than of an outcome -- [Equivalence.dies_by_signal] reads
+    [bh_traces] for a [State.KillEv], exactly as
+    [Equivalence.error_free_unkilled] does on the behaviour side.  So
+    the two readings share that conjunct verbatim, and what this
+    definition translates is the error conjunct alone.  Writing it as
+    an omni predicate would need a kill-aware outcome, which
+    [OmniRun.mexec] does not have: its [OHalt] covers a killed
+    configuration as it covers an exited one. *)
 Definition omni_strong_equiv_error_free (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  omni_corun source_image source_alloc_limit en_source inp never_errors
-  /\ omni_corun target_image target_alloc_limit en_target inp never_errors
+  (omni_corun source_image source_alloc_limit en_source inp never_errors
+   /\ ~ dies_by_signal (run source_image source_alloc_limit en_source inp))
+  /\ (omni_corun target_image target_alloc_limit en_target inp never_errors
+      /\ ~ dies_by_signal (run target_image target_alloc_limit en_target inp))
   /\ omni_trace_equiv source_image source_alloc_limit en_source
                       target_image target_alloc_limit en_target inp.
 
@@ -225,7 +243,8 @@ Lemma strong_equiv_error_free_iff : forall en_source en_target inp,
   <-> omni_strong_equiv_error_free en_source en_target inp.
 Proof.
   intros en_source en_target inp.
-  unfold strong_equiv_error_free, omni_strong_equiv_error_free.
+  unfold strong_equiv_error_free, omni_strong_equiv_error_free,
+    error_free_unkilled.
   rewrite (error_free_iff source_image source_alloc_limit en_source inp).
   rewrite (error_free_iff target_image target_alloc_limit en_target inp).
   rewrite (trace_equiv_iff_omni source_image source_alloc_limit en_source
@@ -256,7 +275,7 @@ Lemma omni_strong_equiv_error_free_implies : forall en_source en_target inp,
   omni_strong_equiv_error_free en_source en_target inp ->
   omni_strong_equiv en_source en_target inp.
 Proof.
-  intros en_source en_target inp (Hsrc & Htgt & Htr).
+  intros en_source en_target inp ((Hsrc & _) & (Htgt & _) & Htr).
   split.
   - destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
     cbn [omni_corun img_segments] in *.
@@ -282,7 +301,7 @@ Lemma omni_strong_equiv_error_free_no_all_errors_escape :
     omni_run source_image source_alloc_limit en_source inp errors ->
     ~ omni_strong_equiv_error_free en_source en_target inp.
 Proof.
-  intros en_source en_target inp Hall (Hsrc & _ & _).
+  intros en_source en_target inp Hall ((Hsrc & _) & _ & _).
   destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
   cbn [omni_run omni_corun] in *.
   destruct (exec_realizes _ _ _ Hall) as (tr & o & Hm & Herr).
@@ -300,7 +319,7 @@ Lemma omni_strong_universal_error_free_refuted_by_source_error :
     ~ omni_strong_universal_error_free_T.
 Proof.
   intros en_source en_target inp Hs Ht Hi Hmay H.
-  destruct (H en_source en_target inp Hs Ht Hi) as (Hsrc & _ & _).
+  destruct (H en_source en_target inp Hs Ht Hi) as ((Hsrc & _) & _ & _).
   destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
   cbn [omni_may omni_corun] in *.
   destruct Hmay as (tr & o & Hm & Herr).
@@ -382,9 +401,10 @@ Definition omni_agree (X Y : Image) (lim : Z) (inp : ProcInput) : Prop :=
   /\ ((exists en, valid_entry X en inp /\ omni_run X lim en inp errors)
       <-> (exists en, valid_entry Y en inp /\ omni_run Y lim en inp errors))
   /\ ((exists en, valid_entry X en inp
-                  /\ omni_may X lim en inp (uncovered (img_segments X)))
+                  /\ omni_may X lim en inp (uncovered (image_run_segments X en inp)))
       <-> (exists en, valid_entry Y en inp
-                      /\ omni_may Y lim en inp (uncovered (img_segments Y)))).
+                      /\ omni_may Y lim en inp
+                           (uncovered (image_run_segments Y en inp)))).
 
 Lemma agree_iff : forall X Y lim inp,
   agree X Y lim inp <-> omni_agree X Y lim inp.

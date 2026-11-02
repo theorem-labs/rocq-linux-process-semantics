@@ -44,10 +44,12 @@ Import ListNotations.
 Open Scope bv_scope.
 
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
-  Prelude Uaccess VaSize MmapBase Hwcap Brk
+  Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly EntryLaunch EntryWitness
   Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
-  Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Fork Kernel.Futex.Syscalls
+  Fs.EventPoll
+  Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
+  Kernel.Fork Kernel.Futex.Syscalls
   Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -208,13 +210,23 @@ Definition undecodable_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["ffffffff"%pstring]
+  seg_bytes := ["ffffffff"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition undecodable_segments : list Segment := [undecodable_segment].
 
 Example undecodable_word_is_not_decoded :
   decode_any (Z_to_bv 32 0xffffffff) = None.
 Proof. vm_compute. reflexivity. Qed.
+
+(** The process input the statements of this file run on: one empty
+    argument, no environment, an empty file system, end of input.  It
+    was spelled inline at every use and again in [Checks.Omni]; one
+    name instead, because [demo_entry] below is the entry OF this
+    input and the two must not drift apart. *)
+Definition demo_proc_input : ProcInput :=
+  mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
+              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
 
 (** A concrete image's program-header record, reused by the auxv checks
     in part 5: the shape [elf-snapshot] emits for a static
@@ -223,9 +235,24 @@ Proof. vm_compute. reflexivity. Qed.
 Example undecodable_step_unmodeled :
   RiscvSemantics.step undecodable_segments
     (init_machine_state undecodable_segments 0x100 demo_phdrs
-       (Z_to_bv 64 65536) demo_draw [[]] [] demo_uid demo_hwcap)
+       demo_sp demo_mbase demo_draw demo_proc_input)
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
+
+(** The same first fetch at the segment list a RUN carries: the
+    binary's own segments with the vDSO pair appended
+    ([Run.run_segments]).  [find_segment] walks the list head first and
+    this image's segment covers 0x100, so the pair is never consulted
+    and the answer is the one above.  [Run.vdso_segments] stays
+    [Opaque] here, so no measured image byte is normalised. *)
+Example undecodable_step_unmodeled_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+       0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)
+  = MachineUnmodeled.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
 
 (** …and therefore the run is NOT modeled.  Any [strong_universal_T]
     naming this image as its source is unprovable, however the target is
@@ -233,29 +260,28 @@ Proof. vm_compute. reflexivity. Qed.
 Example run_of_undecodable_image_is_unmodeled :
   bh_unmodeled (run (mkImage undecodable_segments 0x100 demo_phdrs)
                   demo_limit
-                  (mkEntry (Z_to_bv 64 65536) (Z_to_bv 64 1048576)
-                     (Z_to_bv 64 mmap_base_max) demo_draw)
-                  (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
+                  (mkEntry demo_sp (Z_to_bv 64 1048576)
+                     demo_mbase demo_draw)
+                  demo_proc_input).
 Proof.
   cbn [run bh_unmodeled]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled. reflexivity.
+  (* [Run.init_machine_state] takes the input WHOLE now, so no
+     projection is left to reduce before the step lemma applies. *)
+  rewrite undecodable_step_unmodeled_run. reflexivity.
 Qed.
 
 Example run_of_undecodable_image_refutes_modeled :
   ~ Equivalence.modeled
       (run (mkImage undecodable_segments 0x100 demo_phdrs)
          demo_limit
-         (mkEntry (Z_to_bv 64 65536) (Z_to_bv 64 1048576)
-                     (Z_to_bv 64 mmap_base_max) demo_draw)
-         (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
+         (mkEntry demo_sp (Z_to_bv 64 1048576)
+                     demo_mbase demo_draw)
+         demo_proc_input).
 Proof. intro H. exact (H run_of_undecodable_image_is_unmodeled). Qed.
 
 (** The extracted acceptor's outcomes, read back as [Run.sstep] transitions.
@@ -698,6 +724,134 @@ Proof.
       apply IH; assumption.
 Qed.
 
+(** ** What an [exits_c] program EMITS, not only where it ends
+
+    [exits_c_must_exit_at] says where the run ends; the two lemmas below
+    say what it emits on the way, which is what [Equivalence.dies_by_signal]
+    asks about.  At an [ecall] carrying the exit number there is exactly
+    one kind of successor transition, it emits exactly one event, and it
+    lands halted: [exit_dispatch_forced] (the exit spec admits one outcome
+    triple, whose event list is empty) against [exit_dispatch_halts]
+    (that outcome halts, which rules out the ordinary-syscall transition)
+    and [exit_dispatch_not_killed] (and it is not a killed one, which
+    rules out [Run.sstep_killed]); the error constructors of [Run.sstep]
+    cannot unify with [Run.SNext] and are discarded by inversion. *)
+Lemma exit_step_forced : forall segs ms model x8 evs c',
+  m_halted model = None ->
+  ms_svc_pending ms = Some x8 ->
+  exit_sysno (in_sysno (sys_input segs ms x8)) ->
+  sstep segs (mkCfg ms model) evs (SNext c') ->
+  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+  /\ m_halted (cfg_model c') <> None.
+Proof.
+  intros segs ms model x8 evs c' Hh Hsvc Hno Hss.
+  assert (Harg : in_arg (sys_input segs ms x8) 0 = ms_gpr ms 0) by reflexivity.
+  inversion Hss; subst; try congruence; unify_svc x8.
+  - match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
+        pose proof (exit_dispatch_halts _ _ _ _ _ Hno H) as Hhalts
+    end.
+    congruence.
+  - match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
+        destruct (exit_dispatch_forced _ _ _ _ _ Hno H) as (_ & Hm' & Hevs)
+    end.
+    subst.
+    match goal with
+    | [ H : m_halted (with_halted ?v _) = Some ?c |- _ ] =>
+        assert (Hcode : c = v)
+          by (rewrite m_halted_with_halted in H; congruence)
+    end.
+    rewrite Harg in Hcode.
+    split.
+    + cbn [List.app]. rewrite m_fs_with_halted, Hcode. reflexivity.
+    + cbn [cfg_model]. rewrite m_halted_with_halted. discriminate.
+  - exfalso.
+    match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ ?m' _), Hk : m_killed ?m' = Some _ |- _ ] =>
+        rewrite (exit_dispatch_not_killed _ _ _ _ _ Hno H) in Hk; discriminate
+    end.
+Qed.
+
+(** The engine: every [Run.star] of an [exits_c] program emits at most
+    the exit event.  Same induction as [exits_c_must_exit_at], against a
+    [Run.star]: at an instruction the first transition is forced to be
+    [Run.sstep_instr], which emits nothing and leaves the model fixed; at
+    the [ecall] it is [Run.sstep_exit] by [exit_step_forced], and the
+    configuration it lands in is halted, so [MustExit.star_from_halted]
+    ends the run there. *)
+Lemma exits_c_star_trace : forall segs code fuel ms model tr c',
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  exits_c segs code fuel ms = true ->
+  star segs (mkCfg ms model) tr c' ->
+  tr = [] \/ tr = [ExitEv code (m_fs model)].
+Proof.
+  intros segs code fuel. induction fuel as [|fuel IH];
+    intros ms model tr c' Hh Hlazy Hc Hstar; [discriminate|].
+  cbn [exits_c] in Hc.
+  destruct (ms_svc_pending ms) as [x8|] eqn:Hsvc.
+  - apply andb_true_iff in Hc as [Hx8 Hcode].
+    apply bv_eqb_eq in Hcode. subst code.
+    assert (Hno : exit_sysno (in_sysno (sys_input segs ms x8))).
+    { cbn [in_sysno sys_input].
+      apply orb_true_iff in Hx8. destruct Hx8 as [H|H]; apply Z.eqb_eq in H;
+        [left|right]; exact H. }
+    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
+      [left; reflexivity |].
+    destruct (exit_step_forced _ _ _ _ _ _ Hh Hsvc Hno Hss) as (Hevs & Hne).
+    destruct (star_from_halted _ _ _ _ Hstar1 Hne) as (Htr1 & _).
+    right. rewrite Hevs, Htr1, app_nil_r. reflexivity.
+  - destruct (RiscvSemantics.step segs ms) as [ms'| |] eqn:Hstep;
+      [|discriminate|discriminate].
+    assert (Hacc : mi_account_step segs ms model = MachineOk (ms', model)).
+    { rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity. }
+    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
+      [left; reflexivity |].
+    inversion Hss; subst; try congruence.
+    match goal with
+    | [ H : mi_account_step _ _ _ = MachineOk (?a, ?b) |- _ ] =>
+        rewrite Hacc in H; injection H as -> ->
+    end.
+    cbn [List.app]. exact (IH _ _ _ _ Hh Hlazy Hc Hstar1).
+Qed.
+
+(** ... so no observed prefix of such a run carries a [State.KillEv]:
+    its one non-empty maximal trace is the exit event. *)
+Lemma exits_c_obs_no_kill : forall segs code fuel ms model tr sig fs,
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  exits_c segs code fuel ms = true ->
+  obs_trace segs (mkCfg ms model) tr ->
+  ~ In (KillEv sig fs) tr.
+Proof.
+  intros segs code fuel ms model tr sig fs Hh Hlazy Hc (tr' & c & Hstar & Hp) Hin.
+  destruct (exits_c_star_trace _ _ _ _ _ _ _ Hh Hlazy Hc Hstar) as [-> | ->].
+  - destruct tr as [| a l]; cbn in Hp, Hin; [exact Hin | exact Hp].
+  - destruct tr as [| a [| b l]]; cbn in Hp, Hin.
+    + exact Hin.
+    + destruct Hp as [-> _]. destruct Hin as [Hk | []]. discriminate Hk.
+    + destruct Hp as [_ []].
+Qed.
+
+(** The run-level form [Equivalence.error_free_unkilled] asks for: a
+    program [exits_c] accepts from the run's initial state never dies by
+    a signal.  Proved from the image's own run, not from the absence of a
+    counterexample. *)
+Lemma exits_c_never_dies : forall segs pc ph code fuel lim sp brk0 mbase rnd inp,
+  exits_c (run_segments segs inp sp mbase) code fuel
+    (init_machine_state (run_segments segs inp sp mbase) pc ph sp mbase rnd inp) = true ->
+  ~ dies_by_signal (run (mkImage segs pc ph) lim (mkEntry sp brk0 mbase rnd) inp).
+Proof.
+  intros segs pc ph code fuel lim sp brk0 mbase rnd inp Hms (tr & sig & fs & Ht & Hin).
+  cbn [run bh_traces] in Ht. unfold init_config in Ht.
+  exact (exits_c_obs_no_kill (run_segments segs inp sp mbase) code fuel _
+           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp lim inp))
+           tr sig fs
+           eq_refl eq_refl Hms Ht Hin).
+Qed.
+
 (** ** The image, and the entry a real [execve] could have chosen
 
     Three instructions at 0x100, written out as the hex the loader would
@@ -711,7 +865,8 @@ Definition exit0_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 12;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305000073000000"%pstring]
+  seg_bytes := ["9308d0051305000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition exit0_segments : list Segment := [exit0_segment].
 Definition exit0_image : Image := mkImage exit0_segments 0x100 demo_phdrs.
@@ -721,58 +876,107 @@ Definition exit0_image : Image := mkImage exit0_segments 0x100 demo_phdrs.
 Definition undecodable_image : Image :=
   mkImage undecodable_segments 0x100 demo_phdrs.
 
-(** An [execve] placement that really satisfies [Run.valid_entry] —
-    unlike the fixture entry used by the earlier examples, whose stack
-    pointer (65536) sits far below [State.sp_window_lo] and which those
-    examples never had to validate.  Validity is what the statements
-    below need: [Classifier.agree] quantifies its trace comparison over
-    VALID entries only, so a refutation that named an invalid one would
-    refute nothing. *)
-Definition demo_entry : ExecEntry :=
-  mkEntry (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000)
-          (Z_to_bv 64 mmap_base_max) demo_draw.
+(** THE ENTRY OF AN INPUT, and why it has to be a function of one.
+
+    [Run.entry_launch_ok_va], the fifth conjunct of [Run.valid_entry],
+    asks that the triple (stack VMA end, entry stack pointer, mmap
+    base) be one a Linux v6.18.46 launch can give.  [create_elf_tables]
+    (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f) derives the
+    entry stack pointer from the exec file name, the environment and
+    the arguments it has just copied to the top of the stack VMA, so
+    the admitted set of stack pointers is a function of the INPUT and
+    NO closed entry is valid for every input.  That is why this
+    fixture takes the input it is the entry for.
+
+    The entry itself is [Run.launch_entry_va]: the launch with no
+    stack draw ([StackLayout.ed_top] at [Run.va_stack_top], the top of
+    the address space), no [arch_align_stack] pad (the stack pointer
+    at the high end of rule 2's interval) and no [arch_mmap_rnd] draw.
+    [Run.launch_entry_va_valid] discharges all five conjuncts of
+    [Run.valid_entry], so the arithmetic lives in the core and not
+    here.  Validity is what the statements below need:
+    [Classifier.agree] quantifies its trace comparison over VALID
+    entries only, so a refutation that named an invalid one would
+    refute nothing.
+
+    The break is 0x1000 — one page, the page-rounded top of the
+    reservation each image below makes — and the draw's AT_RANDOM half
+    is [Cases.Prelude.demo_random], both as before.  The vDSO half is
+    [Run.vdso_keeps_all]: no statement here runs a vDSO call. *)
+Definition demo_entry_of (inp : ProcInput) : ExecEntry :=
+  launch_entry_va (in_va_size inp) inp (Z_to_bv 64 0x1000) demo_random
+    vdso_keeps_all.
+
+Definition demo_entry : ExecEntry := demo_entry_of demo_proc_input.
+
+(** The same entry as a RECORD, for the statements that step the run
+    and so need the four fields rather than the derivation.  At
+    [demo_proc_input] the exec file name is [State.default_execfn] and
+    CONFIG_RSEQ is on ([State.default_kernel]), so the auxv has 29
+    entries, [StackLayout.block_head_size] is 512 and
+    [StackLayout.launch_string_bytes] is 3: the stack pointer is
+    [align_down16 (2^47 - 8 - 3) - 512] and the whole entry block is
+    the 528 bytes between it and the top. *)
+Lemma demo_entry_fields :
+  demo_entry
+  = mkEntry (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x1000)
+            (Z_to_bv 64 0x7fffbf701000)
+            (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all).
+Proof.
+  unfold demo_entry, demo_entry_of, launch_entry_va. cbv zeta.
+  (* [all:] rather than bullets: how many goals [f_equal] leaves
+     depends on which of the four fields are already convertible, and a
+     bullet count that is right today is wrong the next time one of
+     them is. *)
+  f_equal.
+  all: try (apply bv_eq; vm_compute; reflexivity).
+  all: f_equal; apply bv_eq; vm_compute; reflexivity.
+Qed.
 
 (** Both images put their only segment inside the first page, so both
     reserve exactly that page and the same break base is valid for
     either.  These two are premises for the statements below rather than
     cases in their own right; as cases they would be admission reason 3,
-    since the three windows [Run.valid_entry] checks against are model
+    since the windows [Run.valid_entry] checks against are model
     constants no observation of a running process reveals.
 
-    Stated for EVERY valid input rather than at the one below, because
-    that is what is true: [Run.valid_entry]'s fourth conjunct asks that
-    the entry stack image fit under [State.sp_window_hi], [demo_entry]
-    puts [sp] at [State.sp_window_lo], and [Run.entry_stack_span_bound]
-    caps a valid input's image at [Run.entry_stack_span_max] — 2238671
-    bytes against the window's two gigabytes.  Naming the input here
-    instead would say less and would have to be restated at each use. *)
+    Stated for EVERY valid input, at THAT input's entry: the break is
+    the only conjunct that reads the image, and
+    [Run.launch_entry_va_valid] carries the other four for every valid
+    input at once.  Naming one input here would say less and would
+    have to be restated at each use. *)
 Example demo_entry_valid_exit0 : forall inp,
-  valid_input inp -> valid_entry exit0_image demo_entry inp.
+  valid_input inp -> valid_entry exit0_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [exit0_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses this proof needs -- [Run.valid_argv], [Run.valid_envp] and
+     [Run.valid_launch] -- are then found by [assumption] rather than by
+     counting.  [red] is what makes the match fire: [match goal] is
+     syntactic, and [valid_launch] stays folded under it, so the
+     conjunct arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, exit0_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
   rewrite Z_to_bv_unsigned, bv_wrap_small
     by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
   repeat split; try lia; vm_compute; try reflexivity; try discriminate.
 Qed.
 
 Example demo_entry_valid_undecodable : forall inp,
-  valid_input inp -> valid_entry undecodable_image demo_entry inp.
+  valid_input inp -> valid_entry undecodable_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [undecodable_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, undecodable_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
   rewrite Z_to_bv_unsigned, bv_wrap_small
     by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
   repeat split; try lia; vm_compute; try reflexivity; try discriminate.
 Qed.
 
@@ -850,10 +1054,40 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Fs.fs_image_real], the FIFTH conjunct: this fixture's image is
+       the empty one, which has no key to be non-canonical and no key
+       under another, so the boolean computes to [true]. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
+    (* [Run.valid_launch], the LAST conjunct, and the only one
+       about the exec file name.  [State.mkProcInput] fills
+       [State.in_execfn] with [State.default_execfn], the one-byte
+       relative path "a", so the first half takes
+       [Run.valid_path_name]'s side of the disjunction -- a name
+       [getname_flags] (fs/namei.c, Linux v6.18.46, commit
+       1f99e9ab748f) can return: between 1 and 4095 bytes and no NUL.
+       The NUL half needs [bv_unsigned] before [discriminate], for the
+       reason the [valid_sigmask] arm needs [bv_eq]: the two bitvector
+       records differ in a field [discriminate] cannot see.  The
+       second half is the E2BIG cap of [bprm_stack_limits]
+       (fs/exec.c), and three bytes of strings with two pointers are
+       far under it.  Two arms rather than one, because [repeat split]
+       reaches inside [valid_launch] wherever the conjunct has already
+       been split. *)
+    try (unfold valid_launch; split;
+         [ unfold valid_execfn, valid_path_name, default_execfn; left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+             vm_compute in Hz; discriminate ]
+         | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
+    try (unfold valid_execfn, valid_path_name, default_execfn; left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+           vm_compute in Hz; discriminate ]);
+    try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
-  (* [Run.valid_urandom], the eighth, is the only COINDUCTIVE conjunct,
+  (* [Run.valid_urandom] is the only COINDUCTIVE conjunct,
      so no computation decides it and the fixture discharges it by
      naming the witness its declaration is: [State.default_urandom],
      which is what [State.mkProcInput] fills the field with. *)
@@ -881,7 +1115,8 @@ Example the_random_clause_is_what_the_fixture_carries :
   /\ ~ valid_input
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
-                          false Sv48 IEof []).
+                          false Sv48 IEof [] default_kernel default_execfn
+                          true true).
 Proof.
   split.
   - valid_urandom_default.
@@ -899,10 +1134,10 @@ Qed.
     refutations free. *)
 Example exit0_image_must_exit_zero :
   must_exit_with verdict_accept exit0_image demo_limit demo_entry
-    (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                       default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48).
+    demo_proc_input.
 Proof.
-  cbn [must_exit_with exit0_image demo_entry]. unfold init_config.
+  rewrite demo_entry_fields.
+  cbn [must_exit_with exit0_image]. unfold init_config.
   apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity |].
   vm_compute. reflexivity.
 Qed.
@@ -916,10 +1151,9 @@ Qed.
     surface is a special case of erroring. *)
 Example undecodable_image_refutes_must_exit :
   ~ must_exit_with verdict_accept undecodable_image demo_limit
-      (mkEntry (Z_to_bv 64 65536) (Z_to_bv 64 1048576)
-         (Z_to_bv 64 mmap_base_max) demo_draw)
-      (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                       default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48).
+      (mkEntry demo_sp (Z_to_bv 64 1048576)
+         demo_mbase demo_draw)
+      demo_proc_input.
 Proof.
   apply must_exit_with_refuted_by_error, run_unmodeled_errors,
     run_of_undecodable_image_is_unmodeled.
@@ -940,25 +1174,58 @@ Qed.
 
 (** The undecodable image is unmodeled on its first fetch at
     [demo_entry] too, exactly as [undecodable_step_unmodeled] shows at
-    the older fixture entry: the fetch reads the segment image, which
-    none of the three [execve] placements touches. *)
+    the invalid fixture entry: the fetch reads the segment image, which
+    none of the three [execve] placements touches.  The two differ in
+    every placement field — this one is the launch
+    [Run.launch_entry_va] names, so its stack pointer is
+    [Run.launch_sp_hi] at the top of the address space and its block
+    is 528 bytes, where the other one's is a page at
+    [Cases.Prelude.demo_sp]. *)
 Example undecodable_step_unmodeled_at_demo_entry :
   RiscvSemantics.step undecodable_segments
     (init_machine_state undecodable_segments 0x100 demo_phdrs
-       (Z_to_bv 64 0x7fff80000000) demo_draw [[]] [] demo_uid demo_hwcap)
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000)
+       (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all)
+       demo_proc_input)
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
+
+(** The same fetch at the segment list the run at [demo_entry] carries
+    ([Run.run_segments]), exactly as [undecodable_step_unmodeled_run]
+    is to [undecodable_step_unmodeled]: the image's own segment covers
+    the entry, so the vDSO pair is never consulted. *)
+Example undecodable_step_unmodeled_at_demo_entry_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input
+          (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+       0x100 demo_phdrs
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000)
+       (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all)
+       demo_proc_input)
+  = MachineUnmodeled.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
 
 (** A configuration the model declines to interpret has no successor at
     all: [Run.sstep_instr] needs [Run.mi_account_step] to have answered
     [MachineOk], and every syscall constructor needs a pending syscall
-    number. *)
+    number.
+
+    THE vDSO PREMISE.  [Run.sstep]'s vDSO arms fire at
+    [MachineUnmodeled] too — that is the point of them, a pc in the
+    vDSO text is unmodeled to the decoder and answered by the call arm
+    instead — so this lemma asks that the pc is not an exported entry.
+    Every caller is at an image's own instruction, where it is
+    [reflexivity]. *)
 Lemma unmodeled_no_next : forall segs ms model evs c',
   ms_svc_pending ms = None ->
   mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = None ->
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
-  intros segs ms model evs c' Hsvc Hacc Hss.
+  intros segs ms model evs c' Hsvc Hacc Hvd Hss.
   inversion Hss; subst; congruence.
 Qed.
 
@@ -984,22 +1251,22 @@ Qed.
     establish.  It is the half of the comparison that says what the
     undecodable image does NOT emit. *)
 Example undecodable_image_emits_nothing : forall tr,
-  bh_traces (run undecodable_image demo_limit demo_entry
-               (mkProcInput [[]] [] [] IEof
-                  demo_uid demo_gid demo_groups net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)) tr ->
+  bh_traces (run undecodable_image demo_limit demo_entry demo_proc_input) tr ->
   tr = [].
 Proof.
   intros tr Htr.
-  cbn [run bh_traces undecodable_image demo_entry] in Htr.
+  rewrite demo_entry_fields in Htr.
+  cbn [run bh_traces undecodable_image] in Htr.
   eapply no_next_obs_trace_nil; [|exact Htr].
   intros evs c'. unfold init_config.
-  apply unmodeled_no_next; [reflexivity|].
+  apply unmodeled_no_next; [reflexivity| |reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  (* [Run.init_machine_state] takes the input WHOLE now, so no
+     projection is left to reduce before the step lemma applies. *)
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The exit-0 image and the undecodable image do not agree on this
@@ -1011,8 +1278,7 @@ Qed.
     different things. *)
 Example exit0_disagrees_with_undecodable :
   ~ agree exit0_image undecodable_image demo_limit
-      (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                       default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48).
+      demo_proc_input.
 Proof.
   intros (Htraces & _).
   destruct (must_exit_with_realizes _ _ _ _ _ exit0_image_must_exit_zero)
@@ -1044,17 +1310,18 @@ Qed.
     error-free obligation seeds the source run with. *)
 Example run_of_undecodable_image_is_unmodeled_at_demo_entry :
   bh_unmodeled (run undecodable_image source_alloc_limit demo_entry
-                  (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                       default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
+                  demo_proc_input).
 Proof.
-  cbn [run bh_unmodeled undecodable_image demo_entry]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  rewrite demo_entry_fields.
+  cbn [run bh_unmodeled undecodable_image]. unfold init_config.
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  (* [Run.init_machine_state] takes the input WHOLE now, so no
+     projection is left to reduce before the step lemma applies. *)
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The abort-declared twin of this one is

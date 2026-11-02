@@ -247,9 +247,21 @@ Local Definition check_openat_create (p : path) (eff : SyscallEffect)
   if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
   else check_create_wronly p eff m.
 
-Local Definition check_openat_append (p : path) (eff : SyscallEffect)
-    (m : Model) : check_result :=
-  if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
+(** Mirrors [Open.openat_append_spec]: under [excl], [check_openat_excl]'s
+    -EEXIST, with a name over [NAME_MAX] declined; otherwise a
+    directory's -EISDIR; and [check_open_append] for the creation either
+    way. *)
+Local Definition check_openat_append (excl : bool) (p : path)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if excl then
+    (if path_is_dirref p then check_ret_only eff (errno_ret EEXIST) m []
+     else if Nat.ltb NAME_MAX (length p) then CheckUnmodeled
+     else if fs_under (m_fs m) p then check_ret_only eff (errno_ret EEXIST) m []
+     else match fs_lookup (m_fs m) p with
+          | Some _ => check_ret_only eff (errno_ret EEXIST) m []
+          | None => check_open_append p eff m
+          end)
+  else if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
   else check_open_append p eff m.
 
 Local Definition check_openat_rdwr (creat trunc : bool) (p : path)
@@ -336,6 +348,7 @@ Local Definition check_openat_devnull (flags : word) (eff : SyscallEffect)
       else if Z.eqb fl append_create_flags then check_open_devnull false true eff m
       else if rdwr_open_word fl then check_open_devnull true true eff m
       else if is_rdwr_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
+      else if is_excl_append_create fl then check_ret_only eff (errno_ret EEXIST) m []
       else CheckUnmodeled
   end.
 
@@ -361,6 +374,7 @@ Local Definition check_openat_urandom (flags : word) (eff : SyscallEffect)
       else if is_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
       else if Z.eqb fl O_DIRECTORY then check_ret_only eff (errno_ret ENOTDIR) m []
       else if is_rdwr_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
+      else if is_excl_append_create fl then check_ret_only eff (errno_ret EEXIST) m []
       else CheckUnmodeled
   end.
 
@@ -404,10 +418,11 @@ Local Definition check_openat_resolved (p : path) (flags : word)
   else if Z.eqb fl wr_create_flags then check_openat_create p eff m
   else if is_excl_create fl then check_openat_excl p eff m
   else if Z.eqb fl O_DIRECTORY then check_openat_dir p eff m
-  else if Z.eqb fl append_create_flags then check_openat_append p eff m
+  else if Z.eqb fl append_create_flags then check_openat_append false p eff m
   else if rdwr_open_word fl then
     check_openat_rdwr (flag_set fl O_CREAT) (flag_set fl O_TRUNC) p eff m
   else if is_rdwr_excl_create fl then check_openat_rdwr_excl p eff m
+  else if is_excl_append_create fl then check_openat_append true p eff m
   else CheckUnmodeled.
 
 Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
@@ -425,7 +440,8 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
 
 
 (** The pathname copy-in is the prefix through the first NUL, the first
-    faulting byte, or [PATH_MAX] — [State.cstr_access_len_aux].  That is
+    faulting byte, the last byte below [TASK_SIZE], or [PATH_MAX] —
+    [State.cstr_access_len_aux].  That is
     the range the model records, not the one [getname()] loads:
     [strncpy_from_user] reads a word at a time and so runs to the end of
     the word holding the NUL, up to 7 bytes further, without moving the
@@ -557,15 +573,23 @@ Proof.
     destruct (fs_lookup (m_fs m) p); now apply check_ret_only_sound_ok.
 Qed.
 
-Local Lemma check_openat_append_sound_ok : forall i p eff m m' evs,
-  check_openat_append p eff m = CheckOk m' evs ->
-  openat_append_spec p m i m (Ok eff m' evs).
+Local Lemma check_openat_append_sound_ok : forall i excl p eff m m' evs,
+  check_openat_append excl p eff m = CheckOk m' evs ->
+  openat_append_spec excl p m i m (Ok eff m' evs).
 Proof.
-  intros i p eff m m' evs H.
+  intros i excl p eff m m' evs H.
   unfold check_openat_append, openat_append_spec in *.
-  destruct (path_is_dirref p || fs_under (m_fs m) p).
-  - now apply check_ret_only_sound_ok.
-  - now apply check_open_append_sound_ok.
+  destruct excl; cbv iota in *.
+  - destruct (path_is_dirref p).
+    + now apply check_ret_only_sound_ok.
+    + destruct (Nat.ltb NAME_MAX (length p)); [discriminate|].
+      destruct (fs_under (m_fs m) p); [now apply check_ret_only_sound_ok|].
+      destruct (fs_lookup (m_fs m) p).
+      * now apply check_ret_only_sound_ok.
+      * now apply check_open_append_sound_ok.
+  - destruct (path_is_dirref p || fs_under (m_fs m) p).
+    + now apply check_ret_only_sound_ok.
+    + now apply check_open_append_sound_ok.
 Qed.
 
 Local Lemma check_openat_rdwr_sound_ok : forall i creat trunc p eff m m' evs,
@@ -643,6 +667,9 @@ Proof.
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [now apply check_ret_only_sound_ok|].
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [now apply check_ret_only_sound_ok|].
   discriminate.
 Qed.
 
@@ -670,6 +697,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) O_DIRECTORY);
     [now apply check_ret_only_sound_ok|].
   destruct (is_rdwr_excl_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [now apply check_ret_only_sound_ok|].
+  destruct (is_excl_append_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [now apply check_ret_only_sound_ok|].
   discriminate.
@@ -734,7 +764,10 @@ Proof.
               ** destruct (is_rdwr_excl_create
                      (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
                  --- now apply check_openat_rdwr_excl_sound_ok.
-                 --- discriminate.
+                 --- destruct (is_excl_append_create
+                        (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
+                     +++ now apply check_openat_append_sound_ok.
+                     +++ discriminate.
 Qed.
 
 Local Lemma check_openat_body_spec_sound_ok :
@@ -821,6 +854,31 @@ Proof.
       now apply check_open_result_no_unmodeled in H.
 Qed.
 
+(** Like [check_openat_dir] below, this checker CAN decline (the
+    exclusive word on a name over [NAME_MAX]), so the dispatcher gets a
+    lemma rather than an [exfalso]. *)
+Local Lemma check_openat_append_sound_unmodeled : forall i excl p eff m,
+  check_openat_append excl p eff m = CheckUnmodeled ->
+  openat_append_spec excl p m i m Unmodeled.
+Proof.
+  intros i excl p eff m H.
+  unfold check_openat_append, openat_append_spec in *.
+  destruct excl; cbv iota in *.
+  - destruct (path_is_dirref p).
+    + exfalso. now apply check_ret_only_no_unmodeled in H.
+    + destruct (Nat.ltb NAME_MAX (length p)); [apply unmodeled_intro|].
+      exfalso. destruct (fs_under (m_fs m) p);
+        [now apply check_ret_only_no_unmodeled in H|].
+      destruct (fs_lookup (m_fs m) p).
+      * now apply check_ret_only_no_unmodeled in H.
+      * unfold check_open_append in H.
+        now apply check_open_result_no_unmodeled in H.
+  - exfalso. destruct (path_is_dirref p || fs_under (m_fs m) p).
+    + now apply check_ret_only_no_unmodeled in H.
+    + unfold check_open_append in H.
+      now apply check_open_result_no_unmodeled in H.
+Qed.
+
 (** Unlike its three neighbours this checker CAN decline, so the
     dispatcher's unmodeled-soundness proof gets a lemma here rather than
     an [exfalso]. *)
@@ -836,16 +894,6 @@ Proof.
     destruct (fs_under (m_fs m) p); [apply unmodeled_intro|].
     destruct (fs_lookup (m_fs m) p); exfalso;
       now apply check_ret_only_no_unmodeled in H.
-Qed.
-
-Local Lemma check_openat_append_no_unmodeled : forall p eff m,
-  check_openat_append p eff m <> CheckUnmodeled.
-Proof.
-  intros p eff m H. unfold check_openat_append in H.
-  destruct (path_is_dirref p || fs_under (m_fs m) p).
-  - now apply check_ret_only_no_unmodeled in H.
-  - unfold check_open_append in H.
-    now apply check_open_result_no_unmodeled in H.
 Qed.
 
 Local Lemma check_open_rdwr_no_unmodeled : forall p fs' eff m,
@@ -918,6 +966,9 @@ Proof.
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [exfalso; now apply check_ret_only_no_unmodeled in H|].
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [exfalso; now apply check_ret_only_no_unmodeled in H|].
   apply unmodeled_intro.
 Qed.
 
@@ -937,6 +988,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) O_DIRECTORY);
     [exfalso; now apply check_ret_only_no_unmodeled in H|].
   destruct (is_rdwr_excl_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [exfalso; now apply check_ret_only_no_unmodeled in H|].
+  destruct (is_excl_append_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [exfalso; now apply check_ret_only_no_unmodeled in H|].
   apply unmodeled_intro.
@@ -996,14 +1050,18 @@ Proof.
         -- exact (check_openat_dir_sound_unmodeled i p eff m H).
         -- destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                append_create_flags).
-           ++ exfalso. now apply check_openat_append_no_unmodeled in H.
+           ++ exact (check_openat_append_sound_unmodeled i false p eff m H).
            ++ destruct (rdwr_open_word
                   (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
               ** exfalso. now apply check_openat_rdwr_no_unmodeled in H.
               ** destruct (is_rdwr_excl_create
                      (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
                  --- exfalso. now apply check_openat_rdwr_excl_no_unmodeled in H.
-                 --- apply unmodeled_intro.
+                 --- destruct (is_excl_append_create
+                        (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
+                     +++ exact (check_openat_append_sound_unmodeled
+                                  i true p eff m H).
+                     +++ apply unmodeled_intro.
 Qed.
 
 Local Lemma check_openat_body_spec_sound_unmodeled :
@@ -1270,19 +1328,28 @@ Proof.
     destruct (fs_lookup (m_fs m) p); apply check_ret_only_complete_ok.
 Qed.
 
-Local Lemma check_openat_append_complete_ok : forall i p eff m m' evs,
-  openat_append_spec p m i m (Ok eff m' evs) ->
-  check_openat_append p eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Local Lemma check_openat_append_complete_ok : forall i excl p eff m m' evs,
+  openat_append_spec excl p m i m (Ok eff m' evs) ->
+  check_openat_append excl p eff m = CheckOk m' evs /\ eff_copyins eff = [].
 Proof.
-  intros i p eff m m' evs.
+  intros i excl p eff m m' evs.
   unfold openat_append_spec, check_openat_append.
-  refine (refine_if (path_is_dirref p || fs_under (m_fs m) p)
-    (fun b => completes_ok i m eff m' evs
-      (if b then err_ret EISDIR else open_append p m)
-      (if b then check_ret_only eff (errno_ret EISDIR) m []
-       else check_open_append p eff m)) _ _).
-  - unfold completes_ok. apply check_ret_only_complete_ok.
-  - unfold completes_ok. apply check_open_append_complete_ok.
+  destruct excl; cbv iota.
+  - destruct (path_is_dirref p).
+    + apply check_ret_only_complete_ok.
+    + destruct (Nat.ltb NAME_MAX (length p));
+        [unfold unmodeled; intro Hu; discriminate Hu|].
+      destruct (fs_under (m_fs m) p); [apply check_ret_only_complete_ok|].
+      destruct (fs_lookup (m_fs m) p).
+      * apply check_ret_only_complete_ok.
+      * apply check_open_append_complete_ok.
+  - refine (refine_if (path_is_dirref p || fs_under (m_fs m) p)
+      (fun b => completes_ok i m eff m' evs
+        (if b then err_ret EISDIR else open_append p m)
+        (if b then check_ret_only eff (errno_ret EISDIR) m []
+         else check_open_append p eff m)) _ _).
+    + unfold completes_ok. apply check_ret_only_complete_ok.
+    + unfold completes_ok. apply check_open_append_complete_ok.
 Qed.
 
 Local Lemma check_openat_rdwr_complete_ok : forall i creat trunc p eff m m' evs,
@@ -1364,6 +1431,9 @@ Proof.
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [apply check_ret_only_complete_ok|].
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [apply check_ret_only_complete_ok|].
   unfold unmodeled. intro Hu. discriminate Hu.
 Qed.
 
@@ -1393,6 +1463,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) O_DIRECTORY);
     [apply check_ret_only_complete_ok|].
   destruct (is_rdwr_excl_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [apply check_ret_only_complete_ok|].
+  destruct (is_excl_append_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [apply check_ret_only_complete_ok|].
   unfold unmodeled. intro Hu. discriminate Hu.
@@ -1460,6 +1533,9 @@ Proof.
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [apply check_openat_rdwr_excl_complete_ok|].
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [apply check_openat_append_complete_ok|].
   unfold unmodeled. intros H. discriminate H.
 Qed.
 
@@ -1628,13 +1704,24 @@ Proof.
   cbv iota in H. inv_ok.
 Qed.
 
-Local Lemma openat_append_spec_no_unmodeled : forall p m i,
-  ~ openat_append_spec p m i m Unmodeled.
+Local Lemma check_openat_append_complete_unmodeled : forall i excl p eff m,
+  openat_append_spec excl p m i m Unmodeled ->
+  check_openat_append excl p eff m = CheckUnmodeled.
 Proof.
-  intros p m i H. unfold openat_append_spec in H.
-  destruct (path_is_dirref p || fs_under (m_fs m) p).
-  - exact (ret_only_no_unmodeled (errno_ret EISDIR) i m H).
-  - exact (open_append_no_unmodeled p m i H).
+  intros i excl p eff m.
+  unfold openat_append_spec, check_openat_append.
+  destruct excl; cbv iota.
+  - destruct (path_is_dirref p).
+    + intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H).
+    + destruct (Nat.ltb NAME_MAX (length p)); [reflexivity|].
+      destruct (fs_under (m_fs m) p);
+        [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
+      destruct (fs_lookup (m_fs m) p); intro H; exfalso;
+        [exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)
+        |exact (open_append_no_unmodeled p m i H)].
+  - destruct (path_is_dirref p || fs_under (m_fs m) p); intro H; exfalso;
+      [exact (ret_only_no_unmodeled (errno_ret EISDIR) i m H)
+      |exact (open_append_no_unmodeled p m i H)].
 Qed.
 
 Local Lemma open_rdwr_no_unmodeled : forall p fs' m i,
@@ -1713,6 +1800,9 @@ Proof.
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
   unfold unmodeled. intros _. reflexivity.
 Qed.
 
@@ -1738,6 +1828,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) O_DIRECTORY);
     [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret ENOTDIR) i m H)|].
   destruct (is_rdwr_excl_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
+  destruct (is_excl_append_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
   unfold unmodeled. intros _. reflexivity.
@@ -1794,12 +1887,15 @@ Proof.
   { apply check_openat_dir_complete_unmodeled. }
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
               append_create_flags).
-  { intro H. exfalso. exact (openat_append_spec_no_unmodeled p m i H). }
+  { apply check_openat_append_complete_unmodeled. }
   destruct (rdwr_open_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
   { intro H. exfalso. exact (openat_rdwr_spec_no_unmodeled _ _ p m i H). }
   destruct (is_rdwr_excl_create
               (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
   { intro H. exfalso. exact (openat_rdwr_excl_spec_no_unmodeled p m i H). }
+  destruct (is_excl_append_create
+              (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
+  { apply check_openat_append_complete_unmodeled. }
   unfold unmodeled. intros _. reflexivity.
 Qed.
 

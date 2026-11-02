@@ -4,7 +4,8 @@
     [strong_universal_T]: observable trace equivalence between the source
     image (Source) and the target image (Target) for all valid stack
     pointers and every valid process input (one [State.ProcInput]
-    record: argv, envp, file system, stdin).
+    record: argv, envp, file system, stdin, the credentials, the kernel
+    build and the exec file name).
 
     Both binaries store 5 into a writable global byte, load it back and
     exit with it — no output, exit 5, on every input — so the two
@@ -44,8 +45,32 @@ Proof.
   pose proof (valid_input_va_size _ Hvalid) as Hsv48.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hens.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hent.
-  destruct Hens as (Hspr & _). destruct Hent as (Hspa & _).
-  destruct Hvalid as (Hva & Hve & _).
+  (* The FIFTH conjunct of each entry predicate is [Run.entry_launch_ok_va]:
+     this stack top, stack pointer and mmap base are ones a Linux
+     launch can give ([create_elf_tables] and [setup_arg_pages],
+     fs/binfmt_elf.c and fs/exec.c, Linux v6.18.46, commit
+     1f99e9ab748f).  The source derivation reads argc off the initial
+     stack and fetches through the overlay, so it needs that conjunct
+     and the LAST conjunct of [Run.valid_input], [Run.valid_launch]:
+     together they bound the entry block and put [sp] at or below the
+     stack VMA's end.  The target reads nothing off the stack and needs
+     neither. *)
+  destruct Hens as (Hspr & _ & _ & _ & Hlaunch_source).
+  destruct Hent as (Hspa & _).
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and this
+     proof names none of them by place -- the peel below leaves every
+     clause in the context, where [assumption] finds it.  The
+     [lazymatch] is the guard, and it is what stops the peel at
+     [Run.valid_launch]: that conjunct stays FOLDED, so it is not
+     syntactically a conjunction and arrives whole, which is what
+     [source_wexit] asks for.  Scoped to [Hvalid] rather than run over
+     every conjunction in the context, because [Hlaunch_source] must
+     stay whole too. *)
+  red in Hvalid.
+  repeat (lazymatch type of Hvalid with
+          | _ /\ _ => let Hc := fresh "Hc" in destruct Hvalid as [Hc Hvalid]
+          end).
   destruct Hspr as (Hr_lo & Hr_hi & _).
   destruct Hspa as (Ha_lo & Ha_hi & _).
   apply (cat_omni_strong_equiv_te
@@ -53,11 +78,15 @@ Proof.
            target_segs TargetMemImage_init_pc TargetMemImage_phdrs sp_target brk_target mb_target rnd_target
            [] (Z_to_bv 64 5) inp).
   - rewrite source_init_pc_val.
-    apply source_wexit; assumption.
+    apply source_wexit with (rbrk := brk_source); assumption.
   - rewrite target_init_pc_val.
     apply target_wexit; assumption.
   - (* Neither binary writes anything, so there is no buffer to bound. *)
     unfold bufs_modeled. constructor.
+  - (* ... and no write to reach the channel arm, so the run is the same
+       on both values of [State.in_channel_reader]: the launch is covered
+       whatever the reader. *)
+    left. left. reflexivity.
 Qed.
 
 (** The legacy statement, through the compat [iff]; this is the theorem

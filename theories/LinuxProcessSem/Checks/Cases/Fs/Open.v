@@ -110,10 +110,12 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     are the same one, so the pair is a real contrast rather than two
     unrelated runs.
 
-    The declines are the three O_APPEND spellings beside the modeled one
+    The declines are the O_APPEND spellings beside the modeled ones
     ([Fs.Open.modeled_open_flags] names each and says why), plus
     O_APPEND on its own, which is O_RDONLY|O_APPEND and not this
-    shape. *)
+    shape.  The O_EXCL spelling is no longer among them: it has an arm
+    of its own, and [openat_excl_append_flag_word] below is its
+    example. *)
 Example openat_append_flag_word :
   let open fs fl := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -137,10 +139,102 @@ Example openat_append_flag_word :
   /\ kept (open have wr_create_flags) = Some []
   (* and the spellings next to it stay declined *)
   /\ open have (append_create_flags + O_TRUNC)%Z = CheckUnmodeled
-  /\ open have (append_create_flags + O_EXCL)%Z = CheckUnmodeled
   /\ open have (O_WRONLY + O_APPEND)%Z = CheckUnmodeled
   /\ open have (O_RDWR + O_CREAT + O_APPEND)%Z = CheckUnmodeled.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** THE EXCLUSIVE APPEND WORDS, O_WRONLY|O_CREAT|O_EXCL|O_APPEND with
+    and without O_TRUNC, against one image so that every pair below is a
+    real contrast.
+
+    What only a Rocq literal can state, for the reason the O_NONBLOCK
+    example gives (an equality BETWEEN TWO FLAG WORDS): the O_TRUNC
+    spelling lands in exactly the model the plain one does, and so does
+    the plain one with the ignored bits set.
+
+    What separates the arm from its two neighbours, and is the arm's
+    whole claim ([Fs.Open.is_excl_append_create]):
+    - an ABSENT name is created EMPTY and the fd is the APPEND kind, at
+      offset 0, where the exclusive shape hands back a [FdFileW];
+    - an EXISTING name is -EEXIST and only -EEXIST: the open that
+      succeeds there and the injectable -EMFILE are both refused, where
+      the append shape opens it and keeps its bytes;
+    - "." is -EEXIST and nothing else, the answer [do_open] gives at
+      its O_EXCL test before [d_is_dir] (fs/namei.c, Linux v6.18.46):
+      -EISDIR, the descriptor and -ENOENT are all refused.
+    The creation, unlike the -EEXIST, does admit an [openat_errnos]
+    alternative. *)
+Example openat_excl_append_flag_word :
+  let open fs pathm fl eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+           pathm (fun _ => None))
+        (with_copyins [(8192, 2%nat)] eff)
+        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+  let dot := fun a => if bv_eqb a 8192 then Some 46
+                      else if bv_eqb a 8193 then Some 0 else None in
+  let have := [([102], [104; 105])] in
+  let absent := [] in
+  let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let fd3 := mkEffect 3 [] [] in
+  let kept r := match r with
+                | CheckOk m _ => fs_lookup (m_fs m) [102]
+                | _ => None
+                end in
+  let kind r := match r with
+                | CheckOk m _ => fd_lookup (m_fds m) 3
+                | _ => None
+                end in
+  (* the O_TRUNC spelling and the ignored bits change nothing *)
+  open absent mem_open_write (excl_append_create_flags + O_TRUNC)%Z fd3
+    = open absent mem_open_write excl_append_create_flags fd3
+  /\ open absent mem_open_write
+       (excl_append_create_flags + O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z fd3
+     = open absent mem_open_write excl_append_create_flags fd3
+  (* an ABSENT name: created empty, and the fd is the APPEND kind *)
+  /\ kept (open absent mem_open_write excl_append_create_flags fd3) = Some []
+  /\ kind (open absent mem_open_write excl_append_create_flags fd3)
+     = Some (FdFileA [102] 0)
+  (* ...where the exclusive shape mints the plain write-only kind *)
+  /\ kind (open absent mem_open_write excl_create_flags fd3)
+     = Some (FdFileW [102] 0)
+  (* and the creation may still fail with an injectable errno *)
+  /\ open absent mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret ENOMEM) [] [])
+     = CheckOk (base absent) []
+  (* an EXISTING name: -EEXIST, deterministically *)
+  /\ open have mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base have) []
+  /\ open have mem_open_write (excl_append_create_flags + O_TRUNC)%Z
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base have) []
+  /\ open have mem_open_write excl_append_create_flags fd3 = CheckReject
+  /\ open have mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret EMFILE) [] [])
+     = CheckReject
+  (* ...where the append shape opens it, bytes intact *)
+  /\ kept (open have mem_open_write append_create_flags fd3)
+     = Some [104; 105]
+  (* "." is -EEXIST, v6.18.46's answer, and only that *)
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base absent) []
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret EISDIR) [] [])
+     = CheckReject
+  /\ open absent dot excl_append_create_flags fd3 = CheckReject
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckReject
+  (* ...where the append shape, with no O_EXCL, is -EISDIR alone *)
+  /\ open absent dot append_create_flags (mkEffect (errno_ret EISDIR) [] [])
+     = CheckOk (base absent) []
+  /\ open absent dot append_create_flags (mkEffect (errno_ret EEXIST) [] [])
+     = CheckReject
+  (* the read-write spelling of the same bits is still declined *)
+  /\ open absent mem_open_write (O_RDWR + O_CREAT + O_EXCL + O_APPEND)%Z fd3
+     = CheckUnmodeled.
+Proof. vm_compute. repeat split; check_eq. Qed.
 
 (** THE SIX READ-WRITE WORDS, as the table the two bits decide.
 
@@ -503,8 +597,10 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     append shape and the read-write shapes with and without O_CREAT and
     O_TRUNC answer -EISDIR (the O_CREAT-free ones through [may_open]'s
     S_IFDIR arm rather than [do_open]'s [d_is_dir], the same errno by
-    a different route), and the exclusive read-write shape answers
-    -EEXIST. *)
+    a different route), and the two other exclusive shapes, read-write
+    and append, answer -EEXIST.  The exclusive append word is the one
+    whose O_EXCL-free neighbour answers -EISDIR on the same image, so
+    its -EISDIR is refused beside its -EEXIST. *)
 Example openat_implied_directory_other_write_words :
   let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
   let under := [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] in
@@ -518,6 +614,9 @@ Example openat_implied_directory_other_write_words :
   /\ open O_RDWR (mkEffect (errno_ret EISDIR) [] []) = CheckOk (m0 under) []
   /\ open (O_RDWR + O_TRUNC)%Z (mkEffect (errno_ret EISDIR) [] []) = CheckOk (m0 under) []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk (m0 under) []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk (m0 under) []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EISDIR) [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open (O_RDWR + O_CREAT)%Z (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -678,8 +777,12 @@ Example devnull_open_by_word :
   /\ minted (O_RDWR + O_CREAT + O_TRUNC)%Z true true
   /\ open excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
+  /\ open (excl_append_create_flags + O_TRUNC)%Z (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk devnull_m0 []
   /\ open O_DIRECTORY (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk devnull_m0 []
   /\ open excl_create_flags (mkEffect 3 [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open O_DIRECTORY (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -879,8 +982,12 @@ Example urandom_open_by_word :
   /\ minted (0 + O_CLOEXEC)%Z
   /\ open excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
+  /\ open (excl_append_create_flags + O_TRUNC)%Z (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk urandom_m0 []
   /\ open O_DIRECTORY (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk urandom_m0 []
   /\ open excl_create_flags (mkEffect 3 [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open O_DIRECTORY (mkEffect 3 [] []) = CheckReject
   /\ open wr_create_flags (mkEffect 3 [] []) = CheckUnmodeled
   /\ open append_create_flags (mkEffect 3 [] []) = CheckUnmodeled
@@ -944,7 +1051,8 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
      the image inputs declare [default_urandom] (as [Cases.Prelude]'s
      fixture does) rather than [IEof]. *)
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
-                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0.
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0
+                   default_kernel default_execfn true true.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1021,7 +1129,114 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons
                  | apply not_in_bytes_of_existsb; vm_compute; reflexivity
                  | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
+  (* [Run.valid_launch], the last conjunct: the fixture declares
+     [State.default_execfn], the one-byte relative name "a" that
+     [getname_flags] (fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f)
+     can return -- one byte, no NUL -- so the first arm of
+     [Run.valid_execfn] applies, and the launch it makes is a handful of
+     bytes, far under the E2BIG limit [bprm_stack_limits] (fs/exec.c)
+     computes. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
+
+(* ========================= a key that is also a directory another key lives in
+
+   The same shape of pin, for [Fs.fs_image_real].  An image with the
+   keys "a" and "a/b" says that "a" is a regular file AND the directory
+   "b" lives in.  No file system holds both: one name in one directory
+   is one inode.  The model has no such rule in [Fs.valid_fs], which
+   asks only for sorted NUL-free keys, so without the clause
+   [Run.valid_input] admits the image and every statement quantified
+   there covers a launch no kernel can produce.
+
+   THE CONTROL IS THE POINT here too: the refused image and the
+   admitted one differ by the one separator that makes "a" a directory
+   ("a" and "ab" nest nowhere). *)
+
+(** The pathological image: "a" is a file, and "a/b" puts a file in the
+    directory "a".  [Fs.valid_fs] admits it and so does
+    [Fs.fs_keys_relative] — neither key begins with "/" — so the
+    refutation below rests on [Fs.fs_image_real] and on nothing else. *)
+Definition prefix_key_image : Fs.Fs :=
+  [([Z_to_bv 8 97], [Z_to_bv 8 104]);
+   ([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [Z_to_bv 8 104])].
+
+(** The same two names with no separator between them: an ordinary
+    image. *)
+Definition flat_key_image : Fs.Fs :=
+  [([Z_to_bv 8 97], [Z_to_bv 8 104]);
+   ([Z_to_bv 8 97; Z_to_bv 8 98], [Z_to_bv 8 104])].
+
+(** The clause that separates them, and the two it does NOT rest on. *)
+Example fs_prefix_key_image_is_not_real :
+  fs_image_real prefix_key_image = false
+  /\ fs_image_real flat_key_image = true
+  /\ fs_sorted prefix_key_image = true
+  /\ fs_keys_relative prefix_key_image.
+Proof.
+  repeat split; try (vm_compute; reflexivity).
+  repeat first [ apply Forall_nil | apply Forall_cons | cbn; key_byte_neq ].
+Qed.
+
+(** …so no run has it: the fixture over the image is refused by
+    [Run.valid_input], THROUGH the image clause, while the fixture over
+    the flat image is admitted. *)
+Example fs_prefix_key_input_is_not_valid :
+  ~ valid_input (image_input prefix_key_image).
+Proof.
+  intros (_ & _ & _ & _ & Hr & _).
+  vm_compute in Hr. discriminate.
+Qed.
+
+Example fs_flat_key_input_is_valid :
+  let tmp0 := [([Z_to_bv 8 102], [Z_to_bv 8 105])] in
+  valid_input (image_input_tmp flat_key_image tmp0).
+Proof.
+  repeat split; cbn;
+    try valid_urandom_default;
+    try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
+    try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
+    try (unfold valid_hwcap; left; reflexivity);
+    (* [Run.valid_launch], the last conjunct: [State.mkProcInput_full]
+       here carries [State.default_execfn], the one-byte relative path
+       "a", which takes [Run.valid_execfn]'s first arm
+       ([Run.valid_path_name]), and this launch's string and pointer
+       bytes are far under [Run.e2big_limit].  Two arms rather than
+       one, because [repeat split] reaches inside [valid_launch]
+       wherever the conjunct has already been split. *)
+    try (unfold valid_launch; split;
+         [ unfold valid_execfn, valid_path_name, default_execfn; left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+             vm_compute in Hz; discriminate ]
+         | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
+    try (unfold valid_execfn, valid_path_name, default_execfn; left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+           vm_compute in Hz; discriminate ]);
+    try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
+    try (vm_compute; reflexivity);
+    try lia;
+    repeat first [ apply Forall_nil | apply Forall_cons
+                 | apply not_in_bytes_of_existsb; vm_compute; reflexivity
+                 | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
+Qed.
+
+(** A non-canonical key is refused by the same clause: "./a" and "a/"
+    and "a//b" each spell a path a walk resolves elsewhere, and a
+    directory entry named "." cannot exist. *)
+Example fs_noncanonical_keys_are_not_real :
+  fs_image_real [([Z_to_bv 8 46; Z_to_bv 8 47; Z_to_bv 8 97], [])] = false
+  /\ fs_image_real [([Z_to_bv 8 97; Z_to_bv 8 47], [])] = false
+  /\ fs_image_real [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 47;
+                      Z_to_bv 8 98], [])] = false
+  /\ fs_image_real [([], [])] = false.
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** And on those admitted images the three opens are ANSWERED: the
     seeded "/tmp/f" key did not trip a guard, and neither did the
@@ -1227,7 +1442,8 @@ Example urandom_same_bytes_on_both_sides :
   let inp := mkProcInput_full [[]] [] [] IEof
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-               (urandom_stream urandom_decl) [] in
+               (urandom_stream urandom_decl) [] default_kernel default_execfn
+               true true in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in
@@ -1458,6 +1674,49 @@ Example openat_directory_name_max_boundary :
   /\ open (repeat 97%Z 255) 256%nat (mkEffect (errno_ret ENOENT) [] [])
      = CheckOk m0 [].
 Proof. vm_compute. split; reflexivity. Qed.
+
+(** THE EXCLUSIVE APPEND WORD AT ITS EDGES: each is a change a wrong arm
+    could make in [Fs.Open.openat_append_spec] and its checker
+    alike, closing every proof.
+    - A 256-byte name is declined and a 255-byte one is created: no name
+      over [Uapi.NAME_MAX] can exist, so the create would reach the
+      filesystem's own -ENAMETOOLONG, which a model with no filesystem
+      type does not invent (the pair above states it for O_DIRECTORY).
+    - Without O_CREAT nothing is created: Linux answers an absent name
+      with the lookup's -ENOENT, since [lookup_open] creates only under
+      O_CREAT (fs/namei.c, Linux v6.18.46), and
+      [Fs.Open.modeled_open_flags] declines the word before the path.
+    - /tmp/<n> and /etc/localtime keep declining it: their arms answer
+      only the words they name. *)
+Example openat_excl_append_edges :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let open bs fl eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+           (open_path_mem bs) (fun _ => None))
+        (with_copyins [(8192, S (length bs))] eff) m0 in
+  let ok r := match r with CheckOk _ _ => true | _ => false end in
+  (* NAME_MAX: 256 bytes declined, whatever is offered; 255 created *)
+  open (repeat 97%Z 256) excl_append_create_flags (mkEffect 3 [] [])
+    = CheckUnmodeled
+  /\ open (repeat 97%Z 256) excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckUnmodeled
+  /\ ok (open (repeat 97%Z 255) excl_append_create_flags (mkEffect 3 [] []))
+     = true
+  (* no O_CREAT: not this word, and declined before the path *)
+  /\ open [102%Z] (O_WRONLY + O_EXCL + O_APPEND)%Z (mkEffect 3 [] [])
+     = CheckUnmodeled
+  /\ open [102%Z] (O_WRONLY + O_EXCL + O_APPEND)%Z
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckUnmodeled
+  (* the /tmp and /etc/localtime arms do not answer it *)
+  /\ open [47; 116; 109; 112; 47; 100]%Z excl_append_create_flags
+       (mkEffect 3 [] [])
+     = CheckUnmodeled
+  /\ open localtime_bytes excl_append_create_flags
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckUnmodeled.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* ================================================ faccessat2 (439)
 
@@ -1844,3 +2103,177 @@ Example openat_tmp_implied_directory_sibling_still_creates :
      | _ => False
      end.
 Proof. vm_compute. split; reflexivity. Qed.
+
+(* =========================================================================
+   THE PATHNAME WALK THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   [State.read_cstr_aux] stepped [a + 1] in the 64-bit word and tested
+   nothing, so a pathname pointer in the last bytes of the address
+   space read the bytes below the wrap and then the bytes from 0 on,
+   said [CstrOk], and [Fs.Open.openat_spec] then ANSWERED the call on
+   that name — a wrong answer, not a decline.  Linux refuses it:
+   [strncpy_from_user] (lib/strncpy_from_user.c, [strncpy_from_user])
+   returns -EFAULT for a source at or above [TASK_SIZE_MAX] and clamps
+   every other scan to end below it, and [getname_flags] (fs/namei.c)
+   returns that -EFAULT.  The walk now tests [State.access_okb a 1] in
+   front of each byte; [State.read_cstr_aux] says why per byte and not
+   once over PATH_MAX.
+
+   The groups follow [Checks.Cases.Net.Socket]'s wrap groups: the
+   wrapping call refused, a neighbouring call at the top of what
+   [State.access_okb] accepts still answered, and the control that the
+   bare walk really would have passed.  The last group is the case the
+   per-byte test exists for: a name that STARTS below [TASK_SIZE] and
+   reaches it faults there, and the ledger records only the byte below.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN BYTES and nothing else, so no
+   refusal can pass because the memory stopped short; [wmem_open] would
+   answer at every address and could not tell a wrapping pointer from
+   any other.
+
+   Every call is a read-only open of "a" on an image that HOLDS "a", so
+   what the bare walk produced on the wrapping pointer was not an errno
+   but a SUCCESS at fd 3.
+   ========================================================================= *)
+
+Definition open_a_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof).
+
+(* ---- the wrap: 'a' in the last byte of the address space, NUL at 0 ----- *)
+
+Definition open_wrap_pathp : word := Z_to_bv 64 (2 ^ 64 - 1).
+
+Definition open_wrap_mem : word -> option byte :=
+  fun a => if bv_eqb a open_wrap_pathp then Some 97   (* 'a' *)
+           else if bv_eqb a 0 then Some 0             (* NUL *)
+           else None.
+
+Definition open_wrap_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_wrap_pathp; 0; 0; 0; 0] open_wrap_mem (fun _ => None).
+
+(** THE CONTROL.  The old walk read [mp a] and then [mp (a + 1)]; here
+    [a + 1] is 0, and the two bytes at those addresses are 'a' and the
+    NUL.  [read_bytes_map] steps the same wrapping [a + 1], so its
+    answer is the byte sequence the old walk consumed, NUL included:
+    the bare walk would have answered [CstrOk "a"]. *)
+Example openat_wrap_would_pass_the_bare_walk :
+  open_wrap_pathp + 1 = Z_to_bv 64 0
+  /\ read_bytes_map open_wrap_mem open_wrap_pathp (Z_to_bv 64 2)
+     = Some [Z_to_bv 8 97; Z_to_bv 8 0].
+Proof. split; check_eq. Qed.
+
+(** The walk refuses at its first byte, and the ledger counts nothing:
+    [strncpy_from_user] returns before it fetches a byte. *)
+Example openat_wrap_path_is_a_fault :
+  read_cstr open_wrap_mem open_wrap_pathp = CstrFault
+  /\ cstr_access_len_aux open_wrap_mem open_wrap_pathp path_max = 0%nat.
+Proof. split; check_eq. Qed.
+
+(** -EFAULT with an empty range is the model's answer.  The success the
+    bare walk admitted — fd 3 on "a", with the two bytes it claimed
+    across the wrap as the ledger — is refused, and so is an -EFAULT
+    that claims those two bytes. *)
+Example openat_wrapping_path_is_efault :
+  check_syscall open_wrap_input
+    (with_copyins [(open_wrap_pathp, 0%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    open_a_model
+  = CheckOk open_a_model []
+  /\ check_syscall open_wrap_input
+       (with_copyins [(open_wrap_pathp, 2%nat)] (mkEffect 3 [] []))
+       open_a_model
+     = CheckReject
+  /\ check_syscall open_wrap_input
+       (with_copyins [(open_wrap_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(* ---- the neighbour: the last two bytes [State.access_okb] accepts ------- *)
+
+(** 'a' at [TASK_SIZE - 2] and the NUL at [TASK_SIZE - 1], the last
+    byte of the user address space, and nothing else.  Linux clamps the
+    scan to these two bytes and finds the NUL inside them. *)
+Definition open_top_pathp : word := Z_to_bv 64 (TASK_SIZE - 2).
+
+Definition open_top_mem : word -> option byte :=
+  fun a => if bv_eqb a open_top_pathp then Some 97                     (* 'a' *)
+           else if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 1)) then Some 0  (* NUL *)
+           else None.
+
+Definition open_top_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_top_pathp; 0; 0; 0; 0] open_top_mem (fun _ => None).
+
+(** The walk reads "a" and counts both bytes.  The last conjunct is why
+    the test sits in front of each byte: [State.access_okb] over the
+    whole PATH_MAX bound refuses this pointer, so one test placed in
+    front of the walk would answer -EFAULT where Linux opens the file. *)
+Example openat_path_at_the_top_reads :
+  read_cstr open_top_mem open_top_pathp = CstrOk [Z_to_bv 8 97]
+  /\ cstr_access_len_aux open_top_mem open_top_pathp path_max = 2%nat
+  /\ access_okb open_top_pathp (Z.of_nat path_max) = false.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR, the half that says the guard is not a blanket refusal
+    of high pointers: the same read-only open of "a" is answered, with
+    the success at fd 3 and the two-byte ledger, and -EFAULT is refused
+    there. *)
+Example openat_path_at_the_top_still_answers :
+  match check_syscall open_top_input
+          (with_copyins [(open_top_pathp, 2%nat)] (mkEffect 3 [] []))
+          open_a_model with
+  | CheckOk m [] =>
+      fd_lookup (m_fds m) (Z_to_bv 64 3)
+      = Some (FdFile [Z_to_bv 8 97] (Z_to_bv 64 0))
+  | _ => False
+  end
+  /\ check_syscall open_top_input
+       (with_copyins [(open_top_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- the crossing: a name that starts below [TASK_SIZE] and reaches it -- *)
+
+(** 'a' at [TASK_SIZE - 1] and the NUL at [TASK_SIZE] itself.  Linux
+    maps no user page at [TASK_SIZE], but the memory map handed to the
+    model is arbitrary, and this one answers there.  Linux clamps the
+    scan to the one byte below [TASK_SIZE], reads 'a', reaches [max]
+    short of [count], and returns -EFAULT (lib/strncpy_from_user.c,
+    [do_strncpy_from_user]).  The walk faults at [TASK_SIZE] the same
+    way, and the ledger is the one byte it read. *)
+Definition open_cross_pathp : word := Z_to_bv 64 (TASK_SIZE - 1).
+
+Definition open_cross_mem : word -> option byte :=
+  fun a => if bv_eqb a open_cross_pathp then Some 97              (* 'a' *)
+           else if bv_eqb a (Z_to_bv 64 TASK_SIZE) then Some 0   (* NUL *)
+           else None.
+
+Definition open_cross_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_cross_pathp; 0; 0; 0; 0] open_cross_mem (fun _ => None).
+
+(** THE CONTROL for the crossing: the bare walk's two bytes, NUL
+    included, are there. *)
+Example openat_crossing_would_pass_the_bare_walk :
+  read_bytes_map open_cross_mem open_cross_pathp (Z_to_bv 64 2)
+  = Some [Z_to_bv 8 97; Z_to_bv 8 0].
+Proof. check_eq. Qed.
+
+(** -EFAULT with the one byte below [TASK_SIZE] on the ledger; the
+    success the bare walk admitted, and an -EFAULT whose ledger claims
+    the byte AT [TASK_SIZE], are both refused. *)
+Example openat_crossing_path_is_efault :
+  read_cstr open_cross_mem open_cross_pathp = CstrFault
+  /\ cstr_access_len_aux open_cross_mem open_cross_pathp path_max = 1%nat
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckOk open_a_model []
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 2%nat)] (mkEffect 3 [] []))
+       open_a_model
+     = CheckReject
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.

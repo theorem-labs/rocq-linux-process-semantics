@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113)
+(** * LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113), clock_getres (114)
 
     This file answers to Linux [kernel/time/posix-timers.c]: it holds
     what the kernel defines there, and nothing else.  Which file a spec
@@ -530,19 +530,37 @@ Definition clockid_percall_b (clkid : word) : bool :=
     before [tp] is touched, and [put_timespec64] runs only under
     [!error] (kernel/time/posix-timers.c, v6.10-v6.15).
 
-    THE DESTINATION GATE declines rather than answering -EFAULT, and it
-    declines a WIDER band than its reason strictly covers.  The reason
-    is the partial case: a 16-byte [tp] straddling into an unmapped
-    page keeps its first bytes and still reports -EFAULT, because
-    [put_timespec64]'s [copy_to_user] reaches riscv64's
-    [__asm_copy_to_user] (arch/riscv/lib/uaccess.S), which copies
-    forward and whose fixup returns bytes-not-copied — so there is no
-    single answer the model could commit to.  A WHOLLY unwritable [tp]
-    is not like that: Linux answers -EFAULT having written nothing, and
-    [read_spec] does commit to -EFAULT in exactly that shape.  It is
-    folded into the same decline anyway, for uniformity with
-    [getrandom_spec]'s whole-buffer gate, which takes the same decision.
-    The cost is coverage on a shape the model could have answered. *)
+    THE DESTINATION GATE asks [access_ok] before it walks, through
+    [State.copy_bytes_map], and splits its [None] by the rule
+    [Kernel.Sys.prlimit64_spec]'s note states.
+    [SYSCALL_DEFINE2(clock_gettime)] (kernel/time/posix-timers.c at
+    v6.18.46) writes [tp] with [put_timespec64] (kernel/time/time.c),
+    which is one [copy_to_user] of the whole struct, and the
+    [clock_get_timespec] of every modeled id returns 0
+    ([posix_get_realtime_timespec] and its siblings in
+    kernel/time/posix-timers.c, and [posix_cpu_clock_get] in
+    kernel/time/posix-cpu-timers.c for the calling process), so the
+    copy-out alone decides the answer.
+
+    - A [tp] THAT [access_ok] REFUSES is -EFAULT with nothing written,
+      and each arm commits to that.  The bare walk each arm called
+      before WRAPPED ([State.copy_bytes_map]'s note), so a [tp] in the
+      last sixteen bytes of the address space read back as writable
+      and the arm answered 0 with a reading written there.
+    - A [tp] THAT [access_ok] ADMITS and that is not wholly writable is
+      declined, and the decline covers a WIDER band than its reason
+      strictly covers.  The reason is the partial case: a 16-byte [tp]
+      straddling into an unmapped page keeps its first bytes and still
+      reports -EFAULT, because [put_timespec64]'s [copy_to_user]
+      reaches riscv64's [__asm_copy_to_user]
+      (arch/riscv/lib/uaccess.S), which copies forward and whose fixup
+      returns bytes-not-copied — so there is no single answer the model
+      could commit to.  A WHOLLY unwritable [tp] is not like that:
+      Linux answers -EFAULT having written nothing, and [read_spec]
+      does commit to -EFAULT in exactly that shape.  It is folded into
+      the same decline anyway, for uniformity with [getrandom_spec]'s
+      whole-buffer gate, which takes the same decision.  The cost is
+      coverage on a shape the model could have answered. *)
 Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
   if clockid_percall_b clkid then
     (* THE PER-CALL IDS, WHICH THE MODEL DOES NOT REMEMBER.  No
@@ -554,8 +572,10 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
        the effect shape are the monotonic arm's, for the monotonic
        arm's reasons. *)
     i <- input ;;
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => unmodeled   (* destination not fully writable: fail closed *)
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16) then err_ret EFAULT
+        else unmodeled   (* admitted, not fully writable: fail closed *)
     | Some _ =>
         bs <- choose (fun bs : list byte => realtime_ok_b bs = true) ;;
         pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
@@ -570,8 +590,10 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
        shape are the monotonic arm's, for the monotonic arm's
        reasons. *)
     i <- input ;;
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => unmodeled   (* destination not fully writable: fail closed *)
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16) then err_ret EFAULT
+        else unmodeled   (* admitted, not fully writable: fail closed *)
     | Some _ =>
         bs <- choose (fun bs : list byte => cputime_ok_b bs = true) ;;
         pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
@@ -589,10 +611,115 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
        receptive without inventing a reading. *)
   else
   i <- input ;;
-  match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-  | None => unmodeled   (* destination not fully writable: fail closed *)
+  match copy_bytes_map (in_wmem i) tp 16 with
+  | None =>
+      if negb (access_okb tp 16) then err_ret EFAULT
+      else unmodeled   (* admitted, not fully writable: fail closed *)
   | Some _ =>
       bs <- choose (fun bs : list byte => timespec_ok_b bs (m_clock m) = true) ;;
       set_clock (Z_to_bv 64 (timespec_ns bs)) ;;
       pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
   end.
+
+(** Positive clock IDs handled by [clock_getres].  IDs 8 and 9 can fail
+    with -EINVAL when no alarm RTC is available.  The CPU clocks (2, 3)
+    have a fixed 1 ns resolution.  For the others Linux returns either
+    [hrtimer_resolution] or [KTIME_LOW_RES]
+    ([posix_get_hrtimer_res] and [posix_get_coarse_res],
+    kernel/time/posix-timers.c, Linux v6.18.46), and which of the two,
+    and the value of [hrtimer_resolution], follow the kernel build and
+    the boot (CONFIG_HIGH_RES_TIMERS, CONFIG_HZ).  A positive normalized
+    subsecond value covers these configurations without fixing the
+    kernel's HZ.  This deliberately leaves the exact resolution
+    unspecified, like other environment time values in this model.
+    Negative dynamic clock IDs and optional auxiliary clocks remain
+    unmodeled. *)
+Definition clock_getres_supported_b (clkid : word) : bool :=
+  (bv_unsigned clkid <=? CLOCK_BOOTTIME_ALARM)%Z
+  || Z.eqb (bv_unsigned clkid) CLOCK_TAI.
+
+Definition clock_getres_alarm_b (clkid : word) : bool :=
+  Z.eqb (bv_unsigned clkid) CLOCK_REALTIME_ALARM
+  || Z.eqb (bv_unsigned clkid) CLOCK_BOOTTIME_ALARM.
+
+Definition clock_getres_cpu_b (clkid : word) : bool :=
+  Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID
+  || Z.eqb (bv_unsigned clkid) CLOCK_THREAD_CPUTIME_ID.
+
+Definition clock_getres_resolution_b (clkid : word) (bs : list byte) : bool :=
+  Nat.eqb (length bs) 16
+  && Z.eqb (tv_sec_of bs) 0
+  && (if clock_getres_cpu_b clkid
+      then Z.eqb (tv_frac_of bs) 1
+      else (0 <? tv_frac_of bs)%Z && (tv_frac_of bs <? 1000000000)%Z).
+
+(** A NULL [tp] needs no destination, and the call still answers 0.
+
+        error = kc->clock_getres(which_clock, &rtn_tp);
+        if (!error && tp && put_timespec64(&rtn_tp, tp))
+                error = -EFAULT;
+        return error;
+
+    ([SYSCALL_DEFINE2(clock_getres)], kernel/time/posix-timers.c, Linux
+    v6.18.46, commit 1f99e9ab748f): the [tp &&] skips the copy, so
+    nothing is written and nothing can fault.
+
+    A NON-NULL [tp] is walked through [State.copy_bytes_map], so a
+    range [access_ok] refuses is not [dst_ok] here.  The bare walk this
+    called before WRAPPED ([State.copy_bytes_map]'s note), so a [tp] in
+    the last sixteen bytes of the address space read back as writable
+    and the call answered 0 with a resolution written there.
+    [clock_getres_spec] answers that range with -EFAULT and declines a
+    range [access_ok] admits that is not wholly writable, as in
+    [clock_gettime_spec].
+
+    THIS ARM ONCE DECLINED A NULL [tp] WHOSE ADDRESS 0 WAS WRITABLE,
+    because QEMU user mode attempts the copy for a NULL target pointer
+    and discards its result ([TARGET_NR_clock_getres] in [do_syscall1],
+    linux-user/syscall.c, QEMU 10.0.11, whose
+    [host_to_target_timespec] does not test for NULL), so under
+    qemu-user the call can write 16 bytes at address 0.  LPS describes
+    Linux v6.18.46, which writes nothing, so the input is answered
+    rather than declined; SCOPE.md's list "Where QEMU user mode
+    differs" carries that write. *)
+Definition clock_getres_dst_ok_b (i : SyscallInput) (tp : word) : bool :=
+  if w_is0 tp then true
+  else match copy_bytes_map (in_wmem i) tp 16 with
+       | Some _ => true
+       | None => false
+       end.
+
+Definition clock_getres_result_spec (clkid tp : word) : Sys SyscallEffect :=
+  if w_is0 tp then ret_only (Z_to_bv 64 0)
+  else
+    bs <- choose (fun bs : list byte =>
+      clock_getres_resolution_b clkid bs = true) ;;
+    pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] []).
+
+(** The clock is resolved before the destination is touched.
+
+    A destination that is not [clock_getres_dst_ok_b] is non-NULL, and
+    its answer follows the rule [Kernel.Sys.prlimit64_spec]'s note
+    states.  A range [access_ok] refuses is -EFAULT with nothing
+    written: [put_timespec64] (kernel/time/time.c at v6.18.46) is one
+    [copy_to_user] of the whole struct, and
+    [SYSCALL_DEFINE2(clock_getres)] (kernel/time/posix-timers.c)
+    returns its failure as -EFAULT.  A range [access_ok] admits that
+    is not wholly writable is declined.  The alarm ids keep their
+    -EINVAL beside the -EFAULT, because [alarm_clock_getres]
+    (kernel/time/alarmtimer.c) fails without an RTC before the copy,
+    and the [!error &&] then skips it. *)
+Definition clock_getres_spec (clkid tp : word) : Sys SyscallEffect :=
+  if clock_getres_supported_b clkid then
+    i <- input ;;
+    if clock_getres_dst_ok_b i tp then
+      if clock_getres_alarm_b clkid
+      then alt (err_ret EINVAL) (clock_getres_result_spec clkid tp)
+      else clock_getres_result_spec clkid tp
+    else if negb (access_okb tp 16) then
+      if clock_getres_alarm_b clkid
+      then alt (err_ret EINVAL) (err_ret EFAULT)
+      else err_ret EFAULT
+    else unmodeled
+  else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE then err_ret EINVAL
+  else unmodeled.

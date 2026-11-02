@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Signal — the rt_sigaction (134) and rt_sigprocmask (135) witnesses, and their proofs
+(** * LinuxProcessSem.Checks.Witness.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135) and sigaltstack (132) witnesses, and their proofs
 
     Mirrors [Sys/Kernel/Signal.v], which answers to Linux
     [kernel/signal.c]: this file holds the witnesses for the syscalls
@@ -27,15 +27,16 @@ Definition sigaltstack_witness (uss uoss : word) (i : SyscallInput)
     match sigaltstack_at (in_mem i) uss with
     | None => ret_outcome (errno_ret EFAULT) m
     | Some bs =>
-        if negb (ss_mode_ok (ss_flags_of bs))
-        then ret_outcome (errno_ret EINVAL) m
-        else if ss_disabling (ss_flags_of bs)
-        then ret_outcome (Z_to_bv 64 0) m
-        else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
-        then Unmodeled
-        else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
-        then ret_outcome (errno_ret ENOMEM) m
-        else ret_outcome (Z_to_bv 64 0) (with_sigaltstack_installed m)
+        outcome_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+        (if negb (ss_mode_ok (ss_flags_of bs))
+         then ret_outcome (errno_ret EINVAL) m
+         else if ss_disabling (ss_flags_of bs)
+         then ret_outcome (Z_to_bv 64 0) m
+         else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
+         then Unmodeled
+         else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
+         then ret_outcome (errno_ret ENOMEM) m
+         else ret_outcome (Z_to_bv 64 0) (with_sigaltstack_installed m))
     end.
 
 Lemma sigaltstack_witness_ok : forall uss uoss i m,
@@ -52,6 +53,7 @@ Proof.
   eapply bind_step; [apply input_ok|]. cbv beta.
   destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
   2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  apply record_copyins_outcome. cbv zeta.
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   destruct (ss_disabling (ss_flags_of bs)) eqn:Hdis; cbv beta iota.
@@ -77,11 +79,13 @@ Definition rt_sigaction_witness (sig act oact ss : word) (i : SyscallInput)
     match sigaction_flags (in_mem i) act with
     | None => ret_outcome (errno_ret EFAULT) m
     | Some fl =>
-        if negb (sig_valid sig) then ret_outcome (errno_ret EINVAL) m
-        else if sig_kernel_only sig then ret_outcome (errno_ret EINVAL) m
-        else if negb (sa_flags_ok fl) then Unmodeled
-        else if sigaction_accepted sig then ret_outcome (Z_to_bv 64 0) m
-        else Unmodeled
+        outcome_copyins [(act, 24%nat)]
+        (if negb (sig_valid sig) then ret_outcome (errno_ret EINVAL) m
+         else if sig_kernel_only sig then ret_outcome (errno_ret EINVAL) m
+         else if negb (sa_flags_ok fl) then Unmodeled
+         else if sigaction_accepted sig then ret_outcome (Z_to_bv 64 0) m
+         else if sigabrt_dfl_install sig (in_mem i) act then ret_outcome (Z_to_bv 64 0) m
+         else Unmodeled)
     end.
 
 Lemma rt_sigaction_witness_ok : forall sig act oact ss i m,
@@ -99,6 +103,7 @@ Proof.
   eapply bind_step; [apply input_ok|]. cbv beta.
   destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl; cbv beta iota.
   2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  apply record_copyins_outcome.
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
@@ -106,6 +111,8 @@ Proof.
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
+  { unfold ret_only, ret_outcome. apply pure_ok. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
   - unfold ret_only, ret_outcome. apply pure_ok.
   - apply unmodeled_intro.
 Qed.

@@ -102,11 +102,20 @@ Open Scope bv_scope.
     THE INPUT IS A PARAMETER, and must be: [Run.valid_entry] asks that
     the entry stack image fit below the top of the address space
     ([Run.entry_stack_fits]), and that image is built from the input's
-    argv and envp.  So an entry is valid FOR AN INPUT, and inhabitation
+    argv and envp.  Its fifth conjunct
+    ([Run.entry_launch_ok_va]) reads even more of the input — the
+    kernel build, the exec file name and the two string lists together
+    decide where [execve] may put the stack top, [sp] and the mmap
+    base, since [create_elf_tables] (fs/binfmt_elf.c, Linux v6.18.46,
+    commit 1f99e9ab748f) lays the block from exactly those.  So an
+    entry is valid FOR AN INPUT, and inhabitation
     is a statement about one — with [Run.valid_input] as the premise,
     since it is [Run.valid_argv] and [Run.valid_envp] that cap the span
     at [Run.entry_stack_span_max] and leave the bottom of the sp window
-    room for it.  An input outside those caps has no valid entry at all,
+    room for it, and [Run.valid_launch] (its thirteenth conjunct) that
+    caps the whole block at the E2BIG limit so that a stack pointer
+    exists at all.  An input outside those caps has no valid entry at
+    all,
     and every statement below that quantifies an entry carries the
     validity premise for exactly that reason.
 
@@ -151,7 +160,22 @@ Proof. intros inp H. apply image_brk_satisfiable_entry;
     which is below the demo's page-rounded image top — the demo's
     segments reach 0x11150, where the [Checks] fixture's reach 0x10c.
     Copying it would have produced an unsatisfiable premise and a
-    refutation that refuted nothing. *)
+    refutation that refuted nothing.
+
+    IT IS STILL THE BREAK THAT FAILS, and that is worth checking rather
+    than assuming, because [Checks.Examples.demo_entry] moved: it is
+    now [demo_entry_of demo_proc_input], the launch entry
+    [Run.launch_entry_va] builds, since no CLOSED entry can satisfy
+    [Run.valid_entry]'s fifth conjunct — [Run.valid_launch_sp] places
+    [sp] from the input's own argv, envp and exec file name
+    ([create_elf_tables], fs/binfmt_elf.c, Linux v6.18.46, commit
+    1f99e9ab748f).  That move changed the stack pointer, the mmap base
+    and the draw; it left [Run.en_brk] at 0x1000, which is the field
+    this refutation reads.  The fifth conjunct cannot rescue the entry
+    either: it says nothing about the break, so the SECOND conjunct
+    [Run.valid_brk] fails at every input exactly as before, and the
+    statement stays a universal over inputs rather than one pinned to
+    [Checks.Examples.demo_proc_input]. *)
 Example demo_entry_is_not_valid_here : forall inp,
   ~ valid_entry O1_image demo_entry inp.
 Proof.
@@ -212,22 +236,32 @@ Qed.
    ========================================================================= *)
 
 (** The error-free flavor, which is what actually falls out here: both
-    patches are error-free ([Verdicts]) and their trace sets are the
-    same two-element set ([Traces]).  [Equivalence.strong_equiv_error_free]
-    is exactly those three conjuncts.
+    patches are error-free ([Verdicts]), neither dies by a signal, and
+    their trace sets are the same two-element set ([Traces]).
+    [Equivalence.strong_equiv_error_free] is exactly those conjuncts.
+    The no-signal half is read off the same characterization: the only
+    non-empty trace of either patch is its exit event, so no trace
+    carries a [State.KillEv].
 
     Proved first because it is the STRONGER statement and it is free:
-    the demo's programs cannot error, so nothing is being claimed that
-    the images do not support.  The baseline obligation the SPEC asks
-    for is derived from it below, by the library's own implication. *)
+    the demo's programs cannot error or die, so nothing is being claimed
+    that the images do not support.  The baseline obligation the SPEC
+    asks for is derived from it below, by the library's own
+    implication. *)
 Theorem P1_P2_strong_universal_error_free :
   strong_universal_error_free_T P1_image P2_image.
 Proof.
   intros en_source en_target inp _ _ _.
-  unfold strong_equiv_error_free, error_free.
+  unfold strong_equiv_error_free, error_free_unkilled, dies_by_signal.
   split; [| split].
-  - exact (P1_error_free _ _ _).
-  - exact (P2_error_free _ _ _).
+  - split; [exact (P1_error_free _ _ _) |].
+    intros (tr & sig & fs & Ht & Hin).
+    destruct (proj1 (P1_traces _ _ _ _) Ht) as [-> | ->];
+      [exact Hin | destruct Hin as [Hk | []]; discriminate Hk].
+  - split; [exact (P2_error_free _ _ _) |].
+    intros (tr & sig & fs & Ht & Hin).
+    destruct (proj1 (P2_traces _ _ _ _) Ht) as [-> | ->];
+      [exact Hin | destruct Hin as [Hk | []]; discriminate Hk].
   - intros tr. split; intros Ht.
     + apply (proj2 (P2_traces _ _ _ _)). exact (proj1 (P1_traces _ _ _ _) Ht).
     + apply (proj2 (P1_traces _ _ _ _)). exact (proj1 (P2_traces _ _ _ _) Ht).
@@ -496,16 +530,18 @@ Definition demo_input (s : list byte) : FinProcInput :=
 (** ... and it really is a valid finite input, whatever the standard
     input: [FinInput.valid_fin_input] constrains argv, envp, the file
     system, the two ids, the soft descriptor limit, the blocked signal
-    mask and the published hart capabilities, and says nothing about
-    [FinInput.fin_stdin].  All seven come from [MeasureLib.core_input],
+    mask, the published hart capabilities and the exec file name, and
+    says nothing about
+    [FinInput.fin_stdin].  All eight come from [MeasureLib.core_input],
     which puts zero in the descriptor limit and the mask — inside
     [Run.valid_nofile]'s ceiling, and the empty mask
-    [Run.valid_sigmask] asks for — and [StackLayout.hwcap_rv64gc] in the
+    [Run.valid_sigmask] asks for — [StackLayout.hwcap_rv64gc] in the
     hwcap, because [Run.valid_hwcap] admits two words and a zero is
-    neither.  Without this the reject-set bites below would be about
+    neither, and [State.default_execfn] in the name.  Without this the
+    reject-set bites below would be about
     records the obligations never quantify over.
 
-    The last two conjuncts get the guarded arms
+    The last three conjuncts get the guarded arms
     [Checks.Examples.demo_input_valid] writes and for the reasons argued
     there: [Run.valid_nofile] is a [Z.le], which [intros []] would strip
     to a bare [False], so it is decided as a boolean through
@@ -514,21 +550,54 @@ Definition demo_input (s : list byte) : FinProcInput :=
     so [bv_eq] has to reduce it to the underlying integers before
     [reflexivity] can close it.  [Run.valid_hwcap] needs an arm of its
     own for a third reason: it is a DISJUNCTION, and neither
-    [reflexivity] nor [lia] picks a side. *)
+    [reflexivity] nor [lia] picks a side.
+
+    [Fs.fs_image_real], the FIFTH conjunct, needs no arm of its own:
+    [demo_fs] is the empty image, with no key to be non-canonical and
+    no key under another, so the boolean computes to [true] and the
+    [reflexivity] at the end of the chain closes it.
+
+    [Run.valid_launch], the THIRTEENTH conjunct, needs three arms for a
+    fourth reason: [repeat split] may or may not have taken it apart
+    already, so each half is also written on its own.  Its first half
+    is about [State.in_execfn], which
+    [MeasureLib.core_input] fills with [State.default_execfn], the
+    one-byte relative path "a" — a name [getname_flags] (fs/namei.c,
+    Linux v6.18.46, commit 1f99e9ab748f) can return, so
+    [Run.valid_path_name]'s side of the disjunction is the one to take,
+    and the no-NUL half needs [bv_unsigned] before [discriminate] for
+    the reason the [valid_sigmask] arm needs [bv_eq].  Its second half
+    is the E2BIG cap [bprm_stack_limits] (fs/exec.c) computes, and this
+    demo's one empty argument, empty environment and one-byte name are
+    far under it. *)
 Lemma demo_input_is_valid : forall s, valid_fin_input (demo_input s).
 Proof.
   intros s.
   unfold valid_fin_input, valid_input, valid_argv, valid_envp, valid_creds,
     valid_id, demo_input, core_input, to_proc_input, demo_argv, demo_envp,
     demo_fs.
-  cbn [mkProcInput in_argv in_envp in_fs in_uid in_gid in_nofile in_sigmask in_hwcap
+  cbn [mkProcInput in_argv in_envp in_fs in_uid in_gid in_nofile in_sigmask
+       in_hwcap in_execfn
        fin_argv fin_envp fin_image_fs fin_uid fin_gid fin_nofile fin_sigmask
-       fin_hwcap total_arg_bytes length].
+       fin_hwcap fin_execfn total_arg_bytes length].
   repeat split; cbn;
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left;
          first [ reflexivity | apply bv_eq; vm_compute; reflexivity ]);
+    try (unfold valid_launch; split;
+         [ unfold valid_execfn, valid_path_name, State.default_execfn;
+           left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+             vm_compute in Hz; discriminate ]
+         | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
+    try (unfold valid_execfn, valid_path_name, State.default_execfn;
+         left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+           vm_compute in Hz; discriminate ]);
+    try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | cbn; lia
                  | intros [] ].

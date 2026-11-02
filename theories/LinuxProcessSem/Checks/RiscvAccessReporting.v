@@ -42,7 +42,8 @@ Definition access_code_segment : Segment := {|
   seg_size := 76;
   seg_perms := "r-x";
   seg_bytes :=
-    ["038505000395050003a5050003b505002380c5002390c50023a0c50023b0c50007a5050007b5050027a0c50027b0c5002fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c50013000000"%pstring]
+    ["038505000395050003a5050003b505002380c5002390c50023a0c50023b0c50007a5050007b5050027a0c50027b0c5002fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c50013000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition access_segments : list Segment := [access_code_segment].
@@ -124,9 +125,20 @@ Example store_conditional_reports :
       Some (access_at 0x200 8).
 Proof. vm_compute. repeat split. Qed.
 
-Example failed_store_conditionals_report_no_access :
-  reported_ranges (access_state 0x138 0x200 None) = Some [] /\
-  reported_ranges (access_state 0x13c 0x200 None) = Some [].
+(** A FAILING sc still passes the store permission check ([Sem.exec]'s
+    [Sc] arm), so it reports the load and the store-back of the same
+    bytes that check is written as: with no reservation, and with a
+    reservation at another address.  On memory the process may not write
+    -- the read-only code segment at [0x100] -- it faults instead of
+    retiring with rd = 1. *)
+Example failed_store_conditionals_check_store_permission :
+  reported_ranges (access_state 0x138 0x200 None) = Some (access_pair 0x200 4) /\
+  reported_ranges (access_state 0x13c 0x200 None) = Some (access_pair 0x200 8) /\
+  reported_ranges
+    (access_state 0x138 0x200 (Some (Z_to_bv 64 0x208))) =
+      Some (access_pair 0x200 4) /\
+  reported_ranges (access_state 0x138 0x100 None) = None /\
+  reported_ranges (access_state 0x13c 0x100 None) = None.
 Proof. vm_compute. repeat split. Qed.
 
 Example atomic_read_modify_write_reports :

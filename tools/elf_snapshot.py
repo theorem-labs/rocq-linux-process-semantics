@@ -136,6 +136,12 @@ EI_MAG = b"\x7fELF"
 ELFCLASS64 = 2
 ELFDATA2LSB = 1
 EM_RISCV = 243
+# e_type.  The model covers a static non-PIE executable only: for an
+# ET_DYN image (a PIE, with or without PT_INTERP) load_elf_binary
+# (fs/binfmt_elf.c, v6.18.46) maps the segments through the mmap region
+# before ARCH_SETUP_ADDITIONAL_PAGES installs the vDSO pair, so the
+# model's initial ledger and its initial program break are both wrong.
+ET_EXEC = 2
 PT_LOAD = 1
 PT_TLS = 7
 # Size of an ELF64 program header (Elf64_Phdr).  Linux's execve refuses any
@@ -320,6 +326,13 @@ def _parse_elf(path: str, max_total_bytes=None) -> dict:
     if e_machine != EM_RISCV:
         raise ValueError(
             "Not RISC-V (e_machine=0x%x, expected 0x%x)" % (e_machine, EM_RISCV)
+        )
+
+    e_type = struct.unpack_from("<H", data, 16)[0]
+    if e_type != ET_EXEC:
+        raise ValueError(
+            "elf-snapshot: e_type %d is not ET_EXEC; the model covers static "
+            "non-PIE executables only" % e_type
         )
 
     e_entry = struct.unpack_from("<Q", data, 24)[0]
@@ -753,7 +766,12 @@ def _emit_coq(
             "  seg_base  := 0x%x%%N;\n"
             "  seg_size  := 0x%x%%N;\n"
             '  seg_perms := "%s";\n'
-            "  seg_bytes := [%s]\n"
+            "  seg_bytes := [%s];\n"
+            # Every emitter must say which KIND of mapping it is writing
+            # (MemImageType.SegKind).  A snapshot of an ELF file is
+            # always the loader's: the kernel's own vDSO and vvar
+            # mappings are built by Run.vdso_segments, never snapshotted.
+            "  seg_kind  := SegLoader\n"
             "|}.\n\n"
             % (
                 name,
@@ -1128,7 +1146,8 @@ _SEG_DEF_RE = re.compile(
     r"  seg_base  := 0x(?P<base>[0-9a-f]+)%N;\n"
     r"  seg_size  := 0x(?P<size>[0-9a-f]+)%N;\n"
     r'  seg_perms := "(?P<perms>[r-][w-][x-])";\n'
-    r"  seg_bytes := \[(?P<bytes>[^\]]*)\]\n"
+    r"  seg_bytes := \[(?P<bytes>[^\]]*)\];\n"
+    r"  seg_kind  := SegLoader\n"
     r"\|\}\."
 )
 _DEP_RE = re.compile(r'From \S+ Extra Dependency "(?P<hex>[^"]+)" as (?P<dep>\w+)\.')

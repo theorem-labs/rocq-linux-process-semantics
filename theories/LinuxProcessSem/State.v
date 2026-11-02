@@ -22,7 +22,7 @@
     fd-table/VmMaps helpers. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -73,10 +73,58 @@ Proof.
   lia.
 Qed.
 
-(** Maximum dynamic stack size below the initial SP (Linux default
-    [RLIMIT_STACK] = 8 MiB).  The whole region
-    [init_sp - stack_max_size, init_sp) models the zero-mapped Linux
-    stack (see [Run.init_machine_state]). *)
+(** Rounding down never goes up, is monotone, and is idempotent.  Three
+    one-line facts about [Z.div]'s floor, kept here because the
+    placement rule's top ([mmap_top], [vdso_top]) is a minimum of a
+    rounded and an unrounded bound and needs all three. *)
+Lemma page_round_down_Z_le : forall x, (page_round_down_Z x <= x)%Z.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  pose proof (Z.mul_div_le x 4096 ltac:(lia)). lia.
+Qed.
+
+Lemma page_round_down_Z_mono : forall x y,
+  (x <= y)%Z -> (page_round_down_Z x <= page_round_down_Z y)%Z.
+Proof.
+  intros x y H. unfold page_round_down_Z, page_size.
+  pose proof (Z.div_le_mono x y 4096 ltac:(lia) H). lia.
+Qed.
+
+Lemma page_round_down_Z_idem : forall x,
+  page_round_down_Z (page_round_down_Z x) = page_round_down_Z x.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  rewrite Z.div_mul by lia. reflexivity.
+Qed.
+
+(** Rounding the SECOND argument of a minimum first changes nothing
+    once the whole minimum is rounded.  This is why [mmap_top] may
+    round [alloc_top] (which [vm_init_sp] leaves 16-byte aligned) while
+    [vdso_top] still equals the rounded minimum of the raw bounds. *)
+Lemma page_round_down_Z_min_r : forall x y,
+  page_round_down_Z (Z.min x (page_round_down_Z y))
+  = page_round_down_Z (Z.min x y).
+Proof.
+  intros x y.
+  pose proof (page_round_down_Z_le y) as Hle.
+  destruct (Z.le_gt_cases x (page_round_down_Z y)) as [H1|H1].
+  - rewrite (Z.min_l x (page_round_down_Z y)) by lia.
+    rewrite (Z.min_l x y) by lia. reflexivity.
+  - rewrite (Z.min_r x (page_round_down_Z y)) by lia.
+    rewrite page_round_down_Z_idem.
+    destruct (Z.le_gt_cases x y) as [H2|H2].
+    + rewrite (Z.min_l x y) by lia.
+      pose proof (page_round_down_Z_mono _ _ H2) as Hm.
+      pose proof (page_round_down_Z_mono _ _ (Z.lt_le_incl _ _ H1)) as Hm2.
+      rewrite page_round_down_Z_idem in Hm2. lia.
+    + rewrite (Z.min_r x y) by lia. reflexivity.
+Qed.
+
+(** Maximum stack size (Linux default [RLIMIT_STACK] = 8 MiB).  Like
+    Linux, the model counts it from the top of the entry image, not from
+    the initial SP: [Run.init_machine_state] zero-maps the window
+    [[Run.stack_window_lo], init_sp), whose floor is [stack_max_size]
+    bytes below [Run.entry_page_top]. *)
 Definition stack_max_size : Z := (8 * 1024 * 1024)%Z.
 
 (** The initial stack pointer is chosen NON-DETERMINISTICALLY at [execve]
@@ -260,8 +308,9 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
     show that each assumption is needed.
 
     WHY NOT LOWER, to the smallest base Linux gives without the
-    assumptions: no spec arm reads the base (placement is admissibility
-    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    assumptions: the base bounds the top-down search ([mmap_top], read
+    by [Mmap.linux_place]), so a lower floor would admit placements no
+    covered kernel makes, and the ASan plan
     checker reads this floor.  [Common.AsanInit] starts its placement
     split at [AsanPlanCore.MBASE_MIN] = this value, and
     [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
@@ -405,7 +454,8 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     base of that set also starts no program: with a base of exactly 0
     the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
     search fails the same way.  The band keeps 0; this costs precision
-    only, as no spec arm reads the base.
+    only: with a base of 0 the model's [mmap_top] leaves the top-down
+    half of [Mmap.linux_place] no room, so it places nothing there.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -523,6 +573,7 @@ Definition ESPIPE : Z := 29%Z.
 Definition EPIPE  : Z := 32%Z.
 Definition ERANGE : Z := 34%Z.
 Definition ENAMETOOLONG : Z := 36%Z.
+Definition ENOSYS : Z := 38%Z.
 Definition ENOTEMPTY : Z := 39%Z.
 
 (** Errno values the per-syscall failure-injection sets draw from
@@ -1048,65 +1099,6 @@ Proof.
   destruct (bv_unsigned_in_range _ len). lia.
 Qed.
 
-(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
-    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
-    enforces, and it counts the terminator, so a 4095-byte path plus its
-    NUL fits and a 4096-byte one does not. *)
-Definition path_max : nat := 4096%nat.
-
-(** Pathname bytes counted as read: through the first NUL, the first
-    unreadable byte, or [path_max].  This is the count the model records,
-    and it is SHORTER than what [getname()] issues —
-    [strncpy_from_user] loads whole words, so it runs past the NUL to the
-    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
-    byte-identical v6.10 through v6.16 — the FILE is not, so the window
-    belongs to the function).  The answer is unaffected: that loop is clamped
-    below TASK_SIZE and falls back to a byte loop when a word load faults,
-    so no verdict moves.  Only the recorded read set is short. *)
-Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
-    : nat :=
-  match fuel with
-  | O => O
-  | S fuel' =>
-      match mp a with
-      | None => 1%nat
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then 1%nat
-          else S (cstr_access_len_aux mp (a + 1) fuel')
-      end
-  end.
-
-(** Reading a pathname out of user memory has three outcomes, and Linux
-    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
-    PATH_MAX), and [-EFAULT] (an unmapped byte before the NUL).  Both
-    failures are ordinary kernel returns, NOT modeling gaps — keeping
-    them apart is what lets [Open.openat_spec] answer an errno instead
-    of declining to interpret the call. *)
-Inductive cstr_result :=
-| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
-| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
-| CstrFault.               (* unmapped byte before the NUL  -> -EFAULT *)
-
-Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
-    : cstr_result :=
-  match k with
-  | O => CstrTooLong             (* no NUL within the length bound *)
-  | S k' =>
-      match mp a with
-      | None => CstrFault        (* unmapped byte before the NUL *)
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
-          else match read_cstr_aux mp (a + 1) k' with
-               | CstrOk r => CstrOk (b :: r)
-               | r => r          (* propagate the failure verbatim *)
-               end
-      end
-  end.
-
-Definition read_cstr (mp : word -> option byte) (a : word)
-    : cstr_result :=
-  read_cstr_aux mp a path_max.
-
 (** Read one little-endian 64-bit word at [a] ([BvBase.le_bytes_to_word]
     decodes index 0 as least significant), or [None] if any of the 8
     bytes is unmapped — for reading 8-byte fields of in-memory kernel
@@ -1407,6 +1399,38 @@ Definition copy_bytes_map (mp : word -> option byte) (a : word) (len : Z)
     : option (list byte) :=
   if access_okb a len then read_bytes_map mp a (Z_to_bv 64 len) else None.
 
+(** AT LENGTH ZERO THIS MODELS [access_ok] AND NOT [copy_from_user], and
+    the two disagree.
+
+    [access_okb a 0] is [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE - 0)],
+    so it is [false] for every pointer above [TASK_SIZE], and
+    [copy_bytes_map mp a 0] is then [None].  That is faithful to
+    [__access_ok] itself (include/asm-generic/access_ok.h:31-41 at
+    v6.18.46: [(size <= limit) && (addr <= (limit - size))], which at
+    [size = 0] is just [addr <= limit]).
+
+    [copy_from_user] does NOT fault there.  In
+    [_inline_copy_from_user] (include/linux/uaccess.h:158-184 at
+    v6.18.46) [res] is initialised to [n]; with [n = 0] a failing
+    [access_ok] jumps to [fail:], which does [memset(to + (n - res), 0, res)]
+    — a zero-byte memset — and returns [res], i.e. 0.  A return of 0 is
+    the caller's success.  So a kernel path that copies nothing from a
+    wild pointer succeeds, while this definition refuses.
+
+    WHAT A CALLER WITH A VARIABLE LENGTH MUST DO.  If the length reaching
+    this definition can be 0 at run time, and the kernel path it models
+    is a [copy_from_user]/[copy_to_user] rather than a bare [access_ok]
+    check, the caller MUST answer the empty copy itself before calling
+    here — otherwise it publishes -EFAULT where Linux proceeds.
+    [Net.Socket.move_addr_bytes] ([Sys/Net/Socket.v], "if [Z.eqb len 0]
+    then [Some []] else [copy_bytes_map mp a len]") is that shape, and it
+    exists because [connect_spec] had exactly this defect; the length
+    there comes from the user, so no arm-local argument could retire it.
+    A caller whose length is a constant and nonzero owes nothing: the
+    case does not arise.  A caller that genuinely models a bare
+    [access_ok] — one that must fail at length 0 — should say so where it
+    calls, because the refusal is then the point and not an oversight. *)
+
 (** The half the walk alone cannot see: a range [access_okb] refuses is
     [None] here however the memory map answers.  This is the property
     every caller's decline rests on, so it is stated once rather than
@@ -1422,6 +1446,191 @@ Lemma copy_bytes_map_accepted : forall mp a len,
   access_okb a len = true ->
   copy_bytes_map mp a len = read_bytes_map mp a (Z_to_bv 64 len).
 Proof. intros mp a len H. unfold copy_bytes_map. rewrite H. reflexivity. Qed.
+
+(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
+    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
+    enforces, and it counts the terminator, so a 4095-byte path plus its
+    NUL fits and a 4096-byte one does not. *)
+Definition path_max : nat := 4096%nat.
+
+(** Pathname bytes counted as read: through the first NUL, the first
+    unreadable byte, the last byte below [TASK_SIZE], or [path_max].
+    This is the count the model records,
+    and it is SHORTER than what [getname()] issues —
+    [strncpy_from_user] loads whole words, so it runs past the NUL to the
+    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
+    byte-identical v6.10 through v6.16 — the FILE is not, so the window
+    belongs to the function).  The answer is unaffected: that loop is clamped
+    below TASK_SIZE and falls back to a byte loop when a word load faults,
+    so no verdict moves.  Only the recorded read set is short.
+
+    AT [TASK_SIZE] THE COUNT STOPS WITHOUT COUNTING, where an unreadable
+    byte below it counts 1.  The kernel attempts an unmapped byte and
+    faults on it; it never attempts the byte at [TASK_SIZE], because
+    [strncpy_from_user]'s clamp ends both loops before it (see
+    [read_cstr_aux]).  The test is [read_cstr_aux]'s own, in the same
+    place, so the two walks stop together, a pointer at or above
+    [TASK_SIZE] records nothing, and no recorded range reaches
+    [TASK_SIZE] ([cstr_access_len_below_task_size]).  The shortness
+    argument above is untouched: the word loop and the byte loop sit
+    inside the same clamp, so what [getname()] issues still covers every
+    byte counted here. *)
+Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
+    : nat :=
+  match fuel with
+  | O => O
+  | S fuel' =>
+      if negb (access_okb a 1) then O   (* past strncpy_from_user's clamp: never fetched *)
+      else match mp a with
+      | None => 1%nat
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then 1%nat
+          else S (cstr_access_len_aux mp (a + 1) fuel')
+      end
+  end.
+
+(** Reading a pathname out of user memory has three outcomes, and Linux
+    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
+    PATH_MAX), and [-EFAULT] (an unmapped byte, or the top of the user
+    address space, before the NUL).  Both
+    failures are ordinary kernel returns, NOT modeling gaps — keeping
+    them apart is what lets [Open.openat_spec] answer an errno instead
+    of declining to interpret the call. *)
+Inductive cstr_result :=
+| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
+| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
+| CstrFault.               (* unmapped byte or TASK_SIZE before the NUL -> -EFAULT *)
+
+(** THE WALK STOPS AT [TASK_SIZE], and stopping there is [CstrFault].
+    [strncpy_from_user] (lib/strncpy_from_user.c, [strncpy_from_user],
+    v6.18.46) sets [max_addr = TASK_SIZE_MAX] — [TASK_SIZE] on riscv64,
+    see [access_okb] — and returns -EFAULT outright when the untagged
+    source address is at or above it.  Otherwise it clamps the scan to
+    [max = max_addr - src_addr] bytes, or to [count] when that is
+    smaller, and [do_strncpy_from_user] (same file) returns the count
+    when the scan ends on [count] and -EFAULT when it ends on the
+    address-space limit first.  Its [res >= count] test comes before
+    the -EFAULT, so where the two bounds fall on the same byte the count
+    wins.  [getname_flags] (fs/namei.c), the pathname caller, returns
+    the -EFAULT as the call's error and turns a count of PATH_MAX into
+    -ENAMETOOLONG.  riscv64 defines no [masked_user_access_begin], so
+    [can_do_masked_user_access()] is 0 (include/linux/uaccess.h) and
+    the clamped branch is the one taken; [untagged_addr] is the
+    identity for every modeled process ([access_okb]'s note).
+
+    So the test is [access_okb a 1] in front of EACH byte load, after
+    the length bound: byte [a] is inside the clamp exactly when
+    [a < TASK_SIZE] ([access_okb_one]).  That is Linux's clamp byte for
+    byte — a name that starts below [TASK_SIZE] and ends at
+    [TASK_SIZE - 1] reads, a name whose bytes reach [TASK_SIZE] faults
+    there, and PATH_MAX non-NUL bytes ending at [TASK_SIZE - 1] are
+    [CstrTooLong], the count winning.  One
+    [access_okb a (Z.of_nat path_max)] in front of the walk would be
+    wrong the other way: it refuses a short name that starts within
+    PATH_MAX bytes of [TASK_SIZE], which Linux
+    reads ([Checks.Cases.Fs.Open.openat_path_at_the_top_still_answers]).
+    The three outcomes suffice, because Linux's answer here is the same
+    -EFAULT an unmapped byte gets.
+
+    Without the test the walk stepped [a + 1] in the 64-bit word and
+    tested nothing, so a pointer in the last bytes of the address space
+    walked off the top and back in at 0 — the wrap [copy_bytes_map]'s
+    note describes — and answered [CstrOk] on a name Linux refuses.
+    With it every walk faults at [TASK_SIZE] at the latest, so [a + 1]
+    never wraps. *)
+Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
+    : cstr_result :=
+  match k with
+  | O => CstrTooLong             (* no NUL within the length bound *)
+  | S k' =>
+      if negb (access_okb a 1) then CstrFault  (* past strncpy_from_user's clamp *)
+      else match mp a with
+      | None => CstrFault        (* unmapped byte before the NUL *)
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+          else match read_cstr_aux mp (a + 1) k' with
+               | CstrOk r => CstrOk (b :: r)
+               | r => r          (* propagate the failure verbatim *)
+               end
+      end
+  end.
+
+Definition read_cstr (mp : word -> option byte) (a : word)
+    : cstr_result :=
+  read_cstr_aux mp a path_max.
+
+(** One byte at [a] is inside the user address space exactly when [a]
+    is below [TASK_SIZE]. *)
+Lemma access_okb_one : forall a,
+  access_okb a 1 = (bv_unsigned a <? TASK_SIZE)%Z.
+Proof.
+  intro a. unfold access_okb.
+  destruct (Z.leb_spec (bv_unsigned a) (TASK_SIZE - 1)%Z);
+    destruct (Z.ltb_spec (bv_unsigned a) TASK_SIZE); try lia; reflexivity.
+Qed.
+
+(** Below [TASK_SIZE] the walk's [a + 1] is the integer successor. *)
+Lemma bv_unsigned_succ_below_task_size : forall a : word,
+  (bv_unsigned a < TASK_SIZE)%Z -> bv_unsigned (a + 1) = (bv_unsigned a + 1)%Z.
+Proof.
+  intros a Ha. rewrite bv_add_unsigned.
+  change (bv_unsigned (1 : word)) with 1%Z.
+  apply bv_wrap_small. change (bv_modulus 64) with 18446744073709551616%Z.
+  pose proof (bv_unsigned_in_range 64 a). unfold TASK_SIZE in Ha. lia.
+Qed.
+
+(** The half the unguarded walk could not see: at or above [TASK_SIZE]
+    a pathname read is [CstrFault] however the memory map answers, and
+    nothing is counted as read. *)
+Lemma read_cstr_aux_refused : forall mp a k,
+  access_okb a 1 = false -> read_cstr_aux mp a (S k) = CstrFault.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+Lemma read_cstr_refused : forall mp a,
+  access_okb a 1 = false -> read_cstr mp a = CstrFault.
+Proof.
+  intros mp a H. unfold read_cstr, path_max. apply read_cstr_aux_refused. exact H.
+Qed.
+
+Lemma cstr_access_len_aux_refused : forall mp a k,
+  access_okb a 1 = false -> cstr_access_len_aux mp a k = O.
+Proof.
+  intros mp a [|k] H; [reflexivity|].
+  cbn [cstr_access_len_aux]. rewrite H. reflexivity.
+Qed.
+
+(** ...and the other direction, which keeps the guard from being a
+    blanket refusal: below [TASK_SIZE] a step is the step it always was. *)
+Lemma read_cstr_aux_accepted : forall mp a k,
+  access_okb a 1 = true ->
+  read_cstr_aux mp a (S k) =
+    match mp a with
+    | None => CstrFault
+    | Some b =>
+        if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+        else match read_cstr_aux mp (a + 1) k with
+             | CstrOk r => CstrOk (b :: r)
+             | r => r
+             end
+    end.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+(** The copy-in ledger never claims a byte at or above [TASK_SIZE]:
+    either it records nothing or its range ends at or below it. *)
+Lemma cstr_access_len_below_task_size : forall mp k a,
+  cstr_access_len_aux mp a k = O \/
+  (bv_unsigned a + Z.of_nat (cstr_access_len_aux mp a k) <= TASK_SIZE)%Z.
+Proof.
+  intros mp k. induction k as [|k IH]; intros a; [left; reflexivity|].
+  cbn [cstr_access_len_aux].
+  destruct (access_okb a 1) eqn:Ha; cbn [negb]; [|left; reflexivity].
+  rewrite access_okb_one in Ha. apply Z.ltb_lt in Ha.
+  right. destruct (mp a) as [b|]; [|lia].
+  destruct (bv_eqb b (Z_to_bv 8 0)); [lia|].
+  destruct (IH (a + 1)) as [H0|Hle].
+  - rewrite H0. lia.
+  - pose proof (bv_unsigned_succ_below_task_size a Ha). lia.
+Qed.
 
 (** The three outcomes of importing an iovec array (lib/iov_iter.c
     [__import_iovec], v6.18.46): the imported entries, a [-EFAULT] from an
@@ -1550,8 +1759,9 @@ Definition cap_iovecs (iovs : list (word * word)) : list (word * word) :=
     ([ReadWrite.readv_imported], [ReadWrite.writev_spec]'s gather),
     after the per-entry [access_ok] the loop applies to the uncapped
     length has been decided.
-    ([Net.Socket.sendmsg_spec] imports with [copy_iovecs_aux] and
-    so lacks the per-segment [access_ok] this function adds.)
+    [Net.Socket.sendmsg_spec] imports through this function too, so the
+    array [access_ok] and the per-segment one hold for every vectored
+    call the model judges.
 
     - A count of exactly ONE takes a DIFFERENT function with the OPPOSITE
       cap/[access_ok] order: [__import_iovec_ubuf] copies the single
@@ -2481,6 +2691,33 @@ Inductive SockState :=
   | SkConnected (peer : PeerAddr) (chan : word) (rx : NetStream)
   | SkReset (peer : PeerAddr) (chan : word).
 
+(** THE SOCKET HAS NO CONNECTION TO SEND ON, as a boolean over the
+    representation.  TCP has NO -ENOTCONN on the send path: net/core/stream.c
+    [sk_stream_wait_connect] (:60-88) answers -EPIPE for every state
+    outside SYN_SENT and SYN_RECV, and net/ipv4/tcp.c
+    [tcp_sendmsg_locked] reaches it whenever the state is outside
+    [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT] (Linux v6.18.46, commit
+    1f99e9ab748f).  [SkReset] is the state whose peer error has ALREADY
+    been consumed, so its send is the plain -EPIPE too; the state with
+    an error still pending is [SkConnected _ _ NRst], which answers
+    -ECONNRESET and raises no signal.
+
+    WHY IT LIVES HERE AND NOT IN [Sys.Net.Socket], where
+    [Net.Socket.send_state] already decides the same question.  Two
+    files need it and the import goes one way:
+    [Sys.Fs.ReadWrite.write_spec]'s socket arm reads it to decide
+    whether a write(2) raises SIGPIPE, and [Sys.Net.Socket] imports
+    [Sys.Fs.ReadWrite] rather than the other way about.  Putting it on
+    the REPRESENTATION rather than in either spec is what keeps one
+    answer; [Net.Socket.send_state_dead_iff] is the tripwire that holds
+    the two in step, and a new [SockState] constructor has to be added
+    here and there in the same commit. *)
+Definition sock_send_dead (sk : SockState) : bool :=
+  match sk with
+  | SkFresh | SkBound | SkListening | SkReset _ _ => true
+  | SkConnected _ _ _ => false
+  end.
+
 (** [PIPE_BUF] (include/uapi/linux/limits.h), which on riscv64 is also
     [PAGE_SIZE]: the size of the page a pipe buffers bytes in, and the
     largest transfer Linux writes atomically. *)
@@ -2529,8 +2766,9 @@ Definition PipeBuf : Type := list byte * Z.
       -EBADF.
     - [FdFileW p off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
       (write-only); read is -EBADF.
-    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND
-      (write-only, APPEND MODE); read is -EBADF.  A SEPARATE
+    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND, or
+      created by O_WRONLY|O_CREAT|O_EXCL|O_APPEND (write-only, APPEND
+      MODE); read is -EBADF.  A SEPARATE
       CONSTRUCTOR RATHER THAN A FLAG ON [FdFileW], and the reason is
       which arms have to notice.  The two kinds differ in where a write
       LANDS: [iocb_flags] (include/linux/fs.h) turns O_APPEND into
@@ -2687,21 +2925,21 @@ Inductive FdEntry :=
     (b) [vm_maps] — live anonymous mappings as [(lo, size)] intervals,
         including brk-grow grants — so allocator grants are handed out
         DISJOINT from each other and from the image ([region_free]
-        against [vm_reserved ++ vm_maps]).  Read that as a PAGE-granular
-        guarantee, which is what it is: no page-aligned address is ever
-        owned by two entries, and every base a syscall can name is page
-        aligned, so a base determines its entry.  Byte-level overlap IS
-        reachable, because a brk grow within one page is checked by
-        neither [region_free] nor Linux itself (see [live_bytes] below);
+        against [vm_reserved ++ vm_maps]).  Every writer records a
+        PAGE-ALIGNED, PAGE-ROUNDED range it has first tested free, the
+        brk grow included ([Sys/Mm/Mmap.brk_grants] records the pages it
+        installs, which is what [Sys/Mm/Mmap.brk_grow_ok] tests), so no
+        byte is ever owned by two entries and a base — always page
+        aligned — determines its entry.  The LOGICAL break is not in
+        this list; it is [vm_brk] below, and [live_bytes] says what it
+        cost to keep it here;
     (c) [vm_noaccess] — physical page ranges currently protected with
-        PROT_NONE.  Ordinarily they are subranges of [vm_maps].  A brk
-        shrink within its final page is the deliberate exception: the
-        byte-granular [vm_maps] tail is removed while Linux keeps the whole
-        page mapped and protected, so [vm_noaccess] may transiently extend
-        to [PAGE_ALIGN(vm_brk)].  It still blocks placement through the
-        containing brk page; mprotect also requires [vm_maps] containment,
-        so the logical tail cannot be exposed until a same-page regrow owns
-        it again.  Protected pages consume budget through their logical
+        PROT_NONE, and subranges of [vm_maps].  A brk shrink takes the
+        same page-rounded range out of both ([Sys/Mm/Mmap.brk_unmap_cut]
+        on this list's twin, [Sys/Mm/Mmap.brk_unmaps] on this one), so a
+        shrink inside the break's final page changes neither: Linux
+        keeps that page mapped and protected, and so does the ledger.
+        Protected pages consume budget through their
         [vm_maps] ownership, and the machine overlay contains no bytes for
         them until a modeled mprotect makes them rw again;
     (d) [vm_start_brk] — Linux's [mm->start_brk]: the ASLR-placed base of
@@ -2732,20 +2970,21 @@ Inductive FdEntry :=
         [mmap_base_min]) and IMMUTABLE for the whole run.  Like the
         initial break it is a quantified parameter of the run
         ([Run.mi_mmap_base], any [Run.valid_mmap_base] value,
-        independent per binary).  NO SPEC ARM READS THIS FIELD'S VALUE.
-        Preference-free placement says only
-        that the address is page-aligned, inside the user address space
-        and disjoint from every recorded mapping — a rule with no base
-        in it (the argument is in [Mmap.mmap_spec]'s placement section).
-        The field is NOT thereby inert and must not be removed as one:
+        independent per binary).  THE SPEC READS THIS FIELD'S VALUE:
+        [mmap_top] below is the minimum of this base and the page-rounded
+        [alloc_top], and it is the top-down bound of [Mmap.linux_place],
+        which both fresh-grant arms of [Mmap.mmap_spec] and [mremap]'s
+        move use to choose their address (the argument is in
+        [Mmap.mmap_spec]'s PLACEMENT section).  The field also carries a
+        PREDICATE that the spec needs on its own:
         [Run.valid_mmap_base] is a conjunct of [Run.valid_entry], which
         [Equivalence.strong_universal_T] quantifies its entries under,
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
-        anti-vacuity lemma.  It is the PREDICATE that is load-bearing in
-        the spec, not the value.  Outside the spec, the ASan plan
-        checker's placement gate ([Common.AsanCeil.placement_ok], taken
-        as its named [placement_policy] hypothesis) reads the value, and
+        anti-vacuity lemma.  Outside the spec, the ASan plan
+        checker's placement gate ([Common.AsanCeil.placement_ok], which
+        is the theorem [Common.AsanCeil.placement_policy_holds] and no
+        longer a named hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
         [mmap_base_min]).
         A base of 0 is what [mkVmMaps] seeds and means only "no base
@@ -2771,7 +3010,8 @@ Record VmMaps := mkVmMapsFull {
 
 (** ALLOCATION TOP: no allocator grant (anonymous mmap, brk grow, a
     moved or grown mremap) may reach at or above this address, so every
-    grant is disjoint from the dynamic stack [sp - stack_max_size, sp)
+    grant is disjoint from the dynamic stack (whose window
+    [[Run.stack_window_lo], sp) starts at or above [sp - stack_max_size])
     and from the argv/envp/auxv block above [sp] — for the [sp] THIS run
     was started with.
 
@@ -2844,6 +3084,45 @@ Ltac alloc_top_bounds :=
   | _ => pose proof stack_max_size_val
   end.
 
+(** THE TOP OF THE TOP-DOWN SEARCH, the bound Linux's
+    [generic_get_unmapped_area_topdown] passes to [vm_unmapped_area] as
+    [info.high_limit] (Linux v6.18.46, commit 1f99e9ab748f,
+    mm/mmap.c, [generic_get_unmapped_area_topdown]; mm/vma.c,
+    [unmapped_area_topdown]).
+
+    Linux's value is [mm->mmap_base] alone, which [vm_mmap_base]
+    carries.  This takes the minimum with [alloc_top] as well, because
+    the model keeps the dynamic stack OUT of the ledger and bounds every
+    grant by [alloc_top] instead (see the [vm_init_sp] note above).  A
+    base drawn above [alloc_top] would otherwise let the search return a
+    range the stack owns.  The difference is residual R-b of SCOPE.md:
+    Linux's search reaches up to [STACK_TOP_MAX] for a free HINT and its
+    bottom-up fallback reaches the stack's guard gap, and this model
+    stops at [alloc_top].
+
+    [page_round_down_Z] on [alloc_top] because [alloc_top] is
+    [sp - stack_max_size] and [sp] is only 16-byte aligned
+    ([Run.valid_sp]), while every address the search returns is a page
+    base. *)
+Definition mmap_top (h : VmMaps) : Z :=
+  Z.min (bv_unsigned (vm_mmap_base h)) (page_round_down_Z (alloc_top h)).
+
+(** WHERE THE vdso/vvar PAIR SITS, as a page base.
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c) is the FIRST
+    [get_unmapped_area] of the run — [load_elf_binary] calls
+    [ARCH_SETUP_ADDITIONAL_PAGES] after it has mapped the segments and
+    before it randomizes brk (fs/binfmt_elf.c) — and for a static
+    ET_EXEC image nothing is mapped below [mm->mmap_base] yet, so the
+    top-down search hands back the highest range that fits: the pair
+    ends exactly at the search top.
+
+    Both [vm_mmap_base] and [vm_init_sp] are immutable for the whole
+    run, so this value is the same at every step, and a reader outside
+    [init_model] (the vDSO's own load and fetch arms) may call it on the
+    current ledger. *)
+Definition vdso_top (h : VmMaps) : Z := page_round_down_Z (mmap_top h).
+
 (** Compatibility constructor for ledgers containing only rw memory.
     Existing examples and allocator simulations need not mention the
     empty protection ledger, nor the placement base (seeded 0, which
@@ -2863,44 +3142,52 @@ Proof. reflexivity. Qed.
 
 (** Bytes currently granted by a ledger: the sum of its interval sizes.
 
-    The [vm_maps] intervals are pairwise disjoint AT PAGE GRANULARITY —
-    no page-aligned address is owned by two entries — which
-    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves is
-    preserved by every modeled syscall from [init_model] on.  They are
-    NOT pairwise disjoint byte for byte, so this sum is NEITHER AN UPPER
-    NOR A LOWER BOUND on the granted-and-not-freed bytes — two sub-page
-    brk gaps move it in OPPOSITE directions — both for [vm_live_bytes]
-    here and downstream in [vm_backed_bytes] and [vm_backing_used], which
-    measure this same sum over ledgers derived from [vm_maps] by
-    subtraction.
+    THE SUM IS THE GRANTED-AND-NOT-FREED BYTES, exactly, and that rests
+    on every writer of [vm_maps] recording a PAGE-ALIGNED, PAGE-ROUNDED
+    range it has first tested free.  The mmap arms do it through
+    [region_free] on the rounded length; a brk grow does it through
+    [Sys/Mm/Mmap.brk_grow_ok] on the pages it installs,
+    [[PAGE_ALIGN(old), PAGE_ALIGN(r))], which is also the range
+    [Sys/Mm/Mmap.brk_grants] records, the range [Sys/Mm/Mmap.brk_zeros]
+    fills and the range [Sys/Mm/Mmap.brk_budget_ok] charges.  Entries
+    are therefore pairwise disjoint byte for byte, not merely at page
+    granularity, and the same holds downstream in [vm_backed_bytes] and
+    [vm_backing_used], which measure this sum over ledgers derived from
+    [vm_maps] by subtraction.
+    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves the
+    page-granular statement preserved by every modeled syscall from
+    [init_model] on.
 
-    OVER-COUNT, from a brk GROW that does not cross a page boundary.
-    [Sys/Mm/Mmap.brk_grants] records the logical range [[old, r)] while
-    [Sys/Mm/Mmap.brk_grow_ok] tests the page-rounded one (plus the page
-    above it) and tests nothing when that range is EMPTY, as it is for
-    such a grow, so the grant enters with no address-space test
-    and entries can overlap — the same bytes counted twice.  That one is
-    FAITHFUL rather than a slip: [SYSCALL_DEFINE1(brk)] takes its
-    [oldbrk == newbrk] early exit before consulting any VMA, so Linux too
-    lets the break walk over bytes another mapping owns (reachable by
-    unmapping the brk VMA and mapping over it).
-    [Checks/VmMapsDisjoint] carries a checked six-syscall execution that
-    reaches exactly that state.  Over-counting can only bring the forced
-    out-of-memory point EARLIER, which is the safe direction.
+    WHAT THIS REPLACED, because the two errors are worth keeping in
+    sight.  An earlier revision recorded a brk grow's LOGICAL range
+    [[old, r)] and cut the logical tail [[r, b)] on a shrink, and then
+    the sum was NEITHER AN UPPER NOR A LOWER BOUND on those bytes: two
+    sub-page brk gaps moved it in OPPOSITE directions.
 
-    UNDER-COUNT, from a brk SHRINK that does not cross a page boundary,
-    and this one is a KNOWN INCONSISTENCY rather than faithful modelling.
-    [Sys/Mm/Mmap.brk_maps_next]'s shrink arm subtracts the RAW range
-    [[r, b)] from [vm_maps], while [Sys/Mm/Mmap.brk_unmaps] reports the
-    PAGE-ROUNDED one, which is empty for such a shrink.  So the effect
-    says nothing was freed, Linux's [oldbrk == newbrk] exit frees no VMA
-    at all, and the ledger drops the bytes anyway:
-    [Checks/VmMapsDisjoint]'s [wit_step6] shrinks the break by 10 bytes
-    inside one page and the ledger goes from [[(65536, 4096)]] to
-    [[(65536, 1990); (67536, 2096)]] — 4096 bytes to 4086, ten granted,
-    unfreed, still-mapped bytes gone from the sum.  Under-counting moves
-    the forced out-of-memory point LATER, which is the UNSAFE direction,
-    and no gate compensates for it.  The two are not reconciled.
+    - OVER-COUNT, from a grow that did not cross a page boundary.  The
+      gate tests the page-rounded range and tests nothing when that
+      range is empty, so such a grow entered [vm_maps] with no
+      address-space test and entries could overlap — the same bytes
+      counted twice.  Over-counting brings the forced out-of-memory
+      point EARLIER: the model refuses memory Linux grants.  A halts
+      statement that allows a refusal as an exit then holds on a refusal
+      the real run never meets; a statement whose premise is that the
+      source is never refused covers fewer inputs.
+    - UNDER-COUNT, from a shrink to a break that is not page aligned.
+      Linux unmaps only from [PAGE_ALIGN(r)] up, and nothing at all when
+      the two breaks round to the same page (its [oldbrk == newbrk]
+      exit), so the page holding [r] stays mapped; where a mapping other
+      than a brk grant owned bytes of [[r, min(b, PAGE_ALIGN(r)))] — a
+      MAP_FIXED or a placed mmap over the heap's last page — the logical
+      cut dropped them while they stayed mapped.  Under-counting moves
+      the forced out-of-memory point LATER: the model grants memory
+      Linux refuses.
+
+    Both followed from one conflation: a ledger of MAPPED MEMORY cannot
+    also be the record of a byte-granular logical break.  The break has
+    a field of its own, [vm_brk], and keeping the ledger page-granular
+    is what makes this sum mean something.  [Checks/VmMapsDisjoint]
+    carries the execution that used to reach the byte-level overlap.
 
     [munmap], a shrinking [mremap], and a [brk] shrink return their bytes
     to the budget by shrinking the ledger.  Placement plays no part — the
@@ -2947,6 +3234,398 @@ Record FdState := mkFdState {
   fdst_pipes : list (word * PipeBuf);
 }.
 
+(** ONE CACHE LEAF as the kernel publishes it, for one of the four
+    levels [ARCH_DLINFO] reports (arch/riscv/include/asm/elf.h, Linux
+    v6.18.46, commit 1f99e9ab748f).
+
+    [cl_acpi] says which of the two firmware paths filled the leaf,
+    because they fill different fields:
+
+    - DEVICETREE.  [cache_associativity] (drivers/base/cacheinfo.c)
+      derives the ways from the size, the number of sets and the line
+      size.  [cl_assoc] is then the NUMBER OF SETS.
+    - ACPI.  [update_cache_properties] (drivers/acpi/pptt.c) copies the
+      PPTT's own associativity and line-size fields, which are 8 and 16
+      bits wide.  [cl_assoc] is then that 8-bit associativity.
+
+    A leaf the machine does not report is all zeros, which gives two
+    zero auxv words — [get_cache_size] and [get_cache_geometry]
+    (arch/riscv/kernel/cacheinfo.c) both answer 0 when [get_cacheinfo]
+    finds no leaf.
+
+    RESIDUAL: [get_cacheinfo] reads the CPU that runs the [execve], and
+    this record holds ONE view.  The kernel's own interface assumes a
+    homogeneous one; SCOPE.md records the gap. *)
+Record CacheLeaf := mkCacheLeaf {
+  cl_acpi  : bool;
+  cl_size  : N;
+  cl_assoc : N;
+  cl_line  : N
+}.
+
+Definition cache_leaf_absent : CacheLeaf := mkCacheLeaf false 0%N 0%N 0%N.
+
+(** The four leaves [ARCH_DLINFO] reports, in its order: L1
+    instruction, L1 data, L2 unified, L3 unified. *)
+Record CacheView := mkCacheView {
+  cv_l1i : CacheLeaf;
+  cv_l1d : CacheLeaf;
+  cv_l2  : CacheLeaf;
+  cv_l3  : CacheLeaf
+}.
+
+Definition cache_view_absent : CacheView :=
+  mkCacheView cache_leaf_absent cache_leaf_absent cache_leaf_absent
+              cache_leaf_absent.
+
+(** [ways_of_associativity], as the two firmware paths set it.  The
+    devicetree arm is [cache_associativity] (drivers/base/cacheinfo.c,
+    Linux v6.18.46, commit 1f99e9ab748f), whose guard is
+
+      [if (!(nr_sets == 1) && (nr_sets > 0 && size > 0 && line_size > 0))]
+
+    so a FULLY ASSOCIATIVE leaf (one set) keeps 0 ways, as does a leaf
+    missing any of the three properties.  There is no devicetree
+    property for the ways; this is the only place they are computed. *)
+Definition cache_ways (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_assoc l mod 2 ^ 8)%N
+  else if andb (negb (N.eqb (cl_assoc l) 1))
+               (andb (negb (N.eqb (cl_assoc l) 0))
+                     (andb (negb (N.eqb (cl_size l) 0))
+                           (negb (N.eqb (cl_line l) 0))))
+       then ((cl_size l / cl_assoc l) / cl_line l)%N
+       else 0%N.
+
+(** [coherency_line_size]: the PPTT's 16-bit field on the ACPI path,
+    the devicetree property on the other. *)
+Definition cache_line (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_line l mod 2 ^ 16)%N else cl_line l.
+
+(** [get_cache_size] returns [this_leaf->size], an [unsigned int], and
+    [get_cache_geometry] returns
+    [this_leaf->ways_of_associativity << 16 | this_leaf->coherency_line_size],
+    also an [unsigned int] (arch/riscv/kernel/cacheinfo.c).  Both are
+    widened into the auxv's 64-bit slot, so both are taken mod 2^32. *)
+Definition cache_size_word (l : CacheLeaf) : Z :=
+  (Z.of_N (cl_size l) mod 2 ^ 32)%Z.
+Definition cache_geometry_word (l : CacheLeaf) : Z :=
+  (Z.lor (Z.of_N (cache_ways l) * 2 ^ 16) (Z.of_N (cache_line l))
+   mod 2 ^ 32)%Z.
+
+
+(** * THE KERNEL BUILD THE RUN WAS LAUNCHED ON
+
+    Two facts about the launch that no trace reveals and that the model
+    cannot derive, and that are FIXED for a kernel image rather than
+    drawn per run: which optional memory-management behaviour the kernel
+    was built with, and which vDSO image it carries.  They sit together
+    in one record so that a later launch fact of the same kind costs one
+    field and no signature.
+
+    A run carries the record in its input ([ProcInput]'s [in_kernel]),
+    not in its entry: a pair of builds compared for equivalence runs on
+    ONE machine, which is why [in_hwcap] and [in_va_size] are inputs
+    too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
+    [m_kernel] reads it.
+
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
+    carries no clause about this record and no consumer's destructuring
+    pattern changes.  That is what [vdso_text_pages]'s wrap below is
+    for. *)
+Record KernelBuild := mkKernelBuild {
+  kb_thp : bool
+    (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
+       decides whether an anonymous request whose length is a multiple
+       of [pmd_size] takes the padded search and the 2 MiB alignment of
+       [thp_get_unmapped_area_vmflags] (Linux v6.18.46, commit
+       1f99e9ab748f, mm/huge_memory.c), which
+       [Sys/Mm/Mmap.linux_place] reads.  Both answers describe real
+       kernels: the riscv defconfig
+       (arch/riscv/configs/defconfig) does not set it, and
+       distribution kernels do *);
+  kb_vdso : N
+    (* which vDSO image the kernel build carries.  Its one use here is
+       the image's SIZE, through [vdso_text_pages] below; the image's
+       CONTENT belongs to the vDSO rules *);
+  kb_aslr : bool
+    (* does the launch RANDOMIZE?  [load_elf_binary] (fs/binfmt_elf.c)
+       sets PF_RANDOMIZE when the personality carries no
+       ADDR_NO_RANDOMIZE and [randomize_va_space] (mm/memory.c) is not
+       0.  It decides the stack draw ([randomize_stack_top], mm/util.c),
+       the mmap-base draw ([arch_mmap_rnd]) and the stack-randomization
+       pad [mmap_base] adds to the gap.  [Run.entry_launch_ok_va] reads
+       it *);
+  kb_guard : N
+    (* the [stack_guard_gap] boot parameter in PAGES
+       ([cmdline_parse_stack_guard_gap], mm/mmap.c; the default is 256
+       pages).  [stack_guard_gap_bytes] wraps it to SCOPE.md's
+       assumed range: at most 0x4aba6a2ab pages, which is what keeps
+       [mmap_base]'s MAX_GAP clamp inactive under Sv48 and Sv57 *);
+  kb_rnd_bits : N
+    (* [vm.mmap_rnd_bits], how many bits [arch_mmap_rnd] (mm/util.c)
+       draws.  [mmap_rnd_bits] wraps it to the sysctl's own range:
+       [ARCH_MMAP_RND_BITS_MIN] = 18 (arch/riscv/Kconfig) up to
+       [mmap_rnd_bits_max] ([set_mmap_rnd_bits_max],
+       arch/riscv/mm/init.c), 33 under Sv48 and Sv57, 24 under Sv39 *);
+  kb_rseq : bool
+    (* was the kernel built with CONFIG_RSEQ (init/Kconfig; riscv64
+       selects HAVE_RSEQ in arch/riscv/Kconfig and the option defaults
+       to y)?  [create_elf_tables] then emits AT_RSEQ_FEATURE_SIZE and
+       AT_RSEQ_ALIGN, so the auxv is 29 entries rather than 27.  It is
+       the ONE build fact that moves an address in the entry block *);
+  kb_vlenb : N
+    (* the vector unit's VLENB CSR, as [riscv_v_setup_vsize]
+       (arch/riscv/kernel/vector.c) read it.  AT_MINSIGSTKSZ is
+       computed from it; [launch_vlenb] below says which values the
+       encoding admits and why each names a real machine *);
+  kb_cache : CacheView
+    (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
+       as eight auxv words *);
+}.
+
+(** The vvar pages the kernel maps below the vDSO text: four, fixed by
+    the build ([__VDSO_PAGES], arch/riscv/include/asm/vdso.h;
+    [VDSO_NR_PAGES], include/vdso/datapage.h, Linux v6.18.46, commit
+    1f99e9ab748f). *)
+Definition vdso_vvar_pages : Z := 4.
+
+(** WHICH MEASURED IMAGE THIS BUILD'S vDSO IS.
+
+    [kb_vdso] names an entry of [Vdso.vdso_images], the images this
+    development has measured, by its position modulo their number.  So
+    every [N] names a real kernel build, and no [Run.valid_input]
+    clause is needed; a build whose image is NOT in the list is a build
+    no statement of this development speaks about, and SCOPE.md says
+    so.
+
+    Modulo the length rather than a bounds clause for the reason
+    [kb_thp] is a [bool]: the encoding is what keeps the launch facts
+    out of [valid_input], and a clause there would have to be
+    destructed by every proof that destructs an input. *)
+Definition vdso_image_of (kb : KernelBuild) : VdsoImage :=
+  nth (Nat.modulo (N.to_nat (kb_vdso kb)) (length vdso_images))
+      vdso_images vdso_image_default.
+
+(** HOW MANY PAGES THE vDSO TEXT TAKES, for the build [kb] names: the
+    page count of that build's MEASURED image.
+
+    This is the ONE place the size of the image is read.  Everything
+    below — [vdso_len], [vdso_reserved], the placement rule, the
+    examples — goes through it, and every proof about the pair uses
+    [vdso_text_pages_pos] and [vdso_text_pages_le] rather than this
+    body. *)
+Definition vdso_text_pages (kb : KernelBuild) : Z :=
+  Z.of_N (vi_pages (vdso_image_of kb)).
+
+(** Every measured image is between one and sixteen pages, and so is
+    the one [vdso_image_default] names, so the two bounds below hold
+    whatever [kb_vdso] is.  Both facts are about the concrete list, and
+    both are decided by the list itself: a measurement that broke
+    either would fail the build here rather than later, in a placement
+    proof that could not say why.  Neither proof names an entry, so
+    adding a measured image costs them nothing. *)
+Lemma vdso_images_pages_ok :
+  Forall (fun im => (1 <= vi_pages im <= 16)%N) vdso_images.
+Proof.
+  apply Forall_forall. intros im Hin.
+  repeat (destruct Hin as [<- | Hin]; [cbn [vi_pages]; lia |]).
+  destruct Hin.
+Qed.
+
+Lemma vdso_image_default_pages :
+  (1 <= vi_pages vdso_image_default <= 16)%N.
+Proof.
+  unfold vdso_image_default, vdso_images. cbn [vi_pages]. lia.
+Qed.
+
+Lemma vdso_image_of_pages : forall kb,
+  (1 <= vi_pages (vdso_image_of kb) <= 16)%N.
+Proof.
+  intros kb. unfold vdso_image_of.
+  set (i := Nat.modulo (N.to_nat (kb_vdso kb)) (length vdso_images)).
+  destruct (Nat.lt_ge_cases i (length vdso_images)) as [Hlt|Hge].
+  - apply (proj1 (Forall_forall _ _) vdso_images_pages_ok).
+    apply nth_In. exact Hlt.
+  - rewrite nth_overflow by exact Hge. exact vdso_image_default_pages.
+Qed.
+
+Lemma vdso_text_pages_pos : forall kb, (1 <= vdso_text_pages kb)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (vdso_image_of_pages kb) as [H _]. lia.
+Qed.
+
+Lemma vdso_text_pages_le : forall kb, (vdso_text_pages kb <= 16)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (vdso_image_of_pages kb) as [_ H]. lia.
+Qed.
+
+(** The whole pair's width in bytes: the vvar pages and the text pages. *)
+Definition vdso_len (kb : KernelBuild) : Z :=
+  ((vdso_vvar_pages + vdso_text_pages kb) * page_size)%Z.
+
+Lemma vdso_len_bounds : forall kb,
+  (5 * page_size <= vdso_len kb <= 20 * page_size)%Z.
+Proof.
+  intros kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb). lia.
+Qed.
+
+(** The build a model gets when nobody names one, and the build a
+    positional [mkProcInput] literal is launched on.  EVERY FIELD NAMES
+    A REAL LAUNCH, and between them they name the ORDINARY one, so a
+    fixture written through [mkProcInput] describes a launch Linux
+    gives rather than a corner of the record:
+
+    - no transparent huge pages (the riscv defconfig,
+      arch/riscv/configs/defconfig);
+    - vDSO image 1, two text pages under [vdso_text_pages] above;
+    - randomisation ON: [randomize_va_space] (mm/memory.c) defaults to
+      1 or 2, never 0, and the personality carries no ADDR_NO_RANDOMIZE;
+    - a stack guard gap of 256 pages, which is [stack_guard_gap]'s own
+      default (mm/mmap.c, [stack_guard_gap = 256UL << PAGE_SHIFT]);
+    - [vm.mmap_rnd_bits] 18, which [mmap_rnd_bits] gives for 0: riscv64
+      sets no ARCH_MMAP_RND_BITS_DEFAULT, so the boot value is
+      ARCH_MMAP_RND_BITS_MIN (arch/riscv/Kconfig, arch/Kconfig);
+    - CONFIG_RSEQ on, riscv64's default (init/Kconfig, arch/riscv/Kconfig
+      selects HAVE_RSEQ);
+    - no vector unit and no cache leaves reported, which is what a
+      machine whose devicetree carries neither gives
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+
+    A run built from a [ProcInput] never sees this value — [init_model]
+    installs [in_kernel] — exactly as with [default_nofile].
+    Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
+Definition default_kernel : KernelBuild :=
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+
+(** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
+    [cmdline_parse_stack_guard_gap] replaces it with
+    [val << PAGE_SHIFT] for a decimal [val] on the boot command line.
+    So the parameter is a PAGE COUNT, and [kb_guard] holds it.
+
+    The [mod] is SCOPE.md's assumption about the machines the model
+    describes, not the kernel's own range: the kernel takes any
+    [unsigned long].  Below 0x4aba6a2ac pages, [mmap_base] (mm/util.c)
+    never clamps the gap at [MAX_GAP = STACK_TOP / 6 * 5] under Sv48 or
+    Sv57, so the base never falls below [mmap_base_min] even with 33
+    bits of randomization. *)
+Definition stack_guard_gap_pages (kb : KernelBuild) : Z :=
+  Z.of_N (kb_guard kb mod 0x4aba6a2ac).
+Definition stack_guard_gap_bytes (kb : KernelBuild) : Z :=
+  (page_size * stack_guard_gap_pages kb)%Z.
+
+Lemma stack_guard_gap_pages_bounds : forall kb,
+  (0 <= stack_guard_gap_pages kb <= 0x4aba6a2ab)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_pages.
+  split; [apply N2Z.is_nonneg|].
+  assert (Hlt : (stack_guard_gap_pages kb < 0x4aba6a2ac)%Z).
+  { unfold stack_guard_gap_pages.
+    replace 0x4aba6a2ac%Z with (Z.of_N 0x4aba6a2ac) by reflexivity.
+    apply N2Z.inj_lt, N.mod_lt. discriminate. }
+  unfold stack_guard_gap_pages in Hlt. lia.
+Qed.
+
+Lemma stack_guard_gap_bytes_bounds : forall kb,
+  (0 <= stack_guard_gap_bytes kb <= 0x4aba6a2ab000)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_bytes, page_size.
+  pose proof (stack_guard_gap_pages_bounds kb). lia.
+Qed.
+
+(** [vm.mmap_rnd_bits], the number of bits [arch_mmap_rnd] (mm/util.c)
+    draws for the mmap base.  [set_mmap_rnd_bits_max]
+    (arch/riscv/mm/init.c) sets the ceiling to
+    [MMAP_VA_BITS - PAGE_SHIFT - 3], which is 33 under Sv48 and Sv57
+    ([MMAP_VA_BITS_64] caps [VA_BITS] at 48, arch/riscv/include/asm/pgtable.h)
+    and 24 under Sv39; [ARCH_MMAP_RND_BITS_MIN] (arch/riscv/Kconfig) is
+    18 on 64-bit, and that is also the boot default, because riscv sets
+    no [ARCH_MMAP_RND_BITS_DEFAULT].  A root write to the sysctl moves
+    it anywhere in between, so the model quantifies over the range. *)
+Definition mmap_rnd_bits_max (v : VaSize) : Z :=
+  match v with Sv39 => 24%Z | Sv48 => 33%Z | Sv57 => 33%Z end.
+Definition mmap_rnd_bits (v : VaSize) (kb : KernelBuild) : Z :=
+  (18 + Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17)))%Z.
+
+Lemma mmap_rnd_bits_bounds : forall v kb,
+  (18 <= mmap_rnd_bits v kb <= mmap_rnd_bits_max v)%Z.
+Proof.
+  intros v kb. unfold mmap_rnd_bits.
+  pose proof (N2Z.is_nonneg (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))).
+  assert (Hlt : (Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))
+                 < Z.of_N (Z.to_N (mmap_rnd_bits_max v - 17)))%Z).
+  { apply N2Z.inj_lt, N.mod_lt. destruct v; discriminate. }
+  rewrite Z2N.id in Hlt by (destruct v; cbn; lia).
+  lia.
+Qed.
+
+(** VLENB, the vector unit's register length in bytes, as
+    [riscv_v_setup_vsize] (arch/riscv/kernel/vector.c) read it:
+    [riscv_v_vsize] is [32 * vlenb].
+
+    A hart whose AT_HWCAP carries the V bit has a RATIFIED vector unit,
+    whose VLEN is a power of two from 128 to 65536 bits, so VLENB is
+    [16 * 2^k] for [k] from 0 to 9.  The V bit is bit 21 of the mask,
+    [1 << ('V' - 'A')] (arch/riscv/include/uapi/asm/hwcap.h,
+    COMPAT_HWCAP_ISA_V).
+
+    WITHOUT THE BIT the machine may still have a vector unit, and
+    AT_MINSIGSTKSZ still reflects it: [signal_minsigstksz] is computed
+    once at boot by [init_rt_signal_env] (arch/riscv/kernel/signal.c)
+    from [has_vector() || has_xtheadvector()], a fact of the hart,
+    while [ELF_HWCAP] clears the V bit for a process that asked for it
+    with PR_RISCV_V_SET_CONTROL (arch/riscv/kernel/cpufeature.c).  So 0
+    means no vector unit here and any other value is a VLENB from 1 to
+    2^32 - 1, the width of [riscv_v_vsize]'s own type.
+
+    UNSETTLED: whether this encoding gives exactly the producible
+    values.  Two points are open — which vector units can set
+    AT_HWCAP's V bit, and the ACPI path's other cache fields.  What
+    would change it: a value the encoding admits that no kernel
+    publishes, or the reverse. *)
+Definition hwcap_has_v (h : word) : bool := Z.testbit (bv_unsigned h) 21.
+
+Definition launch_vlenb (kb : KernelBuild) (hwcap : word) : Z :=
+  if hwcap_has_v hwcap then (16 * 2 ^ Z.of_N (kb_vlenb kb mod 10))%Z
+  else if N.eqb (kb_vlenb kb) 0 then 0%Z
+  else (1 + Z.of_N ((kb_vlenb kb - 1) mod (2 ^ 32 - 1)))%Z.
+
+(** AT_MINSIGSTKSZ: [signal_minsigstksz]
+    (arch/riscv/kernel/signal.c), which [init_rt_signal_env] computes
+    once as [get_rt_frame_size(true)]:
+
+      [frame_size = sizeof(struct rt_sigframe);]
+      [if (has_vector() || has_xtheadvector()) frame_size += riscv_v_sc_size;]
+      [frame_size = round_up(frame_size, 16);]
+
+    with
+    [riscv_v_sc_size = sizeof(struct __riscv_ctx_hdr) + sizeof(struct __sc_riscv_v_state) + riscv_v_vsize]
+    = [8 + 48 + 32 * vlenb].
+
+    [sizeof(struct rt_sigframe)] is 1088 on rv64: 128 bytes of
+    [siginfo] ([SI_MAX_SIZE], include/uapi/asm-generic/siginfo.h) and
+    960 of [struct ucontext] (arch/riscv/include/uapi/asm/ucontext.h) —
+    8 + 8 for [uc_flags] and [uc_link], 24 for [stack_t], 8 for
+    [sigset_t], 120 for [__unused], 8 of padding, then 784 for
+    [struct sigcontext] (256 for [user_regs_struct] and 528 for the
+    floating-point union).  A4's real-kernel run checks the number.
+
+    [ARCH_DLINFO] emits AT_IGNORE instead when [signal_minsigstksz] is
+    0, which it never is: the frame is at least 1088 bytes. *)
+Definition rt_sigframe_size : Z := 1088%Z.
+
+Definition min_sigframe_size (kb : KernelBuild) (hwcap : word) : Z :=
+  let v := launch_vlenb kb hwcap in
+  let vsz := if Z.eqb v 0 then 0%Z else (8 + 48 + 32 * v)%Z in
+  ((rt_sigframe_size + vsz + 15) / 16 * 16)%Z.
+
+(** THE EXEC FILE NAME a positional [mkProcInput] literal gets: the
+    one-byte relative path "a", which [Run.valid_execfn] admits. *)
+Definition default_execfn : list byte := [Z_to_bv 8 97].
+
 (** The virtual-memory subsystem.  [vmst_lazy] records page-aligned sparse
     anonymous reservations whose backing is charged on first data access;
     [vmst_materialized] is the deduplicated set of page bases already charged.
@@ -2955,6 +3634,22 @@ Record VmState := mkVmState {
   vmst_maps : VmMaps;
   vmst_lazy : list (word * word);
   vmst_materialized : list word;
+  vmst_kernel : KernelBuild
+    (* the build the run was launched on, copied from [ProcInput]'s
+       [in_kernel] by [init_model] and written by nothing else.  Read it
+       with [m_kernel] *);
+  vmst_vdso : VdsoRun
+    (* WHAT A vDSO CALL LEAVES BEHIND, and how many calls the run has
+       made.  The draw is the launch's [StackLayout.ed_vdso], copied
+       from [Run.ExecEntry]'s draw by [Run.init_config] and written by
+       nothing else; the count is bumped by [Run.sstep]'s vDSO arm and
+       by nothing else.  Read both with [m_vdso].
+
+       It is HERE, in the model, rather than reachable from the step
+       relation's other arguments, because the draw is a fact of the
+       LAUNCH — like the kernel build beside it — and the step relation
+       sees the launch only through the model.  See Vdso.v for why the
+       leftovers are drawn at all. *)
 }.
 
 (** The channels.  Standard input carries the UNCONSUMED remainder of the
@@ -3287,12 +3982,20 @@ Record ProcState := mkProcState {
                                     writer, and a writer that forgot it would
                                     break no proof.
 
-                                    ONLY [State.with_killed] sets it, its only
-                                    callers are in
-                                    [Sys.Kernel.Signal], and SIGABRT is the only
-                                    signal any of them sends --
-                                    [Kernel.Signal.tkill_spec] is the one arm
-                                    that can send a signal at all. *)
+                                    ONLY [State.with_killed] sets it.  Its
+                                    callers are in [Sys.Kernel.Signal] and in
+                                    [Sys.Fs.ReadWrite], and the signals they
+                                    send are SIGABRT (6) and SIGPIPE (13) --
+                                    [Kernel.Signal.tkill_spec] raises the
+                                    first, the three write arms of
+                                    [Fs.ReadWrite.write_spec] raise the
+                                    second through [raise_sigpipe], and
+                                    [Kernel.Signal.sigmask_deliver_model]
+                                    delivers whichever of them a mask install
+                                    uncovers.  Both have the default
+                                    disposition TERMINATE in every run this
+                                    model covers, which is what makes the halt
+                                    this field marks the end of the run. *)
 ;
   procst_sigabrt_pending : bool  (* SIGABRT has been sent to this process and
                                     is BLOCKED, so it sits in
@@ -3388,6 +4091,140 @@ Record ProcState := mkProcState {
        inode, and the difference shows only where two paths name one
        inode or one path names two -- neither of which [Fs]'s flat,
        link-free namespace can express (Fs.v). *)
+;
+  procst_sigpipe_pending : bool  (* SIGPIPE has been sent to this process and is
+                                    BLOCKED, so it sits in
+                                    [task->pending.signal] waiting for the mask
+                                    to let it through.  [procst_sigabrt_pending]
+                                    above, on the other signal this model can
+                                    raise, and the same kernel path:
+                                    kernel/signal.c [send_signal_locked] adds a
+                                    blocked signal to the pending set and
+                                    [recalc_sigpending] leaves TIF_SIGPENDING
+                                    clear, so the return to user space takes no
+                                    signal and the syscall's -EPIPE IS seen
+                                    (Linux v6.18.46, commit 1f99e9ab748f).
+
+                                    WHO SETS IT: the three write arms of
+                                    [Sys.Fs.ReadWrite.write_spec], through
+                                    [Sys.Fs.ReadWrite.raise_sigpipe], when the
+                                    far end has no reader AND the mask blocks
+                                    signal 13.  With the mask open the same
+                                    helper calls [with_killed] instead and the
+                                    process dies there, which is why this field
+                                    is not the common case.
+
+                                    WHO CLEARS IT: nothing, and
+                                    [Kernel.Signal.sigmask_deliver_model] is why
+                                    that is right.  A pending SIGPIPE is
+                                    delivered by the mask install that uncovers
+                                    it, and that delivery KILLS, so the state
+                                    after it is a halted one and no later reader
+                                    exists.  SIGPIPE's default action is
+                                    terminate (it is in none of
+                                    SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK
+                                    or SIG_KERNEL_COREDUMP_MASK,
+                                    include/linux/signal.h), so there is no
+                                    disposition under which the delivery returns.
+
+                                    A BOOL AND NOT A SIGSET, for
+                                    [procst_sigabrt_pending]'s reason: one write
+                                    sends one signal, and a second write to the
+                                    same dead end sends signal 13 again, which
+                                    [legacy_queue] (kernel/signal.c) drops
+                                    because it is already pending below
+                                    SIGRTMIN.  Setting a bit that is already set
+                                    is exactly that. *)
+;
+  procst_channel_reader : bool   (* THE SECOND FIELD OF THIS RECORD THAT IS NOT
+                                    KERNEL STATE, and unlike
+                                    [procst_abort_terminal] it is not the task's
+                                    declaration but the ENVIRONMENT's: whether
+                                    the far end of descriptors 1 and 2 still has
+                                    a reader.  Seeded by [init_model] from
+                                    [ProcInput]'s [in_channel_reader] and
+                                    written by nothing, so one run has one
+                                    answer.
+
+                                    WHY THE MODEL NEEDS TO BE TOLD.  A channel
+                                    descriptor ([FdChannel]) is whatever the
+                                    launcher put there -- a terminal, a file, a
+                                    pipe, a socket -- and the model carries no
+                                    term for it.  A write to a terminal or a
+                                    file always has a reader; a write to a pipe
+                                    or a socket whose reader has gone raises
+                                    SIGPIPE and dies (fs/pipe.c
+                                    [anon_pipe_write] :460-465, net/core/stream.c
+                                    [sk_stream_error] :190-198, Linux v6.18.46).
+                                    The model cannot derive which, so it is
+                                    quantified over, exactly as [in_uid] and
+                                    [in_sigmask] are.
+
+                                    A LAUNCH FACT AND NOT A PER-CALL CHOICE.  A
+                                    [choose] resolved afresh at each write would
+                                    admit a trace in which one write to stdout
+                                    finds a reader and the next does not, with
+                                    no close in between -- which `prog | head -1`
+                                    does not do either: there the reader goes
+                                    away once and stays away.  The honest
+                                    middle, a reader that goes away at a point
+                                    the model cannot see, is a pipe the model
+                                    does not have a term for; this field says
+                                    which of the two ends the run was launched
+                                    with.  [Run.valid_input] DOES NOT CONSTRAIN
+                                    IT: both values name a real launch, so every
+                                    statement covers both, and the reader-present
+                                    reading -- which every statement in this tree
+                                    was silently written under, as an assumption
+                                    inside the write arm -- is no longer
+                                    assumed anywhere. *)
+;
+  procst_sigpipe_default : bool  (* THE THIRD FIELD OF THIS RECORD THAT IS NOT
+                                    KERNEL STATE IN THE USUAL SENSE: whether the
+                                    process was launched with SIGPIPE at its
+                                    DEFAULT DISPOSITION (SIG_DFL).  [true] is
+                                    SIG_DFL and so death on delivery; [false] is
+                                    SIG_IGN, under which the kernel never
+                                    delivers the signal at all and the write
+                                    simply returns -EPIPE.  Seeded by
+                                    [init_model] from [ProcInput]'s
+                                    [in_sigpipe_default] and written by nothing,
+                                    so one run has one answer.
+
+                                    WHY THE MODEL HAS TO BE TOLD, AND WHY THIS IS
+                                    THE TASK'S DECLARATION RATHER THAN THE
+                                    ENVIRONMENT'S.  A disposition SURVIVES
+                                    execve when it is SIG_IGN: fs/exec.c
+                                    [begin_new_exec] calls
+                                    kernel/signal.c [flush_signal_handlers] with
+                                    [force_default = 0], which resets only
+                                    handlers that are neither SIG_DFL nor
+                                    SIG_IGN (Linux v6.18.46, commit
+                                    1f99e9ab748f).  So `signal(SIGPIPE, SIG_IGN)`
+                                    in a launcher -- what a shell job-control
+                                    wrapper, a service manager or a language
+                                    runtime that wants EPIPE instead of death
+                                    does -- hands this process a world in which
+                                    no write kills it.  The model cannot derive
+                                    which world it is in, because nothing inside
+                                    the modeled surface can observe or change it:
+                                    [Kernel.Signal.rt_sigaction_spec] declines
+                                    every install for signal 13.
+
+                                    IT IS PINNED, UNLIKE [procst_channel_reader].
+                                    [Run.valid_input] pins it to [true], because
+                                    that is the world every statement in this
+                                    tree was written under -- the ordinary
+                                    launch, in which a reader-less write ends the
+                                    program.  The other world is a predicate of
+                                    its own, [Run.valid_input_sigpipe_ignored],
+                                    exactly as the abort stance is
+                                    [Run.valid_input_abort].  Without the field
+                                    that pinning would be an UNSTATED premise of
+                                    every theorem here, and a launcher that
+                                    ignores SIGPIPE would hand the model a
+                                    process it kills where Linux returns -EPIPE
+                                    and runs on. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -3501,6 +4338,10 @@ Definition m_vmmaps (m : Model) : VmMaps := vmst_maps (m_vm m).
 Definition m_vm_lazy (m : Model) : list (word * word) := vmst_lazy (m_vm m).
 Definition m_vm_materialized (m : Model) : list word :=
   vmst_materialized (m_vm m).
+(** The kernel build this run was launched on; see [KernelBuild]. *)
+Definition m_kernel (m : Model) : KernelBuild := vmst_kernel (m_vm m).
+(** The launch's vDSO draw and the run's call count; see [Vdso.VdsoRun]. *)
+Definition m_vdso (m : Model) : VdsoRun := vmst_vdso (m_vm m).
 Definition m_stdin (m : Model) : InputStream := iost_stdin (m_io m).
 Definition m_urandom (m : Model) : InputStream := iost_urandom (m_io m).
 Definition m_net (m : Model) : NetQueue := iost_net (m_io m).
@@ -3524,6 +4365,20 @@ Definition m_sigabrt_pending (m : Model) : bool :=
   procst_sigabrt_pending (m_proc m).
 Definition m_abort_terminal (m : Model) : bool :=
   procst_abort_terminal (m_proc m).
+Definition m_sigpipe_pending (m : Model) : bool :=
+  procst_sigpipe_pending (m_proc m).
+(** Whether the far end of descriptors 1 and 2 still has a reader --
+    the launch fact [Sys.Fs.ReadWrite.write_spec]'s channel arm reads
+    before it admits a transfer.  [Run.valid_input] constrains neither
+    value; see [procst_channel_reader]. *)
+Definition m_channel_reader (m : Model) : bool :=
+  procst_channel_reader (m_proc m).
+(** Whether SIGPIPE is still at SIG_DFL, the launch declaration
+    [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
+    [Run.valid_input] pins it to [true]; the other reading is
+    [Run.valid_input_sigpipe_ignored].  See [procst_sigpipe_default]. *)
+Definition m_sigpipe_default (m : Model) : bool :=
+  procst_sigpipe_default (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -3570,12 +4425,14 @@ Definition default_nofile : word := Z_to_bv 64 1024.
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds []) (mkVmState vm [] [])
+  mkModelOf (mkFdState fds [])
+            (mkVmState vm [] [] default_kernel (vdso_run_init vdso_draw_keep))
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
-               false (Z_to_bv 64 0) false None false false false false [])
+               false (Z_to_bv 64 0) false None false false false false []
+               false true true)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -3590,12 +4447,56 @@ Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
     (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
-    (mkVmState h (m_vm_lazy m) (m_vm_materialized m))
+    (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) (m_vdso m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_vm_backing (lazy : list (word * word))
     (materialized : list word) (m : Model) : Model :=
-  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized)
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) lazy materialized (m_kernel m) (m_vdso m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+(** Install the launch's kernel build.  Its ONE caller is [init_model]:
+    the build is a fact about the machine, and no step changes it. *)
+Definition with_kernel (kb : KernelBuild) (m : Model) : Model :=
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) kb (m_vdso m))
+    (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+(** Install the launch's vDSO draw.  Its ONE caller is
+    [Run.init_config], which reads it off the entry's draw; a step
+    never changes the draw.  [with_vdso_calls] is the other half: the
+    vDSO arm of [Run.sstep] bumps the count and nothing else does. *)
+Definition with_vdso (v : VdsoRun) (m : Model) : Model :=
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) v)
+    (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+Definition with_vdso_bump (m : Model) : Model :=
+  with_vdso (vdso_run_bump (m_vdso m)) m.
+
+(** The vDSO setters rebuild the VM subsystem and nothing else, so
+    every other subsystem is theirs unchanged.  These are the frame
+    facts the step relation's consequences need; the pattern is the one
+    the [with_*] block's header states. *)
+Lemma m_proc_with_vdso : forall v m, m_proc (with_vdso v m) = m_proc m.
+Proof. reflexivity. Qed.
+Lemma m_proc_with_vdso_bump : forall m, m_proc (with_vdso_bump m) = m_proc m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_vdso : forall v m, m_vmmaps (with_vdso v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_vdso_bump : forall m,
+  m_vmmaps (with_vdso_bump m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_vdso : forall v m, m_kernel (with_vdso v m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_vdso_bump : forall m,
+  m_kernel (with_vdso_bump m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_vdso_with_vdso : forall v m, m_vdso (with_vdso v m) = v.
+Proof. reflexivity. Qed.
+Lemma m_vm_lazy_with_vdso : forall v m,
+  m_vm_lazy (with_vdso v m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+Lemma m_vm_materialized_with_vdso : forall v m,
+  m_vm_materialized (with_vdso v m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
 Definition with_stdin (s : InputStream) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (mkIoState s (m_urandom m) (m_net m) (m_conn_ix m))
             (m_fsys m) (m_proc m) (m_lim m) (m_time m).
@@ -3650,7 +4551,9 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         (statpins_restrict fs (m_statpins m)))
+                         (statpins_restrict fs (m_statpins m))
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -3666,7 +4569,9 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          false (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -3675,7 +4580,9 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -3697,7 +4604,9 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_has_children m) (Some bs)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -3733,7 +4642,9 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         ((p, bs) :: m_statpins m))
+                         ((p, bs) :: m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -3759,7 +4670,9 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
-                         (m_statpins m))
+                         (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -3772,7 +4685,9 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -3780,7 +4695,9 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          true (m_sigmask m) (procst_children (m_proc m))
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -3806,7 +4723,9 @@ Definition with_children (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m) true
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -3826,7 +4745,9 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_setsid_succeeded m) s (m_has_children m)
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -3853,7 +4774,9 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m)
                          (m_has_children m) (m_utsname m) true
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -3866,11 +4789,12 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
     a pending signal when it delivers it ([dequeue_signal] from
     [get_signal]), but the only delivery this model has is the FATAL one:
     SIGABRT's disposition in a modeled run is SIG_DFL by construction --
-    [Kernel.Signal.rt_sigaction_spec] declines every install for a signal
-    outside SIGINT and SIGTERM -- so the step that would clear the field
-    is the step that ends the process, and no later state can read it.
-    A second sendable signal, or a catchable SIGABRT, brings the clear
-    with it. *)
+    [Kernel.Signal.rt_sigaction_spec] declines every install of a handler
+    for a signal outside SIGINT and SIGTERM, and accepts only SIG_DFL for
+    SIGABRT, which changes nothing -- so the step that would clear the
+    field is the step that ends the process, and no later state can read
+    it.  A second sendable signal, or a catchable SIGABRT, brings the
+    clear with it. *)
 Definition with_sigabrt_pending (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -3878,7 +4802,72 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
-                         (m_statpins m))
+                         (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
+    [with_sigabrt_pending] above on the other signal this model can
+    raise.  [Sys.Fs.ReadWrite.raise_sigpipe] is the only caller, and it
+    reaches here only when [Sys.Uapi.sigpipe_blocked] holds of the
+    process's mask; with the mask open it calls [with_killed] instead.
+
+    NOTHING CLEARS IT, for [procst_sigabrt_pending]'s reason and more
+    simply: SIGPIPE's default action is TERMINATE and the model admits
+    no other disposition for it ([Kernel.Signal.rt_sigaction_spec]
+    declines every install for signal 13), so the delivery that would
+    dequeue it is the step that ends the process. *)
+Definition with_sigpipe_pending (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         true (m_channel_reader m)
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Seed the environment's channel-reader fact.  Its only caller is
+    [init_model], for the reason [with_abort_terminal] gives: the fact
+    is a parameter of the RUN, so the one place that may install it is
+    the one that turns a [ProcInput] into a model.  Like that field it
+    has no writer anywhere in the model's own state transitions, so it
+    is constant along every run -- which is what lets one run have one
+    answer to "did a write to stdout reach a reader", where a [choose]
+    at each call would let one run have two. *)
+Definition with_channel_reader (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) b
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Seed the task's SIGPIPE disposition.  Its only caller is
+    [init_model], for the reason [with_abort_terminal] gives: the
+    disposition is a parameter of the RUN -- it was decided before
+    execve and survives it ([procst_sigpipe_default] names the kernel
+    site) -- so the one place that may install it is the one that turns
+    a [ProcInput] into a model.  Nothing inside the modeled surface
+    writes it: [Kernel.Signal.rt_sigaction_spec] declines every install
+    for signal 13, so it is constant along every run. *)
+Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         b)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -3889,18 +4878,38 @@ Definition with_sigabrt_pending (m : Model) : Model :=
     [procst_killed] alone -- [Run.sstep_exit] declines a death by signal
     and [Run.sstep_killed] takes it -- so the two cannot both apply.
 
-    IT HAS TWO CALLERS, and which is which decides what guards them.
-    [Kernel.Signal.send_sigabrt] is the SEND, and it sits behind the
-    task's declaration.  [Kernel.Signal.sigmask_deliver_model] is the
-    DELIVERY inside [rt_sigprocmask], and it does NOT: it branches on
-    [procst_sigabrt_pending], because a signal already pending has to be
-    taken by the mask install that uncovers it whatever the task
+    IT HAS FOUR CALLERS, IN TWO SIGNALS, and which is which decides what
+    guards them.
+
+    SIGABRT (6).  [Kernel.Signal.send_sigabrt] is the SEND, and it sits
+    behind the task's declaration.  [Kernel.Signal.sigmask_deliver_model]
+    is the DELIVERY inside [rt_sigprocmask], and it does NOT: it branches
+    on [procst_sigabrt_pending], because a signal already pending has to
+    be taken by the mask install that uncovers it whatever the task
     declared.  A reader checking the declaration-off claim needs both
-    rows — see [Run.decl_off_frame], whose hypothesis carries the pending
-    bit for exactly this reason, and
+    rows — see [Run.decl_off_frame], whose conclusion is about THIS
+    SIGNAL for exactly this reason, and
     [Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted], which
-    refutes the version that names only the declaration.  SIGABRT is the
-    only argument either caller is ever given. *)
+    refutes the version that names only the declaration.
+
+    SIGPIPE (13).  [Sys.Fs.ReadWrite.raise_sigpipe] is the SEND, from the
+    channel, pipe and socket arms of [Sys.Fs.ReadWrite.write_spec] when
+    the far end has no reader, and [Kernel.Signal.sigmask_deliver_model]
+    is again the delivery of a blocked one.  NEITHER SEND IS BEHIND THE
+    ABORT DECLARATION, and that is the difference between the two
+    signals: a pipe whose read end the program itself closed is ordinary
+    modeled state, not a stance a task declares, so a run under plain
+    [Run.valid_input] can end in [KillEv 13].
+
+    TWO LAUNCH FACTS GATE IT, and they are pinned differently on
+    purpose.  [procst_channel_reader] is the ENVIRONMENT's -- whether
+    anything still reads descriptors 1 and 2 -- and [Run.valid_input]
+    CONSTRAINS NEITHER VALUE, so every statement covers both worlds.
+    [procst_sigpipe_default] is the TASK's -- whether SIGPIPE is still
+    at SIG_DFL -- and [Run.valid_input] pins it to [true], the world
+    every statement in this tree was written under; the other world is
+    [Run.valid_input_sigpipe_ignored], where this setter is never
+    reached because [raise_sigpipe] discards the signal. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)
@@ -3908,7 +4917,9 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          true (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -4072,6 +5083,32 @@ Definition pipe_write_room (st : PipeBuf) (n : Z) : bool :=
   match st with
   | ([], _) => (n <=? PIPE_BUF)%Z
   | (_ :: _, used) => (used + n <=? PIPE_BUF)%Z
+  end.
+
+(** MUST THIS WRITE ASK THE ALLOCATOR FOR A PAGE?  It is the same
+    split [pipe_write_room] above makes, read for the other thing that
+    turns on it, and in the band that guard admits it is exactly the
+    kernel's.
+
+    [anon_pipe_write] (fs/pipe.c, Linux v6.18.46) tries the MERGE path
+    first, under [if (chars && !was_empty)] (:478): it copies into the
+    page the last buffer already holds and allocates nothing.  An EMPTY
+    queue fails [!was_empty] and falls through to the ring loop, whose
+    first statement past [!pipe_full] is
+    [page = anon_pipe_get_page(pipe)] (:515) — a [pipe->tmp_page] cache
+    hit, or [alloc_page], which may come back NULL.  A NONEMPTY queue
+    under [pipe_write_room] carries [used >= 1] and [n <= PIPE_BUF -
+    used < PAGE_SIZE], so [chars] is the whole count, the merge's
+    [offset + chars <= PAGE_SIZE] holds, and the loop is never entered;
+    [ReadWrite.write_spec]'s pipe arm spells that argument out where it
+    uses it.
+
+    So this is [true] exactly where Linux can answer -ENOMEM before it
+    has copied a byte. *)
+Definition pipe_needs_page (st : PipeBuf) : bool :=
+  match st with
+  | ([], _) => true
+  | (_ :: _, _) => false
   end.
 
 (** The queue after appending [bs].  An empty queue restarts the mark at
@@ -4398,14 +5435,19 @@ Fixpoint reserved_top (maps : list (word * word)) : Z :=
 
 (** Subtract the half-open interval [lo, hi) from every mapping, keeping the
     parts that fall OUTSIDE it (each mapping may split into a left and/or a
-    right remnant, or vanish).  A [brk] SHRINK uses it in two deliberately
-    different ways (see [Mmap.brk_model_next]): [vm_maps] drops the logical,
-    byte-granular heap tail [new_break, old_break), preserving exact live-byte
-    budget accounting, while [vm_noaccess] drops only the page-rounded range
-    named by [Mmap.brk_unmaps].  The latter is the kernel's actual
-    [do_vmi_align_munmap] interval and is also what the running program sees
-    in [eff_unmaps].  Higher anonymous mmaps and lower mappings survive, and
-    one straddling record is truncated.
+    right remnant, or vanish).  A [brk] SHRINK uses it on both ledgers
+    over ONE range (see [Mmap.brk_model_next]): the page-rounded
+    [[PAGE_ALIGN(new_break), PAGE_ALIGN(old_break))] that
+    [Mmap.brk_unmaps] names, for [vm_maps] through
+    [Mmap.brk_unmap_cut] and for [vm_noaccess] through
+    [maps_subtract_ranges].  That range is the
+    kernel's actual [do_vmi_align_munmap] interval and is also what the
+    running program sees in [eff_unmaps].  Every entry is cut, not only
+    heap grants: an entry wholly inside it vanishes, and an
+    entry that straddles either end keeps the part outside, so more than
+    one record can be truncated.  An earlier revision cut [vm_maps] over
+    the logical tail [[new_break, old_break)] as well, which dropped
+    bytes Linux keeps mapped; [live_bytes] records what that cost.
     Arithmetic in [Z] over unsigned values (no wrapping); the remnant
     bases/sizes fit in 64 bits by construction, so the [Z_to_bv]
     round-trips are lossless.  The interval ENDPOINTS are taken in [Z]
@@ -4516,6 +5558,116 @@ Lemma bv_unsigned_Z_to_bv_u64 : forall z,
 Proof.
   intros z Hz. apply Z_to_bv_small.
   change (bv_modulus 64) with two_pow_64. exact Hz.
+Qed.
+
+(** THE vdso/vvar PAIR AS LEDGER ENTRIES, ending at [top].
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) asks [get_unmapped_area] for
+    [vdso_text_len + VVAR_SIZE] in one request, maps the vvar pages at
+    the bottom of what it gets and the text above them.  So the vvar
+    entry comes first and the text ends at [top].
+
+    [[]] WHEN THE PAIR WOULD NOT FIT above the first page: a ledger
+    whose [top] is that low describes no launch, and an entry at a
+    negative address is not a word.
+
+    They go in [vm_reserved] rather than [vm_maps] (the placement plan,
+    decision D4): the placement search, an in-place [mremap] grow and
+    MAP_FIXED_NOREPLACE all read [vm_reserved], while a whole [munmap]
+    of a [vm_maps] entry would SUCCEED, and Linux's answer to an
+    [munmap] of part of the pair is not that. *)
+Definition vdso_reserved (kb : KernelBuild) (top : Z) : list (word * word) :=
+  let base := (top - vdso_len kb)%Z in
+  if (base <? page_size)%Z then []
+  else [ (Z_to_bv 64 base, Z_to_bv 64 (vdso_vvar_pages * page_size));
+         (Z_to_bv 64 (base + vdso_vvar_pages * page_size),
+          Z_to_bv 64 (vdso_text_pages kb * page_size)) ].
+
+(** The pair lies inside [[top - vdso_len kb, top)] — what a proof
+    about the INITIAL ledger needs in order to say that a range below
+    the pair, or at or above [top], misses it. *)
+Lemma vdso_reserved_above : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  ((top - vdso_len kb <= bv_unsigned a)%Z
+   /\ (bv_unsigned a + bv_unsigned n <= top)%Z).
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    unfold two_pow_64 in *; lia.
+Qed.
+
+(** Every entry of the pair names at least one byte, so neither closes
+    a [region_free] gate over a range it holds no byte of (see
+    [entries_nonzero] below). *)
+Lemma vdso_reserved_nonzero : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z.
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
+Qed.
+
+(** The pair's width is a whole number of pages, which is what a
+    consumer needs to see that a page-aligned top leaves a page-aligned
+    base. *)
+Lemma vdso_len_page : forall kb, (vdso_len kb mod page_size = 0)%Z.
+Proof.
+  intro kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  apply Z_mod_mult.
+Qed.
+
+(** EVERYTHING A CONSUMER NEEDS ABOUT ONE ENTRY OF THE PAIR, in one
+    lemma: it names at least one byte, it starts and ends on a page,
+    and it lies inside [[top - vdso_len kb, top)].  The page-aligned
+    [top] is what [State.vdso_top] gives, and the room premise says the
+    pair fits above the first page, which is the condition under which
+    [vdso_reserved] emits anything at all. *)
+Lemma vdso_reserved_entry_ok : forall kb top a n,
+  (page_size + vdso_len kb <= top)%Z -> (top < two_pow_64)%Z ->
+  (top mod page_size = 0)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z
+  /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z
+  /\ (top - vdso_len kb <= bv_unsigned a)%Z
+  /\ (bv_unsigned a + bv_unsigned n <= top)%Z.
+Proof.
+  intros kb top a n Hroom Htop Hal Hin.
+  pose proof (vdso_text_pages_pos kb) as Hp.
+  pose proof (vdso_text_pages_le kb) as Hl.
+  pose proof (vdso_len_bounds kb) as Hb.
+  assert (Hdiv : (4096 | top)%Z)
+    by (apply Z.mod_divide; [lia | unfold page_size in Hal; exact Hal]).
+  unfold vdso_reserved, vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  destruct Hdiv as (q & Hq).
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    repeat split; try lia;
+    rewrite Hq; rewrite <- Z.mul_sub_distr_r || idtac;
+    try (apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096)%Z
+           with ((q - (4 + vdso_text_pages kb)) * 4096)%Z by lia;
+         apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096 + 4 * 4096)%Z
+           with ((q - vdso_text_pages kb) * 4096)%Z by lia;
+         apply Z_mod_mult).
 Qed.
 
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
@@ -4799,7 +5951,8 @@ Qed.
     length up), so this is the identity on the reachable domain; it is
     here so the bad state is unconstructible rather than merely unreached.
     An unaligned caller would record LESS than it asked for, which
-    over-charges — the safe direction. *)
+    over-charges: the model would refuse memory Linux grants (see
+    [live_bytes] for what that does to a statement). *)
 Definition lazy_interior (a n : word) : list (word * word) :=
   let lo := bv_unsigned a in
   let hi := (lo + bv_unsigned n)%Z in
@@ -5326,19 +6479,135 @@ Record ProcInput := mkProcInput_full {
 
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch
-       could present ([fs_seed_tmp_valid]). *)
+       could present ([fs_seed_tmp_valid]). *);
+  in_kernel : KernelBuild
+    (* THE ENVIRONMENT'S DECLARATION of the kernel build the process
+       was launched on: see [KernelBuild] for what it holds and why it
+       is an input rather than a field of the entry.  [init_model]
+       copies it into [vmst_kernel], where [m_kernel] reads it, and
+       [Sys/Mm/Mmap.linux_place] is its one consumer today.
+
+       [Run.valid_input] has NO clause naming it: every value of every
+       field names a build a launch could present.  [Run.valid_entry]
+       reads it too, to decide which stack tops, stack pointers and
+       mmap bases this launch can give *);
+  in_execfn : list byte
+    (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
+       Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.
+
+       It is on the input rather than on the entry because a statement
+       compares the two binaries on ONE input: a name per entry would
+       compare two binaries launched under different names, while the
+       bytes of the name sit on the initial stack of both.
+       [do_execveat_common] copies it FIRST
+       ([copy_string_kernel], then [bprm->exec = bprm->p]), so it
+       sits at the top of the string area and AT_EXECFN points at it
+       ([StackLayout.at_execfn_ptr]).  [Run.valid_execfn] says which
+       names [getname_flags] (fs/namei.c) and [alloc_bprm] can
+       produce, and [Run.valid_launch] counts its bytes against the
+       E2BIG limit of [bprm_stack_limits].
+
+       RESIDUAL: on Linux the name resolves to the image's file.  This
+       model holds the image's SEGMENTS, not its file, so [in_fs] need
+       not hold a file at this name, and a program that opens its own
+       AT_EXECFN gets [in_fs]'s answer.  SCOPE.md records it *);
+  in_channel_reader : bool
+    (* THE ENVIRONMENT'S DECLARATION of whether the far end of
+       descriptors 1 and 2 still has a reader.  [true]: a write to
+       stdout or stderr reaches something that reads it -- a terminal,
+       a file, a pipe whose reader is open.  [false]: the far end is a
+       pipe or a socket whose reader has gone, which is the state
+       `prog | head -1` leaves the writer in once `head` has had its
+       line.
+
+       WHY IT IS AN INPUT.  A channel descriptor is whatever the
+       launcher put there and the model carries no term for it, exactly
+       as it carries none for the launching uid or the blocked mask.
+       What makes this one matter is that the answer changes the
+       OUTCOME and not only a returned number: with no reader, Linux
+       raises SIGPIPE at the write ([anon_pipe_write], fs/pipe.c, for a
+       pipe; [sk_stream_error], net/core/stream.c, for a socket; Linux
+       v6.18.46, commit 1f99e9ab748f) and the process DIES, where the
+       model used to answer a byte count and let the program run on.
+
+       A LAUNCH FACT AND NOT A PER-CALL CHOICE, for the reason
+       [procst_utsname] is pinned rather than chosen afresh: a [choose]
+       at each write would admit a trace in which one write to stdout
+       finds a reader and the next does not with no close in between,
+       which no launch produces.  One run has one answer.
+
+       [Run.valid_input] PINS IT PRESENT -- the model pins the reader,
+       and names the reader-gone launch so a proof can ask for it:
+       every statement quantified
+       over the ordinary predicate is about the run whose standard
+       output is read, and the run that is the writing end of
+       `prog | head -1` after `head` has had its line is asked for by
+       name, [Run.valid_input_channel_closed], in the shape
+       [Run.valid_input_abort] has for the abort declaration.
+       [Run.valid_input_channel_either] pins neither reading, for a
+       statement that means both.
+
+       WHAT IS NOT OPEN: before this field the write arm ADMITTED a
+       byte count for the reader-less launch and let the program run
+       on, so every such statement was silently sound only for the
+       other one.  The field does not add that assumption, it makes it
+       sayable.  The one place the reader-present reading survives
+       unasked is [EquivalenceDefinition.FinInput.to_proc_input].
+
+       [init_model] copies this into [procst_channel_reader] and
+       nothing else writes it *);
+  in_sigpipe_default : bool
+    (* THE TASK'S DECLARATION of whether SIGPIPE is still at its
+       DEFAULT DISPOSITION when the program starts.  [true]: SIG_DFL,
+       so a delivery ends the process.  [false]: the launcher ran
+       `signal(SIGPIPE, SIG_IGN)` before execve, so the kernel never
+       delivers signal 13 at all and a reader-less write simply returns
+       -EPIPE.
+
+       WHY IT IS AN INPUT.  SIG_IGN SURVIVES EXECVE: fs/exec.c
+       [begin_new_exec] calls kernel/signal.c [flush_signal_handlers]
+       with [force_default = 0], which resets handlers but leaves
+       SIG_DFL and SIG_IGN alone (Linux v6.18.46, commit 1f99e9ab748f).
+       So the disposition the program runs under was decided by its
+       launcher, exactly as the launching uid and the blocked mask
+       were, and nothing inside the modeled surface can observe or
+       change it: [Kernel.Signal.rt_sigaction_spec] declines every
+       install for signal 13.  Ignoring SIGPIPE is what a service
+       manager, a shell wrapper and several language runtimes do.
+
+       [Run.valid_input] PINS IT TO [true], and that is settled where
+       the reader above is not.  The two fields gate the same death,
+       but this one is the TASK's stance and not the environment's, so
+       it is declared the way the abort stance is: [Run.valid_input] is
+       the ordinary launch, [Run.valid_input_sigpipe_ignored] is the
+       other world, and [Run.valid_input_sigpipe_either] asserts both.
+       Without the field every statement here would carry the SIG_DFL
+       launch as an UNSTATED premise, and a launcher that ignores
+       SIGPIPE would be handed a model that kills the process where
+       Linux returns -EPIPE and runs on.
+
+       [init_model] copies this into [procst_sigpipe_default] and
+       nothing else writes it *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the two ENVIRONMENT
-    fields at the end of the record ([in_urandom], [in_tmp]).
+(** THE POSITIONAL-LITERAL FORM: every field except the six
+    TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
+    [in_kernel], [in_execfn], [in_channel_reader],
+    [in_sigpipe_default]).
 
     The record's own constructor is [mkProcInput_full] and takes every
-    field.  This takes the first thirteen, in that order,
-    and fills the last two with THE DEFAULT RANDOM STREAM and
-    THE EMPTY /tmp: [default_urandom], which is zero bytes forever, and
-    a private /tmp that starts empty.  So a literal written through this
-    name denotes an input in an environment
-    that holds no file of its own.
+    field.  This takes the first thirteen, in that order, and fills the
+    last six with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER
+    and SIGPIPE AT SIG_DFL: [default_urandom], which is zero bytes
+    forever; a private /tmp that starts empty; [default_kernel], a
+    kernel built without transparent huge pages; [default_execfn], the
+    one-byte name "a"; [true], the reading every literal written before
+    [in_channel_reader] existed was already assuming; and [true] again,
+    the SIG_DFL launch [Run.valid_input] pins.  So a literal written
+    through this name denotes an input in an environment that holds no
+    file of its own, on an ordinary kernel, launched as "a", whose
+    standard output is read, and whose SIGPIPE still kills.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -5363,7 +6632,8 @@ Definition mkProcInput
     (nofile sigmask hwcap : word) (abort_terminal : bool)
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
-    nofile sigmask hwcap abort_terminal va_size default_urandom [].
+    nofile sigmask hwcap abort_terminal va_size default_urandom []
+    default_kernel default_execfn true true.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -5425,13 +6695,114 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    effective id differs — is not an input this model can state.
    ========================================================================= *)
 
+(** THE INITIAL RESERVED LEDGER: the image the kernel mapped, and the
+    vdso/vvar pair [execve] installed above it.
+
+    The pair ends at [vdso_top] of the ledger this very function
+    builds, which for [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase
+    sp] is [page_round_down_Z (Z.min mbase (sp - stack_max_size))].
+    Written out here rather than called on the finished model because
+    the model is what this term is building; [vm_reserved_init_model]
+    below states the two forms are the same. *)
+Definition init_reserved (reserved : list (word * word))
+    (mbase sp : word) (kb : KernelBuild) : list (word * word) :=
+  reserved
+  ++ vdso_reserved kb
+       (page_round_down_Z
+          (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+
+(** BUILT WITH ONE CONSTRUCTOR, not with a chain of [with_*] setters,
+    and that is a performance fact worth stating where it is easy to
+    undo.
+
+    Each [with_*] rebuilds [mkModelOf] from the projections of its
+    argument, so a chain of them denotes a term holding the PRODUCT of
+    their per-setter counts — not a power.  Only [with_nofile] takes
+    seven; a setter that rebuilds a sub-record takes more, because every
+    field of that record is another projection.  Counted at this commit,
+    over [init_model_setter_chain]'s seven links:
+
+      with_abort_terminal 17   with_sigmask 17   with_nofile  7
+      with_net             9   with_urandom  9   with_creds  17
+      with_kernel          9
+
+    17·17·7·9·9·17·9 = 25,071,039 copies of the innermost model, against
+    the 823,543 that "7^7" would give.  The kernel's conversion does not
+    share them.  A goal that reduces [init_model] TWICE — which is every
+    fixture that writes the term on both sides of an equation, as
+    [Checks.Cases.Prelude] does — then costs time exponential in the
+    chain's length.
+
+    MEASURED, five runs each, on [Checks.Cases.Prelude]'s
+    [fd_truncation_high_low_halves_all_ebadf], whose proof is
+    [repeat constructor; check_eq] and whose [constructor] asks the
+    kernel to convert the two sides.  A cold [.vo] for that one file and
+    a warm cone, in the release checker image
+    ([rc2-checker:1b59b23d],
+    [sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14]),
+    on a 16-vCPU machine, timed by Rocq's own [-time] line for the
+    Example's own sentences:
+
+    - the six-link chain this replaced, written out twice, at [ba8a152]:
+      437.6 to 445.6 s, mean 441.1 s — about 227 s in the tactic and
+      about 214 s in the [Qed];
+    - this definition, written out twice: 0.044 to 0.046 s, mean
+      0.0444 s.
+
+    A factor of 9,935.  The three figures this comment used to give —
+    0.012 s, "over 120 s" and 0.095 s — were not measurements of any
+    chain this tree holds: the first names a form that is not in the
+    tree, the second is a lower bound rather than a time, and neither it
+    nor the third names a machine.  The run behind them is unrecoverable;
+    these replace them.
+
+    [Strategy] does not fix it.  [Strategy 1000] on the constants the
+    chain reduces through leaves the same [Example] over its timeout:
+    conversion still has to reduce the term, and deprioritising an
+    unfolding does not make the copies share.  Flattening the term is
+    what removes them.
+
+    The two forms are equal by [reflexivity], so nothing that reads
+    this model changes: [m_vmmaps_init_model], [alloc_top_init],
+    [m_fs_init_model], [m_stdin_init_model] and
+    [m_sigabrt_pending_init_model] are all still closed by it.  A NEW
+    FIELD GOES HERE, beside the others, and not into a new setter
+    wrapped around the result. *)
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
-  with_abort_terminal (in_abort_terminal inp)
+  mkModelOf
+    (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+                 (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+                 (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
+    (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+                             [] [] brk0 brk0 lim mbase sp)
+               [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
+    (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
+    (mkFsState (in_fs inp))
+    (mkProcState None None
+       (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
+                (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
+       false (in_sigmask inp) false None false false false
+       (in_abort_terminal inp) [] false (in_channel_reader inp)
+       (in_sigpipe_default inp))
+    (mkLimState None (in_nofile inp))
+    (mkTimeState (Z_to_bv 64 0)).
+
+(** THE CHAIN THIS REPLACED, kept only so that the claim above — that
+    the flattening changes the term's shape and not its meaning — is a
+    THEOREM rather than a sentence.  Nothing else reads it.  A field
+    added to one form and not the other fails the build here, which is
+    the point of keeping it. *)
+Definition init_model_setter_chain (reserved : list (word * word))
+    (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
+  with_sigpipe_default (in_sigpipe_default inp)
+  (with_channel_reader (in_channel_reader inp)
+  (with_abort_terminal (in_abort_terminal inp)
   (with_sigmask (in_sigmask inp)
   (with_nofile (in_nofile inp)
    (with_net (in_net inp)
    (with_urandom (in_urandom inp)
+   (with_kernel (in_kernel inp)
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
@@ -5439,12 +6810,214 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-       (mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp)
+       (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+          [] [] brk0 brk0 lim mbase sp)
        (in_stdin inp)
        (in_fs inp)
        None
        None
-       None)))))).
+       None))))))))).
+Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
+  m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_init_model : model.
+
+Lemma vdso_top_init_model : forall reserved brk0 mbase sp lim inp,
+  vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = page_round_down_Z
+      (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
+Proof.
+  intros. unfold vdso_top, mmap_top, alloc_top. cbn.
+  apply page_round_down_Z_min_r.
+Qed.
+
+Lemma vm_reserved_init_model : forall reserved brk0 mbase sp lim inp,
+  vm_reserved (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = reserved
+    ++ vdso_reserved (in_kernel inp)
+         (vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))).
+Proof.
+  intros. rewrite vdso_top_init_model. reflexivity.
+Qed.
+
+(** THE KERNEL BUILD SURVIVES EVERY SETTER, because no step changes the
+    machine the run is on.  [with_kernel] is the one writer, and its one
+    caller is [init_model].  Registered in [model] so a proof that
+    reaches [m_kernel] through a stack of setters writes
+    [autorewrite with model] and names no field. *)
+Lemma m_kernel_with_kernel : forall kb m, m_kernel (with_kernel kb m) = kb.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_kernel : model.
+
+Lemma m_kernel_with_vmmaps : forall v m,
+  m_kernel (with_vmmaps v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vmmaps : model.
+
+Lemma m_kernel_with_vm_backing : forall lz mt m,
+  m_kernel (with_vm_backing lz mt m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vm_backing : model.
+
+Lemma m_kernel_with_fds : forall v m, m_kernel (with_fds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fds : model.
+
+Lemma m_kernel_with_pipes : forall v m, m_kernel (with_pipes v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_pipes : model.
+
+Lemma m_kernel_with_stdin : forall v m, m_kernel (with_stdin v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_stdin : model.
+
+Lemma m_kernel_with_urandom : forall v m,
+  m_kernel (with_urandom v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_urandom : model.
+
+Lemma m_kernel_with_net : forall v m, m_kernel (with_net v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_net : model.
+
+Lemma m_kernel_with_accepted : forall v m,
+  m_kernel (with_accepted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_accepted : model.
+
+Lemma m_kernel_with_fs : forall v m, m_kernel (with_fs v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fs : model.
+
+Lemma m_kernel_with_halted : forall v m, m_kernel (with_halted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_halted : model.
+
+Lemma m_kernel_with_killed : forall v m, m_kernel (with_killed v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_killed : model.
+
+Lemma m_kernel_with_tid : forall v m, m_kernel (with_tid v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_tid : model.
+
+Lemma m_kernel_with_rlimit_core : forall v m,
+  m_kernel (with_rlimit_core v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_rlimit_core : model.
+
+Lemma m_kernel_with_nofile : forall v m, m_kernel (with_nofile v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_nofile : model.
+
+Lemma m_kernel_with_utsname : forall v m,
+  m_kernel (with_utsname v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_utsname : model.
+
+Lemma m_kernel_with_statpin : forall p bs m,
+  m_kernel (with_statpin p bs m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_statpin : model.
+
+Lemma m_kernel_with_abort_terminal : forall v m,
+  m_kernel (with_abort_terminal v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_abort_terminal : model.
+
+(** The two launch declarations this revision added are setters of the
+    same kind, so they get the same row: the kernel build is not theirs
+    to change either. *)
+Lemma m_kernel_with_channel_reader : forall v m,
+  m_kernel (with_channel_reader v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_channel_reader : model.
+
+Lemma m_kernel_with_sigpipe_default : forall v m,
+  m_kernel (with_sigpipe_default v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_default : model.
+
+Lemma m_kernel_with_sigpipe_pending : forall m,
+  m_kernel (with_sigpipe_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_pending : model.
+
+Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_creds : model.
+
+Lemma m_kernel_with_setsid_succeeded : forall m,
+  m_kernel (with_setsid_succeeded m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_setsid_succeeded : model.
+
+Lemma m_kernel_with_children : forall m,
+  m_kernel (with_children m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_children : model.
+
+Lemma m_kernel_with_sigmask : forall v m,
+  m_kernel (with_sigmask v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigmask : model.
+
+Lemma m_kernel_with_sigaltstack_installed : forall m,
+  m_kernel (with_sigaltstack_installed m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigaltstack_installed : model.
+
+Lemma m_kernel_with_sigabrt_pending : forall m,
+  m_kernel (with_sigabrt_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigabrt_pending : model.
+
+Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_clock : model.
+
+Lemma init_model_is_the_setter_chain :
+  forall reserved brk0 mbase sp lim inp,
+    init_model reserved brk0 mbase sp lim inp
+    = init_model_setter_chain reserved brk0 mbase sp lim inp.
+Proof. reflexivity. Qed.
+
+(** AND THE CHECK THAT THE EQUALITY ABOVE IS NOT.  The lemma says the two
+    forms denote the same model; it says nothing about the SHAPE of
+    [init_model], which is the whole of the performance property.  Both
+    forms satisfy it, so a later edit that wraps the constructor in one
+    setter leaves that lemma true and restores the defect.
+
+    MEASURED, and this is why the check is here and not in a timer:
+    wrapping [init_model]'s body in ONE [with_abort_terminal] costs the
+    [Checks.Cases.Prelude] Example 0.009 s (0.053 s against 0.044 s) and
+    the whole file nothing at all -- 12.6 s either way.  The chain's cost
+    is in the NESTING, 0.053 s at one link and 441 s at six, so nothing
+    that watches a build time can see the first wrap.  Only the term's
+    shape can.
+
+    WHAT IT CATCHES: any wrapper around the whole body, whatever its name,
+    including the first.  WHAT IT DOES NOT: a setter applied inside one
+    FIELD of the [mkModelOf] below, and any other definition that could
+    blow up the same way -- it is about the shape of this one definition
+    and nothing else.
+
+    It costs about a millisecond and needs no CI step: [cbv delta] unfolds
+    [init_model] once, [beta] reduces the application, and the match looks
+    only at the head.  Nothing is computed. *)
+Section InitModelIsOneConstructor.
+Variables (reserved : list (word * word)) (brk0 mbase sp : word)
+          (lim : Z) (inp : ProcInput).
+Goal True.
+  let t := eval cbv delta [init_model] beta in
+             (init_model reserved brk0 mbase sp lim inp) in
+  lazymatch t with
+  | mkModelOf _ _ _ _ _ _ _ => idtac
+  | _ => fail 0 "init_model is not one mkModelOf application: a new field goes beside the others in it, never into a setter wrapped around the result (see the comment above this Section)"
+  end.
+  exact I.
+Qed.
+End InitModelIsOneConstructor.
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
@@ -8138,7 +9711,8 @@ Proof. reflexivity. Qed.
 
 Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp lim inp,
   m_vmmaps (init_model reserved brk0 mbase sp lim inp) =
-  mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp.
+  mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+    [] [] brk0 brk0 lim mbase sp.
 Proof. reflexivity. Qed.
 
 (** The grant bound of the model a run starts from, in the form the

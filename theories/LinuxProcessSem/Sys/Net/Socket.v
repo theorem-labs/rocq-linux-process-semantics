@@ -35,6 +35,31 @@ Open Scope sys_scope.
 Definition socket_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
 Definition accept_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
 
+(** Linux v6.18.46 net/socket.c [__sys_accept4_file] reserves a
+    descriptor before [do_accept] checks [sock_from_file].  Below
+    [Uapi.NR_OPEN_DEFAULT], fs/file.c [alloc_fd] needs no table
+    expansion, so -ENOMEM is out of reach there; -EMFILE stays possible
+    because this arm does not consult RLIMIT_NOFILE.  The capacity
+    bound is justified beside the non-socket arm in [accept4_spec].
+    Ported from main LPS (theorem-labs/linux-process-semantics) #1536,
+    commit 7cce061164. *)
+Definition accept_notsock_errnos : list Z := [EMFILE].
+
+(** [sock_alloc]'s own failure, the one errno that can preempt each
+    [inet_create] answer of [socket].  Ported from main LPS #1536,
+    commit 7cce061164. *)
+Definition socket_alloc_errnos : list Z := [ENFILE].
+
+(** Linux v6.18.46 net/socket.c [__sys_accept4_file] reaches descriptor
+    reservation, [sock_alloc] and [sock_alloc_file] before
+    net/ipv4/inet_connection_sock.c [inet_csk_accept] rejects a
+    non-listening socket.  Those sites yield -EMFILE, -ENOMEM and
+    -ENFILE.  In particular [sock_alloc_file] reaches fs/file_table.c
+    [alloc_file_pseudo] / [alloc_empty_file], whose allocation can
+    return -ENOMEM even below [Uapi.NR_OPEN_DEFAULT].  Ported from main
+    LPS #1536, commit 7cce061164. *)
+Definition accept_notlisten_errnos : list Z := [EMFILE; ENOMEM; ENFILE].
+
 (** [bind] and [listen] both reach [inet_csk_get_port], whose every
     failure — an exhausted net.ipv4.ip_local_port_range, or a bind-bucket
     allocation failure — is reported as -EADDRINUSE: the function
@@ -141,18 +166,25 @@ Definition INADDR_ANY : Z := 0%Z.
     every validation errno above preempts -EMFILE, and the injected
     failure set attaches to the SUCCESS path alone.
 
-    THE NARROWING, the same one [openat_spec] carries: [sock_alloc] can
-    fail with -ENFILE after the family and type checks but before
-    [inet_create], so Linux can answer -ENFILE where this spec insists
-    on -EINVAL/-EPROTONOSUPPORT/-ESOCKTNOSUPPORT.  That admits fewer
-    behaviors than Linux, never more.
+    THE -ENFILE BESIDE EACH [inet_create] ANSWER, ported from main LPS
+    (theorem-labs/linux-process-semantics) #1536, commit 7cce061164.
+    [__sock_create] (net/socket.c, Linux v6.18.46, commit 1f99e9ab748f)
+    checks the family and the type ranges and then calls [sock_alloc],
+    which can fail with -ENFILE BEFORE [inet_create] reads the protocol
+    range or walks [inetsw].  So each answer of steps 4 and 5 above has
+    an -ENFILE alternative, and this spec admits it rather than
+    insisting on the validation errno alone.  Steps 2 and 3 keep their
+    single answer: they precede [sock_alloc].  Descriptor allocation in
+    [sock_map_fd] follows creation, so -EMFILE joins none of these
+    arms.
 
     WHAT IS DECLINED, and why:
     - [SOCK_NONBLOCK] in the flags sets O_NONBLOCK on the new file, and
       the model has no notion of a non-blocking fd.  ([SOCK_CLOEXEC] is
       accepted and ignored, as [openat_spec] does for O_CLOEXEC: it
-      touches only the descriptor's close-on-exec bit, and there is no
-      execve here.)
+      touches only the descriptor's close-on-exec bit, there is no
+      execve here, and [Fs.Fcntl.fcntl_spec]'s F_GETFD admits both
+      values of the bit.)
     - Every family but AF_INET.  Whether an in-range family is
       registered is a property of the kernel build, so neither success
       nor -EAFNOSUPPORT can be asserted.
@@ -198,7 +230,8 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          protocol Linux never rejects.  The rewrite is conditional on the
          family, which is why this sits below the AF_INET test: under any
          other in-range family SOCK_PACKET is declined by that test. *)
-    else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro) then err_ret EINVAL
+    else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro)
+    then alt (err_ret EINVAL) (e <- errno_from socket_alloc_errnos ;; err_ret e)
     else if Z.eqb ty SOCK_STREAM then
       (* The BUILT-IN [inetsw_array] holds exactly
          {SOCK_STREAM, IPPROTO_TCP} for this type.  Protocol 0 takes the
@@ -220,7 +253,7 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          protocol 0 still wildcards to TCP however many modules load. *)
       if orb (Z.eqb pro IPPROTO_SCTP) (Z.eqb pro IPPROTO_MPTCP) then unmodeled
       else if negb (orb (Z.eqb pro IPPROTO_IP) (Z.eqb pro IPPROTO_TCP))
-      then err_ret EPROTONOSUPPORT
+      then alt (err_ret EPROTONOSUPPORT) (e <- errno_from socket_alloc_errnos ;; err_ret e)
       else
         alt (e <- errno_from socket_errnos ;; err_ret e)  (* no free fd, or an untracked failure *)
             (fd <- lowest_fd (m_fds m) ;;                 (* success: the lowest free fd, as Linux *)
@@ -238,10 +271,43 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          registers a SOCK_SEQPACKET entry and net/dccp registers a
          SOCK_DCCP one, so [inetsw[ty]] is empty for these two only on a
          kernel that builds neither. *)
-    else err_ret ESOCKTNOSUPPORT.        (* [inetsw[ty]] is empty for every remaining type
+    else alt (err_ret ESOCKTNOSUPPORT) (e <- errno_from socket_alloc_errnos ;; err_ret e).
+                                         (* [inetsw[ty]] is empty for every remaining type
                                             (0, 4, 7, 8 and 9): no in-tree AF_INET protocol
                                             registers one, so the walk never runs and the
-                                            pre-loop -ESOCKTNOSUPPORT stands *)
+                                            pre-loop -ESOCKTNOSUPPORT stands.  The -ENFILE
+                                            beside it is [sock_alloc]'s; the argument for it
+                                            is on [socket_alloc_errnos] above *)
+
+(** [move_addr_to_kernel]'s COPY STEP, zero length included
+    (net/socket.c, [move_addr_to_kernel]).  That function is
+    [if (ulen < 0 || ulen > sizeof(struct sockaddr_storage)) return -EINVAL;
+     if (ulen == 0) return 0;
+     if (copy_from_user(kaddr, uaddr, ulen)) return -EFAULT;],
+    so the ZERO LENGTH RETURNS BEFORE [copy_from_user] RUNS and the
+    pointer is never examined: [connect(fd, p, 0)] cannot be -EFAULT for
+    any [p] at all.
+
+    THE ZERO CASE CANNOT BE LEFT TO [State.copy_bytes_map], which is why
+    this definition exists rather than a bare call.  [State.access_okb a
+    0] is [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE - 0)],
+    FALSE for every [a] above [State.TASK_SIZE] — the kernel's
+    [__access_ok] says the same, and Linux agrees with it everywhere the
+    zero-length copy is actually attempted (the per-segment
+    [access_ok(iov_base, 0)] of [__import_iovec] is exactly that case).
+    Here it is not attempted, so routing the zero through the pair would
+    answer -EFAULT on a call Linux never faults.
+
+    [bind_spec] below answers its zero length from its own arm, above
+    the copy, because on that path the kernel's buffer stays untouched
+    and [inet_bind_sk]'s 16-byte minimum is the whole answer; it records
+    no ledger either.  [connect]'s zero length has no single answer —
+    -ENOTSOCK on a non-socket descriptor, -EINVAL on a socket — so it
+    passes through this definition and is decided by the arms below the
+    copy, with an empty byte list and an empty ledger. *)
+Definition move_addr_bytes (mp : word -> option byte) (a : word) (len : Z)
+    : option (list byte) :=
+  if Z.eqb len 0 then Some [] else copy_bytes_map mp a len.
 
 (** [bind fd addr addrlen].
 
@@ -313,7 +379,29 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
         (* nothing is copied and nothing faults; [inet_bind_sk] then
            rejects the zero length *)
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      (* THE RANGE TEST COMES FIRST, and [State.copy_bytes_map] is that
+         pair — [State.access_okb] and then the walk — spelled once.
+         [socketpair_dest_writable] below puts the same test first for
+         the same reason, and its note carries the long argument.
+
+         WHAT THIS ARM DID BEFORE.  It called [State.read_bytes_map]
+         bare.  That walk advances in WORD arithmetic and WRAPS at 2^64,
+         so an [addrp] in the last [al] bytes of the address space read
+         the bytes below the wrap and then the bytes from 0 on, answered
+         [Some], and this spec JUDGED the call on them — a wrong answer,
+         not a decline.  Linux refuses the range before it moves a byte:
+         [move_addr_to_kernel] (net/socket.c, [move_addr_to_kernel])
+         copies with [copy_from_user], whose [access_ok] sums the
+         address and the size in full width and rejects a range that
+         passes the top of the address space
+         (include/asm-generic/access_ok.h, [__access_ok]), so the call
+         is -EFAULT.  Nothing upstream constrains [addrp]: the two arms
+         above read only [addrlen].
+
+         So the -EFAULT arm below is BOTH the refused range and the
+         failed walk, which is exactly what Linux's one
+         [copy_from_user] test gives. *)
+      match copy_bytes_map (in_mem i) addrp al with
       | None => err_ret EFAULT                   (* copy_from_user failed: real -EFAULT *)
       | Some bs =>
           (* PAST THE COPY.  [move_addr_to_kernel] (net/socket.c) is
@@ -562,9 +650,17 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
       and the reset surfaces as -ECONNRESET on the first read.  That is
       exactly a connection whose script begins with [NRst].
 
-    A NARROWING, openat's again: for a non-socket fd, and for a socket
-    that is not listening, this spec insists on -ENOTSOCK / -EINVAL
-    where Linux could answer -EMFILE first. *)
+    THE ALLOCATION ERRNOS BESIDE THE TWO REFUSALS, ported from main LPS
+    (theorem-labs/linux-process-semantics) #1536, commit 7cce061164.
+    [__sys_accept4_file] (net/socket.c, Linux v6.18.46, commit
+    1f99e9ab748f) reserves a descriptor before [do_accept] reaches
+    [sock_from_file], and reaches [sock_alloc] and [sock_alloc_file]
+    before [inet_csk_accept] rejects a non-listening socket.  So the
+    non-socket arm admits [accept_notsock_errnos] beside -ENOTSOCK and
+    the non-listening arm admits [accept_notlisten_errnos] beside
+    -EINVAL; each list carries which sites it comes from.  The -EBADF
+    of a closed fd keeps its single answer: [fdget] precedes every one
+    of those sites. *)
 Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
   m <- get_model ;;
   let _ := addrlenp in                           (* untouched while [addrp] is NULL *)
@@ -606,9 +702,26 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
                                                 (conn_channel (m_conn_ix m))
                                                 (nq_script (m_net m)))))) ;;
                    ret_only nfd)
-          | _ => err_ret EINVAL                  (* [inet_csk_accept]: not TCP_LISTEN *)
+          | _ => alt (err_ret EINVAL)
+                     (er <- errno_from accept_notlisten_errnos ;; err_ret er)
+                                                 (* [inet_csk_accept]: not TCP_LISTEN, or one
+                                                    of the allocation errnos that precede it *)
           end
-      | _ => err_ret ENOTSOCK
+      | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
+             then unmodeled
+               (* Linux v6.18.46 (commit 1f99e9ab748f), fs/file.c [alloc_fd]
+                  reaches [expand_files], the -ENOMEM source on this path,
+                  only at fd >= the current [max_fds].  The capacity floor
+                  is include/linux/fdtable.h [NR_OPEN_DEFAULT] (64 here;
+                  the floor argument is on [Uapi.NR_OPEN_DEFAULT]).
+                  Reaching 64 is necessary, not sufficient, for expansion:
+                  an open fd 64 or 100 already forces capacity beyond a
+                  lowest free fd of 65 or 64, and the model carries no
+                  table-capacity history.  Below 64, capacity >= 64 >=
+                  [alloc_fd] + 1, so no expansion runs and the errno list
+                  below is exactly [alloc_fd]'s own.  Fail closed above *)
+             else alt (err_ret ENOTSOCK)
+                      (er <- errno_from accept_notsock_errnos ;; err_ret er)
       end
   end.
 
@@ -658,10 +771,16 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
     1. [move_addr_to_kernel]: [ulen < 0 || ulen > sizeof(struct
        sockaddr_storage)] (128) is -EINVAL; [ulen == 0] copies NOTHING
        and returns 0; otherwise a failed [copy_from_user] is -EFAULT.
-       A zero length needs no special case for the READ — [read_bytes_map]
-       at length 0 is [Some []] whatever the pointer, which is exactly
-       "copies nothing, cannot fault" — and the empty address then fails
-       step 3's 2-byte minimum.  It does need one for the LEDGER: a
+       A zero length DOES need a special case for the READ, and
+       [move_addr_bytes] above is it: this arm no longer calls
+       [State.read_bytes_map], it calls [State.copy_bytes_map], whose
+       [State.access_okb a 0] is FALSE for every [a] above
+       [State.TASK_SIZE] -- so routing the zero through it would answer
+       -EFAULT on a call Linux never faults.  [move_addr_bytes] answers
+       [Some []] at length 0 before reaching the pair; see its own note
+       above ("THE ZERO CASE CANNOT BE LEFT TO [State.copy_bytes_map]").
+       The empty address then fails step 3's 2-byte minimum.  It needs a
+       special case for the LEDGER too: a
        zero-length address reads no user byte, so it records an empty
        ledger rather than a singleton zero-length range, as
        [ReadWrite.write_spec] does for a zero-length write.
@@ -845,7 +964,24 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
       let al := sint32 addrlen in
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      (* THE RANGE TEST COMES FIRST — the same [State.copy_bytes_map]
+         pair [bind_spec] above uses, through the same kernel function,
+         reached through [move_addr_bytes] so that a ZERO length
+         returns the empty address WITHOUT asking the range question,
+         as [move_addr_to_kernel]'s [if (ulen == 0) return 0] does.
+         This arm called [State.read_bytes_map] bare before, and that
+         walk WRAPS at 2^64 in word arithmetic: an [addrp] in the last
+         [al] bytes of the address space read the bytes below the wrap
+         and then the bytes from 0 on, and the spec answered -ENOTSOCK,
+         -EINVAL, -EAFNOSUPPORT or a success on them — a wrong answer,
+         not a decline.  [move_addr_to_kernel] (net/socket.c,
+         [move_addr_to_kernel]) copies with [copy_from_user], whose
+         [access_ok] rejects a range that passes the top of the address
+         space (include/asm-generic/access_ok.h, [__access_ok]), so
+         Linux answers -EFAULT — and it answers it BEFORE -ENOTSOCK,
+         which is why the refused range joins this -EFAULT arm and not
+         a later one. *)
+      match move_addr_bytes (in_mem i) addrp al with
       | None => err_ret EFAULT                   (* copy_from_user failed, BEFORE -ENOTSOCK *)
       | Some bs =>
           record_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])
@@ -1234,10 +1370,29 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
     dispatches on the level, or NOTHING when that range is not wholly
     readable and [copy_from_user] therefore moved none of it.  One
     definition for the spec, the checker and the witness so the three
-    cannot drift apart. *)
+    cannot drift apart.
+
+    THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
+    [State.access_okb]-then-walk pair [socketpair_dest_writable] below
+    spells for its destination.  This definition called
+    [State.read_bytes_map] bare before, and that walk WRAPS at 2^64 in
+    word arithmetic: an [optlenp] in the last four bytes of the address
+    space read those bytes and then the bytes from 0 on, said [Some],
+    and the ledger then CLAIMED four bytes had left user memory on a
+    call where Linux moved none — a wrong answer about the copy, not a
+    decline.  [do_sock_getsockopt] (net/socket.c, [do_sock_getsockopt])
+    reads [optlen] with [copy_from_sockptr], which on a user pointer is
+    [copy_from_user] (include/linux/sockptr.h,
+    [copy_from_sockptr_offset]), and that tests [access_ok], which
+    rejects a range passing the top of the address space
+    (include/asm-generic/access_ok.h, [__access_ok]).  The errno does
+    not change — a faulting read here is discarded exactly like a
+    successful one — so what the old behaviour got wrong was the
+    LEDGER, and [eff_copyins] charges a first touch against the backing
+    limit, so it charged a page the kernel never faulted in. *)
 Definition getsockopt_optlen_read (i : SyscallInput) (optlenp : word)
     : list (word * nat) :=
-  match read_bytes_map (in_mem i) optlenp (Z_to_bv 64 4) with
+  match copy_bytes_map (in_mem i) optlenp 4 with
   | Some _ => [(optlenp, 4%nat)]
   | None => []
   end.
@@ -1474,11 +1629,12 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      never allocates one, so [kill_fasync_rcu] takes its
      [if (!fown) goto next] and [send_sigio] -- whose own guard is
      [if (!pid) goto out_unlock_fown] -- is never entered.
-     [Fs.Fcntl.fcntl_spec] models EXACTLY THREE COMMANDS -- [F_SETFD],
-     the provably empty [F_SETFL] above, and an [F_GETFL] restricted to
-     the fd kinds [Fs.Fcntl.getfl_f_flags] can derive a flag word for --
-     and answers [unmodeled] for every other one; none of those ioctls
-     is in [Fs.Ioctl.tty_only_request].
+     [Fs.Fcntl.fcntl_spec] models EXACTLY FOUR COMMANDS -- [F_SETFD],
+     [F_GETFD] (answered 0 or FD_CLOEXEC, since the model does not
+     record the bit), the provably empty [F_SETFL] above, and an
+     [F_GETFL] restricted to the fd kinds [Fs.Fcntl.getfl_f_flags] can
+     derive a flag word for -- and answers [unmodeled] for every other
+     one; none of those ioctls is in [Fs.Ioctl.tty_only_request].
    - NO HANDLER CAN BE INSTALLED FOR EITHER SIGNAL, which is a third gate
      and not a restatement of the two above:
      [Kernel.Signal.sigaction_accepted] admits SIGINT and SIGTERM and
@@ -1487,19 +1643,22 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      not because the claim leans on it.
 
    THE CLAIM IS OVER TWO MODELED SETS, and that is the form to keep true:
-   {[F_SETFD], [F_SETFL], [F_GETFL]} for fcntl, and
+   {[F_SETFD], [F_GETFD], [F_SETFL], [F_GETFL]} for fcntl, and
    [Fs.Ioctl.tty_only_request] for ioctl.  ADDING A COMMAND TO EITHER
    BREAKS THIS SENTENCE -- an [F_SETOWN] arm, an [F_SETFL] that admitted
    FASYNC, or a FIOASYNC arm reopens the route directly.  [F_GETFL]
    clears both gates:
    fs/fcntl.c [do_fcntl]'s arm for it is [err = filp->f_flags; break;],
    whose whole body is that load, so it calls neither [sock_fasync] nor
-   [file_f_owner_allocate].  Reaching one of those two functions is the
-   test a new arm has to be put to; being a read is not the test, and
-   the check is per arm rather than per shape.
+   [file_f_owner_allocate].  [F_GETFD] clears them the same way: its arm
+   is [err = get_close_on_exec(fd) ? FD_CLOEXEC : 0; break;], a test of
+   one fd-table bit with no side effect, so it calls neither function
+   whichever answer it gives.  Reaching one of those two
+   functions is the test a new arm has to be put to; being a read is
+   not the test, and the check is per arm rather than per shape.
 
    Only the FASYNC step is mechanized.  The command-set step is prose
-   because a "[fcntl_spec] answers [unmodeled] outside these three
+   because a "[fcntl_spec] answers [unmodeled] outside these four
    commands" lemma has to invert the [Monad.Sys]
    relation, which needs [Checks.Sys.Prelude]'s [sys_unfold] and
    [inv_ok]; Checks sits ABOVE Sys, so that lemma's home is
@@ -1839,15 +1998,17 @@ Definition MSGHDR_SIZE : Z := 56%Z.
     ([copy_from_user] of the whole 56 bytes, before any field is read);
     a [msg_iovlen] above UIO_MAXIOV is -EMSGSIZE, which is
     [__copy_msghdr]'s own errno and NOT [writev]'s -EINVAL; and past
-    that the call is [writev]'s gather on the connection, sharing
-    [State.copy_iovecs_aux] so that an unreadable descriptor is -EFAULT
-    and a negative [iov_len] is -EINVAL, whichever comes first by index.
+    that the call is [writev]'s gather on the connection, through the
+    same [State.import_iovecs] readv and writev use, so that an
+    unreadable descriptor is -EFAULT and a negative [iov_len] is
+    -EINVAL, whichever comes first by index, and so that the array's
+    own [access_ok] and the per-segment one are asked here too.
 
     THE LEDGER IS EVERY BYTE THE KERNEL REALLY READ, in the order it
     read them: the 56-byte header first — recorded from the point
     [copy_from_user] SUCCEEDED, so the -EFAULT above carries nothing —
     then the descriptor array as far as
-    [State.copy_iovecs_accesses] walked it, then the payload prefix the
+    [State.import_iovecs_accesses] walked it, then the payload prefix the
     send actually moved.  The -EMSGSIZE arm therefore carries the header
     alone and the two import errnos carry the header and the descriptors
     they touched, which is what makes those three answers distinguishable
@@ -1898,7 +2059,26 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
                                   two device kinds all fail it *)
       err_ret ENOTSOCK
   | Some (FdSocket sk) =>
-  match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
+  (* THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
+     [State.access_okb]-then-walk pair [socketpair_dest_writable] below
+     spells for its destination.  This arm called [State.read_bytes_map]
+     bare before, and that walk WRAPS at 2^64 in word arithmetic: a
+     [msgp] in the last 56 bytes of the address space read the bytes
+     below the wrap and then the bytes from 0 on, said [Some], and the
+     six field reads below then decoded a header out of them and the
+     spec ANSWERED the call — a wrong answer, not a decline.  Linux
+     refuses the range: [copy_msghdr_from_user] (net/socket.c,
+     [copy_msghdr_from_user]) opens with
+     [if (copy_from_user(&msg, umsg, sizeof(struct user_msghdr)))
+     return -EFAULT;] — the kernel writes that size as [sizeof] of the
+     pointee —
+     and [copy_from_user]'s [access_ok] sums the address and the size
+     in full width and rejects a range that passes the top of the
+     address space (include/asm-generic/access_ok.h, [__access_ok]).
+     The six [State.read_u64]s below need no test of their own: they
+     sit at offsets 0 to 40 of a range this one has already accepted
+     whole. *)
+  match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
   | None => err_ret EFAULT     (* copy_from_user of the header: real -EFAULT *)
   | Some _ =>
       (* Six of the seven fields.  [msg_flags] at offset 48 is READ BY
@@ -1928,16 +2108,40 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
           else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then unmodeled
             (* the heap-backed range: see [Fs.ReadWrite.readv_heap_gap] *)
           else
-          match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
+          (* THE IMPORT IS [State.import_iovecs], NOT THE BARE ARRAY WALK,
+             and that is the second half of this arm's range question.
+             [State.copy_iovecs_aux] walks the descriptor array at [iov]
+             in WORD arithmetic with no test in front of it, and
+             [State.writev_gathered] then walks each [iov_base] the same
+             way; an [iov] in the last [16 * iovlen] bytes of the
+             address space, or a base in the last [iov_len] bytes, read
+             past the top and back in at 0 and this arm ANSWERED on what
+             it found — -EFAULT, -EINVAL or a delivering send — where
+             Linux answers -EFAULT and moves nothing.  Linux tests both:
+             [copy_iovec_from_user] opens with [user_access_begin] over
+             the whole array (lib/iov_iter.c, [copy_iovec_from_user]),
+             and [__import_iovec]'s loop applies [access_ok] to every
+             segment on its UNCAPPED length (lib/iov_iter.c,
+             [__import_iovec]), both through [__access_ok]
+             (include/asm-generic/access_ok.h, [__access_ok]).
+             [State.import_iovecs] is exactly those two tests around the
+             same walk, with [__import_iovec]'s [nr_segs == 1]
+             short-circuit — [import_ubuf], which caps to MAX_RW_COUNT
+             BEFORE its [access_ok] — kept, so a one-segment send is
+             still judged the way Linux judges it rather than being
+             refused on an uncapped length.  readv and writev have gone
+             through this function all along; the note at
+             [State.import_iovecs] no longer has a sendmsg exception to
+             record. *)
+          match import_iovecs (in_mem i) iov iovlen with
           | ImpFault =>
               record_copyins ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                              ++ copy_iovecs_accesses (in_mem i) iov
-                                   (word_to_nat iovlen))
-                (err_ret EFAULT)                 (* unreadable descriptor *)
+                              ++ import_iovecs_accesses (in_mem i) iov iovlen)
+                (err_ret EFAULT)                 (* unreadable descriptor, or a
+                                                    range [access_ok] refuses *)
           | ImpInval =>
               record_copyins ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                              ++ copy_iovecs_accesses (in_mem i) iov
-                                   (word_to_nat iovlen))
+                              ++ import_iovecs_accesses (in_mem i) iov iovlen)
                 (err_ret EINVAL)                 (* iov_len negative as ssize_t *)
           | ImpOk iovs0 =>
               if negb (w_is0 ctllen) then unmodeled
@@ -1967,7 +2171,7 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
               else
               send_on_socket
                 ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                 ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                 ++ import_iovecs_accesses (in_mem i) iov iovlen)
                 (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                 fd sk
                 (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
