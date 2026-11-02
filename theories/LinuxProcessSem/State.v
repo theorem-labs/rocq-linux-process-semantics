@@ -4354,6 +4354,9 @@ Record ProcState := mkProcState {
                                     clears it), so the [false] is an ASSUMPTION
                                     about the launcher -- it did not set the bit
                                     before its [execve] -- and SCOPE.md lists it.
+                                    A container started with no_new_privs
+                                    (Kubernetes allowPrivilegeEscalation: false)
+                                    does not meet it.
                                     Set by [prctl(PR_SET_NO_NEW_PRIVS)] and read
                                     by [prctl(PR_GET_NO_NEW_PRIVS)]
                                     ([Kernel.Sys.prctl_spec]); nothing clears it.
@@ -4375,12 +4378,17 @@ Record ProcState := mkProcState {
                                     alike).  READ IT THROUGH [m_dumpable].
 
                                     1 AT LAUNCH ([init_model]): [begin_new_exec]
-                                    (fs/exec.c) sets [SUID_DUMP_USER] for an exec
-                                    that raised no privilege, and [suid_dumpable]
-                                    for one that did.  So the 1 is an ASSUMPTION
-                                    about the launch -- the program was not
-                                    setuid or setgid and gained no capability --
-                                    and SCOPE.md lists it.  Written by
+                                    (fs/exec.c) sets [SUID_DUMP_USER] unless the
+                                    executable is not readable by the launching
+                                    user ([would_dump]) or the effective ids
+                                    differ from the real ones, and
+                                    [suid_dumpable] in those cases; an exec that
+                                    gains a capability gets [suid_dumpable] from
+                                    [commit_creds].  So the 1 is an ASSUMPTION
+                                    about the launch -- the program is readable
+                                    by its user, not setuid or setgid, and gains
+                                    no capability -- and SCOPE.md lists it.
+                                    Written by
                                     [prctl(PR_SET_DUMPABLE)] (0 or 1 only) and by
                                     [commit_creds] (kernel/cred.c), which installs
                                     the build's [kb_suid_dumpable] when a call

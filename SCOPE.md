@@ -427,12 +427,15 @@ not apply.
   exec), so for such a launch the first `prctl(PR_GET_PDEATHSIG)` reads
   the launcher's signal, which the model refuses.
 - The launcher set no no-new-privs bit before its `execve`, and the exec
-  that started the process raised no privilege. The model starts the bit
-  false (`State.m_no_new_privs_init_model`) and the dumpable mode 1
-  (`State.m_dumpable_init_model`); `execve` keeps a bit the launcher set,
-  and `begin_new_exec` (`fs/exec.c`, v6.18.44) gives a setuid or setgid
-  exec, or one that gained a capability, the build's `fs.suid_dumpable`
-  instead of 1.
+  that started the process raised no privilege and could read its own
+  binary. The model starts the bit false (`State.m_no_new_privs_init_model`)
+  and the dumpable mode 1 (`State.m_dumpable_init_model`). `execve` keeps a
+  bit the launcher set (a container started with no_new_privs, as
+  Kubernetes' `allowPrivilegeEscalation: false` does, starts with it set).
+  `begin_new_exec` (`fs/exec.c`, v6.18.44) gives the build's
+  `fs.suid_dumpable` instead of 1 to an exec whose binary the launching user
+  cannot read (`would_dump`) or whose effective ids differ from the real
+  ones, and `commit_creds` does to one that gained a capability.
 - The process runs in the init user namespace, under the capability
   LSM alone, with the capability state `State.creds_privileged`
   describes. The credential calls, `getresuid`, `getresgid`, `getsid`,
