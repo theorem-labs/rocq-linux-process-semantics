@@ -20,6 +20,11 @@
     - new descriptors the namespace model does not hold: [eventfd2] 19,
       [pipe2] 59 (the lowest free descriptor: a live descriptor of the
       namespace model is in the table, so it is never reused);
+    - [writev] 66 on a descriptor of the released model, the standard
+      channels among them, where a program's stdio output goes through
+      musl's [__stdio_write] ([Common.LibWritev]); on a descriptor of the
+      namespace model ([FdOpaque]) the released arm declines, as it does
+      every opaque descriptor;
     - [exit] 93 and [exit_group] 94.  LIMIT: when the task is pid 1 of a
       pid namespace the model made, Linux also kills every other task of
       that namespace ([zap_pid_ns_processes], kernel/pid_namespace.c); this
@@ -47,7 +52,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Ext Arm.
 Import ListNotations.
 
 Definition pass_numbers : list Z :=
-  [19; 59; 93; 94; 98; 99; 101; 113; 114; 124; 132; 134; 135; 160; 169; 214; 215; 216; 222;
+  [19; 59; 66; 93; 94; 98; 99; 101; 113; 114; 124; 132; 134; 135; 160; 169; 214; 215; 216; 222;
    226; 233; 278]%Z.
 
 Definition pass_arms : list (Z * NsArm) := map (fun n => (n, released)) pass_numbers.
