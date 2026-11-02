@@ -186,14 +186,16 @@ Definition clone3_probe_uargs : word := Z_to_bv 64 0x10000.
     unreadable -- EXCEPT the one byte that makes [clone3]'s struct
     fork-shaped.
 
-    [clone3_spec] declines every size but [CLONE_ARGS_SIZE] and then every
-    struct but the one [Fork.clone3_fork_args_b] admits: all eleven fields
-    zero except [exit_signal] = SIGCHLD, which [Fork.clone_args_field]
-    reads from offset 32.  An all-NUL memory therefore gives
-    [exit_signal = 0] and the arm declines, so unlike every other entry
-    below this one cannot be fixed by choosing arguments -- the fixture
-    has to carry the struct.  Only that byte changes; every other address
-    still reads NUL. *)
+    [clone3_spec] declines every size but [CLONE_ARGS_SIZE], answers
+    -EFAULT for a [uargs] range [access_ok] refuses, and otherwise
+    declines every struct but the one [Fork.clone3_fork_args_b] admits:
+    all eleven fields zero except [exit_signal] = SIGCHLD, which
+    [Fork.clone_args_field] reads from offset 32.  An all-NUL memory
+    therefore gives [exit_signal = 0] and the arm declines.  A refused
+    address would reach the -EFAULT by registers alone, but that answer
+    stops before [kernel_clone]; this probe measures the RESOLUTION, so
+    unlike every other entry below the fixture has to carry the struct.
+    Only that byte changes; every other address still reads NUL. *)
 Definition probe_mem : word -> option byte :=
   fun a => Some (if bv_eqb a (clone3_probe_uargs + Z_to_bv 64 32)
                  then Z_to_bv 8 SIGCHLD
@@ -237,10 +239,14 @@ Definition probe_mem : word -> option byte :=
     - clock_gettime (113) declines the default CLOCKID: [a0] is a clock
       id here rather than an fd, and AT_FDCWD truncated to 32 bits is no
       modeled clock, so the arm declines before it reaches an answer.
+    - clock_getres (114) also needs a valid CLOCKID.  Its [tp] must be
+      non-NULL in this probe because [probe_mem] makes address zero
+      writable, and QEMU could copy the result there.
     - clone (220) declines the default FLAG WORD: [clone_fork_flags_b]
-      admits the single word SIGCHLD and nothing else.
+      admits the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
+      namespace bits, and AT_FDCWD is neither.
     - clone3 (435) declines the default SIZE and the default STRUCT: it
-      answers only [CLONE_ARGS_SIZE] bytes at a readable address holding
+      resolves only [CLONE_ARGS_SIZE] bytes at a readable address holding
       the fork-shaped [struct clone_args], which is why [probe_mem] above
       carries one.
     - wait4 (260) declines the default ARGUMENT WORDS, before anything
@@ -268,6 +274,11 @@ Definition probe_mem : word -> option byte :=
       follow — an arm that resolves an fd first answers -EBADF before the
       gated argument matters, and an arm that gates on an ARGUMENT VALUE
       declines and needs an entry.
+    - getsid (156) declines the default PID.  [a0] is a [pid_t], and
+      AT_FDCWD narrowed to 32 bits is -100, which names no task the model
+      knows: [Kernel.Sys.getsid_spec] answers only pid 0 and the caller's
+      own pinned tid.  With pid 0 and [probe_model]'s clear setsid bit it
+      reaches its fresh session id.
 
     THE RULE HAS AN EXCEPTION, and it is worth naming so that the next
     arm-that-reads-a0-as-a-value is not given an entry it does not need.
@@ -277,7 +288,19 @@ Definition probe_mem : word -> option byte :=
     default probe therefore reaches its -EINVAL rather than declining.
     What decides the question is not whether [a0] is an fd but whether
     the arm has an ERROR GATE the default value trips, which is the same
-    thing mprotect's paragraph above says about alignment.
+    thing mprotect's paragraph above says about alignment.  close_range
+    (436) is the same case: a0's AT_FDCWD narrows to 0xffffff9c, above
+    the default a1 of 0, so [Fs.File.close_range_spec] answers its
+    [fd > max_fd] -EINVAL.  getppid (173) reads no argument at all, and
+    setgroups (159) answers -EPERM on [probe_model]'s uid 1000 before it
+    reads one.
+    capget (90) and capset (91) need no entry for the same reason: [a0]
+    is the header POINTER, and AT_FDCWD read as an address lies above
+    [State.TASK_SIZE], so [access_ok] refuses the 4-byte version read
+    and both arms answer -EFAULT before any version or pid gate.
+    getresuid (148) and getresgid (150) need none either: [a0] is the
+    first destination POINTER, [access_ok] refuses AT_FDCWD's range for
+    its 4-byte store, and both arms answer -EFAULT with nothing stored.
 
     Add an entry when a newly listed syscall needs something else;
     leaving it out makes [modeled_sysnos_probes_answer] below fail to
@@ -292,6 +315,12 @@ Definition probe_args (n : Z) : list word :=
        the arm reaches the -EINVAL that is its only answer.  a0 stays 0
        because no [count] changes the verdict. *)
     [z; Z_to_bv 64 O_LARGEFILE; z; z; z; z]
+  else if Z.eqb n 156 then
+    (* getsid answers pid 0 -- the caller -- and the caller's own pinned
+       tid, and declines every other pid; the default [AT_FDCWD] in a0 is
+       the [pid_t] -100.  pid 0 on [probe_model], whose setsid bit is
+       clear, reaches the fresh session id. *)
+    [z; z; z; z; z; z]
   else if Z.eqb n 222 then
     (* mmap answers -EINVAL on a zero length only for an anonymous mapping *)
     [AT_FDCWD; z; z; Z_to_bv 64 (MAP_PRIVATE + MAP_ANONYMOUS); z; z]
@@ -311,6 +340,19 @@ Definition probe_args (n : Z) : list word :=
        and then the [usockvec] store, which [probe_mem] makes writable at
        0, so it answers.  a3 stays 0 for that reason. *)
     [Z_to_bv 64 AF_INET; Z_to_bv 64 SOCK_STREAM; z; z; z; z]
+  else if Z.eqb n 101 then
+    (* nanosleep reads its request at a0, and the default [AT_FDCWD] as an
+       address, [2^64 - 100], is a range [State.access_okb] refuses, so
+       the arm answers the -EFAULT [get_timespec64] gives -- an answer, so
+       the probe would pass, but on the gate rather than on the sleep.
+       4096 is inside the range test, and [probe_mem]'s zero bytes there
+       are the request [{0, 0}], which [timespec64_valid] accepts.  a1 is
+       the same 4096, the [nanosleep(&ts, &ts)] shape, so the remainder
+       destination's gate is passed too and the witness takes the
+       completed sleep.  [nanosleep_probe_reaches_the_sleep] below pins
+       that, and [nanosleep_refused_request_probe_answers_efault] keeps
+       the default registers' -EFAULT checked as a second probe. *)
+    [Z_to_bv 64 4096; Z_to_bv 64 4096; z; z; z; z]
   else if Z.eqb n 113 then
     (* clock_gettime dispatches on a CLOCKID, not an fd: AT_FDCWD truncated
        to 32 bits is no modeled clock, so the arm declines before it reaches
@@ -322,6 +364,9 @@ Definition probe_args (n : Z) : list word :=
        answers depend on [probe_model]'s clock; the realtime arm gates only
        on the destination, which [probe_mem] makes writable. *)
     [Z_to_bv 64 CLOCK_REALTIME; z; z; z; z; z]
+  else if Z.eqb n 114 then
+    (* The probe memory is writable at zero, so use a non-NULL [tp]. *)
+    [Z_to_bv 64 CLOCK_MONOTONIC; Z_to_bv 64 4096; z; z; z; z]
   else if Z.eqb n 98 then
     (* futex dispatches on the OP WORD, and the default a1 of 0 is
        [FUTEX_WAIT] without [FUTEX_PRIVATE_FLAG] -- a shared wait, which
@@ -336,23 +381,26 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 167 then
     (* prctl dispatches on an OPTION, not an fd: [AT_FDCWD] narrowed to 32
        bits is 0xffffff9c, which is no prctl option, so the arm declines
-       before it reaches an answer.  [PR_CAPBSET_READ] is the one option
-       [Kernel.Sys.prctl_modeled_options] carries, and a1 is the capability
-       number -- 0 is a capability at or below [CAP_LAST_CAP], so the arm
-       answers 1 rather than -EINVAL.  Which of the two answers this probe
-       reaches does not matter to the check, only that it reaches one. *)
+       before it reaches an answer.  [PR_CAPBSET_READ] is one of the five
+       options [Kernel.Sys.prctl_modeled_options] carries, and a1 is the
+       capability number -- 0 is a capability at or below [CAP_LAST_CAP]
+       and outside [Kernel.Sys.capbset_assumed], so the arm answers 0 or
+       1 rather than -EINVAL.  Which answer this probe reaches does not
+       matter to the check, only that it reaches one. *)
     [Z_to_bv 64 PR_CAPBSET_READ; z; z; z; z; z]
   else if Z.eqb n 220 then
     (* clone declines the default FLAG WORD: [clone_fork_flags_b] admits
-       the single word SIGCHLD and nothing else, so [AT_FDCWD] there is
-       [unmodeled] rather than an answer. *)
+       the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
+       namespace bits, so [AT_FDCWD] there is [unmodeled] rather than an
+       answer.  The fork word is the one probed. *)
     [Z_to_bv 64 SIGCHLD; z; z; z; z; z]
   else if Z.eqb n 435 then
     (* clone3 reaches [kernel_clone] through a struct in user memory
        rather than through registers, and declines every size but
-       [CLONE_ARGS_SIZE] and every struct but the fork-shaped one.  No
-       choice of registers alone reaches an answer; the struct lives in
-       [probe_mem] at [clone3_probe_uargs]. *)
+       [CLONE_ARGS_SIZE] and every struct but the fork-shaped one.  A
+       refused [uargs] answers -EFAULT without reaching [kernel_clone], so
+       the probe points at the struct [probe_mem] carries at
+       [clone3_probe_uargs] instead. *)
     [clone3_probe_uargs; Z_to_bv 64 CLONE_ARGS_SIZE; z; z; z; z]
   else if Z.eqb n 260 then
     (* wait4 decides on the ARGUMENT WORDS before it decides anything else:
@@ -436,6 +484,34 @@ Proof.
   | _ => fail "a number in Specs.modeled_sysnos has no answering dispatch arm -- add the arm, or give the number a probe_args entry if the default probe cannot reach its answer"
   end.
 Qed.
+
+(** What return a probe's witness reaches, for the entries whose point is
+    WHICH answer they reach and not only that they reach one. *)
+Definition probe_returns (i : SyscallInput) (m : Model) (r : word) : bool :=
+  match syscall_spec_witness i m with
+  | Ok eff _ _ => bv_eqb (eff_ret eff) r
+  | Unmodeled => false
+  end.
+
+(** nanosleep's probe reaches the completed sleep, past both range tests,
+    and not the -EFAULT gate its default registers stop at. *)
+Lemma nanosleep_probe_reaches_the_sleep :
+  probe_returns (probe_input 101) (probe_model_for 101) (Z_to_bv 64 0) = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The second nanosleep probe: the default registers, whose request at
+    [AT_FDCWD] is a range [State.access_okb] refuses, answer -EFAULT with
+    nothing read ([Kernel.Time.Hrtimer.nanosleep_spec]'s request note). *)
+Definition nanosleep_refused_probe_input : SyscallInput :=
+  mkInput (Z_to_bv 64 101)
+    [AT_FDCWD; Z_to_bv 64 0; Z_to_bv 64 0; Z_to_bv 64 0; Z_to_bv 64 0;
+     Z_to_bv 64 0]
+    probe_mem probe_mem.
+
+Lemma nanosleep_refused_request_probe_answers_efault :
+  probe_returns nanosleep_refused_probe_input probe_model (errno_ret EFAULT)
+  = true.
+Proof. vm_compute. reflexivity. Qed.
 
 (** The list holds genuine unsigned 64-bit syscall numbers, so a probe input
     really does carry the number it was built from. *)

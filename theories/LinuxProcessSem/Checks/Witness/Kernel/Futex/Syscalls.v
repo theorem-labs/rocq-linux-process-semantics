@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Futex.Syscalls — the futex (98) witness, and its proof
+(** * LinuxProcessSem.Checks.Witness.Kernel.Futex.Syscalls — the futex (98) and set_robust_list (99) witnesses
 
     Mirrors [Sys/Kernel/Futex/Syscalls.v], which answers to Linux
     [kernel/futex/syscalls.c]: this file holds the witnesses for the
@@ -15,6 +15,23 @@ Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude.
+
+(** The spec answers one outcome per length now that the -ENOSYS of QEMU
+    user mode is gone, so the witness reads [len] and exhibits that
+    outcome. *)
+Definition set_robust_list_witness (len : word) (m : Model)
+    : outcome SyscallEffect :=
+  if Z.eqb (bv_unsigned len) 24
+  then ret_outcome (Z_to_bv 64 0) m
+  else ret_outcome (errno_ret EINVAL) m.
+
+Lemma set_robust_list_witness_ok : forall len i m,
+  set_robust_list_spec len i m (set_robust_list_witness len m).
+Proof.
+  intros. unfold set_robust_list_spec, set_robust_list_witness.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    unfold err_ret, ret_only, ret_outcome; apply pure_ok.
+Qed.
 
 (** The gate is written out for the third time; [Checks/Sys/Fs/Timerfd]
     says why the three layers restate it rather than share one

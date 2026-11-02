@@ -55,18 +55,21 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
     holds one [machine_state] and one [Model], and no [Run.sstep] rule
     produces a second of either.  THAT IS NOT THE SAME AS THE CALLER
     HAVING NO CHILD.  [clone] (220) and [clone3] (435) are modeled, and
-    [Kernel.Fork.clone_resolve]'s success branch is exactly the
+    the success branches of [Kernel.Fork.clone_resolve] and
+    [Kernel.Fork.clone_ns_resolve] are exactly the
     operation that creates one: the child is never a configuration, but
     the FACT that the caller has one is, in [State.m_has_children].  So
     -ECHILD is carried by two things rather than by an absence.
 
-    - THE CREATING ARM RECORDS THE CHILD.  [clone_resolve] ends its pid
-      branch with [modify with_children], and
+    - THE CREATING ARMS RECORD THE CHILD.  [clone_resolve] and
+      [clone_ns_resolve] end their pid branch with
+      [modify with_children], and
       [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
-      is the universal statement of it, over every model, every
-      argument shape and every admissible resolution: an answer in
-      [Fork.clone_errnos] leaves the model untouched, and any other
-      answer leaves [m_has_children] set.
+      and [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
+      are the universal statements of it, over every model, every
+      argument shape and every admissible resolution: an errno answer
+      leaves the model untouched, and any other answer leaves
+      [m_has_children] set.
     - THIS SPEC READS WHAT THAT ARM WROTE.  The gate in the body below
       answers -ECHILD only while the field is clear, and yields
       [unmodeled] otherwise.  A caller with a child gets no answer here
