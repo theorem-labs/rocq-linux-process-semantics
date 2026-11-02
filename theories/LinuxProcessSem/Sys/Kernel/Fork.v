@@ -725,9 +725,11 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
     is not a thing this model holds — but the FACT that a child now
     exists is, because [Kernel.Exit.wait4_spec] answers -ECHILD only
     while no child has been created.  So the success branch, and only
-    the success branch, records it with [State.with_children]: the
-    errno alternative created nothing, and the [clone_no_shared_file_b]
-    decline never reaches a resolution at all.
+    the success branch, records it with [State.with_child]: the child
+    bit [State.with_children] sets, and the returned pid appended to
+    [State.procst_child_pids], the list a reap reads and removes from.
+    The errno alternative created nothing, and the
+    [clone_no_shared_file_b] decline never reaches a resolution at all.
 
     Without this call the pair is unsound in a way neither side's proofs
     can see — [wait4] would answer -ECHILD for a caller that has a
@@ -741,7 +743,7 @@ Definition clone_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_from clone_errnos ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify (with_child pid) ;;
          ret_only pid).
 
 (* =========================================================================
@@ -818,8 +820,8 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       its own namespace.  So the admitted pids are exactly
       [clone_resolve]'s: [clone_pid_ok_b], never 0.  And the caller now
       has a child, so the success branch records it with
-      [State.with_children], which [Kernel.Exit.wait4_spec]'s -ECHILD
-      reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
+      [State.with_child] (the child bit and the pid), which
+      [Kernel.Exit.wait4_spec]'s -ECHILD reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
       No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
       [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
       descriptors and [fs_struct] are not touched: [copy_creds],
@@ -860,7 +862,7 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_any ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify (with_child pid) ;;
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to

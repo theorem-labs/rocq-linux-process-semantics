@@ -431,11 +431,12 @@ Proof. vm_compute. reflexivity. Qed.
    What the computed states hold
    ========================================================================= *)
 
-(** The clone's answer is the pid with the child recorded, and nothing
-    else of the model moves. *)
+(** The clone's answer is the pid with the child recorded (the child
+    bit, and 320 in the list of unreaped children), and nothing else of
+    the model moves. *)
 Example parent_trace_clone_records_the_child :
-  parent_trace_s35 = with_children parent_trace_s34.
-Proof. vm_compute. reflexivity. Qed.
+  parent_trace_s35 = with_child (Z_to_bv 64 320) parent_trace_s34.
+Proof. check_eq. Qed.
 
 (** The clone runs with the descriptors the trace has open then: the
     O_PATH descriptor on "/proc" at 3 and the two eventfds at 4 and 5,
@@ -472,7 +473,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
     ends in the clone's answer: the model with the child recorded. *)
 Lemma parent_trace_replays_to_the_clone :
   parent_trace_run parent_trace_calls parent_trace_s00
-  = Some (with_children parent_trace_s34).
+  = Some (with_child (Z_to_bv 64 320) parent_trace_s34).
 Proof.
   rewrite <- parent_trace_clone_records_the_child.
   unfold parent_trace_calls.

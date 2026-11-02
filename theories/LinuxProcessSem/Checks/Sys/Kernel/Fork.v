@@ -118,11 +118,11 @@ Qed.
     the copy-in ledger they require, which is the whole observable
     difference between [clone] and [clone3]. *)
 (** The success arm returns the model WITH the child recorded, mirroring
-    [Kernel.Fork.clone_resolve]'s [with_children] on the same branch.  The
+    [Kernel.Fork.clone_resolve]'s [with_child] on the same branch.  The
     errno arm returns [m] unchanged: it created nothing. *)
 Definition check_clone_answer (ret : word) (m : Model) : check_result :=
   if errno_ret_in clone_errnos ret then CheckOk m []
-  else if clone_pid_ok_b m ret then CheckOk (with_children m) []
+  else if clone_pid_ok_b m ret then CheckOk (with_child ret m) []
   else CheckReject.
 
 Definition check_clone_resolve (eff : SyscallEffect) (m : Model)
@@ -161,7 +161,7 @@ Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
     would accept a -EINTR the spec no longer admits. *)
 Definition check_clone_ns_answer (ret : word) (m : Model) : check_result :=
   if errno_any_b ret then CheckOk m []
-  else if clone_pid_ok_b m ret then CheckOk (with_children m) []
+  else if clone_pid_ok_b m ret then CheckOk (with_child ret m) []
   else CheckReject.
 
 Definition check_clone_ns_resolve (eff : SyscallEffect) (m : Model)

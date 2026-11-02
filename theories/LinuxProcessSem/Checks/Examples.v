@@ -383,13 +383,13 @@ Qed.
     correct for a caller that has nothing to reap.  Something can create
     a child, so
     these are not vacuous: [Kernel.Fork.clone_resolve]'s success
-    branch applies [State.with_children], so a [clone] or [clone3] that
+    branch applies [State.with_child], so a [clone] or [clone3] that
     returns a pid lands in a model with [State.m_has_children] set, and
     the two lemmas below constrain a state a modeled trace really reaches
     rather than quantifying over an empty one.  [Kernel.Fork] pays for
     that here, by setting the field.  Every other arm owes the same — a
     [ptrace] that attaches, or anything else that acquires something to
-    reap: apply [State.with_children], or a [wait4_spec] still answering
+    reap: apply [State.with_child], or a [wait4_spec] still answering
     -ECHILD stops compiling here.
 
     Without this, the failure is silent and it is a PRIORITY 2 defect
