@@ -591,6 +591,7 @@ def run_graph(trust, results=None, outputs=None):
     also needs every job it needs to have succeeded (GitHub's implicit success()). trust is the trust job's outputs;
     results and outputs give a job that runs another result than success, and its outputs."""
     results, outputs = dict(results or {}), dict(outputs or {})
+    outputs.setdefault("gather", {"kind": "pr", "number": trust.get("number", ""), "digest": "0" * 64})
     got = {"trust": "success"}
     out = {"trust": trust}
     order = ["trust", "gather", "screen", "review", "post", "hold"]
@@ -659,6 +660,30 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(self.ran({"route": "review", "number": "7"}, results={"review": "failure"}),
                          {"gather", "review"})
 
+    def test_a_screened_review_that_does_not_finish_is_held(self):
+        """SCREENED_HOURLY_CAP among the causes: the item is not left with neither a review nor a hold."""
+        self.assertEqual(self.ran({"route": "screen", "outsider": "mallory", "number": "7"},
+                                  results={"review": "failure"}, outputs={"screen": {"verdict": "clean"}}),
+                         {"gather", "screen", "review", "hold"})
+        self.assertEqual(self.ran({"route": "screen", "outsider": "mallory", "number": "7"},
+                                  results={"review": "cancelled"}, outputs={"screen": {"verdict": "clean"}}),
+                         {"gather", "screen", "review"})
+
+    def test_a_pull_request_that_moved_on_is_left_to_its_newer_run(self):
+        """The gather job keeps nothing when the head is no longer the event's: neither screen, review nor hold."""
+        for route in ("review", "screen"):
+            with self.subTest(route=route):
+                self.assertEqual(self.ran({"route": route, "outsider": "mallory", "number": "7"},
+                                          outputs={"gather": {"kind": "pr", "number": "7", "digest": ""}}),
+                                 {"gather"})
+        g = step("gather", "Gather the pull request or issue")
+        self.assertEqual(g["env"]["EVENT_HEAD"], "${{ github.event.pull_request.head.sha }}")
+        self.assertIn('[ "$(jq -r .headRefOid "$out/pr.json")" != "$EVENT_HEAD" ]', g["run"])
+        for name in ("Keep it for the screen and the review",):
+            self.assertEqual(step("gather", name)["if"], "steps.gather.outputs.moved != 'true'")
+        upload = [x for x in JOBS["gather"]["steps"] if x.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertEqual([u["if"] for u in upload], ["steps.gather.outputs.moved != 'true'"])
+
 
 class LimitTest(Runner):
     """OUTSIDE_HOURLY_LIMIT: the runs of one account without write access that reach the screen in an hour."""
@@ -672,7 +697,8 @@ class LimitTest(Runner):
     def runs(self, *runs):
         """Serve the runs list and each run's jobs: (id, login, event, trust job's conclusion or None for unlisted)."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
-            {"id": i, "triggering_actor": {"login": who}, "event": event, "created_at": "2026-11-02T10:00:00Z"}
+            {"id": i, "actor": {"login": who}, "triggering_actor": {"login": "alice"}, "event": event,
+             "created_at": "2026-11-02T10:00:00Z"}
             for i, who, event, _c in runs]})
         for i, _who, _event, conclusion in runs:
             jobs = [] if conclusion is None else [{"name": "trust", "conclusion": conclusion}]
@@ -713,6 +739,11 @@ class LimitTest(Runner):
         self.assertIn("date -u -d '-1 hour'", run)
         self.assertIn('-f created=">=$from"', run)
         self.assertIn('"repos/$REPO/actions/workflows/review.yml/runs"', run)
+
+    def test_a_maintainers_re_run_still_counts(self):
+        """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
+        self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
+        self.assertEqual(self.route("mallory", "mallory"), "limit")
 
     def test_a_writers_action_on_an_outsiders_item_has_no_limit(self):
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
@@ -786,6 +817,16 @@ class HoldingsTest(unittest.TestCase):
         self.assertRegex(e["CONTENT_SAFETY_URL"], r"^https://[a-z0-9-]+\.cognitiveservices\.azure\.com$")
         self.assertEqual(e["ANTHROPIC_URL"], "https://api.anthropic.com")
         self.assertEqual(e["STORAGE_URL"], "https://storage.googleapis.com")
+        # the checks that run: Model Armor always, and only checks whose settings are all there
+        listed = e["SCREEN_CHECKS"].split(",")
+        self.assertIn("model_armor", listed)
+        self.assertTrue(set(listed) <= {"model_armor", "prompt_shields", "claude"}, listed)
+        needs = {"model_armor": ["MODEL_ARMOR_URL", "MODEL_ARMOR_TEMPLATE", "GCP_SERVICE_ACCOUNT"],
+                 "prompt_shields": ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "CONTENT_SAFETY_URL"],
+                 "claude": ["ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_FEDERATION_RULE_ID", "SCREEN_MODEL"]}
+        for check in listed:
+            for setting in needs[check]:
+                self.assertTrue(e[setting], (check, setting))
         # an identity not set up yet is empty, and its check does not run; one that is set up is well formed
         self.assertRegex(e["AZURE_CLIENT_ID"], r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$")
         self.assertRegex(e["ANTHROPIC_SERVICE_ACCOUNT_ID"], r"^(svac_[0-9A-Za-z]+)?$")
@@ -830,6 +871,14 @@ class TakeTest(Runner):
         self.assertFalse(os.path.exists(os.path.join(self.work, ".review")))
         self.assertEqual(self.take(digest)[0], 0)
 
+    def test_a_long_listing_cannot_slip_a_member_past(self):
+        """grep -q in a pipe stops tar early, and pipefail would read the broken pipe as a pass."""
+        digest = self.tar(*([".github/x"] + [f".review/f{i:05d}" for i in range(3000)]))
+        for _ in range(3):
+            rc, out, _ = self.take(digest)
+            self.assertNotEqual(rc, 0, out)
+            self.assertFalse(os.path.exists(os.path.join(self.work, ".github")))
+
     def test_anything_beside_review_is_refused(self):
         digest = self.tar(".review/issue.json", ".github/review.md")
         rc, out, _ = self.take(digest)
@@ -846,7 +895,7 @@ class HoldTest(Runner):
         self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
         self.serve(f"repos/{REPO}/issues/comments/5", {"html_url": "https://github.com/acme/model/issues/7#c5"})
         rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
-                                     ROUTE=route, OUTSIDER=outsider, HELD_LABEL=WF["env"]["HELD_LABEL"],
+                                     ROUTE=route, OUTSIDER=outsider, REVIEW="skipped", HELD_LABEL=WF["env"]["HELD_LABEL"],
                                      OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
         self.assertEqual(rc, 0, out)
         calls = gh_calls(self.api)
@@ -879,22 +928,97 @@ class HoldTest(Runner):
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
-        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "ROUTE", "OUTSIDER"})
-        self.assertTrue(all(v.startswith("${{ needs.trust.") or v.startswith("${{ github.") for v in e.values()))
+        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "ROUTE", "OUTSIDER", "REVIEW"})
+        self.assertEqual(e["REVIEW"], "${{ needs.review.result }}")
+        self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
+                            for v in e.values()))
+
+    def test_a_screened_review_that_did_not_finish_says_so(self):
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
+        rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
+                                     ROUTE="screen", OUTSIDER="mallory", REVIEW="failure",
+                                     HELD_LABEL=WF["env"]["HELD_LABEL"],
+                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        self.assertEqual(rc, 0, out)
+        body = next(a for c in gh_calls(self.api) for a in c if a.startswith("body="))
+        self.assertIn("The automated screen passed it, but the automated review of it did not finish", body)
 
 
 class PostLabelTest(Runner):
-    def test_a_posted_review_takes_the_label_off(self):
+    DELETE = ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"]
+
+    def take_off(self, head="", now=None):
         s = step("post", "Take the label review-held off")
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held")
+        if now:
+            self.serve(f"repos/{REPO}/pulls/7", {"head": {"sha": now}})
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD=head)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(gh_calls(self.api), [["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"]])
+        return [c for c in gh_calls(self.api) if c[:2] == ["--method", "DELETE"]]
+
+    def test_a_posted_review_takes_the_label_off(self):
+        self.assertEqual(self.take_off(), [self.DELETE])
+        self.setUp()
+        self.assertEqual(self.take_off("a" * 40, "a" * 40), [self.DELETE])
+
+    def test_the_review_of_an_older_head_leaves_the_label(self):
+        """A newer push may have been held since."""
+        self.assertEqual(self.take_off("a" * 40, "b" * 40), [])
 
     def test_no_label_is_no_error(self):
         s = step("post", "Take the label review-held off")
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held")
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="")
         self.assertEqual(rc, 0, out)
+
+
+class CapTest(Runner):
+    """HOURLY_CAP and SCREENED_HOURLY_CAP count apart: accounts without write access cannot use up writers' reviews."""
+
+    def cap(self, route, jobs):
+        """jobs: names of review jobs of earlier runs whose Review step ran in the last hour."""
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+            {"id": 10 + i, "created_at": "2099-01-01T00:00:00Z"} for i in range(len(jobs))]})
+        for i, name in enumerate(jobs):
+            self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": [
+                {"name": name, "run_id": 10 + i, "run_attempt": 1, "status": "completed",
+                 "started_at": "2099-01-01T00:00:00Z",
+                 "steps": [{"name": "Review", "status": "completed", "conclusion": "success"}]}]})
+        s = step("review", "Hold at the hourly cap")
+        ctx = {"needs.trust.outputs.route": route, "env.HOURLY_CAP": WF["env"]["HOURLY_CAP"],
+               "env.SCREENED_HOURLY_CAP": WF["env"]["SCREENED_HOURLY_CAP"]}
+        env = {k: str(evaluate(v, ctx)) for k, v in s["env"].items() if k in ("POOL", "CAP")}
+        rc, out, _ = self.run_script(s["run"], RUN_ID="100", RUN_ATTEMPT="1", **env)
+        return rc, out
+
+    def test_screened_reviews_do_not_use_up_the_writers_cap(self):
+        screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        writers = int(WF["env"]["HOURLY_CAP"])
+        self.assertLess(screened, writers)
+        self.assertEqual(self.cap("review", ["review (screened)"] * 30)[0], 0)
+        self.assertEqual(self.cap("review", ["review"] * (writers - 1))[0], 0)
+        rc, out = self.cap("review", ["review"] * writers)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("HELD", out)
+
+    def test_screened_reviews_have_their_own_cap(self):
+        screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        self.assertEqual(self.cap("screen", ["review"] * 30 + ["review (screened)"] * (screened - 1))[0], 0)
+        self.assertEqual(self.cap("screen", ["review (screened)"] * screened)[0], 1)
+
+    def test_the_job_is_named_for_its_pool(self):
+        name = JOBS["review"]["name"]
+        self.assertEqual(evaluate(name, {"needs.trust.outputs.route": "screen"}), "review (screened)")
+        self.assertEqual(evaluate(name, {"needs.trust.outputs.route": "review"}), "review")
+
+
+class BunTest(unittest.TestCase):
+    def test_no_other_bun_can_come_first(self):
+        names = [s.get("name") for s in JOBS["review"]["steps"]]
+        self.assertLess(names.index("No Bun but the pinned one"), names.index("Review"))
+        run = step("review", "No Bun but the pinned one")["run"]
+        self.assertIn("/usr/bin/bun /bin/bun", run)
 
 
 if __name__ == "__main__":

@@ -125,7 +125,8 @@ class ScreenTest(unittest.TestCase):
             "CONTENT_SAFETY_URL": f"{u}/safety", "ANTHROPIC_URL": f"{u}/anthropic",
             "ANTHROPIC_ORGANIZATION_ID": "org", "ANTHROPIC_WORKSPACE_ID": "wrkspc_x",
             "ANTHROPIC_SERVICE_ACCOUNT_ID": "svac_x", "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_x",
-            "SCREEN_MODEL": "claude-haiku-5-5", "GITHUB_OUTPUT": self.output, "REPOSITORY": "acme/model",
+            "SCREEN_MODEL": "claude-haiku-5-5", "SCREEN_CHECKS": "model_armor,prompt_shields,claude",
+            "GITHUB_OUTPUT": self.output, "REPOSITORY": "acme/model",
             "NUMBER": "7", "RUN_URL": "https://github.com/acme/model/actions/runs/1",
         }
         a = self.services.answers
@@ -270,9 +271,10 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(v, "held")
         self.assertEqual(reason["checks"]["prompt_shields"]["word"], "error")
 
-    def test_a_check_that_is_set_up_in_part_holds_it(self):
-        """Fail closed for a check that is set up: one of its settings missing is no answer."""
-        for check, setting in (("claude", "ANTHROPIC_SERVICE_ACCOUNT_ID"), ("prompt_shields", "AZURE_TENANT_ID"),
+    def test_a_listed_check_with_a_setting_missing_holds_it(self):
+        """Fail closed for a listed check: a setting of it that is missing is no answer, never a check turned off."""
+        for check, setting in (("claude", "ANTHROPIC_SERVICE_ACCOUNT_ID"), ("claude", "ANTHROPIC_FEDERATION_RULE_ID"),
+                               ("prompt_shields", "AZURE_CLIENT_ID"), ("prompt_shields", "AZURE_TENANT_ID"),
                                ("model_armor", "MODEL_ARMOR_TEMPLATE")):
             with self.subTest(setting=setting):
                 self.fresh()
@@ -289,34 +291,39 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual((written.split("\n")[0], reason), ("verdict=held", None))
         self.assertTrue(printed.endswith("Its reason could not be stored.\n"), printed)
 
-    def test_a_check_that_is_not_set_up_does_not_run_and_the_verdict_says_so(self):
-        for unset, ran in ((["ANTHROPIC_FEDERATION_RULE_ID"], ["model_armor", "prompt_shields"]),
-                           (["AZURE_CLIENT_ID"], ["model_armor", "claude"]),
-                           (["AZURE_CLIENT_ID", "ANTHROPIC_FEDERATION_RULE_ID"], ["model_armor"])):
-            with self.subTest(unset=unset):
+    def test_only_the_listed_checks_run_and_the_verdict_says_which(self):
+        for listed, ran in (("model_armor,prompt_shields", ["model_armor", "prompt_shields"]),
+                            ("claude,model_armor", ["model_armor", "claude"]), ("model_armor", ["model_armor"])):
+            with self.subTest(listed=listed):
                 self.fresh()
                 self.item()
-                for name in unset:
-                    self.env[name] = ""
+                self.env.update(SCREEN_CHECKS=listed, AZURE_CLIENT_ID="", ANTHROPIC_FEDERATION_RULE_ID="")
+                if "prompt_shields" in ran:
+                    self.env["AZURE_CLIENT_ID"] = "client"
+                if "claude" in ran:
+                    self.env["ANTHROPIC_FEDERATION_RULE_ID"] = "fdrl_x"
                 written, printed, reason = self.run_screen()
                 self.assertEqual(written, f"verdict=clean\nchecks={','.join(ran)}\n")
                 self.assertIn(f"from the checks {', '.join(ran)}.", printed)
                 self.assertEqual(reason["ran"], ran)
-                for check, *_ in screen.CHECKS:
+                for check in screen.CHECKS:
                     if check not in ran:
-                        self.assertEqual(reason["checks"][check], {"word": "not set up"})
-                if "ANTHROPIC_FEDERATION_RULE_ID" in unset:
+                        self.assertEqual(reason["checks"][check], {"word": "not listed in SCREEN_CHECKS"})
+                if "claude" not in ran:
                     self.assertEqual(self.services.to("/v1/messages") + self.services.to("/v1/oauth/token"), [])
-                if "AZURE_CLIENT_ID" in unset:
+                if "prompt_shields" not in ran:
                     self.assertEqual(self.services.to("/contentsafety/text:shieldPrompt"), [])
 
-    def test_model_armor_always_runs(self):
-        """No setting turns it off: without it no verdict is clean."""
-        self.assertIsNone(next(s for c, _f, s in screen.CHECKS if c == "model_armor"))
-        self.item()
-        self.env.update(AZURE_CLIENT_ID="", ANTHROPIC_FEDERATION_RULE_ID="")
-        self.services.answers[":sanitizeUserPrompt"] = (503, {"error": "down"})
-        self.assertEqual(self.verdict()[0], "held")
+    def test_a_list_without_model_armor_or_with_anything_else_holds_it(self):
+        for listed in ("", "prompt_shields,claude", "model_armor,gemini", "model_armor,model_armor", "model_armor ,"):
+            with self.subTest(listed=listed):
+                self.fresh()
+                self.item()
+                self.env["SCREEN_CHECKS"] = listed
+                v, reason = self.verdict()
+                self.assertEqual(v, "held")
+                self.assertEqual(self.services.to(":sanitizeUserPrompt"), [])
+                self.assertIn("SCREEN_CHECKS", reason["unscreenable"][-1])
 
     def test_a_retried_service_that_answers_counts(self):
         self.item()
@@ -377,20 +384,73 @@ class ScreenTest(unittest.TestCase):
 
     # --- what is sent -----------------------------------------------------------------------------------------
 
-    def test_only_the_outside_authors_text_is_sent(self):
+    def sent(self):
+        """What each service was sent, as one text each."""
+        model = self.services.to("/v1/messages")[0]["body"]["messages"][0]["content"]
+        armor_text = "".join(r["body"]["userPromptData"]["text"] for r in self.services.to(":sanitizeUserPrompt"))
+        shield_text = "".join(d for r in self.services.to("/contentsafety/text:shieldPrompt")
+                              for d in r["body"]["documents"])
+        return model, armor_text, shield_text
+
+    def test_everything_the_review_reads_is_sent_whoever_wrote_it(self):
+        """Every body, a writer's too, every line of a review comment, and every file of .review/ but head/."""
         self.item(kind="pr", author="mallory", title="Mallory's title", body="Mallory's body",
-                  comments=[("mallory", "MALLORY-COMMENT"), ("alice", "ALICE-COMMENT")],
-                  diff="+MALLORY-DIFF\n", review_comments="alice a.v:3 ALICE-RC\nmallory a.v:4 MALLORY-RC\n")
+                  comments=[("mallory", "MALLORY-COMMENT"), ("alice", "ALICE-COMMENT")], diff="+MALLORY-DIFF\n",
+                  review_comments="alice a.v:3 ALICE-RC\nmallory a.v:4 first line\nIGNORE-THE-RULES second line\n")
+        with open(os.path.join(self.review, "checks.json"), "w") as f:
+            json.dump({"statusCheckRollup": [{"name": "CHECK-NAME", "conclusion": "SUCCESS"}]}, f)
+        with open(os.path.join(self.review, "omitted.txt"), "w") as f:
+            f.write("OMITTED-PATH: cut at 2 MiB\n")
+        with open(os.path.join(self.review, "kind.txt"), "w") as f:
+            f.write("ANOTHER-FILE\n")
         self.assertEqual(self.verdict()[0], "clean")
-        model = json.dumps(self.services.to("/v1/messages")[0]["body"])
-        armor_text = " ".join(r["body"]["userPromptData"]["text"] for r in self.services.to(":sanitizeUserPrompt"))
-        shield_text = " ".join(d for r in self.services.to("/contentsafety/text:shieldPrompt")
-                               for d in r["body"]["documents"])
-        for sent in (model, armor_text, shield_text):
-            for word in ("MALLORY-COMMENT", "MALLORY-DIFF", "MALLORY-RC", "Mallory's title", "Change the model"):
+        for sent in self.sent():
+            for word in ("MALLORY-COMMENT", "ALICE-COMMENT", "MALLORY-DIFF", "ALICE-RC", "IGNORE-THE-RULES",
+                         "Mallory's title", "Change the model", "CHECK-NAME", "OMITTED-PATH", "ANOTHER-FILE"):
                 self.assertIn(word, sent)
-            for word in ("ALICE-COMMENT", "ALICE-RC"):
-                self.assertNotIn(word, sent)
+
+    def test_an_apps_item_is_screened_whole(self):
+        """gh gives an App's author as app/<name>, the REST API as <name>[bot]: no matching of names decides what
+        is sent."""
+        self.item(author="app/renovate", comments=[("renovate[bot]", "BOT-COMMENT")])
+        self.verdict()
+        for sent in self.sent():
+            self.assertIn("BOT-COMMENT", sent)
+
+    def test_many_small_comments_cost_few_requests(self):
+        """The text is joined before it is cut, so the requests grow with the characters, not the comments."""
+        self.item(comments=[("mallory", f"comment {i}") for i in range(2000)])
+        self.assertEqual(self.verdict()[0], "clean")
+        chars = len(screen.joined(screen.parts(self.review)[0]))
+        self.assertLess(chars, 100_000)
+        self.assertEqual(len(self.services.to(":sanitizeUserPrompt")),
+                         len(screen.pieces("x" * chars, screen.ARMOR_PIECE, screen.ARMOR_OVERLAP)))
+        self.assertEqual(len(self.services.to("/contentsafety/text:shieldPrompt")),
+                         len(screen.pieces("x" * chars, screen.SHIELD_PIECE, screen.SHIELD_OVERLAP)))
+        self.assertLess(len(self.services.to("/contentsafety/text:shieldPrompt")), 20)
+
+    def test_a_screen_out_of_time_holds_it(self):
+        self.item()
+        saved = screen.DEADLINE
+        screen.DEADLINE = 0
+        try:
+            v, reason = self.verdict()
+        finally:
+            screen.DEADLINE = saved
+        self.assertEqual(v, "held")
+        self.assertIn("ran out of its 600 seconds", reason["checks"]["model_armor"]["error"])
+        self.assertLess(screen.DEADLINE_SECONDS, 15 * 60)
+
+    def test_a_file_the_diff_shows_as_binary_is_held(self):
+        """A text file that an attribute makes the diff show as binary: its lines are in no text the checks read."""
+        self.item(kind="pr", diff="diff --git a/a.v b/a.v\nBinary files a/a.v and b/a.v differ\n",
+                  head={"a.v": b"Lemma x."})
+        v, reason = self.verdict()
+        self.assertEqual(v, "held")
+        self.assertEqual(reason["unscreenable"], ["the diff shows a.v as binary"])
+        self.fresh()
+        self.item(kind="pr", diff="diff --git a/old.png b/old.png\nBinary files a/old.png and /dev/null differ\n")
+        self.assertEqual(self.verdict()[0], "clean")
 
     def test_the_model_gets_no_tool_and_can_answer_two_words_only(self):
         self.item()
@@ -445,6 +505,19 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual(v, "held")
                 self.assertEqual(reason["unscreenable"], ["changed file docs/a.png is not UTF-8 text"])
                 self.assertEqual(self.services.to(":sanitizeUserPrompt") + self.services.to("/v1/messages"), [])
+
+    def test_text_that_hides_text_is_held_unscreened(self):
+        for ch in ("\U000E0041", "\u202E", "\u2066"):
+            with self.subTest(ch=hex(ord(ch))):
+                self.fresh()
+                self.item(body=f"Fine.{ch}hidden")
+                v, reason = self.verdict()
+                self.assertEqual(v, "held")
+                self.assertRegex(reason["unscreenable"][0], "^body holds characters that hide text")
+                self.assertEqual(self.services.to(":sanitizeUserPrompt"), [])
+        self.fresh()
+        self.item(body="Ask @\u2060octocat.")   # the word joiner the review's comments use
+        self.assertEqual(self.verdict()[0], "clean")
 
     def test_too_much_text_is_held_unscreened(self):
         self.item(kind="pr", diff="+" + "x" * screen.MAX_CHARS)
