@@ -50,6 +50,13 @@ jobs:
             exit 1
           fi
           echo "no conflict markers (searched every tracked file)"
+      # A record that grows (the process record went from 15 to 20 fields in
+      # two days) breaks every positional builder, and one that compiles by
+      # accident binds a value to the wrong field. New code reads and writes
+      # those records through accessors and setters; a place that must build
+      # one by position records itself in tools/record_builders.json.
+      - name: No new positional builders of growing records
+        run: python3 tools/check_record_builders.py
       - id: route
         env:
           EVENT: ${{ github.event_name }}

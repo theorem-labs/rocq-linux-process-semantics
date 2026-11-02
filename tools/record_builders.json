@@ -1,0 +1,80 @@
+{
+ "mkKernelBuild": {
+  "tests/CheckedInputWitness.v": 5,
+  "theories/Common/AsanPlanCore.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryWitness.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Kernel/Sys.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Mm/PlacementHoles.v": 1,
+  "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
+  "theories/LinuxProcessSem/State.v": 2,
+  "tools/placement_conformance/log_to_rocq.py": 1,
+  "tools/placement_conformance/start_state_to_rocq.py": 1
+ },
+ "mkNsCtx": {
+  "theories/LinuxProcessSem/Checks/Cases/Ns/CloneCases.v": 6,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/FilesCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/FsOpsCases.v": 3,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/MountArmsCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/NewMountCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/SpecCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/TaskCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/UserArmsCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/WalkCases.v": 1,
+  "theories/LinuxProcessSem/Ns/Arm.v": 3,
+  "theories/LinuxProcessSem/Ns/Clone.v": 1,
+  "theories/LinuxProcessSem/Ns/Files.v": 1,
+  "theories/LinuxProcessSem/Ns/MountArms.v": 1,
+  "theories/LinuxProcessSem/Ns/Tables.v": 2,
+  "theories/LinuxProcessSem/Ns/Task.v": 1,
+  "theories/LinuxProcessSem/Ns/UserArms.v": 1
+ },
+ "mkNsEnv": {
+  "theories/LinuxProcessSem/Checks/Cases/Ns/NewMountCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/WalkCases.v": 1,
+  "theories/LinuxProcessSem/Ns/Tables.v": 2
+ },
+ "mkNsState": {
+  "theories/LinuxProcessSem/Checks/Cases/Ns/CloneCases.v": 4,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/FilesCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/FsOpsCases.v": 7,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/MountArmsCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/MountinfoCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/NewMountCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/SpecCases.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/UserArmsCases.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Ns/WalkCases.v": 2,
+  "theories/LinuxProcessSem/Ns/Clone.v": 3,
+  "theories/LinuxProcessSem/Ns/Files.v": 1,
+  "theories/LinuxProcessSem/Ns/FsOps.v": 1,
+  "theories/LinuxProcessSem/Ns/Net.v": 1,
+  "theories/LinuxProcessSem/Ns/NewMount.v": 1,
+  "theories/LinuxProcessSem/Ns/Tables.v": 5
+ },
+ "mkProcInput_full": {
+  "theories/Common/AsanPlanCore.v": 1,
+  "theories/Common/CatSimSigpipe.v": 1,
+  "theories/EquivalenceDefinition/FinInput.v": 6,
+  "theories/LinuxProcessSem/Checks/Cases/EntryLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryWitness.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/Open.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/SigpipeLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Prelude.v": 1,
+  "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
+  "theories/LinuxProcessSem/Checks/Examples.v": 1,
+  "theories/LinuxProcessSem/State.v": 2,
+  "tools/placement_conformance/log_to_rocq.py": 1,
+  "tools/placement_conformance/start_state_to_rocq.py": 1
+ },
+ "mkProcState": {
+  "theories/LinuxProcessSem/Procs.v": 1,
+  "theories/LinuxProcessSem/State.v": 24
+ },
+ "mkShared": {
+  "theories/LinuxProcessSem/Procs.v": 6
+ },
+ "mkVmState": {
+  "theories/LinuxProcessSem/State.v": 7
+ }
+}
