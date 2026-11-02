@@ -758,25 +758,25 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         [pselect6] (72), [ppoll] (73) and [epoll_pwait] (22) belong to
         that family and are handled in the bullet below instead, because
         they have arms.
-        Then [signalfd4] (74), which does NOT:
-        [do_signalfd4] (fs/signalfd.c) stores the set in the fd's own
-        [ctx->sigmask], and fs/signalfd.c does not name [blocked]
-        anywhere.  It is on this list as a DELIVERY window instead,
-        because [signalfd_dequeue] calls [dequeue_signal] against that
-        [ctx->sigmask], so a read of the fd hands back exactly the
-        signals a blocked mask left pending.  Sampled at v6.1, v6.6,
-        v6.12 and v6.17, not diffed across the whole window:
-        [do_signalfd4] is NOT identical over those four — the fd lookup
-        and the anon-inode call both changed — but the two statements
-        this rests on are, with only [dequeue_signal]'s leading
-        [current] argument dropped at v6.12.  Then [kill] (129),
+        Then [kill] (129),
         [tgkill] (131), [rt_sigqueueinfo] (138), [rt_tgsigqueueinfo] (240) and
         [pidfd_send_signal] (424), so a process cannot even signal
         itself.  Checked against [Sys.SyscallTable.spec_table]: none of
         them has an arm.
       - [rt_sigaction] (134), [pselect6] (72), [ppoll] (73),
-        [epoll_pwait] (22) and [sigaltstack] (132) ARE on the modeled
-        surface, and their windows are shut one level down instead.
+        [epoll_pwait] (22), [sigaltstack] (132) and [signalfd4] (74) ARE
+        on the modeled surface, and their windows are shut one level
+        down instead.
+        74 makes a descriptor and names [blocked] nowhere:
+        [do_signalfd4] (fs/signalfd.c, read at v6.18.44; identical at
+        v6.18.46) stores the set in the fd's own [ctx->sigmask].  Its
+        window is DELIVERY through the descriptor:
+        [signalfd_dequeue] calls [dequeue_signal] against that
+        [ctx->sigmask], so a read of the fd hands back exactly the
+        signals a blocked mask left pending.
+        [ReadWrite.read_opaque_spec] declines a read of a signalfd
+        ([State.OSignalFd]), and ppoll, pselect6 and epoll decline the
+        descriptor, so nothing modeled reads through it.
         132 is the easy one, and is called out separately so the others
         are not read as the pattern: it has NO window to shut.
         [do_sigaltstack] (kernel/signal.c) reads and writes

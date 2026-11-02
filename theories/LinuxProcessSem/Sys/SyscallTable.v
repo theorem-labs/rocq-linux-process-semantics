@@ -27,7 +27,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Dispatch
   Syscall Uapi Uaccess
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
-  Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
+  Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd Fs.Signalfd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
   Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
@@ -56,7 +56,7 @@ Definition spec_table : list SpecArm :=
   (* openat          *) mkSpecArm  56%Z (fun i => openat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
   (* close           *) mkSpecArm  57%Z (fun i => close_spec (fd32 (in_arg i 0)) i) ::
   (* pipe2           *) mkSpecArm  59%Z (fun i => pipe2_spec (in_arg i 0) (pipe_flags32 (in_arg i 1)) i) ::
-  (* getdents64      *) mkSpecArm  61%Z (fun i => getdents64_spec (fd32 (in_arg i 0)) (in_arg i 2) i) ::
+  (* getdents64      *) mkSpecArm  61%Z (fun i => getdents64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
   (* lseek           *) mkSpecArm  62%Z (fun i => lseek_spec (fd32 (in_arg i 0)) (in_arg i 1) (whence32 (in_arg i 2)) i) ::
   (* read            *) mkSpecArm  63%Z (fun i => read_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
   (* write           *) mkSpecArm  64%Z (fun i => write_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
@@ -66,6 +66,7 @@ Definition spec_table : list SpecArm :=
   (* pwrite64        *) mkSpecArm  68%Z (fun i => pwrite64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* pselect6        *) mkSpecArm  72%Z (fun i => pselect6_spec (nfds32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i) ::
   (* ppoll           *) mkSpecArm  73%Z (fun i => ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) (in_arg i 3) (in_arg i 4) i) ::
+  (* signalfd4       *) mkSpecArm  74%Z (fun i => signalfd4_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i) ::
   (* readlinkat      *) mkSpecArm  78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) i) ::
   (* newfstatat      *) mkSpecArm  79%Z (fun i => newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i) ::
   (* fstat           *) mkSpecArm  80%Z (fun i => fstat_spec (fd32 (in_arg i 0)) (in_arg i 1) i) ::

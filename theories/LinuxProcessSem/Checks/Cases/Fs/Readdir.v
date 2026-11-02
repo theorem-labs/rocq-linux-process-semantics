@@ -121,3 +121,119 @@ Example getdents64_answers_are_inert :
   /\ check_syscall (getdents64_in 5 0) (mkEffect (errno_ret ENOENT) [] [])
        getdents64_model = CheckOk getdents64_model [].
 Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   The /proc/self/fd listing ([State.OProcFdDir], [Fs.Readdir.procfd_getdents_spec])
+
+   bubblewrap's monitor process walks /proc/self/fd with musl's
+   [readdir], which calls getdents64 with a 2048-byte buffer, and closes
+   every descriptor it does not keep.  Before this arm the model
+   declined getdents64 on every opaque descriptor.
+   ========================================================================= *)
+
+(** fds 0-2 the launch's channels, fd 3 an O_PATH descriptor on "/proc",
+    fd 4 the /proc/self/fd directory at position 0, fd 5 an eventfd. *)
+Definition procfd_list_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_fds (fd_insert (fd_insert (fd_insert (m_fds m)
+              3 (FdOpaque (OProcPath [47; 112; 114; 111; 99])))
+              4 (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+              5 (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))) m.
+
+(** [m] with fd 4's directory position set to [p]. *)
+Definition procfd_at (m : Model) (p : option word) : Model :=
+  with_fds (fd_insert (m_fds m) 4 (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) p))) m.
+
+(** [getdents64(fd, dirent, count)] into the 4079 writable bytes at 0x10000. *)
+Definition procfd_list_in (fd dirent count : word) : SyscallInput :=
+  mkInput 61 [fd; dirent; count; 0; 0; 0] (fun _ => None) sysctl_buf_wmem.
+
+(** One [linux_dirent64] record as [filldir64] writes it, up to its NUL:
+    [d_ino], [d_off], [d_reclen] 24 (every name here is one or two
+    bytes), [d_type], the name. *)
+Definition drec (ino off ty : Z) (name : list byte) : list byte :=
+  Z_to_le_bytes 8 ino ++ Z_to_le_bytes 8 off ++ Z_to_le_bytes 2 24
+  ++ [Z_to_bv 8 ty] ++ name ++ [Z_to_bv 8 0].
+
+(** The whole listing from position 0: ".", "..", then "0" to "5" in
+    ascending order, each [d_off] the next entry's position (fd k sits at
+    position k + 2), and the last [d_off] the end position, here 66 (a
+    table of 64 slots: [max_fds + 2]). *)
+Definition procfd_listing (endpos : Z) : list (word * list byte) :=
+  [ (0x10000, drec 1 1 DT_DIR [46]);
+    (0x10018, drec 1 2 DT_DIR [46; 46]);
+    (0x10030, drec 7 3 DT_LNK [48]);
+    (0x10048, drec 8 4 DT_LNK [49]);
+    (0x10060, drec 9 5 DT_LNK [50]);
+    (0x10078, drec 10 6 DT_LNK [51]);
+    (0x10090, drec 11 7 DT_LNK [52]);
+    (0x100a8, drec 12 endpos DT_LNK [53]) ].
+
+(** THE LISTING IS THE MODEL'S OWN TABLE: 192 bytes, eight records, and
+    the directory left at the end position.  [d_ino] is the
+    environment's (any value is admitted), the rest is exact: a wrong
+    [d_off], a missing descriptor and a short count are rejected, and an
+    end position at or below the last listed descriptor's is rejected
+    too.  A second call from the end answers 0, and the position is then
+    the kernel's [max_fds + 2], which the model does not know: a third
+    call is declined.
+
+    THE CONTROL is answered alike by the old text and the new:
+    getdents64 on the O_PATH descriptor at fd 3 is declined. *)
+Example getdents64_proc_self_fd_listing :
+  check_syscall (procfd_list_in 4 0x10000 4079)
+    (mkEffect 192 (procfd_listing 66) []) procfd_list_model
+  = CheckOk (procfd_at procfd_list_model (Some (Z_to_bv 64 66))) []
+  (* a wrong [d_off] on "." *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079)
+       (mkEffect 192 ((0x10000, drec 1 2 DT_DIR [46]) :: tl (procfd_listing 66)) [])
+       procfd_list_model
+     = CheckReject
+  (* the eventfd at fd 5 left out *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079)
+       (mkEffect 168 (firstn 7 (procfd_listing 66)) []) procfd_list_model
+     = CheckReject
+  (* an end position that does not lie past fd 5's *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079)
+       (mkEffect 192 (procfd_listing 7) []) procfd_list_model
+     = CheckReject
+  (* a byte count that is not the records' *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079)
+       (mkEffect 191 (procfd_listing 66) []) procfd_list_model
+     = CheckReject
+  (* from the end: 0, and the position is no longer known *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079) (mkEffect 0 [] [])
+       (procfd_at procfd_list_model (Some (Z_to_bv 64 66)))
+     = CheckOk (procfd_at (procfd_at procfd_list_model (Some (Z_to_bv 64 66))) None) []
+  /\ check_syscall (procfd_list_in 4 0x10000 4079) (mkEffect 0 [] [])
+       (procfd_at procfd_list_model None)
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (procfd_list_in 3 0x10000 4079) (mkEffect (errno_ret ENOTDIR) [] [])
+       procfd_list_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** A BUFFER WITH ROOM FOR ONE RECORD stops after it, and the position
+    is the next entry's; a buffer with room for none is -EINVAL, and one
+    [access_ok] refuses is -EFAULT, both leaving the position at the
+    first unlisted entry. *)
+Example getdents64_proc_self_fd_short_buffers :
+  check_syscall (procfd_list_in 4 0x10000 30)
+    (mkEffect 24 [(0x10000, drec 5 1 DT_DIR [46])] []) procfd_list_model
+  = CheckOk (procfd_at procfd_list_model (Some (Z_to_bv 64 1))) []
+  /\ check_syscall (procfd_list_in 4 0x10000 10) (mkEffect (errno_ret EINVAL) [] [])
+       procfd_list_model
+     = CheckOk (procfd_at procfd_list_model (Some (Z_to_bv 64 0))) []
+  /\ check_syscall (procfd_list_in 4 (Z_to_bv 64 (2 ^ 63)) 4079)
+       (mkEffect (errno_ret EFAULT) [] []) procfd_list_model
+     = CheckOk (procfd_at procfd_list_model (Some (Z_to_bv 64 0))) []
+  (* from position 1: "..", then the descriptors *)
+  /\ check_syscall (procfd_list_in 4 0x10000 4079)
+       (mkEffect 168
+          (map (fun '(a, r) => (Z_to_bv 64 (bv_unsigned a - 24), r)) (tl (procfd_listing 66)))
+          [])
+       (procfd_at procfd_list_model (Some (Z_to_bv 64 1)))
+     = CheckOk (procfd_at (procfd_at procfd_list_model (Some (Z_to_bv 64 1)))
+                  (Some (Z_to_bv 64 66))) [].
+Proof. repeat split; check_eq. Qed.

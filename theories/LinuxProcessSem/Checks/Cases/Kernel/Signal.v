@@ -814,7 +814,7 @@ Proof. vm_compute. reflexivity. Qed.
     for the same reason.  The numbers are named and not counted: when
     this group grows, a count is the part that goes stale. *)
 Definition sig_mask_windows : list Z :=
-  ([ 74   (* signalfd4         *) ; 117 (* ptrace            *)
+  ([ 117  (* ptrace            *)
    ; 129  (* kill              *)
    ; 133  (* rt_sigsuspend     *)
    ; 136  (* rt_sigpending     *) ; 137 (* rt_sigtimedwait   *)
@@ -851,6 +851,20 @@ Proof.
   | _ => fail "a syscall that reads ->blocked, installs a mask, or can deliver or send a signal now HAS a dispatch arm -- it is a second reader or writer of the mask rt_sigprocmask tracks, so the value oset hands back may now be stale; model what that syscall does to the mask in the same commit"
   end.
 Qed.
+
+(** signalfd4 (74) HAS an arm: it makes a descriptor and names
+    [->blocked] nowhere.  Its window is the read of that descriptor,
+    which dequeues the pending signals its mask selects, and the model
+    declines that read: a SIGCHLD signalfd made through the arm, then
+    read, is [CheckUnmodeled]. *)
+Example signalfd_read_is_declined :
+  let m := with_fds (fd_insert (m_fds sig_model) 5
+             (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800)))) sig_model in
+  check_syscall (mkInput 63 [5; 0x10000; 128; 0; 0; 0] (fun _ => None)
+                   (fun a => if bv_leu 0x10000 a && bv_ltu a 0x10080 then Some 0 else None))
+    (mkEffect (errno_ret EAGAIN) [] []) m
+  = CheckUnmodeled.
+Proof. cbv zeta. vm_compute. reflexivity. Qed.
 
 (** THE OTHER HALF OF THE ENUMERATION: the one signal-mask window that
     is on the modeled surface, shut by its spec rather than by its

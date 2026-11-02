@@ -25,7 +25,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad 
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
-  Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Fs.EventPoll Fs.EventFd Fs.Signalfd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls
@@ -36,7 +36,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
-  Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Fs.EventPoll Fs.EventFd Fs.Signalfd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
@@ -279,9 +279,9 @@ Defined.
 (** getdents64 (61). *)
 Definition arm_getdents64 : CheckedArm.
 Proof.
-  refine (mkCheckedArm (mkSpecArm 61%Z (fun i => getdents64_spec (fd32 (in_arg i 0)) (in_arg i 2) i))
-                       (fun i eff m => check_getdents64 (fd32 (in_arg i 0)) (in_arg i 2) eff m)
-                       (fun i m => getdents64_witness (fd32 (in_arg i 0)) (in_arg i 2) m)
+  refine (mkCheckedArm (mkSpecArm 61%Z (fun i => getdents64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i))
+                       (fun i eff m => check_getdents64 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) eff m)
+                       (fun i m => getdents64_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getdents64_sound_ok, check_getdents64_sound_unmodeled, check_getdents64_complete_ok, check_getdents64_complete_unmodeled, getdents64_witness_ok.
@@ -384,6 +384,18 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_ppoll_sound_ok, check_ppoll_sound_unmodeled, check_ppoll_complete_ok, check_ppoll_complete_unmodeled, ppoll_witness_ok.
+Defined.
+
+(** signalfd4 (74).  [ufd] and [flags] are [int] and narrowed here, at
+    the ABI boundary; [sizemask] is [size_t] and compared full-width. *)
+Definition arm_signalfd4 : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 74%Z (fun i => signalfd4_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i))
+                       (fun i eff m => check_signalfd4 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) eff m)
+                       (fun i m => signalfd4_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_signalfd4_sound_ok, check_signalfd4_sound_unmodeled, check_signalfd4_complete_ok, check_signalfd4_complete_unmodeled, signalfd4_witness_ok.
 Defined.
 
 (** readlinkat (78). *)
@@ -1226,6 +1238,7 @@ Definition checked_table : list CheckedArm :=
   arm_pwrite64 ::
   arm_pselect6 ::
   arm_ppoll ::
+  arm_signalfd4 ::
   arm_readlinkat ::
   arm_newfstatat ::
   arm_fstat ::
@@ -1480,13 +1493,13 @@ Lemma sa_spec_arm_pipe2 : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getdents64 : forall i eff m,
-  ca_check arm_getdents64 i eff m = check_getdents64 (fd32 (in_arg i 0)) (in_arg i 2) eff m.
+  ca_check arm_getdents64 i eff m = check_getdents64 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getdents64 : forall i m,
-  ca_witness arm_getdents64 i m = getdents64_witness (fd32 (in_arg i 0)) (in_arg i 2) m.
+  ca_witness arm_getdents64 i m = getdents64_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getdents64 : forall i m o,
-  sa_spec (ca_arm arm_getdents64) i m o = getdents64_spec (fd32 (in_arg i 0)) (in_arg i 2) i m o.
+  sa_spec (ca_arm arm_getdents64) i m o = getdents64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_lseek : forall i eff m,
@@ -1577,6 +1590,16 @@ Lemma ca_witness_arm_ppoll : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_ppoll : forall i m o,
   sa_spec (ca_arm arm_ppoll) i m o = ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) (in_arg i 3) (in_arg i 4) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_signalfd4 : forall i eff m,
+  ca_check arm_signalfd4 i eff m = check_signalfd4 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_signalfd4 : forall i m,
+  ca_witness arm_signalfd4 i m = signalfd4_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_signalfd4 : forall i m o,
+  sa_spec (ca_arm arm_signalfd4) i m o = signalfd4_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_readlinkat : forall i eff m,
@@ -2337,6 +2360,7 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_pwrite64 ca_witness_arm_pwrite64 sa_spec_arm_pwrite64 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_pselect6 ca_witness_arm_pselect6 sa_spec_arm_pselect6 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_ppoll ca_witness_arm_ppoll sa_spec_arm_ppoll : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_signalfd4 ca_witness_arm_signalfd4 sa_spec_arm_signalfd4 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_readlinkat ca_witness_arm_readlinkat sa_spec_arm_readlinkat : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_newfstatat ca_witness_arm_newfstatat sa_spec_arm_newfstatat : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_fstat ca_witness_arm_fstat sa_spec_arm_fstat : arm_unfold.
@@ -2491,6 +2515,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_ppoll : ca_no arm_ppoll = 73%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_ppoll : arm_unfold.
+
+Lemma ca_no_arm_signalfd4 : ca_no arm_signalfd4 = 74%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_signalfd4 : arm_unfold.
 
 Lemma ca_no_arm_fstat : ca_no arm_fstat = 80%Z.
 Proof. reflexivity. Qed.
