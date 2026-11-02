@@ -27,7 +27,7 @@ Example openat_live_dirfd_still_unmodeled :
                  else if bv_eqb a 8193 then Some 0 else None)
        (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -45,8 +45,8 @@ Example openat_empty_path_enoent :
        (fun a => if bv_eqb a 8192 then Some 0 else None)
        (fun _ => None))
     (with_copyins [(8192, 1%nat)] (mkEffect (errno_ret ENOENT) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([], [104])] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [([], [104])] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([], [104])] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([], [104])] IEof)) [].
 Proof. check_eq. Qed.
 
 (** O_NONBLOCK is an IGNORED bit, on every modeled shape: the open lands
@@ -71,7 +71,7 @@ Example o_nonblock_is_an_ignored_open_flag :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            mem_open_write (fun _ => None))
         (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let ok r := match r with CheckOk _ _ => true | _ => false end in
   let have := [([102], [104; 105])] in
   let absent := [] in
@@ -121,7 +121,7 @@ Example openat_append_flag_word :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            mem_open_write (fun _ => None))
         (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let ok r := match r with CheckOk _ _ => true | _ => false end in
   let kept r := match r with
                 | CheckOk m _ => fs_lookup (m_fs m) [102]
@@ -169,12 +169,12 @@ Example openat_excl_append_flag_word :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            pathm (fun _ => None))
         (with_copyins [(8192, 2%nat)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let dot := fun a => if bv_eqb a 8192 then Some 46
                       else if bv_eqb a 8193 then Some 0 else None in
   let have := [([102], [104; 105])] in
   let absent := [] in
-  let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let base fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let fd3 := mkEffect 3 [] [] in
   let kept r := match r with
                 | CheckOk m _ => fs_lookup (m_fs m) [102]
@@ -253,7 +253,7 @@ Example openat_rdwr_flag_words :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            mem_open_write (fun _ => None))
         (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let ok r := match r with CheckOk _ _ => true | _ => false end in
   let kept r := match r with
                 | CheckOk m _ => fs_lookup (m_fs m) [102]
@@ -305,10 +305,10 @@ Example openat_rdwr_errnos :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            mem_open_write (fun _ => None))
         (with_copyins [(8192, 2%nat)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let have := [([102], [104; 105])] in
   let absent := [] in
-  let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let base fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   (* no O_CREAT and no such name: the kernel's own -ENOENT *)
   open absent O_RDWR (mkEffect (errno_ret ENOENT) [] [])
     = CheckOk (base absent) []
@@ -346,8 +346,8 @@ Example openat_rdwr_dirref :
                      else if bv_eqb a 8193 then Some 0 else None)
            (fun _ => None))
         (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret e) [] []))
-        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) in
-  let base := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) in
+  let base := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   open O_RDWR EISDIR = CheckOk base []
   /\ open (O_RDWR + O_TRUNC)%Z EISDIR = CheckOk base []
   /\ open (O_RDWR + O_CREAT)%Z EISDIR = CheckOk base []
@@ -397,7 +397,7 @@ Example faccessat_implied_directory_unmodeled :
   check_syscall
     (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0] fa_mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -409,7 +409,7 @@ Example faccessat_byte_prefix_is_not_a_directory :
   match check_syscall
           (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0] fa_mem_name_a (fun _ => None))
           (with_copyins [(8192, 2%nat)] (mkEffect 0 [] []))
-          (init_model [] 0 0 demo_sp demo_limit
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit
              (demo_input [([97], []); ([97; 98], [104])] IEof)) with
   | CheckOk m [] => m_fs m = [([97], []); ([97; 98], [104])]
   | _ => False
@@ -427,8 +427,8 @@ Example faccessat_bad_mode_beats_an_unreadable_path :
   check_syscall
     (mkInput 48 [AT_FDCWD; 8192; 8; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
 
 (** ...and because the mode is decided before [user_path_at], that arm
@@ -439,7 +439,7 @@ Example faccessat_bad_mode_records_no_copyin :
   check_syscall
     (mkInput 48 [AT_FDCWD; 8192; 8; 0; 0; 0] fa_mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -450,7 +450,7 @@ Example faccessat_existence_needs_the_copyin :
   check_syscall
     (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0] fa_mem_name_a (fun _ => None))
     (mkEffect 0 [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -492,7 +492,7 @@ Example openat_absolute_create_unmodeled :
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
            (open_path_mem [47%Z; 97%Z]) (fun _ => None))
         (with_copyins [(8192, 3%nat)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) in
   open (mkEffect 3 [] []) = CheckUnmodeled
   /\ open (mkEffect (errno_ret ENOENT) [] []) = CheckUnmodeled.
 Proof. vm_compute. split; reflexivity. Qed.
@@ -508,7 +508,7 @@ Example openat_plain_create_still_mints_the_key :
           (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
              (open_path_mem [97%Z]) (fun _ => None))
           (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) with
   | CheckOk m [] => m_fs m = [([Z_to_bv 8 97], [])]
   | _ => False
   end.
@@ -533,7 +533,7 @@ Proof. vm_compute. reflexivity. Qed.
     before this arm), and the control — the same call on "c", which
     nothing lives under — still creates its key. *)
 Example openat_implied_directory_create_eisdir :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let under := [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] in
   let open name eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
@@ -555,7 +555,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     emptied and no -EISDIR: the offered -EISDIR is refused on both.  The
     openat twin of [faccessat_byte_prefix_is_not_a_directory]. *)
 Example openat_byte_prefix_and_exact_key_still_create :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let sibling := [([Z_to_bv 8 97; Z_to_bv 8 98], [104])] in
   let exact := [([Z_to_bv 8 97], [104])] in
   let open fs eff := check_syscall
@@ -579,7 +579,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     tests [d_is_dir], the same order that makes "." -EEXIST under this
     word.  The descriptor is refused, and the control on "c" creates. *)
 Example openat_implied_directory_excl_eexist :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let under := [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] in
   let open name eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 excl_create_flags; 420; 0; 0]
@@ -602,7 +602,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     whose O_EXCL-free neighbour answers -EISDIR on the same image, so
     its -EISDIR is refused beside its -EEXIST. *)
 Example openat_implied_directory_other_write_words :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let under := [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] in
   let open fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -633,7 +633,7 @@ Example openat_slash_key_in_image_unmodeled :
     (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0]
        (open_path_mem [97%Z; 47%Z; 98%Z]) (fun _ => None))
     (with_copyins [(8192, 4%nat)] (mkEffect 3 [] []))
-    (init_model [] 0 0 demo_sp demo_limit
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit
        (demo_input [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
@@ -661,7 +661,7 @@ Definition localtime_bytes : list Z :=
     create the file under /etc, and the model has no /etc to create it
     in. *)
 Example openat_localtime_enoent :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            (open_path_mem localtime_bytes) (fun _ => None))
@@ -697,7 +697,7 @@ Example openat_localtime_in_image_unmodeled :
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem localtime_bytes) (fun _ => None))
         (with_copyins [(8192, 15%nat)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let key := map (fun z => Z_to_bv 8 z) localtime_bytes in
   let enoent := mkEffect (errno_ret ENOENT) [] [] in
   open [(key, [104])] enoent = CheckUnmodeled
@@ -707,7 +707,7 @@ Example openat_localtime_in_image_unmodeled :
      = CheckUnmodeled
   (* the control: an unrelated key leaves the answer in place *)
   /\ open [([Z_to_bv 8 97], [104])] enoent
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit
                   (demo_input [([Z_to_bv 8 97], [104])] IEof)) [].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -722,7 +722,7 @@ Example openat_localtime_match_is_exact :
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
         (with_copyins [(8192, n)] (mkEffect (errno_ret ENOENT) [] []))
-        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) in
   open ([47; 101; 116; 99; 47; 47; 108; 111; 99; 97; 108; 116; 105; 109; 101]%Z)
        16%nat = CheckUnmodeled
   /\ open ([47; 47; 101; 116; 99; 47; 108; 111; 99; 97; 108; 116; 105; 109; 101]%Z)
@@ -731,7 +731,7 @@ Example openat_localtime_match_is_exact :
        14%nat = CheckUnmodeled
   /\ open (localtime_bytes ++ [115%Z]) 16%nat = CheckUnmodeled
   /\ open localtime_bytes 15%nat
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* ================================ "/dev/null", the answered device
@@ -749,7 +749,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 Definition devnull_bytes : list Z := [47; 100; 101; 118; 47; 110; 117; 108; 108]%Z.
 
 Definition devnull_m0 : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** THE OPEN, under every admitted word.  The access mode the word
     names is what the entry records; the O_TRUNC of the clobbering word
@@ -795,7 +795,7 @@ Example devnull_open_declines :
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
         (with_copyins [(8192, n)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let key := map (fun z => Z_to_bv 8 z) devnull_bytes in
   open [(key, [104])] devnull_bytes 10%nat (mkEffect 3 [] []) = CheckUnmodeled
   /\ open [(key, [104])] devnull_bytes 10%nat (mkEffect (errno_ret ENOENT) [] [])
@@ -959,7 +959,7 @@ Definition urandom_decl : list Z :=
 
 Definition urandom_m0 : Model :=
   with_urandom (urandom_stream urandom_decl)
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** THE OPEN, under every word: O_RDONLY (with or without O_CLOEXEC)
     mints the read-only kind and leaves the image alone; the O_EXCL
@@ -1005,7 +1005,7 @@ Example urandom_open_declines :
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
         (with_copyins [(8192, n)] eff)
-        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof)) in
   let key := map (fun z => Z_to_bv 8 z) urandom_bytes in
   open [(key, [104])] urandom_bytes 13%nat (mkEffect 3 [] []) = CheckUnmodeled
   /\ open [(key ++ [Z_to_bv 8 47; Z_to_bv 8 120], [104])] urandom_bytes 13%nat
@@ -1250,7 +1250,7 @@ Example device_opens_answer_on_a_valid_image :
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
         (with_copyins [(8192, n)] eff)
-        (init_model [] 0 0 demo_sp demo_limit
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit
            (image_input_tmp [(key, [Z_to_bv 8 104])] tmp0)) in
   (match open devnull_relative_key devnull_bytes 10%nat (mkEffect 3 [] []) with
    | CheckOk m [] => fd_lookup (m_fds m) 3 = Some (FdDevNull true false)
@@ -1444,12 +1444,12 @@ Example urandom_same_bytes_on_both_sides :
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                (urandom_stream urandom_decl) [] default_kernel default_execfn
                true true in
-  let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
+  let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_ed_top demo_limit inp))
                          3 FdUrandom)
-               (init_model [] 0 0 demo_sp demo_limit inp) in
-  let tgt := with_fds (fd_insert (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
+               (init_model [] 0 0 demo_sp demo_ed_top demo_limit inp) in
+  let tgt := with_fds (fd_insert (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_ed_top demo_limit inp))
                                     4 FdDir) 5 FdUrandom)
-               (init_model [] 0 0 demo_sp demo_limit inp) in
+               (init_model [] 0 0 demo_sp demo_ed_top demo_limit inp) in
   let first8 := map (fun z => Z_to_bv 8 z) (firstn 8 urandom_decl) in
   let read fd m eff := check_syscall
         (mkInput 63 [fd; 4096; 8; 0; 0; 0] (fun _ => None) urandom_wmem) eff m in
@@ -1487,7 +1487,7 @@ Qed.
     model that declines everything — a claimed SUCCESS on the create
     shape is rejected, for ".." exactly as for ".". *)
 Example openat_dotdot_answers_as_dot_does :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open bs n fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1529,7 +1529,7 @@ Example openat_dot3_is_an_ordinary_name :
           (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
              (open_path_mem [46%Z; 46%Z; 46%Z]) (fun _ => None))
           (with_copyins [(8192, 4%nat)] (mkEffect 3 [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) with
   | CheckOk m [] => m_fs m = [([Z_to_bv 8 46; Z_to_bv 8 46; Z_to_bv 8 46], [])]
   | _ => False
   end.
@@ -1544,7 +1544,7 @@ Proof. vm_compute. reflexivity. Qed.
     either one, and a spec that let O_CREAT run first would mint a key
     under the empty name and still pass every other case in this file. *)
 Example openat_empty_path_beats_o_creat :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
            (open_path_mem []) (fun _ => None))
@@ -1569,7 +1569,7 @@ Proof. vm_compute. split; reflexivity. Qed.
     O_DIRECTORY's doing and not the name's.  A real run issues one flag
     word per call and cannot state either. *)
 Example openat_directory_answers :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let open fs bs n fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 0; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1607,7 +1607,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     the arm's answers at once, since a mask applied in one branch and
     not another is exactly the mistake this catches. *)
 Example openat_directory_ignores_largefile_and_cloexec :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let open fs bs n fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 0; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1641,7 +1641,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     arms neither guard nor mint: they ANSWER the implied directory
     ([openat_implied_directory_create_eisdir] above). *)
 Example openat_directory_implied_directory_unmodeled :
-  let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let m0 fs := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input fs IEof) in
   let open fs eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192;
                      Z_to_bv 64 (O_DIRECTORY + O_LARGEFILE + O_CLOEXEC);
@@ -1662,7 +1662,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     a real run cannot make the claim, because the kernel it runs on has a
     filesystem and simply answers. *)
 Example openat_directory_name_max_boundary :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open bs n eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192;
                      Z_to_bv 64 (O_DIRECTORY + O_LARGEFILE + O_CLOEXEC);
@@ -1689,7 +1689,7 @@ Proof. vm_compute. split; reflexivity. Qed.
     - /tmp/<n> and /etc/localtime keep declining it: their arms answer
       only the words they name. *)
 Example openat_excl_append_edges :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open bs fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1729,7 +1729,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** The model both faccessat2 examples below run against: one present
     key "a", nothing else. *)
 Definition fa2_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof).
 
 (** ACCEPTED FLAGS CHANGE NO ANSWER, which is the sharpest claim
     [Fs.Open.faccessat2_spec] makes and the one no real run reaches: it is
@@ -1802,7 +1802,7 @@ Example faccessat2_implied_directory_unmodeled :
     (mkInput 439 [AT_FDCWD; 8192; 0; Z_to_bv 64 AT_EACCESS; 0; 0]
        fa_mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -1831,7 +1831,7 @@ Definition tmp_gif_key : Fs.path :=
     ordinary [State.FdFileW] on the absolute key, so nothing later in the
     run needs an arm of its own. *)
 Example openat_tmp_create_read_unlink :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open fl eff m := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            (open_path_mem tmp_gif_bytes) (fun _ => None))
@@ -1885,7 +1885,7 @@ Example openat_tmp_declared_name_reads :
           (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
              (open_path_mem tmp_gif_bytes) (fun _ => None))
           (with_copyins [(8192, 13%nat)] (mkEffect 3 [] []))
-          (init_model [] 0 0 demo_sp demo_limit
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit
              (demo_input_tmp [] [([111; 117; 116; 46; 103; 105; 102], [104; 105])] IEof)) with
   | CheckOk m [] =>
       fd_lookup (m_fds m) (Z_to_bv 64 3) = Some (FdFile tmp_gif_key (Z_to_bv 64 0))
@@ -1901,7 +1901,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     statement; this is it on a literal the [Fs.valid_fs] of an image
     would have refused outright. *)
 Example openat_tmp_unsorted_declaration_is_canonical :
-  let fs := m_fs (init_model [] 0 0 demo_sp demo_limit
+  let fs := m_fs (init_model [] 0 0 demo_sp demo_ed_top demo_limit
                     (demo_input_tmp []
                        [([98], [1]); ([97], [2]); ([98], [3])] IEof)) in
   (* the canonical form, out of a declaration that was not in it *)
@@ -1919,7 +1919,7 @@ Example openat_tmp_unsorted_declaration_is_canonical :
      declared one.  Which way the collision falls is a choice; this is
      where it is written down. *)
   /\ Fs.fs_lookup
-       (m_fs (init_model [] 0 0 demo_sp demo_limit
+       (m_fs (init_model [] 0 0 demo_sp demo_ed_top demo_limit
                 (demo_input_tmp [(tmp_gif_key, [1])]
                    [([111; 117; 116; 46; 103; 105; 102], [2])] IEof)))
        tmp_gif_key = Some [2].
@@ -1931,9 +1931,9 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     have answered -ENOENT; the model declines it, and it is stated on
     the empty model beside the rest. *)
 Example openat_tmp_excluded_shapes_unmodeled :
-  let held := init_model [] 0 0 demo_sp demo_limit
+  let held := init_model [] 0 0 demo_sp demo_ed_top demo_limit
                 (demo_input_tmp [] [([111; 117; 116; 46; 103; 105; 102], [104])] IEof) in
-  let empty := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let empty := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let open bs n fl eff m := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1981,7 +1981,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     is one-sided: it defends against a filesystem whose limit is larger
     than 255 and not against one whose limit is smaller. *)
 Example openat_tmp_name_max_boundary :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   (* "/tmp/" followed by n copies of 'a' *)
   let name n := List.repeat 97%Z n in
   let open n fl eff := check_syscall
@@ -2012,7 +2012,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     The read word still declines: answering means a directory
     descriptor, and the model has no directory semantics to give one. *)
 Example openat_tmp_implied_directory_create_eisdir :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
   let open fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -2031,7 +2031,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     refuses, so it is still the separator gate's decline and NOT this
     arm's. *)
 Example openat_tmp_implied_directory_read_unmodeled :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
   let open bs n fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -2063,7 +2063,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     becomes a [CheckOk] minting fd 3; move the create's guard after the
     lookup and the -EISDIR becomes a [CheckReject]. *)
 Example openat_tmp_implied_directory_unrealizable_image :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input [([47; 116; 109; 112; 47; 100], [104]);
                            ([47; 116; 109; 112; 47; 100; 47; 102], [104])] IEof) in
   let open fl eff := check_syscall
@@ -2089,7 +2089,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     the same declared /tmp still creates, since [Fs.Namei.fs_under] is a
     COMPONENT prefix and nothing lives under "/tmp/out.gif". *)
 Example openat_tmp_implied_directory_sibling_still_creates :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
   let open bs n fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -2137,7 +2137,7 @@ Proof. vm_compute. split; reflexivity. Qed.
    ========================================================================= *)
 
 Definition open_a_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof).
 
 (* ---- the wrap: 'a' in the last byte of the address space, NUL at 0 ----- *)
 

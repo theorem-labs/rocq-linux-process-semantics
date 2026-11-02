@@ -154,13 +154,13 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
   mkVmMapsFull
-    (init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
+    (init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
        default_kernel)
     maps [] start_brk brk limit wit_mmap_base
     (Z_to_bv 64 sp_window_lo).
 
 Definition wit_s0 : Model :=
-  init_model wit_reserved wit_brk_base wit_mmap_base (Z_to_bv 64 sp_window_lo)
+  init_model wit_reserved wit_brk_base wit_mmap_base (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
     wit_limit
     (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
                  net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48).
@@ -302,7 +302,7 @@ Proof. vm_compute. reflexivity. Qed.
     the first thing the top-down search meets, so the first grant of
     the run lands one page under it. *)
 Example wit_step5_null_hint_lands_under_the_vdso :
-  linux_place_b (m_vmmaps wit_s4) (kb_thp (m_kernel wit_s4))
+  linux_place_b (m_vmmaps wit_s4) (m_kernel wit_s4)
     (Z_to_bv 64 0) 4096
   = Some (vdso_top (m_vmmaps wit_s4) - vdso_len default_kernel - 4096)%Z.
 Proof. vm_compute. reflexivity. Qed.
@@ -327,35 +327,48 @@ Example wit_step5_null_hint_overlapping_refused :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** A HINT INSIDE THE STACK BAND IS NOT HONOURED, which is the other
-    side of the hint rule and worth a case of its own: every arm that
-    places bounds the range by [State.alloc_top], the hinted arm of
-    [Mmap.linux_place] included ([gap_fits maps page_size (alloc_top h)
-    nZ g]), and [alloc_top h] is [vm_init_sp h - stack_max_size], at or
-    below [Run.stack_window_lo] — the lowest address this run's stack
-    can occupy.  So a grant can never reach a byte the stack may grow
-    into, however the caller hints.  Asked here with the hint one page
-    below the top of the user address space, 2^47 - 4096.  Its PARTNER
-    is [wit_step5] above: the same request with a free hint BELOW the
-    top is honoured at that hint, so this is a refusal of the band and
-    not of hints. *)
-Example mmap_hint_in_the_stack_band_is_refused :
+(** A HINT INSIDE THE STACK IS NOT HONOURED, which is the other side of
+    the hint rule and worth a case of its own: the stack is a
+    [vm_reserved] entry ([State.stack_reserved]), the whole
+    [RLIMIT_STACK] window below the stack VMA's end, so the hinted arm
+    of [Mmap.linux_place] sees it like any other entry and a grant can
+    never reach a byte the stack may grow into, however the caller
+    hints.  Asked here with the hint one page below the run's stack
+    pointer.  Its PARTNER is [wit_step5] above: the same request with a
+    free hint is honoured at that hint, so this is a refusal of the
+    stack and not of hints. *)
+Example mmap_hint_in_the_stack_is_refused :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (sp_window_lo - 4096); 4096; 3; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (Z_to_bv 64 (sp_window_lo - 4096)) []
+       [(Z_to_bv 64 (sp_window_lo - 4096), 4096)]) wit_s4
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …and the ledger behind it, so the refusal is not read as an
+    accident: the hint lies inside the stack's entry, which ends at the
+    stack VMA's end and starts [stack_max_size] below it. *)
+Example stack_hint_is_inside_the_stack_entry :
+  stack_reserved default_kernel wit_mmap_base (sp_window_lo + 4096)
+  = [ (Z_to_bv 64 (sp_window_lo + 4096 - stack_max_size),
+       Z_to_bv 64 stack_max_size) ]
+  /\ (sp_window_lo + 4096 - stack_max_size <= sp_window_lo - 4096)%Z.
+Proof. split; [check_eq | unfold sp_window_lo, stack_max_size; lia]. Qed.
+
+(** A HINT ABOVE THE STACK IS HONOURED, as on Linux (residual R-b of
+    SCOPE.md, now closed): one page below [TASK_SIZE] is free, above the
+    stack VMA's end and clear of its guard gap, which sits below the
+    stack. *)
+Example mmap_hint_above_the_stack_is_honoured :
   check_syscall
     (mkInput 222 [140737488351232; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 140737488351232 [] [(140737488351232, 4096)]) wit_s4
-  = CheckReject.
-Proof. vm_compute. reflexivity. Qed.
-
-(** …and the arithmetic behind it, so the refusal is not read as an
-    accident of this ledger: the hint's end is above the allocation top,
-    and the allocation top is a stack's width below the stack pointer
-    the run was started with. *)
-Example stack_band_hint_is_above_alloc_top :
-  (alloc_top (m_vmmaps wit_s4) < 140737488351232 + 4096)%Z
-  /\ alloc_top (m_vmmaps wit_s4)
-     = (bv_unsigned (vm_init_sp (m_vmmaps wit_s4)) - stack_max_size)%Z.
-Proof. split; vm_compute; reflexivity. Qed.
+  = CheckOk
+      (with_vmmaps (wit_vm [(140737488351232, 4096)] 65536 67536 wit_limit)
+         wit_s0) [].
+Proof. check_eq. Qed.
 
 (** WHERE THE OVERLAP USED TO APPEAR.  brk(0x10834) grows the break by
     100 bytes without crossing a page boundary, so [brk_grow_ok]
@@ -839,7 +852,7 @@ Qed.
     The [2 ^ 64] bound is the right remnant's: its base is
     [Z.max a (addr + n)], which only round-trips through [Z_to_bv 64]
     while the request's end fits in a word.  Every caller has that from
-    the [alloc_top] gate. *)
+    the [TASK_SIZE] gate. *)
 Lemma iv_subtract_region_free : forall c sz (a n : word),
   bv_unsigned a + bv_unsigned n < 2 ^ 64 ->
   forall b s,
@@ -1200,10 +1213,10 @@ Proof.
   apply Z.ltb_lt in Elh.
   apply andb_true_iff in Hgok as [Hceil Hfree].
   apply Z.leb_le in Hceil.
-  alloc_top_bounds. unfold two_pow_64 in *.
+  unfold TASK_SIZE, two_pow_64 in *.
   assert (Hlo0 : 0 <= lo) by (apply page_round_up_Z_nonneg; lia).
   assert (Hps : 0 < page_size) by (unfold page_size; lia).
-  pose proof (alloc_top_page_lt h) as Hacp. unfold two_pow_64 in Hacp.
+  assert (Hpsz : page_size = 4096) by reflexivity.
   destruct Hwf as [Hnz Hun]. cbn [app]. split.
   - constructor; [cbn [snd]; rewrite u64 by lia; lia | exact Hnz].
   - intros p Hp. cbn [owners].
@@ -1214,7 +1227,7 @@ Proof.
                    = true).
     { apply owns_intro; rewrite !u64 by lia; lia. }
     rewrite (region_free_no_owner (vm_maps h) _ _ p
-               (region_free_app_r _ _ _ _ Hfree) Hown).
+               (region_free_app_r _ _ _ _ (region_free_app_r _ _ _ _ Hfree)) Hown).
     lia.
 Qed.
 
@@ -1411,7 +1424,8 @@ Lemma check_mmap_preserves : forall addr len prot flags fd off eff m m' evs,
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H Hwf.
   unfold check_mmap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range len) as Hlenr.
   pose proof (word_range addr) as Haddrr.
   destruct (negb (mmap_off_aligned_b off)) eqn:Eoff.
@@ -1611,7 +1625,8 @@ Lemma check_mremap_preserves : forall old old_size new_size flags eff m m' evs,
 Proof.
   intros old old_size new_size flags [ret ws zs us cs ci] m m' evs H Hwf.
   unfold check_mremap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range old) as Hor.
   pose proof (word_range old_size) as Hos.
   pose proof (word_range new_size) as Hns.
@@ -2093,14 +2108,14 @@ Qed.
    ------------------------------------------------------------------------- *)
 
 (** [execve] establishes it: the ledger starts empty. *)
-Lemma init_model_vm_wf : forall reserved brk0 mbase sp lim inp,
-  vm_wf (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
+Lemma init_model_vm_wf : forall reserved brk0 mbase sp top lim inp,
+  vm_wf (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
 Proof.
-  intros reserved brk0 mbase sp lim inp.
+  intros reserved brk0 mbase sp top lim inp.
   (* [m_vmmaps] and [init_model] are [simpl never] ([State.v]), so [cbn]
      has no handle on them; the ledger is [[]] BY CONVERSION, which is
      what [reflexivity] here establishes and [rewrite] then uses. *)
-  assert (Hm : vm_maps (m_vmmaps (init_model reserved brk0 mbase sp lim inp)) = [])
+  assert (Hm : vm_maps (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)) = [])
     by reflexivity.
   unfold vm_wf, maps_wf, sizes_nonzero, page_owner_unique. rewrite Hm.
   split; [constructor|intros p _; cbn [owners]; lia].

@@ -948,7 +948,7 @@ End Runs.
    before any model state is read — so the ids are an ordinary
    unprivileged pair rather than a claim. *)
 Definition pc_model : Model :=
-  init_model [] 0 0 (Z_to_bv 64 sp_window_lo) 0x40000000%Z
+  init_model [] 0 0 (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096)) 0x40000000%Z
     (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
                  net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48).
 

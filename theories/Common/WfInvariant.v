@@ -925,6 +925,7 @@ intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H HW.
 pose proof (proj1 (proj2 HW)) as HL. pose proof (proj2 (proj2 HW)) as HM.
 unfold check_mmap in H. cbv zeta in H.
 pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+assert (Hts : (TASK_SIZE < 2 ^ 64)%Z) by (unfold TASK_SIZE; lia).
 pose proof (word_range len) as Hlenr.
 pose proof (word_range addr) as Haddrr.
 pose proof (word_range ret) as Hretr.
@@ -953,7 +954,7 @@ destruct (mmap_modeled_b prot flags off) eqn:Emod.
   (* LPS revision/place: the two FREELY PLACED arms no longer gate on a
      chain of boolean tests.  [Placement.linux_place_is] is one predicate,
      and [linux_place_is_admissible] returns the same four facts the chain
-     used to yield -- alignment, positivity, the [alloc_top] bound and
+     used to yield -- alignment, positivity, the [TASK_SIZE] bound and
      [region_free] -- so only the peeling changes, not the argument.  The
      MAP_FIXED arms below are unchanged: they place at [addr], so no search
      runs and no placement predicate appears. *)
@@ -1245,6 +1246,7 @@ intros old old_size new_size flags [ret ws zs us cs ci] m m' evs H HW.
 pose proof (proj1 (proj2 HW)) as HL. pose proof (proj2 (proj2 HW)) as HM.
 unfold check_mremap in H. cbv zeta in H.
 pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+assert (Hts : (TASK_SIZE < 2 ^ 64)%Z) by (unfold TASK_SIZE; lia).
 pose proof (word_range old) as Hor.
 pose proof (word_range old_size) as Hos.
 pose proof (word_range new_size) as Hns.
@@ -1749,7 +1751,7 @@ WF m -> LZ_NZ m ->
 (bv_unsigned dst mod page_size = 0)%Z ->
 (bv_unsigned new_n mod page_size = 0)%Z ->
 (0 < bv_unsigned new_n)%Z ->
-(bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
+(bv_unsigned dst + bv_unsigned new_n <= TASK_SIZE)%Z ->
 region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n = true ->
 Mremap.mremap_move_budget_b m old old_n new_n = true ->
 Mremap.mremap_final_budget_b m old old_n dst new_n = true.

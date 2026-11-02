@@ -140,7 +140,7 @@ Qed.
 (** A model with no files, no mappings and only the three standard fds, so a
     probe fd of AT_FDCWD (which is not a valid fd) reliably answers -EBADF. *)
 Definition probe_model : Model :=
-  init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo)
+  init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
     0x40000000%Z
     (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
                  net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48).
@@ -167,7 +167,7 @@ Definition probe_tid : word := Z_to_bv 64 4242.
 
 Definition probe_model_abort : Model :=
   with_tid probe_tid
-    (init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo)
+    (init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
        0x40000000%Z
        (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
                     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc

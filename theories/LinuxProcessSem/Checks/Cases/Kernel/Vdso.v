@@ -43,6 +43,9 @@ Local Open Scope Z_scope.
     test, so the pair lands exactly where a run puts it. *)
 Definition fx_sp : word := Z_to_bv 64 0x7ffffffffdf0.
 Definition fx_mbase : word := Z_to_bv 64 0x7ffff8000000.
+(** The stack VMA's end ([StackLayout.ed_top]) of the fixture's launch:
+    STACK_TOP, the page above [fx_sp]. *)
+Definition fx_ed_top : word := Z_to_bv 64 0x800000000000.
 
 (** The kernel build: [State.default_kernel], whose [kb_vdso] is 1 and
     so names entry [1 mod 1 = 0] of [Vdso.vdso_images] — the one
@@ -344,7 +347,7 @@ Definition fx_inp : ProcInput :=
               default_nofile (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48.
 
 Definition fx_model0 : Model :=
-  init_model [] 0 fx_mbase fx_sp 0x40000000 fx_inp.
+  init_model [] 0 fx_mbase fx_sp fx_ed_top 0x40000000 fx_inp.
 
 (** One page at 0x80000000, mapped and PROT_NONE, which is the shape
     [Sys.Mm.Mprotect]'s modelled arm changes. *)

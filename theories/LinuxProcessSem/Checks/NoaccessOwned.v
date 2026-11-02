@@ -640,7 +640,8 @@ Lemma check_mmap_preserves_na : forall addr len prot flags fd off eff m m' evs,
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H Hwf Hfit Hna.
   unfold check_mmap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range len) as Hlenr.
   pose proof (word_range addr) as Haddrr.
   pose proof (word_range ret) as Hretr.
@@ -830,7 +831,8 @@ Lemma check_mremap_preserves_na :
 Proof.
   intros old old_size new_size flags [ret ws zs us cs ci] m m' evs H Hwf Hfit Hna.
   unfold check_mremap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range old) as Hor.
   pose proof (word_range old_size) as Hos.
   difn H Eflag; [discriminate|].
@@ -878,19 +880,19 @@ Qed.
    ------------------------------------------------------------------------- *)
 
 (** [execve] establishes it: both lists start empty. *)
-Lemma init_model_na_inv : forall reserved brk0 mbase sp lim inp,
-  na_inv (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
+Lemma init_model_na_inv : forall reserved brk0 mbase sp top lim inp,
+  na_inv (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
 Proof.
-  intros reserved brk0 mbase sp lim inp.
-  assert (Hn : vm_noaccess (m_vmmaps (init_model reserved brk0 mbase sp lim inp)) = [])
+  intros reserved brk0 mbase sp top lim inp.
+  assert (Hn : vm_noaccess (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)) = [])
     by reflexivity.
   unfold na_inv. rewrite Hn. split; [intros a n [] | intros a n x []].
 Qed.
 
-Lemma init_model_sys_inv : forall reserved brk0 mbase sp lim inp,
-  sys_inv (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
+Lemma init_model_sys_inv : forall reserved brk0 mbase sp top lim inp,
+  sys_inv (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
 Proof.
-  intros reserved brk0 mbase sp lim inp.
+  intros reserved brk0 mbase sp top lim inp.
   split; [apply init_model_vm_wf|].
   split; [apply init_model_vm_fit | apply init_model_na_inv].
 Qed.

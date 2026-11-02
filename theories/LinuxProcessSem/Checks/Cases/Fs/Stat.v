@@ -31,7 +31,7 @@ Definition statat_absent_input : SyscallInput :=
     (fun _ => None).
 
 Definition statat_absent_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** Which reason from the top of [Checks/Examples.v]: the third and the
     fourth together.  A copy-in ledger is MODEL-INTERNAL STATE that no
@@ -98,7 +98,7 @@ Definition fstat_data_grown : list byte := repeat (Z_to_bv 8 65) 12.
 
 Definition fstat_model_of (d : list byte) : Model :=
   with_fds [(Z_to_bv 64 3, FdFile fstat_path (Z_to_bv 64 0))]
-    (init_model [] 0 0 demo_sp demo_limit
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit
        (demo_input [(fstat_path, d)] IEof)).
 
 Definition fstat_model : Model := fstat_model_of fstat_data.
@@ -109,14 +109,14 @@ Definition fstat_model_grown : Model := fstat_model_of fstat_data_grown.
     the whole difference the fourth file kind makes to [fstat]: none. *)
 Definition fstat_model_rw : Model :=
   with_fds [(Z_to_bv 64 3, FdFileRW fstat_path (Z_to_bv 64 0))]
-    (init_model [] 0 0 demo_sp demo_limit
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit
        (demo_input [(fstat_path, fstat_data)] IEof)).
 
 (** A descriptor on a path the map does not hold: what [unlinkat] leaves
     behind. *)
 Definition fstat_model_unlinked : Model :=
   with_fds [(Z_to_bv 64 3, FdFile fstat_path (Z_to_bv 64 0))]
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** A 128-byte writable landing zone at 4096, and the same zone one byte
     shy — the shape that separates [copy_to_user]'s -EFAULT from the

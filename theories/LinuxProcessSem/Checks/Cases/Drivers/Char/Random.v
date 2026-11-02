@@ -27,7 +27,7 @@ Definition getrandom_dest : word -> option byte :=
   fun a => if bv_leu 4096 a && bv_ltu a 4608 then Some 0 else None.
 
 Definition getrandom_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** One getrandom(4096, buflen, 0) over that zone. *)
 

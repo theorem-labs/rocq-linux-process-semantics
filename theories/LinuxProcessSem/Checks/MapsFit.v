@@ -17,13 +17,13 @@
 
     - a fresh grant ([mmap], [brk] grow, [mremap] grow in place and
       move) conses one entry whose end the writer has bounded — by
-      [alloc_top] for [mmap] and [mremap], by a [word] break for [brk];
+      [TASK_SIZE] for [mmap] and [mremap], by a [word] break for [brk];
     - a cut ([munmap], [mremap]'s source range, [brk] shrink, MAP_FIXED
       over live mappings) subtracts a range from the list, and every
       remnant of [State.iv_subtract] ends no later than the entry it came
       from;
     - [mremap] shrink re-records the source at a smaller size, below
-      [alloc_top].
+      [TASK_SIZE].
 
     As with [vm_wf], the statement is the base case ([init_model_vm_fit])
     and preservation by every modeled syscall
@@ -238,7 +238,8 @@ Lemma check_mmap_preserves_fit : forall addr len prot flags fd off eff m m' evs,
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H Hfit.
   unfold check_mmap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range len) as Hlenr.
   pose proof (word_range addr) as Haddrr.
   pose proof (word_range ret) as Hretr.
@@ -392,7 +393,8 @@ Lemma check_mremap_preserves_fit :
 Proof.
   intros old old_size new_size flags [ret ws zs us cs ci] m m' evs H Hfit.
   unfold check_mremap in H. cbv zeta in H.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac.
+  assert (Hts : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia). unfold two_pow_64 in Hac, Hts.
   pose proof (word_range old) as Hor.
   pose proof (word_range old_size) as Hos.
   pose proof (word_range new_size) as Hns.
@@ -458,11 +460,11 @@ Qed.
    ------------------------------------------------------------------------- *)
 
 (** [execve] establishes it: the ledger starts empty. *)
-Lemma init_model_vm_fit : forall reserved brk0 mbase sp lim inp,
-  vm_fit (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
+Lemma init_model_vm_fit : forall reserved brk0 mbase sp top lim inp,
+  vm_fit (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
 Proof.
-  intros reserved brk0 mbase sp lim inp.
-  assert (Hm : vm_maps (m_vmmaps (init_model reserved brk0 mbase sp lim inp)) = [])
+  intros reserved brk0 mbase sp top lim inp.
+  assert (Hm : vm_maps (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)) = [])
     by reflexivity.
   unfold vm_fit. rewrite Hm. exact maps_fit_nil.
 Qed.

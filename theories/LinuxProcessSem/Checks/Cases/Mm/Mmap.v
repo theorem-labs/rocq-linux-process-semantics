@@ -57,24 +57,26 @@ Example munmap_free_range_noop :
   = CheckOk one_map_model [].
 Proof. check_eq. Qed.
 
-(** The free-range arm's bound is this run's [State.alloc_top],
-    INCLUSIVE: a free page ending exactly at it is the no-op 0, and the
-    page above it is inside the stack band the ledger does not describe,
-    so the arm declines.  [one_map_model]'s stack pointer is [demo_sp],
-    so its [alloc_top] is [demo_top]; a [<?] in place of the [<=?] turns
-    the first of these red. *)
+(** The free-range arm stops at the STACK, inclusive: a free page ending
+    exactly at the stack's floor is the no-op 0, and the page above it is
+    the stack's own entry ([Prelude.demo_stack], a [vm_reserved] entry the
+    model cannot unreserve), so the arm declines.  A [<?] in place of the
+    [<=?] in [State.iv_overlap] turns the first of these red. *)
+Definition stack_map_model : Model :=
+  with_vmmaps (mkVmMaps demo_stack [(65536, 4096)] 0 0 demo_limit)
+              (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
-Example munmap_free_range_ending_at_alloc_top_is_noop :
-  check_syscall (mkInput 215 [Z_to_bv 64 (demo_top - 4096); 4096; 0; 0; 0; 0]
-                   (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) one_map_model
-  = CheckOk one_map_model [].
-Proof. check_eq. Qed.
-
-Example munmap_free_range_in_the_stack_band_is_unmodeled :
+Example munmap_free_range_ending_at_the_stack_is_noop :
   check_syscall (mkInput 215 [Z_to_bv 64 demo_top; 4096; 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) one_map_model
+    (mkEffect 0 [] []) stack_map_model
+  = CheckOk stack_map_model [].
+Proof. check_eq. Qed.
+
+Example munmap_free_range_in_the_stack_is_unmodeled :
+  check_syscall (mkInput 215 [Z_to_bv 64 (demo_top + 4096); 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) stack_map_model
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
@@ -87,26 +89,26 @@ Example munmap_partial_splits_the_mapping :
                    (fun _ => None) (fun _ => None))
     (mkEffectU 0 [] [] [(65536, 4096)] [] [])
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)))
   = CheckOk
       (with_vmmaps (mkVmMaps [] [(69632, 4096)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))) []
+                 (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))) []
   /\ check_syscall (mkInput 215 [65536; 4096; 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] [])
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)))
   = CheckReject.
 Proof. split; check_eq. Qed.
 
 (** The partial-unmap shapes, on a four-page mapping [0x10000, 0x14000). *)
 Definition four_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 16384)] 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 Definition maps_model (maps : list (word * word)) : Model :=
   with_vmmaps (mkVmMaps [] maps 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** Head trim: the first page goes. *)
 Example munmap_head_trim :
@@ -203,15 +205,19 @@ Example munmap_partial_over_image_is_unmodeled :
                    (fun _ => None) (fun _ => None))
     (mkEffectU 0 [] [] [(61440, 8192)] [] [])
     (with_vmmaps (mkVmMaps [(57344, 8192)] [(65536, 16384)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)))
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
-Example munmap_partial_into_stack_band_is_unmodeled :
-  check_syscall (mkInput 215 [Z_to_bv 64 (demo_top - 4096); 8192; 0; 0; 0; 0]
+(** A partial unmap that reaches from a mapping into the stack's entry
+    is declined: the stack is a [vm_reserved] entry, which no arm hands
+    back. *)
+Example munmap_partial_into_stack_is_unmodeled :
+  check_syscall (mkInput 215 [Z_to_bv 64 demo_top; 8192; 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffectU 0 [] [] [(Z_to_bv 64 (demo_top - 4096), 8192)] [] [])
-    (maps_model [(Z_to_bv 64 (demo_top - 8192), 8192)])
+    (mkEffectU 0 [] [] [(Z_to_bv 64 demo_top, 8192)] [] [])
+    (with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 (demo_top - 4096), 8192)] 0 0 demo_limit)
+                 (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)))
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
@@ -417,57 +423,14 @@ Proof. split; check_eq. Qed.
     Linux does once [vma_expandable] (mm/mremap.c, Linux v6.18.46,
     commit 1f99e9ab748f) reports the neighbouring address space taken. *)
 
-(** The THIRD conjunct of [Mremap.mremap_inplace_grow_b],
-    [addr + new_len <= alloc_top h], is what keeps a grown mapping clear
-    of the dynamic stack: the stack is not in [vm_reserved], so nothing
-    else in the predicate notices a grow that climbs into it.  It needs a
-    source address the other mremap examples cannot supply — [mremap_in]
-    bakes 65536 — so the two below name theirs.
-
-    [demo_top] = 0x7fff7f800000 = 140735332483072: the [State.alloc_top]
-    of every ledger these cases build, [sp_window_lo] - [stack_max_size],
-    since [demo_sp] seeds the stack pointer at the bottom of the SP
-    window. *)
-
-(** A source at [demo_top - 8192] whose grown extent ends exactly ON
-    the ceiling, which the conjunct's [<=?] admits — the same inclusive
-    boundary [mmap_modeled_at_ceiling_boundary_grants] reads off for
-    [mmap]. *)
-
-(** The same call one page higher, so the grown extent ends one page PAST
-    the ceiling.  The model differs from the one above in the source's base
-    address and nothing else, and every other conjunct is as permissive
-    here as it is there: the source still fits under the ceiling
-    ([addr + old_len = demo_top] exactly, so [Mremap.mremap_source_b]
-    passes), [region_free] still sees an empty ledger once the source
-    range is cut out, and the budget is still met (limit 8192, final
-    live bytes 8192).  So the flip is attributable to
-    [addr + new_len <= alloc_top h] alone, and deleting that conjunct
-    would turn this [CheckReject] back into the [CheckOk] above.
-
-    Reason 4: no live run can reach it.  A trace would have to grow a tracked
-    mapping in place across its run's [alloc_top].  Linux's top-down
-    [mmap_base] sits at least [stack_guard_gap] below the deepest legal
-    stack, or [MAX_GAP] below [STACK_TOP] when a large guard makes the gap
-    clamp ([mmap_base]'s [MIN_GAP]/[MAX_GAP] clamp, mm/util.c, Linux
-    v6.18.46, commit 1f99e9ab748f).  The other
-    case is a guard within one stack pad plus the stack rlimit of 2^64:
-    the pad wraps (the [PF_RANDOMIZE] addition of [STACK_RND_MASK] to
-    [pad] in the same function), or the sum wraps and the [gap + pad >
-    gap] test beside it keeps the rlimit alone.  The gap is then at most
-    0x407fe000 and can
-    clamp up to [MIN_GAP], so under [PF_RANDOMIZE] the base can be from
-    one page to 0x387ff000 bytes above the deepest stack bottom, up to
-    [STACK_TOP - MIN_GAP].  So with any smaller guard a live run's grants
-    end under the stack's bottom.  With a guard in that range Linux can
-    place a mapping above [alloc_top], which the model refuses: there the
-    model's stack-disjointness rule ([State.alloc_top]) is narrower than
-    Linux.  The other exception is an argv image over 1 MiB, a known
-    limitation of the model. *)
-
-(** And, as with the image conjunct, it closes the in-place ARM rather than
-    the call: from the same ledger a move down to free space is still
-    admissible. *)
+(** What keeps a grown mapping clear of the stack is [region_free]
+    against [vm_reserved]: the stack is a ledger entry
+    ([State.stack_reserved]).  [Cases/Mm/Mremap.v]'s
+    [mremap_inplace_grow_to_ceiling_accepts] and
+    [mremap_inplace_grow_past_ceiling_rejected] pin the boundary on a
+    hand-built ledger, and [Cases/Mm/StackVma.v]'s D3 pair pins it on a
+    real launch; [mremap_move_down_from_ceiling_accepts] shows the
+    refusal closes the in-place ARM, not the call. *)
 
 (** [PAGE_ALIGN(new_len)] in [do_mremap] (mm/mremap.c, Linux v6.18.46,
     commit 1f99e9ab748f)
@@ -1339,11 +1302,16 @@ Proof. check_eq. Qed.
     test,
     Linux v6.18.46, commit 1f99e9ab748f), and the sub-case's own
     guards — alignment, positivity, the [alloc_top] bound and
-    [region_free] — are exactly what makes this hint free.  So the
-    widening is in which argument words reach the transition, never in
-    the set of transitions: no state becomes reachable that the
-    hint-placed shape does not reach, and every invariant that holds of
-    that shape's post-states holds of these unchanged.
+    [region_free] — together with the [TASK_SIZE] bound (which
+    [alloc_top] gives for every launch) and a range clear of the stack's
+    guard band ([State.stack_guard_band]) are exactly what makes this
+    hint free.  So for a range clear of the band the widening is in
+    which argument words reach the transition, never in the set of
+    transitions: no state becomes reachable that the hint-placed shape
+    does not reach, and every invariant that holds of that shape's
+    post-states holds of these unchanged.  Inside the band the MAP_FIXED
+    transition is new and is Linux's own: MAP_FIXED keeps no guard gap
+    ([__get_unmapped_area], mm/mmap.c).
 
     This is the strongest soundness argument any of the four shapes has,
     and it is why the sub-case is here rather than left fail-closed: it
@@ -1355,7 +1323,9 @@ Lemma mmap_fixed_fresh_adds_no_transition :
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
     (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
-    region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
+    (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= TASK_SIZE)%Z ->
+    region_free (stack_guard_band (m_kernel m) (m_vmmaps m)
+                 ++ vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     mmap_noreserve_backed_ok 34 m (page_round_up_Z (bv_unsigned len)) = true ->
     mmap_spec addr len 3 34 mmap_fd_none 0 i m
@@ -1371,7 +1341,7 @@ Lemma mmap_fixed_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m)) []).
 Proof.
-  intros addr len i m Hl Halign Hpos Hceil Hfree Hbud.
+  intros addr len i m Hl Halign Hpos Hceil Htask Hfree Hbud.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
@@ -1383,7 +1353,7 @@ Proof.
     destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
     left. split; [|reflexivity].
     unfold gap_fits, page_size.
-    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    split; [exact Halign|]. split; [lia|]. split; [exact Htask|].
     rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
@@ -1404,7 +1374,9 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
     (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
-    region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
+    (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= TASK_SIZE)%Z ->
+    region_free (stack_guard_band (m_kernel m) (m_vmmaps m)
+                 ++ vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     mmap_spec addr len 0 34 mmap_fd_none 0 i m
       (Ok (mkEffectU addr [] []
@@ -1419,7 +1391,7 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m) []).
 Proof.
-  intros addr len i m Hl Halign Hpos Hceil Hfree.
+  intros addr len i m Hl Halign Hpos Hceil Htask Hfree.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b mmap_noaccess_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
@@ -1431,7 +1403,7 @@ Proof.
     destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
     left. split; [|reflexivity].
     unfold gap_fits, page_size.
-    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    split; [exact Halign|]. split; [lia|]. split; [exact Htask|].
     rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
@@ -2110,7 +2082,7 @@ Definition noaccess_brk_model : Model :=
   with_vmmaps
     (mkVmMapsFull [(4096, 4096)] [(65536, 4096)] [(65536, 4096)]
       65536 69632 demo_limit 0 demo_sp)
-    (init_model [(4096, 4096)] 65536 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [(4096, 4096)] 65536 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** Reason 3.  A brk QUERY resolves to the unchanged break and must leave
     the no-access ledger alone — [brk_model_next]'s subtraction is gated on
@@ -2192,7 +2164,7 @@ Proof. check_eq. Qed.
 
 Definition brk_reserved : list (word * word) := [(4096, 4096)].
 
-Definition m_est : Model := init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input [] IEof).
+Definition m_est : Model := init_model brk_reserved 65536 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 Definition brk_in (req : word) : SyscallInput :=
   mkInput 214 [req; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
@@ -2278,7 +2250,7 @@ Proof. check_eq. Qed.
 
 Definition m_grown : Model :=
   with_vmmaps (mkVmMaps brk_reserved [(65536, 65536)] 65536 131072 demo_limit)
-              (init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model brk_reserved 65536 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 Example brk_shrink_unmaps_freed_tail :
   check_syscall (brk_in 65536)
@@ -2566,7 +2538,7 @@ Proof. check_eq. Qed.
 (* -------------------------------------------------------------------------
    The [check_mmap] placement/budget conjunction.  The
    five-way read-write test — page alignment, positivity, the
-   [alloc_top] bound, [region_free] against
+   [TASK_SIZE] bound, [region_free] against
    [vm_reserved ++ vm_maps], and [vm_limit] — differs deliberately from
    the four-way PROT_NONE test, which has no backed-memory charge.
    [check_mmap_sound_ok]
@@ -2581,7 +2553,8 @@ Proof. check_eq. Qed.
    would also make the paired [CheckReject] pin false, so a drift that
    the build lets through cannot also pass these.
 
-   Reason 3 (MODEL-INTERNAL STATE, [State.alloc_top]) and Reason 4
+   Reason 3 (MODEL-INTERNAL STATE, the stack's ledger entry and its guard
+   band) and Reason 4
    (the environment cannot be made to produce these — placement is
    ASLR-chosen, so no live run can name a literal address at the ceiling or
    overlapping a specific live mapping): every example below pins ONE
@@ -2589,11 +2562,9 @@ Proof. check_eq. Qed.
    [mmap_noaccess_b], by holding a boundary value just inside admissible
    and just outside it.  [vm_limit] is pinned for [mmap_modeled_b] by
    [mmap_within_budget_grants] / [mmap_beyond_budget_rejected] above.
-   The bound is per run
-   ([State.alloc_top]); these examples pin it at [demo_top], the top a
-   run started at the bottom of the SP window has, and the
-   [grant_at_demo_top_*] pair below is what separates a bound read from
-   the ledger from a constant. *)
+   The bound near the stack is per run (the stack's entry and its guard
+   band); these examples pin it at [demo_band], the band of a run started
+   at the bottom of the SP window. *)
 
 Definition mmap_noaccess_in (len : word) : SyscallInput :=
   mkInput 222 [0; len; 0; 34; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
@@ -2641,36 +2612,34 @@ Example mmap_noaccess_unaligned_placement_is_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** [demo_top] = 0x7fff7f800000 = 140735332483072.  The last
-    page-aligned start admitting a 4096-byte grant is
-    [demo_top - 4096] = 140735332478976: [r + n = demo_top]
-    exactly, satisfying the conjunct's [<=?]. Budget and placement are
-    otherwise unconstrained ([ceiling_room_model] carries no live map
-    and [demo_limit] of budget), so only [alloc_top] can be doing
-    the work here — and the pair names each address as its own HINT,
-    which is what keeps that true: Linux honours a free hint whose
-    range fits the window and ignores one whose range does not
-    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
-    Linux v6.18.46, commit 1f99e9ab748f). *)
+(** THE BOUND IS THE STACK'S GUARD GAP.  [stack_room_model] holds the
+    stack's entry, so a hint is honoured up to the band below it
+    ([State.stack_guard_band], Linux's [vm_start_gap] in the hint test,
+    mm/mmap.c [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f).  The last page-aligned start admitting a 4096-byte grant
+    is [demo_band - 4096]: its range ends exactly at the band.  Budget and
+    placement are otherwise unconstrained (no live map, [demo_limit] of
+    budget), so only the band can be doing the work — and the pair names
+    each address as its own HINT, which is what keeps that true: Linux
+    honours a free hint clear of the gap and ignores one that is not. *)
 
 Example mmap_modeled_at_ceiling_boundary_grants :
-  check_syscall (mmap_at_in 140735332478976 4096)
-    (mkEffect 140735332478976 [] [(140735332478976, 4096)])
-    ceiling_room_model
+  check_syscall (mmap_at_in (Z_to_bv 64 (demo_band - 4096)) 4096)
+    (mkEffect (Z_to_bv 64 (demo_band - 4096)) [] [(Z_to_bv 64 (demo_band - 4096), 4096)])
+    stack_room_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [] [(140735332478976, 4096)] 0 0 demo_limit)
-        ceiling_room_model) [].
+      (with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 (demo_band - 4096), 4096)] 0 0 demo_limit)
+        stack_room_model) [].
 Proof. check_eq. Qed.
 
-(** One page past the boundary — [r = demo_top] itself, so
-    [r + n = demo_top + 4096] — fails the SAME conjunct and only
-    that conjunct: region and budget are exactly as permissive as
-    above. *)
+(** One page higher — the band's own first page — the hint is not
+    honoured and the search answers elsewhere: region and budget are
+    exactly as permissive as above. *)
 
 Example mmap_modeled_past_ceiling_is_rejected :
-  check_syscall (mmap_at_in 140735332483072 4096)
-    (mkEffect 140735332483072 [] [(140735332483072, 4096)])
-    ceiling_room_model
+  check_syscall (mmap_at_in (Z_to_bv 64 demo_band) 4096)
+    (mkEffect (Z_to_bv 64 demo_band) [] [(Z_to_bv 64 demo_band, 4096)])
+    stack_room_model
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -2678,20 +2647,22 @@ Proof. check_eq. Qed.
     [vm_noaccess]. *)
 
 Example mmap_noaccess_at_ceiling_boundary_grants :
-  check_syscall (mmap_noaccess_at_in 140735332478976 4096)
-    (mkEffectU 140735332478976 [] [] [(140735332478976, 4096)] [] [])
-    ceiling_room_model
+  check_syscall (mmap_noaccess_at_in (Z_to_bv 64 (demo_band - 4096)) 4096)
+    (mkEffectU (Z_to_bv 64 (demo_band - 4096)) [] []
+       [(Z_to_bv 64 (demo_band - 4096), 4096)] [] [])
+    stack_room_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(140735332478976, 4096)] [(140735332478976, 4096)]
+        (mkVmMapsFull demo_stack [(Z_to_bv 64 (demo_band - 4096), 4096)]
+          [(Z_to_bv 64 (demo_band - 4096), 4096)]
           0 0 demo_limit 0 demo_sp)
-        ceiling_room_model) [].
+        stack_room_model) [].
 Proof. check_eq. Qed.
 
 Example mmap_noaccess_past_ceiling_is_rejected :
-  check_syscall (mmap_noaccess_at_in 140735332483072 4096)
-    (mkEffectU 140735332483072 [] [] [(140735332483072, 4096)] [] [])
-    ceiling_room_model
+  check_syscall (mmap_noaccess_at_in (Z_to_bv 64 demo_band) 4096)
+    (mkEffectU (Z_to_bv 64 demo_band) [] [] [(Z_to_bv 64 demo_band, 4096)] [] [])
+    stack_room_model
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -2787,7 +2758,7 @@ Proof. reflexivity. Qed.
     4096.  A one-page grow fits; a two-page grow can only fail (the
     break comes back unchanged), never move the break. *)
 
-Definition m_tight_brk : Model := init_model brk_reserved 65536 0 demo_sp 4096 (demo_input [] IEof).
+Definition m_tight_brk : Model := init_model brk_reserved 65536 0 demo_sp demo_ed_top 4096 (demo_input [] IEof).
 
 Example brk_grow_within_budget_grants :
   check_syscall (brk_in 69632) (mkEffect 69632 [] [(65536, 4096)]) m_tight_brk
@@ -2937,7 +2908,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     an obligation discharged because it was unreachable is not a test. *)
 Definition lazy_align_base : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example lazy_unaligned_reservation_frees_no_backing :
   let m := vm_add_lazy 67584 6144 lazy_align_base in
@@ -2955,7 +2926,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     mmap spends the released page's budget. *)
 Definition brk_sparse_grown : Model :=
   with_vmmaps (mkVmMaps brk_reserved [(65536, 4096)] 65536 69632 4096)
-    (init_model brk_reserved 65536 0 demo_sp 4096 (demo_input [] IEof)).
+    (init_model brk_reserved 65536 0 demo_sp demo_ed_top 4096 (demo_input [] IEof)).
 
 Definition brk_sparse_fixed : Model :=
   with_mmap_replacement 16434 65536 4096 brk_sparse_grown.
@@ -3023,12 +2994,12 @@ Proof. check_eq. Qed.
 
    The fresh-grant arms used to say three things about a placement the
    model chose and nothing else — page-aligned, inside the user
-   address space (nonzero, ending at or below the run's
-   [State.alloc_top]), and disjoint from every mapping the ledger
-   records.  They now also say WHERE: [Mmap.linux_place], the hint
+   address space (nonzero, ending at or below [State.TASK_SIZE]), and
+   disjoint from every mapping the ledger records.  They now also say WHERE: [Mmap.linux_place], the hint
    test and the two searches of
    [generic_get_unmapped_area_topdown] (mm/mmap.c, Linux v6.18.46,
-   commit 1f99e9ab748f), with [State.alloc_top] for [mmap_end].  The
+   commit 1f99e9ab748f), with [State.TASK_SIZE] for [mmap_end] and the
+   stack's guard band kept free.  The
    section note in [Sys/Mm/Mmap.v] carries the argument and names the
    residuals; these cases carry both halves of it.
 
@@ -3048,7 +3019,7 @@ Proof. check_eq. Qed.
    ------------------------------------------------------------------------- *)
 
 Definition placement_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** A LOW FIRST GRANT, NOW REFUSED.  A first NULL-hint grant at
     0x80000000 is page-aligned, positive, below the ceiling and free,
@@ -3247,8 +3218,8 @@ Example mmap_null_hint_zero_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** NEGATIVE: the grant top.  A grant whose end passes this run's
-    [alloc_top] would not be disjoint from its stack. *)
+(** NEGATIVE: not where Linux puts it.  A NULL-hint request goes where
+    the search puts it, and [demo_top] is not that address. *)
 Example mmap_null_hint_above_ceiling_rejected :
   check_syscall (mmap_in 4096)
     (mkEffect (Z_to_bv 64 demo_top) []
@@ -3370,21 +3341,21 @@ Proof. check_eq. Qed.
     satisfies the three conditions.  Without them it is a lemma about an
     executable function. *)
 Lemma first_null_grant_admissible :
-  forall (mb sp : word) inp (len a : word) m' evs,
+  forall (mb sp top : word) inp (len a : word) m' evs,
     w_is0 len = false ->
     check_mmap 0 len 3 34 mmap_fd_none 0
       (mkEffect a [] [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
-      (init_model [] 0 mb sp demo_limit inp) = CheckOk m' evs ->
+      (init_model [] 0 mb sp top demo_limit inp) = CheckOk m' evs ->
     (bv_unsigned a mod page_size = 0)%Z
     /\ (0 < bv_unsigned a)%Z
     /\ (bv_unsigned a + page_round_up_Z (bv_unsigned len)
-        <= alloc_top (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))%Z
+        <= TASK_SIZE)%Z
     /\ region_free
-         (vm_reserved (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
-          ++ vm_maps (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))
+         (vm_reserved (m_vmmaps (init_model [] 0 mb sp top demo_limit inp))
+          ++ vm_maps (m_vmmaps (init_model [] 0 mb sp top demo_limit inp)))
          a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true.
 Proof.
-  intros mb sp inp len a m' evs Hlen H.
+  intros mb sp top inp len a m' evs Hlen H.
   pose proof (w_is0_false_pos len Hlen) as Hlpos.
   pose proof (page_round_up_Z_pos (bv_unsigned len) Hlpos) as Hge.
   assert (HnPos : (0 < page_round_up_Z (bv_unsigned len))%Z)
@@ -3395,10 +3366,10 @@ Proof.
   cbn [mmap_modeled_b] in H. cbv zeta in H.
   destruct (errno_ret_in mmap_errnos a) eqn:He; [discriminate|].
   destruct (linux_place_is
-              (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
-              (kb_thp (m_kernel (init_model [] 0 mb sp demo_limit inp)))
+              (m_vmmaps (init_model [] 0 mb sp top demo_limit inp))
+              (m_kernel (init_model [] 0 mb sp top demo_limit inp))
               0 (page_round_up_Z (bv_unsigned len)) a
-            && mmap_noreserve_backed_ok 34 (init_model [] 0 mb sp demo_limit inp)
+            && mmap_noreserve_backed_ok 34 (init_model [] 0 mb sp top demo_limit inp)
                  (page_round_up_Z (bv_unsigned len))
             && listNN_eqb
                  [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]
@@ -3410,22 +3381,20 @@ Proof.
 Qed.
 
 (** Reason 1, the negative half of the same [forall]: no resolution whose
-    end passes the RUN'S top is accepted, whatever the stack pointer.  The
-    bound the conclusion names is [State.alloc_top] of the very ledger the
-    check ran on, so a checker comparing against a constant instead
-    could not prove it: at a stack pointer
-    above the constant the constant would admit what the ledger refuses. *)
+    end passes [State.TASK_SIZE], Linux's [mmap_end], is accepted, whatever
+    the launch.  The stack itself is kept out by the ledger
+    ([State.stack_reserved]); the [Cases/Mm/StackVma.v] and
+    [grant_at_demo_top_*] pairs pin that half. *)
 Lemma mmap_null_hint_above_top_never_accepted :
-  forall (mb sp : word) inp (len a : word) m' evs,
+  forall (mb sp top : word) inp (len a : word) m' evs,
     w_is0 len = false ->
-    (alloc_top (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
-     < bv_unsigned a + page_round_up_Z (bv_unsigned len))%Z ->
+    (TASK_SIZE < bv_unsigned a + page_round_up_Z (bv_unsigned len))%Z ->
     check_mmap 0 len 3 34 mmap_fd_none 0
       (mkEffect a [] [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
-      (init_model [] 0 mb sp demo_limit inp) <> CheckOk m' evs.
+      (init_model [] 0 mb sp top demo_limit inp) <> CheckOk m' evs.
 Proof.
-  intros mb sp inp len a m' evs Hlen Habove H.
-  destruct (first_null_grant_admissible mb sp inp len a m' evs Hlen H)
+  intros mb sp top inp len a m' evs Hlen Habove H.
+  destruct (first_null_grant_admissible mb sp top inp len a m' evs Hlen H)
     as (_ & _ & Hle & _).
   lia.
 Qed.
@@ -3434,39 +3403,40 @@ Qed.
 (* -------------------------------------------------------------------------
    THE BOUND IS READ FROM THE LEDGER, NOT FROM A CONSTANT
 
-   [State.alloc_top] is [vm_init_sp - stack_max_size]: the grant top of a
-   run is at or below its own stack's floor.  The biconditional proofs in
-   [Checks/Sys/Mm/Mmap.v] cannot see a constant creeping into both the
-   spec and the checker at once, so each pair below runs THE SAME effect
-   against two ledgers that differ only in the stack pointer they were
-   started with, and asks for opposite verdicts.  [demo_sp] is the bottom
-   of the SP window, so its top is [demo_top]; [hi_sp] is 256 MiB above
-   it.  A grant ending one page past [demo_top] is exactly the lie a run
-   started at [demo_sp] must refuse and a run started at [hi_sp] must
-   admit.  Reason 3: the stack pointer is model-internal state fixed
-   when the run starts, so no trace can vary it.
+   The stack is a ledger entry ([State.stack_reserved], the window below
+   the stack VMA's end) and the gap-keeping tests keep its guard band free
+   ([State.stack_guard_band]).  The biconditional proofs in
+   [Checks/Sys/Mm/Mmap.v] cannot see a constant creeping into both the spec
+   and the checker at once, so each pair below runs THE SAME effect against
+   two launches that differ only in where the stack was put, and asks for
+   opposite verdicts.  Under [demo_sp] / [demo_ed_top] the stack's entry
+   starts at [demo_top + 4096] and its band at [demo_band], so a range at
+   [demo_top] lies in the band; under [hi_sp] / [hi_top] the stack is
+   256 MiB higher and the same range is free.  Reason 3: the stack's place
+   is model-internal state fixed when the run starts, so no trace can vary
+   it.  Both launches put the mmap base at 0, below either stack, so the
+   stack's entry is the full 8 MiB window in both.
    ------------------------------------------------------------------------- *)
 
 Definition hi_sp : word := Z_to_bv 64 (sp_window_lo + 0x10000000).
+Definition hi_top : word := Z_to_bv 64 (sp_window_lo + 0x10000000 + 4096).
 
 Definition top_lo_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 0) demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 Definition top_hi_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 0) hi_sp hi_top demo_limit (demo_input [] IEof).
 
-(** BOTH CALLS NAME [demo_top] AS A HINT, and that is what leaves
-    [State.alloc_top] as the only thing separating them.  A free
-    page-aligned hint Linux returns unchanged, and a hint whose range
-    ends past the search window it is checked in it does not
-    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
-    Linux v6.18.46, commit 1f99e9ab748f).  Under [demo_sp] the hinted
-    range ends one page past that run's [alloc_top], so the hint is
-    not honoured and the top-down search answers somewhere else; under
-    [hi_sp] the same range is 256 MiB below the top and the hint
-    stands.  With a NULL hint instead, BOTH would be refused — the
-    search would answer the highest page under the vdso/vvar pair in
-    either run — and the pair would no longer say anything about the
-    ceiling. *)
+(** BOTH CALLS NAME [demo_top] AS A HINT, and that is what leaves the
+    stack's place as the only thing separating them.  A free page-aligned
+    hint clear of the stack's guard gap Linux returns unchanged, and one
+    inside the gap it does not (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test against
+    [vm_start_gap], Linux v6.18.46, commit 1f99e9ab748f).  Under [demo_sp]
+    the hinted range lies in the band, so the hint is not honoured and the
+    top-down search answers somewhere else; under [hi_sp] the same range is
+    256 MiB below the band and the hint stands.  With a NULL hint instead,
+    BOTH would be refused — the search would answer elsewhere in either
+    run — and the pair would no longer say anything about the stack. *)
 Definition top_hi_reserved : list (word * word) :=
   vm_reserved (m_vmmaps top_hi_model).
 
@@ -3485,10 +3455,10 @@ Example grant_at_demo_top_admitted_under_high_sp :
       (with_vmmaps
         (mkVmMapsFull (vm_reserved (m_vmmaps top_hi_model))
           [(Z_to_bv 64 demo_top, 4096)] [] 0 0 demo_limit
-          (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
+          (Z_to_bv 64 0) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
-(** The PROT_NONE arm reads the same field, through the same hint. *)
+(** The PROT_NONE arm reads the same ledger, through the same hint. *)
 Example noaccess_grant_at_demo_top_rejected_under_low_sp :
   check_syscall (mmap_noaccess_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffectU (Z_to_bv 64 demo_top) [] [] [(Z_to_bv 64 demo_top, 4096)] [] [])
@@ -3505,17 +3475,18 @@ Example noaccess_grant_at_demo_top_admitted_under_high_sp :
         (mkVmMapsFull (vm_reserved (m_vmmaps top_hi_model))
           [(Z_to_bv 64 demo_top, 4096)]
           [(Z_to_bv 64 demo_top, 4096)] 0 0 demo_limit
-          (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
+          (Z_to_bv 64 0) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
 (** And so does a growing [brk]: an established break one page under
-    [demo_top] asked to grow two pages crosses the top. *)
+    [demo_top] asked to grow two pages runs into the band, which
+    [Mmap.brk_grow_ok] keeps free as Linux's [brk] does. *)
 Definition brk_top_lo_model : Model :=
-  init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 mmap_base_max)
-    demo_sp demo_limit (demo_input [] IEof).
+  init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 0)
+    demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 Definition brk_top_hi_model : Model :=
-  init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 mmap_base_max)
-    hi_sp demo_limit (demo_input [] IEof).
+  init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 0)
+    hi_sp hi_top demo_limit (demo_input [] IEof).
 
 Example brk_grow_across_demo_top_rejected_under_low_sp :
   check_syscall (brk_in (Z_to_bv 64 (demo_top + 4096)))
@@ -3535,7 +3506,7 @@ Example brk_grow_across_demo_top_admitted_under_high_sp :
         (mkVmMapsFull (vm_reserved (m_vmmaps brk_top_hi_model))
           [(Z_to_bv 64 (demo_top - 4096), 8192)] []
           (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 (demo_top + 4096))
-          demo_limit (Z_to_bv 64 mmap_base_max) hi_sp) brk_top_hi_model) [].
+          demo_limit (Z_to_bv 64 0) hi_sp) brk_top_hi_model) [].
 Proof. check_eq. Qed.
 
 (* -------------------------------------------------------------------------
@@ -4157,7 +4128,7 @@ Definition budget_ledgers (m : Model)
    vm_noaccess (m_vmmaps m), m_vm_lazy m).
 
 Definition budget_s0 : Model :=
-  init_model brk_reserved 65536 0 demo_sp 8192 (demo_input [] IEof).
+  init_model brk_reserved 65536 0 demo_sp demo_ed_top 8192 (demo_input [] IEof).
 
 (** The budget trace's own call builder: four argument words rather
     than the two [mmap_at_in] above fixes, because this section varies

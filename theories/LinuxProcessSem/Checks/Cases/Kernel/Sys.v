@@ -491,7 +491,7 @@ Proof. split; check_eq. Qed.
 (** The model a demo run starts in: an ordinary unprivileged launch, its
     six ids derived from [Cases.Prelude.demo_uid] / [demo_gid] by
     [State.init_model]. *)
-Definition demo_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition demo_model : Model := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** A ROOT process: all six ids 0, which is what [State.init_model]
     builds for a launch by root and what makes

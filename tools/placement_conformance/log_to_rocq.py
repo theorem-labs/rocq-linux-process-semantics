@@ -40,8 +40,10 @@ THE LAUNCH STATE comes from the log's first line:
     fs/binfmt_elf.c, ARCH_SETUP_ADDITIONAL_PAGES; arch/riscv/kernel/vdso.c);
   * the vDSO text size is the [vdso] mapping's size, as 1 + (n mod 16) pages
     (State.vdso_text_pages);
-  * the stack pointer is field 28 of /proc/self/stat (mm->start_stack), and
-    the break is what brk(0) answered.
+  * the stack pointer is field 28 of /proc/self/stat (mm->start_stack), the
+    stack VMA's end is the end of the [stack] mapping (State.init_model makes
+    the stack's ledger entry from it, State.stack_reserved), and the break is
+    what brk(0) answered.
 
 THE EFFECTS are what Linux did, written in the model's vocabulary:
 
@@ -168,12 +170,22 @@ def launch_state(launch, log_name):
             notes.append(f"the vvar mapping is {(vvar[1] - vvar[0]) // PAGE} "
                          f"pages, not {VVAR_PAGES}")
     reserved = [(lo, hi - lo) for lo, hi, _p, nm in maps if nm not in NOT_IMAGE]
+    stack = named(maps, "[stack]")
+    if stack is None:
+        # qemu-user may name no stack mapping; the page above the stack
+        # pointer is the least end a stack holding it can have.
+        notes.append("the log has no [stack] mapping, so the stack's end is "
+                     "the page above the stack pointer")
+        top = page_up(int(launch["startstack"]) + 1)
+    else:
+        top = stack[1]
     return {
         "reserved": reserved,
         "mbase": vdso[1],
         "vvar_lo": vvar[0] if vvar else vdso[0] - VVAR_PAGES * PAGE,
         "text_pages": text_pages,
         "sp": int(launch["startstack"]),
+        "top": top,
         "brk0": int(launch["brk0"]),
         "mmu": launch.get("mmu", ""),
         "dac_mmap_min_addr": launch.get("dac_mmap_min_addr"),
@@ -307,11 +319,12 @@ Open Scope bv_scope.
     is {kb_vdso_text}).  [kb_aslr] is the boot's own: false under
     `norandmaps`, true otherwise.
 
-    The remaining five are [State.default_kernel]'s, and the replay
-    does not depend on them: [Sys/Mm/Mmap.linux_place] reads [kb_thp],
-    and [State.vdso_reserved] reads [kb_vdso], and nothing in a
-    placement reads the guard gap, the randomisation width, rseq, the
-    vector length or the cache words.  A start-state replay does read
+    The remaining five are [State.default_kernel]'s.  A placement reads
+    one of them, the guard gap: [Sys/Mm/Mmap.linux_place] keeps
+    [State.stack_guard_band] free, and the default 256 pages is the
+    probe kernel's own, since its command line sets no
+    [stack_guard_gap].  Nothing in a placement reads the randomisation
+    width, rseq, the vector length or the cache words.  A start-state replay does read
     them, and that is what tools/placement_conformance's start-state
     rules are for. *)
 Definition replay_kernel : KernelBuild :=
@@ -322,8 +335,8 @@ Definition replay_kernel : KernelBuild :=
 
 (** The launch.  Nothing below reads the argument vector, the environment,
     the file system or the credentials, so they are empty or ordinary; the
-    three fields that decide a placement — the reserved ledger, the mmap
-    base and the stack pointer — are the log's.  The two trailing
+    fields that decide a placement — the reserved ledger, the mmap base,
+    the stack pointer and the stack's end — are the log's.  The two trailing
     declarations are [in_channel_reader] and [in_sigpipe_default], both
     [true]: an ordinary launch whose standard output is read and whose
     SIGPIPE still kills, which is what [Run.valid_input] pins and what a
@@ -339,7 +352,7 @@ Definition replay_reserved : list (word * word) :=
   {reserved}.
 
 Definition replay_init : Model :=
-  init_model replay_reserved ({brk0}) ({mbase}) ({sp})
+  init_model replay_reserved ({brk0}) ({mbase}) ({sp}) ({top})
     source_alloc_limit replay_input.
 
 (** One pair per call of the log: what the probe asked, and what the kernel
@@ -396,6 +409,7 @@ def emit(state, steps, module, log, expect, provenance):
         brk0=w(state["brk0"]),
         mbase=w(state["mbase"]),
         sp=w(state["sp"]),
+        top=w(state["top"]),
         steps=body,
     )
     return text + (OK_LEMMA if expect == "ok" else REJECT_LEMMA)

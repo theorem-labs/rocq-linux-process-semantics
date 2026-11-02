@@ -122,7 +122,7 @@
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType RiscvSemantics Fs State Specs Run.
+  BvBase MemImageType RiscvSemantics Fs State Specs StackLayout Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier.
@@ -201,17 +201,17 @@ Proof.
     rewrite Hshape. exact (Hc (vdso_segments (in_kernel inp) sp mbase) sp mem rom). }
   (* the model half, at this run's initial model *)
   set (m0 := with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rnd))
-               (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp
+               (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp (ed_top rnd)
                   lim inp)).
   assert (Hh : m_halted m0 = None)
     by exact (m_halted_init_model (segments_reserved (run_segments segs inp sp mbase))
-                brk0 mbase sp lim inp).
+                brk0 mbase sp (ed_top rnd) lim inp).
   assert (Hlazy : m_vm_lazy m0 = [])
     by exact (init_model_no_lazy (segments_reserved (run_segments segs inp sp mbase))
-                brk0 mbase sp lim inp).
+                brk0 mbase sp (ed_top rnd) lim inp).
   assert (Hfs : m_fs m0 = in_fs inp)
     by exact (m_fs_init_model (segments_reserved (run_segments segs inp sp mbase))
-                brk0 mbase sp lim inp).
+                brk0 mbase sp (ed_top rnd) lim inp).
   split.
   - (* every observed prefix is one of the two *)
     intros (tr' & c & Hstar & Hp).

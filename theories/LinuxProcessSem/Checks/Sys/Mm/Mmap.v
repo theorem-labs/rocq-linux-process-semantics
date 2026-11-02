@@ -55,7 +55,7 @@ Ltac place_complete Hlen :=
         as (Hal & Hpos & Hb & Hfree);
       rewrite (errno_ret_in_below mmap_errnos a) by
         first [ reflexivity
-              | alloc_top_bounds; unfold two_pow_64 in *; lia ];
+              | alloc_top_bounds; unfold TASK_SIZE in *; unfold two_pow_64 in *; lia ];
       rewrite (proj2 (linux_place_is_iff _ _ _ _ a
                         (proj1 (mmap_grant_len_ok _ Hlen))
                         (proj2 (mmap_grant_len_ok _ Hlen))) Hp)
@@ -94,7 +94,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
+        if linux_place_is (m_vmmaps m) (m_kernel m) addr nZ r
            && mmap_noreserve_backed_ok flags m nZ
            && listNN_eqb zs [(r, n)]
         then CheckOk
@@ -118,7 +118,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
+        if linux_place_is (m_vmmaps m) (m_kernel m) addr nZ r
            && listNN_eqb us [(r, n)]
         then CheckOk
                (with_mmap_backing flags r n
@@ -581,7 +581,7 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+      destruct (linux_place_is (m_vmmaps m) (m_kernel m) addr
                   (page_round_up_Z (bv_unsigned len)) r
                 && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
@@ -610,7 +610,7 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+      destruct (linux_place_is (m_vmmaps m) (m_kernel m) addr
                   (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
@@ -996,7 +996,7 @@ Proof.
       [destruct us; [destruct cs; [destruct copyins|]|]|].
     + destruct (errno_ret_in mmap_errnos r); [destruct zs; discriminate|].
       cbv zeta in H.
-      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+      destruct (linux_place_is (m_vmmaps m) (m_kernel m) addr
                   (page_round_up_Z (bv_unsigned len)) r
                 && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
@@ -1014,7 +1014,7 @@ Proof.
     destruct (errno_ret_in mmap_errnos r).
     - destruct us; discriminate.
     - cbv zeta in H.
-      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+      destruct (linux_place_is (m_vmmaps m) (m_kernel m) addr
                   (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
@@ -1317,7 +1317,7 @@ Proof.
           cbv zeta.
           rewrite (errno_ret_in_below mmap_errnos addr) by
             first [ reflexivity
-                  | alloc_top_bounds;
+                  | alloc_top_bounds; unfold TASK_SIZE in *;
                       unfold two_pow_64 in *; lia ].
           rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
           cbn [andb]. reflexivity.
@@ -1367,7 +1367,7 @@ Proof.
         cbv zeta.
         rewrite (errno_ret_in_below mmap_errnos addr) by
           first [ reflexivity
-                | alloc_top_bounds;
+                | alloc_top_bounds; unfold TASK_SIZE in *;
                     unfold two_pow_64 in *; lia ].
         rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
         cbn [andb].
@@ -1428,7 +1428,7 @@ Proof.
               cbv zeta.
               rewrite (errno_ret_in_below mmap_errnos addr) by
                 first [ reflexivity
-                      | alloc_top_bounds;
+                      | alloc_top_bounds; unfold TASK_SIZE in *;
                           unfold two_pow_64 in *; lia ].
               rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
               match goal with
@@ -1461,7 +1461,7 @@ Proof.
          cbv zeta.
          rewrite (errno_ret_in_below mmap_errnos addr) by
            first [ reflexivity
-                 | alloc_top_bounds;
+                 | alloc_top_bounds; unfold TASK_SIZE in *;
                      unfold two_pow_64 in *; lia ].
          rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
          cbn [andb].
@@ -1485,7 +1485,7 @@ Proof.
     cbv zeta.
     rewrite (errno_ret_in_below mmap_errnos addr) by
       first [ reflexivity
-            | alloc_top_bounds;
+            | alloc_top_bounds; unfold TASK_SIZE in *;
                 unfold two_pow_64 in *; lia ].
     rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
     match goal with
@@ -1544,7 +1544,7 @@ Proof.
               cbv zeta.
               rewrite (errno_ret_in_below mmap_errnos addr) by
                 first [ reflexivity
-                      | alloc_top_bounds;
+                      | alloc_top_bounds; unfold TASK_SIZE in *;
                           unfold two_pow_64 in *; lia ].
               rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
               cbn [andb]. reflexivity.
@@ -1573,7 +1573,7 @@ Proof.
          cbv zeta.
          rewrite (errno_ret_in_below mmap_errnos addr) by
            first [ reflexivity
-                 | alloc_top_bounds;
+                 | alloc_top_bounds; unfold TASK_SIZE in *;
                      unfold two_pow_64 in *; lia ].
          rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
          cbn [andb]. reflexivity. }
@@ -1593,7 +1593,7 @@ Proof.
     cbv zeta.
     rewrite (errno_ret_in_below mmap_errnos addr) by
       first [ reflexivity
-            | alloc_top_bounds;
+            | alloc_top_bounds; unfold TASK_SIZE in *;
                 unfold two_pow_64 in *; lia ].
     rewrite bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl).
     reflexivity.

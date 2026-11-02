@@ -847,7 +847,7 @@ Proof.
   cbn [run bh_traces] in Ht. unfold init_config in Ht.
   exact (exits_c_obs_no_kill (run_segments segs inp sp mbase) code fuel _
            (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp (ed_top rnd) lim inp))
            tr sig fs
            eq_refl eq_refl Hms Ht Hin).
 Qed.

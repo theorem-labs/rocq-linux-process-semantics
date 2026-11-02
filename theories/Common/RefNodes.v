@@ -347,18 +347,17 @@ Definition noaccess_model (a n : word) (m : Model) : Model :=
     TWO CHANGES SINCE THE PLACEMENT WORK.  The first conjunct is the spec's own
     placement rule ([Mmap.linux_place], decided by
     [Placement.linux_place_is]) — the address is Linux's, not merely a
-    free one.  And the third conjunct bounds the grant by the run's
-    [alloc_top], not by the constant [alloc_ceiling]: at Linux's
-    address the constant bound is FALSE for some admissible runs, since
-    the top-down window's ceiling [mmap_top h] follows
-    [vm_mmap_base h], which [Run.valid_mmap_base] allows above
-    [alloc_ceiling] (see [AsanCeil.placement_policy]). *)
+    free one.  And the third conjunct bounds the grant by [TASK_SIZE],
+    the top of the bottom-up fallback, which is the bound
+    [Placement.linux_place_admissible] gives; a plan node that needs the
+    grant under the run's ceiling gets it from the placement itself
+    ([AsanPlacement.null_hint_grant_below_top]). *)
 Definition grant_ok_na (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a
   && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-  && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
+  && (bv_unsigned a + n <=? TASK_SIZE)%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
-  && hint_placement_ok_b hint (m_vmmaps m) (bv_unsigned a) n.
+  && hint_placement_ok_b hint (m_kernel m) (m_vmmaps m) (bv_unsigned a) n.
 
 (** The checker's grant condition for a PROT_NONE grant — EXACTLY what
     [check_mmap]'s noaccess arm tests, so [mmap_noaccess_check] below is
@@ -371,13 +370,13 @@ Definition grant_ok_na (hint : word) (m : Model) (a : word) (n : Z) : bool :=
     had: [check_mmap]'s test reads the call's [addr] argument, so the
     condition is no longer hint-independent. *)
 Definition grant_ok_na_pin (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a.
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a.
 
 Lemma grant_ok_na_pin_unpack : forall hint m a n,
   (0 < n)%Z -> (n mod page_size = 0)%Z ->
   grant_ok_na_pin hint m a n = true ->
   (bv_unsigned a mod page_size = 0)%Z /\ (0 < bv_unsigned a)%Z
-  /\ (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z
+  /\ (bv_unsigned a + n <= TASK_SIZE)%Z
   /\ region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n) = true.
 Proof.
   intros hint m a n Hn Hnal H.
@@ -400,7 +399,7 @@ Proof.
     (proj2 (Z.leb_le _ _) Htop). cbn [andb].
   unfold hint_placement_ok_b. destruct (w_is0 hint) eqn:H0; [|reflexivity].
   unfold w_is0 in H0. apply bv_eqb_eq in H0. subst hint.
-  exact (placement_policy_holds (m_vmmaps m) (kb_thp (m_kernel m)) a n Hn Hnal
+  exact (placement_policy_holds (m_vmmaps m) (m_kernel m) a n Hn Hnal
            (proj1 (linux_place_is_iff _ _ _ _ _ Hn Hnal) H)).
 Qed.
 
@@ -412,7 +411,7 @@ Proof.
 Qed.
 
 (** [grant_ok_na] implies [grant_ok_na_pin]: the gate is the only
-    extra conjunct, and both bound the grant by the run's [alloc_top]. *)
+    extra conjunct, and both bound the grant by [TASK_SIZE]. *)
 Lemma grant_ok_na_pin_of_gate : forall hint m a n,
   grant_ok_na hint m a n = true -> grant_ok_na_pin hint m a n = true.
 Proof.
@@ -422,7 +421,7 @@ Qed.
 
 Lemma grant_ok_na_place : forall hint m a n,
   grant_ok_na hint m a n = true ->
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a = true.
 Proof.
   intros hint m a n H. unfold grant_ok_na in H.
   rewrite !andb_true_iff in H. tauto.
@@ -434,7 +433,7 @@ Lemma grant_na_pin_not_errno : forall hint m a n,
 Proof.
   intros hint m a n Hn Hnal Hg.
   destruct (grant_ok_na_pin_unpack _ _ _ _ Hn Hnal Hg) as (_ & _ & Htop & _).
-  apply errno_ret_in_below; [reflexivity|]. alloc_top_bounds. unfold two_pow_64 in *. lia.
+  apply errno_ret_in_below; [reflexivity|]. unfold TASK_SIZE, two_pow_64 in *. lia.
 Qed.
 
 Definition mmap_noaccess_args_ok (ms : machine_state) : Prop :=
@@ -482,7 +481,7 @@ Proof.
   apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _].
   apply andb_true_iff in Hg as [Hg Htop].
   apply Z.leb_le in Htop.
-  apply errno_ret_in_below; [reflexivity|]. alloc_top_bounds. unfold two_pow_64 in *. lia.
+  apply errno_ret_in_below; [reflexivity|]. unfold TASK_SIZE, two_pow_64 in *. lia.
 Qed.
 
 (* ========================================================================= *)
@@ -716,22 +715,32 @@ Lemma vm_backed_bytes_no_noaccess : forall h,
   vm_noaccess h = [] -> vm_backed_bytes h = vm_live_bytes h.
 Proof. intros h H. unfold vm_backed_bytes, vm_backed_maps. rewrite H. reflexivity. Qed.
 
-(** Admissibility of an aligned grow [b -> b + d]: below the ceiling,
-    disjoint from the image and every mapping, within budget. *)
+(** Admissibility of an aligned grow [b -> b + d]: below the ceiling with
+    its guard page, disjoint from the image and every mapping, within
+    budget.  The grow keeps the stack's guard gap too
+    ([Mmap.brk_grow_ok] reads [State.stack_guard_band]), and
+    [stack_band_ok] puts that band above the ceiling. *)
 Lemma brk_grow_ok_aligned_intro : forall m d,
   let h := m_vmmaps m in
   let b := vm_brk h in
   (bv_unsigned b mod page_size = 0)%Z -> (d mod page_size = 0)%Z -> (0 < d)%Z ->
   (0 < bv_unsigned b)%Z ->
-  (bv_unsigned b + d <= alloc_ceiling)%Z -> init_sp_ok h ->
+  (bv_unsigned b + d + page_size <= alloc_ceiling)%Z -> stack_band_ok (m_kernel m) h ->
   region_free (vm_reserved h ++ vm_maps h) b (Z_to_bv 64 (d + page_size)) = true ->
   (vm_backing_used m + d <= vm_limit h)%Z ->
   Mmap.brk_grow_ok m (Z_to_bv 64 (bv_unsigned b + d)) (Z_to_bv 64 (bv_unsigned b + d)) = true.
 Proof.
-  intros m d h b Hbal Hdal Hd Hb0 Hce Hisp Hrf Hlive.
+  intros m d h b Hbal Hdal Hd Hb0 Hce [_ Hband] Hrf Hlive.
   pose proof alloc_ceiling_val as Hcv. pose proof (u64_range b) as Hbr.
-  pose proof (alloc_ceiling_le_alloc_top h Hisp) as Htop.
-  assert (Hureq : bv_unsigned (Z_to_bv 64 (bv_unsigned b + d)) = (bv_unsigned b + d)%Z) by (apply u64_lit; lia).
+  assert (Hureq : bv_unsigned (Z_to_bv 64 (bv_unsigned b + d)) = (bv_unsigned b + d)%Z)
+    by (apply u64_lit; unfold page_size in *; lia).
+  assert (Hrf' : region_free (stack_guard_band (m_kernel m) h ++ vm_reserved h ++ vm_maps h)
+                   b (Z_to_bv 64 (d + page_size)) = true).
+  { apply region_free_intro. intros a sz Hin.
+    apply in_app_iff in Hin as [Hin|Hin]; [|exact (region_free_In _ _ _ _ _ Hrf Hin)].
+    pose proof (Hband _ Hin) as Ha. cbn [fst] in Ha.
+    unfold iv_overlap. rewrite (u64_lit (d + page_size)) by (unfold page_size in *; lia).
+    apply andb_false_iff. right. apply Z.ltb_ge. lia. }
   unfold Mmap.brk_grow_ok, Mmap.brk_budget_ok, Mmap.brk_grow_bytes.
   fold h. fold b. rewrite Hureq.
   rewrite (proj2 (Z.ltb_lt 0 _) Hb0), (proj2 (Z.ltb_lt (bv_unsigned b) _)) by lia. cbn [andb].
@@ -739,30 +748,48 @@ Proof.
   rewrite (page_round_up_Z_aligned (bv_unsigned b + d))
     by (first [lia | rewrite Z.add_mod, Hbal, Hdal by (unfold page_size; lia); reflexivity]).
   rewrite (proj2 (Z.ltb_lt _ _)) by lia.
-  rewrite (proj2 (Z.leb_le _ _)) by lia.
+  rewrite (proj2 (Z.leb_le _ _)) by (unfold TASK_SIZE, page_size in *; lia).
   replace (Z_to_bv 64 (bv_unsigned b)) with b by (symmetry; apply Z_to_bv_u_eq'; reflexivity).
-  replace (bv_unsigned b + d + page_size - bv_unsigned b)%Z with (d + page_size)%Z by lia. rewrite Hrf.
+  replace (bv_unsigned b + d + page_size - bv_unsigned b)%Z with (d + page_size)%Z by lia. rewrite Hrf'.
   replace (Z.max 0 (bv_unsigned b + d - bv_unsigned b))%Z with d by lia.
   rewrite (proj2 (Z.leb_le _ _) Hlive). reflexivity.
 Qed.
 
 (** In the initial model (no mappings yet; break = the ASLR base [brk0] at or
     above the image top) the first aligned grow of [d <= limit] bytes that
-    stays below the ceiling is admissible. *)
+    stays below the ceiling with its guard page is admissible.  The image's
+    reservations end at or below [brk0], under the ceiling and so under the
+    stack pointer: none of them is a stack entry, and the ledger has no
+    guard band ([State.stack_guard_band]). *)
 Lemma brk_grow_admissible_init : forall reserved (brk0 mbase sp : word) lim (model : Model) d,
   (sp_window_lo <= bv_unsigned sp)%Z ->
   (reserved_top reserved <= bv_unsigned brk0)%Z ->
   (bv_unsigned brk0 mod page_size = 0)%Z -> (d mod page_size = 0)%Z -> (0 < d)%Z ->
   (0 < bv_unsigned brk0)%Z ->
-  (bv_unsigned brk0 + d <= alloc_ceiling)%Z ->
+  (bv_unsigned brk0 + d + page_size <= alloc_ceiling)%Z ->
   (d <= lim)%Z ->
   m_vmmaps model = mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp ->
   m_vm_lazy model = [] -> m_vm_materialized model = [] ->
   Mmap.brk_grow_ok model (Z_to_bv 64 (bv_unsigned brk0 + d)) (Z_to_bv 64 (bv_unsigned brk0 + d)) = true.
 Proof.
   intros reserved brk0 mbase sp lim model d Hsp Htop Hbal Hdal Hd Hb0 Hce Hlim Hvm Hlz Hmt.
-  pose proof (brk_grow_ok_aligned_intro model d) as H. cbv zeta in H. rewrite Hvm in H. cbn in H.
-  apply H; try assumption; try lia.  (* init_sp_ok of the literal ledger is Hsp up to conversion *)
+  pose proof alloc_ceiling_val as Hcv.
+  assert (Hnone : forall iv, In iv reserved -> stack_entry_holds sp iv = false).
+  { intros [a sz] Hin.
+    pose proof (proj1 (Forall_forall _ _) (reserved_top_above reserved (bv_unsigned brk0) Htop) _ Hin) as Hb.
+    cbn [fst snd] in Hb. unfold stack_entry_holds. cbn [fst snd].
+    apply andb_false_iff. right. apply Z.ltb_ge.
+    unfold sp_window_lo, page_size in *. lia. }
+  assert (Hband : stack_band_ok (m_kernel model) (m_vmmaps model)).
+  { rewrite Hvm. split.
+    - intros iv Hin Hh. cbn [vm_reserved vm_init_sp] in Hin, Hh.
+      rewrite (Hnone iv Hin) in Hh. discriminate.
+    - intros iv Hin. unfold stack_guard_band in Hin. cbn [vm_reserved vm_init_sp] in Hin.
+      destruct (List.find (stack_entry_holds sp) reserved) as [[a sz]|] eqn:Hf;
+        [|contradiction].
+      apply find_some in Hf as [Hin_r Hh]. rewrite (Hnone _ Hin_r) in Hh. discriminate. }
+  pose proof (brk_grow_ok_aligned_intro model d) as H. cbv zeta in H. rewrite Hvm in H, Hband. cbn in H.
+  apply H; try assumption; try lia.
   - rewrite app_nil_r. apply region_free_above_top. exact Htop.
   - rewrite vm_backing_used_simple by assumption. rewrite Hvm. cbn. lia.
 Qed.

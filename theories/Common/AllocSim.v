@@ -495,8 +495,9 @@ Lemma brk_grow_ok_grow : forall h req r,
   brk_grow_ok h req r
   = ((if (page_round_up_Z (bv_unsigned (vm_brk h))
           <? page_round_up_Z (bv_unsigned r))%Z
-      then (page_round_up_Z (bv_unsigned r) <=? alloc_top h)%Z
-           && region_free (vm_reserved h ++ vm_maps h)
+      then (page_round_up_Z (bv_unsigned r) <=? TASK_SIZE)%Z
+           && region_free (stack_guard_band (m_kernel (vm_model h)) h
+                           ++ vm_reserved h ++ vm_maps h)
                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned (vm_brk h))))
                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                              - page_round_up_Z (bv_unsigned (vm_brk h))))
@@ -614,8 +615,9 @@ Lemma brk_grow_ok_aligned_grow : forall h req r,
   (bv_unsigned (vm_brk h) < bv_unsigned r)%Z ->
   (bv_unsigned (vm_brk h) mod page_size = 0)%Z ->
   brk_grow_ok h req r
-  = (((page_round_up_Z (bv_unsigned r) <=? alloc_top h)%Z
-      && region_free (vm_reserved h ++ vm_maps h) (vm_brk h)
+  = (((page_round_up_Z (bv_unsigned r) <=? TASK_SIZE)%Z
+      && region_free (stack_guard_band (m_kernel (vm_model h)) h
+                      ++ vm_reserved h ++ vm_maps h) (vm_brk h)
            (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                         - bv_unsigned (vm_brk h))))
      && (vm_backed_bytes h + brk_grow_bytes h r <=? vm_limit h)%Z)%bool.
@@ -664,10 +666,10 @@ Qed.
     means the ceiling bound comes back already in the form the caller's
     success lemma asks for, with no rewrite in between.
 
-    [ceil] is the run's [State.alloc_top], passed in with its own
-    bound ([State.alloc_top_page_lt]: a page above it is still below
-    2^64, which is what the gate's one-page lookahead needs) so this
-    file need not know which ledger it came from. *)
+    [ceil] is the gate's top ([State.TASK_SIZE]), passed in with its own
+    bound (a page above it is still below 2^64, which is what the gate's
+    one-page lookahead needs) so this file need not know which ledger it
+    came from. *)
 Lemma brk_aligned_grant_ok :
   forall (res : list (word * word)) (r w g : word) (top ceil : Z),
   bv_unsigned (r + w) = (bv_unsigned r + bv_unsigned w)%Z ->
@@ -730,7 +732,8 @@ Qed.
 (* ========================================================================= *)
 
 (** Can the break grow from [r] by [t] bytes, against reservation list
-    [reserved], grant top [top] (the run's [State.alloc_top]) and
+    [reserved] (the stack's guard band and the ledger's reservations),
+    grant top [top] ([State.TASK_SIZE]) and
     allocation budget [lim] ([State.vm_limit] of a fresh ledger: no live
     grants yet, so the [t] added bytes must fit the whole budget)?  The
     free region is the installed pages plus the one above them, as in
@@ -945,14 +948,17 @@ Proof.
   rewrite andb_true_iff, orb_true_iff, !bv_eqb_eq. tauto.
 Qed.
 
-(** The ledger is spelled with a free [sp] (and a base nothing reads)
-    because [brk_grow_ok] compares against [State.alloc_top] of the
-    ledger it is handed: the [top] the set algebra was stated at has to
-    be THAT ledger's, [bv_unsigned sp - stack_max_size]. *)
+(** The ledger is spelled with a free [sp] and base because [brk_grow_ok]
+    keeps the stack's guard gap of the ledger it is handed
+    ([State.stack_guard_band], which reads both): the reservations the set
+    algebra is stated over are THAT band and the ledger's own, and its top
+    is [TASK_SIZE], the bound [check_brk_limits] applies. *)
 Lemma T1_iff_T2 : forall reserved lim s (mb sp : word) t bufs r,
   r <> Z_to_bv 64 0 -> (bv_unsigned s <= bv_unsigned r)%Z ->
   (bv_unsigned r + bv_unsigned t < 2 ^ 64)%Z ->
-  forall o, T1 reserved lim (bv_unsigned sp - stack_max_size) t bufs r o <->
+  forall o, T1 (stack_guard_band (m_kernel (vm_model (mkVmMapsFull reserved [] [] s r lim mb sp)))
+                  (mkVmMapsFull reserved [] [] s r lim mb sp) ++ reserved)
+              lim TASK_SIZE t bufs r o <->
     (exists r2, brk_r_ok (mkVmMapsFull reserved [] [] s r lim mb sp) (r + t) r2
                 /\ T2 (r + t) bufs r2 o).
 Proof.
@@ -1443,7 +1449,7 @@ Lemma alloc_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_outcomes (run_segments segs inp sp mb)
               (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
               (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (outcomes_post (in_fs inp) U).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto.
@@ -1455,7 +1461,7 @@ Lemma alloc_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_outcomes (run_segments segs inp sp mb)
               (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
               (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   forall tr, obs_trace (run_segments segs inp sp mb)
                (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
@@ -1464,7 +1470,7 @@ Proof.
   unfold init_config.
   set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) in *.
   set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) in *.
+               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) in *.
   assert (Hh : m_halted m0 = None) by reflexivity.
   assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
   assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
@@ -1484,7 +1490,7 @@ Lemma alloc_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_outcomes (run_segments segs inp sp mb)
               (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
               (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   ~ reaches_error (run_segments segs inp sp mb)
       (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -1500,11 +1506,11 @@ Lemma alloc_omni_strong_equiv :
   to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp source_alloc_limit inp)) U ->
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)) U ->
   to_outcomes (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp target_alloc_limit inp)) U ->
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd) target_alloc_limit inp)) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
@@ -1536,11 +1542,11 @@ Lemma alloc_strong_equiv :
   to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp)) U ->
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd) rlim inp)) U ->
   to_outcomes (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp)) U ->
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd) alim inp)) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).

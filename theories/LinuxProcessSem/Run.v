@@ -1414,11 +1414,19 @@ Definition entry_stack_image (inp : ProcInput) (mbase : word)
     counted 8 MiB from [sp]
     (theorem-labs/rocq-linux-process-semantics#6), and the version
     before this one counted it from the top of the block and had no
-    guard-gap floor at all (#25). *)
+    guard-gap floor at all (#25).
+
+    The ledger's stack entry [State.stack_reserved] starts at the same
+    address, through [State.stack_floor]; [stack_window_lo_floor] below
+    says the two formulas are one. *)
 Definition stack_window_lo (kb : KernelBuild) (mbase : word)
     (draw : EntryDraw) : Z :=
   Z.max (bv_unsigned (ed_top draw) - stack_max_size)
         (bv_unsigned mbase + stack_guard_gap_bytes kb).
+
+Lemma stack_window_lo_floor : forall kb mbase draw,
+  stack_window_lo kb mbase draw = stack_floor kb mbase (bv_unsigned (ed_top draw)).
+Proof. reflexivity. Qed.
 
 Definition init_machine_state (inp : ProcInput) : machine_state :=
   let regs :=
@@ -1466,7 +1474,7 @@ Definition init_config (inp : ProcInput) : config :=
   mkCfg (init_machine_state inp)
         (with_vdso (vdso_run_init (ed_vdso mi_draw))
            (init_model (segments_reserved mi_loaded_segments) mi_init_brk
-                       mi_mmap_base mi_init_sp mi_alloc_limit inp)).
+                       mi_mmap_base mi_init_sp (ed_top mi_draw) mi_alloc_limit inp)).
 
 End WithMemImage.
 

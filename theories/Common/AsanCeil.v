@@ -4,10 +4,12 @@
     The reflective ASan automation (AsanPlanCore / AsanPlan / AsanPlanSound /
     the AsanNodes* files) assumes that every anonymous grant ends below the
     CONSTANT [alloc_ceiling = 0x7fff7f800000] and that first-fit placement
-    starts at [bottomup_floor = 0x2aaaaaaab000].  The spec instead bounds
-    grants by [State.alloc_top h = vm_init_sp h - stack_max_size] (the RUN's
-    stack pointer) and has no floor (placement is admissibility, not a
-    search).  The checker keeps its numeric constants
+    starts at [bottomup_floor = 0x2aaaaaaab000].  The spec instead places
+    a grant by [Sys/Mm/Mmap.linux_place], whose top-down window stops at
+    [State.mmap_top h], at most [State.alloc_top h = vm_init_sp h -
+    stack_max_size] (the RUN's stack pointer), and whose fallback reaches
+    [TASK_SIZE]; the stack's entry and guard band lie above the ceiling
+    ([stack_band_ok] below).  The checker keeps its numeric constants
     ([AsanPlanCore.CEIL] / [FLOOR]); soundness needs only that the constant
     ceiling lies at or below the spec's: for every admissible run
     [sp >= sp_window_lo = 0x7fff80000000] ([Run.valid_sp]), hence
@@ -48,12 +50,13 @@ Proof. reflexivity. Qed.
 
 (** ** The placement gate, stated over [Sys/Mm/Mmap.linux_place]
 
-    WHAT THE GATE SAYS NOW.  [placement_ok h aZ nZ] is "aZ is where
+    WHAT THE GATE SAYS NOW.  [placement_ok kb h aZ nZ] is "aZ is where
     Linux puts a NULL-hint anonymous request of nZ bytes into the
-    ledger h, on one of the two kernel builds" — the spec's own
-    [Mmap.linux_place] at hint 0, with the build existentially
-    quantified because the ASan plan layer does not carry the run's
-    [State.KernelBuild].  [placement_ok_b] decides it with
+    ledger h, on the kernel build kb" — the spec's own
+    [Mmap.linux_place] at hint 0.  The build is an argument because the
+    placement reads two of its fields: [kb_thp], and the stack guard
+    gap [Mmap.linux_place] keeps free below the stack.  A caller holding
+    the model passes [m_kernel m].  [placement_ok_b] decides it with
     [Checks.Placement.linux_place_b], and [placement_ok_window] reads
     off Linux's two search windows (mm/mmap.c,
     [generic_get_unmapped_area_topdown], Linux v6.18.46 commit
@@ -90,87 +93,69 @@ Proof. reflexivity. Qed.
         high as [sp_window_hi - stack_max_size = 0x7fffff800000].  A
         grant in [[alloc_ceiling, alloc_top h)] is Linux's and breaks
         the bound.  (This is residual R-a of the placement plan.)  The
-        true bound at Linux's address is [aZ + nZ <= alloc_top h],
+        true bound at Linux's address is [aZ + nZ <= TASK_SIZE],
         which [Placement.linux_place_admissible] gives, so the grant
         predicates state that one and the gate states none. *)
-Definition placement_ok (h : VmMaps) (aZ nZ : Z) : Prop :=
-  exists thp : bool, linux_place h thp (Z_to_bv 64 0) nZ aZ.
+Definition placement_ok (kb : KernelBuild) (h : VmMaps) (aZ nZ : Z) : Prop :=
+  linux_place h kb (Z_to_bv 64 0) nZ aZ.
 
-Definition placement_ok_b (h : VmMaps) (aZ nZ : Z) : bool :=
-  (match linux_place_b h true (Z_to_bv 64 0) nZ with
-   | Some x => (x =? aZ)%Z | None => false end)
-  || (match linux_place_b h false (Z_to_bv 64 0) nZ with
-      | Some x => (x =? aZ)%Z | None => false end).
+Definition placement_ok_b (kb : KernelBuild) (h : VmMaps) (aZ nZ : Z) : bool :=
+  match linux_place_b h kb (Z_to_bv 64 0) nZ with
+  | Some x => (x =? aZ)%Z | None => false end.
 
-Lemma placement_ok_b_iff : forall h aZ nZ,
+Lemma placement_ok_b_iff : forall kb h aZ nZ,
   0 < nZ -> nZ mod page_size = 0 ->
-  (placement_ok_b h aZ nZ = true <-> placement_ok h aZ nZ).
+  (placement_ok_b kb h aZ nZ = true <-> placement_ok kb h aZ nZ).
 Proof.
-  intros h aZ nZ HnPos HnAl. unfold placement_ok_b, placement_ok.
-  assert (K : forall thp,
-    (match linux_place_b h thp (Z_to_bv 64 0) nZ with
-     | Some x => (x =? aZ)%Z | None => false end) = true
-    <-> linux_place h thp (Z_to_bv 64 0) nZ aZ).
-  { intro thp.
-    destruct (linux_place_b_spec h thp (Z_to_bv 64 0) nZ HnPos HnAl)
-      as [Hsome Hnone].
-    destruct (linux_place_b h thp (Z_to_bv 64 0) nZ) as [x|] eqn:Hb.
-    - split.
-      + intro E. apply Z.eqb_eq in E. subst x. now apply Hsome.
-      + intro Hp. apply Z.eqb_eq.
-        exact (linux_place_unique _ _ _ _ _ _ (proj1 (Hsome x) eq_refl) Hp).
-    - split; [discriminate|]. intro Hp. exfalso.
-      exact (proj1 Hnone eq_refl aZ Hp). }
-  rewrite orb_true_iff, (K true), (K false).
-  split; [intros [H|H]; [now exists true | now exists false]
-         | intros ([|] & H); [now left | now right]].
+  intros kb h aZ nZ HnPos HnAl. unfold placement_ok_b, placement_ok.
+  destruct (linux_place_b_spec h kb (Z_to_bv 64 0) nZ HnPos HnAl)
+    as [Hsome Hnone].
+  destruct (linux_place_b h kb (Z_to_bv 64 0) nZ) as [x|] eqn:Hb.
+  - split.
+    + intro E. apply Z.eqb_eq in E. subst x. now apply Hsome.
+    + intro Hp. apply Z.eqb_eq.
+      exact (linux_place_unique _ _ _ _ _ _ (proj1 (Hsome x) eq_refl) Hp).
+  - split; [discriminate|]. intro Hp. exfalso.
+    exact (proj1 Hnone eq_refl aZ Hp).
 Qed.
 
-(** Linux's address is unique, so the gate is a FUNCTION of the state:
-    two addresses that both pass it under the same kernel build are
-    equal.  (The disjunction over [thp] is there because the ASan plan
-    layer does not carry the run's [KernelBuild]; both builds exist and
-    the bound below holds for either.) *)
-Lemma placement_ok_thp : forall h thp aZ nZ,
-  linux_place h thp (Z_to_bv 64 0) nZ aZ -> placement_ok h aZ nZ.
-Proof. intros h thp aZ nZ H. now exists thp. Qed.
+Definition hint_placement_ok_b (addr : word) (kb : KernelBuild) (h : VmMaps)
+    (aZ nZ : Z) : bool :=
+  if w_is0 addr then placement_ok_b kb h aZ nZ else true.
 
-Definition hint_placement_ok_b (addr : word) (h : VmMaps) (aZ nZ : Z) : bool :=
-  if w_is0 addr then placement_ok_b h aZ nZ else true.
-
-Lemma hint_placement_ok_b_nonnull : forall addr h aZ nZ,
-  w_is0 addr = false -> hint_placement_ok_b addr h aZ nZ = true.
-Proof. intros addr h aZ nZ H. unfold hint_placement_ok_b. now rewrite H. Qed.
+Lemma hint_placement_ok_b_nonnull : forall addr kb h aZ nZ,
+  w_is0 addr = false -> hint_placement_ok_b addr kb h aZ nZ = true.
+Proof. intros addr kb h aZ nZ H. unfold hint_placement_ok_b. now rewrite H. Qed.
 
 (** Linux's plain search leaves the address in one of its two windows.
     Both halves are the [gap_fits] bound of the branch that produced
     it.  The ASan layer uses the stronger MAXIMALITY of the top-down
     branch (see [AsanPlacement.null_hint_grant_above]); this is the
     cheap consequence. *)
-Lemma topdown_search_window : forall h nZ a,
-  topdown_search h nZ a -> (a + nZ <= mmap_top h)%Z \/ (task_unmapped_base <= a)%Z.
+Lemma topdown_search_window : forall h kb nZ a,
+  topdown_search h kb nZ a -> (a + nZ <= mmap_top h)%Z \/ (task_unmapped_base <= a)%Z.
 Proof.
-  intros h nZ a H. unfold topdown_search in H. cbv zeta in H.
+  intros h kb nZ a H. unfold topdown_search in H. cbv zeta in H.
   destruct H as [[(_ & _ & Hhi & _) _] | [_ [(_ & Hlo & _ & _) _]]];
-    [now left | now right].
+    [left; lia | now right].
 Qed.
 
-Lemma placement_ok_window : forall h aZ nZ,
-  placement_ok h aZ nZ ->
+Lemma placement_ok_window : forall kb h aZ nZ,
+  placement_ok kb h aZ nZ ->
   (aZ + nZ <= mmap_top h)%Z \/ (task_unmapped_base <= aZ)%Z.
 Proof.
-  intros h aZ nZ (thp & Hpl).
+  intros kb h aZ nZ Hpl. unfold placement_ok in Hpl.
   unfold linux_place in Hpl. cbv zeta in Hpl.
   assert (Hg : hint_address (Z_to_bv 64 0) = 0) by (vm_compute; reflexivity).
   rewrite Hg, Z.eqb_refl in Hpl. cbv iota in Hpl.
   pose proof pmd_size_pos as Hpmd.
-  destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
+  destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
   - destruct Hpl as [(ret & Hret & ->)|[_ Hts]].
     + pose proof (thp_align_bounds ret) as [Hb1 Hb2].
-      destruct (topdown_search_window _ _ _ Hret) as [Hhi|Hlo];
+      destruct (topdown_search_window _ _ _ _ Hret) as [Hhi|Hlo];
         [left|right]; lia.
-    + exact (topdown_search_window _ _ _ Hts).
-  - exact (topdown_search_window _ _ _ Hpl).
+    + exact (topdown_search_window _ _ _ _ Hts).
+  - exact (topdown_search_window _ _ _ _ Hpl).
 Qed.
 
 (** THE GATE, now a theorem.  A NULL-hint grant of the spec is at the
@@ -178,16 +163,16 @@ Qed.
     checker's placement gate.  The node-soundness layer applies
     [placement_policy_holds] where it used to carry a hypothesis. *)
 Definition placement_policy : Prop :=
-  forall (h : VmMaps) (thp : bool) (a : word) (nZ : Z),
+  forall (h : VmMaps) (kb : KernelBuild) (a : word) (nZ : Z),
     0 < nZ -> nZ mod page_size = 0 ->
-    linux_place h thp (Z_to_bv 64 0) nZ (bv_unsigned a) ->
-    placement_ok_b h (bv_unsigned a) nZ = true.
+    linux_place h kb (Z_to_bv 64 0) nZ (bv_unsigned a) ->
+    placement_ok_b kb h (bv_unsigned a) nZ = true.
 
 Theorem placement_policy_holds : placement_policy.
 Proof.
-  intros h thp a nZ HnPos HnAl Hpl.
-  apply (placement_ok_b_iff h (bv_unsigned a) nZ HnPos HnAl).
-  now exists thp.
+  intros h kb a nZ HnPos HnAl Hpl.
+  apply (placement_ok_b_iff kb h (bv_unsigned a) nZ HnPos HnAl).
+  exact Hpl.
 Qed.
 
 (** the ledger's stack pointer is an admissible one *)
@@ -199,9 +184,9 @@ Proof. intros h H. unfold init_sp_ok, sp_window_lo in H. unfold alloc_top, alloc
 Lemma alloc_top_ge_of_ceiling : forall h z, init_sp_ok h -> z <= alloc_ceiling -> z <= alloc_top h.
 Proof. intros h z H Hz. pose proof (alloc_ceiling_le_alloc_top h H). lia. Qed.
 
-Lemma init_sp_ok_init_model : forall reserved brk0 mbase sp lim inp,
-  valid_sp sp -> init_sp_ok (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
-Proof. intros reserved brk0 mbase sp lim inp (Hlo & _ & _). unfold init_sp_ok. cbn. exact Hlo. Qed.
+Lemma init_sp_ok_init_model : forall reserved brk0 mbase sp top lim inp,
+  valid_sp sp -> init_sp_ok (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
+Proof. intros reserved brk0 mbase sp top lim inp (Hlo & _ & _). unfold init_sp_ok. cbn. exact Hlo. Qed.
 
 (** every ledger update of the spec and of the checker copies [vm_init_sp] *)
 Lemma init_sp_ok_same : forall h h', vm_init_sp h' = vm_init_sp h -> init_sp_ok h -> init_sp_ok h'.
@@ -210,6 +195,67 @@ Proof. intros h h' E H. unfold init_sp_ok in *. rewrite E. exact H. Qed.
 Lemma init_sp_ok_mkVmMapsFull : forall h r m na sb b l mb,
   init_sp_ok h -> init_sp_ok (mkVmMapsFull r m na sb b l mb (vm_init_sp h)).
 Proof. intros. unfold init_sp_ok in *. cbn. assumption. Qed.
+
+(** ** The stack's ledger entry and its guard band lie above the ceiling
+
+    The model's ledger holds the stack as a [vm_reserved] entry
+    ([State.stack_reserved]), and a placement keeps the guard band below
+    it free ([State.stack_guard_band]).  The plan checker's gap
+    arithmetic counts the reserved entries BELOW [alloc_ceiling] only,
+    and that is sound because these two lie above it: every reserved
+    entry that holds the run's stack pointer, and every entry of the
+    band, starts at or above [alloc_ceiling].  [stack_band_ok] says so.
+    [AsanInit] proves it once at launch (from [Run.entry_launch_ok_va]
+    and the guard gap of the launch's kernel), and it holds for the
+    whole run: no step changes [vm_reserved], [vm_init_sp],
+    [vm_mmap_base] or the kernel build, which are all it reads
+    ([stack_band_ok_same]). *)
+Definition stack_band_ok (kb : KernelBuild) (h : VmMaps) : Prop :=
+  (forall iv, In iv (vm_reserved h) ->
+     stack_entry_holds (vm_init_sp h) iv = true ->
+     alloc_ceiling <= bv_unsigned (fst iv))
+  /\ (forall iv, In iv (stack_guard_band kb h) ->
+        alloc_ceiling <= bv_unsigned (fst iv)).
+
+Lemma stack_band_ok_same : forall kb h h',
+  vm_reserved h' = vm_reserved h -> vm_init_sp h' = vm_init_sp h ->
+  vm_mmap_base h' = vm_mmap_base h ->
+  stack_band_ok kb h -> stack_band_ok kb h'.
+Proof.
+  intros kb h h' Er Es Eb [H1 H2]. split.
+  - intros iv Hin Hh. rewrite Er in Hin. rewrite Es in Hh. exact (H1 iv Hin Hh).
+  - intros iv Hin. unfold stack_guard_band in Hin. rewrite Er, Es, Eb in Hin.
+    exact (H2 iv Hin).
+Qed.
+
+(** The reserved entries the gap arithmetic counts: all but the ones
+    that hold the run's stack pointer, which [stack_band_ok] puts above
+    the ceiling. *)
+Definition res_below_stack (h : VmMaps) : list (word * word) :=
+  List.filter (fun iv => negb (stack_entry_holds (vm_init_sp h) iv)) (vm_reserved h).
+
+(** The reserved entries the gap arithmetic counts are the image's and
+    the launch's extras: the stack's entry, the one that holds the run's
+    stack pointer, is the one [co_res] lists apart and the filter drops. *)
+Lemma filter_below_stack : forall (sp : word) segs stk rx,
+  Forall (fun iv => stack_entry_holds sp iv = true) stk ->
+  Forall (fun iv => stack_entry_holds sp iv = false) (segs ++ rx) ->
+  List.filter (fun iv => negb (stack_entry_holds sp iv)) (segs ++ (stk ++ rx))
+  = segs ++ rx.
+Proof.
+  intros sp segs stk rx Hstk Hrest.
+  apply Forall_app in Hrest as [Hs Hr].
+  rewrite !filter_app.
+  assert (E1 : forall l, Forall (fun iv => stack_entry_holds sp iv = false) l ->
+                 List.filter (fun iv => negb (stack_entry_holds sp iv)) l = l).
+  { induction l as [|x l IH]; intros H; [reflexivity|].
+    inversion H as [|? ? Hx Hl]; subst. cbn. rewrite Hx. cbn. now rewrite IH. }
+  assert (E2 : forall l, Forall (fun iv => stack_entry_holds sp iv = true) l ->
+                 List.filter (fun iv => negb (stack_entry_holds sp iv)) l = []).
+  { induction l as [|x l IH]; intros H; [reflexivity|].
+    inversion H as [|? ? Hx Hl]; subst. cbn. rewrite Hx. cbn. now rewrite IH. }
+  rewrite (E1 _ Hs), (E2 _ Hstk), (E1 _ Hr). reflexivity.
+Qed.
 
 (** [State.page_round_up_Z_ge] has a [0 <= z] hypothesis; the bound holds for every [z]. *)
 Lemma page_round_up_Z_ge_all : forall z, z <= page_round_up_Z z.

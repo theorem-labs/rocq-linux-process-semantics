@@ -783,7 +783,7 @@ Lemma spin_img_to_spin : forall vt sp brk0 mbase (rnd : EntryDraw) lim inp,
     (init_machine_state (spin_segs ++ vt) 0x10000 (mkPhdrInfo 0x10040 56 6)
        sp mbase rnd inp)
     (with_vdso (vdso_run_init (ed_vdso rnd))
-       (init_model (segments_reserved (spin_segs ++ vt)) brk0 mbase sp lim inp)).
+       (init_model (segments_reserved (spin_segs ++ vt)) brk0 mbase sp (ed_top rnd) lim inp)).
 Proof.
   intros vt sp brk0 mbase rnd lim inp.
   eapply ts_spin_of_step_j with (w := Z_to_bv 32 0x6f).
@@ -853,7 +853,7 @@ Example spin_img_to_spin_by_execution :
        (mkDraw (Z_to_bv 128 0) (Z_to_bv 64 69632) vdso_keeps_all)
        spin_exec_input)
     (init_model (segments_reserved spin_segs) (Z_to_bv 64 1048576)
-       (Z_to_bv 64 0x7fff7f800000) (Z_to_bv 64 65536) 0x40000000%Z
+       (Z_to_bv 64 0x7fff7f800000) (Z_to_bv 64 65536) (Z_to_bv 64 69632) 0x40000000%Z
        spin_exec_input).
 Proof. prove_to_spin 1%nat. Qed.
 

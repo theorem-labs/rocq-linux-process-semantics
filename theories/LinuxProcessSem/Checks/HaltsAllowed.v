@@ -327,7 +327,7 @@ Example abrt_declined_undeclared_is_unmodeled :
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
        (with_vdso (Vdso.vdso_run_init (ed_vdso abrt_draw))
-          (init_model (segments_reserved abrt_rsegs) abrt_brk abrt_mbase abrt_sp
+          (init_model (segments_reserved abrt_rsegs) abrt_brk abrt_mbase abrt_sp (Z_to_bv 64 0x7fff80001000)
              source_alloc_limit abrt_input_undeclared)))
   = CheckUnmodeled.
 Proof. abrt_open2. vm_compute. reflexivity. Qed.

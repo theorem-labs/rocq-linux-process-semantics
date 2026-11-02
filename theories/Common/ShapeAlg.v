@@ -1309,19 +1309,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp rlim inp))
+                   rbrk rmb rsp (ed_top rrnd) rlim inp))
              bufs code eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp rlim inp Hr) Hs Hbm).
+                rbrk rmb rsp (ed_top rrnd) rlim inp Hr) Hs Hbm).
   - unfold init_config.
     apply (cat_realizes (run_segments target_segs inp asp amb)
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp alim inp))
+                   abrk amb asp (ed_top arnd) alim inp))
              bufs code eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp alim inp Hr) Ht Hbm).
+                abrk amb asp (ed_top arnd) alim inp Hr) Ht Hbm).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1350,19 +1350,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp source_alloc_limit inp))
+                   rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp))
              bufs code eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp source_alloc_limit inp Hr) Hs Hbm).
+                rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp Hr) Hs Hbm).
   - unfold init_config.
     apply (cat_realizes (run_segments target_segs inp asp amb)
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp target_alloc_limit inp))
+                   abrk amb asp (ed_top arnd) target_alloc_limit inp))
              bufs code eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp target_alloc_limit inp Hr) Ht Hbm).
+                abrk amb asp (ed_top arnd) target_alloc_limit inp Hr) Ht Hbm).
 Qed.
 
 (** [MmapSim.mmap_strong_equiv_te], re-derived from the same theorem, on
@@ -1373,12 +1373,12 @@ Theorem mmap_strong_equiv_alg :
   MmapSim.tmw (run_segments source_segs inp rsp rmb)
       (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
       (with_vdso (vdso_run_init (ed_vdso rrnd))
-         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
             rlim inp)) bf cf bs cs ->
   MmapSim.tmw (run_segments target_segs inp asp amb)
       (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
       (with_vdso (vdso_run_init (ed_vdso arnd))
-         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
             alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1397,19 +1397,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp rlim inp))
+                   rbrk rmb rsp (ed_top rrnd) rlim inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp rlim inp Hr) Hs Hbf Hbs).
+                rbrk rmb rsp (ed_top rrnd) rlim inp Hr) Hs Hbf Hbs).
   - unfold init_config.
     apply (tmw_realizes (run_segments target_segs inp asp amb)
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp alim inp))
+                   abrk amb asp (ed_top arnd) alim inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp alim inp Hr) Ht Hbf Hbs).
+                abrk amb asp (ed_top arnd) alim inp Hr) Ht Hbf Hbs).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1420,12 +1420,12 @@ Theorem mmap_omni_strong_equiv_alg :
   MmapSim.tmw (run_segments source_segs inp rsp rmb)
       (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
       (with_vdso (vdso_run_init (ed_vdso rrnd))
-         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
             source_alloc_limit inp)) bf cf bs cs ->
   MmapSim.tmw (run_segments target_segs inp asp amb)
       (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
       (with_vdso (vdso_run_init (ed_vdso arnd))
-         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
             target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1443,19 +1443,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp source_alloc_limit inp))
+                   rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp source_alloc_limit inp Hr) Hs Hbf Hbs).
+                rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp Hr) Hs Hbf Hbs).
   - unfold init_config.
     apply (tmw_realizes (run_segments target_segs inp asp amb)
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp target_alloc_limit inp))
+                   abrk amb asp (ed_top arnd) target_alloc_limit inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp target_alloc_limit inp Hr) Ht Hbf Hbs).
+                abrk amb asp (ed_top arnd) target_alloc_limit inp Hr) Ht Hbf Hbs).
 Qed.
 
 (* =========================================================================
@@ -1619,13 +1619,13 @@ Theorem alloc_mmap_strong_equiv_alg :
   AllocSim.to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           rlim inp))
     (AllocSim2.two_outcomes bf cf bs cs) ->
   MmapSim.tmw (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1648,10 +1648,10 @@ Proof.
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp alim inp))
+                   abrk amb asp (ed_top arnd) alim inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp alim inp Hr) Ht Hbf Hbs).
+                abrk amb asp (ed_top arnd) alim inp Hr) Ht Hbf Hbs).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1662,13 +1662,13 @@ Theorem alloc_mmap_omni_strong_equiv_alg :
   AllocSim.to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           source_alloc_limit inp))
     (AllocSim2.two_outcomes bf cf bs cs) ->
   MmapSim.tmw (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1690,10 +1690,10 @@ Proof.
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp target_alloc_limit inp))
+                   abrk amb asp (ed_top arnd) target_alloc_limit inp))
              bf cf bs cs eq_refl eq_refl
              (init_model_fd1chan (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp target_alloc_limit inp Hr) Ht Hbf Hbs).
+                abrk amb asp (ed_top arnd) target_alloc_limit inp Hr) Ht Hbf Hbs).
 Qed.
 
 
@@ -1812,9 +1812,9 @@ Theorem cat_ch_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          (fd ch : word) bufs code (inp : ProcInput),
   fd32 fd = fd ->
-  (forall reserved brk0 mb1 sp1 lim1 inp1,
+  (forall reserved brk0 mb1 sp1 top1 lim1 inp1,
      in_channel_reader inp1 = true ->
-     fdchan fd ch (init_model reserved brk0 mb1 sp1 lim1 inp1)) ->
+     fdchan fd ch (init_model reserved brk0 mb1 sp1 top1 lim1 inp1)) ->
   in_channel_reader inp = true ->
   to_wexit_ch (run_segments source_segs inp rsp rmb) fd
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
@@ -1837,19 +1837,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp rlim inp))
+                   rbrk rmb rsp (ed_top rrnd) rlim inp))
              bufs code eq_refl eq_refl
              (Hinit (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp rlim inp Hrdr) H32 Hs Hbm).
+                rbrk rmb rsp (ed_top rrnd) rlim inp Hrdr) H32 Hs Hbm).
   - unfold init_config.
     apply (cat_realizes_ch (run_segments target_segs inp asp amb) fd ch
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp alim inp))
+                   abrk amb asp (ed_top arnd) alim inp))
              bufs code eq_refl eq_refl
              (Hinit (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp alim inp Hrdr) H32 Ht Hbm).
+                abrk amb asp (ed_top arnd) alim inp Hrdr) H32 Ht Hbm).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1858,9 +1858,9 @@ Theorem cat_ch_omni_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd
          (fd ch : word) bufs code (inp : ProcInput),
   fd32 fd = fd ->
-  (forall reserved brk0 mb1 sp1 lim1 inp1,
+  (forall reserved brk0 mb1 sp1 top1 lim1 inp1,
      in_channel_reader inp1 = true ->
-     fdchan fd ch (init_model reserved brk0 mb1 sp1 lim1 inp1)) ->
+     fdchan fd ch (init_model reserved brk0 mb1 sp1 top1 lim1 inp1)) ->
   in_channel_reader inp = true ->
   to_wexit_ch (run_segments source_segs inp rsp rmb) fd
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
@@ -1882,19 +1882,19 @@ Proof.
              (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
              (with_vdso (vdso_run_init (ed_vdso rrnd))
                 (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
-                   rbrk rmb rsp source_alloc_limit inp))
+                   rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp))
              bufs code eq_refl eq_refl
              (Hinit (segments_reserved (run_segments source_segs inp rsp rmb))
-                rbrk rmb rsp source_alloc_limit inp Hrdr) H32 Hs Hbm).
+                rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp Hrdr) H32 Hs Hbm).
   - unfold init_config.
     apply (cat_realizes_ch (run_segments target_segs inp asp amb) fd ch
              (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
              (with_vdso (vdso_run_init (ed_vdso arnd))
                 (init_model (segments_reserved (run_segments target_segs inp asp amb))
-                   abrk amb asp target_alloc_limit inp))
+                   abrk amb asp (ed_top arnd) target_alloc_limit inp))
              bufs code eq_refl eq_refl
              (Hinit (segments_reserved (run_segments target_segs inp asp amb))
-                abrk amb asp target_alloc_limit inp Hrdr) H32 Ht Hbm).
+                abrk amb asp (ed_top arnd) target_alloc_limit inp Hrdr) H32 Ht Hbm).
 Qed.
 
 (** ... and the fd-1 theorem is its instance, on a launch with a reader. *)

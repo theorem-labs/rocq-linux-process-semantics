@@ -16,7 +16,7 @@
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Monad Specs StackLayout Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim CatExec AllocSim MmapSim.
 
 Import ListNotations.
@@ -38,13 +38,13 @@ Lemma alloc_mmap_strong_equiv :
   to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           rlim inp))
     (two_outcomes bf cf bs cs) ->
   tmw (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -83,13 +83,13 @@ Lemma alloc_mmap_omni_strong_equiv :
   to_outcomes (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           source_alloc_limit inp))
     (two_outcomes bf cf bs cs) ->
   tmw (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->

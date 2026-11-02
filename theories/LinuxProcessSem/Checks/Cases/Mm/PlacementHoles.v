@@ -44,7 +44,7 @@ Open Scope bv_scope.
     different addresses for the same call. *)
 Definition place_model : Model :=
   init_model [] (Z_to_bv 64 0x11000) (Z_to_bv 64 mmap_base_min)
-    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
+    (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096)) target_alloc_limit (demo_input [] IEof).
 
 (** The SAME launch with transparent huge pages, and the only field
     that differs is [kb_thp]: written as a projection-wise copy of
@@ -69,7 +69,8 @@ Proof. vm_compute. reflexivity. Qed.
 Example place_alloc_top : alloc_top (m_vmmaps place_model) = 140735332483072%Z.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE PAIR IS THERE, and it is the top of the search window: the vvar
+(** THE PAIR IS THERE, after the stack's entry ([State.stack_reserved],
+    the 8 MiB below [demo_ed_top]), and it is the top of the search window: the vvar
     part of four pages at [mmap_top - 24576], then the two text pages
     directly above it, ending exactly at [mmap_top].
     [__setup_additional_pages] (arch/riscv/kernel/vdso.c:110) asks
@@ -79,7 +80,8 @@ Proof. vm_compute. reflexivity. Qed.
     text above it (:130-138). *)
 Example place_vdso_pair_is_reserved :
   vm_reserved (m_vmmaps place_model)
-  = [ (Z_to_bv 64 23387528564736, Z_to_bv 64 16384);
+  = [ (Z_to_bv 64 140735332487168, Z_to_bv 64 8388608);
+      (Z_to_bv 64 23387528564736, Z_to_bv 64 16384);
       (Z_to_bv 64 23387528581120, Z_to_bv 64 8192) ].
 Proof. vm_compute. reflexivity. Qed.
 
@@ -101,7 +103,7 @@ Proof. vm_compute. reflexivity. Qed.
     below [alloc_top], which is what let it refuse a mapping the same
     Linux launch grants — the placement holes. *)
 Example place_first_grant_is_under_the_vdso :
-  linux_place_b (m_vmmaps place_model) false (Z_to_bv 64 0) 4096
+  linux_place_b (m_vmmaps place_model) (m_kernel place_model) (Z_to_bv 64 0) 4096
   = Some 23387528560640%Z.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -167,12 +169,12 @@ Proof. vm_compute. eexists; eexists; reflexivity. Qed.
     starts lower, so the answer is lower than the plain one even though
     the alignment moves it up again. *)
 Example place_4m_without_thp :
-  linux_place_b (m_vmmaps place_model) false (Z_to_bv 64 0) 0x400000
+  linux_place_b (m_vmmaps place_model) (m_kernel place_model) (Z_to_bv 64 0) 0x400000
   = Some 23387524370432%Z.
 Proof. vm_compute. reflexivity. Qed.
 
 Example place_4m_with_thp :
-  linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 0) 0x400000
+  linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 0) 0x400000
   = Some 23387522990080%Z.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -190,8 +192,8 @@ Proof. vm_compute. discriminate. Qed.
     no-hint path — including the transparent-huge-page path, which
     [__get_unmapped_area] gates on [!addr]. *)
 Example place_hint_one_is_no_hint :
-  linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 1) 0x400000
-  = linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 0) 0x400000.
+  linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 1) 0x400000
+  = linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 0) 0x400000.
 Proof. vm_compute. reflexivity. Qed.
 
 (** (3) A HINT THAT IS NOT PAGE ALIGNED IS ROUNDED DOWN AND HONOURED.
@@ -200,7 +202,7 @@ Proof. vm_compute. reflexivity. Qed.
     returns it.  So a hinted grant CAN land at a low address, where a
     preference-free one cannot. *)
 Example place_hint_rounded_down_and_honoured :
-  linux_place_b (m_vmmaps place_model) false (Z_to_bv 64 0x1001) 4096
+  linux_place_b (m_vmmaps place_model) (m_kernel place_model) (Z_to_bv 64 0x1001) 4096
   = Some 4096%Z.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -211,13 +213,13 @@ Proof. vm_compute. reflexivity. Qed.
     a reader is most likely to get wrong: a hint that cannot be
     honoured is not the same as no hint. *)
 Example place_hint_max_searches_without_thp :
-  linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 0xffffffffffffffff) 0x400000
+  linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 0xffffffffffffffff) 0x400000
   = Some 23387524370432%Z.
 Proof. vm_compute. reflexivity. Qed.
 
 Example place_hint_max_differs_from_no_hint :
-  linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 0xffffffffffffffff) 0x400000
-  <> linux_place_b (m_vmmaps place_thp) true (Z_to_bv 64 0) 0x400000.
+  linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 0xffffffffffffffff) 0x400000
+  <> linux_place_b (m_vmmaps place_thp) (m_kernel place_thp) (Z_to_bv 64 0) 0x400000.
 Proof. vm_compute. discriminate. Qed.
 
 (** (5) THE PLACEMENT IS A FUNCTION, and that is the property the whole
@@ -305,7 +307,7 @@ Proof. vm_compute. reflexivity. Qed.
     answered with the old break is admitted. *)
 Definition place_brk_model : Model :=
   init_model [] (Z_to_bv 64 23387528560640) (Z_to_bv 64 mmap_base_min)
-    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
+    (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096)) target_alloc_limit (demo_input [] IEof).
 
 Example vdso_brk_grow_into_the_pair_rejected :
   check_syscall
@@ -355,7 +357,7 @@ Proof. vm_compute. eexists; eexists; reflexivity. Qed.
 
 (** The launch's ledger, in the form the general lemmas take. *)
 Definition place_reserved : list (word * word) :=
-  init_reserved [] (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
+  init_reserved [] (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
     (m_kernel place_model).
 
 Example place_reserved_is_the_fixture_ledger :
@@ -390,7 +392,8 @@ Qed.
 
 (** EVERY ENTRY NAMES A BYTE AND STARTS AND ENDS ON A PAGE, again by
     the general lemma.  The image's own reservations are empty here, so
-    the whole content of the conclusion comes from the pair. *)
+    the whole content of the conclusion comes from the stack's entry and
+    the pair. *)
 Example place_ledger_entry_ok : forall a n,
   In (a, n) place_reserved ->
   (0 < bv_unsigned n)%Z /\ (bv_unsigned a mod page_size = 0)%Z
@@ -402,27 +405,33 @@ Proof.
             /\ (bv_unsigned m mod page_size = 0)%Z)
     by (intros b m []).
   destruct (init_reserved_entry_ok [] (Z_to_bv 64 mmap_base_min)
-              (Z_to_bv 64 sp_window_lo) (m_kernel place_model) a n
-              place_vdso_room_premise place_launch_top_in_range Hres Hin)
+              (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
+              (m_kernel place_model) a n
+              place_vdso_room_premise place_launch_top_in_range
+              ltac:(vm_compute; reflexivity) ltac:(vm_compute; reflexivity) Hres Hin)
     as (H1 & H2 & H3 & _).
   repeat split; assumption.
 Qed.
 
-(** EVERY ENTRY IS THE IMAGE'S OR LIES IN THE PAIR'S HULL.  The image
-    is empty here, so this says the ledger IS the pair's hull. *)
+(** EVERY ENTRY IS THE IMAGE'S, THE STACK'S, OR LIES IN THE PAIR'S HULL.
+    The image is empty here, so this says the ledger is the stack's entry,
+    ending at the stack VMA's end, and the pair's hull. *)
 Example place_ledger_entry_place : forall a n,
   In (a, n) place_reserved ->
-  (launch_vdso_top (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
-     - vdso_len (m_kernel place_model) <= bv_unsigned a)%Z
-  /\ (bv_unsigned a + bv_unsigned n
-      <= launch_vdso_top (Z_to_bv 64 mmap_base_min)
-           (Z_to_bv 64 sp_window_lo))%Z.
+  (bv_unsigned a + bv_unsigned n = sp_window_lo + 4096)%Z
+  \/ ((launch_vdso_top (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
+       - vdso_len (m_kernel place_model) <= bv_unsigned a)%Z
+      /\ (bv_unsigned a + bv_unsigned n
+          <= launch_vdso_top (Z_to_bv 64 mmap_base_min)
+               (Z_to_bv 64 sp_window_lo))%Z).
 Proof.
   intros a n Hin. unfold place_reserved in Hin.
   destruct (init_reserved_entry_place [] (Z_to_bv 64 mmap_base_min)
-              (Z_to_bv 64 sp_window_lo) (m_kernel place_model) a n
-              place_launch_top_in_range Hin) as [[] | Hhull].
-  exact Hhull.
+              (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096))
+              (m_kernel place_model) a n
+              place_launch_top_in_range Hin) as [[] | [(_ & Hend & _) | Hhull]].
+  - left. rewrite Hend. vm_compute. reflexivity.
+  - right. exact Hhull.
 Qed.
 
 (** THE GRANT THE RULE CHOOSES MISSES THE PAIR, by the general lemma
@@ -434,12 +443,13 @@ Qed.
     one state where both can be run. *)
 Example place_ledger_splits :
   vm_reserved (m_vmmaps place_model)
-  = [] ++ vdso_reserved (m_kernel place_model)
+  = stack_reserved (m_kernel place_model) (Z_to_bv 64 mmap_base_min) (sp_window_lo + 4096)
+    ++ vdso_reserved (m_kernel place_model)
             (vdso_top (m_vmmaps place_model)).
 Proof. now vm_compute. Qed.
 
 Example place_first_grant_is_chosen :
-  linux_place_is (m_vmmaps place_model) false (Z_to_bv 64 0) 4096
+  linux_place_is (m_vmmaps place_model) (m_kernel place_model) (Z_to_bv 64 0) 4096
     (Z_to_bv 64 23387528560640) = true.
 Proof. now vm_compute. Qed.
 
@@ -453,8 +463,10 @@ Proof.
   assert (Hr : bv_unsigned (Z_to_bv 64 23387528560640) = 23387528560640%Z)
     by now vm_compute.
   rewrite <- Hr.
-  apply (linux_place_misses_vdso (m_vmmaps place_model) false (Z_to_bv 64 0)
-           4096 (Z_to_bv 64 23387528560640) (m_kernel place_model) [] a n);
+  apply (linux_place_misses_vdso (m_vmmaps place_model) (m_kernel place_model) (Z_to_bv 64 0)
+           4096 (Z_to_bv 64 23387528560640) (m_kernel place_model)
+           (stack_reserved (m_kernel place_model) (Z_to_bv 64 mmap_base_min) (sp_window_lo + 4096))
+           a n);
     [ now vm_compute | now vm_compute | now vm_compute
     | exact place_ledger_splits | exact place_first_grant_is_chosen
     | exact Hin ].

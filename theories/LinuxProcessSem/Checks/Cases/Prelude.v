@@ -43,14 +43,29 @@ Definition demo_phdrs : PhdrInfo := mkPhdrInfo 0x10040 56 6.
 Definition demo_limit : Z := 0x40000000%Z.
 
 (** The stack pointer these demo checks are started with: the bottom of
-    the SP window, so their grant top ([State.alloc_top]) is the lowest
-    any admissible run has and every literal below is admitted by every
-    run.  [demo_top] is that top, spelled once. *)
+    the SP window.  [demo_top] is [State.alloc_top] for it, spelled once.
+    [demo_ed_top] is the stack VMA's end ([StackLayout.ed_top]) they are
+    started with: one page above [demo_sp], room for an entry image of
+    up to a page.  So the stack's ledger entry ([State.stack_reserved])
+    is the 8 MiB below that end, and nothing below sits near it. *)
 Definition demo_sp : word := Z_to_bv 64 sp_window_lo.
 Definition demo_top : Z := (sp_window_lo - stack_max_size)%Z.
+Definition demo_ed_top : word := Z_to_bv 64 (sp_window_lo + 4096).
+
+(** The stack's ledger entry of a demo run ([State.stack_reserved] at the
+    default kernel, a zero mmap base and [demo_ed_top]): the 8 MiB below
+    [demo_ed_top], so it starts one page above [demo_top] and holds
+    [demo_sp].  A hand-built ledger that wants the stack where a launch
+    puts it lists this among its reservations. *)
+Definition demo_stack : list (word * word) :=
+  [ (Z_to_bv 64 (demo_top + 4096), Z_to_bv 64 stack_max_size) ].
+
+Example demo_stack_is_the_launch_entry :
+  stack_reserved default_kernel (Z_to_bv 64 0) (bv_unsigned demo_ed_top) = demo_stack.
+Proof. check_eq. Qed.
 
 Lemma demo_top_is_alloc_top : forall reserved brk0 mbase lim inp,
-  alloc_top (m_vmmaps (init_model reserved brk0 mbase demo_sp lim inp))
+  alloc_top (m_vmmaps (init_model reserved brk0 mbase demo_sp demo_ed_top lim inp))
   = demo_top.
 Proof. reflexivity. Qed.
 
@@ -246,7 +261,7 @@ Proof. split; check_eq. Qed.
 
 Example unmodeled_syscall_is_error :
   check_syscall (mkInput 166 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -255,14 +270,14 @@ Proof. vm_compute. reflexivity. Qed.
 
 Definition one_map_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** An unaligned addr or len = 0 is -EINVAL, as on Linux. *)
 
 Definition near_ceiling_sum_model : Model :=
   with_vmmaps
     (mkVmMaps [] [(Z_to_bv 64 (two_pow_64 - 8192), 4096)] 0 0 demo_limit)
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** Reason 3.  A live mapping at [addr + n = 2^64 - 4096], one page
     short of the word's end: [munmap_near_max_is_einval] shows the
@@ -272,7 +287,7 @@ Definition near_ceiling_sum_model : Model :=
     Linux hands back sits far below [State.alloc_top]), so only a
     hand-built model can exercise the gate at its own boundary. *)
 
-Definition noaccess_base : Model := init_model [] 0 0 demo_sp 16384 (demo_input [] IEof).
+Definition noaccess_base : Model := init_model [] 0 0 demo_sp demo_ed_top 16384 (demo_input [] IEof).
 
 Definition noaccess_three_pages : Model :=
   with_vmmaps
@@ -292,18 +307,26 @@ Definition noaccess_unowned : Model :=
 
 Definition noaccess_image_overlap : Model :=
   with_vmmaps (mkVmMapsFull [(4096, 4096)] [(4096, 4096)] [] 0 0 16384 0 demo_sp)
-              (init_model [(4096, 4096)] 0 0 demo_sp 16384 (demo_input [] IEof)).
+              (init_model [(4096, 4096)] 0 0 demo_sp demo_ed_top 16384 (demo_input [] IEof)).
 
 Definition tight_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192)
-              (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Definition ceiling_room_model : Model :=
-  with_vmmaps (mkVmMaps [] [] 0 0 demo_limit) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+  with_vmmaps (mkVmMaps [] [] 0 0 demo_limit) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
+
+(** [ceiling_room_model] with the stack's entry in its ledger
+    ([demo_stack]), so the stack and its guard band are where a launch puts
+    them.  [demo_band] is the band's lowest byte: the stack's floor less the
+    default kernel's 256-page guard gap. *)
+Definition stack_room_model : Model :=
+  with_vmmaps (mkVmMaps demo_stack [] 0 0 demo_limit) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
+Definition demo_band : Z := (demo_top + 4096 - 1048576)%Z.
 
 Definition region_live_model : Model :=
   with_vmmaps (mkVmMaps [] [(131072, 4096)] 0 0 demo_limit)
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 (** [region_free], independent of the ceiling and the budget (both
     generous here: [demo_limit], and the sole live map is 4096 bytes
@@ -314,8 +337,8 @@ Definition region_live_model : Model :=
 Example fd_truncation_high_low_halves_all_ebadf :
   Forall (fun fd =>
     check_syscall (mkInput 64 [fd; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-      (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [])
+      (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+    = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [])
     [Z_to_bv 64 (2 ^ 31); Z_to_bv 64 (2 ^ 32 - 1); Z_to_bv 64 (2 ^ 64 - 1);
      Z_to_bv 64 (2 ^ 63 + 2 ^ 32 - 1)].
 Proof. repeat constructor; check_eq. Qed.
@@ -329,12 +352,12 @@ Proof. repeat constructor; check_eq. Qed.
 Example fd_truncation_live_low_half_under_bit63 :
   check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 63); 4096; 2; 0; 0; 0]
                    mem_ab (fun _ => None))
-    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 63 [Z_to_bv 64 (2 ^ 63); 4096; 16; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. split; check_eq. Qed.
 
 (** The value that comparison runs against — pinned as a numeral, so a
@@ -376,7 +399,7 @@ Definition rlim_src_at (soft hard : byte) : word -> option byte :=
            else if bv_ltu a 8208 then Some 0
            else None.
 
-Definition rlim_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition rlim_model : Model := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** A NONZERO soft limit on purpose: it is what lets the set below
     actually change the record, so [prlimit64_read_after_set] cannot pass
@@ -755,8 +778,8 @@ Proof. intros [ehdr c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
     cannot disagree. *)
 
 Lemma auxv_ids_are_the_credentials_the_readers_answer :
-  forall reserved brk0 mbase sp lim inp la ph entry ar ae,
-    let m := init_model reserved brk0 mbase sp lim inp in
+  forall reserved brk0 mbase sp top lim inp la ph entry ar ae,
+    let m := init_model reserved brk0 mbase sp top lim inp in
     filter (fun e => orb (orb (bv_eqb (fst e) AT_UID) (bv_eqb (fst e) AT_EUID))
                          (orb (bv_eqb (fst e) AT_GID) (bv_eqb (fst e) AT_EGID)))
            (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
@@ -764,7 +787,7 @@ Lemma auxv_ids_are_the_credentials_the_readers_answer :
     = [ (AT_UID,  cr_uid  (m_creds m)); (AT_EUID, cr_euid (m_creds m));
         (AT_GID,  cr_gid  (m_creds m)); (AT_EGID, cr_egid (m_creds m)) ].
 Proof.
-  intros reserved brk0 mbase sp lim inp [ehdr c msz [|]] ph entry ar ae;
+  intros reserved brk0 mbase sp top lim inp [ehdr c msz [|]] ph entry ar ae;
     reflexivity.
 Qed.
 

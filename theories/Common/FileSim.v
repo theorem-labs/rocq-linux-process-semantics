@@ -2404,7 +2404,7 @@ Lemma fout_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_fout (run_segments segs inp sp mb)
           (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (fout_post U).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto.
@@ -2416,7 +2416,7 @@ Lemma fout_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_fout (run_segments segs inp sp mb)
           (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   forall tr, obs_trace (run_segments segs inp sp mb)
                (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (fout_trace o).
@@ -2425,7 +2425,7 @@ Proof.
   unfold init_config.
   set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) in *.
   set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) in *.
+               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) in *.
   assert (Hh : m_halted m0 = None) by reflexivity.
   assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
   split.
@@ -2443,7 +2443,7 @@ Lemma fout_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_fout (run_segments segs inp sp mb)
           (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+             (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) U ->
   ~ reaches_error (run_segments segs inp sp mb)
       (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -2459,12 +2459,12 @@ Lemma fout_omni_strong_equiv :
   to_fout (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           source_alloc_limit inp)) U ->
   to_fout (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           target_alloc_limit inp)) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -2494,12 +2494,12 @@ Lemma fout_strong_equiv :
   to_fout (run_segments source_segs inp rsp rmb)
     (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
           rlim inp)) U ->
   to_fout (run_segments target_segs inp asp amb)
     (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
     (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
           alim inp)) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

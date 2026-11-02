@@ -143,11 +143,11 @@ Definition M_loop (model : Model) : Prop :=
   m_halted model = None /\
   m_vm_lazy model = [].
 
-Lemma init_M_loop : forall reserved brk0 mb sp lim inp,
+Lemma init_M_loop : forall reserved brk0 mb sp top lim inp,
   in_channel_reader inp = true ->
-  M_loop (init_model reserved brk0 mb sp lim inp).
+  M_loop (init_model reserved brk0 mb sp top lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp Hr.
+  intros reserved brk0 mb sp top lim inp Hr.
   split; [reflexivity | split; [apply init_model_fd1chan; exact Hr | split; reflexivity]].
 Qed.
 
@@ -1175,9 +1175,9 @@ Proof.
   set (fs0 := in_fs inp) in *; set (stdin0 := in_stdin inp) in *.
   unfold init_config.
   set (ms0 := init_machine_state segs pc ph sp mb rnd inp) in *.
-  pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr) as HM0'.
+  pose proof (init_M_loop (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp Hrdr) as HM0'.
   set (model0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-                   (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+                   (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) in *.
   assert (HM0 : M_loop model0) by exact HM0'.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
   assert (Hfs0 : m_fs model0 = fs0) by reflexivity.
@@ -1232,9 +1232,9 @@ Lemma stream_omni_corun : forall pc ph sp brk0 mb rnd lim inp,
 Proof.
   intros pc ph sp brk0 mb rnd lim inp Hrd Hrdr. unfold init_config.
   set (model0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-                   (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+                   (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) in *.
   assert (HM0 : M_loop model0)
-    by exact (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr).
+    by exact (init_M_loop (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp Hrdr).
   apply to_rd_coexec; [exact HM0 | exact Hrd].
 Qed.
 

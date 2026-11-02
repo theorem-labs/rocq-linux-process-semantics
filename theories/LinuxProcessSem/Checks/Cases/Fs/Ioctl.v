@@ -22,15 +22,15 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 
 Example ioctl_tiocgwinsz_enotty :
   check_syscall (mkInput 29 [1; TIOCGWINSZ; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. check_eq. Qed.
 
 Example ioctl_tty_only_requests_all_enotty :
   Forall (fun req =>
     check_syscall (mkInput 29 [1; req; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-      (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [])
+      (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+    = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [])
     [TCGETS; TCSETS; TIOCSCTTY; TIOCGWINSZ;
      TIOCSWINSZ; TIOCNOTTY; TIOCGPTN; TIOCSPTLCK].
 Proof. repeat constructor; check_eq. Qed.
@@ -38,7 +38,7 @@ Proof. repeat constructor; check_eq. Qed.
 Example ioctl_other_request_is_error :
   Forall (fun req =>
     check_syscall (mkInput 29 [1; req; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-      (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
     = CheckUnmodeled)
     [Z_to_bv 64 21531; Z_to_bv 64 21537].   (* FIONREAD 0x541B, FIONBIO 0x5421 *)
 Proof. repeat constructor; vm_compute; reflexivity. Qed.
@@ -59,9 +59,9 @@ Proof. repeat constructor; vm_compute; reflexivity. Qed.
    ------------------------------------------------------------------------- *)
 
 Definition ioctl_devnull_model : Model :=
-  with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+  with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)))
               3 (FdDevNull false true))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)).
 
 Example ioctl_devnull_tiocgwinsz_enotty :
   check_syscall (mkInput 29 [3; TIOCGWINSZ; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))

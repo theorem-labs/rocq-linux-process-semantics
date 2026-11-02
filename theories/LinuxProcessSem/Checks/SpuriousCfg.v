@@ -87,7 +87,7 @@ Definition errno_eff (e : Z) : SyscallEffect := mkEffect (errno_ret e) [] [].
 
 (** The model every check below starts from: the demo process with an
     empty file system and end of input. *)
-Definition m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition m0 : Model := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (* =========================================================================
    PART 2 — which families a configuration turns off

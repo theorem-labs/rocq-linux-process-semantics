@@ -277,9 +277,9 @@ Definition page_round_up (len : word) : word :=
     tests, and every consumer that destructs [grant_ok] reads them, so
     they are kept rather than re-derived at each use. *)
 Definition grant_ok (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a
   && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-  && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
+  && (bv_unsigned a + n <=? TASK_SIZE)%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
   && (vm_backing_used m + n <=? vm_limit (m_vmmaps m))%Z.
 
@@ -289,7 +289,7 @@ Definition grant_ok (hint : word) (m : Model) (a : word) (n : Z) : bool :=
     [Placement.linux_place_b] and this lemma. *)
 Lemma grant_ok_intro : forall hint m a n,
   (0 < n)%Z -> (n mod page_size = 0)%Z ->
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true ->
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a = true ->
   (vm_backing_used m + n <= vm_limit (m_vmmaps m))%Z ->
   grant_ok hint m a n = true.
 Proof.
@@ -329,7 +329,7 @@ Proof. reflexivity. Qed.
 Lemma grant_ok_unpack : forall hint m a n,
   grant_ok hint m a n = true ->
   (bv_unsigned a mod page_size = 0)%Z /\ (0 < bv_unsigned a)%Z /\
-  (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z /\
+  (bv_unsigned a + n <= TASK_SIZE)%Z /\
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n) = true /\
   (vm_backing_used m + n <= vm_limit (m_vmmaps m))%Z.
 Proof.
@@ -345,7 +345,7 @@ Qed.
     Linux gives. *)
 Lemma grant_ok_place : forall hint m a n,
   grant_ok hint m a n = true ->
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a = true.
 Proof.
   intros hint m a n H. unfold grant_ok in H.
   rewrite !andb_true_iff in H. tauto.
@@ -623,7 +623,7 @@ Proof.
   intros hint model a n Hn Hg.
   destruct (grant_ok_unpack _ _ _ _ Hg) as (_ & _ & Hce & _).
   apply errno_ret_in_below; [reflexivity|].
-  alloc_top_bounds. unfold two_pow_64 in *. lia.
+  unfold TASK_SIZE, two_pow_64 in *. lia.
 Qed.
 
 Lemma mmap_succ_ok : forall segs ms x8 model a,
@@ -691,7 +691,7 @@ Proof.
     split; [reflexivity|]. left.
     apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
     exists e. auto.
-  - destruct (linux_place_is (m_vmmaps model) (kb_thp (m_kernel model))
+  - destruct (linux_place_is (m_vmmaps model) (m_kernel model)
                 (ms_gpr ms 0) (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) r
               && (vm_backing_used model
                   + page_round_up_Z (bv_unsigned (ms_gpr ms 1))
@@ -1753,7 +1753,7 @@ Qed.
 Lemma mmap_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
   tmw segs (init_machine_state segs pc ph sp mb rnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-         (init_model (segments_reserved segs) brk0 mb sp lim inp)) bf cf bs cs ->
+         (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
@@ -1763,11 +1763,11 @@ Proof.
   unfold init_config in *.
   set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-               (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+               (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) in *.
   assert (Hh : m_halted m0 = None) by reflexivity.
   assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
   assert (Hfd : fd1chan m0)
-    by exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp lim inp Hr).
+    by exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp Hr).
   assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
@@ -1789,7 +1789,7 @@ Qed.
 Lemma mmap_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
   tmw segs (init_machine_state segs pc ph sp mb rnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-         (init_model (segments_reserved segs) brk0 mb sp lim inp)) bf cf bs cs ->
+         (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
@@ -1798,9 +1798,9 @@ Proof.
   unfold init_config.
   apply (tmw_no_error segs _
            (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp)) bf cf bs cs);
+              (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)) bf cf bs cs);
     [reflexivity | reflexivity
-    | exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp lim inp Hr)
+    | exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp Hr)
     | exact Hte | exact Hbf | exact Hbs].
 Qed.
 
@@ -1812,7 +1812,7 @@ Lemma mmap_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
   tmw (run_segments segs inp sp mb)
       (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
-         (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) bf cf bs cs ->
+         (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (tmw_post bf cf bs cs (in_fs inp)).
@@ -1820,7 +1820,7 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs Hr.
   cbn [omni_run]. unfold init_config.
   exact (tmw_exec (run_segments segs inp sp mb) _ _ bf cf bs cs Hte Hbf Hbs eq_refl eq_refl
-           (init_model_fd1chan (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp
+           (init_model_fd1chan (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp
               Hr)).
 Qed.
 
@@ -1829,12 +1829,12 @@ Lemma mmap_omni_strong_equiv_te :
   tmw (run_segments source_segs inp rsp rmb)
       (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
             source_alloc_limit inp)) bf cf bs cs ->
   tmw (run_segments target_segs inp asp amb)
       (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
             target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1871,12 +1871,12 @@ Lemma mmap_strong_equiv_te :
   tmw (run_segments source_segs inp rsp rmb)
       (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
-         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp (ed_top rrnd)
             rlim inp)) bf cf bs cs ->
   tmw (run_segments target_segs inp asp amb)
       (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
       (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
-         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp (ed_top arnd)
             alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->

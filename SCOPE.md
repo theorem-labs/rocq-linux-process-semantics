@@ -88,10 +88,12 @@ mode answers. QEMU citations are QEMU 10.0.11.
   range below `mm->mmap_base`, else the lowest free range from
   `TASK_UNMAPPED_BASE` up (`mm/mmap.c`, `__get_unmapped_area` and
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
-  and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
-  of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; "Known gaps in precision" gives the difference as R-a,
-  R-b and R-c. QEMU
+  and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). The
+  stack is an entry of the model's ledger (`State.stack_reserved`) and
+  each of the three keeps the stack's guard gap below it
+  (`State.stack_guard_band`), as Linux's `vm_start_gap` does; the hint
+  and the bottom-up fallback reach `TASK_SIZE`. "Known gaps in
+  precision" gives the differences that remain as R-a and R-e. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -265,8 +267,9 @@ already says so. These are the known cases.
 
   Commit `2116988d5372` ("riscv: mm: Do not restrict mmap address based
   on hint", v6.11) made the macro unconditional, which is the form the
-  model follows. The model's own band above `State.alloc_top` is a
-  separate limit and is residual R-b below, not a version difference.
+  model follows. The model's own MAP_FIXED limit at `State.alloc_top` is
+  a separate limit, named under "Known gaps in precision", not a
+  version difference.
 - **`socket` with a type at or above `SOCK_MAX` and a family of 44 or
   45, and AF_INET protocols 256 to 262.** `NPROTO` and `IPPROTO_MAX`
   grew across the stable series (`include/linux/socket.h`,
@@ -579,37 +582,46 @@ equivalence) can be true of the model and false of Linux.
   only its own entry image against the stack limit (see "Stack floor").
   LPS pull request #25, which makes the stack window count the entry
   image, makes `alloc_top` Linux's floor and closes it.
-- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
-  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
-  above the stack included, and its bottom-up fallback searches up to the
-  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
-  `generic_get_unmapped_area_topdown`: the hint test is
-  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
-  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
-  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
-  hint, and searches, only below `State.alloc_top`. It stays open because
-  the dynamic stack is a bound in this model and not an entry in the
-  ledger, so the model cannot tell a free address above the stack from the
-  stack itself. The stack VMA in the ledger closes it.
-- **R-c, the stack guard gap.** When the stack has grown to its limit,
-  Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
-  that gap from the start of a `VM_GROWSDOWN` VMA
-  (`include/linux/mm.h`, `vm_start_gap`, through `stack_guard_start_gap`;
-  `vm_end_gap` is the matching rule above a `VM_GROWSUP` VMA). The model
-  allows a mapping there when the mmap base or a hint reaches
-  `State.alloc_top`. It stays open for the reason R-b gives: the ledger has
-  no stack VMA, so it has no gap to keep. The stack VMA in the ledger
-  closes it.
-  The same gap reaches `brk`: Linux refuses a grow to within a page and
-  `stack_guard_gap` of the stack's start, because the `vma_find` at
-  `SYSCALL_DEFINE1(brk)` (`mm/mmap.c`) searches up to
-  `newbrk + PAGE_SIZE + stack_guard_gap` and compares against
-  `vm_start_gap(next)`. `Sys/Mm/Mmap.v`, `brk_grow_ok` tests only the
-  installed pages and the one page above them, against a ledger with no
-  stack VMA in it, so `State.alloc_top` stands in for that refusal — and
-  stands in for it only while the stack has not grown to within
-  `stack_guard_gap` and a page of that bound. The stack VMA in the
-  ledger closes this too.
+- **R-e, the stack at its full size.** The model's ledger holds the
+  stack as one entry, `[Run.stack_window_lo, ed_top)` (`State.stack_reserved`):
+  the window `Run.init_machine_state` maps, which reaches 8 MiB below the
+  stack VMA's end. Below it the model keeps `stack_guard_gap` free
+  (`State.stack_guard_band`) for a hint, for both search windows, for a
+  `brk` grow and for an `mremap` move, as Linux's `vm_start_gap` does for
+  a `VM_GROWSDOWN` VMA (`include/linux/mm.h`; `mm/mmap.c`,
+  `generic_get_unmapped_area_topdown` and `SYSCALL_DEFINE1(brk)`;
+  `mm/vma.c`, `unmapped_area` and `unmapped_area_topdown`). Linux's stack
+  VMA is shorter until the stack grows: `setup_arg_pages` (`fs/exec.c`)
+  makes it the entry image plus 128 KiB, and `expand_downwards`
+  (`mm/vma.c`) grows it on a page fault, which the model does not report.
+  So while Linux's stack is short, an address below Linux's stack start
+  but inside the model's window, or inside the model's guard band, is one
+  Linux can grant and the model does not: a hint there is honoured by
+  Linux and placed elsewhere by the model, an in-place `mremap` grow into
+  the window moves instead, and a `MAP_FIXED` or `MAP_FIXED_NOREPLACE`
+  mapping or an `munmap` into the window is `unmodeled`. In each difference the
+  model places elsewhere, moves or declines; it never grants an address
+  that Linux refuses.
+  `Checks/Cases/Mm/StackVma.v`, `residual_hint_below_full_stack_refused`,
+  pins one such hint. It stays open because the model has no stack growth
+  in the machine semantics; a model whose stack entry starts at Linux's
+  current VMA and grows on a fault closes it, and that case then flips.
+- **`MAP_FIXED` above `State.alloc_top`.** A `MAP_FIXED` or
+  `MAP_FIXED_NOREPLACE` `mmap` whose range ends above `alloc_top`,
+  `sp - 8 MiB`, answers `unmodeled`. Linux grants a free range anywhere
+  below `TASK_SIZE`, the page above the stack and the stack's guard gap
+  included, because `__get_unmapped_area` (`mm/mmap.c`) hands a
+  `MAP_FIXED` address straight back and keeps no gap. This is a refusal
+  to answer and never a wrong answer: `unmodeled` is the fail-closed
+  verdict. The hint, the searches, `brk`, `munmap` and `mremap` reach
+  `TASK_SIZE`; the `MAP_FIXED` arms keep `alloc_top` because consumer
+  proofs close their gate through `alloc_top`'s own definition.
+- **R-b and R-c are closed.** R-b (a hint or the bottom-up fallback
+  above `State.alloc_top`) and R-c (the stack guard gap, for `mmap` and
+  `brk`) were open while the stack was a bound and not a ledger entry.
+  With the entry and its guard band, a hint above the stack is honoured
+  (`Checks/Cases/Mm/StackVma.v`, `rb_hint_above_stack_honoured`) and a hint
+  inside the guard band is refused (`rc_hint_in_guard_band_refused`).
 - **What a vDSO call leaves behind.** After a call to an exported vDSO
   entry, the caller-saved registers other than `a0`, and the bytes of
   `[sp - F, sp)`, take the values of the launch's draw
@@ -717,10 +729,15 @@ equivalence) can be true of the model and false of Linux.
   model carries `ed_top` as part of the entry, so this floor is exact
   at entry and there is no band.
   A mapping that the program makes later can raise Linux's floor, and
-  the model's ledger does not raise the stack window with it. That is
-  the residual: a program that maps a page just below its stack and
-  then grows the stack into the guard gap above that mapping faults on
-  Linux where the model answers.
+  the model's ledger does not raise the stack window with it. The model
+  keeps the guard gap below its stack entry for a hint, the searches,
+  `brk` and an `mremap` move, so only a `MAP_FIXED` mapping and an
+  in-place `mremap` grow can come within the guard gap of the window, as
+  on Linux, where neither keeps the gap. That is the residual: a program
+  that makes such a mapping just below the window and then grows the
+  stack into the guard gap above it faults on Linux where the model
+  answers. (Neither can reach into the window itself: the stack is a
+  ledger entry, `State.stack_reserved`.)
   QEMU user mode has a band of the same kind, for a different reason;
   "Where QEMU user mode differs" above says where the guest stack goes.
 - **A failing store-conditional on a write-only segment.** The model

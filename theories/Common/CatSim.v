@@ -1119,16 +1119,16 @@ End WithSegs.
 Definition wexit_launch (bufs : list (list byte)) (inp : ProcInput) : Prop :=
   bufs = [] \/ in_channel_reader inp = true.
 
-Lemma init_model_fd1chan : forall reserved brk0 mb sp lim inp,
+Lemma init_model_fd1chan : forall reserved brk0 mb sp top lim inp,
   in_channel_reader inp = true ->
-  fd1chan (init_model reserved brk0 mb sp lim inp).
-Proof. intros reserved brk0 mb sp lim inp Hr. split; [reflexivity | exact Hr]. Qed.
+  fd1chan (init_model reserved brk0 mb sp top lim inp).
+Proof. intros reserved brk0 mb sp top lim inp Hr. split; [reflexivity | exact Hr]. Qed.
 
-Lemma init_model_wexit_ready : forall reserved brk0 mb sp lim inp bufs,
+Lemma init_model_wexit_ready : forall reserved brk0 mb sp top lim inp bufs,
   wexit_launch bufs inp ->
-  wexit_ready bufs (init_model reserved brk0 mb sp lim inp).
+  wexit_ready bufs (init_model reserved brk0 mb sp top lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp bufs [Hnil | Hr];
+  intros reserved brk0 mb sp top lim inp bufs [Hnil | Hr];
     [left; exact Hnil | right; apply init_model_fd1chan; exact Hr].
 Qed.
 
@@ -1151,12 +1151,12 @@ Proof. intros v m H; exact H. Qed.
 Definition sigpipe_fatal (inp : ProcInput) : Prop :=
   in_sigpipe_default inp = true /\ sigpipe_blocked (in_sigmask inp) = false.
 
-Lemma init_model_fd1dead : forall reserved brk0 mb sp lim inp,
+Lemma init_model_fd1dead : forall reserved brk0 mb sp top lim inp,
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
-  fd1dead (init_model reserved brk0 mb sp lim inp).
+  fd1dead (init_model reserved brk0 mb sp top lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp Hr (Hd & Hm).
+  intros reserved brk0 mb sp top lim inp Hr (Hd & Hm).
   split; [reflexivity | split; [exact Hr | split; [exact Hd | exact Hm]]].
 Qed.
 
@@ -1183,11 +1183,11 @@ Proof.
   cbn [omni_run]. unfold init_config.
   exact (to_wexit_exec (run_segments segs inp sp mb) _ bufs code Hte
            (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp))
            eq_refl eq_refl
            (wexit_ready_with_vdso _ _ _
               (init_model_wexit_ready
-                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp _
                  lim inp bufs Hl)) Hbm).
 Qed.
 
@@ -1204,15 +1204,15 @@ Proof.
   unfold init_config in *.
   set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None) by reflexivity.
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) = None) by reflexivity.
   assert (Hlazy : m_vm_lazy (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) = []) by reflexivity.
   assert (Hfd : wexit_ready bufs (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)))
     by (apply wexit_ready_with_vdso;
         apply init_model_wexit_ready; exact Hl).
   assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = fs0) by reflexivity.
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp)) = fs0) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
     destruct (to_wexit_star_only (run_segments segs inp sp mb) ms bufs code Hte _ Hh Hlazy Hfd Hbm tr' c Hstar)
@@ -1292,11 +1292,11 @@ Proof.
   cbn [omni_run]. unfold init_config.
   exact (to_wexit_kill_exec (run_segments segs inp sp mb) _ bufs code Hte Hne Hfo
            (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp))
            eq_refl eq_refl
            (fd1dead_with_vdso _ _
               (init_model_fd1dead
-                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp _
                  lim inp Hr Hm))).
 Qed.
 
@@ -1317,11 +1317,11 @@ Proof.
   unfold init_config.
   exact (to_wexit_kill_obs_iff (run_segments segs inp sp mb) _ bufs code
            (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp))
            Hte Hne Hfo eq_refl eq_refl
            (fd1dead_with_vdso _ _
               (init_model_fd1dead
-                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp _
                  lim inp Hr Hm)) tr).
 Qed.
 
@@ -1341,11 +1341,11 @@ Proof.
   unfold init_config.
   exact (to_wexit_kill_no_error (run_segments segs inp sp mb) _ bufs code
            (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp))
            Hte Hne Hfo eq_refl eq_refl
            (fd1dead_with_vdso _ _
               (init_model_fd1dead
-                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp _
                  lim inp Hr Hm))).
 Qed.
 
@@ -1521,11 +1521,11 @@ Proof.
   intros model [H Hr]. split; [exact H | split; [reflexivity | exact Hr]].
 Qed.
 
-Lemma init_model_fdchan2 : forall reserved brk0 mb sp lim inp,
+Lemma init_model_fdchan2 : forall reserved brk0 mb sp top lim inp,
   in_channel_reader inp = true ->
-  fdchan (Z_to_bv 64 2) (Z_to_bv 64 2) (init_model reserved brk0 mb sp lim inp).
+  fdchan (Z_to_bv 64 2) (Z_to_bv 64 2) (init_model reserved brk0 mb sp top lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp Hr.
+  intros reserved brk0 mb sp top lim inp Hr.
   split; [reflexivity | split; [reflexivity | exact Hr]].
 Qed.
 

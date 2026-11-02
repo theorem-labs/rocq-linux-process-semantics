@@ -2992,11 +2992,11 @@ Inductive FdEntry :=
         [Run.valid_mmap_base] carries it;
     (h) [vm_init_sp] — the stack pointer [execve] handed this run
         ([Run.mi_init_sp], any [Run.valid_sp] value, quantified
-        independently per binary), IMMUTABLE for the whole run.  The
-        allocator reads it through [alloc_top] below: it is what keeps
-        every grant off THIS run's stack.  The stack itself has no
-        reservation entry — see [alloc_top] for why a bound does the
-        job a reservation would. *)
+        independently per binary), IMMUTABLE for the whole run.  Two
+        readers: [alloc_top] below, which bounds the top-down search,
+        and [stack_guard_band], which finds the stack's entry in
+        [vm_reserved] as the one that holds this pointer.  The stack
+        itself is a [vm_reserved] entry ([stack_reserved]). *)
 Record VmMaps := mkVmMapsFull {
   vm_reserved  : list (word * word);
   vm_maps      : list (word * word);
@@ -3008,25 +3008,21 @@ Record VmMaps := mkVmMapsFull {
   vm_init_sp   : word;
 }.
 
-(** ALLOCATION TOP: no allocator grant (anonymous mmap, brk grow, a
-    moved or grown mremap) may reach at or above this address, so every
-    grant is disjoint from the dynamic stack (whose window
-    [[Run.stack_window_lo], sp) starts at or above [sp - stack_max_size])
-    and from the argv/envp/auxv block above [sp] — for the [sp] THIS run
-    was started with.
+(** THE STACK'S RLIMIT FLOOR AS SEEN FROM [sp]: [stack_max_size] below
+    the stack pointer this run was started with.
 
-    A bound rather than a reservation entry, on purpose: [region_free]
-    over a list holding a symbolic [sp]-based interval turns every
-    concrete [grant_ok ... = true] in the examples into an open [bv]
-    term, while one [Z] inequality keeps [sp] a single [lia] atom.  The
-    price is that a hinted grant INTO the stack band — which Linux
-    honours when the hint is free — is refused here rather than
-    declined.
+    Two readers are left.  [mmap_top], the top of the top-down search,
+    takes the minimum of the mmap base and this (residual R-a of
+    SCOPE.md).  The MAP_FIXED and MAP_FIXED_NOREPLACE argument gates and
+    their budget mark ([Sys/Mm/Mmap.v]) answer [unmodeled] for a range
+    that ends above it (SCOPE.md, "MAP_FIXED above [State.alloc_top]").
+    The hint, the bottom-up fallback, [brk], [munmap] and [mremap] read
+    the stack's own ledger entry ([stack_reserved]) and, where Linux keeps
+    one, the guard gap below it ([stack_guard_band]), with [TASK_SIZE] as
+    the top.
 
     Computed in [Z] from a [word], so it is below 2^64 for every ledger
-    ([alloc_top_lt]) with no wrap argument: that is what lets a proof
-    conclude from [a + n <= alloc_top h] that [a + n] is a real address
-    and never an encoded errno.
+    ([alloc_top_lt]) with no wrap argument.
 
     [stack_max_size] stays a constant.  [Sys.v]'s [prlimit64] note
     argues why [RLIMIT_STACK] is not modelled; until it is, 8 MiB is the
@@ -3091,14 +3087,13 @@ Ltac alloc_top_bounds :=
     [unmapped_area_topdown]).
 
     Linux's value is [mm->mmap_base] alone, which [vm_mmap_base]
-    carries.  This takes the minimum with [alloc_top] as well, because
-    the model keeps the dynamic stack OUT of the ledger and bounds every
-    grant by [alloc_top] instead (see the [vm_init_sp] note above).  A
-    base drawn above [alloc_top] would otherwise let the search return a
-    range the stack owns.  The difference is residual R-b of SCOPE.md:
-    Linux's search reaches up to [STACK_TOP_MAX] for a free HINT and its
-    bottom-up fallback reaches the stack's guard gap, and this model
-    stops at [alloc_top].
+    carries.  This takes the minimum with [alloc_top] as well.  That is
+    residual R-a of SCOPE.md: a base drawn above [alloc_top] puts this
+    model's top-down placements below the kernel's.  The search never
+    reaches the stack's entry or its guard band either way, because
+    both start at or above the mmap base ([stack_floor],
+    [stack_guard_band]).  The hint and the bottom-up fallback reach
+    [TASK_SIZE], as Linux's do ([Sys/Mm/Mmap.linux_place]).
 
     [page_round_down_Z] on [alloc_top] because [alloc_top] is
     [sp - stack_max_size] and [sp] is only 16-byte aligned
@@ -3128,9 +3123,8 @@ Definition vdso_top (h : VmMaps) : Z := page_round_down_Z (mmap_top h).
     empty protection ledger, nor the placement base (seeded 0, which
     means "no base recorded" and which nothing in the spec reads; see
     the [vm_mmap_base] note above).  The stack pointer is seeded at the
-    BOTTOM of the SP window, so a hand-built ledger's [alloc_top] is the
-    smallest any admissible run has: what such a ledger admits, every
-    run admits. *)
+    BOTTOM of the SP window.  Such a ledger has no stack entry, so it
+    has no guard band either ([stack_guard_band]). *)
 Definition mkVmMaps (reserved maps : list (word * word))
     (start_brk brk : word) (limit : Z) : VmMaps :=
   mkVmMapsFull reserved maps [] start_brk brk limit (Z_to_bv 64 0)
@@ -5670,6 +5664,175 @@ Proof.
          apply Z_mod_mult).
 Qed.
 
+(** THE STACK AS A LEDGER ENTRY.
+
+    [Run.init_machine_state] zero-maps the stack the program can grow
+    into, [[Run.stack_window_lo, sp)], and lays the entry image from
+    [sp] up to the stack VMA's end [StackLayout.ed_top].  This is the
+    floor of that window, written here because [init_model] builds the
+    ledger from it and [Run] reads [State]: the higher of
+    [RLIMIT_STACK] below the VMA's end and the guard gap above the mmap
+    base ([expand_downwards], mm/vma.c, Linux v6.18.46, commit
+    1f99e9ab748f; [Run.stack_window_lo]'s note gives both).
+    [Run.stack_window_lo] is this function. *)
+Definition stack_floor (kb : KernelBuild) (mbase : word) (top : Z) : Z :=
+  Z.max (top - stack_max_size) (bv_unsigned mbase + stack_guard_gap_bytes kb).
+
+(** The stack's entry in [vm_reserved]: [[stack_floor, top)], exactly
+    the bytes [Run.init_machine_state] maps for the stack and the entry
+    image.
+
+    THE FULL-SIZE STACK, NOT LINUX'S CURRENT ONE.  Linux's stack VMA
+    starts short — [setup_arg_pages] (fs/exec.c) makes it the entry
+    image plus 128 KiB — and grows on a page fault ([expand_downwards]),
+    which the model does not report.  The entry is the stack at its
+    [RLIMIT_STACK] extent, the window the machine already maps, so every
+    test that reads [vm_reserved] refuses an address the stack may yet
+    take.  That refuses some addresses Linux grants while its stack is
+    still short; SCOPE.md names the band.
+
+    IN [vm_reserved] AND NOT [vm_maps], like the vdso/vvar pair: the
+    placement search, MAP_FIXED_NOREPLACE, an in-place [mremap] grow,
+    [brk] and [munmap] all read [vm_reserved], and none of the arms that
+    would hand the range back ([munmap], MAP_FIXED over it) is modelled
+    for a reservation.
+
+    [[]] when the window is empty or reaches past [TASK_SIZE]: no launch
+    has either, and the guard keeps the entry's two words exact. *)
+Definition stack_reserved (kb : KernelBuild) (mbase : word) (top : Z)
+    : list (word * word) :=
+  let lo := stack_floor kb mbase top in
+  if ((lo <? top) && (top <=? TASK_SIZE))%Z%bool
+  then [ (Z_to_bv 64 lo, Z_to_bv 64 (top - lo)) ]
+  else [].
+
+Lemma stack_floor_nonneg : forall kb mbase top,
+  (0 <= stack_floor kb mbase top)%Z.
+Proof.
+  intros kb mbase top. unfold stack_floor.
+  pose proof (bv_unsigned_range_u64 mbase).
+  pose proof (stack_guard_gap_bytes_bounds kb). lia.
+Qed.
+
+(** The entry is [[stack_floor, top)], below [TASK_SIZE] and nonempty. *)
+Lemma stack_reserved_in : forall kb mbase top a n,
+  In (a, n) (stack_reserved kb mbase top) ->
+  bv_unsigned a = stack_floor kb mbase top
+  /\ (bv_unsigned a + bv_unsigned n = top)%Z
+  /\ (stack_floor kb mbase top < top)%Z
+  /\ (top <= TASK_SIZE)%Z.
+Proof.
+  intros kb mbase top a n Hin. unfold stack_reserved in Hin.
+  pose proof (stack_floor_nonneg kb mbase top).
+  destruct (Z.ltb_spec (stack_floor kb mbase top) top) as [Hlt|Hge];
+    destruct (Z.leb_spec top TASK_SIZE) as [Hle|Hgt];
+    cbn in Hin; try contradiction.
+  destruct Hin as [Heq|[]]. inversion Heq; subst a n.
+  unfold TASK_SIZE in Hle.
+  rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64; lia).
+  unfold TASK_SIZE. lia.
+Qed.
+
+Lemma stack_reserved_nonzero : forall kb mbase top,
+  entries_nonzero (stack_reserved kb mbase top).
+Proof.
+  intros kb mbase top a n Hin.
+  destruct (stack_reserved_in kb mbase top a n Hin) as (Ha & Hn & Hlt & _).
+  lia.
+Qed.
+
+(** THE GUARD GAP BELOW THE STACK, as a list the gap-keeping tests read.
+
+    Linux keeps [stack_guard_gap] free below a VM_GROWSDOWN VMA in the
+    tests that go through [vm_start_gap] (include/linux/mm.h, Linux
+    v6.18.46, commit 1f99e9ab748f): a hint
+    ([generic_get_unmapped_area_topdown], mm/mmap.c), both search
+    windows ([unmapped_area] and [unmapped_area_topdown], mm/vma.c, the
+    [VM_STARTGAP_FLAGS] retry), and a [brk] grow ([SYSCALL_DEFINE1(brk)],
+    mm/mmap.c).  A MAYMOVE [mremap] destination is a search, so it keeps
+    it too.  Two tests do NOT: MAP_FIXED, whose [__get_unmapped_area]
+    hands the address straight back, and an in-place [mremap] grow,
+    whose [vma_expandable] (mm/mremap.c) asks [find_vma_intersection]
+    only.  So the band is not in [vm_reserved]: the tests that keep the
+    gap read [stack_guard_band kb h ++ vm_reserved h ++ vm_maps h], and
+    the two that do not read the ledger alone.
+
+    WHICH ENTRY IS THE STACK.  The ledger carries no field for it (one
+    would break every positional [mkVmMapsFull] builder), so the stack is
+    the reserved entry that holds the run's own initial stack pointer
+    [vm_init_sp], which [stack_reserved]'s entry does for every launch:
+    [stack_floor] is below [sp] and [ed_top] above it.  A hand-built
+    ledger with no such entry has no band, as it has no stack.
+
+    THE BAND STOPS AT THE MMAP BASE.  [vm_start_gap] saturates at 0;
+    this stops at [vm_mmap_base] instead.  For a launch the two agree,
+    because [stack_floor] is at least the base plus the gap, so the band
+    [[floor - gap, floor)] starts at or above the base already.  Stopping
+    there says by construction what is true of every launch: the band is
+    above the top-down window, whose top [mmap_top] is at most the base,
+    so a search that stays below the base never meets it. *)
+Definition stack_entry_holds (sp : word) (e : word * word) : bool :=
+  ((bv_unsigned (fst e) <=? bv_unsigned sp)
+   && (bv_unsigned sp <? bv_unsigned (fst e) + bv_unsigned (snd e)))%Z%bool.
+
+Definition stack_guard_band (kb : KernelBuild) (h : VmMaps)
+    : list (word * word) :=
+  match List.find (stack_entry_holds (vm_init_sp h)) (vm_reserved h) with
+  | Some (a, _) =>
+      let lo := bv_unsigned a in
+      let b := Z.max (lo - stack_guard_gap_bytes kb)
+                     (bv_unsigned (vm_mmap_base h)) in
+      if (b <? lo)%Z then [ (Z_to_bv 64 b, Z_to_bv 64 (lo - b)) ] else []
+  | None => []
+  end.
+
+(** Every entry of the band starts at or above the mmap base, ends at
+    the start of the reserved entry it guards, and names a byte. *)
+Lemma stack_guard_band_in : forall kb h b n,
+  In (b, n) (stack_guard_band kb h) ->
+  exists a m,
+    In (a, m) (vm_reserved h)
+    /\ stack_entry_holds (vm_init_sp h) (a, m) = true
+    /\ (bv_unsigned (vm_mmap_base h) <= bv_unsigned b)%Z
+    /\ (bv_unsigned a - stack_guard_gap_bytes kb <= bv_unsigned b)%Z
+    /\ (bv_unsigned b + bv_unsigned n = bv_unsigned a)%Z
+    /\ (0 < bv_unsigned n)%Z.
+Proof.
+  intros kb h b n Hin. unfold stack_guard_band in Hin.
+  destruct (List.find (stack_entry_holds (vm_init_sp h)) (vm_reserved h))
+    as [[a m]|] eqn:Hf; [|contradiction].
+  apply find_some in Hf as [Hin_r Hhold].
+  pose proof (bv_unsigned_range_u64 a) as Ha.
+  pose proof (bv_unsigned_range_u64 (vm_mmap_base h)) as Hb.
+  pose proof (stack_guard_gap_bytes_bounds kb) as Hg.
+  destruct (Z.ltb_spec (Z.max (bv_unsigned a - stack_guard_gap_bytes kb)
+                              (bv_unsigned (vm_mmap_base h)))
+                       (bv_unsigned a)) as [Hlt|Hge];
+    cbn in Hin; [|contradiction].
+  destruct Hin as [Heq|[]]. inversion Heq; subst b n.
+  exists a, m. split; [exact Hin_r|]. split; [exact Hhold|].
+  rewrite !bv_unsigned_Z_to_bv_u64 by lia. lia.
+Qed.
+
+Lemma stack_guard_band_nonzero : forall kb h,
+  entries_nonzero (stack_guard_band kb h).
+Proof.
+  intros kb h b n Hin.
+  destruct (stack_guard_band_in kb h b n Hin) as (_ & _ & _ & _ & _ & _ & _ & H).
+  exact H.
+Qed.
+
+(** A range that ends at or below the mmap base misses the band: the
+    one fact every top-down search needs about it. *)
+Lemma stack_guard_band_above_base : forall kb h b n,
+  In (b, n) (stack_guard_band kb h) ->
+  (bv_unsigned (vm_mmap_base h) <= bv_unsigned b)%Z.
+Proof.
+  intros kb h b n Hin.
+  destruct (stack_guard_band_in kb h b n Hin) as (_ & _ & _ & _ & H & _).
+  exact H.
+Qed.
+
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
     is emitted under exactly the guard that makes its size positive. *)
 Lemma iv_subtract_nonzero : forall (a sz : word) loZ hiZ,
@@ -6665,8 +6828,10 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    [mm->mmap_base] ([Run.valid_mmap_base] — quantified the same way,
    see [Run.mi_mmap_base] and the [vm_mmap_base] field note); [sp] is
    the initial stack pointer ([Run.valid_sp], see [Run.mi_init_sp] and
-   the [vm_init_sp] field note), which [alloc_top] bounds every grant
-   by; the file
+   the [vm_init_sp] field note), which the top-down search's top
+   [mmap_top] reads through [alloc_top]; [top] is the stack VMA's end
+   ([StackLayout.ed_top] of the entry's draw), which with [mbase] fixes
+   the stack's ledger entry [stack_reserved]; the file
    system, standard
    input and the random device's stream start as the [in_fs], [in_stdin]
    and [in_urandom] of the caller-supplied
@@ -6695,18 +6860,23 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    effective id differs — is not an input this model can state.
    ========================================================================= *)
 
-(** THE INITIAL RESERVED LEDGER: the image the kernel mapped, and the
-    vdso/vvar pair [execve] installed above it.
+(** THE INITIAL RESERVED LEDGER: the image the kernel mapped, the
+    stack [execve] set up ([stack_reserved], ending at the stack VMA's
+    end [top]), and the vdso/vvar pair [execve] installed below the
+    mmap base.
 
     The pair ends at [vdso_top] of the ledger this very function
     builds, which for [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase
     sp] is [page_round_down_Z (Z.min mbase (sp - stack_max_size))].
     Written out here rather than called on the finished model because
     the model is what this term is building; [vm_reserved_init_model]
-    below states the two forms are the same. *)
+    below states the two forms are the same.  The pair comes last, so
+    the ledger keeps the shape [rest ++ vdso_reserved kb (vdso_top h)]
+    that [Checks.Placement.linux_place_misses_vdso] reads. *)
 Definition init_reserved (reserved : list (word * word))
-    (mbase sp : word) (kb : KernelBuild) : list (word * word) :=
+    (mbase sp top : word) (kb : KernelBuild) : list (word * word) :=
   reserved
+  ++ stack_reserved kb mbase (bv_unsigned top)
   ++ vdso_reserved kb
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
@@ -6768,13 +6938,13 @@ Definition init_reserved (reserved : list (word * word))
     [m_sigabrt_pending_init_model] are all still closed by it.  A NEW
     FIELD GOES HERE, beside the others, and not into a new setter
     wrapped around the result. *)
-Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
+Definition init_model (reserved : list (word * word)) (brk0 mbase sp top : word)
     (lim : Z) (inp : ProcInput) : Model :=
   mkModelOf
     (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
                  (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
                  (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
-    (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+    (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp top (in_kernel inp))
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
     (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
@@ -6794,7 +6964,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     added to one form and not the other fails the build here, which is
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
-    (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
+    (brk0 mbase sp top : word) (lim : Z) (inp : ProcInput) : Model :=
   with_sigpipe_default (in_sigpipe_default inp)
   (with_channel_reader (in_channel_reader inp)
   (with_abort_terminal (in_abort_terminal inp)
@@ -6810,20 +6980,20 @@ Definition init_model_setter_chain (reserved : list (word * word))
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-       (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+       (mkVmMapsFull (init_reserved reserved mbase sp top (in_kernel inp))
           [] [] brk0 brk0 lim mbase sp)
        (in_stdin inp)
        (in_fs inp)
        None
        None
        None))))))))).
-Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
-  m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
+Lemma m_kernel_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_kernel (init_model reserved brk0 mbase sp top lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_init_model : model.
 
-Lemma vdso_top_init_model : forall reserved brk0 mbase sp lim inp,
-  vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+Lemma vdso_top_init_model : forall reserved brk0 mbase sp top lim inp,
+  vdso_top (m_vmmaps (init_model reserved brk0 mbase sp top lim inp))
   = page_round_down_Z
       (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
 Proof.
@@ -6831,13 +7001,15 @@ Proof.
   apply page_round_down_Z_min_r.
 Qed.
 
-Lemma vm_reserved_init_model : forall reserved brk0 mbase sp lim inp,
-  vm_reserved (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
-  = reserved
+(** The launch's ledger in the shape [rest ++ vdso_reserved kb
+    (vdso_top h)]: the image's entries and the stack's are the [rest]. *)
+Lemma vm_reserved_init_model : forall reserved brk0 mbase sp top lim inp,
+  vm_reserved (m_vmmaps (init_model reserved brk0 mbase sp top lim inp))
+  = (reserved ++ stack_reserved (in_kernel inp) mbase (bv_unsigned top))
     ++ vdso_reserved (in_kernel inp)
-         (vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))).
+         (vdso_top (m_vmmaps (init_model reserved brk0 mbase sp top lim inp))).
 Proof.
-  intros. rewrite vdso_top_init_model. reflexivity.
+  intros. rewrite vdso_top_init_model, <- app_assoc. reflexivity.
 Qed.
 
 (** THE KERNEL BUILD SURVIVES EVERY SETTER, because no step changes the
@@ -6977,9 +7149,9 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_clock : model.
 
 Lemma init_model_is_the_setter_chain :
-  forall reserved brk0 mbase sp lim inp,
-    init_model reserved brk0 mbase sp lim inp
-    = init_model_setter_chain reserved brk0 mbase sp lim inp.
+  forall reserved brk0 mbase sp top lim inp,
+    init_model reserved brk0 mbase sp top lim inp
+    = init_model_setter_chain reserved brk0 mbase sp top lim inp.
 Proof. reflexivity. Qed.
 
 (** AND THE CHECK THAT THE EQUALITY ABOVE IS NOT.  The lemma says the two
@@ -7006,11 +7178,11 @@ Proof. reflexivity. Qed.
     [init_model] once, [beta] reduces the application, and the match looks
     only at the head.  Nothing is computed. *)
 Section InitModelIsOneConstructor.
-Variables (reserved : list (word * word)) (brk0 mbase sp : word)
+Variables (reserved : list (word * word)) (brk0 mbase sp top : word)
           (lim : Z) (inp : ProcInput).
 Goal True.
   let t := eval cbv delta [init_model] beta in
-             (init_model reserved brk0 mbase sp lim inp) in
+             (init_model reserved brk0 mbase sp top lim inp) in
   lazymatch t with
   | mkModelOf _ _ _ _ _ _ _ => idtac
   | _ => fail 0 "init_model is not one mkModelOf application: a new field goes beside the others in it, never into a setter wrapped around the result (see the comment above this Section)"
@@ -7025,9 +7197,9 @@ End InitModelIsOneConstructor.
     [Mm/Mprotect.v], each of which is shown there to preserve
     [vm_noaccess_entries_nonzero]. *)
 Lemma init_model_noaccess_nonzero :
-  forall reserved brk0 mbase sp lim inp,
+  forall reserved brk0 mbase sp top lim inp,
     vm_noaccess_entries_nonzero
-      (m_vmmaps (init_model reserved brk0 mbase sp lim inp)).
+      (m_vmmaps (init_model reserved brk0 mbase sp top lim inp)).
 Proof. intros. apply entries_nonzero_nil. Qed.
 
 (** * The setter/accessor interactions, as REWRITES rather than reductions.
@@ -9697,21 +9869,21 @@ Lemma m_sigaltstack_installed_with_abort_terminal : forall (v : bool) (m : Model
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_sigaltstack_installed_with_abort_terminal : model.
 
-Lemma m_sigaltstack_installed_init_model : forall reserved brk0 mbase sp lim inp,
-  m_sigaltstack_installed (init_model reserved brk0 mbase sp lim inp) = false.
+Lemma m_sigaltstack_installed_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_sigaltstack_installed (init_model reserved brk0 mbase sp top lim inp) = false.
 Proof. reflexivity. Qed.
 
-Lemma m_fds_init_model : forall reserved brk0 mbase sp lim inp,
-  m_fds (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_fds_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_fds (init_model reserved brk0 mbase sp top lim inp) =
   [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
      (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
      (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ].
 Proof. reflexivity. Qed.
 
 
-Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp lim inp,
-  m_vmmaps (init_model reserved brk0 mbase sp lim inp) =
-  mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_vmmaps (init_model reserved brk0 mbase sp top lim inp) =
+  mkVmMapsFull (init_reserved reserved mbase sp top (in_kernel inp))
     [] [] brk0 brk0 lim mbase sp.
 Proof. reflexivity. Qed.
 
@@ -9720,8 +9892,8 @@ Proof. reflexivity. Qed.
     so [lia] closes every bound from [Hsp_lo]/[Hsp_hi].  In the [model]
     rewrite base, unlike its neighbours, because nothing matches on an
     unreduced [alloc_top]. *)
-Lemma alloc_top_init : forall reserved brk0 mbase sp lim inp,
-  alloc_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+Lemma alloc_top_init : forall reserved brk0 mbase sp top lim inp,
+  alloc_top (m_vmmaps (init_model reserved brk0 mbase sp top lim inp))
   = (bv_unsigned sp - stack_max_size)%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite alloc_top_init : model.
@@ -9732,98 +9904,98 @@ Proof. reflexivity. Qed.
     [VmState] as well as [vm_maps]; a site that needs the budget conjunct
     of a grant check at the initial model names this rather than trying to
     reduce [vm_backing_used] through the opaque accessors. *)
-Lemma vm_backing_used_init_model : forall reserved brk0 mbase sp lim inp,
-  vm_backing_used (init_model reserved brk0 mbase sp lim inp) = 0%Z.
+Lemma vm_backing_used_init_model : forall reserved brk0 mbase sp top lim inp,
+  vm_backing_used (init_model reserved brk0 mbase sp top lim inp) = 0%Z.
 Proof. reflexivity. Qed.
 
 
-Lemma m_stdin_init_model : forall reserved brk0 mbase sp lim inp,
-  m_stdin (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_stdin_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_stdin (init_model reserved brk0 mbase sp top lim inp) =
   in_stdin inp.
 Proof. reflexivity. Qed.
 
-Lemma m_urandom_init_model : forall reserved brk0 mbase sp lim inp,
-  m_urandom (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_urandom_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_urandom (init_model reserved brk0 mbase sp top lim inp) =
   in_urandom inp.
 Proof. reflexivity. Qed.
 
 
-Lemma m_fs_init_model : forall reserved brk0 mbase sp lim inp,
-  m_fs (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_fs_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_fs (init_model reserved brk0 mbase sp top lim inp) =
   in_fs inp.
 Proof. reflexivity. Qed.
 
 
-Lemma m_halted_init_model : forall reserved brk0 mbase sp lim inp,
-  m_halted (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_halted_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_halted (init_model reserved brk0 mbase sp top lim inp) =
   None.
 Proof. reflexivity. Qed.
 
 
-Lemma m_tid_init_model : forall reserved brk0 mbase sp lim inp,
-  m_tid (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_tid_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_tid (init_model reserved brk0 mbase sp top lim inp) =
   None.
 Proof. reflexivity. Qed.
 
 
-Lemma m_rlimit_core_init_model : forall reserved brk0 mbase sp lim inp,
-  m_rlimit_core (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_rlimit_core_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_rlimit_core (init_model reserved brk0 mbase sp top lim inp) =
   None.
 Proof. reflexivity. Qed.
 
-Lemma m_nofile_init_model : forall reserved brk0 mbase sp lim inp,
-  m_nofile (init_model reserved brk0 mbase sp lim inp) = in_nofile inp.
+Lemma m_nofile_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_nofile (init_model reserved brk0 mbase sp top lim inp) = in_nofile inp.
 Proof. reflexivity. Qed.
 
-Lemma m_clock_init_model : forall reserved brk0 mbase sp lim inp,
-  m_clock (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_clock_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_clock (init_model reserved brk0 mbase sp top lim inp) =
   Z_to_bv 64 0.
 Proof. reflexivity. Qed.
 
-Lemma m_net_init_model : forall reserved brk0 mbase sp lim inp,
-  m_net (init_model reserved brk0 mbase sp lim inp) = in_net inp.
+Lemma m_net_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_net (init_model reserved brk0 mbase sp top lim inp) = in_net inp.
 Proof. reflexivity. Qed.
 
 
-Lemma m_conn_ix_init_model : forall reserved brk0 mbase sp lim inp,
-  m_conn_ix (init_model reserved brk0 mbase sp lim inp) = Z_to_bv 64 0.
+Lemma m_conn_ix_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_conn_ix (init_model reserved brk0 mbase sp top lim inp) = Z_to_bv 64 0.
 Proof. reflexivity. Qed.
 
 
-Lemma m_creds_init_model : forall reserved brk0 mbase sp lim inp,
-  m_creds (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_creds_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_creds (init_model reserved brk0 mbase sp top lim inp) =
   mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
           (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp).
 Proof. reflexivity. Qed.
 
-Lemma m_sigmask_init_model : forall reserved brk0 mbase sp lim inp,
-  m_sigmask (init_model reserved brk0 mbase sp lim inp) = in_sigmask inp.
+Lemma m_sigmask_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_sigmask (init_model reserved brk0 mbase sp top lim inp) = in_sigmask inp.
 Proof. reflexivity. Qed.
 
-Lemma m_setsid_succeeded_init_model : forall reserved brk0 mbase sp lim inp,
-  m_setsid_succeeded (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_setsid_succeeded_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_setsid_succeeded (init_model reserved brk0 mbase sp top lim inp) =
   false.
 Proof. reflexivity. Qed.
 
-Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,
-  m_killed (init_model reserved brk0 mbase sp lim inp) = None.
+Lemma m_killed_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_killed (init_model reserved brk0 mbase sp top lim inp) = None.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_killed_init_model : model.
 
-Lemma m_sigabrt_pending_init_model : forall reserved brk0 mbase sp lim inp,
-  m_sigabrt_pending (init_model reserved brk0 mbase sp lim inp) = false.
+Lemma m_sigabrt_pending_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_sigabrt_pending (init_model reserved brk0 mbase sp top lim inp) = false.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_sigabrt_pending_init_model : model.
 
 (** The declaration arrives from the input and is the only one of the
     three that a run can start with either value of. *)
-Lemma m_abort_terminal_init_model : forall reserved brk0 mbase sp lim inp,
-  m_abort_terminal (init_model reserved brk0 mbase sp lim inp)
+Lemma m_abort_terminal_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_abort_terminal (init_model reserved brk0 mbase sp top lim inp)
     = in_abort_terminal inp.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_abort_terminal_init_model : model.
 
-Lemma m_pipes_init_model : forall reserved brk0 mbase sp lim inp,
-  m_pipes (init_model reserved brk0 mbase sp lim inp) =
+Lemma m_pipes_init_model : forall reserved brk0 mbase sp top lim inp,
+  m_pipes (init_model reserved brk0 mbase sp top lim inp) =
   [].
 Proof. reflexivity. Qed.

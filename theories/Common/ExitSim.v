@@ -701,7 +701,7 @@ Proof.
   exact (to_exit_exec (run_segments segs inp sp mb) code
            (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
            (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp))
            eq_refl eq_refl (sim_c_to_exit (run_segments segs inp sp mb) code F _ Hsim)).
 Qed.
 

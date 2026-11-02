@@ -166,8 +166,8 @@ Definition mprotect_errnos : list Z := [ENOMEM].
     every VMA (mm/mprotect.c [do_mprotect_pkey]), and that is deliberate:
     the ledger is not a complete picture of the address space, so "absent
     from [vm_maps]" does not entail "absent from every VMA".  The stack is
-    the standing counterexample — it carries no entry at all, by the
-    argument at [State.alloc_top] — so answering that errno would be a
+    the standing counterexample — it is a [vm_reserved] entry
+    ([State.stack_reserved]) and never a [vm_maps] one — so answering that errno would be a
     guess wherever the model's picture is thinner than Linux's.
 
     NO 32-bit truncation here, deliberately, and it is not an oversight

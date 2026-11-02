@@ -94,7 +94,7 @@
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType RiscvSemantics Fs State Run.
+  BvBase MemImageType RiscvSemantics Fs State StackLayout Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier.
@@ -163,8 +163,8 @@ Qed.
     of the two: the initial model holds no lazy anonymous mapping, which
     is what keeps the accounting step from taking the fault transition
     and what keeps the model FIXED across an instruction step. *)
-Lemma init_model_no_lazy : forall reserved brk0 mbase sp lim inp,
-  m_vm_lazy (init_model reserved brk0 mbase sp lim inp) = [].
+Lemma init_model_no_lazy : forall reserved brk0 mbase sp top lim inp,
+  m_vm_lazy (init_model reserved brk0 mbase sp top lim inp) = [].
 Proof. reflexivity. Qed.
 
 (* =========================================================================
@@ -193,9 +193,9 @@ Proof.
   cbn [must_exit_with]. unfold init_config.
   apply (exits_c_must_exit_at _ _ fuel);
     [ exact (m_halted_init_model (segments_reserved (run_segments segs inp sp mbase))
-               brk0 mbase sp lim inp)
+               brk0 mbase sp (ed_top rnd) lim inp)
     | exact (init_model_no_lazy (segments_reserved (run_segments segs inp sp mbase))
-               brk0 mbase sp lim inp) |].
+               brk0 mbase sp (ed_top rnd) lim inp) |].
   destruct (init_machine_state_abstracts (run_segments segs inp sp mbase) pc ph sp mbase
               rnd inp)
     as (mem & rom & Hshape).

@@ -44,19 +44,20 @@ Open Scope sys_scope.
    what it cost the budget.
    Placement is a function of the ledger (see PLACEMENT below), and
    every address it gives avoids occupied space:
-   - below this run's [State.alloc_top], hence disjoint from the dynamic
-     stack and the argv/envp block of the stack pointer the run was
-     started with;
+   - below [State.TASK_SIZE], the top of the user address space;
    - [region_free] against [vm_reserved] (the page-rounded LOAD
      segments, fixed at [execve] — the kernel maps whole pages, so a
      grant sharing a partial page with a segment is as impossible as a
-     full overlap) and against [vm_maps] (live anonymous mappings AND
-     recorded brk grows, so an MMAP can never alias the live heap — the
-     converse does not hold, because a same-page brk grow is not gated
-     on [vm_maps] at all).
+     full overlap — the stack at its full size, [State.stack_reserved],
+     and the vdso/vvar pair) and against [vm_maps] (live anonymous
+     mappings AND recorded brk grows, so an MMAP can never alias the
+     live heap — the converse does not hold, because a same-page brk
+     grow is not gated on [vm_maps] at all);
+   - where Linux keeps the stack's guard gap (a hint, the search, a
+     [brk] grow), [region_free] against [State.stack_guard_band] too.
    This is what allocator-frame reasoning needs downstream: every
    mmap/brk effect's [eff_zeros] is disjoint from the stack and the
-   image by constant-interval arithmetic, with no dependence on SP.
+   image, because both are ledger entries.
 
    PLACEMENT is Linux's: a fresh grant with no MAP_FIXED lands at the
    one address [linux_place] gives, which is the address
@@ -67,7 +68,7 @@ Open Scope sys_scope.
    and the program break are still drawn -- but GIVEN the draw and the
    earlier calls, the address is a function, not a choice.  See the
    PLACEMENT section below for the rule, for what Linux does, and for
-   the three residuals in which the model's address can still differ
+   the two residuals in which the model's address can still differ
    from the kernel's.
 
    BUDGET: every accessible grant is additionally metered against the
@@ -103,10 +104,10 @@ Open Scope sys_scope.
 
     - GROW ([req > break]): the kernel maps the added anonymous, zero-filled
       pages and returns [req] — but only if the region is free (below
-      [alloc_top] and disjoint from the image and every live mapping)
-      and the page above it is disjoint too — Linux keeps it clear of the
-      break ([brk_grow_ok]); otherwise it [goto out]s and returns the
-      break unchanged.  Both
+      [TASK_SIZE], disjoint from the image, the stack and every live
+      mapping) and the page above it is disjoint too, with the stack's
+      guard gap kept ([brk_grow_ok]); otherwise it [goto out]s and
+      returns the break unchanged.  Both
       resolutions are admissible (a real grow can be blocked, and musl then
       falls back to mmap).
 
@@ -162,8 +163,8 @@ Definition brk_is_grow (req r old : word) : bool :=
 (** Turn a nonempty half-open interval [[lo, hi)] expressed in unbounded
     integer address arithmetic into the effect/ledger range spelling.  Both
     brk directions use this helper so their page rounding cannot drift apart.
-    Admissible brk transitions keep the endpoints below [alloc_top], so
-    the conversion back to 64-bit words is lossless. *)
+    Admissible brk transitions keep the endpoints at or below
+    [TASK_SIZE], so the conversion back to 64-bit words is lossless. *)
 Definition brk_page_range (lo hi : Z) : list (word * word) :=
   if Z.ltb lo hi
   then [(Z_to_bv 64 lo, Z_to_bv 64 (hi - lo))]
@@ -240,10 +241,10 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
   then brk_page_range lo hi else [].
 
 (** The GROW gate: when [r] is strictly above the break, the PHYSICAL pages
-    newly installed — [[PAGE_ALIGN(old), PAGE_ALIGN(r))] — must lie below
-    [alloc_top], and they and the one page above them must be disjoint
-    from the image and every live mapping (ONE FREE PAGE ABOVE THE NEW
-    BREAK, below).
+    newly installed — [[PAGE_ALIGN(old), PAGE_ALIGN(r))] — must end at
+    or below [TASK_SIZE], and they and the one page above them must be
+    disjoint from the image, the stack, every live mapping and the
+    stack's guard band (ONE FREE PAGE ABOVE THE NEW BREAK, below).
     A same-page grow has no physical interval, so those address-space tests
     are vacuous — and it records and charges nothing, so there is nothing
     for them to protect.  The budget is the same range again
@@ -347,11 +348,12 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
     For a VM_GROWSDOWN VMA — the stack — [vm_start_gap] subtracts
     [stack_guard_gap] (256 pages unless the command line says otherwise,
     mm/mmap.c), so Linux also refuses a grow to within a page and that gap
-    of the stack's current start.  The model has no stack VMA to test
-    against: [alloc_top] keeps every grow at least [stack_max_size] below
-    the run's [sp], which stands in for that refusal only while the stack
-    has not grown to within [stack_guard_gap + PAGE_SIZE] of that bound.
-    That is a premise of the model.
+    of the stack's start.  The stack is a [vm_reserved] entry
+    ([State.stack_reserved]) and its gap is [State.stack_guard_band], so
+    the same [region_free] makes that refusal too, for the stack at its
+    full size (residual R-e of SCOPE.md).  The [TASK_SIZE] test is
+    [check_brk_limits]'s: its [__get_unmapped_area] refuses a [newbrk]
+    past [TASK_SIZE].
 
     What this gate buys is the ledger's disjointness: a brk grow records
     exactly the range it tests here, so no [vm_maps] entry can overlap
@@ -384,8 +386,9 @@ Definition brk_grow_ok (m : Model) (req r : word) : bool :=
   then let lo := page_round_up_Z (bv_unsigned (vm_brk h)) in
        let hi := page_round_up_Z (bv_unsigned r) in
        (if Z.ltb lo hi
-        then Z.leb hi (alloc_top h)
-             && region_free (vm_reserved h ++ vm_maps h)
+        then Z.leb hi TASK_SIZE
+             && region_free (stack_guard_band (m_kernel m) h
+                             ++ vm_reserved h ++ vm_maps h)
                             (Z_to_bv 64 lo) (Z_to_bv 64 (hi + page_size - lo))
         else true)
        && brk_budget_ok m r
@@ -423,7 +426,7 @@ Definition brk_r_ok (m : Model) (req r : word) : bool :=
     The cut's end is capped one byte short of 2^64.  [PAGE_ALIGN(old)]
     reaches 2^64 only for a break inside the top page of the address
     space, which no run reaches (every break stays at or below
-    [State.alloc_top], under 2^47); the cap keeps the cut's end a word, so
+    [State.TASK_SIZE]); the cap keeps the cut's end a word, so
     a right remnant's base round-trips through [Z_to_bv] and
     [Checks/VmMapsDisjoint.maps_wf_subtract] applies.  It changes nothing
     on any reachable state. *)
@@ -1048,40 +1051,39 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    MUST answer -ENOMEM.  With [task_unmapped_base <= mmap_top h], true
    of every valid base, [linux_place] has a solution exactly when a
    range of the requested size is free below [mmap_top h], or at or
-   above [task_unmapped_base] below [alloc_top h]
-   ([Checks.Placement.linux_place_exists]), which is Linux's condition
-   with [alloc_top] in place of the stack's guard.  So the model
-   refuses only where that launch refuses, or where the address space
-   really is exhausted.
+   above [task_unmapped_base] below [TASK_SIZE], clear of the stack's
+   guard band ([Checks.Placement.linux_place_exists]), which is Linux's
+   condition for the full-size stack.  So the model refuses only where
+   that launch refuses, or where the address space really is exhausted.
 
-   THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
+   THE TWO OPEN RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
    mapping or the stack sits.
 
-   - R-a, a base above [alloc_top].  The model's stack window starts at
-     [sp - stack_max_size]; Linux's starts at the stack VMA's end.  A
-     high base draw with a large entry block can put Linux's base above
+   - R-a, a base above [alloc_top].  [mmap_top] is the lower of the base
+     and [sp - stack_max_size]; Linux's top is the base.  A high base
+     draw with a large entry block can put Linux's base above
      [alloc_top], and then this model's top-down placements are lower
      than the kernel's.
-   - R-b, hints and the bottom-up fallback above [alloc_top].  Linux
-     honours a free hint anywhere up to STACK_TOP_MAX, the band above
-     the stack included, and its bottom-up fallback reaches the stack's
-     guard gap (mm/mmap.c, [generic_get_unmapped_area_topdown];
-     arch/riscv/include/asm/processor.h, [arch_get_mmap_end]).  This
-     model honours a hint and searches only below [alloc_top], because
-     the dynamic stack is a bound here and not a ledger entry.
-   - R-c, the stack's guard gap.  When the stack has grown to its
-     limit Linux keeps a mapping [stack_guard_gap] below it; this model
-     allows a mapping there when the base or a hint reaches
-     [alloc_top].  R-b and R-c close together, by tracking the stack
-     VMA in the ledger.
    - R-d, the entry, is CLOSED.  [Run.valid_entry_va] once drew the
      stack pointer and the base independently; its conjunct
      [Run.entry_launch_ok_va] now admits exactly the (stack top, sp,
      base) triples of a Linux launch, and
      [Checks.Cases.EntryLaunch.a1_kind1_pair_refused] refutes the pair
      SCOPE.md once gave as its example.
+   - R-e, the stack at its full size.  The stack's ledger entry
+     ([State.stack_reserved]) is the window [Run.init_machine_state]
+     maps, [RLIMIT_STACK] deep, and the guard band sits below that.
+     Linux's stack VMA starts at the entry image plus 128 KiB and grows
+     on page faults the model does not report, so while it is short
+     Linux honours a hint, and its fallback lands, in the part of the
+     window and band that its own VMA and gap do not cover yet; this
+     model places elsewhere.
+
+   R-b (a hint or the fallback above [alloc_top]) and R-c (the guard
+   gap) are closed: the hint and the fallback reach [TASK_SIZE], and
+   both keep [State.stack_guard_band] free.
 
    QEMU USER MODE IS OUT.  [mmap_find_vma] (linux-user/mmap.c, QEMU
    10.0.11) searches the HOST process's free space, which is not a
@@ -1134,13 +1136,19 @@ Definition lowest_gap (maps : list (word * word)) (lo hi nZ a : Z) : Prop :=
     below [mmap_top], and if there is none, the lowest fit from
     [task_unmapped_base] up (mm/mmap.c).  The two windows are the
     kernel's [[PAGE_SIZE, mm->mmap_base)] and
-    [[TASK_UNMAPPED_BASE, mmap_end)], with [alloc_top] for [mmap_end]
-    (residual R-b). *)
-Definition topdown_search (h : VmMaps) (nZ a : Z) : Prop :=
-  let maps := vm_reserved h ++ vm_maps h in
-  highest_gap maps page_size (mmap_top h) nZ a
-  \/ ((forall a', ~ gap_fits maps page_size (mmap_top h) nZ a')
-      /\ lowest_gap maps task_unmapped_base (alloc_top h) nZ a).
+    [[TASK_UNMAPPED_BASE, mmap_end)], with [TASK_SIZE] for [mmap_end]
+    ([arch_get_mmap_end] is STACK_TOP_MAX, which is [TASK_SIZE_64]) and
+    [mmap_top] for the base (residual R-a).  Linux's base is never above
+    [mmap_end]; the [Z.min] says so for every ledger, so no answer ends
+    past [TASK_SIZE].  Both windows read the ledger with the stack's
+    guard band in front ([State.stack_guard_band]): the kernel's
+    [VM_STARTGAP_FLAGS] retry keeps that gap in both. *)
+Definition topdown_search (h : VmMaps) (kb : KernelBuild) (nZ a : Z) : Prop :=
+  let maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h in
+  let top := Z.min (mmap_top h) TASK_SIZE in
+  highest_gap maps page_size top nZ a
+  \/ ((forall a', ~ gap_fits maps page_size top nZ a')
+      /\ lowest_gap maps task_unmapped_base TASK_SIZE nZ a).
 
 (** [__thp_get_unmapped_area]'s answer for pgoff 0 (mm/huge_memory.c):
     the least multiple of PMD_SIZE STRICTLY ABOVE the padded search's
@@ -1165,29 +1173,31 @@ Definition hint_address (hint : word) : Z :=
   page_round_down_Z (bv_unsigned hint).
 
 (** WHERE LINUX PUTS A MAPPING OF [nZ] BYTES, given the ledger [h], the
-    kernel build's THP setting and the caller's hint.  Items (2), (3)
-    and (4) of the PLACEMENT section above, in that order.
+    kernel build (its THP setting and its stack guard gap) and the
+    caller's hint.  Items (2), (3) and (4) of the PLACEMENT section
+    above, in that order.
 
     [Checks.Placement] holds the executable twin [linux_place_b] with
     its correctness proof, and the three facts a consumer needs:
     [linux_place_unique], [linux_place_admissible] (the four conditions
     the old [choose] guard asked for) and [linux_place_exists]. *)
-Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
+Definition linux_place (h : VmMaps) (kb : KernelBuild) (hint : word) (nZ a : Z)
     : Prop :=
   let g := hint_address hint in
-  let maps := vm_reserved h ++ vm_maps h in
+  let maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h in
   if (g =? 0)%Z then
     (* no hint; a hint of 1 to 4095 has rounded to zero and is here *)
-    if thp && (nZ mod pmd_size =? 0)%Z then
-      (exists ret, topdown_search h (nZ + pmd_size) ret /\ a = thp_align ret)
-      \/ ((forall ret, ~ topdown_search h (nZ + pmd_size) ret)
-          /\ topdown_search h nZ a)
-    else topdown_search h nZ a
+    if kb_thp kb && (nZ mod pmd_size =? 0)%Z then
+      (exists ret, topdown_search h kb (nZ + pmd_size) ret /\ a = thp_align ret)
+      \/ ((forall ret, ~ topdown_search h kb (nZ + pmd_size) ret)
+          /\ topdown_search h kb nZ a)
+    else topdown_search h kb nZ a
   else
-    (* a nonzero hint is honoured if the range is free; it never takes
+    (* a nonzero hint is honoured if the range is free and clear of the
+       stack's guard gap, up to [mmap_end] = TASK_SIZE; it never takes
        the THP path, which [__get_unmapped_area] gates on [!addr] *)
-    (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
-    \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
+    (gap_fits maps page_size TASK_SIZE nZ g /\ a = g)
+    \/ (~ gap_fits maps page_size TASK_SIZE nZ g /\ topdown_search h kb nZ a).
 
 (* =========================================================================
    AN ANONYMOUS MAP_SHARED MAPPING IS NOT A PRIVATE ONE, and an arm that
@@ -1326,7 +1336,8 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     MAP_FIXED shapes are recognized separately below.  A NON-NULL [addr]
     is not constrained: without MAP_FIXED it is only a hint, and
     [linux_place] decides it as the kernel does — the hint itself when
-    the range is free below [State.alloc_top], else the top-down search.
+    the range is free below [State.TASK_SIZE] and clear of the stack's
+    guard band ([State.stack_guard_band]), else the top-down search.
     A NULL [addr] leaves the kernel to place, and [linux_place] gives
     the one address — see the placement section above.
     Everything else — file-backed mappings, executable permissions,
@@ -1713,13 +1724,15 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    target side: [Equivalence.equiv] compares whole trace sets, and the
    source's set contains the -EEXIST trace.
 
-   WHAT THE LEDGER CANNOT SEE, since -EEXIST is rejected on a range the
-   ledger calls free.  The kernel's own VMAs — the vdso/vvar pair
-   [execve] installs — are in neither ledger, so a request that lands
-   on them answers -EEXIST on Linux and is rejected here; the stack is
-   kept out by [alloc_top], which declines the band above it.  That is
-   a known limitation of the model, the same absence [munmap]'s
-   free-range arm has.
+   WHAT THE LEDGER SEES.  The kernel's own VMAs — the vdso/vvar pair
+   and the stack [execve] installs — are [vm_reserved] entries
+   ([State.vdso_reserved], [State.stack_reserved]), so a request that
+   lands on the pair answers -EEXIST here as it does on Linux.  A request
+   that reaches the stack's entry never gets that far: the entry starts
+   above [State.alloc_top], so the argument gate below answers
+   [unmodeled] first (SCOPE.md, "MAP_FIXED above [State.alloc_top]").
+   No guard gap is kept on this path: [__get_unmapped_area] hands a
+   MAP_FIXED address straight back.
    ========================================================================= *)
 
 (** Does [flags] spell a MAP_FIXED_NOREPLACE request over the plain
@@ -1774,10 +1787,10 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
     Linux looks at the FLAGS first and the length second — see
     [mmap_plain_anon_b] for the citations.  For the modeled shape
     ([mmap_modeled_b]): either fails
-    with an errno from [mmap_errnos], or the kernel grants ANY
-    page-aligned, nonzero
-    region below [alloc_top] (hence disjoint from the stack) that
-    is disjoint from the binary image and from every live allocation
+    with an errno from [mmap_errnos], or the kernel grants the
+    page-aligned, nonzero region [linux_place] gives, below [TASK_SIZE],
+    disjoint from the binary image, the stack, the vdso/vvar pair, the
+    stack's guard band and every live allocation
     (see the disjointness note above, and the placement section for why
     the guard says that and no more) and that fits the run's remaining
     backed-memory budget (the complete post-state [vm_backing_used] within
@@ -1818,7 +1831,7 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
     kernel does with it and why ignoring it is the conservative
     direction.  The rounded length is computed in [Z]; it re-enters
     [word] only when the bound check already confines it below
-    [alloc_top]. *)
+    [TASK_SIZE]. *)
 Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
   if negb (mmap_off_aligned_b off) then err_ret EINVAL
   else if negb (mmap_anon_b flags) then
@@ -1903,7 +1916,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        let nZ := page_round_up_Z (bv_unsigned len) in
        let n := Z_to_bv 64 nZ in
        a <- choose (fun a =>
-                      linux_place h (kb_thp (m_kernel m)) addr nZ
+                      linux_place h (m_kernel m) addr nZ
                         (bv_unsigned a)
                       /\ mmap_noreserve_backed_ok flags m nZ = true) ;;
        modify (fun _ =>
@@ -1921,7 +1934,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        let nZ := page_round_up_Z (bv_unsigned len) in
        let n := Z_to_bv 64 nZ in
        a <- choose (fun a =>
-                      linux_place h (kb_thp (m_kernel m)) addr nZ
+                      linux_place h (m_kernel m) addr nZ
                         (bv_unsigned a)) ;;
        modify (fun _ =>
          with_mmap_backing flags a n
@@ -1969,7 +1982,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        This also removes a disagreement between the three branches: an
        overflowing length already yields -ENOMEM in the two fresh-grant
        branches above, where it makes their [choose] guard
-       ([a + nZ <= alloc_top h]) unsatisfiable and collapses the [alt]
+       ([a + nZ <= TASK_SIZE]) unsatisfiable and collapses the [alt]
        onto [mmap_errnos = [ENOMEM]].  Only this branch answered
        [unmodeled].
 
@@ -1986,6 +1999,22 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        [State.sp_window_lo]); a ledger whose stack pointer is outside
        that window is outside the theorem.  At or above the top:
        [unmodeled].
+
+       THAT TOP IS NARROWER THAN LINUX'S, AND ON PURPOSE.  Linux grants
+       a free MAP_FIXED range anywhere below [TASK_SIZE] — above the
+       stack too, and in the stack's guard gap, which MAP_FIXED does not
+       keep.  This arm declines every range that reaches past
+       [alloc_top], so it answers [unmodeled] where Linux answers.  That
+       is a refusal to answer and never a wrong answer: [unmodeled] is
+       the fail-closed verdict, and no check reads it as anything else.
+       SCOPE.md names it ("MAP_FIXED above [alloc_top]").  The hint, the
+       search, [brk], [munmap] and [mremap] reach [TASK_SIZE]; this arm
+       keeps [alloc_top] because consumer proofs close its gate through
+       [alloc_top]'s own body, and moving it would cost them a re-proof
+       for a gain in the conservative direction only.  Below the top the
+       stack is still seen: it is a [vm_reserved] entry
+       ([State.stack_reserved]), so the sub-cases below decline a range
+       that meets it, as they decline one that meets the image.
 
        -EPERM is deliberately NOT modeled.  [security_mmap_addr]
        ([__get_unmapped_area], mm/mmap.c) runs after the
@@ -2194,7 +2223,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
              (mmap_fixed_destroyed_next h addr n) m) ;;
            pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
       (* WHAT STILL DECLINES, and it is one shape: a request that meets
-         [vm_reserved], the image's LOAD reservations.  Linux would
+         [vm_reserved] — the image's LOAD reservations, the stack at its
+         full size or the vdso/vvar pair.  For the image: Linux would
          replace those pages like any others, but the model's image
          bytes do not live in this ledger — they are the [State.Image]
          segments the fetch and the memory overlay read — so replacing
@@ -2292,9 +2322,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          Both bounds the zero-fill needs are already discharged by the
          gate above — [addr + n <= alloc_top h] and [region_free]
          against [vm_reserved] — so this branch's exposed bytes are
-         disjoint from the image and from the stack of the stack pointer
-         this run was started with, like every other grant in this
-         file. *)
+         disjoint from the image and from the stack, whose entry is in
+         [vm_reserved] ([State.stack_reserved]), like every other grant
+         in this file. *)
       alt
         (e <- errno_from mmap_errnos ;; err_ret e)
         (alt
@@ -2318,19 +2348,22 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          destructive resolution above cannot arise — which is why this
          sub-case has TWO resolutions where the commit has three.
 
-         IT ADDS NO REACHABLE TRANSITION.  The guards below are the
+         IT ADDS NO REACHABLE TRANSITION.  The guards below imply the
          [choose] guard of the hint-placed rw branch, conjunct for
-         conjunct — page alignment, nonzero base, [alloc_top],
+         conjunct — page alignment, nonzero base, an end at or below
+         [alloc_top] (so below [TASK_SIZE] for every launch),
          [region_free] against [vm_reserved ++ vm_maps], and the budget
-         — and the post-state and effect are that branch's, spelled
-         the same way with [addr] where it writes the chosen [a].  So
-         every (pre-state, effect, post-state) triple this admits is one
-         the model already admitted for the SAME program at the same
-         length, hinting its own (nonzero) [addr] without MAP_FIXED: the
-         kernel honors a free hint, and the model's nondeterministic
-         placement covers it.  [Checks/Cases/Mm/Mmap.v]'s
+         — except the one test a hint adds and MAP_FIXED does not:
+         [State.stack_guard_band].  The post-state and effect are that
+         branch's, spelled the same way with [addr] where it writes the
+         chosen [a].  So every (pre-state, effect, post-state) triple
+         this admits for a range clear of the band is one the model
+         already admitted for the SAME program at the same length,
+         hinting its own (nonzero) [addr] without MAP_FIXED: the kernel
+         honors a free hint.  [Checks/Cases/Mm/Mmap.v]'s
          [mmap_fixed_fresh_adds_no_transition] states exactly that and
-         proves it.
+         proves it.  Inside the band the transition is new, and it is
+         Linux's: MAP_FIXED keeps no gap.
 
          The four-way split is on the LEDGER, not on the flags: wholly
          inside one tracked mapping is a commit, meeting nothing at all
@@ -2595,8 +2628,9 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       configuration that reads that family as forced-only removes it
       (so the forced-only and alloc-forced-only readings keep today's
       answer).
-    - [addr, addr+n) disjoint from the image and every recorded
-      mapping, and ending at or below this run's [State.alloc_top]: 0, a no-op
+    - [addr, addr+n) disjoint from the image, the stack, the vdso/vvar
+      pair and every recorded mapping, and ending at or below
+      [State.TASK_SIZE]: 0, a no-op
       — Linux does not fail when the range contains no mapped pages.
       Below that line the only mappings the ledger does not carry are
       the ones the KERNEL installs without being asked — the vdso/vvar
@@ -2617,7 +2651,7 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
     - [addr, addr+n) meeting recorded mappings without being exactly
       one — a head or tail trim, a hole punched in one mapping, a range
       over several mappings or over mappings and free pages — that
-      touches no image segment and ends at or below [State.alloc_top]:
+      touches no [vm_reserved] entry and ends at or below [State.TASK_SIZE]:
       Linux splits the VMA the range starts inside and the one it ends
       inside ([vms_gather_munmap_vmas]'s two [__split_vma] calls, mm/vma.c),
       detaches every VMA between, and returns 0; free pages are
@@ -2640,32 +2674,28 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       allocation family, the family of the same split failure in
       [Mprotect.mprotect_errnos] and [Mremap.mremap_errnos], and a
       configuration that reads that family as forced-only removes it.
-    - anything else — a range touching the binary image ([vm_reserved]
-      can never be unreserved), or a range reaching into the STACK BAND
-      [[alloc_top h, TASK_SIZE)] — is unmodeled and yields [unmodeled]
-      (fail closed).  The band is the one region the
-      ledger does not describe: [Run.init_machine_state] zero-maps the
-      stack below the entry [sp] and records it in no [VmMaps] list, so a
-      range that is free by the ledger may be the stack, which Linux
-      would split and unmap where a no-op 0 would leave it mapped.
-      [alloc_top h] is [vm_init_sp h - stack_max_size], at or below
-      [Run.stack_window_lo], the lowest address this run's stack can
-      occupy, which is why it is a safe bound here.
+    - anything else — a range touching a [vm_reserved] entry: the binary
+      image, the stack ([State.stack_reserved]) or the vdso/vvar pair,
+      none of which this model can unreserve — or a range past
+      [State.TASK_SIZE] — is unmodeled and yields [unmodeled] (fail
+      closed).  The stack's entry is the stack at its full size, so a
+      range below Linux's current stack VMA but inside that window is
+      declined here where Linux answers 0 (residual R-e of SCOPE.md).
 
     With the kernel and boot fixed ([State.TASK_SIZE]), the
     address-space test is Linux's own -EINVAL. *)
 
 (** The free-range no-op arm's guard: nothing recorded in the range,
-    and the range below the stack band (see [munmap_spec]). *)
+    and the range below [TASK_SIZE] (see [munmap_spec]). *)
 Definition munmap_free_ok (h : VmMaps) (addr : word) (nZ : Z) : bool :=
   (region_free (vm_reserved h ++ vm_maps h) addr (Z_to_bv 64 nZ)
-   && (bv_unsigned addr + nZ <=? alloc_top h)%Z)%bool.
+   && (bv_unsigned addr + nZ <=? TASK_SIZE)%Z)%bool.
 
-(** The partial arm's guard: no image segment in the range, and the
-    range below the stack band (see [munmap_spec]). *)
+(** The partial arm's guard: no reserved entry in the range, and the
+    range below [TASK_SIZE] (see [munmap_spec]). *)
 Definition munmap_cut_ok (h : VmMaps) (addr : word) (nZ : Z) : bool :=
   (region_free (vm_reserved h) addr (Z_to_bv 64 nZ)
-   && (bv_unsigned addr + nZ <=? alloc_top h)%Z)%bool.
+   && (bv_unsigned addr + nZ <=? TASK_SIZE)%Z)%bool.
 
 (** The runtime failure of the exact and the partial arm (see
     [munmap_spec]). *)

@@ -426,7 +426,7 @@ Proof.
                sp mbase rnd inp)
             (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
                (init_model (segments_reserved (run_segments exit0_segments inp sp mbase))
-                  brk0 mbase sp lim inp))
+                  brk0 mbase sp (ed_top rnd) lim inp))
             eq_refl eq_refl (exit0_exits_c _ _ _ _)).
 Qed.
 
@@ -902,7 +902,7 @@ Definition ebreak_ms : machine_state :=
 Definition ebreak_model (lim : Z) : Model :=
   with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw demo_entry)))
     (init_model (segments_reserved ebreak_rsegs) (en_brk demo_entry)
-       (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input).
+       (en_mmap_base demo_entry) (en_sp demo_entry) (ed_top (en_draw demo_entry)) lim demo_proc_input).
 
 Lemma ebreak_config : forall lim,
   init_config ebreak_rsegs 0x100 demo_phdrs (en_sp demo_entry)
@@ -1049,7 +1049,7 @@ Definition loop_ms : machine_state :=
 Definition loop_model (lim : Z) : Model :=
   with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw demo_entry)))
     (init_model (segments_reserved loop_rsegs) (en_brk demo_entry)
-       (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input).
+       (en_mmap_base demo_entry) (en_sp demo_entry) (ed_top (en_draw demo_entry)) lim demo_proc_input).
 Definition loop_c (lim : Z) : config := mkCfg loop_ms (loop_model lim).
 
 Lemma loop_config : forall lim,
@@ -1124,7 +1124,7 @@ Definition wloop_s (k : nat) : machine_state := with_mem (wloop_msk k) (ms_mem w
 Definition wloop_model (lim : Z) : Model :=
   with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw demo_entry)))
     (init_model (segments_reserved wloop_rsegs) (en_brk demo_entry)
-       (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input).
+       (en_mmap_base demo_entry) (en_sp demo_entry) (ed_top (en_draw demo_entry)) lim demo_proc_input).
 Definition wloop_c (lim : Z) : config := mkCfg (wloop_s 0) (wloop_model lim).
 
 Lemma wloop_config : forall lim,
