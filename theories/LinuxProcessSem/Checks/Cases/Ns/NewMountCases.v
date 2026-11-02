@@ -62,7 +62,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
      mkInode 30 IDir 365 0 0 0 [] false; mkInode 31 IDir 365 0 0 0 [] empty;
      mkInode 40 IDir 493 0 0 0 [] false]
     []
-    (mkNsEnv 100 [mkProcEntry [b [115;121;115]] IDir 365 0 0 false] [])
+    (mkNsEnv 100 [mkProcEntry [b [115;121;115]] IDir 365 0 0 false] [] default_mi_env)
 .
 
 (** A task in user namespace 2, mount namespace 1 and pid namespace 1,
@@ -131,6 +131,6 @@ Example devpts_ptmx :
 Definition at_limit : NsState :=
   let w := world true false in
   mkNsState (ns_mounts w) (ns_userns w) (ns_mntns w) (ns_pidns w) (ns_netns w) (ns_sbs w)
-            (ns_dentries w) (ns_inodes w) (ns_files w) (mkNsEnv 3 [] []).
+            (ns_dentries w) (ns_inodes w) (ns_files w) (mkNsEnv 3 [] [] default_mi_env).
 Example limit_refuses :
   err (new_mount at_limit ctx cred 1000 1000 (NewTmpfs 493) nf 2 1 3) = Some 28 := eq_refl.

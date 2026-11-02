@@ -397,21 +397,22 @@ Definition eventfd_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
 
 (** [proc_mounts_read] and [show_mountinfo] (fs/proc_namespace.c): the
     mount namespace and root are captured by the open.  The identifiers
-    and file-system display fields are environment values.  Kind: over. *)
+    and file-system display fields are the environment's, one value per
+    kernel object for the whole run ([Tables.env_mountinfo]), so two reads
+    of the same open file see one text when no mount changed between
+    them.  Kind: exact given those values. *)
 Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) (l : Loc) (ns : positive) (root : positive * positive) (off : Z)
     (o : ext_outcome) : Prop :=
   if negb (file_can_read f) then o = ns_errno EBADF m ctx st
   else if negb (access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))) then o = ns_errno EFAULT m ctx st
   else
-    (exists E, mi_env_ok E st
-       /\ mountinfo_text E st ns (LDentry (fst root) (snd root)) = None
-       /\ o = EUnmodeled)
-    \/ (exists E text, mi_env_ok E st
-          /\ mountinfo_text E st ns (LDentry (fst root) (snd root)) = Some text
-          /\ let bs := firstn (Z.to_nat (rw_count_clamp (in_arg i 2))) (skipn (Z.to_nat off) text) in
-             o = read_delivery i m ctx st h
-                   (NfMountinfo l ns root (off + Z.of_nat (length bs))) bs).
+    match mountinfo_text (env_mountinfo (ns_env st)) st ns (LDentry (fst root) (snd root)) with
+    | None => o = EUnmodeled
+    | Some text =>
+        let bs := firstn (Z.to_nat (rw_count_clamp (in_arg i 2))) (skipn (Z.to_nat off) text) in
+        o = read_delivery i m ctx st h (NfMountinfo l ns root (off + Z.of_nat (length bs))) bs
+    end.
 
 Definition read_arm : NsArm := fun i m ctx st o =>
   let fd := fd_word (in_arg i 0) in
