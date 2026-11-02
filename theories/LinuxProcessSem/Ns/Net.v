@@ -460,13 +460,50 @@ Definition done_msg (seq port : Z) : list byte :=
 (** What the environment chooses in a dump: per interface (in order) the
     [ifi_type] of a device that is not a loopback device and the attributes
     after IFLA_IFNAME; per address message (in order) its two timestamps;
-    and how many messages each datagram carries. *)
+    and how many messages each datagram carries.  [nl_env_ok] below says
+    which choices Linux can make. *)
 Record NlEnv := mkNlEnv {
   ne_types  : list Z;
   ne_rests  : list (list byte);
   ne_stamps : list (Z * Z);
   ne_split  : list nat
 }.
+
+(** A run of attributes as [nla_put] (include/net/netlink.h) writes them:
+    each starts with its [nla_len], at least the 4-byte header and within
+    the run, and the next starts [NLA_ALIGN(nla_len)] after it; the run
+    ends exactly at the end of the last one's padding.  So its length is a
+    multiple of 4, and a reader's [nla_ok]/[nla_next] walks it to the end.
+    Each step consumes at least 4 bytes, so [length bs + 1] steps
+    suffice. *)
+Fixpoint nla_run_ok (fuel : nat) (bs : list byte) : bool :=
+  match fuel with
+  | O => false
+  | Datatypes.S f =>
+      match bs with
+      | [] => true
+      | _ :: _ =>
+          let n := nl_u16 bs 0 in
+          (4 <=? n) && (nl_align n <=? nl_len bs)
+          && nla_run_ok f (skipn (Z.to_nat (nl_align n)) bs)
+      end
+  end.
+
+Definition nla_list_ok (bs : list byte) : bool := nla_run_ok (Datatypes.S (length bs)) bs.
+
+(** The most a dump datagram can hold besides [rtnl_calcit]'s
+    [min_dump_alloc]: [netlink_dump] (net/netlink/af_netlink.c) allocates
+    [max(min_dump_alloc, NLMSG_GOODSIZE)], or [nlk->max_recvmsg_len] when
+    that is larger, and trims the skb to exactly that ([skb_reserve]);
+    [netlink_recvmsg] caps [max_recvmsg_len] at [SKB_WITH_OVERHEAD(32768)],
+    and [NLMSG_GOODSIZE] is below 8192.  So every dump datagram is at most
+    [max(min_dump_alloc, 32768)].  The model does not follow
+    [max_recvmsg_len], so it admits up to 32768 bytes even before a large
+    receive: an over-approximation, never a refusal of a Linux datagram. *)
+Definition NL_DUMP_SKB_MAX : Z := 32768.
+
+Definition dgrams_fit (cap : Z) (dgs : list (list byte)) : bool :=
+  forallb (fun dg => nl_len dg <=? cap) dgs.
 
 Fixpoint link_msgs (env : NlEnv) (seq port : Z) (k : nat) (ifs : list NetIf) : list (list byte) :=
   match ifs with
@@ -523,6 +560,38 @@ Definition reply_dgrams (env : NlEnv) (r : NlReply) : option (list (list byte)) 
   | RAddrDump seq port ifs =>
       option_map (fun g => g ++ [done_msg seq port])
                  (split_msgs (ne_split env) (addr_msgs env seq port 0 (addr_items ifs)))
+  end.
+
+(** The choices Linux can make for a dump, given [lim], the build's
+    largest [if_nlmsg_size] ([Tables.env_nl_link_max]):
+    - each device's attributes after IFLA_IFNAME are a run [nla_put]
+      writes ([nla_list_ok]);
+    - each RTM_NEWLINK message is at most [lim]: [rtnl_fill_ifinfo] writes
+      at most [if_nlmsg_size] bytes, and [rtnetlink_rcv_msg] sets a link
+      dump's [min_dump_alloc] to [rtnl_calcit]'s largest [if_nlmsg_size]
+      (net/core/rtnetlink.c), so one message always fits an empty skb;
+    - each datagram of a link dump is at most [max(lim, NL_DUMP_SKB_MAX)],
+      and of an address dump at most [NL_DUMP_SKB_MAX], since
+      [inet_dump_ifaddr]'s [min_dump_alloc] is 0.
+    How many messages share a datagram ([ne_split]) stays free: Linux
+    packs as many as fit, and the model admits every packing within the
+    caps.  Read at v6.18.44; identical at v6.18.46. *)
+Definition nl_env_ok (lim : Z) (env : NlEnv) (r : NlReply) : bool :=
+  match r with
+  | RLinkDump seq port ifs =>
+      let ms := link_msgs env seq port 0 ifs in
+      forallb nla_list_ok (firstn (length ifs) (ne_rests env))
+      && forallb (fun msg => nl_len msg <=? lim) ms
+      && match split_msgs (ne_split env) ms with
+         | Some g => dgrams_fit (Z.max lim NL_DUMP_SKB_MAX) g
+         | None => true
+         end
+  | RAddrDump seq port ifs =>
+      match split_msgs (ne_split env) (addr_msgs env seq port 0 (addr_items ifs)) with
+      | Some g => dgrams_fit NL_DUMP_SKB_MAX g
+      | None => true
+      end
+  | RNone | RAck _ => true
   end.
 
 (* =========================================================================
@@ -983,7 +1052,9 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                              match rt_handle x (ns_userns st) (nf_cred f) caller dst p dg with
                              | SDecline => False
                              | SDone ifs r =>
-                                 exists env dgs, reply_dgrams env r = Some dgs /\
+                                 exists env dgs,
+                                   nl_env_ok (env_nl_link_max (ns_env st)) env r = true /\
+                                   reply_dgrams env r = Some dgs /\
                                    let st2 := match ifs with
                                               | Some l => set_netns_ifs st n l
                                               | None => st
@@ -999,7 +1070,7 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     [import_ubuf] (the length capped at MAX_RW_COUNT; -EFAULT for a buffer
     [access_ok] refuses) before the descriptor, then [netlink_sendto].
     Kind: exact on the namespace's new state and on acknowledgements, over
-    on dump replies ([NlEnv]); [nl_insert_errnos] (an autobind) and
+    on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an autobind) and
     [nl_alloc_errnos] beside the answer.  Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its

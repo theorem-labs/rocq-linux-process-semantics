@@ -166,6 +166,51 @@ Example getlink_dgrams :
   end = true.
 Proof. vm_compute. reflexivity. Qed.
 
+(** THE ATTRIBUTES AFTER IFLA_IFNAME are a run [nla_put] writes: an
+    attribute of 5 bytes with its 3 padding bytes, then one of 8, is one;
+    3 stray bytes, an attribute whose length runs past the end, a length
+    below the header, and a run that stops inside the padding are not. *)
+Example nla_runs :
+  nla_list_ok [] = true
+  /\ nla_list_ok (bs [5; 0; 1; 0; 7; 0; 0; 0; 8; 0; 2; 0; 1; 2; 3; 4]) = true
+  /\ nla_list_ok (bs [1; 2; 3]) = false
+  /\ nla_list_ok (bs [12; 0; 1; 0; 7; 0; 0; 0]) = false
+  /\ nla_list_ok (bs [2; 0; 1; 0]) = false
+  /\ nla_list_ok (bs [5; 0; 1; 0; 7]) = false.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** A link dump's choices: lo's 40-byte message fits a bound of 40, not
+    one of 39; a rest that is not an attribute run is refused whatever the
+    bound. *)
+Example link_dump_env :
+  nl_env_ok 40 (mkNlEnv [] [[]] [] [1%nat]) (RLinkDump 3 2 [lo_up]) = true
+  /\ nl_env_ok 39 (mkNlEnv [] [[]] [] [1%nat]) (RLinkDump 3 2 [lo_up]) = false
+  /\ nl_env_ok 65536 (mkNlEnv [] [bs [1; 2; 3]] [] [1%nat]) (RLinkDump 3 2 [lo_up]) = false.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** The datagram cap: two 40-byte messages in one datagram fit 80, not 79. *)
+Example dgram_cap :
+  dgrams_fit 80 [getlink_lo ++ getlink_lo] = true
+  /\ dgrams_fit 79 [getlink_lo ++ getlink_lo] = false.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** lo and a fallback device in one datagram, the fallback with an 8-byte
+    attribute run: NLMSG_NEXT from the first message (at NLMSG_ALIGN of its
+    length) lands on the second, whose own length ends the datagram. *)
+Definition sit0 : NetIf := mkNetIf 2 (bs [115; 105; 116; 48]) IFF_NOARP [].
+Example two_messages_parse :
+  let env := mkNlEnv [0; 776] [[]; bs [8; 0; 4; 0; 0; 5; 0; 0]] [] [2%nat] in
+  nl_env_ok 1024 env (RLinkDump 3 2 [lo_up; sit0]) = true
+  /\ match reply_dgrams env (RLinkDump 3 2 [lo_up; sit0]) with
+     | Some (x :: _ :: []) =>
+         let l1 := nl_u32 x 0 in
+         let off := Z.to_nat (nl_align l1) in
+         (l1 =? 40) && (nl_u16 x (off + 4) =? RTM_NEWLINK) && (nl_u32 x (off + 20) =? 2)
+         && (nl_align l1 + nl_u32 x off =? nl_len x)
+     | _ => false
+     end = true.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** recvfrom truncation keeps the first ten bytes while MSG_TRUNC returns
     the full datagram length and removes it from the queue. *)
 Example recvfrom_truncates :
