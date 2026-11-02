@@ -1374,6 +1374,8 @@ Proof.
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [discriminate|].
+  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
+  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
@@ -1739,6 +1741,7 @@ Lemma check_sigpipe_write_frame : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros eff m m' evs H. unfold check_sigpipe_write in H.
+  destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_model in H; subst.
   unfold raise_sigpipe.
   destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); reflexivity.
@@ -1748,6 +1751,7 @@ Lemma check_sigpipe_writev_frame : forall reads eff m m' evs,
   check_sigpipe_writev reads eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros reads eff m m' evs H. unfold check_sigpipe_writev in H.
+  destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_copyins_model in H; subst.
   unfold raise_sigpipe.
   destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); reflexivity.

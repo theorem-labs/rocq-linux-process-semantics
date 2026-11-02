@@ -44,6 +44,12 @@
 
 From Stdlib Require Import extraction.ExtrOcamlBasic.
 From Stdlib Require Import extraction.ExtrOcamlZBigInt.
+(* The checker reaches the measured vDSO images, which are primitive
+   strings.  Without these realisations [PrimString.string] would be
+   extracted as an unrealised axiom type named [string], which a
+   literal (a [Pstring.t]) does not have.  They use the kernel
+   library's [Pstring] and [Uint63], which tests/extraction links. *)
+From Stdlib Require Import extraction.ExtrOCamlPString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import

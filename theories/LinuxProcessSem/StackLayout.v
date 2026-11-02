@@ -40,7 +40,7 @@
        own unconditional entries, in the order [auxv_entries] lists. *)
 
 From Stdlib Require Import ZArith NArith List Lia.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -334,7 +334,28 @@ Qed.
 Record EntryDraw := mkDraw {
   ed_random : bv 128;
   ed_top    : word;
-  ed_vdso   : nat -> list word -> list byte -> word -> (list word * list byte)
+  ed_vdso   : VdsoDraw
+    (* WHAT A vDSO CALL LEAVES BEHIND: from the index of the call in
+       the run, the caller-saved registers before it, the bytes of
+       [[sp - F, sp)] before it and the call's result, to the
+       caller-saved registers and those bytes after it.  F is the
+       chosen image's largest frame ([Vdso.vi_frame]).
+
+       It is part of the DRAW, beside [ed_random], for the same reason
+       that one is: Linux's answer is what the vDSO's compiled code
+       left, a function of the same inputs and of time values this
+       model lets the environment choose, and the model has no term for
+       that code.  Drawing it once per launch — rather than afresh at
+       each call — is what makes two calls with the same inputs leave
+       the same bytes, as they do on a real run; the call's INDEX is an
+       argument so that two calls that are not the same call still may
+       differ.  [Run.init_config] copies it into the model, where
+       [Run.sstep]'s vDSO arm reads it.
+
+       Its result is [Vdso.VdsoLeftovers] rather than a bare pair, so
+       that the registers and the frame bytes are named where they are
+       read; [Vdso.vdso_draw_keep] is the draw that gives back what the
+       call started with, which is one Linux also gives. *)
 }.
 
 (** The sixteen bytes AT_RANDOM points at, serialized little-endian.

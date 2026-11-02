@@ -691,8 +691,9 @@ Definition child_ms (c c' : config) : machine_state :=
     - [procst_child_pids] is []: [copy_process] starts [p->children]
       empty (kernel/fork.c).
 
-    The two launch facts ([procst_channel_reader], [procst_sigpipe_default])
-    are copied, and so are the no-new-privs bit ([copy_process] sets it in
+    The three launch facts ([procst_channel_reader], [procst_sigpipe_default],
+    [procst_sigpipe_terminal]) are copied, and so are the no-new-privs bit
+    ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
     parent's own), kernel/fork.c, read at v6.18.44, identical at
@@ -711,6 +712,7 @@ Definition child_proc (ps : ProcState) : ProcState :=
               (procst_killed ps) false
               (procst_abort_terminal ps) (procst_statpins ps)
               false (procst_channel_reader ps) (procst_sigpipe_default ps)
+              (procst_sigpipe_terminal ps)
               (Z_to_bv 64 0)
               [] (procst_no_new_privs ps) (procst_dumpable ps).
 
