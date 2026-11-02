@@ -104,7 +104,7 @@ Lemma pstep_x_at_grows : forall ext cenv segs cfg p P evs P',
 Proof.
   intros ext cenv segs cfg p P evs P' H Hlt.
   inversion H; subst; try (do 5 eexists; reflexivity); exfalso;
-    unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result in Hlt;
+    unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result, sync_result in Hlt;
     simpl pcfg_procs in Hlt; try rewrite orphan_at_exit_length in Hlt;
     first
       [ rewrite replace_in_length in Hlt; lia
@@ -250,13 +250,14 @@ Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg)
     forced EPERM from a security module's (the LPS owner's decision,
     2026-11-01).
 
-    ON THIS CORE the whole-system form holds only for programs whose
-    processes in the released world make no call but exit, exit_group,
-    clone, clone3 and wait4 while another process lives
-    ([Procs.multiproc_allowed]; a process outside the released world also
-    gets the calls [Ext.ext_multiproc] admits): any other call in that state
-    is the model's error.  A program whose parent goes on making calls after
-    a clone needs [lholts_ns_within_budget], below. *)
+    ON THIS CORE the whole-system form holds for programs whose processes
+    in the released world make, while another process lives, only the
+    calls [Procs.multiproc_ok] admits: exit, exit_group, clone, clone3 and
+    wait4, and since the core's widening the private calls of class (A)
+    and the file and I/O calls of class (B) (a process outside the released
+    world gets the calls [Ext.ext_multiproc] admits); any other call in that
+    state is the model's error.  A program whose parent makes another call
+    after a clone needs [lholts_ns_within_budget], below. *)
 Definition pholts_x_within_budget (ext : ExtSpec) (cenv : CloneEnv) (pre : ProcInput -> Prop)
     (host : NsState -> Prop) (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
@@ -421,20 +422,32 @@ Module NsProcs := NsStep ProcsCore.
    What a focused process reads, on this core
    ========================================================================= *)
 
-(** Everything process [f] can read: its own entry (registers, model,
-    descriptor table, namespace context); each open file description its
-    descriptors name, with its content (what, offset, flags and the count
-    of references, whose fall to zero a reader of a pipe sees as end of
-    file); the file system and I/O state; the pipe buffers; and the
-    namespace state.  A per-process descriptor that is not a shared
-    description (an eventfd, a signalfd) is part of [f]'s own model. *)
+(** What process [f] reads from its own state and the shared state: its
+    own entry (registers, model, descriptor table, namespace context);
+    each open file description its descriptors name, with its content
+    (what, offset, flags and the count of references, whose fall to zero
+    a reader of a pipe sees as end of file); the file system and I/O
+    state; the pipe buffers; the namespace state; and the core's record of
+    [f] ([Procs.sh_meta] at [f]: whether [f]'s namespace bits are ones the
+    core does not model, which [Procs.peer_refused_b] reads before every
+    step of [f]).  A per-process descriptor that is not a shared
+    description (an eventfd, a signalfd) is part of [f]'s own model.
+
+    NOT IN THE VIEW: what the core's sync arm ([Procs.px_sync]) copies
+    into [f]'s model from the OTHER processes before [f]'s clock reads,
+    [uname] and [fstat] of a pinned path -- the largest clock, a peer's
+    uts name, a peer's stat pin.  Those follow the other processes' own
+    progress, so a view that held them would make [focus_noninterfering]
+    false whenever another process runs.  A lineage that makes those calls
+    needs facts about them besides [lineage_quiet]. *)
 Record FocusView := mkFocusView {
   fv_entry : option ProcessEntry;
   fv_ofds  : list (OfdId * option Ofd);
   fv_fsys  : FsState;
   fv_io    : IoState;
   fv_pipes : list (word * PipeBuf);
-  fv_ns    : NsState
+  fv_ns    : NsState;
+  fv_meta  : ProcMeta
 }.
 
 Fixpoint ofd_get (l : list (OfdId * Ofd)) (o : OfdId) : option Ofd :=
@@ -451,7 +464,7 @@ Definition focus_view (P : pconfig) (f : Pid) : FocusView :=
      | Some x => map (fun fo => (snd fo, ofd_get (sh_ofd S) (snd fo))) (pe_ofd x)
      | None => []
      end)
-    (sh_fsys S) (sh_io S) (sh_pipes S) (sh_ns S).
+    (sh_fsys S) (sh_io S) (sh_pipes S) (sh_ns S) (meta_look (sh_meta S) f).
 
 Fixpoint view_get (l : list (OfdId * option Ofd)) (o : OfdId) : option (option Ofd) :=
   match l with
@@ -459,13 +472,48 @@ Fixpoint view_get (l : list (OfdId * option Ofd)) (o : OfdId) : option (option O
   | (k, d) :: r => if bv_eqb k o then Some d else view_get r o
   end.
 
+(** WHAT OF A DESCRIPTION'S REFERENCE COUNT A HOLDER CAN OBSERVE.  The core
+    has three kinds of shared description ([Procs.OfdWhat]); for each, the
+    count is compared ([ofd_seen] keeps it) exactly when a holder can tell
+    one count from another:
+    - [OfdPipe]: COMPARED.  A read sees end of file, and a write gets EPIPE
+      and SIGPIPE, when the other end's count reaches zero (fs/pipe.c,
+      [pipe_read], [pipe_write]; [Procs.Ofd]'s comment).
+    - [OfdSocket]: COMPARED.  On Linux a socket's release at its last
+      close is what its peer sees as end of file, ECONNRESET or EPIPE
+      (net/socket.c, [sock_close]).  The model's [State.SockState] holds
+      no connection between two descriptions, so no answer reads another
+      holder's count today; the count is compared anyway, so that a model
+      that connects sockets needs no change here.
+    - [OfdFile]: NOT COMPARED.  On Linux the count of a file's description
+      is read by no call ([f_count] is in neither stat nor fdinfo); what
+      a holder can see is the release at the LAST close (__fput, fs/file_table.c):
+      flock locks and open-file-description record locks dropped, a lease
+      broken, fsnotify's close events, an unlinked inode freed.  While [f]
+      names the description the count is at least one, so another
+      process's close cannot be that last close.  In the model none of
+      those is held for a shared description anyway: flock (32) is refused
+      while another process lives ([Procs] class C), record locks, leases
+      and F_NOTIFY have no state ([Sys.Fs.Fcntl]'s fcntl header), and
+      inotify and fanotify have no arm.
+    The namespace model's own open files are in the namespace state
+    ([fv_ns]), compared whole. *)
+Definition ofd_seen (d : Ofd) : Ofd :=
+  match ofd_what d with
+  | OfdFile _ _ => mkOfd (ofd_what d) (ofd_off d) (ofd_flags d) (Z_to_bv 64 0)
+  | OfdPipe _ _ | OfdSocket _ => d
+  end.
+
 (** Two views are the same for [f] up to the exchange descriptions [xs]:
-    every part equal, except the content of a description in [xs]. *)
+    every part equal, except the content of a description in [xs], and a
+    file description's reference count ([ofd_seen]). *)
 Definition focus_eq (xs : list OfdId) (a b : FocusView) : Prop :=
   fv_entry a = fv_entry b /\ fv_fsys a = fv_fsys b /\ fv_io a = fv_io b
-  /\ fv_pipes a = fv_pipes b /\ fv_ns a = fv_ns b
+  /\ fv_pipes a = fv_pipes b /\ fv_ns a = fv_ns b /\ fv_meta a = fv_meta b
   /\ map fst (fv_ofds a) = map fst (fv_ofds b)
-  /\ forall o, ~ In o xs -> view_get (fv_ofds a) o = view_get (fv_ofds b) o.
+  /\ forall o, ~ In o xs ->
+       option_map (option_map ofd_seen) (view_get (fv_ofds a) o)
+       = option_map (option_map ofd_seen) (view_get (fv_ofds b) o).
 
 Lemma focus_eq_refl : forall xs v, focus_eq xs v v.
 Proof. intros xs v. repeat split; intros; reflexivity. Qed.
@@ -517,13 +565,14 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
 (** THE LINEAGE HALTING STATEMENT over the namespace model.
 
     WHY THE LINEAGE.  The whole-system form ([pholts_x_within_budget]) is
-    unavailable for a program whose parent goes on making calls after a
-    clone, because this core restricts a released-world process while
-    another process lives ([Procs.multiproc_allowed]: only exit,
-    exit_group, clone, clone3 and wait4).  WHEN THAT GUARD IS WIDENED, the
-    whole-system form becomes available and the statements of this shape
-    are to be revisited, AND each statement's witness for [lineage_quiet]
-    must be established again (see below).
+    unavailable for a program whose parent makes, after a clone, a call
+    this core does not admit while another process lives
+    ([Procs.multiproc_ok]).  The core's guard was WIDENED (the private
+    calls of class (A) and the file and I/O calls of class (B), for a
+    process in the released world): a statement of this shape is to be
+    revisited for whether the whole-system form now holds, AND each
+    statement's witness for [lineage_quiet] must be established again over
+    the wider core (see below).
 
     WHAT IT IS ABOUT.  A statement of this shape is about the lineage
     process (after a clone, the child) and ITS exit status: every maximal
@@ -552,8 +601,9 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
       credentials, a write to an exchange description, a wait after the
       cut).  That half survives a change of the core.  A half that rests on
       this core making the parent's calls model errors
-      ([Procs.multiproc_allowed]) EXPIRES when the guard is widened, and
-      the witness must then be proved again over the wider core.
+      ([Procs.multiproc_ok]) EXPIRED with the widening of the guard: the
+      parent's calls of class (A) and (B) now step while the child lives,
+      and the witness must be proved again over the wider core.
     The budget premise is [MustExitP.pholts_within_budget]'s: the released
     one-process run of the image.  It says nothing about the memory a child
     asks for; a statement whose child may be refused memory must exclude
