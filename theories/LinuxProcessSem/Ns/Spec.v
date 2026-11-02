@@ -153,31 +153,82 @@ Proof.
   destruct (P (Z.opp (bv_signed ret))); cbn; [rewrite andb_true_r; reflexivity | reflexivity].
 Qed.
 
-(** The descriptor calls whose released answer reads or moves a
-    descriptor's private state (an offset, a pipe's or socket's buffer, a
-    directory position, status flags): fcntl, ioctl, close, getdents64,
-    lseek, read, write, readv, writev, pread64, pwrite64, sendto,
-    recvfrom, sendmsg, recvmsg. *)
-Definition private_fd_calls : list Z :=
-  [25; 29; 57; 61; 62; 63; 64; 65; 66; 67; 68; 206; 207; 211; 212]%Z.
+(** THE CALLS A TASK OUTSIDE THE RELEASED WORLD MAKES WHILE ANOTHER PROCESS
+    LIVES.  A core admits a claimed call in a system of several processes
+    only when it is one of the core's own numbers or this guard admits it;
+    a task in the released world gets the core's class list alone
+    ([ns_multiproc_coherent]).  This guard admits exactly the calls the
+    setup child of a sandbox makes while its parent lives -- bubblewrap
+    0.13.1's child from its [raw_clone] to its exec, as three re-traced
+    launches record them, the checks a harness runs there, and the stderr
+    message of a setup that dies -- and each only where its answer reads
+    and writes state that a live peer either shares as the model shares
+    it or cannot reach:
+    - the namespace state [NsState], which the core keeps once, in its
+      shared part, as Linux keeps one copy of every namespace, mount,
+      dentry, inode, socket and open file of the namespace model;
+    - the caller's [NsCtx] and its released [Model]'s task fields (ids,
+      capabilities, umask, root, cwd, signal mask, parent-death signal):
+      per task in Linux after a [clone] without CLONE_FS, CLONE_FILES,
+      CLONE_SIGHAND or CLONE_THREAD (kernel/fork.c [copy_fs],
+      [copy_files], [copy_sighand]), and per process in the core;
+    - the caller's descriptor table, per task after a clone without
+      CLONE_FILES, and the start a directory descriptor names, which no
+      peer can change ([ns_mp_any_fd]).
+    What a descriptor's OPEN FILE holds is shared by every holder: an
+    offset, status flags, a socket's queue, an eventfd's counter.  The
+    namespace model keeps that state for its own descriptors ([ONsFile])
+    in [NsState], so it is shared ([ns_mp_nsfile_calls]); the released
+    model keeps it per process, so a call that reads or moves it on a
+    released descriptor is not admitted, except where the arm reads none
+    of it:
+    - [read] (63) of an eventfd: the arm admits every value Linux can
+      return and keeps no counter ([FsOps.eventfd_read_arm]);
+    - [writev] (66) of a standard channel: the answer depends only on the
+      launch fact [State.m_channel_reader], and what it writes is the
+      trace's [WriteEv];
+    - [close] (57) of an opaque descriptor (an O_PATH or /proc/sys file,
+      an eventfd, a namespace file): Linux's close of these drops a
+      reference and nothing a peer observes; a namespace file another
+      process still names is freed early ([Arm.release_handle]), and that
+      process's later use declines;
+    - [fcntl] (25) F_GETFD (1) and F_SETFD (2): the close-on-exec bit is
+      the caller's descriptor table's.
+    Every other claimed call is not admitted while another process lives:
+    the core makes it a model error, never a wrong answer.  That covers
+    time ([clock_gettime] 113: the core keeps a clock per process), the
+    released file system, pipes and sockets of the released model, and
+    every call this child does not make.  Widening the list is one more
+    row of this argument. *)
+Definition ns_mp_any_fd : list Z :=
+  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 91; 97; 135; 166; 167; 172; 198; 437;
+   442]%Z.
 
-(** The call reaches the released answer on such a descriptor of the
-    released model: a file, a pipe, a socket or a directory. *)
-Definition released_private_fd (i : SyscallInput) (m : Model) : bool :=
-  existsb (Z.eqb (ns_sysno i)) private_fd_calls
-  && match fd_lookup (m_fds m) (in_arg i 0) with
-     | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdFileA _ _) | Some (FdFileRW _ _)
-     | Some (FdPipe _ _) | Some (FdSocket _) | Some FdDir => true
-     | _ => false
-     end.
+(** [ioctl], [getdents64], [read], [write], [fstat], [bind], [sendto] and
+    [recvfrom], admitted on a descriptor of the namespace model only. *)
+Definition ns_mp_nsfile_calls : list Z := [29; 61; 63; 64; 80; 200; 206; 207]%Z.
 
-(** The claimed calls [ns_ext] answers soundly while other processes are
-    live: a task outside the released world, whose arms read the shared
-    namespace state, except a call that falls back to the released answer
-    on a descriptor whose state a multi-process core keeps per process.
-    A task in the released world gets the core's own guard. *)
+Definition ns_multiproc_call (i : SyscallInput) (m : Model) : bool :=
+  let n := ns_sysno i in
+  let fd := fd_word (in_arg i 0) in
+  let e := fd_lookup (m_fds m) fd in
+  let nsfile := match e with
+                | Some x => match fd_entry_handle x with Some _ => true | None => false end
+                | None => false
+                end in
+  let evfd := match eventfd_flags_of m fd with Some _ => true | None => false end in
+  let opaque := match e with Some x => fd_entry_opaque x | None => false end in
+  let chan := match e with Some (FdChannel _) => true | _ => false end in
+  let cmd := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
+  existsb (Z.eqb n) ns_mp_any_fd
+  || (existsb (Z.eqb n) ns_mp_nsfile_calls && nsfile)
+  || (Z.eqb n 63 && evfd)
+  || (Z.eqb n 66 && chan)
+  || (Z.eqb n 57 && opaque)
+  || (Z.eqb n 25 && (nsfile || Z.eqb cmd 1 || Z.eqb cmd 2)).
+
 Definition ns_multiproc (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
-  negb (flat_view ctx st) && negb (released_private_fd i m).
+  negb (flat_view ctx st) && ns_multiproc_call i m.
 
 Lemma ns_multiproc_coherent : forall i m ctx st,
   flat_view ctx st = true -> ns_multiproc i m ctx st = false.
