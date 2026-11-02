@@ -53,6 +53,34 @@ Example clone_all_child : forall m,
                   None None).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** As on Linux: the host's mount namespace has rootfs (mount 1) as its root
+    mount and "/" (mount 2) mounted on rootfs's root; the caller's root is
+    "/"'s root.  A new mount namespace copies both, so the child's root
+    mount (the copy of "/") has a parent, the copy of rootfs: so the
+    child's later pivot_root does not stop at "the root mount has no
+    parent" (EINVAL). *)
+Definition host_rootfs : NsState :=
+  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None;
+             mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
+            [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0] [mkNetNs 1 1 [] false]
+            [] [] [] [] (ns_env empty_nsstate).
+
+Definition caller_rootfs : NsCtx :=
+  mkNsCtx 1 1 1 1 [(1%positive, 136)] (2%positive, 2%positive) (2%positive, 2%positive) 18 nocaps 0 []
+          (Some false) (Some 1).
+
+Example clone_root_mount_has_parent : forall m,
+  match clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller_rootfs host_rootfs 138 with
+  | CnOk child _ s =>
+      match find_mount (ns_mounts s) (fst (cx_root child)) with
+      | Some r => match mnt_parent r with Some _ => mnt_ns r = cx_mount child | None => False end
+      | None => False
+      end
+  | _ => False
+  end.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 (** The new user namespace: a child of 1 owned by kuid 65534 with no maps;
     the new pid namespace's last pid is 1; the copy of the root mount is a
     mount of the new mount namespace; the new network namespace is

@@ -73,14 +73,16 @@ Definition nsfile_loc (f : NsFile) : option Loc :=
 (** Where a descriptor the released model opened is.  A task in the
     released world opened it (a namespace arm would have minted an
     [ONsFile]), so its path is a path of the host's mount namespace,
-    resolved from that namespace's root as the released arm resolved it
-    when it checked the open.  No task of the model changes the host's
-    mount namespace (a task in it is in the released world, whose mount
-    arm declines), so the walk now is the walk then.  The walk runs with
-    every capability of the initial user namespace, since the released
-    arm already checked the opener's permission, and with no pid, so a
-    path through procfs [self] does not resolve; a relative path, and any
-    walk that does not end at a location, give [None]. *)
+    resolved from the root a task of that namespace that is not chrooted
+    has: the root of the topmost mount on the namespace's root mount
+    ([Walk.ns_top]; on Linux, "/" mounted on rootfs), as the released arm
+    resolved it when it checked the open.  No task of the model changes the
+    host's mount namespace (a task in it is in the released world, whose
+    mount arm declines), so the walk now is the walk then.  The walk runs
+    with every capability of the initial user namespace, since the
+    released arm already checked the opener's permission, and with no pid,
+    so a path through procfs [self] does not resolve; a relative path, and
+    any walk that does not end at a location, give [None]. *)
 Definition host_loc (st : NsState) (p : list byte) : option Loc :=
   let absolute := match p with c :: _ => (bv_unsigned c =? 47)%Z | [] => false end in
   match absolute,
@@ -88,7 +90,8 @@ Definition host_loc (st : NsState) (p : list byte) : option Loc :=
         find (fun u => match uns_parent u with None => true | Some _ => false end) (ns_userns st) with
   | true, Some n, Some u =>
       match find_mount (ns_mounts st) (mntns_root n) with
-      | Some r =>
+      | Some r0 =>
+          let r := ns_top st r0 in
           let root := (mnt_id r, mnt_root r) in
           let full := (2 ^ 41 - 1)%Z in
           let hctx := mkNsCtx (uns_id u) (mntns_id n) (cx_pidns init_nsctx) (cx_net init_nsctx) []

@@ -144,6 +144,24 @@ Definition mount_on (st : NsState) (parent point : positive) : option Mount :=
           | None => false
           end) (ns_mounts st).
 
+(** [topmost_overmount] (fs/namespace.c): from mount [m], the mount on its
+    root dentry, and so on up. *)
+Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
+  match fuel with
+  | O => m
+  | S f => match mount_on st (mnt_id m) (mnt_root m) with
+           | Some m' => topmost_fuel f st m'
+           | None => m
+           end
+  end.
+
+(** The topmost mount on a mount namespace's root mount [r]: where a task of
+    that namespace that is not chrooted has its root.  On Linux the
+    namespace's root mount is rootfs and "/" is mounted on it, so this is
+    "/"'s mount, not rootfs. *)
+Definition ns_top (st : NsState) (r : Mount) : Mount :=
+  topmost_fuel (length (ns_mounts st)) st r.
+
 (* =========================================================================
    Path text
    ========================================================================= *)
