@@ -597,8 +597,6 @@ Proof.
   - replace (eager_used model') with (eager_used model) by (symmetry; apply Hfr). assumption.
   - intros a Hh. rewrite (hid_same _ _ _ _ Hs) in Hh. rewrite (Hhid a Hh). auto.
   - eapply SINV_frame; [|eassumption]. intros a Ha. apply Hhid. unfold hid. rewrite Ha. reflexivity.
-  - (* co_band: the kernel build is a field no step writes *)
-    rewrite Hs, m_kernel_with_vm_backing. assumption.
 Qed.
 
 (** ---- the knowledge GC / forgetting facts is a weakening ----------------- *)
