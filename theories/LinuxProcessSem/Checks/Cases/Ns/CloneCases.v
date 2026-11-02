@@ -30,8 +30,7 @@ Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 
 (** The caller: pid 136 of the host. *)
 Definition caller : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18 nocaps 0 []
-          (Some false) (Some 1).
+  mkNsCtx 1 1 1 1 [(1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18 nocaps 0 [].
 
 Definition SIGCHLD : Z := 17.
 Definition ALL_NS : Z :=
@@ -49,8 +48,7 @@ Definition ret_of (o : CloneNs) : option (option Z) := match o with CnOk _ r _ =
 Example clone_all_child : forall m,
   child_of (clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138)
   = Some (mkNsCtx 2 2 2 2 [(2%positive, 1); (1%positive, 138)] (2%positive, 1%positive)
-                  (2%positive, 1%positive) 18 (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 []
-                  None None).
+                  (2%positive, 1%positive) 18 (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 []).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** As on Linux: the host's mount namespace has rootfs (mount 1) as its root
@@ -67,8 +65,7 @@ Definition host_rootfs : NsState :=
             [] [] [] [] (ns_env empty_nsstate).
 
 Definition caller_rootfs : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 136)] (2%positive, 2%positive) (2%positive, 2%positive) 18 nocaps 0 []
-          (Some false) (Some 1).
+  mkNsCtx 1 1 1 1 [(1%positive, 136)] (2%positive, 2%positive) (2%positive, 2%positive) 18 nocaps 0 [].
 
 Example clone_root_mount_has_parent : forall m,
   match clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller_rootfs host_rootfs 138 with
@@ -106,7 +103,7 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     EPERM. *)
 Definition no_admin_inside : NsCtx :=
   mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          nocaps 0 [] (Some false) (Some 1).
+          nocaps 0 [].
 
 (** A task in the released world that makes no namespace: the core's own
     clone decides the flag word (CLONE_VM here), and the namespace model
@@ -131,7 +128,7 @@ Definition inside : NsState :=
 
 Definition shell : NsCtx :=
   mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] (Some false) (Some 1).
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [].
 
 Example clone_newns_inside_needs_admin : forall m,
   clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) no_admin_inside inside 140
@@ -203,7 +200,7 @@ Definition deep : NsState :=
 
 Definition admin_in_deep : NsCtx :=
   mkNsCtx 1 1 7 1 [(7%positive, 1)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] (Some false) (Some 1).
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [].
 
 Example clone_pid_level_32 : forall m,
   clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.

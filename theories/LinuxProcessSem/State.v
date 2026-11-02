@@ -3390,6 +3390,25 @@ Definition cache_geometry_word (l : CacheLeaf) : Z :=
    mod 2 ^ 32)%Z.
 
 
+(** THE BUILD'S [suid_dumpable]: the dumpable mode [commit_creds]
+    (kernel/cred.c) gives a process whose call moves its effective or
+    filesystem ids, and [begin_new_exec] (fs/exec.c) one whose exec raised
+    its privilege.  The kernel holds it in [int suid_dumpable] (fs/exec.c,
+    default 0), which the sysctl fs.suid_dumpable writes and bounds to 0..2
+    ([proc_dointvec_minmax_coredump] with [SYSCTL_ZERO] and [SYSCTL_TWO],
+    fs/exec.c); the three values are [SUID_DUMP_DISABLE], [SUID_DUMP_USER]
+    and [SUID_DUMP_ROOT] (include/linux/sched/coredump.h).  One constructor
+    per value, so every value names a real setting and [Run.valid_input]
+    needs no clause.  Read at v6.18.44; identical at v6.18.46. *)
+Inductive SuidDump := SuidDumpDisable | SuidDumpUser | SuidDumpRoot.
+
+Definition suid_dump_word (s : SuidDump) : word :=
+  match s with
+  | SuidDumpDisable => Z_to_bv 64 0
+  | SuidDumpUser => Z_to_bv 64 1
+  | SuidDumpRoot => Z_to_bv 64 2
+  end.
+
 (** * THE KERNEL BUILD THE RUN WAS LAUNCHED ON
 
     Two facts about the launch that no trace reveals and that the model
@@ -3458,6 +3477,10 @@ Record KernelBuild := mkKernelBuild {
   kb_cache : CacheView
     (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
        as eight auxv words *);
+  kb_suid_dumpable : SuidDump
+    (* the sysctl fs.suid_dumpable, which [commit_creds] installs as the
+       dumpable mode when a call moves the effective or filesystem ids
+       ([Kernel.Sys.commit_id_creds]); see [SuidDump] *);
 }.
 
 (** The vvar pages the kernel maps below the vDSO text: four, fixed by
@@ -3524,13 +3547,15 @@ Qed.
       selects HAVE_RSEQ);
     - no vector unit and no cache leaves reported, which is what a
       machine whose devicetree carries neither gives
-      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c);
+    - fs.suid_dumpable 0, the kernel's own default ([int suid_dumpable =
+      0], fs/exec.c).
 
     A run built from a [ProcInput] never sees this value — [init_model]
     installs [in_kernel] — exactly as with [default_nofile].
     Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
 Definition default_kernel : KernelBuild :=
-  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent SuidDumpDisable.
 
 (** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
     v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
@@ -4300,6 +4325,77 @@ Record ProcState := mkProcState {
                                     identical at v6.18.46: kernel/fork.c
                                     [copy_process], fs/exec.c [begin_new_exec],
                                     kernel/cred.c [commit_creds]. *)
+;
+  procst_child_pids : list word  (* THE CHILDREN NO [wait4] HAS REAPED, as
+                                    the pids the caller's clones returned,
+                                    oldest first: the kernel's
+                                    [task->children], which [do_wait]
+                                    (kernel/exit.c) reads.  READ IT THROUGH
+                                    [m_child_pids].
+
+                                    [] AT LAUNCH ([init_model]) and [] in a new
+                                    child ([Procs.child_proc]): [copy_process]
+                                    (kernel/fork.c) starts [p->children] empty.
+                                    The multi-process core writes it -- a
+                                    successful clone appends the pid it returns,
+                                    a reap removes it -- through
+                                    [with_child_pids]; this record only holds
+                                    it.  Kernel citations, read at v6.18.44 and
+                                    identical at v6.18.46: kernel/fork.c
+                                    [copy_process], kernel/exit.c [do_wait]. *)
+;
+  procst_no_new_privs : bool     (* THE NO-NEW-PRIVS BIT, the kernel's
+                                    [task_no_new_privs] (PFA_NO_NEW_PRIVS in
+                                    [task->atomic_flags]).  READ IT THROUGH
+                                    [m_no_new_privs].
+
+                                    FALSE AT LAUNCH ([init_model]).  An [execve]
+                                    keeps the bit (fs/exec.c reads it and never
+                                    clears it), so the [false] is an ASSUMPTION
+                                    about the launcher -- it did not set the bit
+                                    before its [execve] -- and SCOPE.md lists it.
+                                    Set by [prctl(PR_SET_NO_NEW_PRIVS)] and read
+                                    by [prctl(PR_GET_NO_NEW_PRIVS)]
+                                    ([Kernel.Sys.prctl_spec]); nothing clears it.
+                                    A new child copies it ([Procs.child_proc]):
+                                    [copy_process] (kernel/fork.c) sets it in the
+                                    child when the parent has it.  Kernel
+                                    citations, read at v6.18.44 and identical at
+                                    v6.18.46: kernel/sys.c [prctl], kernel/fork.c
+                                    [copy_process], fs/exec.c. *)
+;
+  procst_dumpable : word         (* THE DUMPABLE MODE of the process's mm,
+                                    [get_dumpable]: [SUID_DUMP_DISABLE] (0),
+                                    [SUID_DUMP_USER] (1) or [SUID_DUMP_ROOT] (2)
+                                    (include/linux/sched/coredump.h).  A READER
+                                    TESTS IT AGAINST 1 and does not read it as a
+                                    boolean: 2 is not dumpable as the user
+                                    ([task_dump_owner], fs/proc/base.c, makes the
+                                    task's proc entries root's for 0 and 2
+                                    alike).  READ IT THROUGH [m_dumpable].
+
+                                    1 AT LAUNCH ([init_model]): [begin_new_exec]
+                                    (fs/exec.c) sets [SUID_DUMP_USER] for an exec
+                                    that raised no privilege, and [suid_dumpable]
+                                    for one that did.  So the 1 is an ASSUMPTION
+                                    about the launch -- the program was not
+                                    setuid or setgid and gained no capability --
+                                    and SCOPE.md lists it.  Written by
+                                    [prctl(PR_SET_DUMPABLE)] (0 or 1 only) and by
+                                    [commit_creds] (kernel/cred.c), which installs
+                                    the build's [kb_suid_dumpable] when a call
+                                    moves the effective or filesystem ids
+                                    ([Kernel.Sys.commit_id_creds] for the id
+                                    setters); read by [prctl(PR_GET_DUMPABLE)]
+                                    and by procfs ownership ([Ns.Files.loc_attr]).
+                                    A new child copies it ([Procs.child_proc]):
+                                    [mm_init] (kernel/fork.c) keeps the parent's
+                                    MMF_DUMPABLE bits (MMF_INIT_LEGACY_MASK,
+                                    include/linux/mm_types.h).  Kernel citations,
+                                    read at v6.18.44 and identical at v6.18.46:
+                                    fs/exec.c [begin_new_exec], kernel/sys.c
+                                    [prctl], kernel/cred.c [commit_creds],
+                                    kernel/fork.c [mm_init]. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4456,6 +4552,16 @@ Definition m_sigpipe_default (m : Model) : bool :=
     position; see [procst_pdeath_signal]. *)
 Definition m_pdeath_signal (m : Model) : word :=
   procst_pdeath_signal (m_proc m).
+(** The pids of the children no [wait4] has reaped; see
+    [procst_child_pids]. *)
+Definition m_child_pids (m : Model) : list word :=
+  procst_child_pids (m_proc m).
+(** The no-new-privs bit; see [procst_no_new_privs]. *)
+Definition m_no_new_privs (m : Model) : bool :=
+  procst_no_new_privs (m_proc m).
+(** The dumpable mode, 0, 1 or 2; see [procst_dumpable]. *)
+Definition m_dumpable (m : Model) : word :=
+  procst_dumpable (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4508,7 +4614,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true true (Z_to_bv 64 0))
+               false true true (Z_to_bv 64 0) [] false (Z_to_bv 64 1))
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4591,7 +4697,8 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_abort_terminal m)
                          (statpins_restrict fs (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4609,7 +4716,8 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          false (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4620,7 +4728,8 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4644,7 +4753,8 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4682,7 +4792,8 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_abort_terminal m)
                          ((p, bs) :: m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4710,7 +4821,8 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4725,7 +4837,8 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4735,7 +4848,8 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -4763,7 +4877,8 @@ Definition with_children (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -4785,7 +4900,8 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -4814,7 +4930,8 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -4842,7 +4959,8 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -4865,7 +4983,8 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          true (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -4885,7 +5004,8 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) b
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE disposition.  Its only caller is
@@ -4905,7 +5025,8 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         b (m_pdeath_signal m))
+                         b (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** Install a parent-death signal.  Two kinds of caller, both in
@@ -4922,7 +5043,55 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) s)
+                         (m_sigpipe_default m) s
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+            (m_lim m) (m_time m).
+
+(** Install the list of unreaped children.  Its writers are the
+    multi-process core's clone and reap steps; see [procst_child_pids]. *)
+Definition with_child_pids (l : list word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         l (m_no_new_privs m) (m_dumpable m))
+            (m_lim m) (m_time m).
+
+(** Set the no-new-privs bit.  Its one writer is [Kernel.Sys.prctl_spec]'s
+    [PR_SET_NO_NEW_PRIVS] arm, which passes [true]; nothing clears it. *)
+Definition with_no_new_privs (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) b (m_dumpable m))
+            (m_lim m) (m_time m).
+
+(** Install a dumpable mode.  Two kinds of caller, both in [Kernel.Sys]:
+    [prctl_spec]'s [PR_SET_DUMPABLE] arm, which stores 0 or 1, and
+    [commit_id_creds], which stores the build's [kb_suid_dumpable] when an
+    id setter moves the effective id, as [commit_creds] does. *)
+Definition with_dumpable (d : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) d)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -4974,7 +5143,8 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          true (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m))
+                         (m_sigpipe_default m) (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -6855,7 +7025,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
-       (in_sigpipe_default inp) (Z_to_bv 64 0))
+       (in_sigpipe_default inp) (Z_to_bv 64 0) [] false (Z_to_bv 64 1))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -7072,6 +7242,81 @@ Lemma m_vmmaps_with_pdeath_signal : forall (v : word) (m : Model),
   m_vmmaps (with_pdeath_signal v m) = m_vmmaps m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vmmaps_with_pdeath_signal : model.
+
+Lemma m_kernel_with_child_pids : forall v m,
+  m_kernel (with_child_pids v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_child_pids : model.
+
+Lemma m_child_pids_with_child_pids : forall (v : list word) (m : Model),
+  m_child_pids (with_child_pids v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_child_pids_with_child_pids : model.
+
+Lemma m_creds_with_child_pids : forall (v : list word) (m : Model),
+  m_creds (with_child_pids v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_child_pids : model.
+
+Lemma m_vmmaps_with_child_pids : forall (v : list word) (m : Model),
+  m_vmmaps (with_child_pids v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_child_pids : model.
+
+Lemma m_kernel_with_no_new_privs : forall v m,
+  m_kernel (with_no_new_privs v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_no_new_privs : model.
+
+Lemma m_no_new_privs_with_no_new_privs : forall (v : bool) (m : Model),
+  m_no_new_privs (with_no_new_privs v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_no_new_privs_with_no_new_privs : model.
+
+Lemma m_creds_with_no_new_privs : forall (v : bool) (m : Model),
+  m_creds (with_no_new_privs v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_no_new_privs : model.
+
+Lemma m_vmmaps_with_no_new_privs : forall (v : bool) (m : Model),
+  m_vmmaps (with_no_new_privs v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_no_new_privs : model.
+
+Lemma m_kernel_with_dumpable : forall v m,
+  m_kernel (with_dumpable v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_dumpable : model.
+
+Lemma m_dumpable_with_dumpable : forall (v : word) (m : Model),
+  m_dumpable (with_dumpable v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_dumpable_with_dumpable : model.
+
+Lemma m_dumpable_with_creds : forall (v : Creds) (m : Model),
+  m_dumpable (with_creds v m) = m_dumpable m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_dumpable_with_creds : model.
+
+Lemma m_dumpable_with_pdeath_signal : forall (v : word) (m : Model),
+  m_dumpable (with_pdeath_signal v m) = m_dumpable m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_dumpable_with_pdeath_signal : model.
+
+Lemma m_pdeath_signal_with_dumpable : forall (v : word) (m : Model),
+  m_pdeath_signal (with_dumpable v m) = m_pdeath_signal m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pdeath_signal_with_dumpable : model.
+
+Lemma m_creds_with_dumpable : forall (v : word) (m : Model),
+  m_creds (with_dumpable v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_dumpable : model.
+
+Lemma m_vmmaps_with_dumpable : forall (v : word) (m : Model),
+  m_vmmaps (with_dumpable v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_dumpable : model.
 
 Lemma init_model_is_the_setter_chain :
   forall reserved brk0 mbase sp lim inp,
@@ -9111,6 +9356,13 @@ Arguments with_utsname : simpl never.
 Arguments m_pdeath_signal : simpl never.
 Arguments with_pdeath_signal : simpl never.
 
+Arguments m_child_pids : simpl never.
+Arguments with_child_pids : simpl never.
+Arguments m_no_new_privs : simpl never.
+Arguments with_no_new_privs : simpl never.
+Arguments m_dumpable : simpl never.
+Arguments with_dumpable : simpl never.
+
 (** And of the model a run starts from.  [init_model] builds one with
     [mkModel], so these are [reflexivity] too -- but a proof cannot see that
     through an opaque accessor, and [cbn] with a delta list will not unfold
@@ -9909,6 +10161,21 @@ Proof. reflexivity. Qed.
     [procst_pdeath_signal] names. *)
 Lemma m_pdeath_signal_init_model : forall reserved brk0 mbase sp lim inp,
   m_pdeath_signal (init_model reserved brk0 mbase sp lim inp) = Z_to_bv 64 0.
+Proof. reflexivity. Qed.
+
+(** No unreaped child, no-new-privs clear and the process dumpable as its
+    user at launch: the assumptions [procst_child_pids],
+    [procst_no_new_privs] and [procst_dumpable] name. *)
+Lemma m_child_pids_init_model : forall reserved brk0 mbase sp lim inp,
+  m_child_pids (init_model reserved brk0 mbase sp lim inp) = [].
+Proof. reflexivity. Qed.
+
+Lemma m_no_new_privs_init_model : forall reserved brk0 mbase sp lim inp,
+  m_no_new_privs (init_model reserved brk0 mbase sp lim inp) = false.
+Proof. reflexivity. Qed.
+
+Lemma m_dumpable_init_model : forall reserved brk0 mbase sp lim inp,
+  m_dumpable (init_model reserved brk0 mbase sp lim inp) = Z_to_bv 64 1.
 Proof. reflexivity. Qed.
 
 Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,

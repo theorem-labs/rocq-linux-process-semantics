@@ -29,7 +29,7 @@ Example empty_is_flat : forall ctx, flat_view ctx empty_nsstate = true := flat_v
     namespace [u] and umask [umask]. *)
 Definition task_in (u : positive) (pid : Z) (umask : Z) : NsCtx :=
   mkNsCtx u 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
-          (mkCaps 0 0 0 0 0) 0 [] (Some false) (Some 1%Z).
+          (mkCaps 0 0 0 0 0) 0 [].
 Definition task (pid : Z) (umask : Z) : NsCtx := task_in 1 pid umask.
 
 Definition nf : MountFlags := mkMountFlags false false false false.
@@ -130,5 +130,5 @@ Example host_loc_below_top :
   := eq_refl.
 Example top_root_not_chrooted :
   UserArms.current_chrooted rootfs_world
-    (mkNsCtx 1 1 1 1 [] (2%positive, 2%positive) (2%positive, 2%positive) 18 (mkCaps 0 0 0 0 0) 0 []
-             (Some false) (Some 1%Z)) = Some false := eq_refl.
+    (mkNsCtx 1 1 1 1 [] (2%positive, 2%positive) (2%positive, 2%positive) 18 (mkCaps 0 0 0 0 0) 0 [])
+  = Some false := eq_refl.

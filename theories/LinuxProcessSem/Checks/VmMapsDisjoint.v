@@ -2088,11 +2088,11 @@ Proof.
   vm_frame2 H.
 Qed.
 
-(** [prctl] answers its five options and declines every other one.  Only
-    [PR_SET_PDEATHSIG] changes the model, through
-    [State.with_pdeath_signal], which rebuilds [ProcState] alone and
-    carries [vm_maps] across BY CONVERSION; every other accepting branch
-    hands back [m] itself. *)
+(** [prctl] answers its seven options and declines every other one.  Only
+    the three setters change the model, through [State.with_pdeath_signal],
+    [State.with_dumpable] and [State.with_no_new_privs], each of which
+    rebuilds [ProcState] alone and carries [vm_maps] across BY CONVERSION;
+    every other accepting branch hands back [m] itself. *)
 Lemma check_prctl_frame : forall i option_ arg2 eff m m' evs,
   check_prctl i option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.

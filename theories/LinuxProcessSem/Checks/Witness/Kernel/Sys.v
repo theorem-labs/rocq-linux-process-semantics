@@ -331,12 +331,13 @@ Qed.
     [choose] and one [alt], [PR_CAPBSET_READ]'s 0 or 1 for a capability
     outside [capbset_assumed]; the witness takes its 1, the answer the
     arm gives every valid capability.  An option outside
-    [prctl_modeled_options] declines, and each of the five answers by a
+    [prctl_modeled_options] declines, and each of the seven answers by a
     test on its arguments alone ([i] supplies a2..a4 for
-    [PR_SET_NO_NEW_PRIVS]), on the stored parent-death signal and on
-    [i]'s writable memory ([PR_GET_PDEATHSIG]), so otherwise the witness
-    is the spec with the monad erased: [PR_SET_PDEATHSIG] stores its
-    argument, and [PR_GET_PDEATHSIG]'s store is [put_user_ids]'s. *)
+    [PR_SET_NO_NEW_PRIVS] and [PR_GET_NO_NEW_PRIVS]), on the stored state
+    and on [i]'s writable memory ([PR_GET_PDEATHSIG]), so otherwise the
+    witness is the spec with the monad erased: each setter stores its
+    value, each reader answers the stored one, and [PR_GET_PDEATHSIG]'s
+    store is [put_user_ids]'s. *)
 Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
@@ -357,11 +358,17 @@ Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z
      then ret_outcome (errno_ret EINVAL) m
-     else ret_outcome (Z_to_bv 64 0) m)
+     else ret_outcome (Z_to_bv 64 0) (with_dumpable arg2 m))
   else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
     (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
          && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
-     then ret_outcome (Z_to_bv 64 0) m
+     then ret_outcome (Z_to_bv 64 0) (with_no_new_privs true m)
+     else ret_outcome (errno_ret EINVAL) m)
+  else if Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE then
+    ret_outcome (m_dumpable m) m
+  else if Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS then
+    (if (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then ret_outcome (Z_to_bv 64 (if m_no_new_privs m then 1 else 0)) m
      else ret_outcome (errno_ret EINVAL) m)
   else Unmodeled.
 
@@ -384,11 +391,20 @@ Proof.
     destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
       as [[r ws]|]; [apply pure_ok|apply unmodeled_intro]. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
-  { destruct ((1 <? bv_unsigned arg2)%Z); apply pure_ok. }
-  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS);
+  { destruct ((1 <? bv_unsigned arg2)%Z); [apply pure_ok|].
+    eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS).
+  { eapply bind_step; [apply input_ok|]. cbv beta.
+    destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+              && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+      [|apply pure_ok].
+    eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE).
+  { eapply bind_step; [apply get_model_ok|]. cbv beta. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS);
     [|apply unmodeled_intro].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
-            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     apply pure_ok.
 Qed.

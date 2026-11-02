@@ -49,8 +49,8 @@ let () =
 (* The kernel build the launch ran on, as State.default_kernel names it:
    no transparent huge pages, vDSO image 1, randomizing, the 256-page
    stack_guard_gap, no extra mmap_rnd_bits, CONFIG_RSEQ, no vector unit,
-   and the four cache leaves absent.  Each N of the model arrives as a Z
-   and is refused here when negative. *)
+   the four cache leaves absent, and fs.suid_dumpable 0.  Each N of the
+   model arrives as a Z and is refused here when negative. *)
 let leaf_absent : M.rawCacheLeaf = {
   M.rcl_acpi = false; rcl_size = z "0"; rcl_assoc = z "0"; rcl_line = z "0" }
 
@@ -58,7 +58,8 @@ let kernel_default : M.rawKernelBuild = {
   M.rkb_thp = false; rkb_vdso = z "1"; rkb_aslr = true; rkb_guard = z "256";
   rkb_rnd_bits = z "0"; rkb_rseq = true; rkb_vlenb = z "0";
   rkb_cache = { M.rcv_l1i = leaf_absent; rcv_l1d = leaf_absent;
-                rcv_l2 = leaf_absent; rcv_l3 = leaf_absent } }
+                rcv_l2 = leaf_absent; rcv_l3 = leaf_absent };
+  rkb_suid_dumpable = M.SuidDumpDisable }
 
 (* The exec file name, without its NUL: the one-byte relative name "a",
    which Run.valid_execfn admits. *)
@@ -240,7 +241,8 @@ let () =
                       rcv_l2 = { M.rcl_acpi = false; rcl_size = z "1048576";
                                  rcl_assoc = z "8"; rcl_line = z "64" };
                       rcv_l3 = { M.rcl_acpi = true; rcl_size = z "33554432";
-                                 rcl_assoc = z "16"; rcl_line = z "64" } } };
+                                 rcl_assoc = z "16"; rcl_line = z "64" } };
+                  rkb_suid_dumpable = M.SuidDumpRoot };
               rpi_execfn = [z "47"; z "97"];
               rpi_channel_reader = true; rpi_sigpipe_default = true }))
 

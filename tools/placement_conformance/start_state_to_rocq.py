@@ -428,7 +428,8 @@ Local Open Scope Z_scope.
 
 (** ** The launch facts the boot reported
 
-{facts_note} *)
+{facts_note}  fs.suid_dumpable is not one of them: the fixture takes
+[State.default_kernel]'s, and no placement or start-state rule reads it. *)
 Definition rec_kernel : KernelBuild :=
   mkKernelBuild {thp} {kb_vdso}%N {aslr} {guard}%N {kb_rnd_bits}%N {rseq}
     {kb_vlenb}%N
@@ -436,7 +437,8 @@ Definition rec_kernel : KernelBuild :=
       ({l1i})
       ({l1d})
       ({l2})
-      ({l3})).
+      ({l3}))
+    (kb_suid_dumpable default_kernel).
 
 (** The argument vector, the environment and the exec file name, byte for
     byte as the probe recorded them. *)

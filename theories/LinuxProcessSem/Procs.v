@@ -495,7 +495,7 @@ Definition child_ms (c c' : config) : machine_state :=
   | Some sp => set_reg base 2 sp
   end.
 
-(** The child's process record: the parent's, with the SIX fields that
+(** The child's process record: the parent's, with the SEVEN fields that
     are the CHILD's own cleared, and every other field copied.
 
     - [procst_tid] is [None]: the child's differs on Linux, and clone
@@ -517,9 +517,15 @@ Definition child_ms (c c' : config) : machine_state :=
       new thread group starts with no pending signal ([copy_process],
       kernel/fork.c).
     - [procst_pdeath_signal] is 0: [copy_process] clears it.
+    - [procst_child_pids] is []: [copy_process] starts [p->children]
+      empty (kernel/fork.c).
 
     The two launch facts ([procst_channel_reader], [procst_sigpipe_default])
-    are copied. *)
+    are copied, and so are the no-new-privs bit ([copy_process] sets it in
+    the child when the parent has it) and the dumpable mode ([mm_init]
+    keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
+    parent's own), kernel/fork.c, read at v6.18.44, identical at
+    v6.18.46. *)
 Definition child_proc (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               false (procst_sigmask ps)
@@ -534,7 +540,8 @@ Definition child_proc (ps : ProcState) : ProcState :=
               (procst_killed ps) false
               (procst_abort_terminal ps) (procst_statpins ps)
               false (procst_channel_reader ps) (procst_sigpipe_default ps)
-              (Z_to_bv 64 0).
+              (Z_to_bv 64 0)
+              [] (procst_no_new_privs ps) (procst_dumpable ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

@@ -501,10 +501,11 @@ Definition a1_execfn : list byte := [Z_to_bv 8 97].
     guard gap at its boot default of 256 pages (mm/mmap.c,
     [stack_guard_gap = 256UL << PAGE_SHIFT]), [vm.mmap_rnd_bits] at
     riscv64's ARCH_MMAP_RND_BITS_MIN of 18 ([kb_rnd_bits] 0,
-    arch/riscv/Kconfig), CONFIG_RSEQ on, no vector unit and no cache
-    leaf reported.  Randomization is the one fact the examples vary. *)
+    arch/riscv/Kconfig), CONFIG_RSEQ on, no vector unit, no cache leaf
+    reported, and fs.suid_dumpable at its default 0.  Randomization is
+    the one fact the examples vary. *)
 Definition a1_kernel (aslr : bool) : KernelBuild :=
-  mkKernelBuild false 0%N aslr 256%N 0%N true 0%N cache_view_absent.
+  mkKernelBuild false 0%N aslr 256%N 0%N true 0%N cache_view_absent SuidDumpDisable.
 
 Definition a1_input_argv (argv : list (list byte)) (execfn : list byte)
     (kb : KernelBuild) : ProcInput :=

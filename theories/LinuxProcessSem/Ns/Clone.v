@@ -149,11 +149,11 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
 
 (** A clone that takes a task out of the released world (a flat caller,
     any namespace flag) meets state the released model does not keep: the
-    caller's capability sets (it derives them) and its no_new_privs bit
-    and dumpable mode (it stores neither).  With CLONE_NEWUSER the child's
-    sets are the new namespace's full sets whatever the caller's; without
-    it the clone declines.  The child's no_new_privs bit and dumpable mode
-    are then unknown. *)
+    caller's capability sets (it derives them).  With CLONE_NEWUSER the
+    child's sets are the new namespace's full sets whatever the caller's;
+    without it the clone declines.  The no-new-privs bit and the dumpable
+    mode are the released model's and the child's process record copies
+    them ([Procs.child_proc]). *)
 Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
   flat_view ctx st && (any_new_ns f || has_flag f CLONE_NEWUSER).
 
@@ -230,9 +230,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                           mkNsCtx (cc_user cc) mntns child_ns net pids
                                   (where_ (fst (cx_root ctx)), snd (cx_root ctx))
                                   (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx))
-                                  (cx_umask ctx) (cc_caps cc) (cc_secure cc) (cx_cloexec ctx)
-                                  (if leaves_flat f ctx st then None else cx_no_new_privs ctx)
-                                  (if leaves_flat f ctx st then None else cx_dumpable ctx) in
+                                  (cx_umask ctx) (cc_caps cc) (cc_secure cc) (cx_cloexec ctx) in
                         CnOk child (if flat_view ctx st then None else clone_ret ctx child)
                              (mkNsState T' U (ns_mntns st ++ new_mntns) pidns' (ns_netns st ++ new_net)
                                         (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st)

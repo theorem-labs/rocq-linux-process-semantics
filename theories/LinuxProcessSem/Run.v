@@ -1107,13 +1107,12 @@ Qed.
 
     WHY A LOG AND NOT MORE STATE.  Several facts a statement needs are
     the RESULT of a call the model does not otherwise remember -- that
-    [prctl(PR_SET_NO_NEW_PRIVS)] returned 0 before the [clone], that
     [setgroups], [setresgid] and [setresuid] returned 0 in that order
     before the exec.  The kernel keeps those effects in the task and in
     its credentials; the model keeps what a modeled call can read back
-    (the credentials) and nothing it cannot.  The log lets a statement
-    say what the program did without the model inventing state no
-    modeled call consults. *)
+    (the credentials, the no-new-privs bit, the dumpable mode) and
+    nothing it cannot.  The log lets a statement say what the program did
+    without the model inventing state no modeled call consults. *)
 Inductive star_calls : config -> list event -> list SysCall -> config -> Prop :=
 | star_calls_refl : forall c, star_calls c [] [] c
 | star_calls_ret : forall ms model x8 eff model' model'' evs tr log c',

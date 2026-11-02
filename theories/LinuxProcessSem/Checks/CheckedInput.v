@@ -620,7 +620,8 @@ Record RawKernelBuild := mkRawKernelBuild {
   rkb_rnd_bits : Z;     (* vm.mmap_rnd_bits *)
   rkb_rseq     : bool;  (* CONFIG_RSEQ *)
   rkb_vlenb    : Z;     (* the vector unit's VLENB CSR *)
-  rkb_cache    : RawCacheView
+  rkb_cache    : RawCacheView;
+  rkb_suid_dumpable : SuidDump  (* fs.suid_dumpable; one constructor per value *)
 }.
 
 (** It is built with [State.mkProcInput_full], the record's own
@@ -813,16 +814,17 @@ Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
 (** [State.KernelBuild]'s own comment says that EVERY VALUE OF EVERY
     FIELD NAMES A REAL BUILD — [vdso_text_pages], [mmap_rnd_bits],
     [stack_guard_gap_pages] and [launch_vlenb] each wrap their field
-    into the range the kernel admits — so [Run.valid_input] carries no
-    clause about this record and there is no launch condition to
-    decide here.  What is left to check is the one invariant
-    extraction erases: an [N] is not negative. *)
+    into the range the kernel admits, and [SuidDump] has one constructor
+    per value — so [Run.valid_input] carries no clause about this record
+    and there is no launch condition to decide here.  What is left to
+    check is the one invariant extraction erases: an [N] is not
+    negative. *)
 Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
   match n_of_Z (rkb_vdso k), n_of_Z (rkb_guard k), n_of_Z (rkb_rnd_bits k),
         n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k) with
   | Some vdso, Some guard, Some rnd_bits, Some vlenb, Some cache =>
       Some (mkKernelBuild (rkb_thp k) vdso (rkb_aslr k) guard rnd_bits
-              (rkb_rseq k) vlenb cache)
+              (rkb_rseq k) vlenb cache (rkb_suid_dumpable k))
   | _, _, _, _, _ => None
   end.
 
@@ -1201,7 +1203,8 @@ Definition raw_of_cache_view (c : CacheView) : RawCacheView :=
 Definition raw_of_kernel (kb : KernelBuild) : RawKernelBuild :=
   mkRawKernelBuild (kb_thp kb) (Z.of_N (kb_vdso kb)) (kb_aslr kb)
     (Z.of_N (kb_guard kb)) (Z.of_N (kb_rnd_bits kb)) (kb_rseq kb)
-    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb)).
+    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
+    (kb_suid_dumpable kb).
 
 Lemma cache_leaf_of_raw_of_leaf : forall l,
   cache_leaf_of_raw (raw_of_cache_leaf l) = Some l.
@@ -1224,7 +1227,7 @@ Theorem kernel_of_raw_of_kernel : forall kb,
 Proof.
   intros kb. unfold kernel_of_raw, raw_of_kernel.
   cbn [rkb_thp rkb_vdso rkb_aslr rkb_guard rkb_rnd_bits rkb_rseq rkb_vlenb
-       rkb_cache].
+       rkb_cache rkb_suid_dumpable].
   rewrite !n_of_Z_total, cache_view_of_raw_of_view.
   destruct kb; reflexivity.
 Qed.
