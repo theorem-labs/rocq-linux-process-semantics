@@ -48,7 +48,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Dispatch
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
-  Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Fs.EventPoll Fs.EventFd Fs.Signalfd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
