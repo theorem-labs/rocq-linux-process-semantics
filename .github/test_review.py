@@ -851,7 +851,8 @@ class TakeTest(Runner):
                 f.write(m)
         os.makedirs(os.path.join(self.temp, "review-data"), exist_ok=True)
         tar = os.path.join(self.temp, "review-data", "review.tar")
-        subprocess.run(["tar", "-cf", tar, "-C", src] + [m.split("/")[0] for m in members], check=True)
+        tops = list(dict.fromkeys(m.split("/")[0] for m in members))   # each top-level name once
+        subprocess.run(["tar", "-cf", tar, "-C", src] + tops, check=True)
         return subprocess.run(["sha256sum", tar], capture_output=True, text=True, check=True).stdout.split()[0]
 
     def take(self, digest):
