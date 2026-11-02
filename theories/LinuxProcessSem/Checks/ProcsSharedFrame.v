@@ -382,12 +382,12 @@ Qed.
 Lemma shared_not_sync : forall P e,
   sync_pending_b P e = true -> multiproc_shared (pe_cfg (pcfg_shared P) e) = false.
 Proof.
-  intros P e H. unfold sync_pending_b in H. unfold multiproc_shared.
-  cbn [cfg_ms pe_cfg]. destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
-  apply andb_true_iff in H as [H _]. cbn [multiproc_synced_sysnos List.existsb] in H.
-  apply orb_true_iff in H as [H|H];
-    [|apply orb_true_iff in H as [H|H]; [|discriminate H]];
-    apply Z.eqb_eq in H; rewrite H; reflexivity.
+  intros P e H. destruct (sync_pending_sysno _ _ H) as (x8 & Hs & Hin).
+  unfold multiproc_shared. cbn [cfg_ms pe_cfg]. rewrite Hs.
+  cbn [multiproc_synced_sysnos List.existsb] in Hin.
+  repeat (apply orb_true_iff in Hin as [E|Hin];
+          [apply Z.eqb_eq in E; rewrite E; reflexivity|]).
+  discriminate Hin.
 Qed.
 
 (** THE FRAME.  A step of [p] at a class-(B) call keeps the root and the

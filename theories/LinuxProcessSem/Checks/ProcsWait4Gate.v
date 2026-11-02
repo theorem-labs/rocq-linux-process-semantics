@@ -117,7 +117,7 @@ Proof.
     split; [reflexivity|]. right; left. split; [exact Hz | reflexivity].
   - (* pstep_wait_refuse *)
     split; [reflexivity|]. right; right. split; [exact Hrf | reflexivity].
-  - (* pstep_ns_refuse: a [wait4] is not namespace-gated *)
+  - (* pstep_peer_refuse: a [wait4] is not namespace-gated *)
     rewrite (wait4_owned_not_ns Q e Hwo) in Hns0. discriminate Hns0.
   - (* pstep_sync: a [wait4] is not synced *)
     rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.
@@ -177,7 +177,7 @@ Proof.
     split; [reflexivity|]. right; left. split; [exact Hz | reflexivity].
   - (* px_wait_refuse *)
     split; [reflexivity|]. right; right. split; [exact Hrf | reflexivity].
-  - (* px_ns_refuse *)
+  - (* px_peer_refuse *)
     rewrite (wait4_owned_not_ns Q e Hwo) in Hns0. discriminate Hns0.
   - (* px_sync *)
     rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.

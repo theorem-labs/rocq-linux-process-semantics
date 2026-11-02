@@ -3194,23 +3194,23 @@ Lemma fw_not_ns_of_rem : forall P e Q nr,
                                  /\ bv_unsigned x8 = nr) ->
   (nr = 220%Z \/ nr = 260%Z \/ nr = 94%Z) ->
   fw_rem (pe_ms e) Q ->
-  ns_refused_b P e = false.
+  peer_refused_b P e = false.
 Proof.
   intros P e Q nr Hnr Hin Hrem.
   destruct (ms_svc_pending (pe_ms e)) eqn:Hsv.
   - assert (HQ : Q (pe_ms e))
       by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
     destruct (Hnr _ HQ) as (x8 & Hs & Hv).
-    apply (ns_refused_of_sysno P e x8 Hs). rewrite Hv.
+    apply (peer_refused_of_sysno P e x8 Hs). rewrite Hv.
     destruct Hin as [-> | [-> | ->]]; reflexivity.
-  - apply ns_refused_instr. exact Hsv.
+  - apply peer_refused_instr. exact Hsv.
 Qed.
 
 (** THE NAMESPACE GATE IS CLOSED at every running entry of every shape:
     each is at an instruction or heading for 220, 260 or 94. *)
 Lemma fw_shape_not_ns : forall P p e,
   fw_shape P -> look P p = Some e -> m_halted (pe_model e) = None ->
-  ns_refused_b P e = false.
+  peer_refused_b P e = false.
 Proof.
   intros P p e Hsh Hl Hhh.
   destruct Hsh as [Hone | [Htwo | [Hex | Hhalt]]].
@@ -3899,7 +3899,7 @@ Proof.
   - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
     rewrite fw_ninety_four. reflexivity.
   - apply (wait4_owned_not_260 P e 94 Hsv). rewrite fw_ninety_four. discriminate.
-  - apply (ns_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
+  - apply (peer_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
   - apply (sync_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
 Qed.
 

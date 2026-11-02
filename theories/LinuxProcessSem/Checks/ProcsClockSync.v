@@ -145,11 +145,11 @@ Qed.
     copy. *)
 Theorem syscall_spec_clock_ge : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
-  List.existsb (Z.eqb (bv_unsigned (in_sysno i))) multiproc_synced_sysnos = true ->
+  List.existsb (Z.eqb (bv_unsigned (in_sysno i))) multiproc_clock_sysnos = true ->
   (clk m <= clk m')%Z.
 Proof.
   intros i m eff m' evs H Hn. apply check_syscall_ok_iff in H.
-  cbn [multiproc_synced_sysnos List.existsb] in Hn.
+  cbn [multiproc_clock_sysnos List.existsb] in Hn.
   apply orb_true_iff in Hn as [E|Hn];
     [|apply orb_true_iff in Hn as [E|E]; [|discriminate E]];
     apply Z.eqb_eq in E.
@@ -198,7 +198,7 @@ Qed.
 (** The released step at a synced call keeps or raises the copy. *)
 Lemma sstep_clock_ge : forall segs cfg c evs c',
   (match ms_svc_pending (cfg_ms c) with
-   | Some x8 => List.existsb (Z.eqb (bv_unsigned x8)) multiproc_synced_sysnos
+   | Some x8 => List.existsb (Z.eqb (bv_unsigned x8)) multiproc_clock_sysnos
    | None => false
    end) = true ->
   sstep_cfg segs cfg c evs (SNext c') -> (clk (cfg_model c) <= clk (cfg_model c'))%Z.
@@ -247,10 +247,10 @@ Proof.
 Qed.
 
 Lemma synced_not_other : forall (x8 : word) (n : Z),
-  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_synced_sysnos = true ->
+  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_clock_sysnos = true ->
   bv_unsigned x8 = n -> n <> 101%Z -> n <> 113%Z -> False.
 Proof.
-  intros x8 n H Hn H1 H2. cbn [multiproc_synced_sysnos List.existsb] in H.
+  intros x8 n H Hn H1 H2. cbn [multiproc_clock_sysnos List.existsb] in H.
   apply orb_true_iff in H as [E|H];
     [|apply orb_true_iff in H as [E|E]; [|discriminate E]];
     apply Z.eqb_eq in E; lia.
@@ -261,7 +261,7 @@ Qed.
 Theorem pstep_clock_monotone : forall segs cfg p P evs P' e x8,
   look P p = Some e ->
   ms_svc_pending (pe_ms e) = Some x8 ->
-  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_synced_sysnos = true ->
+  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_clock_sysnos = true ->
   pstep_at segs cfg p P evs (PNext P') ->
   exists e', look P' p = Some e'
     /\ forall q f, look P q = Some f -> (clk (pe_model f) <= clk (pe_model e'))%Z.
@@ -273,9 +273,10 @@ Proof.
     [ (c1 & Hss & Hsy & ->) | [ Hcp | [ Hwt | [ Hwo | (Hsy & ->) ] ] ] ].
   - (* the released step: the copy was already the maximum *)
     unfold sync_pending_b in Hsy. rewrite Hs, Hn in Hsy. cbn [andb] in Hsy.
+    apply orb_false_iff in Hsy as [Hsy _]. apply orb_false_iff in Hsy as [Hsy _].
     apply Z.ltb_ge in Hsy.
     assert (Hsyn : (match ms_svc_pending (cfg_ms (pe_cfg (pcfg_shared P) e)) with
-                    | Some y => List.existsb (Z.eqb (bv_unsigned y)) multiproc_synced_sysnos
+                    | Some y => List.existsb (Z.eqb (bv_unsigned y)) multiproc_clock_sysnos
                     | None => false end) = true)
       by (cbn [cfg_ms pe_cfg]; rewrite Hs; exact Hn).
     pose proof (sstep_clock_ge _ _ _ _ _ Hsyn Hss) as Hg.

@@ -1,6 +1,6 @@
 (** * LinuxProcessSem.Checks.ProcsNsGate — a namespace child never gets its parent's answer
 
-    Not part of the trusted specification: QA on [Procs.ns_refused_b], in
+    Not part of the trusted specification: QA on [Procs.peer_refused_b], in
     the sense of [Checks.Examples]'s header, under its first reason: the
     statements are universally quantified over configurations and steps.
 
@@ -17,7 +17,7 @@
       asks for a new user namespace records the child's user namespace as
       stale ([Procs.pm_ns_stale]).
     - [userns_getuid_refused]: an entry whose user namespace is stale, with
-      getuid (174) pending, takes [pstep_ns_refuse] (an error, never the
+      getuid (174) pending, takes [pstep_peer_refuse] (an error, never the
       absence of an arm) and no step of it has a successor.  So the
       class-(A) arm cannot answer it, and losing the gate fails this
       Check. *)
@@ -53,7 +53,7 @@ Qed.
 Lemma pstep_next_ns : forall segs cfg p P evs P',
   pstep_at segs cfg p P evs (PNext P') ->
   exists e, look P p = Some e /\
-    ( ns_refused_b P e = false
+    ( peer_refused_b P e = false
       \/ clone_pending_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_owned_b P e = true
@@ -92,10 +92,10 @@ Theorem userns_getuid_refused : forall segs cfg P e x8,
   /\ (forall evs P', ~ pstep_at segs cfg (pe_pid e) P evs (PNext P')).
 Proof.
   intros segs cfg P e x8 Hl Hh Hs H174 Hst.
-  assert (Hns : ns_refused_b P e = true).
-  { unfold ns_refused_b. rewrite Hs, H174.
+  assert (Hns : peer_refused_b P e = true).
+  { unfold peer_refused_b. rewrite Hs, H174.
     apply Z.eqb_neq in Hst. rewrite Hst. reflexivity. }
-  split; [apply pstep_ns_refuse; assumption|].
+  split; [apply pstep_peer_refuse; assumption|].
   intros evs P' Hp.
   destruct (pstep_next_ns _ _ _ _ _ _ Hp) as (e1 & Hl1 & Hor).
   rewrite Hl in Hl1. injection Hl1 as <-.

@@ -864,12 +864,12 @@ Qed.
 Lemma private_not_sync : forall P e,
   sync_pending_b P e = true -> multiproc_private (pe_cfg (pcfg_shared P) e) = false.
 Proof.
-  intros P e H. unfold sync_pending_b in H. unfold multiproc_private.
-  cbn [cfg_ms pe_cfg]. destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
-  apply andb_true_iff in H as [H _]. cbn [multiproc_synced_sysnos List.existsb] in H.
-  apply orb_true_iff in H as [H|H];
-    [|apply orb_true_iff in H as [H|H]; [|discriminate H]];
-    apply Z.eqb_eq in H; rewrite H; reflexivity.
+  intros P e H. destruct (sync_pending_sysno _ _ H) as (x8 & Hs & Hin).
+  unfold multiproc_private. cbn [cfg_ms pe_cfg]. rewrite Hs.
+  cbn [multiproc_synced_sysnos List.existsb] in Hin.
+  repeat (apply orb_true_iff in Hin as [E|Hin];
+          [apply Z.eqb_eq in E; rewrite E; reflexivity|]).
+  discriminate Hin.
 Qed.
 
 (** THE FRAME.  A step of [p] at a class-(A) call keeps the shared state
@@ -967,7 +967,7 @@ Qed.
 
 (** Class (C): the answer needs the peer, and the core does not give it. *)
 Definition multiproc_peer_sysnos : list Z :=
-  [32; 35; 80; 96; 156; 157; 160; 167; 172; 173; 178; 261]%Z.
+  [32; 35; 96; 156; 157; 167; 172; 173; 178]%Z.
 
 Lemma not_admitted_sysno : forall n,
   List.existsb (Z.eqb n) multiproc_peer_sysnos = true ->
@@ -1036,10 +1036,11 @@ Proof.
   - destruct (wait4_owned_260 _ _ Hwo) as (y & Hy & Hy260).
     rewrite Hs in Hy. injection Hy as <-.
     exact (not_admitted_not_260 _ Hna Hy260).
-  - unfold sync_pending_b in Hsy. rewrite Hs in Hsy.
-    apply andb_true_iff in Hsy as [Hsy _].
-    unfold multiproc_sysnos in Hna. rewrite !List.existsb_app, Hsy in Hna.
-    rewrite orb_true_r in Hna. discriminate Hna.
+  - destruct (sync_pending_sysno _ _ Hsy) as (y & Hy & Hin).
+    rewrite Hs in Hy. injection Hy as <-.
+    unfold multiproc_sysnos, multiproc_owned_sysnos in Hna.
+    rewrite !List.existsb_app, Hin in Hna.
+    destruct (List.existsb _ multiproc_core_sysnos); discriminate Hna.
 Qed.
 
 (** The admitted lists and the class-(C) list are the modeled surface, each

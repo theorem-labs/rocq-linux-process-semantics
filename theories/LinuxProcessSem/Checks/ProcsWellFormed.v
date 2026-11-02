@@ -625,7 +625,7 @@ Proof.
   unfold sync_result. cbn [pcfg_procs pcfg_root]. split.
   - rewrite <- (orphan_at_exit_running (pe_model (sync_entry P e)) (pe_pid e)
                   (replace_in (pcfg_procs P) (pe_pid e) (sync_entry P e)))
-      by exact Hh.
+      by (rewrite sync_entry_halted; exact Hh).
     apply (tbl_absorb _ _ e); [exact Htbl | exact He | reflexivity | reflexivity | reflexivity].
   - apply (root_replace _ _ e); [exact Hnd | exact He | reflexivity | exact Hroot].
 Qed.
