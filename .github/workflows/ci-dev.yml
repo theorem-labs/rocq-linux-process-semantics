@@ -1,0 +1,76 @@
+name: ci-dev
+# Iteration builds. This file lives only on the throwaway branches
+# ci-dev/<slot> that a helper script pushes (never on a PR branch, never on
+# main). It builds the dune targets listed in .ci-dev/targets, or everything
+# plus the gen_checker and assumption checks when that file is empty, with
+# Rocq 9.2 as CI's Rocq 9.2 job does, and keeps _build in the Actions cache per
+# slot so a rebuild is incremental.
+on:
+  push:
+    branches: ['ci-dev/**']
+
+concurrency:
+  group: ci-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ci-dev build
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore _build
+        uses: actions/cache/restore@v4
+        with:
+          path: _build
+          key: ci-dev-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ci-dev-${{ github.ref_name }}-
+            ci-dev-
+
+      - uses: rocq-prover/docker-opam-action@master
+        with:
+          coq_version: '9.2'
+          before_install: |
+            startGroup "Fix workspace permissions"
+              sudo chown -R $(id -u):$(id -g) .
+              git config --global --add safe.directory /github/workspace
+            endGroup
+            startGroup "Install Python 3"
+              sudo apt-get update -y -q
+              sudo apt-get install -y -q --no-install-recommends python3
+            endGroup
+          install: |
+            startGroup "Install dependencies"
+              opam update -y
+              opam pin add -k version -y dune 3.23.1
+              opam install -y -j 2 --deps-only .
+            endGroup
+          script: |
+            targets=$(grep -v '^[[:space:]]*$' .ci-dev/targets || true)
+            echo "CI_DEV_TARGETS=[$targets]"
+            if [ -n "$targets" ]; then
+              if opam exec -- dune build --display short $targets 2>&1; then rc=0; else rc=$?; fi
+            else
+              if opam exec -- dune build --display short 2>&1; then rc=0; else rc=$?; fi
+              if [ "$rc" = 0 ]; then
+                if python3 tools/gen_checker.py --check && python3 tools/gen_checker.py --verify; then :; else rc=$?; echo "GEN_CHECKER_FAILED=$rc"; fi
+              fi
+              if [ "$rc" = 0 ]; then
+                if opam exec -- python3 .github/check_assumptions.py; then :; else rc=$?; echo "CHECK_ASSUMPTIONS_FAILED=$rc"; fi
+              fi
+            fi
+            echo "BUILD=$rc"
+          uninstall: ''
+
+      - name: Save _build
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: _build
+          key: ci-dev-${{ github.ref_name }}-${{ github.sha }}
