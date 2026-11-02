@@ -315,16 +315,22 @@ Qed.
     leaves the modeled surface, and there is no [State.KillEv] to refute
     it by.  The two stances therefore differ on this image for
     [halts_allowed_T] exactly as [Checks.AbortWitness] shows they differ
-    for the error-free family. *)
+    for the error-free family.
+
+    It is stated at the run's own segment list, [Checks.AbortWitness]'s
+    [abrt_rsegs] (the image's segment, then the vDSO pair), and at the
+    model [Run.init_config] builds for the undeclared launch at
+    [abrt_entry]: the entry's break, mmap base and stack pointer, under
+    [State.with_vdso]. *)
 Example abrt_declined_undeclared_is_unmodeled :
-  check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
+  check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
-       (init_model (segments_reserved abrt_segments) (Z_to_bv 64 0x1000)
-          (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000)
-          source_alloc_limit abrt_input_undeclared))
+       (with_vdso (Vdso.vdso_run_init (ed_vdso abrt_draw))
+          (init_model (segments_reserved abrt_rsegs) abrt_brk abrt_mbase abrt_sp
+             source_alloc_limit abrt_input_undeclared)))
   = CheckUnmodeled.
-Proof. exact abrt_tkill_declined_undeclared. Qed.
+Proof. abrt_open2. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
    The set form is not the single-code form in disguise
