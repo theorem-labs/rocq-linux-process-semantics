@@ -854,17 +854,36 @@ Qed.
 
 (** signalfd4 (74) HAS an arm: it makes a descriptor and names
     [->blocked] nowhere.  Its window is the read of that descriptor,
-    which dequeues the pending signals its mask selects, and the model
-    declines that read: a SIGCHLD signalfd made through the arm, then
-    read, is [CheckUnmodeled]. *)
+    which dequeues the pending signals its mask selects.  That read now
+    answers on a NON-BLOCKING signalfd, and it READS the mask the model
+    keeps and writes none: a SIGCHLD record is admitted only while
+    [State.m_sigmask] blocks SIGCHLD (and a child exists), and every
+    answer leaves the model as it was.  The read of a BLOCKING signalfd
+    is still declined, because it may wait. *)
 Example signalfd_read_is_declined :
   let m := with_fds (fd_insert (m_fds sig_model) 5
-             (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800)))) sig_model in
+             (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80000)))) sig_model in
   check_syscall (mkInput 63 [5; 0x10000; 128; 0; 0; 0] (fun _ => None)
                    (fun a => if bv_leu 0x10000 a && bv_ltu a 0x10080 then Some 0 else None))
     (mkEffect (errno_ret EAGAIN) [] []) m
   = CheckUnmodeled.
 Proof. cbv zeta. vm_compute. reflexivity. Qed.
+
+(** The non-blocking signalfd, with a child recorded: the record's
+    admission follows the mask the model keeps.  SIGCHLD blocked, a
+    record for signal 17 is answered over the unchanged model; SIGCHLD
+    open, the same record is rejected and -EAGAIN is answered. *)
+Example signalfd_read_reads_the_mask :
+  let m := with_children (with_fds (fd_insert (m_fds sig_model) 5
+             (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800)))) sig_model) in
+  let i := mkInput 63 [5; 0x10000; 128; 0; 0; 0] (fun _ => None)
+             (fun a => if bv_leu 0x10000 a && bv_ltu a 0x10080 then Some 0 else None) in
+  let rec17 := word_le4 (Z_to_bv 64 17) ++ repeat (Z_to_bv 8 0) 124 in
+  check_syscall i (mkEffect 128 [(0x10000, rec17)] []) (with_sigmask (Z_to_bv 64 0x10000) m)
+  = CheckOk (with_sigmask (Z_to_bv 64 0x10000) m) []
+  /\ check_syscall i (mkEffect 128 [(0x10000, rec17)] []) m = CheckReject
+  /\ check_syscall i (mkEffect (errno_ret EAGAIN) [] []) m = CheckOk m [].
+Proof. cbv zeta. repeat split; check_eq. Qed.
 
 (** THE OTHER HALF OF THE ENUMERATION: the one signal-mask window that
     is on the modeled surface, shut by its spec rather than by its

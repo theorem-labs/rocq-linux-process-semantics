@@ -612,6 +612,13 @@ Definition SFD_CLOEXEC : Z := O_CLOEXEC.
 Definition SFD_NONBLOCK : Z := O_NONBLOCK.
 Definition SFD_FLAGS_SET : Z := Z.lor SFD_CLOEXEC SFD_NONBLOCK.
 
+(** [sizeof(struct signalfd_siginfo)], the record a [read] of a signalfd
+    copies out for each signal it dequeues: include/uapi/linux/signalfd.h
+    lays out 128 bytes whose first field is [__u32 ssi_signo], and
+    [signalfd_copyinfo] (fs/signalfd.c) asserts the size with
+    [BUILD_BUG_ON].  Both read at v6.18.44; identical at v6.18.46. *)
+Definition SIGNALFD_SIGINFO_BYTES : Z := 128.
+
 (** The three [d_type] values a [getdents64] of /proc/self/fd can
     carry (include/linux/fs_types.h [DT_UNKNOWN], [DT_DIR], [DT_LNK],
     read at v6.18.44; identical at v6.18.46): "." and ".." are [DT_DIR]

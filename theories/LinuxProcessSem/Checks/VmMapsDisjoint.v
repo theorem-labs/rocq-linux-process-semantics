@@ -1778,6 +1778,19 @@ Ltac vm_done H :=
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
 
+(** The signalfd read hands back the model it was given.  Proved apart
+    and kept folded in [check_read_frame]: [vm_step] splits on the first
+    closed [if] it finds anywhere in the hypothesis, so a closed test
+    inside one arm of [check_read] doubles every other arm's goals, and
+    this arm's tests on [count] are closed. *)
+Lemma check_read_signalfd_frame : forall i mask flags buf count eff m m' evs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i mask flags buf count eff m m' evs H.
+  apply check_read_signalfd_model in H. subst m'. reflexivity.
+Qed.
+
 Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -1785,7 +1798,10 @@ Proof.
   unfold check_read, check_read_urandom, check_socket_pending_error,
     check_access_ok_zero, check_read_opaque, check_read_proc,
     check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
-  cbv zeta in H. vm_frame2 H.
+  cbv zeta in H.
+  repeat (vm_step H || vm_done H
+          || (apply check_read_signalfd_frame in H; exact H));
+    try reflexivity.
 Qed.
 
 Lemma check_write_frame : forall i fd buf count eff m m' evs,
