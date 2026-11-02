@@ -54,9 +54,13 @@
     [ext_multiproc] names the claimed calls the extension answers soundly
     while other processes are live: those whose answer reads and writes
     only state the core shares between processes.  A core admits a
-    claimed call in a system of several processes when its own guard
-    admits it or this one does.  [ext_multiproc_coherent] gives a task in
-    the released world the core's guard alone. *)
+    claimed call in a system of several processes when its guard without
+    its private-call numbers admits it, or this one does, or the view is
+    flat and the number is one of the core's private calls
+    ([Procs.multiproc_ok]): the core's private-call class is a property of
+    the released spec, which a claimed call reaches only at a flat view.
+    [ext_multiproc_coherent] gives a task in the released world the core's
+    guard alone. *)
 
 From Stdlib Require Import List PArith ZArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import State Monad Specs Run.

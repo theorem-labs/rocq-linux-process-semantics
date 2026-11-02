@@ -69,8 +69,7 @@ Qed.
 Lemma multiproc_ok_owned : forall ext segs P e,
   wait4_owned_b P e = true -> multiproc_ok ext segs P e = true.
 Proof.
-  intros ext segs P e H. unfold multiproc_ok. cbv zeta.
-  rewrite (wait4_owned_allowed P e H). reflexivity.
+  intros ext segs P e H. apply multiproc_ok_base. exact (wait4_owned_base P e H).
 Qed.
 
 (** THE RELEASED STEP NEVER ANSWERS A [wait4] OF A CALLER WITH A CHILD. *)
