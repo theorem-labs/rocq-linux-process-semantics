@@ -729,6 +729,58 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+(** The parent-side arms the extensions added: each unfolds as its
+    [Checks.VmMapsDisjoint] [_frame] lemma does.  None reaches
+    [State.with_killed]: [capset] and [close_range] write the credentials
+    and the descriptor table, the four readers write user memory only. *)
+Lemma check_capget_kf : forall i header dataptr eff m m' evs,
+  check_capget i header dataptr eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i header dataptr eff m m' evs H Hoff Hk.
+  unfold check_capget, check_capget_copy in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_capset_kf : forall i header data eff m m' evs,
+  check_capset i header data eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i header data eff m m' evs H Hoff Hk.
+  unfold check_capset in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_close_range_kf : forall fd max_fd flags eff m m' evs,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros fd max_fd flags eff m m' evs H Hoff Hk.
+  unfold check_close_range in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getppid_kf : forall eff m m' evs,
+  check_getppid eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros eff m m' evs H Hoff Hk.
+  unfold check_getppid in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getsid_kf : forall pid eff m m' evs,
+  check_getsid pid eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros pid eff m m' evs H Hoff Hk.
+  unfold check_getsid, check_getppid in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getresid_kf : forall i get rp ep sp eff m m' evs,
+  check_getresid i get rp ep sp eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i get rp ep sp eff m m' evs H Hoff Hk.
+  unfold check_getresid, check_ret_writes in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
 Lemma check_socket_kf : forall domain type protocol eff m m' evs,
   check_socket domain type protocol eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -829,7 +881,8 @@ Lemma check_clone_kf : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros flags eff m m' evs H Hoff Hk.
-  unfold check_clone, check_clone_resolve, check_clone_answer, check_clone_ns_resolve, check_clone_ns_answer in H.
+  unfold check_clone, check_clone_resolve, check_clone_answer,
+    check_clone_ns_resolve, check_clone_ns_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -989,55 +1042,6 @@ Qed.
    The table, the dispatcher, the spec
    ------------------------------------------------------------------------- *)
 
-(** The arms the clone-records-child line added to the dispatcher. *)
-Lemma check_capget_kf : forall i header dataptr eff m m' evs,
-  check_capget i header dataptr eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i header dataptr eff m m' evs H Hoff Hk.
-  unfold check_capget, check_capget_copy in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_capset_kf : forall i header data eff m m' evs,
-  check_capset i header data eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i header data eff m m' evs H Hoff Hk.
-  unfold check_capset in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_close_range_kf : forall fd max_fd flags eff m m' evs,
-  check_close_range fd max_fd flags eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros fd max_fd flags eff m m' evs H Hoff Hk.
-  unfold check_close_range in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_getppid_kf : forall eff m m' evs,
-  check_getppid eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros eff m m' evs H Hoff Hk.
-  unfold check_getppid in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_getresid_kf : forall i get rp ep sp eff m m' evs,
-  check_getresid i get rp ep sp eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i get rp ep sp eff m m' evs H Hoff Hk.
-  unfold check_getresid, check_ret_writes in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_getsid_kf : forall pid eff m m' evs,
-  check_getsid pid eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros pid eff m m' evs H Hoff Hk.
-  unfold check_getsid, check_getppid in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
 (** What one dispatcher arm owes, as a property of the table entry. *)
 Definition arm_kill_free (c : CheckedArm) : Prop :=
   forall i eff m m' evs,
@@ -1142,8 +1146,8 @@ Proof.
     | eapply check_capset_kf; eassumption
     | eapply check_close_range_kf; eassumption
     | eapply check_getppid_kf; eassumption
-    | eapply check_getresid_kf; eassumption
     | eapply check_getsid_kf; eassumption
+    | eapply check_getresid_kf; eassumption
     | fail 1 "checked_table_kill_free has no case for this dispatcher arm: give the new checker a *_kf lemma and add it to the list above" ].
 Qed.
 
