@@ -766,7 +766,12 @@ def _emit_coq(
             "  seg_base  := 0x%x%%N;\n"
             "  seg_size  := 0x%x%%N;\n"
             '  seg_perms := "%s";\n'
-            "  seg_bytes := [%s]\n"
+            "  seg_bytes := [%s];\n"
+            # Every emitter must say which KIND of mapping it is writing
+            # (MemImageType.SegKind).  A snapshot of an ELF file is
+            # always the loader's: the kernel's own vDSO and vvar
+            # mappings are built by Run.vdso_segments, never snapshotted.
+            "  seg_kind  := SegLoader\n"
             "|}.\n\n"
             % (
                 name,
@@ -1141,7 +1146,8 @@ _SEG_DEF_RE = re.compile(
     r"  seg_base  := 0x(?P<base>[0-9a-f]+)%N;\n"
     r"  seg_size  := 0x(?P<size>[0-9a-f]+)%N;\n"
     r'  seg_perms := "(?P<perms>[r-][w-][x-])";\n'
-    r"  seg_bytes := \[(?P<bytes>[^\]]*)\]\n"
+    r"  seg_bytes := \[(?P<bytes>[^\]]*)\];\n"
+    r"  seg_kind  := SegLoader\n"
     r"\|\}\."
 )
 _DEP_RE = re.compile(r'From \S+ Extra Dependency "(?P<hex>[^"]+)" as (?P<dep>\w+)\.')

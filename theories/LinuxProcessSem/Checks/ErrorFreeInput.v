@@ -366,12 +366,12 @@ Proof.
   cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
   eexists [], _. split; [apply star_cfg_refl |].
   unfold unmodeled_at. cbn [cfg_ms cfg_model].
-  split; [reflexivity |]. left. split; [reflexivity |].
+  split; [reflexivity |]. left. split; [reflexivity |]. split; [| reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** THE BUGGY REGION, under every configuration.  Leaving the modeled

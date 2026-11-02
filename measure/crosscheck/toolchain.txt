@@ -1,0 +1,4 @@
+riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0
+GNU ld (GNU Binutils for Debian) 2.44
+GNU objdump (GNU Binutils for Debian) 2.44
+GNU readelf (GNU Binutils for Debian) 2.44

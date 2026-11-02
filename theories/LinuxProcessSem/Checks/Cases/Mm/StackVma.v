@@ -101,7 +101,8 @@ Definition sv_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 12;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305000073000000"%pstring]
+  seg_bytes := ["9308d0051305000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition sv_segs : list Segment := [sv_segment].
 Definition sv_image : Image := mkImage sv_segs 0x100 demo_phdrs.
