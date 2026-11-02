@@ -163,8 +163,8 @@ Qed.
     of the two: the initial model holds no lazy anonymous mapping, which
     is what keeps the accounting step from taking the fault transition
     and what keeps the model FIXED across an instruction step. *)
-Lemma init_model_no_lazy : forall reserved brk0 mbase sp lim inp,
-  m_vm_lazy (init_model reserved brk0 mbase sp lim inp) = [].
+Lemma init_model_no_lazy : forall reserved brk0 mbase sp top lim inp,
+  m_vm_lazy (init_model reserved brk0 mbase sp top lim inp) = [].
 Proof. reflexivity. Qed.
 
 (* =========================================================================

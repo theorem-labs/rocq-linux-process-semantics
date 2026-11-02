@@ -80,8 +80,8 @@ Open Scope sys_scope.
       the pgoff-overflow check ([check_prep_vma]) needs
       [pgoff + (new_len >> 12)]
       to wrap 64 bits, and for an anonymous vma [do_mmap] sets
-      [pgoff = addr >> PAGE_SHIFT] (mm/mmap.c [do_mmap]), so [alloc_top]
-      ([State.alloc_top_lt]) caps it under 2^52 against a
+      [pgoff = addr >> PAGE_SHIFT] (mm/mmap.c [do_mmap]), so the source
+      gate's [TASK_SIZE] bound caps it under 2^35 against a
       [new_len >> 12] below 2^52.
     - EFAULT: no vma at [addr] ([check_prep_vma], after [do_mremap]'s
       [vma_lookup]) and [old_len] running past the vma end
@@ -249,12 +249,12 @@ Definition page_align_is0_b (len : word) : bool :=
     or above the page-rounded image top and the break never goes below
     [min_brk].  So no trace can distinguish dropping it; it is kept because
     the disjointness is an invariant of the other specs rather than
-    something stated here.  The [alloc_top]
+    something stated here.  The [TASK_SIZE]
     bound is what [mremap_source_ret_not_errno] needs to know that a
     successful in-place return cannot be mistaken for an encoded errno. *)
 Definition mremap_source_b (h : VmMaps) (old old_n : word)
     (old_nZ : Z) : bool :=
-  (bv_unsigned old + old_nZ <=? alloc_top h)%Z
+  (bv_unsigned old + old_nZ <=? TASK_SIZE)%Z
   && region_free (vm_reserved h) old old_n
   && map_has (vm_maps h) old old_n
   && region_free (vm_noaccess h) old old_n.
@@ -300,16 +300,20 @@ Definition mremap_final_budget_b (m : Model)
     [mremap_inplace_grow_accepts] to [CheckReject] by adding one reserved
     entry and changing nothing else.
 
-    The [alloc_top] conjunct is LIVE too, and it is the only thing
-    keeping a grown mapping clear of the dynamic stack — the stack is in
-    neither [vm_reserved] nor [vm_maps], so [region_free] cannot see it.
-    No
-    kernel places an ordinary anonymous mapping near this address for the
-    in-place arm to grow from.  [Checks/Examples.v]'s
-    [mremap_inplace_grow_past_ceiling_rejected] pins it, against
-    [mremap_inplace_grow_to_ceiling_accepts] one page below: the pair
-    differs only in the source's base address, so the flipped verdict is
-    attributable to this conjunct alone. *)
+    The stack is a [vm_reserved] entry ([State.stack_reserved]), so the
+    same [vm_reserved] half keeps a grown mapping off it — and nothing
+    more: no guard gap, because [vma_expandable] (mm/mremap.c) asks only
+    [find_vma_intersection] and a MAP_FIXED [get_unmapped_area], neither
+    of which reads [vm_start_gap].  So a grow may end right at the
+    stack's floor, as on Linux.  The entry is the stack at its full
+    size, so a grow into the part of that window Linux's shorter stack
+    VMA does not cover yet is refused here (residual R-e of SCOPE.md).
+    [Checks/Cases/Mm/StackVma.v] pins the boundary on a real launch:
+    [d3_mremap_inplace_accepted] grows a page up to the stack's floor in
+    place, and [d3_control_inplace_accepted] does the same two pages
+    lower.  The
+    [TASK_SIZE] conjunct is [check_mremap_params]'s own limit and keeps
+    the grown end a word. *)
 (** THE ROOM TEST ALONE, with no budget in it.  Linux asks the two
     questions in this order and answers them differently: no room means
     MOVE, a failing charge means REFUSE and do not move
@@ -320,7 +324,7 @@ Definition mremap_final_budget_b (m : Model)
 Definition mremap_inplace_room_b (m : Model) (old old_n new_n : word)
     (old_nZ new_nZ : Z) : bool :=
   let h := m_vmmaps m in
-  (bv_unsigned old + new_nZ <=? alloc_top h)%Z
+  (bv_unsigned old + new_nZ <=? TASK_SIZE)%Z
   && region_free (vm_reserved h
                   ++ maps_subtract (vm_maps h) (bv_unsigned old)
                        (bv_unsigned old + bv_unsigned old_n)) old new_n.
@@ -342,7 +346,7 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     1f99e9ab748f).
     So the conditions that hold of one
     hold of the other — page-aligned, nonzero, below
-    [State.alloc_top], disjoint from every recorded mapping — and
+    [State.TASK_SIZE], disjoint from every recorded mapping — and
     the conditions that do NOT are the same conditions, for the same
     reason.  This guard carries no search-order conjunct, for the
     reason its mmap twin carries none: a highest-fit conjunct would be
@@ -442,7 +446,7 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
   negb (bv_eqb dst old)
   && (bv_unsigned dst mod page_size =? 0)%Z
   && (0 <? bv_unsigned dst)%Z
-  && (bv_unsigned dst + new_nZ <=? alloc_top h)%Z
+  && (bv_unsigned dst + new_nZ <=? TASK_SIZE)%Z
   && region_free (vm_reserved h ++ vm_maps h) dst new_n
   && mremap_final_budget_b m old old_n dst new_n.
 
@@ -462,7 +466,7 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
     it cannot be false while the move's own budget mark is false. *)
 Definition mremap_dst_ok (m : Model) (old_nZ new_nZ : Z)
     (old old_n dst new_n : word) : Prop :=
-  linux_place (m_vmmaps m) (kb_thp (m_kernel m)) (Z_to_bv 64 0) new_nZ
+  linux_place (m_vmmaps m) (m_kernel m) (Z_to_bv 64 0) new_nZ
     (bv_unsigned dst)
   /\ mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true.
 
@@ -651,7 +655,7 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
       the first shows the fall-through would ACCEPT, the second that the
       answer is [Unmodeled] anyway, so the flip is attributable to this
       gate alone.  Delete the WRAP half and there is no such state:
-      [old_nZ = 2^64] fails [mremap_source_b]'s [alloc_top] conjunct
+      [old_nZ = 2^64] fails [mremap_source_b]'s [TASK_SIZE] conjunct
       for EVERY address and every ledger, so no trace and no hand-built
       state can tell the two spellings apart.  It is kept because the
       gate must answer for the argument Linux actually rounds, and the

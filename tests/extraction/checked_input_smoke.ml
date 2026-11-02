@@ -74,7 +74,7 @@ let seed : M.rawProcInput = {
   rpi_channel_reader = true; rpi_sigpipe_default = true }
 
 let model =
-  match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
+  match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "4096") (z "0") seed with
   | Some m -> m
   | None -> failwith "the in-range seed was refused"
 
@@ -146,8 +146,8 @@ let () =
 (* ----------------------------------------------------------------- *)
 
 let seed_refused ?(reserved = []) ?(brk0 = "4096") ?(mbase = "4096")
-    ?(sp = "4096") (s : M.rawProcInput) =
-  M.init_model_checked reserved (z brk0) (z mbase) (z sp) (z "0") s = None
+    ?(sp = "4096") ?(top = "4096") (s : M.rawProcInput) =
+  M.init_model_checked reserved (z brk0) (z mbase) (z sp) (z top) (z "0") s = None
 
 let w = "18446744073709551616"
 
@@ -157,6 +157,7 @@ let () =
   check "an out-of-range initial break is refused" (seed_refused ~brk0:w seed);
   check "an out-of-range mmap base is refused" (seed_refused ~mbase:w seed);
   check "an out-of-range stack pointer is refused" (seed_refused ~sp:w seed);
+  check "an out-of-range stack top is refused" (seed_refused ~top:w seed);
   check "an out-of-range uid is refused" (seed_refused { seed with M.rpi_uid = z w });
   check "an out-of-range group is refused"
     (seed_refused { seed with M.rpi_groups = [z w] });

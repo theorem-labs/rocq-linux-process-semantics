@@ -92,7 +92,8 @@ Proof.
   rewrite (proj2 (Z.ltb_lt _ _)) by lia.
   replace (Z_to_bv 64 (bv_unsigned b)) with b by (symmetry; apply Z_to_bv_u_eq'; reflexivity).
   replace (bv_unsigned b + d + page_size - bv_unsigned b)%Z with (d + page_size)%Z by lia.
-  rewrite (region_free_false_of_overlap _ b (Z_to_bv 64 (d + page_size)) a sz Hin).
+  rewrite (region_free_false_of_overlap _ b (Z_to_bv 64 (d + page_size)) a sz
+             (in_or_app _ _ _ (or_intror Hin))).
   - rewrite andb_false_r. reflexivity.
   - unfold iv_overlap. rewrite (u64_lit (d + page_size)) by (unfold page_size in *; lia).
     assert (Hov2' : (bv_unsigned a < bv_unsigned b + (d + page_size))%Z) by (unfold page_size in *; lia).
@@ -606,7 +607,7 @@ Proof.
   destruct (brk_req_sound E cs R FULL model d HC Hreq) as (D1 & D2 & D3 & Dm).
   destruct (brk_base_ok_sound E cs R FULL model d HC Hbase) as (B1 & B2 & B3 & B4).
   pose proof (brk_req_val E cs R FULL model d HC Hreq Hbase) as G10.
-  destruct (co_res _ _ _ _ _ _ _ _ _ _ _ _ HC) as (rx & Hres & Hrxg & _ & _).
+  destruct (co_res _ _ _ _ _ _ _ _ _ _ _ _ HC) as (stk & rx & Hres & Hrxg & _ & _ & _ & _).
   pose proof (proj1 (APS.maps_match_exact nx0 (fun _ => None) (fun _ _ _ => None) (fun _ _ _ => None) (fun _ _ _ => None) E _ _ Hnf) (co_maps _ _ _ _ _ _ _ _ _ _ _ _ HC)) as Hmaps.
   pose proof (co_limit _ _ _ _ _ _ _ _ _ _ _ _ HC) as Hlim. pose proof (co_sbrk _ _ _ _ _ _ _ _ _ _ _ _ HC) as Hsbrk.
   pose proof (co_brk _ _ _ _ _ _ _ _ _ _ _ _ HC) as Hbrk.
@@ -671,8 +672,8 @@ Proof.
     pose proof (co_eager _ _ _ _ _ _ _ _ _ _ _ _ HC). pose proof (co_abytes _ _ _ _ _ _ _ _ _ _ _ _ HC). lia. }
   assert (Hadm : Mmap.brk_grow_ok model (Z_to_bv 64 (bv_unsigned b + d)) (Z_to_bv 64 (bv_unsigned b + d)) = true).
   { apply (brk_grow_ok_aligned_intro model d); fold h b;
-      [exact B1 | exact D2 | exact D1 | exact B2 | rewrite alloc_ceiling_val; unfold KHI in *; lia
-      | exact (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ _ HC)))) | exact Hrfg |].
+      [exact B1 | exact D2 | exact D1 | exact B2 | rewrite alloc_ceiling_val; unfold KHI, page_size in *; lia
+      | exact (co_band _ _ _ _ _ _ _ _ _ _ _ _ HC) | exact Hrfg |].
     rewrite Hlim. lia. }
   unfold cfg_of.
   eapply (srz_brk_grow_lazy SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w d TA TB HF HE Hh G17);
@@ -766,7 +767,7 @@ Proof.
       | |- Forall _ (_ :: _) =>
           constructor; [first [intros Hk; discriminate | intros [Hk|Hk]; discriminate] | assumption]
       | |- sum_sizes _ <= _ =>
-          rewrite Hvm'; unfold h'; cbn [vm_reserved vm_maps]; rewrite sum_sizes_app in *; cbn [sum_sizes snd]; rewrite Udw;
+          rewrite Hvm'; unfold h'; cbn [vm_reserved vm_maps vm_init_sp]; rewrite sum_sizes_app in *; cbn [sum_sizes snd]; rewrite Udw;
           cbn [sum_sizes] in co_totsz0; lia
       | |- exists Y, _ =>
           destruct co_split0 as [Y (Y1 & Y2 & Y3 & Y4)]; exists Y; rewrite Hvm'; unfold h'; cbn [vm_reserved vm_maps vm_mmap_base];
@@ -998,7 +999,7 @@ Lemma reserved_free_above : forall E cs R FULL model (lo n : word),
   region_free (vm_reserved (m_vmmaps model)) lo n = true.
 Proof.
   intros E cs R FULL model lo n HC Hlo Hhi.
-  destruct (co_res _ _ _ _ _ _ _ _ _ _ _ _ HC) as (rx & Hres & HG & _ & _).
+  destruct (co_res _ _ _ _ _ _ _ _ _ _ _ _ HC) as (stk & rx & Hres & HG & _ & _ & _ & _).
   destruct (co_split _ _ _ _ _ _ _ _ _ _ _ _ HC) as (Y & HY1 & _ & _ & HY4).
   rewrite Hres. apply RefNodes.region_free_intro.
   intros b s Hin. apply in_app_iff in Hin as [Hin|Hin].
@@ -1421,7 +1422,7 @@ Proof.
     split; [exact Hm'|]. split; [exact Hne'|]. intros Hnf'. exact (DISJ' m' Hm' Hnf' Hne'). }
   assert (KNF : forall m', am_kind m' = KNONE \/ am_kind m' = KNONELAZY \/ am_kind m' = KRWLAZY -> is_fog m' = false).
   { intros m' Hk. unfold is_fog. destruct Hk as [-> |[-> | ->]]; reflexivity. }
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres Xband].
   destruct Hlohi as (L1 & L2 & L3 & L4 & L5).
   assert (HAeq : ALLOW E cs' = flat_map (allow1 A E) (kept ++ gone ++ a_ghost cs)) by reflexivity.
   constructor; rewrite ?HAeq; subst cs'; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss];
@@ -1478,7 +1479,8 @@ Proof.
     rewrite NOACC, K1, (LAZYOUT x Hxo), K2. split; reflexivity.
   - (* totsz *) rewrite PM. unfold map_remove. rewrite sum_sizes_app. rewrite sum_sizes_app in Xtotsz.
     pose proof (sum_sizes_filter_le (fun p => negb (bv_eqb (fst p) addr)) (vm_maps (m_vmmaps model))) as SF.
-    change (vm_reserved (m_vmmaps model')) with (vm_reserved (m_vmmaps model)). lia.
+    change (vm_reserved (m_vmmaps model')) with (vm_reserved (m_vmmaps model)).
+    change (vm_init_sp (m_vmmaps model')) with (vm_init_sp (m_vmmaps model)). lia.
   - (* split *) destruct Xsplit as (Y & HY1 & HY2 & HY3 & HY4). exists Y. split; [exact HY1|]. split; [exact HY2|]. split; [exact HY3|].
     rewrite PM. unfold map_remove. apply ledger_split_app_inv in HY4 as [S1 S2]. apply ledger_split_app; [exact S1 | apply ledger_split_filter; exact S2].
   - exact Xbrk.
@@ -1550,6 +1552,7 @@ Proof.
   - (* mres: munmap only removes entries *)
     rewrite PM. unfold map_remove. apply Forall_forall. intros iv Hiv.
     apply filter_In in Hiv as [Hiv _]. exact (proj1 (Forall_forall _ _) Xmres iv Hiv).
+  - (* band: munmap changes none of what [stack_band_ok] reads *) exact Xband.
 Qed.
 
 End SoundMunmap.

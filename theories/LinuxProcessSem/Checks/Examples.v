@@ -830,7 +830,7 @@ Proof.
   intros segs pc ph code fuel lim sp brk0 mbase rnd inp Hms (tr & sig & fs & Ht & Hin).
   cbn [run bh_traces] in Ht. unfold init_config in Ht.
   exact (exits_c_obs_no_kill segs code fuel _
-           (init_model (segments_reserved segs) brk0 mbase sp lim inp) tr sig fs
+           (init_model (segments_reserved segs) brk0 mbase sp (ed_top rnd) lim inp) tr sig fs
            eq_refl eq_refl Hms Ht Hin).
 Qed.
 

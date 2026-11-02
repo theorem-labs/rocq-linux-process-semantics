@@ -580,9 +580,8 @@ Qed.
    The ledger's two windows, and the bounds that make them usable
    ========================================================================= *)
 
-(** The search top is below 2^64 and at or above nothing in particular;
-    these are the two facts every call of the two [_spec] lemmas needs
-    about a real ledger. *)
+(** The search tops are below 2^64; these are the facts every call of
+    the two [_spec] lemmas needs about a real ledger. *)
 Lemma mmap_top_lt_two_pow_64 : forall h, (mmap_top h < two_pow_64)%Z.
 Proof.
   intro h. unfold mmap_top.
@@ -590,11 +589,14 @@ Proof.
   change (bv_modulus 64) with two_pow_64 in Hhi. lia.
 Qed.
 
-Lemma alloc_top_lt_two_pow_64 : forall h, (alloc_top h < two_pow_64)%Z.
-Proof.
-  intro h. pose proof (alloc_top_room h).
-  unfold stack_max_size in *. lia.
-Qed.
+Lemma TASK_SIZE_lt_two_pow_64 : (TASK_SIZE < two_pow_64)%Z.
+Proof. unfold TASK_SIZE, two_pow_64. lia. Qed.
+
+(** The top-down window's top, as [Sys/Mm/Mmap.topdown_search] writes
+    it: never past [TASK_SIZE]. *)
+Lemma search_top_lt_two_pow_64 : forall h,
+  (Z.min (mmap_top h) TASK_SIZE < two_pow_64)%Z.
+Proof. intro h. pose proof TASK_SIZE_lt_two_pow_64. lia. Qed.
 
 Lemma page_size_aligned : (page_size mod page_size = 0)%Z.
 Proof. reflexivity. Qed.
@@ -605,33 +607,45 @@ Proof. reflexivity. Qed.
 Lemma task_unmapped_base_nonneg : (0 <= task_unmapped_base)%Z.
 Proof. unfold task_unmapped_base. lia. Qed.
 
+(** A range clear of a list is clear of every suffix of it: what lets a
+    proof read the gap-keeping list [stack_guard_band kb h ++ vm_reserved
+    h ++ vm_maps h] as the ledger alone. *)
+Lemma region_free_app_r : forall l1 l2 a n,
+  region_free (l1 ++ l2) a n = true -> region_free l2 a n = true.
+Proof.
+  intros l1 l2 a n H. apply region_free_intro. intros b s Hin.
+  apply (region_free_In _ _ _ _ _ H). apply in_or_app. now right.
+Qed.
+
 (* =========================================================================
    [topdown_search] and [linux_place], computed
    ========================================================================= *)
 
 (** [generic_get_unmapped_area_topdown] with no hint, as a function. *)
-Definition topdown_search_b (h : VmMaps) (nZ : Z) : option Z :=
-  let maps := vm_reserved h ++ vm_maps h in
-  match highest_gap_b maps page_size (mmap_top h) nZ with
+Definition topdown_search_b (h : VmMaps) (kb : KernelBuild) (nZ : Z)
+    : option Z :=
+  let maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h in
+  match highest_gap_b maps page_size (Z.min (mmap_top h) TASK_SIZE) nZ with
   | Some a => Some a
-  | None => lowest_gap_b maps task_unmapped_base (alloc_top h) nZ
+  | None => lowest_gap_b maps task_unmapped_base TASK_SIZE nZ
   end.
 
-Lemma topdown_search_b_spec : forall h nZ,
+Lemma topdown_search_b_spec : forall h kb nZ,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  (forall a, topdown_search_b h nZ = Some a <-> topdown_search h nZ a)
-  /\ (topdown_search_b h nZ = None <-> forall a, ~ topdown_search h nZ a).
+  (forall a, topdown_search_b h kb nZ = Some a <-> topdown_search h kb nZ a)
+  /\ (topdown_search_b h kb nZ = None <-> forall a, ~ topdown_search h kb nZ a).
 Proof.
-  intros h nZ HnPos HnAl.
-  set (maps := vm_reserved h ++ vm_maps h).
-  destruct (highest_gap_b_spec maps page_size (mmap_top h) nZ
+  intros h kb nZ HnPos HnAl.
+  set (maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h).
+  set (top := Z.min (mmap_top h) TASK_SIZE).
+  destruct (highest_gap_b_spec maps page_size top nZ
               ltac:(unfold page_size; lia) HnPos HnAl
-              (mmap_top_lt_two_pow_64 h)) as [Hhi1 Hhi2].
-  destruct (lowest_gap_b_spec maps task_unmapped_base (alloc_top h) nZ
+              (search_top_lt_two_pow_64 h)) as [Hhi1 Hhi2].
+  destruct (lowest_gap_b_spec maps task_unmapped_base TASK_SIZE nZ
               task_unmapped_base_nonneg HnPos task_unmapped_base_aligned HnAl
-              (alloc_top_lt_two_pow_64 h)) as [Hlo1 Hlo2].
-  unfold topdown_search_b, topdown_search. fold maps.
-  destruct (highest_gap_b maps page_size (mmap_top h) nZ) as [t|] eqn:Ht.
+              TASK_SIZE_lt_two_pow_64) as [Hlo1 Hlo2].
+  unfold topdown_search_b, topdown_search. fold maps. fold top.
+  destruct (highest_gap_b maps page_size top nZ) as [t|] eqn:Ht.
   - split.
     + intro a. split.
       * intro H. injection H as <-. left. now apply Hhi1.
@@ -643,7 +657,7 @@ Proof.
            exact (Hno t Hfit).
     + split; [discriminate|]. intro H. exfalso.
       exact (H t (or_introl (proj1 (Hhi1 t) eq_refl))).
-  - assert (Hno : forall a, ~ gap_fits maps page_size (mmap_top h) nZ a)
+  - assert (Hno : forall a, ~ gap_fits maps page_size top nZ a)
       by (exact (proj1 Hhi2 eq_refl)).
     split.
     + intro a. split.
@@ -656,27 +670,27 @@ Proof.
         -- destruct Ha as [Hfit _]. exact (Hno a Hfit).
         -- exact (proj1 Hlo2 H a (proj1 Ha)).
       * intro H.
-        destruct (lowest_gap_b maps task_unmapped_base (alloc_top h) nZ)
+        destruct (lowest_gap_b maps task_unmapped_base TASK_SIZE nZ)
           as [a0|] eqn:Hl; [exfalso|reflexivity].
         exact (H a0 (or_intror (conj Hno (proj1 (Hlo1 a0) eq_refl)))).
 Qed.
 
 (** WHERE LINUX PUTS IT, computed.  [Sys/Mm/Mmap.linux_place]'s three
     branches, in the same order. *)
-Definition linux_place_b (h : VmMaps) (thp : bool) (hint : word) (nZ : Z)
+Definition linux_place_b (h : VmMaps) (kb : KernelBuild) (hint : word) (nZ : Z)
     : option Z :=
   let g := hint_address hint in
-  let maps := vm_reserved h ++ vm_maps h in
+  let maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h in
   if (g =? 0)%Z then
-    if thp && (nZ mod pmd_size =? 0)%Z then
-      match topdown_search_b h (nZ + pmd_size) with
+    if kb_thp kb && (nZ mod pmd_size =? 0)%Z then
+      match topdown_search_b h kb (nZ + pmd_size) with
       | Some ret => Some (thp_align ret)
-      | None => topdown_search_b h nZ
+      | None => topdown_search_b h kb nZ
       end
-    else topdown_search_b h nZ
+    else topdown_search_b h kb nZ
   else
-    if gap_fits_b maps page_size (alloc_top h) nZ g then Some g
-    else topdown_search_b h nZ.
+    if gap_fits_b maps page_size TASK_SIZE nZ g then Some g
+    else topdown_search_b h kb nZ.
 
 (* =========================================================================
    [linux_place_b] is [linux_place]
@@ -738,18 +752,17 @@ Qed.
 
 (** The search's answer, read as the old [choose] guard read its
     address.  [page_size <= a] rather than [0 < a] because both windows
-    start at or above one page. *)
-Lemma topdown_search_admissible : forall h nZ a,
-  (0 < nZ)%Z -> topdown_search h nZ a ->
+    start at or above one page.  The [region_free] is over the whole
+    gap-keeping list, the guard band included; [region_free_app_r]
+    reads it as the ledger alone. *)
+Lemma topdown_search_admissible : forall h kb nZ a,
+  (0 < nZ)%Z -> topdown_search h kb nZ a ->
   (a mod page_size = 0)%Z /\ (page_size <= a)%Z
-  /\ (a + nZ <= alloc_top h)%Z
-  /\ region_free (vm_reserved h ++ vm_maps h)
+  /\ (a + nZ <= TASK_SIZE)%Z
+  /\ region_free (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
        (Z_to_bv 64 a) (Z_to_bv 64 nZ) = true.
 Proof.
-  intros h nZ a HnPos Hts.
-  pose proof (page_round_down_Z_le (alloc_top h)) as Hrd.
-  assert (Htop : (mmap_top h <= alloc_top h)%Z)
-    by (unfold mmap_top; plia).
+  intros h kb nZ a HnPos Hts.
   destruct Hts as [[Hfit _]|[_ [Hfit _]]];
     destruct Hfit as (Hal & Hlo & Hhi & Hfree).
   - split; [exact Hal|]. split; [exact Hlo|]. split; [plia|exact Hfree].
@@ -759,10 +772,10 @@ Proof.
 Qed.
 
 (** THE SEARCH IS A FUNCTION. *)
-Lemma topdown_search_unique : forall h nZ a a',
-  topdown_search h nZ a -> topdown_search h nZ a' -> a = a'.
+Lemma topdown_search_unique : forall h kb nZ a a',
+  topdown_search h kb nZ a -> topdown_search h kb nZ a' -> a = a'.
 Proof.
-  intros h nZ a a' Ha Ha'.
+  intros h kb nZ a a' Ha Ha'.
   destruct Ha as [Ha|[Hno Ha]]; destruct Ha' as [Ha'|[Hno' Ha']].
   - exact (highest_gap_unique _ _ _ _ _ _ Ha Ha').
   - exfalso. exact (Hno' a (proj1 Ha)).
@@ -773,47 +786,50 @@ Qed.
 (** THE PLACEMENT IS A FUNCTION, which is the whole point of the
     change: given the ledger, the kernel build and the hint, the model
     has no freedom left in the address. *)
-Lemma linux_place_unique : forall h thp hint nZ a a',
-  linux_place h thp hint nZ a -> linux_place h thp hint nZ a' -> a = a'.
+Lemma linux_place_unique : forall h kb hint nZ a a',
+  linux_place h kb hint nZ a -> linux_place h kb hint nZ a' -> a = a'.
 Proof.
-  intros h thp hint nZ a a' Ha Ha'. unfold linux_place in Ha, Ha'.
+  intros h kb hint nZ a a' Ha Ha'. unfold linux_place in Ha, Ha'.
   cbv zeta in Ha, Ha'.
   destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
-  - destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
+  - destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
     + destruct Ha as [(ret & Hret & ->)|[Hno Hts]];
         destruct Ha' as [(ret' & Hret' & ->)|[Hno' Hts']].
-      * f_equal. exact (topdown_search_unique _ _ _ _ Hret Hret').
+      * f_equal. exact (topdown_search_unique _ _ _ _ _ Hret Hret').
       * exfalso. exact (Hno' ret Hret).
       * exfalso. exact (Hno ret' Hret').
-      * exact (topdown_search_unique _ _ _ _ Hts Hts').
-    + exact (topdown_search_unique _ _ _ _ Ha Ha').
+      * exact (topdown_search_unique _ _ _ _ _ Hts Hts').
+    + exact (topdown_search_unique _ _ _ _ _ Ha Ha').
   - destruct Ha as [[Hfit ->]|[Hno Hts]];
       destruct Ha' as [[Hfit' ->]|[Hno' Hts']].
     + reflexivity.
     + exfalso. exact (Hno' Hfit).
     + exfalso. exact (Hno Hfit').
-    + exact (topdown_search_unique _ _ _ _ Hts Hts').
+    + exact (topdown_search_unique _ _ _ _ _ Hts Hts').
 Qed.
 
-(** WHAT THE OLD GUARD ASKED FOR, from the new one.  A proof that
-    destructed the four conjuncts of the old [choose] applies this and
-    goes on unchanged. *)
-Lemma linux_place_admissible : forall h thp hint nZ a,
+(** WHAT THE OLD GUARD ASKED FOR, from the new one: the address is a
+    page, nonzero, ends at or below [TASK_SIZE], and misses the ledger.
+    A proof that destructed the four conjuncts of the old [choose]
+    applies this and goes on with [TASK_SIZE] where it had [alloc_top].
+    [linux_place_misses_band] gives the fifth fact, the guard band. *)
+Lemma linux_place_admissible : forall h kb hint nZ a,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  linux_place h thp hint nZ a ->
-  (a mod page_size = 0)%Z /\ (0 < a)%Z /\ (a + nZ <= alloc_top h)%Z
+  linux_place h kb hint nZ a ->
+  (a mod page_size = 0)%Z /\ (0 < a)%Z /\ (a + nZ <= TASK_SIZE)%Z
   /\ region_free (vm_reserved h ++ vm_maps h)
        (Z_to_bv 64 a) (Z_to_bv 64 nZ) = true.
 Proof.
-  intros h thp hint nZ a HnPos HnAl Hpl.
-  pose proof (alloc_top_lt_two_pow_64 h) as Hat.
+  intros h kb hint nZ a HnPos HnAl Hpl.
+  pose proof TASK_SIZE_lt_two_pow_64 as Hts64.
   unfold linux_place in Hpl. cbv zeta in Hpl.
   destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
-  - destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
+  - destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
     + destruct Hpl as [(ret & Hret & ->)|[_ Hts]].
-      * destruct (topdown_search_admissible h (nZ + pmd_size) ret
+      * destruct (topdown_search_admissible h kb (nZ + pmd_size) ret
                     ltac:(pose proof pmd_size_pos; plia) Hret)
           as (Hal & Hlo & Hhi & Hfree).
+        apply region_free_app_r in Hfree.
         pose proof (thp_align_bounds ret) as [Hb1 Hb2].
         pose proof pmd_size_pos as Hpmd.
         assert (HretW : bv_unsigned (Z_to_bv 64 ret) = ret)
@@ -837,88 +853,94 @@ Proof.
         -- apply (region_free_shrink _ (Z_to_bv 64 ret)
                     (Z_to_bv 64 (nZ + pmd_size))); rewrite ?HretW, ?HbigW,
              ?HaW, ?HnW; [exact Hfree|plia|plia].
-      * destruct (topdown_search_admissible h nZ a HnPos Hts)
+      * destruct (topdown_search_admissible h kb nZ a HnPos Hts)
           as (Hal & Hlo & Hhi & Hfree).
+        apply region_free_app_r in Hfree.
         unfold page_size in Hlo.
         repeat split; [exact Hal | plia | exact Hhi | exact Hfree].
-    + destruct (topdown_search_admissible h nZ a HnPos Hpl)
+    + destruct (topdown_search_admissible h kb nZ a HnPos Hpl)
         as (Hal & Hlo & Hhi & Hfree).
+      apply region_free_app_r in Hfree.
       unfold page_size in Hlo.
       repeat split; [exact Hal | plia | exact Hhi | exact Hfree].
   - destruct Hpl as [[Hfit ->]|[_ Hts]].
     + destruct Hfit as (Hal & Hlo & Hhi & Hfree).
+      apply region_free_app_r in Hfree.
       unfold page_size in Hlo.
       repeat split; [exact Hal | plia | exact Hhi | exact Hfree].
-    + destruct (topdown_search_admissible h nZ a HnPos Hts)
+    + destruct (topdown_search_admissible h kb nZ a HnPos Hts)
         as (Hal & Hlo & Hhi & Hfree).
+      apply region_free_app_r in Hfree.
       unfold page_size in Hlo.
       repeat split; [exact Hal | lia | exact Hhi | exact Hfree].
 Qed.
 
 (** THE RULE HAS AN ANSWER whenever a range of the requested size is
-    free in either of Linux's two windows.  This is what a proof that
-    has to BUILD an execution needs, and it is why the model refuses
-    only where the kernel refuses: a refusal is now exhaustion.
+    free in either of Linux's two windows, clear of the stack's guard
+    band.  This is what a proof that has to BUILD an execution needs,
+    and it is why the model refuses only where the kernel refuses: a
+    refusal is now exhaustion.
 
     The placement plan states this with [task_unmapped_base <= mmap_top h]
     as a further premise.  It is not needed — the argument never
     compares the two windows — so it is not asked for here, and a
     caller that holds it simply does not have to pass it. *)
-Lemma linux_place_exists : forall h thp hint nZ,
+Lemma linux_place_exists : forall h kb hint nZ,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  (exists g, gap_fits (vm_reserved h ++ vm_maps h) page_size (mmap_top h) nZ g
-             \/ gap_fits (vm_reserved h ++ vm_maps h) task_unmapped_base
-                  (alloc_top h) nZ g) ->
-  exists a, linux_place h thp hint nZ a.
+  (exists g,
+     gap_fits (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+       page_size (Z.min (mmap_top h) TASK_SIZE) nZ g
+     \/ gap_fits (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+          task_unmapped_base TASK_SIZE nZ g) ->
+  exists a, linux_place h kb hint nZ a.
 Proof.
-  intros h thp hint nZ HnPos HnAl Hex.
+  intros h kb hint nZ HnPos HnAl Hex.
+  set (maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h) in *.
+  set (top := Z.min (mmap_top h) TASK_SIZE) in *.
   (* The plain search has an answer. *)
-  assert (Hts : exists a, topdown_search h nZ a).
-  { destruct (topdown_search_b_spec h nZ HnPos HnAl) as [Hsome Hnone].
-    destruct (topdown_search_b h nZ) as [a|] eqn:Hb;
+  assert (Hts : exists a, topdown_search h kb nZ a).
+  { destruct (topdown_search_b_spec h kb nZ HnPos HnAl) as [Hsome Hnone].
+    destruct (topdown_search_b h kb nZ) as [a|] eqn:Hb;
       [exists a; now apply Hsome|].
     exfalso. destruct Hex as (g & [Hg|Hg]).
-    - destruct (highest_gap_b_spec (vm_reserved h ++ vm_maps h) page_size
-                  (mmap_top h) nZ ltac:(unfold page_size; lia) HnPos HnAl
-                  (mmap_top_lt_two_pow_64 h)) as [Hh1 Hh2].
-      destruct (highest_gap_b (vm_reserved h ++ vm_maps h) page_size
-                  (mmap_top h) nZ) as [t|] eqn:Ht.
+    - destruct (highest_gap_b_spec maps page_size top nZ
+                  ltac:(unfold page_size; lia) HnPos HnAl
+                  (search_top_lt_two_pow_64 h)) as [Hh1 Hh2].
+      destruct (highest_gap_b maps page_size top nZ) as [t|] eqn:Ht.
       + apply (proj1 Hnone eq_refl t). left. now apply Hh1.
       + exact (proj1 Hh2 eq_refl g Hg).
-    - destruct (lowest_gap_b_spec (vm_reserved h ++ vm_maps h)
-                  task_unmapped_base (alloc_top h) nZ
+    - destruct (lowest_gap_b_spec maps task_unmapped_base TASK_SIZE nZ
                   task_unmapped_base_nonneg HnPos task_unmapped_base_aligned
-                  HnAl (alloc_top_lt_two_pow_64 h)) as [Hl1 Hl2].
-      destruct (lowest_gap_b (vm_reserved h ++ vm_maps h) task_unmapped_base
-                  (alloc_top h) nZ) as [t|] eqn:Ht.
-      + destruct (highest_gap_b_spec (vm_reserved h ++ vm_maps h) page_size
-                    (mmap_top h) nZ ltac:(unfold page_size; lia) HnPos HnAl
-                    (mmap_top_lt_two_pow_64 h)) as [Hh1 Hh2].
-        destruct (highest_gap_b (vm_reserved h ++ vm_maps h) page_size
-                    (mmap_top h) nZ) as [u|] eqn:Hu.
+                  HnAl TASK_SIZE_lt_two_pow_64) as [Hl1 Hl2].
+      destruct (lowest_gap_b maps task_unmapped_base TASK_SIZE nZ)
+        as [t|] eqn:Ht.
+      + destruct (highest_gap_b_spec maps page_size top nZ
+                    ltac:(unfold page_size; lia) HnPos HnAl
+                    (search_top_lt_two_pow_64 h)) as [Hh1 Hh2].
+        destruct (highest_gap_b maps page_size top nZ) as [u|] eqn:Hu.
         * apply (proj1 Hnone eq_refl u). left. now apply Hh1.
         * apply (proj1 Hnone eq_refl t). right.
           split; [now apply Hh2 | now apply Hl1].
       + exact (proj1 Hl2 eq_refl g Hg). }
-  unfold linux_place. cbv zeta.
+  unfold linux_place. cbv zeta. fold maps.
   destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
-  - destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
+  - destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
     + assert (HpadPos : (0 < nZ + pmd_size)%Z)
         by (pose proof pmd_size_pos; lia).
       assert (HpadAl : ((nZ + pmd_size) mod page_size = 0)%Z).
       { rewrite Zplus_mod, HnAl.
         rewrite (mod_pmd_mod_page pmd_size (Z_mod_same_full pmd_size)).
         reflexivity. }
-      destruct (topdown_search_b_spec h (nZ + pmd_size) HpadPos HpadAl)
+      destruct (topdown_search_b_spec h kb (nZ + pmd_size) HpadPos HpadAl)
         as [Hq1 Hq2].
-      destruct (topdown_search_b h (nZ + pmd_size)) as [ret|] eqn:Hq.
+      destruct (topdown_search_b h kb (nZ + pmd_size)) as [ret|] eqn:Hq.
       * exists (thp_align ret). left. exists ret.
         split; [now apply Hq1 | reflexivity].
       * destruct Hts as (a & Ha). exists a. right.
         split; [now apply Hq2 | exact Ha].
     + exact Hts.
-  - destruct (gap_fits_b (vm_reserved h ++ vm_maps h) page_size (alloc_top h)
-                nZ (hint_address hint)) eqn:Hf.
+  - destruct (gap_fits_b maps page_size TASK_SIZE nZ (hint_address hint))
+      eqn:Hf.
     + exists (hint_address hint). left.
       split; [now apply gap_fits_b_iff | reflexivity].
     + destruct Hts as (a & Ha). exists a. right. split; [|exact Ha].
@@ -930,28 +952,29 @@ Qed.
    The checker's view: computing the answer decides the question
    ========================================================================= *)
 
-Lemma linux_place_b_spec : forall h thp hint nZ,
+Lemma linux_place_b_spec : forall h kb hint nZ,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  (forall a, linux_place_b h thp hint nZ = Some a
-             <-> linux_place h thp hint nZ a)
-  /\ (linux_place_b h thp hint nZ = None
-      <-> forall a, ~ linux_place h thp hint nZ a).
+  (forall a, linux_place_b h kb hint nZ = Some a
+             <-> linux_place h kb hint nZ a)
+  /\ (linux_place_b h kb hint nZ = None
+      <-> forall a, ~ linux_place h kb hint nZ a).
 Proof.
-  intros h thp hint nZ HnPos HnAl.
+  intros h kb hint nZ HnPos HnAl.
   pose proof pmd_size_pos as Hpmd.
   assert (HpadPos : (0 < nZ + pmd_size)%Z) by lia.
   assert (HpadAl : ((nZ + pmd_size) mod page_size = 0)%Z).
   { rewrite Zplus_mod, HnAl.
     rewrite (mod_pmd_mod_page pmd_size (Z_mod_same_full pmd_size)).
     reflexivity. }
-  destruct (topdown_search_b_spec h nZ HnPos HnAl) as [Hp1 Hp2].
-  destruct (topdown_search_b_spec h (nZ + pmd_size) HpadPos HpadAl)
+  destruct (topdown_search_b_spec h kb nZ HnPos HnAl) as [Hp1 Hp2].
+  destruct (topdown_search_b_spec h kb (nZ + pmd_size) HpadPos HpadAl)
     as [Hq1 Hq2].
-  unfold linux_place_b, linux_place. cbv zeta.
+  set (maps := stack_guard_band kb h ++ vm_reserved h ++ vm_maps h).
+  unfold linux_place_b, linux_place. cbv zeta. fold maps.
   destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
-  - destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
-    + destruct (topdown_search_b h (nZ + pmd_size)) as [ret|] eqn:Hq.
-      * assert (Hret : topdown_search h (nZ + pmd_size) ret)
+  - destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
+    + destruct (topdown_search_b h kb (nZ + pmd_size)) as [ret|] eqn:Hq.
+      * assert (Hret : topdown_search h kb (nZ + pmd_size) ret)
           by (now apply Hq1).
         split.
         -- intro a. split.
@@ -959,12 +982,12 @@ Proof.
               split; [exact Hret|reflexivity].
            ++ intros [(ret' & Hret' & ->)|[Hno _]].
               ** f_equal. f_equal.
-                 exact (topdown_search_unique _ _ _ _ Hret Hret').
+                 exact (topdown_search_unique _ _ _ _ _ Hret Hret').
               ** exfalso. exact (Hno ret Hret).
         -- split; [discriminate|]. intro H. exfalso.
            exact (H (thp_align ret)
                     (or_introl (ex_intro _ ret (conj Hret eq_refl)))).
-      * assert (Hno : forall ret, ~ topdown_search h (nZ + pmd_size) ret)
+      * assert (Hno : forall ret, ~ topdown_search h kb (nZ + pmd_size) ret)
           by (now apply Hq2).
         split.
         -- intro a. split.
@@ -979,10 +1002,9 @@ Proof.
            ++ intro H. apply Hp2. intros a Ha.
               exact (H a (or_intror (conj Hno Ha))).
     + exact (conj Hp1 Hp2).
-  - destruct (gap_fits_b (vm_reserved h ++ vm_maps h) page_size (alloc_top h)
-                nZ (hint_address hint)) eqn:Hf.
-    + assert (Hfit : gap_fits (vm_reserved h ++ vm_maps h) page_size
-                       (alloc_top h) nZ (hint_address hint))
+  - destruct (gap_fits_b maps page_size TASK_SIZE nZ (hint_address hint))
+      eqn:Hf.
+    + assert (Hfit : gap_fits maps page_size TASK_SIZE nZ (hint_address hint))
         by (now apply gap_fits_b_iff).
       split.
       * intro a. split.
@@ -990,8 +1012,7 @@ Proof.
         -- intros [[_ ->]|[Hno _]]; [reflexivity|exfalso; exact (Hno Hfit)].
       * split; [discriminate|]. intro H. exfalso.
         exact (H (hint_address hint) (or_introl (conj Hfit eq_refl))).
-    + assert (Hno : ~ gap_fits (vm_reserved h ++ vm_maps h) page_size
-                      (alloc_top h) nZ (hint_address hint)).
+    + assert (Hno : ~ gap_fits maps page_size TASK_SIZE nZ (hint_address hint)).
       { intro Hc. rewrite (proj2 (gap_fits_b_iff _ _ _ _ _) Hc) in Hf.
         discriminate. }
       split.
@@ -1009,22 +1030,22 @@ Qed.
     Linux gives?  Written over the returned [word] so that
     [Checks.Sys.Mm.Mmap] and [Checks.Sys.Mm.Mremap] carry no [option]
     plumbing. *)
-Definition linux_place_is (h : VmMaps) (thp : bool) (hint : word) (nZ : Z)
-    (r : word) : bool :=
-  match linux_place_b h thp hint nZ with
+Definition linux_place_is (h : VmMaps) (kb : KernelBuild) (hint : word)
+    (nZ : Z) (r : word) : bool :=
+  match linux_place_b h kb hint nZ with
   | Some a => (a =? bv_unsigned r)%Z
   | None => false
   end.
 
-Lemma linux_place_is_iff : forall h thp hint nZ r,
+Lemma linux_place_is_iff : forall h kb hint nZ r,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  (linux_place_is h thp hint nZ r = true
-   <-> linux_place h thp hint nZ (bv_unsigned r)).
+  (linux_place_is h kb hint nZ r = true
+   <-> linux_place h kb hint nZ (bv_unsigned r)).
 Proof.
-  intros h thp hint nZ r HnPos HnAl.
-  destruct (linux_place_b_spec h thp hint nZ HnPos HnAl) as [Hsome Hnone].
+  intros h kb hint nZ r HnPos HnAl.
+  destruct (linux_place_b_spec h kb hint nZ HnPos HnAl) as [Hsome Hnone].
   unfold linux_place_is.
-  destruct (linux_place_b h thp hint nZ) as [a|] eqn:Hb.
+  destruct (linux_place_b h kb hint nZ) as [a|] eqn:Hb.
   - split.
     + intro H. apply Z.eqb_eq in H. subst a. now apply Hsome.
     + intro H. apply Z.eqb_eq.
@@ -1035,22 +1056,56 @@ Qed.
 
 (** The checker's test implies the four facts the old guard asked for,
     in one step, for the proofs in [Checks/Sys/Mm/]. *)
-Lemma linux_place_is_admissible : forall h thp hint nZ r,
+Lemma linux_place_is_admissible : forall h kb hint nZ r,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  linux_place_is h thp hint nZ r = true ->
+  linux_place_is h kb hint nZ r = true ->
   (bv_unsigned r mod page_size = 0)%Z /\ (0 < bv_unsigned r)%Z
-  /\ (bv_unsigned r + nZ <= alloc_top h)%Z
+  /\ (bv_unsigned r + nZ <= TASK_SIZE)%Z
   /\ region_free (vm_reserved h ++ vm_maps h) r (Z_to_bv 64 nZ) = true.
 Proof.
-  intros h thp hint nZ r HnPos HnAl H.
-  apply (linux_place_is_iff h thp hint nZ r HnPos HnAl) in H.
-  destruct (linux_place_admissible h thp hint nZ (bv_unsigned r) HnPos HnAl H)
+  intros h kb hint nZ r HnPos HnAl H.
+  apply (linux_place_is_iff h kb hint nZ r HnPos HnAl) in H.
+  destruct (linux_place_admissible h kb hint nZ (bv_unsigned r) HnPos HnAl H)
     as (Hal & Hpos & Hhi & Hfree).
   assert (Hr : Z_to_bv 64 (bv_unsigned r) = r)
     by (apply bv_eq; rewrite Z_to_bv_unsigned; apply bv_wrap_small;
         apply bv_unsigned_in_range).
   rewrite Hr in Hfree.
   repeat split; assumption.
+Qed.
+
+(** THE ADDRESS THE RULE CHOOSES KEEPS THE STACK'S GUARD GAP: the fifth
+    fact, which the old guard did not have to ask for because the stack
+    was a bound and not an entry. *)
+Lemma linux_place_misses_band : forall h kb hint nZ a,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
+  linux_place h kb hint nZ a ->
+  region_free (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+    (Z_to_bv 64 a) (Z_to_bv 64 nZ) = true.
+Proof.
+  intros h kb hint nZ a HnPos HnAl Hpl.
+  unfold linux_place in Hpl. cbv zeta in Hpl.
+  destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
+  - destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool.
+    + destruct Hpl as [(ret & Hret & ->)|[_ Hts]].
+      * destruct (topdown_search_admissible h kb (nZ + pmd_size) ret
+                    ltac:(pose proof pmd_size_pos; plia) Hret)
+          as (Hal & Hlo & Hhi & Hfree).
+        pose proof (thp_align_bounds ret) as [Hb1 Hb2].
+        pose proof pmd_size_pos as Hpmd.
+        pose proof TASK_SIZE_lt_two_pow_64 as Hts64.
+        unfold page_size in Hlo.
+        apply (region_free_shrink _ (Z_to_bv 64 ret)
+                 (Z_to_bv 64 (nZ + pmd_size))); [exact Hfree| |];
+          rewrite !bv_unsigned_Z_to_bv_u64 by plia; plia.
+      * exact (proj2 (proj2 (proj2
+                 (topdown_search_admissible h kb nZ a HnPos Hts)))).
+    + exact (proj2 (proj2 (proj2
+               (topdown_search_admissible h kb nZ a HnPos Hpl)))).
+  - destruct Hpl as [[Hfit ->]|[_ Hts]].
+    + exact (proj2 (proj2 (proj2 Hfit))).
+    + exact (proj2 (proj2 (proj2
+               (topdown_search_admissible h kb nZ a HnPos Hts)))).
 Qed.
 
 (** * THE vDSO PAIR UNDER LOAD
@@ -1107,38 +1162,48 @@ Definition launch_vdso_top (mbase sp : word) : Z :=
 (** THE LAUNCH'S LEDGER HAS NO ZERO-WIDTH ENTRY when the image's own
     reservations have none.  [State.entries_nonzero] is what stops an
     entry closing a [region_free] gate over a range it holds no byte
-    of, and [State.init_reserved] appends the pair to the image's list,
-    so the pair has to carry its half: [State.vdso_reserved_nonzero].
+    of, and [State.init_reserved] appends the stack's entry and the pair
+    to the image's list, so each has to carry its half:
+    [State.stack_reserved_nonzero] and [State.vdso_reserved_nonzero].
 
     The only premise about the top is the 64-bit bound, which is why
     this is the form a fixture can use — it needs no alignment and no
     room hypothesis. *)
-Lemma init_reserved_nonzero : forall reserved mbase sp kb,
+Lemma init_reserved_nonzero : forall reserved mbase sp top kb,
   entries_nonzero reserved ->
   (launch_vdso_top mbase sp < two_pow_64)%Z ->
-  entries_nonzero (init_reserved reserved mbase sp kb).
+  entries_nonzero (init_reserved reserved mbase sp top kb).
 Proof.
-  intros reserved mbase sp kb Hres Htop a n Hin.
-  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  intros reserved mbase sp top kb Hres Htop a n Hin.
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin];
+    [|apply in_app_or in Hin as [Hin | Hin]].
   - exact (Hres a n Hin).
+  - exact (stack_reserved_nonzero _ _ _ a n Hin).
   - exact (vdso_reserved_nonzero _ _ _ _ Htop Hin).
 Qed.
 
-(** EVERY ENTRY OF THE LAUNCH'S LEDGER IS THE IMAGE'S OR LIES IN THE
-    PAIR'S HULL.  [State.vdso_reserved_above] is the second half.  A
-    proof that a range misses the whole ledger splits here: it argues
-    about the image's segments, and about one interval for the pair. *)
-Lemma init_reserved_entry_place : forall reserved mbase sp kb a n,
+(** EVERY ENTRY OF THE LAUNCH'S LEDGER IS THE IMAGE'S, THE STACK'S, OR
+    LIES IN THE PAIR'S HULL.  [State.stack_reserved_in] and
+    [State.vdso_reserved_above] are the last two.  A proof that a range
+    misses the whole ledger splits here: it argues about the image's
+    segments, about one interval for the stack and one for the pair. *)
+Lemma init_reserved_entry_place : forall reserved mbase sp top kb a n,
   (launch_vdso_top mbase sp < two_pow_64)%Z ->
-  In (a, n) (init_reserved reserved mbase sp kb) ->
+  In (a, n) (init_reserved reserved mbase sp top kb) ->
   In (a, n) reserved
+  \/ (bv_unsigned a = stack_floor kb mbase (bv_unsigned top)
+      /\ (bv_unsigned a + bv_unsigned n = bv_unsigned top)%Z
+      /\ (stack_floor kb mbase (bv_unsigned top) < bv_unsigned top)%Z
+      /\ (bv_unsigned top <= TASK_SIZE)%Z)
   \/ ((launch_vdso_top mbase sp - vdso_len kb <= bv_unsigned a)%Z
       /\ (bv_unsigned a + bv_unsigned n <= launch_vdso_top mbase sp)%Z).
 Proof.
-  intros reserved mbase sp kb a n Htop Hin.
-  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  intros reserved mbase sp top kb a n Htop Hin.
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin];
+    [|apply in_app_or in Hin as [Hin | Hin]].
   - left. exact Hin.
-  - right. exact (vdso_reserved_above _ _ _ _ Htop Hin).
+  - right. left. exact (stack_reserved_in _ _ _ _ _ Hin).
+  - right. right. exact (vdso_reserved_above _ _ _ _ Htop Hin).
 Qed.
 
 (** EVERYTHING AN ENTRY OF THE LAUNCH'S LEDGER PROMISES, in one
@@ -1151,26 +1216,41 @@ Qed.
 
     The room premise is the condition under which
     [State.vdso_reserved] emits anything at all, and it is the one
-    premise a caller must carry.  Say so here rather than letting a
-    port discover it. *)
-Lemma init_reserved_entry_ok : forall reserved mbase sp kb a n,
+    premise about the pair a caller must carry.  The stack's entry
+    starts on a page when the stack's end and the mmap base do, which
+    [Run.valid_stack_top_va] and [Run.valid_launch_base] give for every
+    launch.  Say so here rather than letting a port discover it. *)
+Lemma init_reserved_entry_ok : forall reserved mbase sp top kb a n,
   (page_size + vdso_len kb <= launch_vdso_top mbase sp)%Z ->
   (launch_vdso_top mbase sp < two_pow_64)%Z ->
+  (bv_unsigned top mod page_size = 0)%Z ->
+  (bv_unsigned mbase mod page_size = 0)%Z ->
   (forall b m, In (b, m) reserved ->
      (0 < bv_unsigned m)%Z /\ (bv_unsigned b mod page_size = 0)%Z
      /\ (bv_unsigned m mod page_size = 0)%Z) ->
-  In (a, n) (init_reserved reserved mbase sp kb) ->
+  In (a, n) (init_reserved reserved mbase sp top kb) ->
   (0 < bv_unsigned n)%Z
   /\ (bv_unsigned a mod page_size = 0)%Z
   /\ (bv_unsigned n mod page_size = 0)%Z
   /\ ((launch_vdso_top mbase sp - vdso_len kb) mod page_size = 0)%Z.
 Proof.
-  intros reserved mbase sp kb a n Hroom Htop Hres Hin.
+  intros reserved mbase sp top kb a n Hroom Htop HtopAl HbaseAl Hres Hin.
   assert (Hal : (launch_vdso_top mbase sp mod page_size = 0)%Z)
     by apply page_round_down_Z_mod.
   pose proof (vdso_hull_base_page kb _ Hal) as Hhull.
-  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin];
+    [|apply in_app_or in Hin as [Hin | Hin]].
   - destruct (Hres a n Hin) as (H1 & H2 & H3). repeat split; assumption.
+  - destruct (stack_reserved_in _ _ _ _ _ Hin) as (Ha & Hn & Hlt & _).
+    assert (Hfl : (stack_floor kb mbase (bv_unsigned top) mod page_size = 0)%Z).
+    { unfold stack_floor. rewrite stack_max_size_val.
+      unfold stack_guard_gap_bytes, page_size in *.
+      apply Z.max_case.
+      - rewrite Zminus_mod, HtopAl. reflexivity.
+      - rewrite Zplus_mod, HbaseAl, Z.mul_comm, Z_mod_mult. reflexivity. }
+    repeat split; [plia | rewrite Ha; exact Hfl | | exact Hhull].
+    replace (bv_unsigned n) with (bv_unsigned top - bv_unsigned a)%Z by plia.
+    rewrite Ha, Zminus_mod, HtopAl, Hfl. reflexivity.
   - destruct (vdso_reserved_entry_ok kb _ a n Hroom Htop Hal Hin)
       as (H1 & H2 & H3 & _ & _).
     repeat split; assumption.
@@ -1182,20 +1262,20 @@ Qed.
     statement, and it is the one a port needs, because a port's build
     is not the fixture's.
 
-    The ledger is split as the image's entries and the pair, which is
-    the shape [State.vm_reserved_init_model] gives for a launch and
-    which every later state keeps: no step of the model removes a
-    reservation. *)
-Lemma linux_place_misses_vdso : forall h thp hint nZ r kb rest a n,
+    The ledger is split as the image's and the stack's entries and the
+    pair, which is the shape [State.vm_reserved_init_model] gives for a
+    launch and which every later state keeps: no step of the model
+    removes a reservation. *)
+Lemma linux_place_misses_vdso : forall h pkb hint nZ r kb rest a n,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z -> (nZ < two_pow_64)%Z ->
   vm_reserved h = rest ++ vdso_reserved kb (vdso_top h) ->
-  linux_place_is h thp hint nZ r = true ->
+  linux_place_is h pkb hint nZ r = true ->
   In (a, n) (vdso_reserved kb (vdso_top h)) ->
   (bv_unsigned r + nZ <= bv_unsigned a)%Z
   \/ (bv_unsigned a + bv_unsigned n <= bv_unsigned r)%Z.
 Proof.
-  intros h thp hint nZ r kb rest a n HnPos HnAl HnB Hres H Hin.
-  destruct (linux_place_is_admissible h thp hint nZ r HnPos HnAl H)
+  intros h pkb hint nZ r kb rest a n HnPos HnAl HnB Hres H Hin.
+  destruct (linux_place_is_admissible h pkb hint nZ r HnPos HnAl H)
     as (_ & _ & _ & Hfree).
   assert (Hin' : In (a, n) (vm_reserved h ++ vm_maps h)).
   { apply in_or_app. left. rewrite Hres. apply in_or_app. right. exact Hin. }

@@ -569,7 +569,7 @@ End WithSegs.
     of every outcome trace). *)
 Lemma fout_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_fout_mix segs (init_machine_state segs pc ph sp mb rnd inp)
-              (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+              (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) U ->
   (exists o, U o) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (fout_trace o).
@@ -577,9 +577,9 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
   set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
+  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) = None)
     by reflexivity.
-  assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = [])
+  assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) = [])
     by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
@@ -610,10 +610,10 @@ Lemma file_mix_equiv_only :
          U inp,
   to_fout_mix source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp) U ->
   to_fout target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp) U ->
   (exists o, U o) ->
   Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
         (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
@@ -642,10 +642,10 @@ Lemma file_mix_omni_equiv_only :
          U inp,
   to_fout_mix source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp) U ->
   to_fout target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp) U ->
   (exists o, U o) ->
   omni_equiv (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd)
              (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp.
@@ -672,7 +672,7 @@ Lemma file_mix_unmodeled_leaf_not_covered : forall segs pc ph sp brk0 mb rnd lim
   msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = Some x8 ->
   syscall_spec (sys_input segs ms' x8)
-    (init_model (segments_reserved segs) brk0 mb sp lim inp) Unmodeled ->
+    (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) Unmodeled ->
   ~ omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered segs).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' x8 Hm Hsvc Herr.

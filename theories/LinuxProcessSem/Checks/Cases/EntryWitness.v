@@ -663,7 +663,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Local Definition high_model (lim : Z) : Model :=
   init_model (segments_reserved high_segments) witness_brk witness_mbase
-             witness_sp lim witness_input.
+             witness_sp (ed_top witness_draw) lim witness_input.
 
 Local Lemma high_reaches_error : forall lim,
   reaches_error high_segments

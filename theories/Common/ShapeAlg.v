@@ -1299,13 +1299,13 @@ Proof.
   - unfold init_config.
     apply (cat_realizes source_segs
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
-             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Hs Hbm).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp)
+             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Hs Hbm).
   - unfold init_config.
     apply (cat_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp alim inp)
-             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbm).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp)
+             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbm).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1330,13 +1330,13 @@ Proof.
   - unfold init_config.
     apply (cat_realizes source_segs
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
-             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Hs Hbm).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)
+             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Hs Hbm).
   - unfold init_config.
     apply (cat_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp)
-             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbm).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp)
+             bufs code eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbm).
 Qed.
 
 (** [MmapSim.mmap_strong_equiv_te], re-derived from the same theorem, on
@@ -1345,9 +1345,9 @@ Theorem mmap_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          bf cf bs cs (inp : ProcInput),
   MmapSim.tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-      (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) bf cf bs cs ->
+      (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp) bf cf bs cs ->
   MmapSim.tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
-      (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
+      (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -1363,13 +1363,13 @@ Proof.
   - unfold init_config.
     apply (tmw_realizes source_segs
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Hs Hbf Hbs).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Hs Hbf Hbs).
   - unfold init_config.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp alim inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1378,9 +1378,9 @@ Theorem mmap_omni_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd
          bf cf bs cs (inp : ProcInput),
   MmapSim.tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-      (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) bf cf bs cs ->
+      (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp) bf cf bs cs ->
   MmapSim.tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
-      (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+      (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
@@ -1395,13 +1395,13 @@ Proof.
   - unfold init_config.
     apply (tmw_realizes source_segs
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Hs Hbf Hbs).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Hs Hbf Hbs).
   - unfold init_config.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 (* =========================================================================
@@ -1564,11 +1564,11 @@ Theorem alloc_mmap_strong_equiv_alg :
          bf cf bs cs (inp : ProcInput),
   AllocSim.to_outcomes source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp)
     (AllocSim2.two_outcomes bf cf bs cs) ->
   MmapSim.tmw target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -1588,8 +1588,8 @@ Proof.
   - unfold init_config.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp alim inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1599,11 +1599,11 @@ Theorem alloc_mmap_omni_strong_equiv_alg :
          bf cf bs cs (inp : ProcInput),
   AllocSim.to_outcomes source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)
     (AllocSim2.two_outcomes bf cf bs cs) ->
   MmapSim.tmw target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
@@ -1622,8 +1622,8 @@ Proof.
   - unfold init_config.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp)
-             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp)
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 
@@ -1742,9 +1742,9 @@ Theorem cat_ch_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          (fd ch : word) bufs code (inp : ProcInput),
   fd32 fd = fd ->
-  (forall reserved brk0 mb1 sp1 lim1 inp1,
+  (forall reserved brk0 mb1 sp1 top1 lim1 inp1,
      in_channel_reader inp1 = true ->
-     fdchan fd ch (init_model reserved brk0 mb1 sp1 lim1 inp1)) ->
+     fdchan fd ch (init_model reserved brk0 mb1 sp1 top1 lim1 inp1)) ->
   in_channel_reader inp = true ->
   to_wexit_ch source_segs fd
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
@@ -1763,13 +1763,13 @@ Proof.
   - unfold init_config.
     apply (cat_realizes_ch source_segs fd ch
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
-             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ Hrdr) H32 Hs Hbm).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp)
+             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ _ Hrdr) H32 Hs Hbm).
   - unfold init_config.
     apply (cat_realizes_ch target_segs fd ch
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp alim inp)
-             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ Hrdr) H32 Ht Hbm).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp)
+             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ _ Hrdr) H32 Ht Hbm).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1778,9 +1778,9 @@ Theorem cat_ch_omni_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd
          (fd ch : word) bufs code (inp : ProcInput),
   fd32 fd = fd ->
-  (forall reserved brk0 mb1 sp1 lim1 inp1,
+  (forall reserved brk0 mb1 sp1 top1 lim1 inp1,
      in_channel_reader inp1 = true ->
-     fdchan fd ch (init_model reserved brk0 mb1 sp1 lim1 inp1)) ->
+     fdchan fd ch (init_model reserved brk0 mb1 sp1 top1 lim1 inp1)) ->
   in_channel_reader inp = true ->
   to_wexit_ch source_segs fd
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
@@ -1798,13 +1798,13 @@ Proof.
   - unfold init_config.
     apply (cat_realizes_ch source_segs fd ch
              (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-             (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
-             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ Hrdr) H32 Hs Hbm).
+             (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)
+             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ _ Hrdr) H32 Hs Hbm).
   - unfold init_config.
     apply (cat_realizes_ch target_segs fd ch
              (init_machine_state target_segs apc aph asp amb arnd inp)
-             (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp)
-             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ Hrdr) H32 Ht Hbm).
+             (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp)
+             bufs code eq_refl eq_refl (Hinit _ _ _ _ _ _ _ Hrdr) H32 Ht Hbm).
 Qed.
 
 (** ... and the fd-1 theorem is its instance, on a launch with a reader. *)

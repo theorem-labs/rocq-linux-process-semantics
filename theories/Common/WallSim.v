@@ -810,7 +810,7 @@ Qed.
 (** The run-level omni judgment of a retry-loop run. *)
 Lemma wall_omni_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) ->
   bufs_modeled bufs ->
   to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
@@ -820,13 +820,13 @@ Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw.
   cbn [omni_run]. unfold init_config.
   exact (to_wallexit_exec segs fd ch Hfd32 bufs code _
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
+           (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)
            eq_refl eq_refl Hfdc Hbm Hw).
 Qed.
 
 Lemma wall_obs_iff : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) ->
   bufs_modeled bufs ->
   to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
@@ -841,7 +841,7 @@ Qed.
 
 Lemma wall_no_error_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) ->
   bufs_modeled bufs ->
   to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
@@ -871,10 +871,10 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp
     Hsource Htarget Hbm Hr.
   assert (HfdS : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp))
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp))
     by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   assert (HfdT : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp))
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp))
     by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   split.
   { cbn [img_segments].
@@ -915,10 +915,10 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          bufs code inp Hsource Htarget Hbm Hr.
   assert (HfdS : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp))
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp))
     by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   assert (HfdT : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp))
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp))
     by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   split.
   { apply no_error_run_modeled.

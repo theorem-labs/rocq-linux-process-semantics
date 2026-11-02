@@ -949,32 +949,45 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
 
 (** [lim] is the run's byte budget and is a [Z] in the model
     ([State.vm_limit]), so every integer is one it can hold: it is passed
-    through unchecked, and that is not an omission. *)
+    through unchecked, and that is not an omission.  [top] is the stack
+    VMA's end ([StackLayout.ed_top]), a word like [sp]. *)
 Definition init_model_checked (reserved : list (Z * Z))
-    (brk0 mbase sp : Z) (lim : Z) (r : RawProcInput) : option Model :=
+    (brk0 mbase sp top : Z) (lim : Z) (r : RawProcInput) : option Model :=
   match pairs_of_Z reserved, word_of_Z brk0, word_of_Z mbase, word_of_Z sp,
-        proc_input_of_raw r with
-  | Some res, Some b, Some mb, Some s, Some inp =>
-      Some (init_model res b mb s lim inp)
-  | _, _, _, _, _ => None
+        word_of_Z top, proc_input_of_raw r with
+  | Some res, Some b, Some mb, Some s, Some t, Some inp =>
+      Some (init_model res b mb s t lim inp)
+  | _, _, _, _, _, _ => None
   end.
 
-Theorem init_model_checked_refuses_out_of_range_sp : forall reserved brk0 mbase sp lim r,
+Theorem init_model_checked_refuses_out_of_range_sp : forall reserved brk0 mbase sp top lim r,
   ~ (0 <= sp < 2 ^ 64)%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout. unfold init_model_checked.
+  intros reserved brk0 mbase sp top lim r Hout. unfold init_model_checked.
   rewrite (proj2 (word_of_Z_refused sp) Hout).
   destruct (pairs_of_Z reserved); [|reflexivity].
   destruct (word_of_Z brk0); [|reflexivity].
   now destruct (word_of_Z mbase).
 Qed.
 
-Theorem init_model_checked_refuses_out_of_range_uid : forall reserved brk0 mbase sp lim r,
-  ~ (0 <= rpi_uid r < 2 ^ 64)%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+Theorem init_model_checked_refuses_out_of_range_top : forall reserved brk0 mbase sp top lim r,
+  ~ (0 <= top < 2 ^ 64)%Z ->
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout. unfold init_model_checked.
+  intros reserved brk0 mbase sp top lim r Hout. unfold init_model_checked.
+  rewrite (proj2 (word_of_Z_refused top) Hout).
+  destruct (pairs_of_Z reserved); [|reflexivity].
+  destruct (word_of_Z brk0); [|reflexivity].
+  destruct (word_of_Z mbase); [|reflexivity].
+  now destruct (word_of_Z sp).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_uid : forall reserved brk0 mbase sp top lim r,
+  ~ (0 <= rpi_uid r < 2 ^ 64)%Z ->
+  init_model_checked reserved brk0 mbase sp top lim r = None.
+Proof.
+  intros reserved brk0 mbase sp top lim r Hout. unfold init_model_checked.
   assert (proc_input_of_raw r = None) as Hp.
   { unfold proc_input_of_raw.
     rewrite (proj2 (word_of_Z_refused (rpi_uid r)) Hout).
@@ -986,15 +999,16 @@ Proof.
   destruct (pairs_of_Z reserved); [|reflexivity].
   destruct (word_of_Z brk0); [|reflexivity].
   destruct (word_of_Z mbase); [|reflexivity].
-  now destruct (word_of_Z sp).
+  destruct (word_of_Z sp); [|reflexivity].
+  now destruct (word_of_Z top).
 Qed.
 
 Theorem init_model_checked_refuses_out_of_range_peer_port :
-  forall reserved brk0 mbase sp lim r p,
+  forall reserved brk0 mbase sp top lim r p,
   In p (rpi_net r) -> ~ (0 <= rpe_port p < 2 ^ 16)%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r p Hin Hout. unfold init_model_checked.
+  intros reserved brk0 mbase sp top lim r p Hin Hout. unfold init_model_checked.
   assert (net_of_raw (rpi_net r) = None) as Hnet.
   { clear - Hin Hout. induction (rpi_net r) as [|q l IH]; cbn; [contradiction|].
     destruct Hin as [->|Hin].
@@ -1017,7 +1031,8 @@ Proof.
   destruct (pairs_of_Z reserved); [|reflexivity].
   destruct (word_of_Z brk0); [|reflexivity].
   destruct (word_of_Z mbase); [|reflexivity].
-  now destruct (word_of_Z sp).
+  destruct (word_of_Z sp); [|reflexivity].
+  now destruct (word_of_Z top).
 Qed.
 
 (* =========================================================================
@@ -1029,15 +1044,16 @@ Qed.
     theorems above do inline, named once because there are now eleven
     of them. *)
 Lemma init_model_checked_None_of_input :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   proc_input_of_raw r = None ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r H. unfold init_model_checked. rewrite H.
+  intros reserved brk0 mbase sp top lim r H. unfold init_model_checked. rewrite H.
   destruct (pairs_of_Z reserved); [|reflexivity].
   destruct (word_of_Z brk0); [|reflexivity].
   destruct (word_of_Z mbase); [|reflexivity].
-  now destruct (word_of_Z sp).
+  destruct (word_of_Z sp); [|reflexivity].
+  now destruct (word_of_Z top).
 Qed.
 
 Lemma proc_input_of_raw_None_kernel : forall r,
@@ -1082,22 +1098,22 @@ Qed.
 (** THE KERNEL BUILD, component by component.  The four numbers of the
     record itself first. *)
 Theorem init_model_checked_refuses_out_of_range_kernel_vdso :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   ~ (0 <= rkb_vdso (rpi_kernel r))%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout.
+  intros reserved brk0 mbase sp top lim r Hout.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
   rewrite (proj2 (n_of_Z_refused _) Hout). reflexivity.
 Qed.
 
 Theorem init_model_checked_refuses_out_of_range_kernel_guard :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   ~ (0 <= rkb_guard (rpi_kernel r))%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout.
+  intros reserved brk0 mbase sp top lim r Hout.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
   rewrite (proj2 (n_of_Z_refused _) Hout).
@@ -1105,11 +1121,11 @@ Proof.
 Qed.
 
 Theorem init_model_checked_refuses_out_of_range_kernel_rnd_bits :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   ~ (0 <= rkb_rnd_bits (rpi_kernel r))%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout.
+  intros reserved brk0 mbase sp top lim r Hout.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
   rewrite (proj2 (n_of_Z_refused _) Hout).
@@ -1118,11 +1134,11 @@ Proof.
 Qed.
 
 Theorem init_model_checked_refuses_out_of_range_kernel_vlenb :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   ~ (0 <= rkb_vlenb (rpi_kernel r))%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hout.
+  intros reserved brk0 mbase sp top lim r Hout.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
   rewrite (proj2 (n_of_Z_refused _) Hout).
@@ -1165,12 +1181,12 @@ Qed.
     statement, because which leaf a reader filled wrong is not what
     the refusal turns on. *)
 Theorem init_model_checked_refuses_out_of_range_cache_component :
-  forall reserved brk0 mbase sp lim r l,
+  forall reserved brk0 mbase sp top lim r l,
   In l (raw_cache_leaves (rkb_cache (rpi_kernel r))) ->
   ~ (0 <= rcl_size l)%Z \/ ~ (0 <= rcl_assoc l)%Z \/ ~ (0 <= rcl_line l)%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r l Hin Hbad.
+  intros reserved brk0 mbase sp top lim r l Hin Hbad.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_kernel.
   apply kernel_of_raw_None_cache.
@@ -1234,11 +1250,11 @@ Qed.
     the length bounds and the NUL that [Run.valid_path_name] forbids,
     which no [list Z] enforces at all. *)
 Theorem init_model_checked_refuses_out_of_range_execfn_byte :
-  forall reserved brk0 mbase sp lim r z,
+  forall reserved brk0 mbase sp top lim r z,
   In z (rpi_execfn r) -> ~ (0 <= z < 2 ^ 8)%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r z Hin Hout.
+  intros reserved brk0 mbase sp top lim r z Hin Hout.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_execfn. unfold execfn_of_Z.
   destruct (execfn_shape_b (rpi_execfn r)); [|reflexivity].
@@ -1246,22 +1262,22 @@ Proof.
 Qed.
 
 Theorem init_model_checked_refuses_empty_execfn :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   rpi_execfn r = [] ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hnil.
+  intros reserved brk0 mbase sp top lim r Hnil.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_execfn.
   unfold execfn_of_Z. rewrite Hnil. reflexivity.
 Qed.
 
 Theorem init_model_checked_refuses_long_execfn :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   (4095 < Z.of_nat (length (rpi_execfn r)))%Z ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hlong.
+  intros reserved brk0 mbase sp top lim r Hlong.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_execfn.
   unfold execfn_of_Z, execfn_shape_b.
@@ -1271,11 +1287,11 @@ Proof.
 Qed.
 
 Theorem init_model_checked_refuses_nul_execfn :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   In 0%Z (rpi_execfn r) ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r Hin.
+  intros reserved brk0 mbase sp top lim r Hin.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_execfn.
   unfold execfn_of_Z, execfn_shape_b.
@@ -1304,11 +1320,11 @@ Qed.
     [image_shape_b] because that is the test the caller can run
     itself. *)
 Theorem init_model_checked_refuses_unreal_image :
-  forall reserved brk0 mbase sp lim r,
+  forall reserved brk0 mbase sp top lim r,
   image_shape_b (rpi_image_fs r) = false ->
-  init_model_checked reserved brk0 mbase sp lim r = None.
+  init_model_checked reserved brk0 mbase sp top lim r = None.
 Proof.
-  intros reserved brk0 mbase sp lim r H.
+  intros reserved brk0 mbase sp top lim r H.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_image.
   now apply image_fs_of_raw_None_shape.

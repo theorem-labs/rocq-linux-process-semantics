@@ -83,7 +83,7 @@ Definition check_mremap (old old_size new_size flags : word)
         else if (old_nZ <? new_nZ)%Z
                   && negb (mremap_inplace_room_b m old old_n new_n
                              old_nZ new_nZ)
-                  && linux_place_is (m_vmmaps m) (kb_thp (m_kernel m))
+                  && linux_place_is (m_vmmaps m) (m_kernel m)
                        (Z_to_bv 64 0) new_nZ r
                   && mremap_fresh_b m old_nZ new_nZ old old_n r new_n
                   && listNN_eqb zs (mremap_tail r old_n old_nZ new_nZ)
@@ -103,7 +103,7 @@ Proof.
   unfold mremap_source_b in Hsrc. rewrite !Bool.andb_true_iff in Hsrc.
   destruct Hsrc as (((Hbound & _) & _) & _). apply Z.leb_le in Hbound.
   apply errno_ret_in_below; [reflexivity|].
-  alloc_top_bounds. unfold two_pow_64 in *; lia.
+  unfold TASK_SIZE in *; unfold two_pow_64 in *; lia.
 Qed.
 
 Lemma mremap_fresh_ret_not_errno : forall m old_nZ new_nZ old old_n dst new_n,
@@ -117,7 +117,7 @@ Proof.
   destruct Hfresh as (((((_ & _) & _) & Hbound) & _) & _).
   apply Z.leb_le in Hbound.
   apply errno_ret_in_below; [reflexivity|].
-  alloc_top_bounds. unfold two_pow_64 in *; lia.
+  unfold TASK_SIZE in *; unfold two_pow_64 in *; lia.
 Qed.
 
 Lemma mremap_fresh_neq_old : forall m old_nZ new_nZ old old_n dst new_n,
@@ -230,7 +230,7 @@ Proof.
                   (page_round_up_Z (bv_unsigned old_size))
                   (page_round_up_Z (bv_unsigned new_size)))) eqn:Hnoroom;
         [|destruct copyins; discriminate].
-      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m))
+      destruct (linux_place_is (m_vmmaps m) (m_kernel m)
                   (Z_to_bv 64 0)
                   (page_round_up_Z (bv_unsigned new_size)) r) eqn:Hplace;
         [|destruct copyins; discriminate].
@@ -337,7 +337,7 @@ Proof.
       (page_round_up_Z (bv_unsigned old_size))
       (page_round_up_Z (bv_unsigned new_size))));
       [|destruct copyins; discriminate].
-    destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) (Z_to_bv 64 0)
+    destruct (linux_place_is (m_vmmaps m) (m_kernel m) (Z_to_bv 64 0)
       (page_round_up_Z (bv_unsigned new_size)) r);
       [|destruct copyins; discriminate].
     destruct (mremap_fresh_b m

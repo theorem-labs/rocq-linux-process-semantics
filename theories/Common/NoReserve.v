@@ -263,15 +263,15 @@ Proof. reflexivity. Qed.
     Its first conjunct is [MmapSim.grant_ok]'s: the address is the ONE
     [Mmap.linux_place] gives, not merely a free one. *)
 Definition grant_ok_nr (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a
   && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-  && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
+  && (bv_unsigned a + n <=? TASK_SIZE)%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n).
 
 (** Building one: the placement test is all a caller has to show. *)
 Lemma grant_ok_nr_intro : forall hint m a n,
   (0 < n)%Z -> (n mod page_size = 0)%Z ->
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true ->
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a = true ->
   grant_ok_nr hint m a n = true.
 Proof.
   intros hint m a n Hn Hnal Hpl.
@@ -285,7 +285,7 @@ Qed.
 
 Lemma grant_ok_nr_place : forall hint m a n,
   grant_ok_nr hint m a n = true ->
-  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
+  linux_place_is (m_vmmaps m) (m_kernel m) hint n a = true.
 Proof.
   intros hint m a n H. unfold grant_ok_nr in H.
   rewrite !andb_true_iff in H. tauto.
@@ -294,7 +294,7 @@ Qed.
 Lemma grant_ok_nr_unpack : forall hint m a n,
   grant_ok_nr hint m a n = true ->
   (bv_unsigned a mod page_size = 0)%Z /\ (0 < bv_unsigned a)%Z /\
-  (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z /\
+  (bv_unsigned a + n <= TASK_SIZE)%Z /\
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n) = true.
 Proof.
   intros hint m a n H. unfold grant_ok_nr in H.
@@ -312,7 +312,7 @@ Proof.
   intros hint model a n Hn Hg.
   destruct (grant_ok_nr_unpack _ _ _ _ Hg) as (_ & _ & Hce & _).
   apply errno_ret_in_below; [reflexivity|].
-  alloc_top_bounds. unfold two_pow_64 in *. lia.
+  unfold TASK_SIZE, two_pow_64 in *. lia.
 Qed.
 
 (** The errno resolutions of the NORESERVE call (failure-anytime is
@@ -396,7 +396,7 @@ Proof.
     apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
     exists e. auto.
   - rewrite andb_true_r in Hspec.
-    destruct (linux_place_is (m_vmmaps model) (kb_thp (m_kernel model))
+    destruct (linux_place_is (m_vmmaps model) (m_kernel model)
                 (ms_gpr ms 0) (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) r)
       eqn:Hcond; rewrite ?Hcond in Hspec.
     2:{ rewrite andb_false_l in Hspec. discriminate. }

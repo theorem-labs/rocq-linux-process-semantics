@@ -230,7 +230,7 @@ Definition fixed_rw_model (lim : Z) : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096)] [(65536, 4096)] 0 0 lim (Z_to_bv 64 0)
        (Z_to_bv 64 sp_window_lo))
-    (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top lim (demo_input [] IEof)).
 
 Definition mmap_fixed_rw_in : SyscallInput :=
   mkInput 222 [65536; 4096; 3; 50; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
@@ -274,7 +274,7 @@ Proof. vm_compute. reflexivity. Qed.
     ledger. *)
 Definition sanitizer_budget_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [] 0 0 lim)
-    (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top lim (demo_input [] IEof)).
 
 Example mmap_sanitizer_budget_plus_page_is_budget_refused :
   alloc_budget_refused_b
@@ -427,7 +427,7 @@ Qed.
     request the budget sees; a shrink releases. *)
 Definition mremap_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 lim)
-              (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top lim (demo_input [] IEof)).
 
 Definition mremap_in (old_size new_size : word) : SyscallInput :=
   mkInput 216 [65536; old_size; new_size; 1; 0; 0] (fun _ => None) (fun _ => None).
@@ -446,7 +446,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Definition mremap_two_page_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 lim)
-              (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_ed_top lim (demo_input [] IEof)).
 
 Example mremap_shrink_is_not_budget_refused :
   alloc_budget_refused_b (mremap_in 8192 4096) (mremap_two_page_model 8192) = false.
@@ -496,7 +496,7 @@ Definition mremap_budget_refused_two_gate_b (old old_size new_size flags : word)
 Definition ov_model : Model :=
   with_vm_backing [(Z_to_bv 64 0x11000, Z_to_bv 64 8192)] [Z_to_bv 64 0x11000]
     (with_vmmaps (mkVmMaps [] [(0x10000, 4096); (0x11000, 8192)] 0 0 16384)
-      (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp demo_ed_top 16384 (demo_input [] IEof))).
 
 Example ov_pre_state_within_budget : vm_backing_within_limit ov_model = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -544,7 +544,7 @@ Definition un_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(0x10000, 4096); (0x11000, 8192)] [(0x11000, 8192)]
        0 0 8192 (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo))
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example un_pre_state_within_budget : vm_backing_within_limit un_model = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -811,7 +811,7 @@ Proof.
   pose proof (page_round_up_Z_mod (bv_unsigned new_size)) as Hnmod.
   pose proof (page_round_up_Z_nonneg (bv_unsigned old_size)
                 (proj1 (bv_unsigned_in_range 64 old_size))) as Honn.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
+  assert (Htop : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia).
   destruct (mremap_fresh_b m _ _ old old_n dst new_n) eqn:Hf; [exfalso | reflexivity].
   unfold mremap_fresh_b in Hf. cbv zeta in Hf.
   rewrite !Bool.andb_true_iff in Hf.
@@ -865,7 +865,7 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
   (* [dst] is fresh: the non-budget conjuncts of [Mremap.mremap_fresh_b] *)
   (bv_unsigned dst mod page_size = 0)%Z ->
   (bv_unsigned dst + page_round_up_Z (bv_unsigned new_size)
-   <= alloc_top (m_vmmaps m))%Z ->
+   <= TASK_SIZE)%Z ->
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
   (* ...and carries no backing metadata *)
@@ -914,7 +914,7 @@ Proof.
   pose proof (page_round_up_Z_mod (bv_unsigned new_size)) as Hnmod.
   pose proof (page_round_up_Z_nonneg (bv_unsigned old_size)
                 (proj1 (bv_unsigned_in_range 64 old_size))) as Honn.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
+  assert (Htop : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia).
   apply negb_true_iff.
   unfold mremap_move_budget_b.
   unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
@@ -970,7 +970,7 @@ Qed.
     budget gate [Mremap.mremap_move_budget_b] passes, the gate
     [Mremap.mremap_final_budget_b] that [Mremap.mremap_fresh_b] reads
     passes at every destination that is page aligned, ends at or below
-    [alloc_top] and is free against [vm_reserved ++ vm_maps] — the
+    [TASK_SIZE] and is free against [vm_reserved ++ vm_maps] — the
     non-budget conjuncts of [Mremap.mremap_fresh_b] that bear on the
     charge.  The ledger hypotheses are [State.noaccess_pages_owned], the
     fit of every live mapping (from which [Mremap.maps_subtract_fits]
@@ -987,7 +987,7 @@ Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
   (bv_unsigned dst mod page_size = 0)%Z ->
   (bv_unsigned new_n mod page_size = 0)%Z ->
   (0 < bv_unsigned new_n)%Z ->
-  (bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
+  (bv_unsigned dst + bv_unsigned new_n <= TASK_SIZE)%Z ->
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
   = true ->
   noaccess_pages_owned (m_vmmaps m) ->
@@ -1012,7 +1012,7 @@ Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
 Proof.
   intros m old old_n dst new_n Hdalign Hnmod Hpos Hdtop Hdfree Hown Hfit
     Hlazy Hpages Hmv.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
+  assert (Htop : (TASK_SIZE < two_pow_64)%Z) by (unfold TASK_SIZE, two_pow_64; lia).
   unfold mremap_move_budget_b in Hmv.
   unfold mremap_final_budget_b, vm_backing_within_limit.
   rewrite mremap_model_next_limit.
@@ -1176,7 +1176,7 @@ Definition touch_ms : machine_state := {|
     mark, not the allocator. *)
 Definition touch_model (lim : Z) : Model :=
   with_vm_backing [(Z_to_bv 64 touch_page, Z_to_bv 64 page_size)] []
-    (init_model (segments_reserved touch_segments) 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model (segments_reserved touch_segments) 0 0 demo_sp demo_ed_top lim (demo_input [] IEof)).
 
 (** The interpreter reports the store as a successful eight-byte access
     of the page — a scalar, so [vm_compute] never builds the successor
@@ -1261,7 +1261,7 @@ Definition wtouch_ms : machine_state := {|
 
 Definition wtouch_model : Model :=
   with_vm_backing [(0, 0x2000)] [0]
-    (init_model [] 0 0 demo_sp 0x1000 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 0x1000 (demo_input [] IEof)).
 
 Definition wtouch_eff : SyscallEffect :=
   mkEffectU 1 [] [] [] [] [(Z_to_bv 64 0x1000, 1%nat)].
@@ -1480,7 +1480,7 @@ Definition mm_s (k : nat) : machine_state := with_mem (mm_msk k) (ms_mem mm_ms0)
 
 Definition mm_model : Model :=
   init_model (segments_reserved mm_segments) (en_brk demo_entry)
-    (en_mmap_base demo_entry) (en_sp demo_entry) mm_budget demo_proc_input.
+    (en_mmap_base demo_entry) (en_sp demo_entry) (ed_top (en_draw demo_entry)) mm_budget demo_proc_input.
 Definition mm_c : config := mkCfg (mm_s 0) mm_model.
 
 Lemma mm_config :
@@ -1996,7 +1996,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Definition ebreak_model_abort (lim : Z) : Model :=
   init_model (segments_reserved ebreak_segments) (en_brk abrt_entry)
-    (en_mmap_base abrt_entry) (en_sp abrt_entry) lim abrt_input.
+    (en_mmap_base abrt_entry) (en_sp abrt_entry) (ed_top (en_draw abrt_entry)) lim abrt_input.
 
 Lemma ebreak_config_abort : forall lim,
   init_config ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)

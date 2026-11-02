@@ -243,7 +243,7 @@ Definition raw_seed : RawProcInput :=
     raw_kernel_default [97] true true.
 
 Example seed_is_accepted :
-  exists m, init_model_checked [] 4096 4096 4096 0 raw_seed = Some m.
+  exists m, init_model_checked [] 4096 4096 4096 4096 0 raw_seed = Some m.
 Proof.
   unfold init_model_checked.
   destruct (pairs_of_Z []) eqn:E1; [|vm_compute in E1; discriminate E1].
@@ -253,99 +253,104 @@ Proof.
   eexists. reflexivity.
 Qed.
 
-(* word: the reserved segments, the break, the mmap base, the stack *)
+(* word: the reserved segments, the break, the mmap base, the stack
+   pointer and the stack VMA's end *)
 Example seed_reserved_out_of_range_refused :
-  init_model_checked [(18446744073709551616, 4096)] 4096 4096 4096 0 raw_seed
+  init_model_checked [(18446744073709551616, 4096)] 4096 4096 4096 4096 0 raw_seed
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_brk_out_of_range_refused :
-  init_model_checked [] 18446744073709551616 4096 4096 0 raw_seed = None.
+  init_model_checked [] 18446744073709551616 4096 4096 4096 0 raw_seed = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_mmap_base_out_of_range_refused :
-  init_model_checked [] 4096 18446744073709551616 4096 0 raw_seed = None.
+  init_model_checked [] 4096 18446744073709551616 4096 4096 0 raw_seed = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_sp_out_of_range_refused :
-  init_model_checked [] 4096 4096 18446744073709551616 0 raw_seed = None.
+  init_model_checked [] 4096 4096 18446744073709551616 4096 0 raw_seed = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_top_out_of_range_refused :
+  init_model_checked [] 4096 4096 4096 18446744073709551616 0 raw_seed = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* word: the credentials and the launch limits *)
 Example seed_uid_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 18446744073709551616 0 [] [] 1024 0 4397
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_group_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [18446744073709551616] [] 1024 0 4397
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_nofile_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [] [] 18446744073709551616 0 4397
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_sigmask_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 18446744073709551616 4397
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_hwcap_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 18446744073709551616
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* byte: argv, envp, the file system, standard input, the random device *)
 Example seed_argv_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [[256]] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_envp_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [[256]] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_fs_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [([97], [256])] [] 0 0 [] [] 1024 0 4397
        false Sv48 [] [] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_stdin_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [256] 0 0 [] [] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_urandom_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [256] []
        raw_kernel_default [97] true true)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_tmp_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 []
        [([97], [256])] raw_kernel_default [97] true true) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* bv 32 and bv 16: a network peer's address and port *)
 Example seed_peer_addr_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 []
        [mkRawPeer 4294967296 80 [] RneFin] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
@@ -353,7 +358,7 @@ Example seed_peer_addr_out_of_range_refused :
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_peer_port_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 []
        [mkRawPeer 0 65536 [] RneFin] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
@@ -362,7 +367,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* byte: what a peer says *)
 Example seed_peer_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (mkRawProcInput [] [] [] [] 0 0 []
        [mkRawPeer 0 80 [256] RneFin] 1024 0 4397 false Sv48 [] []
        raw_kernel_default [97] true true)
@@ -388,7 +393,7 @@ Definition raw_seed_full : RawProcInput :=
     [7] [([98], [2])] raw_kernel_live [47; 97] true true.
 
 Example seed_structured_fields_in_range_accepted :
-  exists m, init_model_checked [(4096, 4096)] 8192 12288 16384 65536
+  exists m, init_model_checked [(4096, 4096)] 8192 12288 16384 4096 65536
               raw_seed_full = Some m.
 Proof.
   unfold init_model_checked.
@@ -417,7 +422,7 @@ Definition seed_with_execfn (fn : list Z) : RawProcInput :=
 
 (* [N]: which vDSO image the build carries *)
 Example seed_kernel_vdso_negative_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false (-1) true 256 0 true 0 raw_cache_absent))
   = None.
@@ -433,7 +438,7 @@ Proof. reflexivity. Qed.
 
 (* [N]: the [stack_guard_gap] boot parameter, in pages *)
 Example seed_kernel_guard_negative_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true (-1) 0 true 0 raw_cache_absent))
   = None.
@@ -449,7 +454,7 @@ Proof. reflexivity. Qed.
 
 (* [N]: vm.mmap_rnd_bits *)
 Example seed_kernel_rnd_bits_negative_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 (-1) true 0 raw_cache_absent))
   = None.
@@ -465,7 +470,7 @@ Proof. reflexivity. Qed.
 
 (* [N]: the vector unit's VLENB *)
 Example seed_kernel_vlenb_negative_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true (-1) raw_cache_absent))
   = None.
@@ -481,7 +486,7 @@ Proof. reflexivity. Qed.
 
 (* [N]: one of the twelve numbers of the four cache leaves *)
 Example seed_kernel_cache_assoc_negative_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0
           (mkRawCacheView raw_leaf_absent raw_leaf_absent
@@ -504,7 +509,7 @@ Proof. reflexivity. Qed.
 (* the exec file name: the empty name [getname_flags] refuses with
    -ENOENT, and the one-byte name beside it *)
 Example seed_execfn_empty_refused :
-  init_model_checked [] 4096 4096 4096 0 (seed_with_execfn []) = None.
+  init_model_checked [] 4096 4096 4096 4096 0 (seed_with_execfn []) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_execfn_one_byte_converted :
@@ -515,7 +520,7 @@ Proof. reflexivity. Qed.
 (* a NUL byte, which [strncpy_from_user] stops at, so no name carries
    one, and the same name with a byte that is not NUL *)
 Example seed_execfn_nul_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_execfn [47; 0; 97]) = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -526,7 +531,7 @@ Proof. reflexivity. Qed.
 
 (* byte: a value no [byte] holds, beside the largest one that does *)
 Example seed_execfn_byte_out_of_range_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_execfn [47; 256]) = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -538,7 +543,7 @@ Proof. reflexivity. Qed.
 (* the length bound: PATH_MAX counting the NUL, so 4095 bytes is a
    name [getname_flags] can return and 4096 is not *)
 Example seed_execfn_4096_bytes_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_execfn (repeat 97 4096%nat)) = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -556,7 +561,7 @@ Proof. vm_compute. reflexivity. Qed.
     [execfn_of_Z] says why that is the safe direction.  Beside it the
     same shape at 4095 bytes, which the boundary converts. *)
 Example seed_execfn_long_dev_fd_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_execfn
        ([47; 100; 101; 118; 47; 102; 100; 47; 51; 47] ++ repeat 97 4088%nat))
   = None.
@@ -602,7 +607,7 @@ Definition raw_image_flat_keys : list (list Z * list Z) :=
   [([97], [104]); ([97; 98], [104])].
 
 Example seed_unreal_image_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_image raw_image_prefix_key) = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -638,7 +643,7 @@ Proof. vm_compute. reflexivity. Qed.
     converted by [fs_of_raw] just as readily: "./a" names the file
     "a", which the flat map would keep as a file of its own. *)
 Example seed_noncanonical_image_refused :
-  init_model_checked [] 4096 4096 4096 0
+  init_model_checked [] 4096 4096 4096 4096 0
     (seed_with_image [([46; 47; 97], [104])]) = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -657,7 +662,7 @@ Proof. vm_compute. reflexivity. Qed.
     declaration -- so the same nesting the image is refused for is
     converted there. *)
 Example seed_nested_tmp_converted :
-  exists m, init_model_checked [] 4096 4096 4096 0
+  exists m, init_model_checked [] 4096 4096 4096 4096 0
               (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 []
                  [([97], [104]); ([97; 47; 98], [104])]
                  raw_kernel_default [97] true true) = Some m.

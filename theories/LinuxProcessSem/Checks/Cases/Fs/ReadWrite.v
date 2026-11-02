@@ -600,8 +600,8 @@ Qed.
 Example write_ab_events :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
     (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
 Proof. check_eq. Qed.
 
 (** The same write("ab") may deliver only "a" — a SHORT channel write,
@@ -613,15 +613,15 @@ Proof. check_eq. Qed.
 Example write_ab_short_delivery :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
     (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97]
   /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (with_copyins [(4096, 3%nat)] (mkEffect 3 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (with_copyins [(4096, 0%nat)] (mkEffect 0 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -633,12 +633,12 @@ Proof. split; [|split]; check_eq. Qed.
 Example write_a_then_b_events :
   check_syscall (mkInput 64 [1; 4096; 1; 0; 0; 0] mem_ab (fun _ => None))
     (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97]
   /\ check_syscall (mkInput 64 [1; 4097; 1; 0; 0; 0] mem_ab (fun _ => None))
        (with_copyins [(4097, 1%nat)] (mkEffect 1 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 98].
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 98].
 Proof. split; check_eq. Qed.
 
 (** Concretely for writev: [mem_ab] plus an iovec array at 8192
@@ -647,13 +647,13 @@ Proof. split; check_eq. Qed.
 
 Example read_bad_fd_ebadf :
   check_syscall (mkInput 63 [5; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. check_eq. Qed.
 
 Example read_bad_fd_success_rejected :
   check_syscall (mkInput 63 [5; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 4 [(4096, [1; 2; 3; 4])] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 4 [(4096, [1; 2; 3; 4])] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -666,22 +666,22 @@ Example write_fd_truncates_to_32_bits :
   check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 32 + 1); 4096; 2; 0; 0; 0]
                    mem_ab (fun _ => None))
     (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-      (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   /\ check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 32 + 1); 4096; 2; 0; 0; 0]
                      mem_ab (fun _ => None))
        (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
 Proof. split; check_eq. Qed.
 
 Example write_fd_high_bits_ebadf_rejected :
   check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 32 + 1); 4096; 2; 0; 0; 0]
                    mem_ab (fun _ => None))
     (with_copyins [(4096, 2%nat)] (mkEffect (errno_ret EBADF) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -691,11 +691,11 @@ Proof. check_eq. Qed.
 Example read_fd_truncates_to_32_bits :
   check_syscall (mkInput 63 [Z_to_bv 64 (2 ^ 32); 4096; 16; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 63 [Z_to_bv 64 (2 ^ 32); 4096; 16; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -938,7 +938,7 @@ Example create_write_updates_fs :
           (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 wr_create_flags; 420; 0; 0]
              mem_open_write (fun _ => None))
           (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) with
   | CheckOk m1 [] =>
       match check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_open_write (fun _ => None))
               (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) m1 with
@@ -1451,17 +1451,17 @@ Example writev_two_iovecs_equals_one_write :
        (import_iovecs_accesses mem_writev_ab 8192 2 ++
         iov_prefix_accesses (cap_iovecs [(4096, 1); (4097, 1)]) 2)
        (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-      (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   /\ check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
        (with_copyins
           (import_iovecs_accesses mem_writev_ab 8192 2 ++
            iov_prefix_accesses (cap_iovecs [(4096, 1); (4097, 1)]) 2)
           (mkEffect 2 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98].
 Proof. split; check_eq. Qed.
 
 (** Linux >= 4.1 truncates writev's count to 32 bits before validating it
@@ -1479,25 +1479,25 @@ Example writev_iovcnt_truncates_to_32_bits :
        (import_iovecs_accesses mem_writev_ab 8192 2 ++
         iov_prefix_accesses (cap_iovecs [(4096, 1); (4097, 1)]) 2)
        (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
       (with_copyins
          (import_iovecs_accesses mem_writev_ab 8192 2 ++
           iov_prefix_accesses (cap_iovecs [(4096, 1); (4097, 1)]) 2)
          (mkEffect 2 [] []))
-      (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   /\ check_syscall (mkInput 66 [1; 8192; Z_to_bv 64 (2 ^ 32); 0; 0; 0]
                      mem_writev_ab (fun _ => None))
        (mkEffect 0 [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 66 [1; 8192; 1025; 0; 0; 0] mem_writev_ab (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 66 [1; 8192; Z_to_bv 64 (two_pow_64 - 1); 0; 0; 0]
                      mem_writev_ab (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** A raw count over IOV_MAX whose low 32 bits are in range is the
@@ -1514,16 +1514,16 @@ Example writev_over_max_truncates_only :
        (import_iovecs_accesses mem_writev_ab 8192 2 ++
         iov_prefix_accesses (cap_iovecs [(4096, 1); (4097, 1)]) 2)
        (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97; WriteEv 1 98]
   /\ check_syscall (mkInput 66 [1; 8192; Z_to_bv 64 (2 ^ 32 + 2); 0; 0; 0]
                      mem_writev_ab (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_writev_ab 8192 2)
           (mkEffect (errno_ret EINVAL) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -1552,7 +1552,7 @@ Definition mem_iov_pair (b0 l0 b1 l1 : word) : word -> option byte :=
     2^63. *)
 Example writev_import_range_fault_beats_the_gather :
   let mem := mem_iov_pair 4096 1 1 (Z_to_bv 64 TASK_SIZE) in
-  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem (fun _ => None))
     (with_copyins (import_iovecs_accesses mem 8192 2)
        (mkEffect (errno_ret EFAULT) [] [])) m
@@ -1601,7 +1601,7 @@ Proof. split; check_eq. Qed.
     fail-closed one. *)
 Example writev_over_rw_bytes_max_total_is_judged :
   let mem := mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0 in
-  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   check_syscall (mkInput 66 [1; 8192; Z_to_bv 64 (2 ^ 32 + 1); 0; 0; 0] mem (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] []) m
   = CheckReject
@@ -1677,23 +1677,23 @@ Example readv_single_iovec_caps_before_access_ok :
        (with_copyins
           (import_iovecs_accesses mem_readv_cap_order 8192 1)
           (mkEffect 0 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall
        (mkInput 65 [0; 8192; 2; 0; 0; 0]
           mem_readv_cap_order (fun _ => None))
        (with_copyins
           (import_iovecs_accesses mem_readv_cap_order 8192 2)
           (mkEffect (errno_ret EFAULT) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall
        (mkInput 65 [0; 8192; 2; 0; 0; 0]
           mem_readv_cap_order (fun _ => None))
        (with_copyins
           (import_iovecs_accesses mem_readv_cap_order 8192 2)
           (mkEffect 0 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
@@ -1726,8 +1726,8 @@ Example readv_huge_len_delivers_one_byte_without_unary_expansion :
     (mkInput 65 [0; 8192; 1; 0; 0; 0] mem_readv_huge wmem_readv_one)
     (with_copyins (import_iovecs_accesses mem_readv_huge 8192 1)
        (mkEffect 1 [(4096, [120])] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] (ICons 120 IEof)))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [ReadEv 0 120]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] (ICons 120 IEof)))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [ReadEv 0 120]
   /\ check_syscall
        (mkInput 65 [3; 8192; 1; 0; 0; 0] mem_readv_huge wmem_readv_one)
        (with_copyins (import_iovecs_accesses mem_readv_huge 8192 1)
@@ -1771,35 +1771,35 @@ Example readv_heap_iovec_boundary_fails_closed :
     (mkInput 65 [0; 8192; 8; 0; 0; 0] mem_readv_eight_zero (fun _ => None))
     (with_copyins (import_iovecs_accesses mem_readv_eight_zero 8192 8)
        (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall
        (mkInput 65 [0; 8192; 8; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_eight_zero 8192 8)
           (mkEffect (errno_ret ENOMEM) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall
        (mkInput 65 [0; 8192; 9; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall
        (mkInput 65 [0; 8192; 9; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect (errno_ret ENOMEM) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret ENOMEM) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall
        (mkInput 65 [0; 8192; 1024; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall
        (mkInput 65 [5; 8192; 9; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall
        (mkInput 65 [3; 8192; 9; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
@@ -1814,18 +1814,18 @@ Example readv_heap_iovec_boundary_fails_closed :
   /\ check_syscall
        (mkInput 65 [0; 8192; Z_to_bv 64 (2 ^ 32 + 9); 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall
        (mkInput 65 [0; 8192; Z_to_bv 64 (2 ^ 32 + 9); 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect (errno_ret ENOMEM) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret ENOMEM) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall
        (mkInput 65 [0; 8192; 1025; 0; 0; 0]
           mem_readv_eight_zero (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** readv's count reaches Linux through [__import_iovec]'s [unsigned]
@@ -1842,23 +1842,23 @@ Example readv_iovcnt_truncates_to_32_bits :
                    mem_readv_iov (fun _ => None))
     (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1)
        (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = check_syscall (mkInput 65 [0; 8192; 1; 0; 0; 0] mem_readv_iov (fun _ => None))
       (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1)
          (mkEffect 0 [] []))
-      (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   /\ check_syscall (mkInput 65 [0; 8192; 1; 0; 0; 0] mem_readv_iov (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1)
           (mkEffect 0 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   (* two descriptors reaches the unreadable one: -EFAULT, so a zero return
      is inadmissible there -- the conjunct that makes the first two
      non-vacuous *)
   /\ check_syscall (mkInput 65 [0; 8192; 2; 0; 0; 0] mem_readv_iov (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_iov 8192 2)
           (mkEffect 0 [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -1873,16 +1873,16 @@ Example readv_over_max_truncates_only :
                    mem_readv_iov (fun _ => None))
     (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1)
        (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 65 [0; 8192; Z_to_bv 64 (2 ^ 32 + 1); 0; 0; 0]
                      mem_readv_iov (fun _ => None))
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 65 [0; 8192; 1; 0; 0; 0] mem_readv_iov (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1)
           (mkEffect (errno_ret EINVAL) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -1899,10 +1899,10 @@ Proof. split; [|split]; check_eq. Qed.
 
 Example readv_write_only_fd_is_ebadf_before_import :
   check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2013,12 +2013,12 @@ Example readv_unreadable_base_faults_before_the_sign_test :
   /\ check_syscall (mkInput 65 [0; 8192; 2; 0; 0; 0] mem_readv_len_only (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_len_only 8192 2)
           (mkEffect (errno_ret EFAULT) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 65 [0; 8192; 2; 0; 0; 0] mem_readv_len_only (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_readv_len_only 8192 2)
           (mkEffect (errno_ret EINVAL) [] []))
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
@@ -2038,7 +2038,7 @@ Proof. repeat split; check_eq. Qed.
 Definition iov_len_fault_model : Model :=
   vm_add_lazy 65536 4096
     (with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 4096)
-       (init_model [] 0 0 demo_sp 4096 (demo_input [] IEof))).
+       (init_model [] 0 0 demo_sp demo_ed_top 4096 (demo_input [] IEof))).
 
 Definition mem_iov_base_only : word -> option byte :=
   fun a =>
@@ -2132,7 +2132,7 @@ Definition wmem_first (n : Z) : word -> option byte :=
 
 Example partial_destination_on_a_pipe_declines :
   let mem := mem_iov_pair 4096 2 4098 3 in
-  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] hello_stdin) in
+  let m := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] hello_stdin) in
   let delivered := mkEffect 5 [(4096, [104; 101]); (4098, [108; 108; 111])] [] in
   check_syscall (mkInput 65 [0; 8192; 2; 0; 0; 0] mem (wmem_first 4))
     (with_copyins (import_iovecs_accesses mem 8192 2) delivered) m
@@ -2311,15 +2311,15 @@ Example bit31_is_part_of_the_32_bit_arguments :
   = CheckOk lseek_model []
   /\ check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 31 + 1); 4096; 2; 0; 0; 0]
                      mem_ab (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 29 [Z_to_bv 64 (2 ^ 31 + 1); TIOCGWINSZ; 4096; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 29 [1; Z_to_bv 64 (2 ^ 31 + 21523); 4096; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; first [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -2351,11 +2351,11 @@ Proof. split; [|split; [|split]]; first [check_eq | vm_compute; reflexivity]. Qe
 Example read_channel_eintr_rejected :
   check_syscall (mkInput 63 [0; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
     (mkEffect 1 [(4096, [120])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] (ICons 120 IEof)))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [ReadEv 0 120]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] (ICons 120 IEof)))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [ReadEv 0 120]
   /\ check_syscall (mkInput 63 [0; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
        (mkEffect (errno_ret EINTR) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] (ICons 120 IEof)))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] (ICons 120 IEof)))
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -2375,12 +2375,12 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 Example write_channel_eintr_rejected :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
     (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
       [WriteEv 1 97; WriteEv 1 98]
   /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (mkEffect (errno_ret EINTR) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2403,11 +2403,11 @@ Proof. split; check_eq. Qed.
 Example write_channel_epipe_rejected :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
     (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [WriteEv 1 97]
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [WriteEv 1 97]
   /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (mkEffect (errno_ret EPIPE) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2840,11 +2840,11 @@ Definition noreader_ignored_input : ProcInput :=
                    false false.
 
 Definition noreader_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit noreader_input.
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit noreader_input.
 Definition noreader_ignored_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit noreader_ignored_input.
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit noreader_ignored_input.
 Definition reader_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** PAIR 1 — A WRITE TO STANDARD OUTPUT WHOSE READER HAS GONE KILLS THE
     PROCESS, AND THE SAME WRITE WITH A READER STILL DELIVERS.
@@ -3187,7 +3187,7 @@ Proof. split; check_eq. Qed.
 (* ---- write (64) on stdout ---------------------------------------------- *)
 
 Definition rw_chan_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof).
 
 (** Before the test the channel arm delivered the sixteen bytes it
     walked across the wrap; [vfs_write]'s [access_ok] refuses the range

@@ -16,7 +16,7 @@
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Monad Specs StackLayout Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim CatExec AllocSim MmapSim.
 
 Import ListNotations.
@@ -37,11 +37,11 @@ Lemma alloc_mmap_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
   to_outcomes source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) rlim inp)
     (two_outcomes bf cf bs cs) ->
   tmw target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -76,11 +76,11 @@ Lemma alloc_mmap_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
   to_outcomes source_segs
     (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp (ed_top rrnd) source_alloc_limit inp)
     (two_outcomes bf cf bs cs) ->
   tmw target_segs
     (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+    (init_model (segments_reserved target_segs) abrk amb asp (ed_top arnd) target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)

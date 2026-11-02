@@ -506,45 +506,50 @@ Qed.
 (* ---- the bridge to Linux's rule ---- *)
 
 (** The same search over the window Linux FALLS BACK to
-    ([[TASK_UNMAPPED_BASE, alloc_top h)], mm/mmap.c,
+    ([[TASK_UNMAPPED_BASE, TASK_SIZE)], mm/mmap.c,
     [generic_get_unmapped_area_topdown], Linux v6.18.46 commit
-    1f99e9ab748f).  Its floor is the only difference from
-    [place_in_model], and the floor is what makes the answer a witness
-    Linux's rule accepts. *)
-Definition place_in_model_linux (h : VmMaps) (nZ : Z) : option Z :=
-  place (vm_reserved h ++ vm_maps h) task_unmapped_base (alloc_top h) nZ.
+    1f99e9ab748f), against the list Linux's search reads: the stack's
+    guard band ([State.stack_guard_band]) in front of the ledger.  The
+    window and the band are the differences from [place_in_model], and
+    they are what make the answer a witness Linux's rule accepts. *)
+Definition place_in_model_linux (h : VmMaps) (kb : KernelBuild) (nZ : Z) : option Z :=
+  place (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+    task_unmapped_base TASK_SIZE nZ.
+
+Lemma TASK_SIZE_lt_2_64 : (TASK_SIZE < 2 ^ 64)%Z.
+Proof. unfold TASK_SIZE. lia. Qed.
 
 (** THE WITNESS A BUILDER NEEDS.  A free gap in Linux's fallback window
-    means the rule has an answer — for every kernel build and every
-    hint.  The answer is [Placement.linux_place_b]'s, NOT [g]: the
-    search here only shows the admissible set is non-empty. *)
-Lemma place_in_model_linux_grants : forall h thp hint nZ g,
+    means the rule has an answer — for every hint.  The answer is
+    [Placement.linux_place_b]'s, NOT [g]: the search here only shows the
+    admissible set is non-empty. *)
+Lemma place_in_model_linux_grants : forall h kb hint nZ g,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
-  place_in_model_linux h nZ = Some g ->
-  exists a, linux_place h thp hint nZ a.
+  place_in_model_linux h kb nZ = Some g ->
+  exists a, linux_place h kb hint nZ a.
 Proof.
-  intros h thp hint nZ g HnPos HnAl H. unfold place_in_model_linux in H.
+  intros h kb hint nZ g HnPos HnAl H. unfold place_in_model_linux in H.
   destruct (place_sound _ _ _ _ _ H) as (Hal & Hlo & Hhi & Hfree).
-  apply (linux_place_exists h thp hint nZ HnPos HnAl).
+  apply (linux_place_exists h kb hint nZ HnPos HnAl).
   exists g. right. unfold gap_fits. repeat split; assumption.
 Qed.
 
 (** …and the search finds one whenever a free aligned range sits in
     that window, so the bridge is not vacuous. *)
-Lemma place_in_model_linux_complete : forall h nZ g,
+Lemma place_in_model_linux_complete : forall h kb nZ g,
   (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
   (g mod page_size = 0)%Z -> (task_unmapped_base <= g)%Z ->
-  (g + nZ <= alloc_top h)%Z ->
-  region_free (vm_reserved h ++ vm_maps h)
+  (g + nZ <= TASK_SIZE)%Z ->
+  region_free (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
     (Z_to_bv 64 g) (Z_to_bv 64 nZ) = true ->
-  exists a, place_in_model_linux h nZ = Some a.
+  exists a, place_in_model_linux h kb nZ = Some a.
 Proof.
-  intros h nZ g Hn Hnal HgAl Hglo Hghi Hfree.
+  intros h kb nZ g Hn Hnal HgAl Hglo Hghi Hfree.
   unfold place_in_model_linux.
   apply (place_complete _ _ _ _ g); try assumption.
   - unfold task_unmapped_base. lia.
   - unfold task_unmapped_base, page_size. reflexivity.
-  - exact (alloc_top_lt h).
+  - exact TASK_SIZE_lt_2_64.
 Qed.
 
 (* ---- that the completeness lemma is not vacuous ---- *)

@@ -217,28 +217,58 @@ Qed.
     above [bottomup_floor] and below [alloc_ceiling] makes the request
     PLACEABLE: Linux's bottom-up window reaches from
     [task_unmapped_base] (which is below [bottomup_floor]) up to
-    [alloc_top h] (which [init_sp_ok] puts at or above
-    [alloc_ceiling]), so the free gap is a fit in one of the two
-    windows and [Placement.linux_place_exists] answers.
+    [TASK_SIZE], so the free gap is a fit in that window and
+    [Placement.linux_place_exists] answers.
+
+    THE TOTALS LEAVE THE STACK OUT, AND [stack_band_ok] IS WHY THAT IS
+    SOUND.  The plan checker counts the entries of [res_below_stack h ++
+    vm_maps h]: every reserved entry except the stack's.  The stack's
+    entry is 8 MiB and its guard band is the kernel's whole guard gap,
+    and neither is in the count.  They need no room below
+    [alloc_ceiling] because they lie above it, which is exactly what the
+    [stack_band_ok] premise says, and the proof uses it to show the gap
+    misses both.  Without that premise the arithmetic could certify a
+    gap that overlaps the stack.
 
     THE GAP IS NOT THE ANSWER.  The address Linux picks is its own,
     and that is what the conclusion names; the slack argument only
     shows the search cannot come back empty. *)
-Theorem free_gap_of_totals : forall (h : VmMaps) (thp : bool) nZ tot,
+Theorem free_gap_of_totals : forall (h : VmMaps) (kb : KernelBuild) nZ tot,
   0 < nZ -> nZ mod page_size = 0 ->
-  alloc_ceiling <= alloc_top h ->
-  gw_sizes (vm_reserved h ++ vm_maps h) <= tot ->
-  bottomup_floor + nZ + tot + Z.of_nat (length (vm_reserved h ++ vm_maps h)) * (nZ + 4095) <= alloc_ceiling ->
-  exists g, linux_place h thp (Z_to_bv 64 0) nZ g.
+  stack_band_ok kb h ->
+  gw_sizes (res_below_stack h ++ vm_maps h) <= tot ->
+  bottomup_floor + nZ + tot
+    + Z.of_nat (length (res_below_stack h ++ vm_maps h)) * (nZ + 4095)
+    <= alloc_ceiling ->
+  exists g, linux_place h kb (Z_to_bv 64 0) nZ g.
 Proof.
-  intros h thp nZ tot HnZ HnAl Htop Htot Hband.
-  destruct (free_gap_of_slack (vm_reserved h ++ vm_maps h) nZ ltac:(lia))
+  intros h kb nZ tot HnZ HnAl [Hstk Hband] Htot Hroom.
+  destruct (free_gap_of_slack (res_below_stack h ++ vm_maps h) nZ ltac:(lia))
     as (g & Hal & Hfl & Hc & Hfree).
   { rewrite gap_weight_sizes. lia. }
-  apply (linux_place_exists h thp (Z_to_bv 64 0) nZ HnZ HnAl).
+  pose proof bottomup_floor_val as Hfv. pose proof alloc_ceiling_val as Hcv.
+  assert (HgW : bv_unsigned (Z_to_bv 64 g) = g) by (apply fg_u64_lit; lia).
+  assert (HnW : bv_unsigned (Z_to_bv 64 nZ) = nZ) by (apply fg_u64_lit; lia).
+  (* the gap ends at or below the ceiling, so it misses every entry that
+     starts at or above it: the stack's entry and its guard band *)
+  assert (Above : forall b s, alloc_ceiling <= bv_unsigned b ->
+            iv_overlap (Z_to_bv 64 g) (Z_to_bv 64 nZ) b s = false).
+  { intros b s Hb. unfold iv_overlap. rewrite HgW, HnW.
+    apply andb_false_iff. right. apply Z.ltb_ge. lia. }
+  assert (Hall : region_free (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+                   (Z_to_bv 64 g) (Z_to_bv 64 nZ) = true).
+  { apply region_free_intro. intros b s Hin.
+    apply in_app_iff in Hin as [Hin|Hin]; [exact (Above b s (Hband _ Hin))|].
+    apply in_app_iff in Hin as [Hin|Hin].
+    - destruct (stack_entry_holds (vm_init_sp h) (b, s)) eqn:Hh.
+      + exact (Above b s (Hstk _ Hin Hh)).
+      + apply (region_free_In _ _ _ _ _ Hfree). apply in_app_iff. left.
+        unfold res_below_stack. apply filter_In. split; [exact Hin|]. now rewrite Hh.
+    - apply (region_free_In _ _ _ _ _ Hfree). apply in_app_iff. now right. }
+  apply (linux_place_exists h kb (Z_to_bv 64 0) nZ HnZ HnAl).
   exists g. right. unfold gap_fits.
-  pose proof bottomup_floor_val as Hfv.
-  repeat split; [exact Hal | unfold task_unmapped_base; lia | lia | exact Hfree].
+  repeat split; [exact Hal | unfold task_unmapped_base; lia
+                | unfold TASK_SIZE; lia | exact Hall].
 Qed.
 
 (* ========================================================================= *)
@@ -350,44 +380,53 @@ Qed.
     below [Z.min (vm_mmap_base h) (page_round_down_Z (alloc_top h))];
     [mmap_top_of_ceiling] below turns the two bounds a caller holds
     into this one. *)
-Theorem null_hint_grant_above : forall h (a : word) nZ K Y,
+Theorem null_hint_grant_above : forall h kb (a : word) nZ K Y,
   0 < nZ -> nZ mod page_size = 0 ->
   bv_unsigned a mod page_size = 0 ->
-  Y mod page_size = 0 -> Y <= mmap_top h ->
+  Y mod page_size = 0 -> Y <= mmap_top h -> Y <= TASK_SIZE ->
   page_size <= K -> K + 2 * nZ <= Y ->
   ledger_split (vm_reserved h ++ vm_maps h) K Y ->
-  placement_ok_b h (bv_unsigned a) nZ = true ->
+  placement_ok_b kb h (bv_unsigned a) nZ = true ->
   bottomup_floor <= bv_unsigned a \/ Y - 2 * nZ < bv_unsigned a.
 Proof.
-  intros h a nZ K Y HnZ HnAl HaAl HYal HYB HK HY Hsplit Hpl.
+  intros h kb a nZ K Y HnZ HnAl HaAl HYal HYB HYT HK HY Hsplit Hpl.
   right.
   pose proof (fg_u64_range a) as Ha.
   pose proof pmd_size_pos as Hpmd.
   pose proof (mmap_top_lt_two_pow_64 h) as Htop64.
   assert (HY64 : Y < 2 ^ 64) by (clear - Htop64 HYB; unfold two_pow_64 in *; lia).
+  (* the stack's guard band starts at or above the base, so above [Y] *)
+  assert (HBase : Y <= bv_unsigned (vm_mmap_base h)).
+  { unfold mmap_top in HYB. lia. }
   (* every window of width [w <= Y - K] ending at [Y] is a top-down fit *)
   assert (FIT : forall w, 0 < w -> w mod page_size = 0 -> K + w <= Y ->
-           gap_fits (vm_reserved h ++ vm_maps h) page_size (mmap_top h) w (Y - w)).
+           gap_fits (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+             page_size (Z.min (mmap_top h) TASK_SIZE) w (Y - w)).
   { intros w Hw Hwal Hroom. unfold gap_fits.
     repeat split.
     - rewrite Zminus_mod, HYal, Hwal. reflexivity.
     - unfold page_size in HK |- *. lia.
     - lia.
-    - exact (ledger_split_window_free_w _ K Y w ltac:(unfold page_size in HK; lia)
-               Hw ltac:(lia) HY64 Hsplit). }
+    - pose proof (ledger_split_window_free_w _ K Y w ltac:(unfold page_size in HK; lia)
+                    Hw ltac:(lia) HY64 Hsplit) as Hfr.
+      apply region_free_intro. intros b s Hin.
+      apply in_app_iff in Hin as [Hin|Hin].
+      + pose proof (stack_guard_band_above_base kb h b s Hin) as Hb.
+        unfold iv_overlap. rewrite !fg_u64_lit by lia.
+        apply andb_false_iff. right. apply Z.ltb_ge. lia.
+      + exact (region_free_In _ _ _ _ _ Hfr Hin). }
   (* the top-down search's answer is at or above [Y - w] *)
   assert (TD : forall w b, 0 < w -> w mod page_size = 0 -> K + w <= Y ->
-           topdown_search h w b -> (Y - w <= b)%Z).
+           topdown_search h kb w b -> (Y - w <= b)%Z).
   { intros w b Hw Hwal Hroom Hts. unfold topdown_search in Hts. cbv zeta in Hts.
     destruct Hts as [[_ Hmax]|[Hno _]].
     - exact (Hmax _ (FIT w Hw Hwal Hroom)).
     - exfalso. exact (Hno (Y - w) (FIT w Hw Hwal Hroom)). }
-  apply (placement_ok_b_iff h (bv_unsigned a) nZ HnZ HnAl) in Hpl.
-  destruct Hpl as (thp & Hpl).
-  unfold linux_place in Hpl. cbv zeta in Hpl.
+  apply (placement_ok_b_iff kb h (bv_unsigned a) nZ HnZ HnAl) in Hpl.
+  unfold placement_ok, linux_place in Hpl. cbv zeta in Hpl.
   assert (Hg : hint_address (Z_to_bv 64 0) = 0) by (vm_compute; reflexivity).
   rewrite Hg, Z.eqb_refl in Hpl. cbv iota in Hpl.
-  destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool eqn:Hthp.
+  destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool eqn:Hthp.
   - assert (Hmul : (nZ mod pmd_size = 0)%Z)
       by (apply andb_true_iff in Hthp as [_ E]; now apply Z.eqb_eq).
     assert (Hge : (pmd_size <= nZ)%Z).
@@ -398,6 +437,71 @@ Proof.
       reflexivity. }
     destruct Hpl as [(ret & Hret & ->)|[_ Hts]].
     + pose proof (thp_align_bounds ret) as [Hb1 _].
+      pose proof (TD (nZ + pmd_size) ret ltac:(lia) HpadAl ltac:(lia) Hret). lia.
+    + pose proof (TD nZ _ HnZ HnAl ltac:(lia) Hts). lia.
+  - pose proof (TD nZ _ HnZ HnAl ltac:(lia) Hpl). lia.
+Qed.
+
+(** …and BELOW the top of Linux's top-down window: the same free window
+    under [Y] means the top-down search answers, so the bottom-up
+    fallback, which reaches [TASK_SIZE], never runs.  A plan node needs
+    this to keep the grant under the run's ceiling. *)
+Theorem null_hint_grant_below_top : forall h kb (a : word) nZ K Y,
+  0 < nZ -> nZ mod page_size = 0 ->
+  bv_unsigned a mod page_size = 0 ->
+  Y mod page_size = 0 -> Y <= mmap_top h -> Y <= TASK_SIZE ->
+  page_size <= K -> K + 2 * nZ <= Y ->
+  ledger_split (vm_reserved h ++ vm_maps h) K Y ->
+  placement_ok_b kb h (bv_unsigned a) nZ = true ->
+  bv_unsigned a + nZ <= mmap_top h.
+Proof.
+  intros h kb a nZ K Y HnZ HnAl HaAl HYal HYB HYT HK HY Hsplit Hpl.
+  pose proof (fg_u64_range a) as Ha.
+  pose proof pmd_size_pos as Hpmd.
+  pose proof (mmap_top_lt_two_pow_64 h) as Htop64.
+  assert (HY64 : Y < 2 ^ 64) by (clear - Htop64 HYB; unfold two_pow_64 in *; lia).
+  (* the stack's guard band starts at or above the base, so above [Y] *)
+  assert (HBase : Y <= bv_unsigned (vm_mmap_base h)).
+  { unfold mmap_top in HYB. lia. }
+  (* every window of width [w <= Y - K] ending at [Y] is a top-down fit *)
+  assert (FIT : forall w, 0 < w -> w mod page_size = 0 -> K + w <= Y ->
+           gap_fits (stack_guard_band kb h ++ vm_reserved h ++ vm_maps h)
+             page_size (Z.min (mmap_top h) TASK_SIZE) w (Y - w)).
+  { intros w Hw Hwal Hroom. unfold gap_fits.
+    repeat split.
+    - rewrite Zminus_mod, HYal, Hwal. reflexivity.
+    - unfold page_size in HK |- *. lia.
+    - lia.
+    - pose proof (ledger_split_window_free_w _ K Y w ltac:(unfold page_size in HK; lia)
+                    Hw ltac:(lia) HY64 Hsplit) as Hfr.
+      apply region_free_intro. intros b s Hin.
+      apply in_app_iff in Hin as [Hin|Hin].
+      + pose proof (stack_guard_band_above_base kb h b s Hin) as Hb.
+        unfold iv_overlap. rewrite !fg_u64_lit by lia.
+        apply andb_false_iff. right. apply Z.ltb_ge. lia.
+      + exact (region_free_In _ _ _ _ _ Hfr Hin). }
+  (* the top-down search's answer is at or above [Y - w] *)
+  assert (TD : forall w b, 0 < w -> w mod page_size = 0 -> K + w <= Y ->
+           topdown_search h kb w b -> (b + w <= mmap_top h)%Z).
+  { intros w b Hw Hwal Hroom Hts. unfold topdown_search in Hts. cbv zeta in Hts.
+    destruct Hts as [[(_ & _ & Hhi & _) _]|[Hno _]].
+    - lia.
+    - exfalso. exact (Hno (Y - w) (FIT w Hw Hwal Hroom)). }
+  apply (placement_ok_b_iff kb h (bv_unsigned a) nZ HnZ HnAl) in Hpl.
+  unfold placement_ok, linux_place in Hpl. cbv zeta in Hpl.
+  assert (Hg : hint_address (Z_to_bv 64 0) = 0) by (vm_compute; reflexivity).
+  rewrite Hg, Z.eqb_refl in Hpl. cbv iota in Hpl.
+  destruct (kb_thp kb && (nZ mod pmd_size =? 0)%Z)%bool eqn:Hthp.
+  - assert (Hmul : (nZ mod pmd_size = 0)%Z)
+      by (apply andb_true_iff in Hthp as [_ E]; now apply Z.eqb_eq).
+    assert (Hge : (pmd_size <= nZ)%Z).
+    { pose proof (Z.div_mod nZ pmd_size ltac:(lia)) as D.
+      assert (0 < nZ / pmd_size)%Z by nia. nia. }
+    assert (HpadAl : ((nZ + pmd_size) mod page_size = 0)%Z).
+    { rewrite Zplus_mod, HnAl, (mod_pmd_mod_page pmd_size (Z_mod_same_full pmd_size)).
+      reflexivity. }
+    destruct Hpl as [(ret & Hret & ->)|[_ Hts]].
+    + pose proof (thp_align_bounds ret) as [_ Hb2].
       pose proof (TD (nZ + pmd_size) ret ltac:(lia) HpadAl ltac:(lia) Hret). lia.
     + pose proof (TD nZ _ HnZ HnAl ltac:(lia) Hts). lia.
   - pose proof (TD nZ _ HnZ HnAl ltac:(lia) Hpl). lia.
@@ -426,21 +530,21 @@ Qed.
     >= the floor).  The ceiling the mark is measured against is
     [mmap_top h], the top of Linux's top-down window; use
     [mmap_top_of_ceiling] to produce it. *)
-Theorem null_hint_grant_step : forall h (a n : word) nZ K Y,
+Theorem null_hint_grant_step : forall h kb (a n : word) nZ K Y,
   0 < nZ -> nZ mod page_size = 0 ->
   bv_unsigned a mod page_size = 0 ->
-  Y mod page_size = 0 -> Y <= mmap_top h ->
+  Y mod page_size = 0 -> Y <= mmap_top h -> Y <= TASK_SIZE ->
   page_size <= K -> K < bottomup_floor -> K + 2 * nZ <= Y ->
   ledger_split (vm_reserved h ++ vm_maps h) K Y ->
-  placement_ok_b h (bv_unsigned a) nZ = true ->
+  placement_ok_b kb h (bv_unsigned a) nZ = true ->
   let Y' := Z.min Y (bv_unsigned a) in
   K < bv_unsigned a
   /\ (bottomup_floor <= Y' \/ Y - 2 * nZ + page_size <= Y') /\ Y' <= Y
   /\ Y' mod page_size = 0 /\ Y' <= mmap_top h
   /\ ledger_split (vm_reserved h ++ (a, n) :: vm_maps h) K Y'.
 Proof.
-  intros h a n nZ K Y HnZ HnAl HaAl HYal HYB HK HKfl HY Hsplit Hpl Y'.
-  pose proof (null_hint_grant_above h a nZ K Y HnZ HnAl HaAl HYal HYB HK HY Hsplit Hpl) as Habove.
+  intros h kb a n nZ K Y HnZ HnAl HaAl HYal HYB HYT HK HKfl HY Hsplit Hpl Y'.
+  pose proof (null_hint_grant_above h kb a nZ K Y HnZ HnAl HaAl HYal HYB HYT HK HY Hsplit Hpl) as Habove.
   pose proof bottomup_floor_val as Hfv.
   (* page arithmetic: name the quotients so everything is linear *)
   pose proof (page_multiple_eq _ HaAl) as E1.
@@ -476,18 +580,18 @@ Proof. unfold kHighMemBeg, mmap_base_min. rewrite bottomup_floor_val. split; ref
 
 (** Instance: with the high mark at least [kHighMemBeg + 2 nZ], a NULL-hint
     grant is at or above [kHighMemBeg + page_size]. *)
-Corollary kHighMemBeg_le : forall h (a : word) nZ Y,
+Corollary kHighMemBeg_le : forall h kb (a : word) nZ Y,
   0 < nZ -> nZ mod page_size = 0 ->
   bv_unsigned a mod page_size = 0 ->
-  Y mod page_size = 0 -> Y <= mmap_top h ->
+  Y mod page_size = 0 -> Y <= mmap_top h -> Y <= TASK_SIZE ->
   kHighMemBeg + 2 * nZ <= Y ->
   ledger_split (vm_reserved h ++ vm_maps h) kHighMemBeg Y ->
-  placement_ok_b h (bv_unsigned a) nZ = true ->
+  placement_ok_b kb h (bv_unsigned a) nZ = true ->
   kHighMemBeg < bv_unsigned a.
 Proof.
-  intros h a nZ Y HnZ HnAl HaAl HYal HYB HY Hsplit Hpl.
+  intros h kb a nZ Y HnZ HnAl HaAl HYal HYB HYT HY Hsplit Hpl.
   assert (HK : page_size <= kHighMemBeg) by (unfold kHighMemBeg, page_size; clear; lia).
-  destruct (null_hint_grant_above h a nZ kHighMemBeg Y HnZ HnAl HaAl HYal HYB HK HY Hsplit Hpl)
+  destruct (null_hint_grant_above h kb a nZ kHighMemBeg Y HnZ HnAl HaAl HYal HYB HYT HK HY Hsplit Hpl)
     as [Hfl|Hlt]; clear HnAl HaAl HYal Hpl; [|lia].
   rewrite bottomup_floor_val in Hfl. unfold kHighMemBeg. lia.
 Qed.

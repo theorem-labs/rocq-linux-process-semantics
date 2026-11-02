@@ -55,7 +55,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
   PropExec CatExec CatSim SeqExec StoreOk ShapeAlg DivergeSim SpinAlg AgentLib
-  AsanAcct AsanAcctShape AsanPlacement BackingAlgebra.
+  AsanAcct AsanAcctShape AsanCeil AsanPlacement BackingAlgebra.
 From LinuxProcessSemantics.Common Require Import AxSymExec3 AxSymExec3Sound AxSymRun3 AsanPlan.
 Local Instance asanreflect_fx : PropExec.FPState := PropExec.fx0.
 Import ListNotations.
@@ -338,11 +338,14 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
   co_fds   : fds_ok E (a_fd cs) model;
   co_fs    : m_fs model = FS0;
   co_tid   : a_tidset cs = false -> m_tid model = None;
-  co_res   : exists rx : list (word * word),
-               vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ rx
-               /\ Forall resx_entry_ok rx
+  co_res   : exists stk rx : list (word * word),
+               vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ (stk ++ rx)
+               /\ Forall resx_entry_ok (stk ++ rx)
                /\ (length rx <= n_resx A)%nat
-               /\ sum_sizes rx <= resx_bytes A;
+               /\ sum_sizes rx <= resx_bytes A
+               /\ Forall (fun iv => stack_entry_holds (vm_init_sp (m_vmmaps model)) iv = true) stk
+               /\ Forall (fun iv => stack_entry_holds (vm_init_sp (m_vmmaps model)) iv = false)
+                         (segments_reserved SEGS ++ rx);
   co_limit : vm_limit (m_vmmaps model) = LIMIT;
   (* model: the ledger *)
   co_maps  : maps_match E (a_maps cs) (vm_maps (m_vmmaps model));
@@ -396,7 +399,12 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
                forall a : word, bv_unsigned (edenot E (am_base m)) <= bv_unsigned a < bv_unsigned (edenot E (am_base m)) + bv_unsigned (edenot E (am_len m)) ->
                  in_ivs (bv_unsigned a) (vm_noaccess (m_vmmaps model)) = false
                  /\ page_in_ranges (page_base a) (m_vm_lazy model) = true) (a_maps cs);
-  co_totsz : sum_sizes (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) <= a_totsz cs;
+  (* the reserved entries holding the run's stack pointer — the stack's
+     entry — are not counted: [co_band] puts them above the ceiling the
+     gap arithmetic measures under ([AsanPlacement.free_gap_of_totals]) *)
+  co_totsz : sum_sizes (List.filter (fun iv => negb (stack_entry_holds (vm_init_sp (m_vmmaps model)) iv))
+                                    (vm_reserved (m_vmmaps model))
+                        ++ vm_maps (m_vmmaps model)) <= a_totsz cs;
   co_split : exists Y, a_ylo cs <= Y /\ Y mod 4096 = 0 /\ Y <= bv_unsigned (vm_mmap_base (m_vmmaps model))
                        /\ ledger_split (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) kHighMemBeg Y;
   co_brk   : vm_brk (m_vmmaps model) = edenot E (a_brk cs);
@@ -420,7 +428,15 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
       ceiling, inside a tracked entry, which may sit above the extra
       reservations, so no numeric bound can place it below them. *)
   co_mres  : Forall (fun iv => Forall (iv_disjoint iv) (vm_reserved (m_vmmaps model)))
-                    (vm_maps (m_vmmaps model))
+                    (vm_maps (m_vmmaps model));
+  (** THE STACK'S ENTRY AND ITS GUARD BAND LIE ABOVE THE CEILING.  The
+      model's ledger holds the stack as a reserved entry and keeps the
+      guard band below it free ([State.stack_reserved],
+      [State.stack_guard_band]); [co_totsz] leaves both out of the gap
+      arithmetic, and this field is what makes that sound.  It reads only
+      [vm_reserved], [vm_init_sp], [vm_mmap_base] and the kernel build,
+      which no step changes, so every node carries it unchanged. *)
+  co_band  : stack_band_ok (m_kernel model) (m_vmmaps model)
 }.
 
 (* ######################################################################### *)
@@ -571,6 +587,8 @@ Proof.
   - replace (eager_used model') with (eager_used model) by (symmetry; apply Hfr). assumption.
   - intros a Hh. rewrite (hid_same _ _ _ _ Hs) in Hh. rewrite (Hhid a Hh). auto.
   - eapply SINV_frame; [|eassumption]. intros a Ha. apply Hhid. unfold hid. rewrite Ha. reflexivity.
+  - (* co_band: the kernel build is a field no step writes *)
+    rewrite Hs, m_kernel_with_vm_backing. assumption.
 Qed.
 
 (** ---- the knowledge GC / forgetting facts is a weakening ----------------- *)

@@ -735,6 +735,6 @@ Qed.
 (** The initial model's ledgers are well formed when the image's reserved
     list is (checked per image by computation) — [vm_maps], [vm_noaccess]
     and the lazy ledger start empty. *)
-Lemma model_ivs_wf_init : forall reserved brk0 mbase sp lim inp,
-  valid_sp sp -> model_ivs_wf (init_model reserved brk0 mbase sp lim inp).
+Lemma model_ivs_wf_init : forall reserved brk0 mbase sp top lim inp,
+  valid_sp sp -> model_ivs_wf (init_model reserved brk0 mbase sp top lim inp).
 Proof. intros. repeat split; try (intros q Hq; cbn in Hq; contradiction). apply init_sp_ok_init_model; assumption. Qed.

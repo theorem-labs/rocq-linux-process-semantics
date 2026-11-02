@@ -485,7 +485,7 @@ Section Init.
 
   Definition R0 : bvmap 5 word := regupd (regupd bvmap_empty 10 (Z_to_bv 64 0)) 2 sp.
   Definition FULL0 : word -> option byte := wrap_mem inp mbase ph entryw sp rdraw.
-  Definition model0 : Model := init_model (segments_reserved segs) brk0 mbase sp LIMIT inp.  (* init_model takes the run stack pointer *)
+  Definition model0 : Model := init_model (segments_reserved segs) brk0 mbase sp top LIMIT inp.  (* init_model takes the run stack pointer *)
 
   Let cs0 := init_acs_of A CEIL.
   Let cs0z := init_acs_of_zero A CEIL.   (* zero-draw initial state: init_kn_zero *)
@@ -512,9 +512,16 @@ Section Init.
     page_round_down_Z (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
   Let RESX : list (word * word) := vdso_reserved (in_kernel inp) VTOP.
 
+  (** THE STACK'S LEDGER ENTRY ([State.stack_reserved]): the window the
+      launch maps for the stack, [[stack_floor, ed_top)].  [init_reserved]
+      puts it between the image's reservations and the vDSO pair. *)
+  Let TOPZ : Z := bv_unsigned top.
+  Let FL : Z := stack_floor (in_kernel inp) mbase TOPZ.
+  Let STK : list (word * word) := stack_reserved (in_kernel inp) mbase TOPZ.
+
   Lemma model0_facts :
     m_halted model0 = None /\ m_fds model0 = fds_std /\ m_tid model0 = None
-    /\ vm_reserved (m_vmmaps model0) = segments_reserved segs ++ RESX /\ vm_maps (m_vmmaps model0) = []
+    /\ vm_reserved (m_vmmaps model0) = segments_reserved segs ++ (STK ++ RESX) /\ vm_maps (m_vmmaps model0) = []
     /\ vm_noaccess (m_vmmaps model0) = [] /\ m_vm_lazy model0 = [] /\ m_vm_materialized model0 = []
     /\ vm_limit (m_vmmaps model0) = LIMIT /\ vm_brk (m_vmmaps model0) = brk0 /\ vm_start_brk (m_vmmaps model0) = brk0
     /\ vm_mmap_base (m_vmmaps model0) = mbase /\ eager_used model0 = 0.
@@ -569,6 +576,147 @@ Section Init.
   Lemma resx_bytes_lo : 81920 <= resx_bytes A.
   Proof.
     pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. unfold resx_bytes. lia.
+  Qed.
+
+  (** The entry stack pointer sits below the stack VMA's end: [Run.launch_sp_hi]
+      is [align_down16 (top - 8 - L) - C]. *)
+  (** [lia] with the alignment facts dropped first: micromega turns each
+      [_ mod _ = 0] into a fresh quotient and the search goes nonlinear
+      (see [Checks.Placement.plia]). *)
+  Local Ltac nlia :=
+    repeat match goal with H : (_ mod _ = 0)%Z |- _ => clear H end; lia.
+
+  Lemma sp_lt_top : usp < TOPZ.
+  Proof.
+    pose proof Hlau as Hl. destruct Hl as (_ & [_ [_ Hhi]] & _).
+    unfold launch_sp_hi, align_down16 in Hhi.
+    pose proof (Nat2Z.is_nonneg
+      (launch_string_bytes (in_argv inp) (in_envp inp) (in_execfn inp))).
+    pose proof (Nat2Z.is_nonneg
+      (block_head_size (kb_rseq (in_kernel inp)) (in_argv inp) (in_envp inp))).
+    unfold usp, TOPZ, top. nlia.
+  Qed.
+
+  (** WHERE THE STACK'S ENTRY IS, for this launch: it ends at the stack VMA's
+      end, starts at [FL], holds the entry stack pointer, and starts at least
+      the default guard gap above [AsanCeil.alloc_ceiling]:
+      [Run.entry_launch_ok_va] puts the stack VMA's end at least
+      [STACK_TOP - 2^30] under randomization, which [State.default_kernel]
+      has on, and the entry stack pointer within 2244095 bytes of the floor
+      ([StoreOk.stack_window_lo_valid]). *)
+  Lemma stk_facts :
+    STK = [ (Z_to_bv 64 FL, Z_to_bv 64 (TOPZ - FL)) ]
+    /\ FL <= usp < TOPZ /\ TOPZ <= TASK_SIZE
+    /\ FL mod 4096 = 0 /\ TOPZ mod 4096 = 0
+    /\ alloc_ceiling + stack_guard_gap_bytes (in_kernel inp) <= FL
+    /\ bv_unsigned mbase + stack_guard_gap_bytes (in_kernel inp) <= FL.
+  Proof.
+    pose proof sp_lt_top as Hst.
+    pose proof (stack_window_lo_valid inp sp brk0 mbase rdraw Hlaunch Hlau) as Hwl.
+    pose proof (stack_window_lo_ge_sp inp sp brk0 mbase rdraw Hlau) as Hwg.
+    pose proof Hlau as Hl. destruct Hl as ((Htal & Hthi & Htlo) & _ & _).
+    pose proof mb_range as ((Y1 & Y2) & Y3).
+    pose proof usp_lo as Hu.
+    assert (Hg : stack_guard_gap_bytes (in_kernel inp) = 1048576) by (vm_compute; reflexivity).
+    assert (Ha : kb_aslr (in_kernel inp) = true) by reflexivity.
+    rewrite Ha in Htlo.
+    unfold stack_window_lo in Hwl, Hwg. rewrite Hg in Hwl, Hwg.
+    unfold STK, FL, TOPZ, usp, top in *.
+    unfold stack_reserved, stack_floor. rewrite Hg.
+    set (T := bv_unsigned (ed_top rdraw)) in *.
+    set (F := Z.max (T - stack_max_size) (bv_unsigned mbase + 1048576)) in *.
+    unfold va_stack_top, sp_window_hi, stack_rnd_max, page_size in Hthi, Htlo, Htal.
+    cbv beta iota in Hthi, Htlo.
+    unfold mmap_base_min, mmap_base_max, sp_window_hi in Y1, Y2. unfold page_size in Y3.
+    unfold stack_window_reach in Hwl.
+    assert (HF : F = Z.max (T - 8388608) (bv_unsigned mbase + 1048576))
+      by (unfold F; rewrite stack_max_size_val; reflexivity).
+    rewrite stack_max_size_val in Hwl, Hwg.
+    assert (Hfl_al : F mod 4096 = 0).
+    { rewrite HF. apply Z.max_case.
+      - rewrite Zminus_mod, Htal. reflexivity.
+      - rewrite Zplus_mod, Y3. reflexivity. }
+    assert (Hlt : (F <? T) = true) by (apply Z.ltb_lt; lia).
+    assert (Hle : (T <=? TASK_SIZE) = true) by (apply Z.leb_le; unfold TASK_SIZE; lia).
+    cbv zeta. rewrite Hlt, Hle. cbn [andb].
+    split; [reflexivity|].
+    assert (HTal : T mod 4096 = 0) by exact Htal.
+    split; [|split; [|split; [exact Hfl_al|split; [exact HTal|]]]];
+      clear Hfl_al HTal Htal Y3;
+      unfold alloc_ceiling, TASK_SIZE in *; lia.
+  Qed.
+
+  Lemma stk_holds_sp : Forall (fun iv => stack_entry_holds sp iv = true) STK.
+  Proof.
+    destruct stk_facts as (Hs & [H1 H2] & H3 & _).
+    rewrite Hs. constructor; [|constructor].
+    unfold stack_entry_holds. cbn [fst snd].
+    pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+    unfold FL, usp, TASK_SIZE in *.
+    rewrite !u64_lit by nlia.
+    apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; nlia.
+  Qed.
+
+  (** The image's reservations and the vDSO pair do not hold the stack
+      pointer: the image is under 2^32 ([img_facts]) and the pair under the
+      mmap base. *)
+  Lemma rest_misses_sp :
+    Forall (fun iv => stack_entry_holds sp iv = false) (segments_reserved segs ++ RESX).
+  Proof.
+    pose proof usp_lo as Hu. pose proof vtop_range as [[T1 T2] T3].
+    pose proof mb_range as ((Y1 & Y2) & Y3).
+    apply Forall_app. split.
+    - apply Forall_forall. intros [b s] Hin.
+      pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2].
+      pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4).
+      cbn [fst snd] in R1, R2. unfold stack_entry_holds. cbn [fst snd].
+      apply andb_false_iff. right. apply Z.ltb_ge. unfold usp in Hu. nlia.
+    - assert (Hv : VTOP <= usp - stack_max_size).
+      { unfold VTOP, usp.
+        pose proof (page_round_down_Z_le
+          (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))). lia. }
+      rewrite resx_eq.
+      apply Forall_cons; [|apply Forall_cons; [|apply Forall_nil]];
+        unfold stack_entry_holds; cbn [fst snd];
+        rewrite !u64_lit by (unfold mmap_base_min, mmap_base_max, sp_window_hi in *; nlia);
+        apply andb_false_iff; right; apply Z.ltb_ge;
+        unfold usp, stack_max_size, mmap_base_min, mmap_base_max, sp_window_hi in *; nlia.
+  Qed.
+
+  (** THE BAND AND THE STACK'S ENTRY LIE ABOVE THE CEILING
+      ([AsanCeil.stack_band_ok]), for the run's own kernel build.  The guard
+      gap enters here and nowhere else: the launch's kernel is
+      [State.default_kernel], whose gap is 256 pages, and [stk_facts] carries
+      it.  A launch on another build would discharge the same premise,
+      [alloc_ceiling + stack_guard_gap_bytes kb <= stack_floor], from its own
+      gap. *)
+  Lemma stack_band_ok_init : stack_band_ok (m_kernel model0) (m_vmmaps model0).
+  Proof.
+    destruct model0_facts as (_ & _ & _ & M4 & _).
+    destruct stk_facts as (Hs & [H1 H2] & H3 & H4 & H5 & Hceil & _).
+    pose proof rest_misses_sp as Hrest.
+    assert (Holder : forall iv, In iv (vm_reserved (m_vmmaps model0)) ->
+              stack_entry_holds (vm_init_sp (m_vmmaps model0)) iv = true ->
+              iv = (Z_to_bv 64 FL, Z_to_bv 64 (TOPZ - FL))).
+    { intros iv Hin Hh. change (vm_init_sp (m_vmmaps model0)) with sp in Hh.
+      rewrite M4 in Hin. apply in_app_iff in Hin as [Hin|Hin];
+        [|apply in_app_iff in Hin as [Hin|Hin]].
+      - exfalso. pose proof (proj1 (Forall_forall _ _) Hrest iv
+          (in_or_app _ _ _ (or_introl Hin))) as X. congruence.
+      - rewrite Hs in Hin. destruct Hin as [<-|[]]. reflexivity.
+      - exfalso. pose proof (proj1 (Forall_forall _ _) Hrest iv
+          (in_or_app _ _ _ (or_intror Hin))) as X. congruence. }
+    assert (HFLw : bv_unsigned (Z_to_bv 64 FL) = FL).
+    { pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+      unfold FL in *. apply u64_lit. unfold TASK_SIZE in H3. nlia. }
+    split.
+    - intros iv Hin Hh. rewrite (Holder iv Hin Hh). cbn [fst]. rewrite HFLw.
+      pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)). nlia.
+    - intros [b n] Hin.
+      destruct (stack_guard_band_in _ _ b n Hin) as (a & m & Hin_r & Hh & _ & Hgb & _ & _).
+      pose proof (Holder (a, m) Hin_r Hh) as E. injection E as -> ->.
+      rewrite HFLw in Hgb. change (m_kernel model0) with (in_kernel inp) in Hgb.
+      cbn [fst]. nlia.
   Qed.
 
   (** the hidden set at start: the two argument-block regions; the hull and
@@ -1152,12 +1300,26 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: the launch reserves the vDSO pair beside the image *)
+    - (* co_res: the launch reserves the stack's entry and the vDSO pair
+         beside the image *)
       pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
       pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4).
       pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. pose proof resx_bytes_lo.
-      exists RESX. split; [reflexivity|].
-      split; [| split; [pose proof resx_len; lia | rewrite resx_sum; lia]].
+      exists STK, RESX. split; [reflexivity|].
+      split; [| split; [pose proof resx_len; lia
+                       | split; [rewrite resx_sum; lia
+                                | split; [exact stk_holds_sp | exact rest_misses_sp]]]].
+      apply Forall_app. split.
+      { destruct stk_facts as (Hs & [H1 H2] & H3 & H4 & H5 & H6 & H7).
+        rewrite Hs. constructor; [|constructor]. unfold resx_entry_ok. cbn [fst snd].
+        pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+        assert (Hsz : (TOPZ - FL) mod 4096 = 0)
+          by (rewrite Zminus_mod, H5, H4; reflexivity).
+        pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as H8.
+        unfold FL, TOPZ, usp, TASK_SIZE, alloc_ceiling in *.
+        rewrite !u64_lit by nlia.
+        split; [nlia | split; [exact H4 | split; [exact Hsz |]]].
+        unfold KHI. repeat split; nlia. }
       rewrite resx_eq. repeat constructor;
         cbn [fst snd];
         rewrite !u64_lit
@@ -1175,7 +1337,10 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - (* co_totsz: the image's reservations and the vDSO pair *)
+    - (* co_totsz: the image's reservations and the vDSO pair; the stack's
+         entry is the one entry that holds [sp], and the count leaves it out *)
+      change (vm_init_sp (m_vmmaps model0)) with sp.
+      rewrite (filter_below_stack _ _ _ _ stk_holds_sp rest_misses_sp).
       rewrite app_nil_r, sum_sizes_app, (if_sizes _ _ _ IMG), resx_sum.
       pose proof resx_bytes_lo. lia.
     - (* co_split: the high mark is the vDSO pair's BASE, not its top; with the
@@ -1188,9 +1353,16 @@ Section Init.
       rewrite app_nil_r. intros b sz Hin. apply in_app_or in Hin as [Hin|Hin].
       + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
         left. unfold kHighMemBeg. lia.
-      + right. rewrite resx_eq in Hin. cbn [In] in Hin.
-        destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
-          rewrite u64_lit by lia; lia.
+      + right. apply in_app_or in Hin as [Hin|Hin].
+        * destruct stk_facts as (Hs & [H1 H2] & H3 & H4 & H5 & H6 & H7).
+          rewrite Hs in Hin. destruct Hin as [E|[]]. inversion E; subst. cbn [fst].
+          pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+          pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as H8.
+          unfold FL, TOPZ, usp, TASK_SIZE, alloc_ceiling in *.
+          rewrite u64_lit by nlia. nlia.
+        * rewrite resx_eq in Hin. cbn [In] in Hin.
+          destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
+            rewrite u64_lit by lia; lia.
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7 & _). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.
@@ -1201,6 +1373,8 @@ Section Init.
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
     - (* co_mres: no tracked mappings yet *) constructor.
+    - (* co_band: the stack's entry and its guard band lie above the ceiling *)
+      exact stack_band_ok_init.
   Qed.
 
   (** ZERO DRAW: the same configuration over [init_kn_zero], under the zero-draw hypothesis;
@@ -1220,12 +1394,26 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: the launch reserves the vDSO pair beside the image *)
+    - (* co_res: the launch reserves the stack's entry and the vDSO pair
+         beside the image *)
       pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
       pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4).
       pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. pose proof resx_bytes_lo.
-      exists RESX. split; [reflexivity|].
-      split; [| split; [pose proof resx_len; lia | rewrite resx_sum; lia]].
+      exists STK, RESX. split; [reflexivity|].
+      split; [| split; [pose proof resx_len; lia
+                       | split; [rewrite resx_sum; lia
+                                | split; [exact stk_holds_sp | exact rest_misses_sp]]]].
+      apply Forall_app. split.
+      { destruct stk_facts as (Hs & [H1 H2] & H3 & H4 & H5 & H6 & H7).
+        rewrite Hs. constructor; [|constructor]. unfold resx_entry_ok. cbn [fst snd].
+        pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+        assert (Hsz : (TOPZ - FL) mod 4096 = 0)
+          by (rewrite Zminus_mod, H5, H4; reflexivity).
+        pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as H8.
+        unfold FL, TOPZ, usp, TASK_SIZE, alloc_ceiling in *.
+        rewrite !u64_lit by nlia.
+        split; [nlia | split; [exact H4 | split; [exact Hsz |]]].
+        unfold KHI. repeat split; nlia. }
       rewrite resx_eq. repeat constructor;
         cbn [fst snd];
         rewrite !u64_lit
@@ -1243,7 +1431,10 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - (* co_totsz: the image's reservations and the vDSO pair *)
+    - (* co_totsz: the image's reservations and the vDSO pair; the stack's
+         entry is the one entry that holds [sp], and the count leaves it out *)
+      change (vm_init_sp (m_vmmaps model0)) with sp.
+      rewrite (filter_below_stack _ _ _ _ stk_holds_sp rest_misses_sp).
       rewrite app_nil_r, sum_sizes_app, (if_sizes _ _ _ IMG), resx_sum.
       pose proof resx_bytes_lo. lia.
     - (* co_split: the high mark is the vDSO pair's BASE, not its top; with the
@@ -1256,9 +1447,16 @@ Section Init.
       rewrite app_nil_r. intros b sz Hin. apply in_app_or in Hin as [Hin|Hin].
       + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
         left. unfold kHighMemBeg. lia.
-      + right. rewrite resx_eq in Hin. cbn [In] in Hin.
-        destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
-          rewrite u64_lit by lia; lia.
+      + right. apply in_app_or in Hin as [Hin|Hin].
+        * destruct stk_facts as (Hs & [H1 H2] & H3 & H4 & H5 & H6 & H7).
+          rewrite Hs in Hin. destruct Hin as [E|[]]. inversion E; subst. cbn [fst].
+          pose proof (stack_floor_nonneg (in_kernel inp) mbase TOPZ) as H0.
+          pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as H8.
+          unfold FL, TOPZ, usp, TASK_SIZE, alloc_ceiling in *.
+          rewrite u64_lit by nlia. nlia.
+        * rewrite resx_eq in Hin. cbn [In] in Hin.
+          destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
+            rewrite u64_lit by lia; lia.
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7 & _). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.
@@ -1269,6 +1467,8 @@ Section Init.
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
     - (* co_mres: no tracked mappings yet *) constructor.
+    - (* co_band: the stack's entry and its guard band lie above the ceiling *)
+      exact stack_band_ok_init.
   Qed.
 
   (** [Run.init_config] is the configuration [cs_ok] speaks about *)

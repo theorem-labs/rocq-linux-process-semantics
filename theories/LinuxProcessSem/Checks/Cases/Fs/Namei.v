@@ -39,7 +39,7 @@ Example unlinkat_implied_directory_unmodeled :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EISDIR) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97; 47; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97; 47; 98], [104])] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -56,7 +56,7 @@ Example unlinkat_implied_directory_unrealizable_image_unmodeled :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EISDIR) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 47; 98], [104])] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -69,7 +69,7 @@ Example unlinkat_byte_prefix_is_not_a_directory :
   match check_syscall
           (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
           (with_copyins [(8192, 2%nat)] (mkEffect 0 [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof)) with
   | CheckOk m [] => m_fs m = [([97; 98], [104])]
   | _ => False
   end.
@@ -94,7 +94,7 @@ Example unlinkat_bad_flags_records_no_copyin :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 1; 0; 0; 0] mem_name_a (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -104,8 +104,8 @@ Example unlinkat_bad_flags_empty_ledger_ok :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 1; 0; 0; 0] mem_name_a (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [])] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
 
 (** Past the flag test the ledger is REQUIRED: the removal really did
@@ -116,7 +116,7 @@ Example unlinkat_removal_needs_the_copyin :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
     (mkEffect 0 [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -127,7 +127,7 @@ Example unlinkat_copyin_extent_is_the_nul_terminated_prefix :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
     (with_copyins [(8192, 1%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], []); ([97; 98], [104])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -162,7 +162,7 @@ Example unlinkat_trailing_slash_on_a_file_is_enotdir :
   match check_syscall
           (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a_slash (fun _ => None))
           (with_copyins [(8192, 3%nat)] (mkEffect (errno_ret ENOTDIR) [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [104])] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [104])] IEof)) with
   | CheckOk m [] => m_fs m = [([97], [104])]
   | _ => False
   end.
@@ -176,7 +176,7 @@ Example unlinkat_trailing_slash_success_rejected :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a_slash (fun _ => None))
     (with_copyins [(8192, 3%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [([97], [104])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -188,8 +188,8 @@ Example unlinkat_root_removedir_is_ebusy :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 512; 0; 0; 0]   (* AT_REMOVEDIR *) mem_name_root (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EBUSY) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
 
 (** The rejecting half, and the one that matters most: -ENOENT is the
@@ -199,7 +199,7 @@ Example unlinkat_root_enoent_rejected :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 512; 0; 0; 0]   (* AT_REMOVEDIR *) mem_name_root (fun _ => None))
     (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -248,7 +248,7 @@ Definition mem_gif_basename : word -> option byte :=
     refused, which is what keeps the answer from being a licence to
     remove. *)
 Example unlinkat_tmp_key_not_held_is_enoent :
-  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   let call eff := check_syscall
         (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_abs_gif (fun _ => None))
         (with_copyins [(8192, 13%nat)] eff) m0 in
@@ -278,7 +278,7 @@ Example unlinkat_tmp_removed_key_second_unlink_is_enoent :
         (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_abs_gif (fun _ => None))
         (with_copyins [(8192, 13%nat)] eff) m in
   match call (mkEffect 0 [] [])
-          (init_model [] 0 0 demo_sp demo_limit
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit
              (demo_input_tmp [] [([111; 117; 116; 46; 103; 105; 102], [104])]
                 IEof)) with
   | CheckOk m1 [] =>
@@ -297,7 +297,7 @@ Example unlinkat_tmp_declared_key_removed :
   match check_syscall
           (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_abs_gif (fun _ => None))
           (with_copyins [(8192, 13%nat)] (mkEffect 0 [] []))
-          (init_model [] 0 0 demo_sp demo_limit
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit
              (demo_input_tmp [] [([111; 117; 116; 46; 103; 105; 102], [104])] IEof)) with
   | CheckOk m [] => m_fs m = []
   | _ => False
@@ -314,7 +314,7 @@ Example unlinkat_tmp_image_key_removed :
   match check_syscall
           (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_abs_gif (fun _ => None))
           (with_copyins [(8192, 13%nat)] (mkEffect 0 [] []))
-          (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof)) with
+          (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [(abs_gif_name, [104])] IEof)) with
   | CheckOk m [] => m_fs m = []
   | _ => False
   end.
@@ -330,7 +330,7 @@ Proof. vm_compute. reflexivity. Qed.
     itself, "/tmp/" and "/tmp/." name the directory rather than a file
     in it. *)
 Example unlinkat_tmp_excluded_shapes_unmodeled :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input [(abs_gif_name, [104]); ([47; 116; 109; 112; 47; 100; 47; 102], [104])] IEof) in
   let call mem n flags eff := check_syscall
         (mkInput 35 [AT_FDCWD; 8192; flags; 0; 0; 0] mem (fun _ => None))
@@ -366,7 +366,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     [d_is_dir] test answers -EISDIR for a directory.  (fs/namei.c, Linux
     v6.18.46.) *)
 Example unlinkat_tmp_implied_directory_is_eisdir :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
   let call mem n eff := check_syscall
         (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem (fun _ => None))
@@ -393,7 +393,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     Without it a spec that answered -EISDIR for every absent name under
     /tmp would pass the first half. *)
 Example unlinkat_tmp_implied_directory_precedes_not_held :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
   let call mem n eff := check_syscall
         (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem (fun _ => None))
@@ -413,7 +413,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     seeded at its own key — [State.in_tmp] does not forbid a separator
     in a declared name. *)
 Example unlinkat_tmp_implied_directory_sibling_still_unlinks :
-  let m0 := init_model [] 0 0 demo_sp demo_limit
+  let m0 := init_model [] 0 0 demo_sp demo_ed_top demo_limit
               (demo_input_tmp []
                  [([100; 47; 102], [104]);
                   ([111; 117; 116; 46; 103; 105; 102], [104])] IEof) in
@@ -443,7 +443,7 @@ Example unlinkat_tmp_name_max_boundary :
                             Z_to_bv 8 112; Z_to_bv 8 47] ++ name n
                            ++ [Z_to_bv 8 0])) (fun _ => None))
         (with_copyins [(8192, (6 + n)%nat)] (mkEffect 0 [] []))
-        (init_model [] 0 0 demo_sp demo_limit
+        (init_model [] 0 0 demo_sp demo_ed_top demo_limit
            (demo_input_tmp [] [(name n, [Z_to_bv 8 104])] IEof)) in
   (* 255: the key the declaration seeded is removed *)
   match call 255%nat with CheckOk m [] => m_fs m = [] | _ => False end
@@ -458,7 +458,7 @@ Proof. vm_compute. split; reflexivity. Qed.
     "/tmp/o", not "/tmp/o\0ut".  The declaration is not an image the
     model can be surprised by. *)
 Example unlinkat_tmp_nul_name_is_not_seeded :
-  m_fs (init_model [] 0 0 demo_sp demo_limit
+  m_fs (init_model [] 0 0 demo_sp demo_ed_top demo_limit
           (demo_input_tmp [] [([111; 0; 117; 116], [104])] IEof)) = [].
 Proof. vm_compute. reflexivity. Qed.
 
@@ -473,7 +473,7 @@ Example unlinkat_absolute_basename_success_rejected :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_gif_basename (fun _ => None))
     (with_copyins [(8192, 8%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [(abs_gif_name, [104])] IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -483,6 +483,6 @@ Example unlinkat_absolute_basename_is_enoent :
   check_syscall
     (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_gif_basename (fun _ => None))
     (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret ENOENT) [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [(abs_gif_name, [104])] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [(abs_gif_name, [104])] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.

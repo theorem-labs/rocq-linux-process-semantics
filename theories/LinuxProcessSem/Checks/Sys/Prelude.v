@@ -191,7 +191,7 @@ Proof.
 Qed.
 
 (** A value far below the error-encoding window (in particular any
-    fd < 2^31, or any grant address below [alloc_top]) never
+    fd < 2^31, or any grant address below [TASK_SIZE]) never
     matches an injectable errno. *)
 
 Lemma errno_ret_in_below : forall es r,

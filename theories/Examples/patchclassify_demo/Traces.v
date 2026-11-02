@@ -122,7 +122,7 @@
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType RiscvSemantics Fs State Specs Run.
+  BvBase MemImageType RiscvSemantics Fs State Specs StackLayout Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier.
@@ -197,11 +197,11 @@ Proof.
       as (mem & rom & Hshape).
     rewrite Hshape. apply Hc. }
   (* the model half, at this run's initial model *)
-  pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp lim inp)
+  pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp (ed_top rnd) lim inp)
     as Hh.
-  pose proof (init_model_no_lazy (segments_reserved segs) brk0 mbase sp lim inp)
+  pose proof (init_model_no_lazy (segments_reserved segs) brk0 mbase sp (ed_top rnd) lim inp)
     as Hlazy.
-  pose proof (m_fs_init_model (segments_reserved segs) brk0 mbase sp lim inp)
+  pose proof (m_fs_init_model (segments_reserved segs) brk0 mbase sp (ed_top rnd) lim inp)
     as Hfs.
   split.
   - (* every observed prefix is one of the two *)

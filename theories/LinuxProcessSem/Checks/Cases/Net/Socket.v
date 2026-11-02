@@ -1932,18 +1932,18 @@ Definition wmem_open : word -> option byte := fun _ => Some 0.
     nothing a binary can observe says which it is running on. *)
 Example recv_on_a_non_socket_descriptor :
   check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
-    (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [(4096, [97])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 212 [1; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 212 [1; 4096; Z_to_bv 64 (2 ^ 31); 0; 0; 0]
                      (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -1998,19 +1998,19 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example recv_argument_order_is_opposite :
   check_syscall (mkInput 207 [999; Z_to_bv 64 (2 ^ 63); 1; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 207 [999; Z_to_bv 64 (2 ^ 63); 1; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 212 [999; Z_to_bv 64 (2 ^ 63); 0; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 212 [999; Z_to_bv 64 (2 ^ 63); 0; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2023,19 +2023,19 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example socketpair_writes_the_descriptors_before_it_fails :
   check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
     (mkEffect (errno_ret EOPNOTSUPP) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP) [(4096, [4;0;0;0]); (4100, [5;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2046,18 +2046,18 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
     express: fail closed. *)
 Example socketpair_flag_check_precedes_the_writes :
   check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
-    (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EINVAL) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [1; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [1; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2085,17 +2085,17 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example socketpair_declines_the_partial_destination :
   check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 TASK_SIZE; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 TASK_SIZE; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EFAULT) [(Z_to_bv 64 TASK_SIZE, [3;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 5); 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -2168,13 +2168,13 @@ Proof. vm_compute. reflexivity. Qed.
 Example socketpair_wrapping_destination_is_efault :
   check_syscall (mkInput 199 [2; 1; 0; socketpair_wrap_sv; 0; 0]
                    (fun _ => None) socketpair_wrap_mem)
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; socketpair_wrap_sv; 0; 0]
                      (fun _ => None) socketpair_wrap_mem)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(socketpair_wrap_sv, [3;0;0;0]); (0, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2219,14 +2219,14 @@ Proof. vm_compute. reflexivity. Qed.
 Example socketpair_past_long_max_at_the_checker :
   check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (2 ^ 63); 0; 0]
                    (fun _ => None) socketpair_high_mem)
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (2 ^ 63); 0; 0]
                      (fun _ => None) socketpair_high_mem)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(Z_to_bv 64 (2 ^ 63), [3;0;0;0]);
                   (Z_to_bv 64 (2 ^ 63 + 4), [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2267,25 +2267,25 @@ Example socketpair_dest_width_is_eight :
     (mkEffect (errno_ret EOPNOTSUPP)
               [(Z_to_bv 64 (TASK_SIZE - 8), [3;0;0;0]);
                (Z_to_bv 64 (TASK_SIZE - 4), [4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 8); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 7); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(Z_to_bv 64 (TASK_SIZE - 7), [3;0;0;0]);
                   (Z_to_bv 64 (TASK_SIZE - 3), [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
      = CheckUnmodeled
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 3); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** PAIR 4 — A WRITE TO A SOCKET WITH NO CONNECTION IS ANSWERED, WHERE

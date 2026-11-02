@@ -316,7 +316,7 @@ Definition cm_s (k : nat) : machine_state := with_mem (cm_msk k) (ms_mem cm_ms0)
 
 Definition cm_model : Model :=
   init_model (segments_reserved cm_segments) (en_brk demo_entry)
-    (en_mmap_base demo_entry) (en_sp demo_entry) cm_budget demo_proc_input.
+    (en_mmap_base demo_entry) (en_sp demo_entry) (ed_top (en_draw demo_entry)) cm_budget demo_proc_input.
 Definition cm_c : config := mkCfg (cm_s 0) cm_model.
 
 Lemma cm_config :

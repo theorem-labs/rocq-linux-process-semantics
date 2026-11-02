@@ -91,7 +91,7 @@ Proof. vm_compute. reflexivity. Qed.
     materialization-fault result. *)
 Definition accounted_write_model : Model :=
   with_vm_backing [(0, 0x2000)] []
-    (init_model [] 0 0 (Z_to_bv 64 sp_window_lo) 0x1000
+    (init_model [] 0 0 (Z_to_bv 64 sp_window_lo) (Z_to_bv 64 (sp_window_lo + 4096)) 0x1000
        (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
                      net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48)).
 

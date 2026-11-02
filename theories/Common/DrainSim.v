@@ -973,8 +973,8 @@ Proof.
   set (fs0 := in_fs inp) in *; set (stdin0 := in_stdin inp) in *.
   unfold init_config.
   set (ms0 := init_machine_state segs pc ph sp mb rnd inp) in *.
-  pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr) as HM0.
-  set (model0 := init_model (segments_reserved segs) brk0 mb sp lim inp) in *.
+  pose proof (init_M_loop (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp Hrdr) as HM0.
+  set (model0 := init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp) in *.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
   assert (Hfs0 : m_fs model0 = fs0) by reflexivity.
   split.

@@ -499,7 +499,7 @@ Proof. repeat split; check_eq. Qed.
     from a [pipe2] the run made. *)
 Example init_model_holds_no_pipe_end :
   Forall (fun e => match snd e with FdPipe _ _ => False | _ => True end)
-    (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))).
+    (m_fds (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))).
 Proof. repeat constructor. Qed.
 
 (* =========================================================================
@@ -511,7 +511,7 @@ Proof. repeat constructor. Qed.
     next, so over [init_model]'s three channels they are 3 and 4. *)
 
 Definition one_pipe_model : Model :=
-  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m := init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof) in
   pipe2_model m (pipe_new_id (m_pipes m)).
 
 (** THE MODEL ADMITS BOTH KERNELS' COUNT VALIDATION for a vectored write
@@ -648,7 +648,7 @@ Example pipe2_wrapping_fildes_rejects_the_pair :
   check_syscall (mkInput 59 [pipe2_wrap_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_wrap_mem)
     (mkEffect (Z_to_bv 64 0) [(pipe2_wrap_fildes, [3;0;0;0;4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -661,8 +661,8 @@ Example pipe2_wrapping_fildes_is_efault :
   check_syscall (mkInput 59 [pipe2_wrap_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_wrap_mem)
     (mkEffect (errno_ret EFAULT) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof)) [].
 Proof. check_eq. Qed.
 
 (** WHERE THE NARROWING LANDS, which is the conjunct the two above cannot
@@ -691,7 +691,7 @@ Example pipe2_unwrapped_fildes_still_installs_the_pair :
   check_syscall (mkInput 59 [pipe2_flat_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_flat_mem)
     (mkEffect (Z_to_bv 64 0) [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckOk one_pipe_model [].
 Proof. check_eq. Qed.
 
@@ -704,6 +704,6 @@ Example pipe2_unwrapped_fildes_rejects_efault :
   check_syscall (mkInput 59 [pipe2_flat_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_flat_mem)
     (mkEffect (errno_ret EFAULT) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_ed_top demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. check_eq. Qed.

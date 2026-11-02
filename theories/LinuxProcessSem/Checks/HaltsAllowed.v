@@ -320,7 +320,7 @@ Example abrt_declined_undeclared_is_unmodeled :
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
        (init_model (segments_reserved abrt_segments) (Z_to_bv 64 0x1000)
-          (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000)
+          (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x7fff80001000)
           source_alloc_limit abrt_input_undeclared))
   = CheckUnmodeled.
 Proof. exact abrt_tkill_declined_undeclared. Qed.

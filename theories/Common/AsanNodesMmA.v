@@ -243,7 +243,7 @@ Proof.
       pose proof (u64_range a) as Ra.
       unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg _].
       apply andb_prop in Hg as [Hg Hceil]. apply Z.leb_le in Hceil.
-      pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb.
+      assert (Hatb : TASK_SIZE < 2 ^ 64) by (unfold TASK_SIZE; lia).
       eapply (grant_vis_add E' (null_cs1 cs kd eager ne nlo nhi) cs' _ ne _ FULL' model' a n nZ HC1 Hn).
       + unfold null_cs1, add_entry. cbn [kn a_ss mk_ss s_know]. apply kimg_in_hull_app; [|apply kimg_clip_in_hull'].
         apply kimg_in_hull_pure. apply Forall_cons; [exact I | apply (proj2 (Forall_app _ _ _)); split; [apply null_kend_pure | apply kdisj_new_pure]].
@@ -277,7 +277,7 @@ Proof.
         apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hg' Hpos].
         apply andb_prop in Hg' as [_ Hal].
         apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil.
-        pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb. unfold page_size in Hal.
+        assert (Hatb : TASK_SIZE < 2 ^ 64) by (unfold TASK_SIZE; lia). unfold page_size in Hal.
         constructor; try reflexivity.
         unfold vm_add_lazy. rewrite m_vm_lazy_with_vm_backing. rewrite lazy_interior_fresh; [reflexivity | exact Hal | | |]; subst n; rewrite u64_lit by lia; [exact HnZal | lia | lia].
       * split; [intros x Hx; apply zfill_out; exact Hx | intros x Hx; apply zfill_in; exact Hx].
@@ -299,7 +299,7 @@ Proof.
         apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hg' Hpos].
         apply andb_prop in Hg' as [_ Hal].
         apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil.
-        pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb. unfold page_size in Hal.
+        assert (Hatb : TASK_SIZE < 2 ^ 64) by (unfold TASK_SIZE; lia). unfold page_size in Hal.
         constructor; try reflexivity.
         unfold vm_add_lazy. rewrite m_vm_lazy_with_vm_backing. rewrite lazy_interior_fresh; [reflexivity | exact Hal | | |]; subst n; rewrite u64_lit by lia; [exact HnZal | lia | lia].
       * split; [intros x Hx; apply unfill_out; exact Hx | intros x Hx; apply unfill_in; exact Hx].

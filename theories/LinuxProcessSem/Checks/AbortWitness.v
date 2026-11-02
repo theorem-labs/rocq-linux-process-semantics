@@ -263,7 +263,7 @@ Definition abrt_s (k : nat) : machine_state :=
   with_mem (abrt_msk k) (ms_mem abrt_ms0).
 
 Definition abrt_model (lim : Z) : Model :=
-  init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase abrt_sp
+  init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase abrt_sp (ed_top abrt_draw)
     lim abrt_input.
 Definition abrt_c (lim : Z) : config := mkCfg (abrt_s 0) (abrt_model lim).
 
@@ -479,7 +479,7 @@ Lemma abrt_tkill_declined_undeclared :
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
        (init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase
-          abrt_sp source_alloc_limit abrt_input_undeclared))
+          abrt_sp (ed_top abrt_draw) source_alloc_limit abrt_input_undeclared))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -1072,7 +1072,7 @@ Definition blk_L0 : machine_state :=
 
 Definition blk_m0 (lim : Z) : Model :=
   init_model (segments_reserved abrt_blocked_segments) blk_brk blk_mbase
-    blk_sp lim abrt_blocked_input.
+    blk_sp (ed_top blk_draw) lim abrt_blocked_input.
 Definition blk_c (lim : Z) : config := mkCfg (blk_leg blk_L0 0) (blk_m0 lim).
 
 Lemma blk_config : forall lim,

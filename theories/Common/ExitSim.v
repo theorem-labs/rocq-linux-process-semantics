@@ -688,7 +688,7 @@ Proof.
   cbn [omni_run]. unfold init_config.
   exact (to_exit_exec segs code
            (init_machine_state segs pc ph sp mb rnd inp)
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
+           (init_model (segments_reserved segs) brk0 mb sp (ed_top rnd) lim inp)
            eq_refl eq_refl (sim_c_to_exit segs code F _ Hsim)).
 Qed.
 

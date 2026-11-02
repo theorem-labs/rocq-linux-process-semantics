@@ -22,7 +22,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 
 Definition mremap_two_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Definition mremap_in (old_size new_size : word) : SyscallInput :=
   (* a4 is deliberately nonzero: Linux ignores new_address without FIXED. *)
@@ -66,7 +66,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_budget_full_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 4096)
-    (init_model [] 0 0 demo_sp 4096 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 4096 (demo_input [] IEof)).
 
 Example mremap_grow_beyond_budget_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -76,7 +76,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_occupied_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096); (131072, 8192)] 0 0 16384)
-    (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 16384 (demo_input [] IEof)).
 
 Example mremap_move_to_occupied_range_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -124,7 +124,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_one_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_accepts :
   check_syscall (mremap_in 4096 8192)
@@ -136,7 +136,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_crowded_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096); (69632, 4096)] 0 0 16384)
-    (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 16384 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_into_neighbour_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -146,7 +146,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_below_image_model : Model :=
   with_vmmaps (mkVmMaps [(69632, 4096)] [(65536, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_into_image_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -181,41 +181,48 @@ Definition mremap_at_in (old_addr old_size new_size : word) : SyscallInput :=
   mkInput 216 [old_addr; old_size; new_size; 1; 0x12345000; 0]
     (fun _ => None) (fun _ => None).
 
+(** AN IN-PLACE GROW STOPS AT THE STACK, and not before it.  The ledger
+    holds the stack's entry ([Prelude.demo_stack], from [demo_top + 4096]
+    up), so a grow that ends at the stack's floor is admitted in place —
+    Linux's [vma_expandable] keeps no guard gap — and one that reaches a
+    page into the stack is refused.  The pair differs only in the
+    source's base. *)
 Definition mremap_grow_to_ceiling_model : Model :=
-  with_vmmaps (mkVmMaps [] [(140735332474880, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+  with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 (demo_top - 4096), 4096)] 0 0 8192)
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_to_ceiling_accepts :
-  check_syscall (mremap_at_in 140735332474880 4096 8192)
-    (mkEffectU 140735332474880 [] [(140735332478976, 4096)] [] [] [])
+  check_syscall (mremap_at_in (Z_to_bv 64 (demo_top - 4096)) 4096 8192)
+    (mkEffectU (Z_to_bv 64 (demo_top - 4096)) [] [(Z_to_bv 64 demo_top, 4096)] [] [] [])
     mremap_grow_to_ceiling_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [] [(140735332474880, 8192)] 0 0 8192)
+      (with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 (demo_top - 4096), 8192)] 0 0 8192)
          mremap_grow_to_ceiling_model) [].
 Proof. check_eq. Qed.
 
 Definition mremap_grow_past_ceiling_model : Model :=
-  with_vmmaps (mkVmMaps [] [(140735332478976, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+  with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 demo_top, 4096)] 0 0 8192)
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_past_ceiling_rejected :
-  check_syscall (mremap_at_in 140735332478976 4096 8192)
-    (mkEffectU 140735332478976 [] [(140735332483072, 4096)] [] [] [])
+  check_syscall (mremap_at_in (Z_to_bv 64 demo_top) 4096 8192)
+    (mkEffectU (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 (demo_top + 4096), 4096)] [] [] [])
     mremap_grow_past_ceiling_model
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** The same search answer, for the same reason: the source sits one
-    page under this run's [alloc_top] and cannot grow in place, so the
-    move goes to the bottom-up window's floor. *)
+(** The search answer, for the same reason: the source sits one page
+    under the stack and cannot grow in place, so the move goes to the
+    bottom-up window's floor (this ledger's mmap base is 0, so the
+    top-down window is empty). *)
 Example mremap_move_down_from_ceiling_accepts :
-  check_syscall (mremap_at_in 140735332478976 4096 8192)
+  check_syscall (mremap_at_in (Z_to_bv 64 demo_top) 4096 8192)
     (mkEffectU (Z_to_bv 64 0x2aaaaab000) []
-      [(Z_to_bv 64 0x2aaaaac000, 4096)] [(140735332478976, 4096)]
-      [mkCopy 140735332478976 (Z_to_bv 64 0x2aaaaab000) 4096] [])
+      [(Z_to_bv 64 0x2aaaaac000, 4096)] [(Z_to_bv 64 demo_top, 4096)]
+      [mkCopy (Z_to_bv 64 demo_top) (Z_to_bv 64 0x2aaaaab000) 4096] [])
     mremap_grow_past_ceiling_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [] [(Z_to_bv 64 0x2aaaaab000, 8192)] 0 0 8192)
+      (with_vmmaps (mkVmMaps demo_stack [(Z_to_bv 64 0x2aaaaab000, 8192)] 0 0 8192)
          mremap_grow_past_ceiling_model) [].
 Proof. check_eq. Qed.
 
@@ -268,7 +275,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_zero_entry_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 0)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 Example mremap_zero_entry_passes_the_source_gate :
   mremap_source_b (m_vmmaps mremap_zero_entry_model) 65536 0 0 = true.
@@ -287,10 +294,10 @@ Lemma mremap_wrapping_old_size_cannot_pass_the_source_gate :
 Proof.
   intros h old old_n old_nZ Hwrap. unfold mremap_source_b.
   pose proof (word_unsigned_range old) as Hold.
-  replace ((bv_unsigned old + old_nZ <=? alloc_top h)%Z) with false.
+  replace ((bv_unsigned old + old_nZ <=? TASK_SIZE)%Z) with false.
   - reflexivity.
   - symmetry. apply Z.leb_gt.
-    alloc_top_bounds. unfold two_pow_64 in *. lia.
+    unfold TASK_SIZE, two_pow_64 in *. lia.
 Qed.
 
 Example mremap_wrapping_old_size_rounds_past_the_word :
@@ -532,7 +539,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 Definition mremap_lazy_two_pages : Model :=
   with_vm_backing [(65536, 8192)] [65536; 69632]
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-      (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof))).
 
 Example mremap_lazy_shrink_drops_tail_charge :
   check_syscall (mremap_in 8192 4096)
@@ -552,7 +559,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
 Definition mremap_lazy_one_page : Model :=
   with_vm_backing [(65536, 4096)] [65536]
     (with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 4096)
-      (init_model [] 0 0 demo_sp 4096 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp demo_ed_top 4096 (demo_input [] IEof))).
 
 (** A lazy grow succeeds at a full backed budget because its new tail is a
     reservation, not an eager charge. *)
@@ -598,7 +605,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
 Definition mremap_mixed_backing : Model :=
   with_vm_backing [(65536, 4096)] []
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-      (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp demo_ed_top 8192 (demo_input [] IEof))).
 
 Example mremap_mixed_backing_fails_closed :
   check_syscall (mremap_in 8192 4096)
@@ -635,7 +642,7 @@ Definition mremap_placement_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(Z_to_bv 64 0x2aaaaab000, 4096)] [] 0 0 8192
       (Z_to_bv 64 mmap_base_max) demo_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_ed_top 8192 (demo_input [] IEof)).
 
 (** A growing move to a low destination, NOW REFUSED.  0x80000000 is
     page-aligned, positive, below the ceiling and free, and the old
@@ -743,7 +750,7 @@ Example mremap_move_onto_source_only_region_free_fails :
   /\ (0 <? bv_unsigned mremap_overlapping_dst)%Z = true
   /\ (bv_unsigned mremap_overlapping_dst
        + bv_unsigned mremap_overlapping_dst_n
-         <=? alloc_top (m_vmmaps mremap_placement_model))%Z = true
+         <=? TASK_SIZE)%Z = true
   /\ mremap_final_budget_b mremap_placement_model
        mremap_src mremap_src_n
        mremap_overlapping_dst mremap_overlapping_dst_n = true.
@@ -778,7 +785,7 @@ Lemma mremap_fresh_b_conjuncts :
     = (negb (bv_eqb dst old)
        && (bv_unsigned dst mod page_size =? 0)%Z
        && (0 <? bv_unsigned dst)%Z
-       && (bv_unsigned dst + new_nZ <=? alloc_top (m_vmmaps m))%Z
+       && (bv_unsigned dst + new_nZ <=? TASK_SIZE)%Z
        && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
             dst new_n
        && mremap_final_budget_b m old old_n dst new_n).
@@ -813,7 +820,7 @@ Definition mremap_grow_past_top_hi_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 4096)] [] 0 0 8192
       (Z_to_bv 64 mmap_base_max) hi_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp hi_top 8192 (demo_input [] IEof)).
 
 Example mremap_inplace_grow_past_demo_top_admitted_under_high_sp :
   check_syscall (mremap_at_in (Z_to_bv 64 (demo_top - 4096)) 4096 8192)
@@ -836,12 +843,12 @@ Definition mremap_move_source_lo_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) demo_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_ed_top 16384 (demo_input [] IEof)).
 Definition mremap_move_source_hi_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) hi_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp hi_top 16384 (demo_input [] IEof)).
 
 (** The destination the search gives in the HIGH-sp run, named
     structurally so no constant can drift from the field it is read
