@@ -83,6 +83,112 @@ Proof.
       [apply unmodeled_intro | apply alt_r; apply pure_ok].
 Qed.
 
+(** [ReadWrite.read_eventfd_spec]: the -EFAULT, the -EINVAL, the decline
+    of a blocking eventfd, and on a non-blocking one the -EAGAIN, which
+    the spec admits beside both the delivery and the no-byte -EFAULT; a
+    partly writable range is the decline. *)
+Definition read_eventfd_witness (flags buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then ret_outcome (errno_ret EFAULT) m
+  else if (bv_unsigned count <? 8)%Z then ret_outcome (errno_ret EINVAL) m
+  else if negb (efd_nonblock_b flags) then Unmodeled
+  else match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+       | Some _ => ret_outcome (errno_ret EAGAIN) m
+       | None =>
+           match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+           | None => ret_outcome (errno_ret EAGAIN) m
+           | Some _ => Unmodeled
+           end
+       end.
+
+Lemma read_eventfd_witness_ok : forall flags buf count i m,
+  read_eventfd_spec flags buf count i m (read_eventfd_witness flags buf count i m).
+Proof.
+  intros. unfold read_eventfd_spec, read_eventfd_witness.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (bv_unsigned count <? 8)%Z; cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (efd_nonblock_b flags)); cbv beta iota; [apply unmodeled_intro|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|]; cbv beta iota.
+  - apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|]; cbv beta iota;
+      [apply unmodeled_intro|].
+    apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+Qed.
+
+(** [ReadWrite.read_opaque_spec]: one witness per object. *)
+Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  match o with
+  | OProcFile _ => read_proc_witness buf count i m
+  | OEventFd fl => read_eventfd_witness fl buf count i m
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  end.
+
+Lemma read_opaque_witness_ok : forall o buf count i m,
+  read_opaque_spec o buf count i m (read_opaque_witness o buf count i m).
+Proof.
+  intros. unfold read_opaque_spec, read_opaque_witness.
+  destruct o; cbv beta iota;
+    [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+Qed.
+
+(** [ReadWrite.write_eventfd_spec]: the -EFAULT, the -EINVAL, the failed
+    copy's -EFAULT, and past the copy, under its 8-byte ledger, the
+    [ULLONG_MAX] -EINVAL or the 8. *)
+Definition write_eventfd_witness (flags buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then ret_outcome (errno_ret EFAULT) m
+  else if negb (Z.eqb (bv_unsigned count) 8) then ret_outcome (errno_ret EINVAL) m
+  else match read_bytes_map (in_mem i) buf (Z_to_bv 64 8) with
+       | None => ret_outcome (errno_ret EFAULT) m
+       | Some bs =>
+           outcome_copyins [(buf, 8%nat)]
+             (if Z.eqb (bytes_le_to_Z bs) (2 ^ 64 - 1)%Z
+              then ret_outcome (errno_ret EINVAL) m
+              else ret_outcome (Z_to_bv 64 8) m)
+       end.
+
+Lemma write_eventfd_witness_ok : forall flags buf count i m,
+  write_eventfd_spec flags buf count i m (write_eventfd_witness flags buf count i m).
+Proof.
+  intros. unfold write_eventfd_spec, write_eventfd_witness.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (Z.eqb (bv_unsigned count) 8)); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_mem i) buf (Z_to_bv 64 8)) as [bs|]; cbv beta iota;
+    [|unfold err_ret, ret_only, ret_outcome; apply pure_ok].
+  apply record_copyins_outcome.
+  destruct (Z.eqb (bytes_le_to_Z bs) (2 ^ 64 - 1)%Z); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (efd_nonblock_b flags); cbv beta iota.
+  - apply alt_r. unfold ret_only, ret_outcome. apply pure_ok.
+  - unfold ret_only, ret_outcome. apply pure_ok.
+Qed.
+
+(** [ReadWrite.write_opaque_spec]: the eventfd's witness, [Unmodeled] on
+    the other five objects. *)
+Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  match o with
+  | OEventFd fl => write_eventfd_witness fl buf count i m
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  end.
+
+Lemma write_opaque_witness_ok : forall o buf count i m,
+  write_opaque_spec o buf count i m (write_opaque_witness o buf count i m).
+Proof.
+  intros. unfold write_opaque_spec, write_opaque_witness.
+  destruct o; cbv beta iota;
+    [ apply unmodeled_intro | apply unmodeled_intro | apply write_eventfd_witness_ok
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+Qed.
+
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -214,10 +320,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
-  | Some (FdOpaque (OProcFile _)) => read_proc_witness buf count i m
-  | Some (FdOpaque (OProcPath _)) => Unmodeled
-  | Some (FdOpaque (OEventFd _)) => Unmodeled
-  | Some (FdOpaque (ONsFile _)) => Unmodeled
+  | Some (FdOpaque o) => read_opaque_witness o buf count i m
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -266,12 +369,10 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
-  9:{ (* the opaque kinds: a /proc/sys file reads, the other three decline *)
+  9:{ (* the opaque kinds: see [read_opaque_witness] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. destruct o as [q|q|fl|h]; cbv beta iota;
-        [apply unmodeled_intro | apply read_proc_witness_ok
-        | apply unmodeled_intro | apply unmodeled_intro]. }
+      srw Hfd. apply read_opaque_witness_ok. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -685,7 +786,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
         (* no connection to send on: -EPIPE and SIGPIPE *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
-  | Some (FdOpaque _) => Unmodeled
+  | Some (FdOpaque o) => write_opaque_witness o buf count i m
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -745,10 +846,10 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply pure_ok. }
-  9:{ (* the opaque kinds: declined *)
+  9:{ (* the opaque kinds: see [write_opaque_witness] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. apply unmodeled_intro. }
+      srw Hfd. apply write_opaque_witness_ok. }
   - destruct (w_is0 ch) eqn:Hm.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].

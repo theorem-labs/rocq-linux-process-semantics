@@ -617,7 +617,7 @@ Proof. intros i m o E. unfold syscall_spec, dispatch. rewrite E. reflexivity. Qe
 
 Lemma getdents64_dispatch : forall i m o,
   bv_unsigned (in_sysno i) = 61%Z ->
-  syscall_spec i m o <-> getdents64_spec (fd32 (in_arg i 0)) (in_arg i 2) i m o.
+  syscall_spec i m o <-> getdents64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i m o.
 Proof. intros i m o E. unfold syscall_spec, dispatch. rewrite E. reflexivity. Qed.
 
 (** The family each arm is read under, at every configuration. *)
@@ -767,13 +767,15 @@ Proof.
 Qed.
 
 (** [getdents64]: -ENOENT is admitted only on a directory whose buffer
-    has no room for an entry, beside [filldir64]'s own -EINVAL. *)
-Lemma getdents64_answer_beside_refusal : forall fd count i m eff m' evs,
-  getdents64_spec fd count i m (Ok eff m' evs) ->
+    has no room for an entry, beside [filldir64]'s own -EINVAL.  The
+    /proc/self/fd listing never answers it
+    ([getdents64_opaque_not_enoent]). *)
+Lemma getdents64_answer_beside_refusal : forall fd dirent count i m eff m' evs,
+  getdents64_spec fd dirent count i m (Ok eff m' evs) ->
   ret_in_errnos getdents64_errnos (eff_ret eff) = true ->
-  getdents64_spec fd count i m (Ok (mkEffect (errno_ret EINVAL) [] []) m []).
+  getdents64_spec fd dirent count i m (Ok (mkEffect (errno_ret EINVAL) [] []) m []).
 Proof.
-  intros fd count i m eff m' evs H Hr.
+  intros fd dirent count i m eff m' evs H Hr.
   unfold getdents64_spec in H |- *.
   apply get_model_bind_ok_inv in H. cbv beta in H.
   eapply bind_ok0; [apply get_model_ok |]. cbv beta.
@@ -782,8 +784,13 @@ Proof.
   end;
   cbv iota in H |- *; [| refute_ret H Hr].
   (* every descriptor but a directory: -ENOTDIR, or a decline (the
-     opaque kinds) that admits no [Ok] *)
+     opaque kinds but the listing) that admits no [Ok] *)
   destruct e; cbv iota in H |- *; try (refute_ret H Hr); try (refute_unmodeled H).
+  (* the opaque kinds: the listing never answers -ENOENT *)
+  all: try (exfalso;
+            pose proof (getdents64_opaque_not_enoent _ _ _ _ _ _ _ _ _ H) as Hne;
+            unfold ret_in_errnos, getdents64_errnos in Hr; cbn [existsb] in Hr;
+            rewrite Hne in Hr; cbn in Hr; discriminate Hr).
   (* the directory: no room for an entry, or a decline *)
   case_if H; [apply alt_r; apply pure_ok | refute_unmodeled H].
 Qed.
@@ -835,7 +842,7 @@ Proof.
   intros i m eff m' evs E Hspec Hr.
   rewrite (getdents64_refusal_b _ _ _ E) in Hr.
   apply (getdents64_dispatch _ _ _ E) in Hspec.
-  pose proof (getdents64_answer_beside_refusal _ _ _ _ _ _ _ Hspec Hr) as Hw.
+  pose proof (getdents64_answer_beside_refusal _ _ _ _ _ _ _ _ Hspec Hr) as Hw.
   do 3 eexists. split.
   - apply (getdents64_dispatch _ _ _ E). exact Hw.
   - rewrite (getdents64_refusal_b _ _ _ E). cbn [eff_ret]. vm_compute. reflexivity.

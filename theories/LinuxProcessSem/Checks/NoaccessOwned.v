@@ -994,6 +994,7 @@ Proof.
     | erewrite check_connect_frame by eassumption; exact Hna
     | erewrite check_timerfd_create_frame by eassumption; exact Hna
     | erewrite check_eventfd2_frame by eassumption; exact Hna
+    | erewrite check_signalfd4_frame by eassumption; exact Hna
     | erewrite check_pipe2_frame by eassumption; exact Hna
     | erewrite check_getcwd_frame by eassumption; exact Hna
     | erewrite check_epoll_create1_frame by eassumption; exact Hna

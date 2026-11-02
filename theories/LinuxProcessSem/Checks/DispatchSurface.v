@@ -301,6 +301,9 @@ Definition probe_mem : word -> option byte :=
     getresuid (148) and getresgid (150) need none either: [a0] is the
     first destination POINTER, [access_ok] refuses AT_FDCWD's range for
     its 4-byte store, and both arms answer -EFAULT with nothing stored.
+    signalfd4 (74) needs none: its default [sizemask] in [a2] is 0, not
+    8, so [Fs.Signalfd.signalfd4_spec] answers -EINVAL before it reads
+    anything.
 
     Add an entry when a newly listed syscall needs something else;
     leaving it out makes [modeled_sysnos_probes_answer] below fail to

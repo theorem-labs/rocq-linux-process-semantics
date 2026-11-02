@@ -276,8 +276,9 @@ Proof.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
-     too, and so does a pipe READ end, an O_RDWR file and a /proc/sys file
-     ([State.OProcFile]), so each gets a bullet rather than a one-line
+     too, and so does a pipe READ end, an O_RDWR file, a /proc/sys file
+     ([State.OProcFile]) and an eventfd ([State.OEventFd]), so each gets a
+     bullet rather than a one-line
      dismissal.  The two write-only kinds ([FdFileW] and the append
      [FdFileA]) are the -EBADF pair. *)
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
@@ -295,13 +296,9 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
-      | (* the opaque kinds: only a /proc/sys file delivers, at most
-           [count] bytes under the count gate *)
-        destruct o; cbv iota in Hspec;
-        [ discriminate Hspec
-        | exact (check_read_proc_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws)
-        | discriminate Hspec
-        | discriminate Hspec ]
+      | (* the opaque kinds: a /proc/sys file delivers at most [count]
+           bytes under the count gate, an eventfd 8 *)
+        exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws)
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -3402,4 +3399,106 @@ Example read_proc_sys_partly_writable_declines :
   /\ check_syscall (sysctl_read_in 3 4079) (mkEffect (errno_ret EFAULT) [] [])
        sysctl_read_model
      = CheckOk sysctl_read_model [].
+Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   read (63) and write (64) on an eventfd ([State.OEventFd])
+
+   Before these arms the model declined both calls on every eventfd.
+   bubblewrap's monitor process writes 1 to its BLOCKING eventfd
+   (made with [EFD_CLOEXEC], 0x80000) and reads 8 bytes from its
+   NON-BLOCKING one (made with [EFD_CLOEXEC|EFD_NONBLOCK], 0x80800).
+   The counter is the environment's ([ReadWrite.read_eventfd_spec],
+   [ReadWrite.write_eventfd_spec]).
+   ========================================================================= *)
+
+(** fd 3 an O_PATH descriptor on "/proc", fd 4 a non-blocking eventfd,
+    fd 5 a blocking one, fd 6 a non-blocking semaphore eventfd. *)
+Definition efd_rw_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_fds (fd_insert (fd_insert (fd_insert (fd_insert (m_fds m)
+              3 (FdOpaque (OProcPath [47; 112; 114; 111; 99])))
+              4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800))))
+              5 (FdOpaque (OEventFd (Z_to_bv 64 0x80000))))
+              6 (FdOpaque (OEventFd (Z_to_bv 64 (0x80800 + EFD_SEMAPHORE))))) m.
+
+(** [read(fd, 0x10000, count)] into the 4079 writable bytes at 0x10000. *)
+Definition efd_read_in (fd count : word) : SyscallInput :=
+  mkInput 63 [fd; 0x10000; count; 0; 0; 0] (fun _ => None) sysctl_buf_wmem.
+
+(** [write(fd, 0x10000, count)] with the 8 bytes [v] at 0x10000. *)
+Definition efd_write_in (fd count : word) (v : list byte) : SyscallInput :=
+  mkInput 64 [fd; 0x10000; count; 0; 0; 0] (bytes_at 0x10000 v) (fun _ => None).
+
+Definition efd_one : list byte := [1; 0; 0; 0; 0; 0; 0; 0].
+Definition efd_two : list byte := [2; 0; 0; 0; 0; 0; 0; 0].
+Definition efd_zero : list byte := [0; 0; 0; 0; 0; 0; 0; 0].
+Definition efd_max : list byte := [255; 255; 255; 255; 255; 255; 255; 255].
+
+(** bubblewrap's [write(child_wait_fd, &1, 8)] on the BLOCKING eventfd:
+    8, with the 8 bytes read on the copy-in ledger.  Outside SCOPE.md's
+    exclusion (no counter within v of 2^64 - 1) a blocking write does not
+    wait, so -EAGAIN is REJECTED on it; the non-blocking eventfd admits
+    it beside the 8.  The value 2^64 - 1 is -EINVAL whatever the flags,
+    and a count other than 8 is -EINVAL before the copy.
+
+    THE CONTROL, answered alike by the old text and the new: a write on
+    the O_PATH descriptor is declined. *)
+Example write_eventfd_bwrap_child_wait :
+  check_syscall (efd_write_in 5 8 efd_one)
+    (with_copyins [(0x10000, 8%nat)] (mkEffect 8 [] [])) efd_rw_model
+  = CheckOk efd_rw_model []
+  /\ check_syscall (efd_write_in 5 8 efd_one)
+       (with_copyins [(0x10000, 8%nat)] (mkEffect (errno_ret EAGAIN) [] [])) efd_rw_model
+     = CheckReject
+  /\ check_syscall (efd_write_in 4 8 efd_one)
+       (with_copyins [(0x10000, 8%nat)] (mkEffect (errno_ret EAGAIN) [] [])) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_write_in 4 8 efd_one)
+       (with_copyins [(0x10000, 8%nat)] (mkEffect 8 [] [])) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_write_in 5 8 efd_max)
+       (with_copyins [(0x10000, 8%nat)] (mkEffect (errno_ret EINVAL) [] [])) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_write_in 5 8 efd_max)
+       (with_copyins [(0x10000, 8%nat)] (mkEffect 8 [] [])) efd_rw_model
+     = CheckReject
+  /\ check_syscall (efd_write_in 5 4 efd_one) (mkEffect (errno_ret EINVAL) [] [])
+       efd_rw_model
+     = CheckOk efd_rw_model []
+  (* the copy-in ledger is part of the answer *)
+  /\ check_syscall (efd_write_in 5 8 efd_one) (mkEffect 8 [] []) efd_rw_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall (efd_write_in 3 8 efd_one) (mkEffect (errno_ret EBADF) [] [])
+       efd_rw_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** bubblewrap's [read(event_fd, &val, 8)] on the NON-BLOCKING eventfd:
+    8 with any NONZERO value delivered at the buffer, or -EAGAIN.  A zero
+    value is rejected (Linux delivers only a nonzero count), and on the
+    semaphore eventfd the value is exactly 1.  Fewer than 8 bytes is
+    -EINVAL.
+
+    THE CONTROL, answered alike by the old text and the new: a read on
+    the BLOCKING eventfd is declined, because it may wait. *)
+Example read_eventfd_bwrap_event_fd :
+  check_syscall (efd_read_in 4 8) (mkEffect 8 [(0x10000, efd_one)] []) efd_rw_model
+  = CheckOk efd_rw_model []
+  /\ check_syscall (efd_read_in 4 8) (mkEffect 8 [(0x10000, efd_two)] []) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_read_in 4 8) (mkEffect (errno_ret EAGAIN) [] []) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_read_in 4 8) (mkEffect 8 [(0x10000, efd_zero)] []) efd_rw_model
+     = CheckReject
+  /\ check_syscall (efd_read_in 6 8) (mkEffect 8 [(0x10000, efd_one)] []) efd_rw_model
+     = CheckOk efd_rw_model []
+  /\ check_syscall (efd_read_in 6 8) (mkEffect 8 [(0x10000, efd_two)] []) efd_rw_model
+     = CheckReject
+  /\ check_syscall (efd_read_in 4 4) (mkEffect (errno_ret EINVAL) [] []) efd_rw_model
+     = CheckOk efd_rw_model []
+  (* the control *)
+  /\ check_syscall (efd_read_in 5 8) (mkEffect 8 [(0x10000, efd_one)] []) efd_rw_model
+     = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
