@@ -2616,14 +2616,16 @@ Lemma fw_svc_after_effect : forall ms eff,
   ms_svc_pending (advance_past_svc (apply_effect ms eff)) = None.
 Proof. reflexivity. Qed.
 
+(** THE RESERVATION IS CLEARED, NOT CARRIED, across a system call:
+    [Run.advance_past_svc] sets [ms_resv := None], as Linux drops an
+    LR/SC reservation on a trap.  It used to carry the caller's, and
+    this lemma used to say so; nothing in this file wanted that -- both
+    its users are proving [= None] for the next segment lemma's
+    [ForkwaitSteps.mkst_eta] -- so the clearing makes them shorter
+    rather than harder. *)
 Lemma fw_resv_after_effect : forall ms eff,
-  ms_resv (advance_past_svc (apply_effect ms eff)) = ms_resv ms.
-Proof.
-  intros ms eff.
-  cbn [ms_resv advance_past_svc apply_effect].
-  destruct (fw_set_reg10_frame ms (eff_ret eff)) as (_ & Hrv & _).
-  rewrite Hrv. reflexivity.
-Qed.
+  ms_resv (advance_past_svc (apply_effect ms eff)) = None.
+Proof. reflexivity. Qed.
 
 Lemma fw_zero_word : Z_to_bv 64 0 = (0 : word).
 Proof. bveq. Qed.
@@ -2678,7 +2680,7 @@ Proof.
   assert (Hsv' : ms_svc_pending (cfg_ms cc) = None)
     by (unfold cc; apply fw_svc_after_effect).
   assert (Hrv' : ms_resv (cfg_ms cc) = None)
-    by (unfold cc; cbn [cfg_ms]; rewrite fw_resv_after_effect; exact Hrv).
+    by (unfold cc; apply fw_resv_after_effect).
   assert (Hpc' : bv_unsigned (ms_pc_val (cfg_ms cc)) = 0x1101c%Z).
   { unfold cc. cbn [cfg_ms]. rewrite fw_pc_after_effect.
     assert (Hpcw : ms_pc_val (pe_ms e) = 0x11018)
@@ -2803,7 +2805,7 @@ Proof.
   { cbn [pe_ms].
     apply (fw_reap_rem _ (ms_gpr (pe_ms ep) 1)).
     - apply fw_svc_after_effect.
-    - rewrite fw_resv_after_effect. exact Hrv.
+    - apply fw_resv_after_effect.
     - rewrite fw_pc_after_effect.
       assert (Hpcw : ms_pc_val (pe_ms ep) = 0x1103c)
         by (apply bv_eq; rewrite Hpc; vm_compute; reflexivity).
@@ -3504,24 +3506,43 @@ Qed.
     over [Run.init_config], so the table is a single entry; the entry
     point is the image's own [0x11000], no call is pending, the
     reservation is clear because [Run.init_machine_state] sets it so,
-    and what is left is the seven steps of [ForkwaitSteps.fw_run_A]. *)
+    and what is left is the seven steps of [ForkwaitSteps.fw_run_A].
+
+    THE WINDOW BELOW THE STACK POINTER IS NOT SIMPLY [sp - 8 MiB].
+    [Run.stack_window_lo] counts RLIMIT_STACK from the stack VMA's end
+    [StackLayout.ed_top] and takes the HIGHER of that and the guard gap
+    above the mmap base, so a bound on [sp] alone does not reach it.
+    [Common.StoreOk.stack_window_lo_valid] is what does: under an
+    admissible launch the floor is at or below [sp - 6144513], which is
+    well under the sixteen bytes the status slot sits at.  That lemma
+    wants [Run.valid_launch] and [Sv48], which is why this takes
+    [Run.valid_input] -- the statement's second premise, until now
+    unused. *)
 Lemma fw_shape_at_pinit : forall sp brk0 mbase rnd lim inp,
   valid_entry (mkImage ForkwaitMemImage_loaded_segments
                        ForkwaitMemImage_init_pc ForkwaitMemImage_phdrs)
               (Run.mkEntry sp brk0 mbase rnd) inp ->
+  valid_input inp ->
   fw_shape (pinit_config ForkwaitMemImage_loaded_segments
               ForkwaitMemImage_init_pc ForkwaitMemImage_phdrs
               sp brk0 mbase rnd lim inp).
 Proof.
-  intros sp brk0 mbase rnd lim inp Hve.
-  unfold valid_entry, valid_entry_va in Hve.
-  destruct Hve as (Hsp & _ & _ & _).
+  intros sp brk0 mbase rnd lim inp Hve Hvi.
+  assert (Hva : in_va_size inp = Sv48)
+    by (destruct Hvi as (_&_&_&_&_&_&_&_&_&_&_&_& H &_); exact H).
+  assert (Hvl : valid_launch inp)
+    by (destruct Hvi as (_&_&_&_&_&_&_&_&_&_&_&_&_&_& H); exact H).
+  unfold valid_entry, valid_entry_va in Hve. rewrite Hva in Hve.
+  destruct Hve as (Hsp & _ & _ & _ & Hlau).
   unfold pinit_config. left.
   apply fw_shape_one_proc;
     [split; [reflexivity|]; split; [reflexivity|];
      split; [reflexivity | reflexivity]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
+  assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd
+                  <= bv_unsigned sp + stack_window_reach - stack_max_size)%Z)
+    by exact (stack_window_lo_valid inp sp brk0 mbase rnd Hvl Hlau).
   assert (Hregs : getr (ms_regs (cfg_ms
                      (init_config ForkwaitMemImage_loaded_segments
                         ForkwaitMemImage_init_pc ForkwaitMemImage_phdrs
@@ -3535,9 +3556,9 @@ Proof.
   - reflexivity.
   - vm_compute. reflexivity.
   - rewrite Hregs. exact Hsp16.
-  - (* THE STATUS SLOT IS WRITABLE: [Run.init_machine_state] zero-maps
-       the eight megabytes below the entry stack pointer, and the slot
-       is sixteen bytes below it. *)
+  - (* THE STATUS SLOT IS WRITABLE: the launch zero-maps the window
+       below the entry stack pointer, and the slot is sixteen bytes
+       below it. *)
     rewrite Hregs.
     apply store_ok_of_all.
     + rewrite fw_slot_addr by exact Hsp16.
@@ -3546,13 +3567,12 @@ Proof.
     + intros x Hx. rewrite fw_slot_addr in Hx by exact Hsp16.
       cbn [cfg_ms init_config init_machine_state ms_mem] in *.
       unfold wview.
-      destruct (stack_to_mem sp
-                  (entry_stack_image ForkwaitMemImage_phdrs sp
-                     (in_argv inp) (in_envp inp) (in_uid inp)
-                     (in_hwcap inp) rnd) x) as [b|] eqn:Estk;
-        [discriminate|].
+      match goal with
+      | [ |- context[stack_to_mem ?a ?b x] ] =>
+          destruct (stack_to_mem a b x) as [bb|] eqn:Estk; [discriminate|]
+      end.
       rewrite (proj2 (Z.leb_le _ _))
-        by (change stack_max_size with 8388608%Z; lia).
+        by (unfold stack_window_reach, stack_max_size in Hwlo; lia).
       rewrite (proj2 (Z.ltb_lt _ _)) by lia.
       cbn. discriminate.
 Qed.
@@ -3982,16 +4002,19 @@ End ForkwaitConsumers.
 
 (** THE CLAIM [Statement.forkwait_halts] MAKES, PROVED.
 
-    The budget premise and [valid_input] are not used: the budget's two
-    fault arms are closed by the state instead (see the note at
-    [fw_no_error]), and nothing in this program reads the input.  They
-    stay in the statement because the statement is the RELEASED shape,
-    and a statement that drops a premise is no longer comparable with
-    the one-process halting claims it is meant to sit beside. *)
+    THE BUDGET PREMISE IS NOT USED.  The two fault arms it is there for
+    are closed by the state instead -- see the note at [fw_no_error] --
+    and it stays in the statement because the statement is the RELEASED
+    shape, and one that drops a premise is no longer comparable with
+    the one-process halting claims it is meant to sit beside.
+
+    [Run.valid_input] IS used, for one thing: the stack window below
+    the entry pointer, whose floor needs [Run.valid_launch] and [Sv48]
+    ([fw_shape_at_pinit]). *)
 Theorem forkwait_halts_proved : forkwait_halts.
 Proof.
-  intros en inp Hve _ _.
+  intros en inp Hve Hvi _.
   destruct en as [sp brk0 mbase rnd].
   apply forkwait_halts_at.
-  apply fw_shape_at_pinit. exact Hve.
+  apply fw_shape_at_pinit; [exact Hve | exact Hvi].
 Qed.
