@@ -2306,31 +2306,41 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 
     The first conjunct is the new answer on a FRESH socket -- one
     [socket(2)] has minted and nothing has connected --
-    [State.sock_send_dead] true: -EPIPE and a death by signal 13.  The
-    second is the same on a RESET connection, the other shape
-    [sock_send_dead] admits.  The third is the neighbouring case STILL
-    REFUSED, and it is refused for a reason this revision did not
-    touch: on [SkConnected] the send either goes out as a short count
-    or blocks, and the model carries no send buffer to decide which, so
-    it fails closed there as it always did.  The fourth is the
-    discrimination in the other direction: the killing answer is
-    refused on the connected socket, so the arm has not become
-    constantly killing. *)
+    [State.sock_send_dead] true: -EPIPE and a death by signal 13, on a
+    launch that declares the SIGPIPE death
+    ([State.with_sigpipe_terminal] [true], the field
+    [Run.valid_input_sigpipe_kills] pins).  The second is the same on a
+    RESET connection, the other shape [sock_send_dead] admits.  The
+    third is the neighbouring case STILL REFUSED, and it is refused for
+    a reason this revision did not touch: on [SkConnected] the send
+    either goes out as a short count or blocks, and the model carries
+    no send buffer to decide which, so it fails closed there as it
+    always did.  The fourth is the discrimination in the other
+    direction: the killing answer is refused on the connected socket,
+    so the arm has not become constantly killing.  The fifth is the
+    ORDINARY launch, which does not declare the death
+    ([Run.valid_input] pins the field [false]): there the same write
+    DECLINES, as it did before the arm could raise the signal. *)
 Example write_socket_with_no_connection_is_answered :
   check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-    (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model
-  = CheckOk (with_killed (Z_to_bv 64 13) fresh_socket_model) []
+    (mkEffect (errno_ret EPIPE) [] []) (with_sigpipe_terminal true fresh_socket_model)
+  = CheckOk (with_killed (Z_to_bv 64 13)
+               (with_sigpipe_terminal true fresh_socket_model)) []
   /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-       (mkEffect (errno_ret EPIPE) [] []) reset_socket_model
-     = CheckOk (with_killed (Z_to_bv 64 13) reset_socket_model) []
+       (mkEffect (errno_ret EPIPE) [] []) (with_sigpipe_terminal true reset_socket_model)
+     = CheckOk (with_killed (Z_to_bv 64 13)
+                  (with_sigpipe_terminal true reset_socket_model)) []
   /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
        (connected_socket_model NFin)
      = CheckUnmodeled
   /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (mkEffect (errno_ret EPIPE) [] []) (connected_socket_model NFin)
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model
      = CheckUnmodeled.
-Proof. split; [|split; [|split]]; check_eq. Qed.
+Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.
 
 (* =========================================================================
    THE FOUR USER READS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE

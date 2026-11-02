@@ -242,7 +242,8 @@ let () =
                       rcv_l3 = { M.rcl_acpi = true; rcl_size = z "33554432";
                                  rcl_assoc = z "16"; rcl_line = z "64" } } };
               rpi_execfn = [z "47"; z "97"];
-              rpi_channel_reader = true; rpi_sigpipe_default = true }))
+              rpi_channel_reader = true; rpi_sigpipe_default = true;
+              rpi_sigpipe_terminal = false }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

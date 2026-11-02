@@ -109,7 +109,9 @@ Open Scope sys_scope.
       - SIGPIPE (13) — a modeled [write], and the model RAISES it: the
         channel, pipe and socket arms of [ReadWrite.write_spec] send it
         through [ReadWrite.raise_sigpipe] when the far end has no
-        reader.  That is exactly why it must stay off this list.  The
+        reader and the launch declares the death
+        ([State.m_sigpipe_terminal]); otherwise that write declines.
+        That is exactly why it must stay off this list.  The
         model has one disposition for signal 13, SIG_DFL, and the
         launch premise above [Run.unmodeled_at] is what supplies it;
         an accepted [rt_sigaction] here would let a program install

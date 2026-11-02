@@ -406,15 +406,18 @@ Qed.
 (* ========================================================================= *)
 
 (** fd 1 is channel 1, its far end has NO reader, SIGPIPE's disposition
-    is SIG_DFL and the mask leaves it open.  The last two conjuncts are
-    what make the write a death: under SIG_IGN [ReadWrite.raise_sigpipe]
-    discards the signal, and with signal 13 blocked it records it as
-    pending; either way the write RETURNS -EPIPE, a continuation no
-    [to_wexit] derivation carries. *)
+    is SIG_DFL, the launch declares the SIGPIPE death
+    ([State.m_sigpipe_terminal]) and the mask leaves the signal open.
+    The last three conjuncts are what make the write a death: under
+    SIG_IGN [ReadWrite.raise_sigpipe] discards the signal, with the
+    death undeclared [ReadWrite.sigpipe_write] declines the write, and
+    with signal 13 blocked it records it as pending; in none of those
+    does a [to_wexit] derivation's continuation apply. *)
 Definition fd1dead (model : Model) : Prop :=
   fd_lookup (m_fds model) (Z_to_bv 64 1) = Some (FdChannel (Z_to_bv 64 1))
   /\ m_channel_reader model = false
   /\ m_sigpipe_default model = true
+  /\ m_sigpipe_terminal model = true
   /\ sigpipe_blocked (m_sigmask model) = false.
 
 (** The checker's answer, whatever the claimed effect: -EPIPE over the
@@ -432,7 +435,7 @@ Lemma write1_dead_check : forall segs ms x8 model eff,
   = check_ret_only eff (errno_ret EPIPE)
       (with_killed (Z_to_bv 64 SIGPIPE) model) [].
 Proof.
-  intros segs ms x8 model eff (Hfd & Hrdr & Hdef & Hmask) Hg Hok Hc.
+  intros segs ms x8 model eff (Hfd & Hrdr & Hdef & Hterm & Hmask) Hg Hok Hc.
   unfold check_write.
   rewrite Hg; norm_fd32; rewrite Hfd.
   change (w_is0 (Z_to_bv 64 1)) with false. cbv beta iota.
@@ -440,7 +443,8 @@ Proof.
   rewrite Hc. cbv beta iota.
   rewrite Hrdr. change (negb false) with true. cbv beta iota.
   rewrite Hok. change (negb true) with false. cbv beta iota.
-  unfold check_sigpipe_write, raise_sigpipe. rewrite Hdef, Hmask. reflexivity.
+  unfold check_sigpipe_write, sigpipe_declines, raise_sigpipe.
+  rewrite Hdef, Hterm, Hmask. reflexivity.
 Qed.
 
 Lemma write1_dead_ok : forall segs ms x8 model,
@@ -1133,18 +1137,21 @@ Proof.
 Qed.
 
 (** SIGPIPE kills at this launch: its disposition is SIG_DFL
-    ([State.in_sigpipe_default], which [Run.valid_input] pins) and the
-    launch mask leaves signal 13 open. *)
+    ([State.in_sigpipe_default], which [Run.valid_input] pins), the
+    launch declares the death ([State.in_sigpipe_terminal], which
+    [Run.valid_input_channel_closed] pins and [Run.valid_input] does
+    not) and the launch mask leaves signal 13 open. *)
 Definition sigpipe_fatal (inp : ProcInput) : Prop :=
-  in_sigpipe_default inp = true /\ sigpipe_blocked (in_sigmask inp) = false.
+  in_sigpipe_default inp = true /\ in_sigpipe_terminal inp = true
+  /\ sigpipe_blocked (in_sigmask inp) = false.
 
 Lemma init_model_fd1dead : forall reserved brk0 mb sp lim inp,
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
   fd1dead (init_model reserved brk0 mb sp lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp Hr (Hd & Hm).
-  split; [reflexivity | split; [exact Hr | split; [exact Hd | exact Hm]]].
+  intros reserved brk0 mb sp lim inp Hr (Hd & Ht & Hm).
+  split; [reflexivity | split; [exact Hr | split; [exact Hd | split; [exact Ht | exact Hm]]]].
 Qed.
 
 (* ========================================================================= *)
