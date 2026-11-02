@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Futex.Syscalls — futex (98)
+(** * LinuxProcessSem.Sys.Kernel.Futex.Syscalls — futex (98), set_robust_list (99)
 
     This file answers to Linux [kernel/futex/syscalls.c]: it holds what
     the kernel defines there, and nothing else.  Which file a spec
@@ -17,6 +17,36 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
+
+(** Linux checks the native 64-bit [struct robust_list_head] size before
+    storing the pointer.  Its three fields are 64-bit words, so the only
+    accepted length is 24.  It does not read or validate [head] here:
+
+        if (unlikely(len != sizeof(struct robust_list_head)))
+                return -EINVAL;
+        current->robust_list = head;
+        return 0;
+
+    ([SYSCALL_DEFINE2(set_robust_list)], kernel/futex/syscalls.c, Linux
+    v6.18.46, commit 1f99e9ab748f; the kernel spells the size argument
+    as the pointed-to type of [head], which cannot be quoted here
+    because that spelling opens a Rocq comment).  The registered
+    pointer is used only at thread exit; this model's exit step
+    discards user-memory effects and has no later user step.
+
+    THE ANSWER IS LINUX'S ALONE.  QEMU user mode returns -ENOSYS for
+    every length and pointer ([TARGET_NR_set_robust_list] in
+    [do_syscall1], linux-user/syscall.c, QEMU 10.0.11: "Silently return
+    ENOSYS so that guest userspace falls back to a non-robust futex
+    implementation").  This model described both systems and admitted
+    either answer at each call, so a source and a target could answer
+    differently inside one agreement claim.  LPS describes Linux
+    v6.18.46 only, so the -ENOSYS is gone; SCOPE.md's list "Where QEMU
+    user mode differs" carries it. *)
+Definition set_robust_list_spec (len : word) : Sys SyscallEffect :=
+  if Z.eqb (bv_unsigned len) 24
+  then ret_only (Z_to_bv 64 0)
+  else err_ret EINVAL.
 
 (** THE WAITER SET OF A PRIVATE FUTEX KEY IS EMPTY IN THIS MODEL, and
     everything below rests on it.  Citations are torvalds/linux read at
@@ -39,17 +69,20 @@ Open Scope sys_scope.
     its mm.  The only entry points to [copy_process] (kernel/fork.c) are
     [clone] (220) and [clone3] (435), and neither ever grants [CLONE_VM]:
     [Kernel.Fork.clone_fork_flags_b] admits the single flag word
-    [SIGCHLD] and [Kernel.Fork.clone3_fork_args_b] the same word in a
-    struct, and every other word declines or fails.  A forked child gets
+    [SIGCHLD], [Kernel.Fork.clone_ns_flags_b] [SIGCHLD] plus namespace
+    bits and nothing else, [Kernel.Fork.clone3_fork_args_b] the first
+    word in a struct, and every other word declines or fails.  A forked
+    child gets
     a COPY of the mm
     ([copy_mm] calls [dup_mm] when [CLONE_VM] is clear), so its private
     keys are different keys — and it is not a configuration this
     development can be in anyway.
 
     THAT PREMISE IS CHECKED RATHER THAN ASSERTED.
-    [Checks.Cases.Kernel.Futex.Syscalls.clone_fork_gate_grants_no_shared_mm]
-    and its [clone3] twin prove that neither gate admits a word with
-    [CLONE_VM] set, so widening either one breaks the build beside the
+    [Checks.Cases.Kernel.Futex.Syscalls.clone_fork_gate_grants_no_shared_mm],
+    [clone_ns_gate_grants_no_shared_mm] and the [clone3] twin prove that
+    no gate admits a word with [CLONE_VM] set, so widening any one breaks
+    the build beside the
     prose saying why it matters.  An argument that spans two files is
     the kind that rots quietly, and this one is load-bearing for every
     answer below.

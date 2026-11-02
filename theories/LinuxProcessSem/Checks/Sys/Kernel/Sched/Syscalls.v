@@ -89,7 +89,7 @@ Definition check_sched_setscheduler (i : SyscallInput)
   else if (w_is0 param || (sint32 pid <? 0)%Z)%bool
   then check_ret_only eff (errno_ret EINVAL) m []
   else
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
+  match copy_bytes_map (in_mem i) param 4 with
   | None =>
       if negb (access_okb param 4)
       then check_ret_only eff (errno_ret EFAULT) m []
@@ -121,7 +121,7 @@ Proof.
   cbv iota.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (copy_bytes_map (in_mem i) param 4) as [bs|] eqn:Hread.
   - destruct (negb (sched_targets_self_b pid m)) eqn:Hself; [discriminate|].
     cbv iota.
     destruct (sched_setscheduler_answer (bv_unsigned (abi_low32 policy))
@@ -153,7 +153,7 @@ Proof.
   cbv iota.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (copy_bytes_map (in_mem i) param 4) as [bs|] eqn:Hread.
   - apply record_copyins_unmodeled.
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself.
     { cbv iota. apply unmodeled_intro. }
@@ -183,7 +183,7 @@ Proof.
     now apply check_ret_only_ok_iff. }
   cbv iota in H.
   apply bind_input_model_inv in H.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (copy_bytes_map (in_mem i) param 4) as [bs|] eqn:Hread.
   - apply record_copyins_ok_inv in H as (core & Hcore & ->).
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself.
     { cbv iota in Hcore. discriminate Hcore. }
@@ -213,7 +213,7 @@ Proof.
   { cbv iota in H. unfold err_ret, ret_only in H. discriminate H. }
   cbv iota in H.
   apply bind_input_model_inv in H.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (copy_bytes_map (in_mem i) param 4) as [bs|] eqn:Hread.
   - apply record_copyins_unmodeled_inv in H.
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself; [reflexivity|].
     cbv iota in H.

@@ -298,6 +298,15 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          ([random_fops] has one; the urandom table does not), so
          [file_can_poll] is false and [epoll_ctl] ADD is the same
          -EPERM.  Declined until written. *)
+  | FdOpaque _ => None
+      (* FAIL-CLOSED.  An O_PATH target is refused by [do_epoll_ctl]'s
+         [CLASS(fd, tf)] ([fdget] skips FMODE_PATH, fs/file.c), which is
+         -EBADF and not a poll question at all; an eventfd has
+         [.poll = eventfd_poll] (fs/eventfd.c) and a /proc/sys file
+         [.poll = proc_sys_poll] (fs/proc/proc_sysctl.c), both read at
+         v6.18.44; identical at v6.18.46.  An [ONsFile]'s answer depends
+         on an object of unknown type.  None of the four answers is
+         written. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -325,7 +334,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)
@@ -483,18 +492,20 @@ Definition ep_op_has_event (op32 : word) : bool :=
     unreachable.  So this arm needs the copy's VERDICT and not its
     bytes.
 
-    IT NEVERTHELESS RECORDS NO COPY-IN, AND THAT IS A KNOWN-WRONG
-    OMISSION rather than a consequence of the bytes being unused.
+    THE COPY IS RECORDED although its bytes are unused.
     [State.eff_copyins] is not bookkeeping about which bytes an arm
     consulted: [State.syscall_effect_accesses] concatenates it with the
-    write ledger and [Run.mi_account_step] hands the result to
-    [State.materialize_model_accesses], which charges newly touched
-    pages of a lazy anonymous reservation against [vm_backing_used].  A
-    16-byte [event] on a mapped-but-never-touched anonymous page is
-    therefore faulted in and charged by Linux and not by this model,
-    which UNDER-charges the budget — the direction that lets the model
-    grant an allocation the kernel would refuse.  [pselect6] has the
-    identical omission.
+    write ledger and [Run.sstep_syscall] hands the result to
+    [State.materialize_model_accesses], which charges a first touch of a
+    page of a lazy anonymous reservation against [vm_backing_used],
+    reads included ([State.v]'s first-access accounting: an abstract
+    backing guarantee, which charges a user load the same way).  The
+    kernel reads the 16 bytes at [event] with [copy_from_user]
+    ([SYSCALL_DEFINE4(epoll_ctl)], fs/eventpoll.c:2663-2665, v6.18.46)
+    before [do_epoll_ctl] runs, so every answer after a successful copy
+    carries [(event, 16)] ([epoll_ctl_reads]), as the same read done by
+    a load instruction would.  A failed copy records nothing, the
+    convention [Kernel.Signal.rt_sigprocmask_spec] states.
 
     ONE ARM DECLINES, named where it is decided: step 4 on a CHANNEL
     target, where [fd_can_poll] cannot say whether the far end has a
@@ -504,6 +515,14 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
   let after_copy :=
     match fd_lookup (m_fds m) epfd with
     | None => Some (errno_ret EBADF)
+    | Some (FdOpaque _) => None
+        (* FAIL-CLOSED on the EPOLL descriptor.  [do_epoll_ctl]'s
+           [CLASS(fd, f)(epfd)] refuses an O_PATH descriptor with
+           -EBADF ([fdget] skips FMODE_PATH, fs/file.c and
+           fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an eventfd or a /proc/sys
+           file goes on to the target as any non-epoll file does.  The
+           split is not written, and an [ONsFile]'s object is of unknown
+           type, so all four decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)
@@ -521,12 +540,22 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
        else Some (errno_ret EFAULT)
   else after_copy.
 
+(** The copy-from-user ledger of [epoll_ctl_outcome]'s answer: the event
+    struct, exactly when the syscall entry copied it and the copy
+    succeeded. *)
+Definition epoll_ctl_reads (i : SyscallInput) (op32 event : word)
+    : list (word * nat) :=
+  if (ep_op_has_event op32
+      && copy_from_user_ok (in_mem i) event epoll_event_bytes)%bool
+  then [(event, Z.to_nat epoll_event_bytes)]
+  else [].
+
 Definition epoll_ctl_spec (epfd op32 tfd event : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => unmodeled
-  | Some r => pure (mkEffect r [] [])
+  | Some r => pure (with_copyins (epoll_ctl_reads i op32 event) (mkEffect r [] []))
   end.
 
 (** ------------------------------------------------------------------
@@ -622,6 +651,12 @@ Definition epoll_pwait_outcome (i : SyscallInput) (m : Model)
   | EpSigNone =>
       match fd_lookup (m_fds m) epfd with
       | None => Some (errno_ret EBADF)
+      | Some (FdOpaque _) => None
+          (* FAIL-CLOSED, as at [epoll_ctl_outcome]: [do_epoll_wait]'s
+             [CLASS(fd, f)(epfd)] answers -EBADF for an O_PATH
+             descriptor (fs/eventpoll.c, v6.18.44; identical at v6.18.46), and the split from
+             the other two objects and an [ONsFile]'s unknown object is
+             not written *)
       | Some _ =>
           let n := sint32 maxevents32 in
           if (n <=? 0)%Z then Some (errno_ret EINVAL)

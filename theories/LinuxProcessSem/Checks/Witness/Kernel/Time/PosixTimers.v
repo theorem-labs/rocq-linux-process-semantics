@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Time.PosixTimers — the clock_gettime (113) witness, and its proof
+(** * LinuxProcessSem.Checks.Witness.Kernel.Time.PosixTimers — the clock_gettime (113) and clock_getres (114) witnesses
 
     Mirrors [Sys/Kernel/Time/PosixTimers.v], which answers to Linux
     [kernel/time/posix-timers.c]: this file holds the witnesses for the
@@ -34,8 +34,10 @@ Definition clock_gettime_witness (clkid tp : word) (i : SyscallInput)
     (* a per-call id reads 0 ns: [realtime_ok_b] relates a reading to
        nothing, so the smallest normalized timespec is always
        admissible and the witness needs no model state at all. *)
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => Unmodeled                            (* unwritable destination *)
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16) then ret_outcome (errno_ret EFAULT) m
+        else Unmodeled                             (* unwritable destination *)
     | Some _ =>
         Ok (mkEffect (Z_to_bv 64 0) [(tp, clock_gettime_bytes 0)] [])
            m []
@@ -45,8 +47,10 @@ Definition clock_gettime_witness (clkid tp : word) (i : SyscallInput)
        SIGNED reading, and 0 is inside it in both directions, so the
        same smallest normalized timespec is admissible for the same
        reason, and again with no model state. *)
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => Unmodeled                            (* unwritable destination *)
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16) then ret_outcome (errno_ret EFAULT) m
+        else Unmodeled                             (* unwritable destination *)
     | Some _ =>
         Ok (mkEffect (Z_to_bv 64 0) [(tp, clock_gettime_bytes 0)] [])
            m []
@@ -54,8 +58,10 @@ Definition clock_gettime_witness (clkid tp : word) (i : SyscallInput)
   else if negb (Z.eqb (bv_unsigned clkid) CLOCK_MONOTONIC) then Unmodeled
   else if negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)
   then Unmodeled
-  else match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-       | None => Unmodeled                            (* unwritable destination *)
+  else match copy_bytes_map (in_wmem i) tp 16 with
+       | None =>
+           if negb (access_okb tp 16) then ret_outcome (errno_ret EFAULT) m
+           else Unmodeled                         (* unwritable destination *)
        | Some _ =>
            let bs := clock_gettime_bytes (bv_unsigned (m_clock m)) in
            Ok (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
@@ -104,8 +110,10 @@ Proof.
   intros. unfold clock_gettime_spec, clock_gettime_witness.
   destruct (clockid_percall_b clkid) eqn:Hrt.
   { eapply bind_step; [apply input_ok|]. cbv beta.
-    destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hw0;
-      [|apply unmodeled_intro].
+    destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hw0.
+    2:{ cbv iota. destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota;
+          [|apply unmodeled_intro].
+        unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
     destruct (clock_gettime_bytes_ns 0) as [Hns0 [Hnsec0 Hlen0]];
       [unfold CLOCK_NS_ENVELOPE; lia|].
     eapply bind_step.
@@ -115,8 +123,10 @@ Proof.
     apply pure_ok. }
   destruct (Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID) eqn:Hcp.
   { eapply bind_step; [apply input_ok|]. cbv beta.
-    destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hw1;
-      [|apply unmodeled_intro].
+    destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hw1.
+    2:{ cbv iota. destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota;
+          [|apply unmodeled_intro].
+        unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
     destruct (clock_gettime_bytes_ns 0) as [Hns0 [Hnsec0 Hlen0]];
       [unfold CLOCK_NS_ENVELOPE; lia|].
     eapply bind_step.
@@ -130,8 +140,10 @@ Proof.
   destruct (negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)) eqn:Henv;
     [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hw;
-    [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hw.
+  2:{ cbv iota. destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota;
+        [|apply unmodeled_intro].
+      unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   apply negb_false_iff, Z.ltb_lt in Henv.
   pose proof (bv_unsigned_in_range 64 (m_clock m)).
   destruct (clock_gettime_bytes_ns (bv_unsigned (m_clock m)))
@@ -146,4 +158,52 @@ Proof.
     reflexivity. }
   eapply bind_step; [apply modify_ok|].
   apply pure_ok.
+Qed.
+
+(** clock_getres: a range [access_ok] refuses is -EFAULT on every
+    supported id — on an alarm id it is the [alt]'s right half — so the
+    witness needs no case on the id there. *)
+Definition clock_getres_witness (clkid tp : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if clock_getres_supported_b clkid then
+    if clock_getres_dst_ok_b i tp then
+      if clock_getres_alarm_b clkid then ret_outcome (errno_ret EINVAL) m
+      else if w_is0 tp then ret_outcome (Z_to_bv 64 0) m
+      else Ok (mkEffect (Z_to_bv 64 0)
+                    [(tp, clock_gettime_bytes 1)] []) m []
+    else if negb (access_okb tp 16) then ret_outcome (errno_ret EFAULT) m
+    else Unmodeled
+  else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE
+       then ret_outcome (errno_ret EINVAL) m
+       else Unmodeled.
+
+Lemma clock_getres_one_ns : forall clkid,
+  clock_getres_resolution_b clkid (clock_gettime_bytes 1) = true.
+Proof.
+  intros clkid. unfold clock_getres_resolution_b.
+  destruct (clock_getres_cpu_b clkid); vm_compute; reflexivity.
+Qed.
+
+Lemma clock_getres_witness_ok : forall i clkid tp m,
+  clock_getres_spec clkid tp i m (clock_getres_witness clkid tp i m).
+Proof.
+  intros. unfold clock_getres_spec, clock_getres_witness.
+  destruct (clock_getres_supported_b clkid).
+  - eapply bind_step; [apply input_ok|]. cbv beta.
+    destruct (clock_getres_dst_ok_b i tp).
+    2:{ destruct (negb (access_okb tp 16)); [|apply unmodeled_intro].
+        destruct (clock_getres_alarm_b clkid); [apply alt_r|];
+          unfold err_ret, ret_only, ret_outcome; apply pure_ok. }
+    destruct (clock_getres_alarm_b clkid).
+    + apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+    + unfold clock_getres_result_spec.
+      destruct (w_is0 tp).
+      * unfold ret_only, ret_outcome. apply pure_ok.
+      * eapply bind_step.
+        { apply (choose_ok _ (clock_gettime_bytes 1)).
+          apply clock_getres_one_ns. }
+        apply pure_ok.
+  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+    + unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+    + apply unmodeled_intro.
 Qed.

@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Kernel.Signal — the rt_sigaction (134) and rt_sigprocmask (135) checkers, and their proofs
+(** * LinuxProcessSem.Checks.Sys.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135) and sigaltstack (132) checkers, and their proofs
 
     Mirrors [Sys/Kernel/Signal.v], which answers to Linux
     [kernel/signal.c]: this file holds the checkers for the syscalls
@@ -16,11 +16,13 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude.
 
-(** sigaltstack: no arm touches user memory, so every admissible outcome
-    is a bare return; exactly one of them carries the model forward with
-    the alternate-stack bit set, the install.  SS_DISABLE succeeds and
-    does NOT set it: the kernel zeroes [ss_size] before the store, so the
-    record stays in the shape the arms below can answer from.  The
+(** sigaltstack: no arm writes user memory, so every admissible outcome
+    is a bare return; the arms after the 24-byte copy of [uss] carry
+    that copy in the ledger, and the arms before it, with the copy's own
+    -EFAULT, carry none.  Exactly one outcome carries the model forward
+    with the alternate-stack bit set, the install.  SS_DISABLE succeeds
+    and does NOT set it: the kernel zeroes [ss_size] before the store, so
+    the record stays in the shape the arms below can answer from.  The
     declining arms are the ones whose answer would need the user stack
     pointer, or the stored flags word (see [Signal.sigaltstack_spec]). *)
 Definition check_sigaltstack (i : SyscallInput) (uss uoss : word)
@@ -33,14 +35,18 @@ Definition check_sigaltstack (i : SyscallInput) (uss uoss : word)
     | None => check_ret_only eff (errno_ret EFAULT) m []
     | Some bs =>
         if negb (ss_mode_ok (ss_flags_of bs))
-        then check_ret_only eff (errno_ret EINVAL) m []
+        then check_ret_only_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+               eff (errno_ret EINVAL) m []
         else if ss_disabling (ss_flags_of bs)
-        then check_ret_only eff (Z_to_bv 64 0) m []
+        then check_ret_only_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+               eff (Z_to_bv 64 0) m []
         else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
         then CheckUnmodeled
         else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
-        then check_ret_only eff (errno_ret ENOMEM) m []
-        else check_ret_only eff (Z_to_bv 64 0) (with_sigaltstack_installed m) []
+        then check_ret_only_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+               eff (errno_ret ENOMEM) m []
+        else check_ret_only_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+               eff (Z_to_bv 64 0) (with_sigaltstack_installed m) []
     end.
 
 Lemma check_sigaltstack_sound_ok : forall i uss uoss eff m m' evs,
@@ -59,19 +65,21 @@ Proof.
   destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
   2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       apply pure_ok. }
+  cbv beta iota zeta in H |- *.
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode; cbv beta iota.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
   destruct (ss_disabling (ss_flags_of bs)) eqn:Hdis; cbv beta iota.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
   destruct (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool eqn:Hzero;
     cbv beta iota; [discriminate|].
   destruct (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z eqn:Hsz;
     cbv beta iota.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
-  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+  apply record_copyins_ok_empty; [reflexivity|].
   eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
@@ -91,15 +99,16 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
   2:{ now apply check_ret_only_no_unmodeled in H. }
+  apply record_copyins_unmodeled. cbv beta iota zeta in H |- *.
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode; cbv beta iota.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (ss_disabling (ss_flags_of bs)) eqn:Hdis; cbv beta iota.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool eqn:Hzero;
     cbv beta iota.
   { apply unmodeled_intro. }
   destruct (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z eqn:Hsz;
-    cbv beta iota; now apply check_ret_only_no_unmodeled in H.
+    cbv beta iota; now apply check_ret_only_copyins_no_unmodeled in H.
 Qed.
 
 Lemma check_sigaltstack_complete_ok : forall i uss uoss eff m m' evs,
@@ -119,13 +128,14 @@ Proof.
   2:{ inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode;
     cbv beta iota in *.
-  { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (ss_disabling (ss_flags_of bs)) eqn:Hdis; cbv beta iota in *.
-  { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool eqn:Hzero;
     cbv beta iota in *; [inv_ok|].
   destruct (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z eqn:Hsz;
-    cbv beta iota in *; inv_ok; cbn; rewrite bv_eqb_refl; reflexivity.
+    cbv beta iota in *; inv_ok;
+    apply check_ret_only_copyins_ok_iff; now repeat split.
 Qed.
 
 Lemma check_sigaltstack_complete_unmodeled : forall i uss uoss m eff,
@@ -152,9 +162,11 @@ Proof.
     cbv beta iota in *; inv_ok.
 Qed.
 
-(** rt_sigaction: nothing is recorded, so every admissible outcome is a
-    bare return; the declining arms are the ones whose answer would need
-    a stored disposition (see [Signal.rt_sigaction_spec]). *)
+(** rt_sigaction: every admissible outcome is a bare return.  The arms
+    after the 24-byte copy of [act] carry that copy in the ledger; the
+    arms before it, and the -EFAULT of the copy itself, carry none.  The
+    declining arms are the ones whose answer would need a stored
+    disposition (see [Signal.rt_sigaction_spec]). *)
 Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb ss (Z_to_bv 64 8))
@@ -167,10 +179,17 @@ Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
     match sigaction_flags (in_mem i) act with
     | None => check_ret_only eff (errno_ret EFAULT) m []
     | Some fl =>
-        if negb (sig_valid sig) then check_ret_only eff (errno_ret EINVAL) m []
-        else if sig_kernel_only sig then check_ret_only eff (errno_ret EINVAL) m []
+        if negb (sig_valid sig)
+        then check_ret_only_copyins [(act, 24%nat)] eff (errno_ret EINVAL) m []
+        else if sig_kernel_only sig
+        then check_ret_only_copyins [(act, 24%nat)] eff (errno_ret EINVAL) m []
         else if negb (sa_flags_ok fl) then CheckUnmodeled
-        else if sigaction_accepted sig then check_ret_only eff (Z_to_bv 64 0) m []
+        else if sigaction_accepted sig
+        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
+        else if sigabrt_dfl_install sig (in_mem i) act
+        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
+        else if sigchld_dfl_install sig (in_mem i) act
+        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
         else CheckUnmodeled
     end.
 
@@ -193,14 +212,21 @@ Proof.
   2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       apply pure_ok. }
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota; [discriminate|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota; [|discriminate].
-  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota; [|discriminate].
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+  apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
 Qed.
 
 Lemma check_rt_sigaction_sound_unmodeled : forall i sig act oact ss eff m,
@@ -219,14 +245,19 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl; cbv beta iota.
   2:{ now apply check_ret_only_no_unmodeled in H. }
+  apply record_copyins_unmodeled.
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
-  - now apply check_ret_only_no_unmodeled in H.
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota.
+  - now apply check_ret_only_copyins_no_unmodeled in H.
   - apply unmodeled_intro.
 Qed.
 
@@ -247,12 +278,16 @@ Proof.
     cbv beta iota in *.
   2:{ inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota in *.
-  { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *.
-  { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *; [inv_ok|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; inv_ok.
-  cbn. rewrite bv_eqb_refl. reflexivity.
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *.
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *.
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota in *; inv_ok.
+  apply check_ret_only_copyins_ok_iff. now repeat split.
 Qed.
 
 Lemma check_rt_sigaction_complete_unmodeled : forall i sig act oact ss m eff,
@@ -273,7 +308,10 @@ Proof.
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *; [inv_ok|].
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *;
     [reflexivity|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *;
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; [inv_ok|].
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *;
+    [inv_ok|].
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota in *;
     [inv_ok|reflexivity].
 Qed.
 
