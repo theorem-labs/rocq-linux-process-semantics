@@ -5,7 +5,7 @@
     system call adds what the rest of the system decides (open writers for
     EBUSY, the caller's capabilities for EPERM, path lookup for the target).
 
-    Linux 6.18.44 sources:
+    Linux v6.18.46 sources:
     - the subtree a recursive operation reaches: [copy_tree] and
       [mount_setattr_prepare] walk [next_mnt] over the subtree,
       fs/namespace.c;
@@ -105,10 +105,7 @@ Definition clears_locked (ch : AttrChange) (m : Mount) : bool :=
   || (mf_nodev (mnt_lock_flags m) && mf_nodev (at_clr ch))
   || (mf_noexec (mnt_lock_flags m) && mf_noexec (at_clr ch)).
 
-Definition with_flags (m : Mount) (f : MountFlags) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) f (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
-          (mnt_peer m) (mnt_master m).
+Definition with_flags (m : Mount) (f : MountFlags) : Mount := mnt_with_flags m f.
 
 Definition setattr_targets (T : list Mount) (r : positive) (recursive : bool) : list positive :=
   if recursive then subtree T r else [r].
@@ -418,14 +415,11 @@ Qed.
 Inductive PropChange := PropPrivate | PropSlave.
 
 Definition with_prop (m : Mount) (peer master : option positive) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
-          peer master.
+  mnt_with_master (mnt_with_peer m peer) master.
 
 (** MS_PRIVATE: no peer group, no master, and the unbindable mark cleared. *)
 Definition made_private (m : Mount) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) false None None.
+  mnt_with_unbindable (with_prop m None None) false.
 
 (** Another mount of the table is in peer group [g]. *)
 Definition has_other_peer (t : list Mount) (m : Mount) (g : positive) : bool :=

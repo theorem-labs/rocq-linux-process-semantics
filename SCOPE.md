@@ -474,6 +474,19 @@ not apply.
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
+- No host mount event reaches a mount namespace of the namespace model,
+  under the default launch. A peer group that the tables hold and that
+  also has a member in a mount namespace outside the tables is open: a
+  mount or unmount at that outside member propagates to every member in
+  the tables and to every slave below them (`propagate_mnt`,
+  `propagate_umount`, `fs/pnode.c`, v6.18.46), at any time and without a
+  call of the model. The launch names its open groups in the launch value
+  `Ns.Tables.env_open_groups`, measured from the host's
+  `/proc/<pid>/mountinfo` files. Its default, in `Ns.Tables.empty_nsenv`,
+  is the empty list: under it no host mount event reaches a namespace of
+  the model (`Ns.Propagation.closed_no_outside_event`). A statement that
+  wants the case where such events can happen names a non-empty
+  `env_open_groups`.
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when

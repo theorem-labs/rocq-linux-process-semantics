@@ -8,24 +8,29 @@
     operations, and [Ns.ProcsIface] says how a multi-process core carries
     these records.
 
-    [NsState] and [NsCtx] are built and changed through [empty_nsstate],
-    [init_nsctx] and the setters below them, never by applying [mkNsState]
-    or [mkNsCtx] to every field elsewhere: a new field then touches the
-    record, its initial value and its setters, and no caller.
+    [NsState], [NsEnv], [NsCtx], [PropLinks] and [Mount] are built and
+    changed through [empty_nsstate], [empty_nsenv], [init_nsctx],
+    [empty_prop] and the setters below them, never by applying [mkNsState],
+    [mkNsEnv], [mkNsCtx], [mkPropLinks] or [mkMount] to every field
+    elsewhere: a new field then touches the record, its initial value and
+    its setters, and no caller.  (Fixtures and copy functions written
+    before the [Mount] setters still apply [mkMount]; new code does not.)
 
-    The shapes follow Linux 6.18.44: a mount is [struct mount]
+    The shapes follow Linux v6.18.46: a mount is [struct mount]
     (fs/mount.h), with [mnt_flags] split into the four flags a mount carries
     and the four locks [lock_mnt_tree] sets (MNT_LOCK_READONLY,
     MNT_LOCK_NOSUID, MNT_LOCK_NODEV, MNT_LOCK_NOEXEC), MNT_LOCKED, the
     unbindable mark that lives in [mnt_t_flags], the peer group
     ([mnt_group_id] of a shared mount) and the peer group it is a slave of
-    (that of its [mnt_master]); a user namespace is
-    [struct user_namespace] (include/linux/user_namespace.h) with its level,
-    owner, the two id maps and the setgroups flag; a mount namespace keeps
-    the mount fixed as its root at creation ([mnt_namespace.root]); a
-    superblock is [struct super_block] reduced to its kind, owner, flags and
-    magic; a dentry is a name in its parent directory, and every dentry and
-    inode the model holds is listed, with ids unique across superblocks.
+    (that of its [mnt_master]); the order the kernel keeps of a peer
+    group's ring and of a mount's slave list is [PropLinks]; a user
+    namespace is [struct user_namespace] (include/linux/user_namespace.h)
+    with its level, owner, the two id maps and the setgroups flag; a mount
+    namespace keeps the mount fixed as its root at creation
+    ([mnt_namespace.root]); a superblock is [struct super_block] reduced to
+    its kind, owner, flags and magic; a dentry is a name in its parent
+    directory, and every dentry and inode the model holds is listed, with
+    ids unique across superblocks.
 
     Mount points and mount roots ([mnt_mountpoint], [mnt_root]) are dentry
     ids.  The entries of procfs below a task's directory are not listed:
@@ -75,6 +80,65 @@ Record Mount := mkMount {
   mnt_peer       : option positive;   (** the peer group when shared *)
   mnt_master     : option positive    (** the group it is a slave of *)
 }.
+
+(** The setters of [Mount], one per field ([mnt_with_place] sets the
+    parent and the mount point together, as [mnt_set_mountpoint] does,
+    fs/namespace.c:1020-1028): with [mkMount] itself, the places new code
+    builds a mount from. *)
+Definition mnt_with_id (m : Mount) (i : positive) : Mount :=
+  mkMount i (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_ns (m : Mount) (n : positive) : Mount :=
+  mkMount (mnt_id m) n (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_place (m : Mount) (parent : option positive) (mp : positive) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) parent mp (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_root (m : Mount) (d : positive) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) d (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_sb (m : Mount) (s : positive) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) s
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_flags (m : Mount) (f : MountFlags) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          f (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_lock_flags (m : Mount) (f : MountFlags) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) f (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_locked (m : Mount) (b : bool) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) b (mnt_unbindable m)
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_unbindable (m : Mount) (b : bool) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) b
+          (mnt_peer m) (mnt_master m).
+
+Definition mnt_with_peer (m : Mount) (g : option positive) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          g (mnt_master m).
+
+Definition mnt_with_master (m : Mount) (g : option positive) : Mount :=
+  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m) (mnt_sb m)
+          (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
+          (mnt_peer m) g.
 
 (** One line of a uid_map or gid_map: ids [first, first + count) of the
     namespace map to ids [lower, lower + count) of its parent. *)
@@ -335,25 +399,121 @@ Definition default_mi_env : MiEnv :=
     link dump ([Net.nl_env_ok]).  That bound is a fact of the build's
     configuration (the attribute sizes [if_nlmsg_size] and the address
     families' [get_link_af_size] add up); a value below Linux's makes the
-    model refuse the dump Linux gives.  Last, the names KNOWN ABSENT from
+    model refuse the dump Linux gives.  Then the names KNOWN ABSENT from
     a host directory: pairs of a host directory's dentry and a name whose
     lookup there returns -ENOENT, as a negative dentry records it.  A
     host lookup of a name the tables do not list is otherwise undecided;
     a pair is a measured fact about the host (stat of that path gave
     ENOENT), and a statement that lists one asks that nothing outside the
-    model creates the name. *)
+    model creates the name.
+
+    Last, the OPEN peer groups: the keys of the peer groups the tables
+    hold that have a member outside the tables, in a mount namespace the
+    tables do not hold.  A mount or unmount at that outside member reaches
+    every member of the group in the tables and every slave below them
+    ([propagate_mnt], [propagate_umount], fs/pnode.c:311-366, 658-687,
+    Linux v6.18.46), so the host can add or remove mounts in a namespace of
+    the model without a call of the model, at any time.  A launch measures
+    the list: it reads /proc/<pid>/mountinfo of every process of the host
+    (as root); a group is open when a mount with its [shared:N] is in a
+    namespace the tables do not hold, or when a mount of the tables shows
+    [master:N] for a group with no member in the tables.  The arms that
+    would read a mount that can receive from an open group decline
+    ([Propagation.open_reach]).  [empty_nsenv] sets it to [], the launch in which
+    no host mount event reaches a namespace of the model
+    ([Propagation.closed_no_outside_event]); a statement that wants that case
+    names a non-empty list. *)
 Record NsEnv := mkNsEnv {
   env_mount_max     : Z;
   env_proc_entries  : list ProcEntry;
   env_net_fallback  : list NetIf;
   env_mountinfo     : MiEnv;
   env_nl_link_max   : Z;
-  env_host_absent   : list (positive * list byte)
+  env_host_absent   : list (positive * list byte);
+  env_open_groups   : list positive
 }.
+
+(** The launch values of a system the namespace model knows nothing of:
+    Linux's default mount limit (100000), no procfs entry, no fallback
+    device, [default_mi_env], a link-message bound of 65536 bytes, no name
+    known absent and no open peer group. *)
+Definition empty_nsenv : NsEnv :=
+  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] [].
+
+(** The setters of [NsEnv], one per field: with [empty_nsenv], the only
+    places that apply [mkNsEnv] to every field. *)
+Definition env_with_mount_max (e : NsEnv) (v : Z) : NsEnv :=
+  mkNsEnv v (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
+          (env_host_absent e) (env_open_groups e).
+
+Definition env_with_proc_entries (e : NsEnv) (v : list ProcEntry) : NsEnv :=
+  mkNsEnv (env_mount_max e) v (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
+          (env_host_absent e) (env_open_groups e).
+
+Definition env_with_net_fallback (e : NsEnv) (v : list NetIf) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) v (env_mountinfo e) (env_nl_link_max e)
+          (env_host_absent e) (env_open_groups e).
+
+Definition env_with_mountinfo (e : NsEnv) (v : MiEnv) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) v (env_nl_link_max e)
+          (env_host_absent e) (env_open_groups e).
+
+Definition env_with_nl_link_max (e : NsEnv) (v : Z) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) v
+          (env_host_absent e) (env_open_groups e).
+
+Definition env_with_host_absent (e : NsEnv) (v : list (positive * list byte)) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) v (env_open_groups e).
+
+Definition env_with_open_groups (e : NsEnv) (v : list positive) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) v.
+
+(** The order the kernel keeps of mount propagation, beyond each mount's
+    peer group and master group ([Ns.Propagation]; Linux v6.18.46):
+    - [pl_rings]: a peer group's members in [next_peer] order, the order of
+      the [mnt_share] ring (fs/mount.h:68, fs/pnode.c:17-20).  The list has
+      no start: the member after the last is the first.  A group with one
+      member in the tables needs no entry.
+    - [pl_slaves]: a mount's [mnt_slave_list], head first, as [first_slave]
+      and [next_slave] read it (fs/mount.h:69-71, fs/pnode.c:22-30).  The
+      entry's key is the master mount ([mnt_master]) of each slave it
+      lists.  A mount with no slave or one slave needs no entry.
+    - [pl_next_group]: a lower bound for the key of the next new peer group
+      ([Propagation.new_group_key]); no key the tables used before is given
+      again.
+    Both orders decide the order in which the kernel walks a propagation
+    tree ([propagation_next], [next_group], fs/pnode.c:177-212, 228-258),
+    so the order in which one call makes secondary mounts, and so their
+    [mnt_id_unique] and their order in mountinfo.  The kernel shows neither
+    order to user space ([show_mountinfo] prints group numbers only,
+    fs/proc_namespace.c:158-169), so a launch states an order only where it
+    knows it: an absent entry for a group with two or more members in the
+    tables, or for a mount with two or more slaves, means "order unknown",
+    and an arm whose answer that order would decide declines. *)
+Record PropLinks := mkPropLinks {
+  pl_rings      : list (positive * list positive);
+  pl_slaves     : list (positive * list positive);
+  pl_next_group : positive
+}.
+
+(** No order data, and keys from 1. *)
+Definition empty_prop : PropLinks := mkPropLinks [] [] 1%positive.
+
+(** The setters of [PropLinks], one per field. *)
+Definition pl_with_rings (pl : PropLinks) (v : list (positive * list positive)) : PropLinks :=
+  mkPropLinks v (pl_slaves pl) (pl_next_group pl).
+
+Definition pl_with_slaves (pl : PropLinks) (v : list (positive * list positive)) : PropLinks :=
+  mkPropLinks (pl_rings pl) v (pl_next_group pl).
+
+Definition pl_with_next_group (pl : PropLinks) (v : positive) : PropLinks :=
+  mkPropLinks (pl_rings pl) (pl_slaves pl) v.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
     open files a process's descriptor table names by handle
-    ([State.ONsFile]). *)
+    ([State.ONsFile]); [ns_prop] the order data of propagation. *)
 Record NsState := mkNsState {
   ns_mounts   : list Mount;
   ns_userns   : list UserNs;
@@ -365,6 +525,7 @@ Record NsState := mkNsState {
   ns_dentries : list Dentry;
   ns_inodes   : list Inode;
   ns_files    : list (N * NsFile);
+  ns_prop     : PropLinks;
   ns_env      : NsEnv
 }.
 
@@ -416,58 +577,68 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
 
 (** The shared state of a system the namespace model knows nothing of: no
     mount tree and no namespace but the host's UTS namespace
-    ([host_utsns], whose names are the released pin's), Linux's default
-    mount limit (100000) and no procfs entry.  A core builds its released
-    world from this, never from the constructor, so a new field changes no
-    caller. *)
+    ([host_utsns], whose names are the released pin's), no order data of
+    propagation, and the launch values of [empty_nsenv].  A core builds its
+    released world from this, never from the constructor, so a new field
+    changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z []).
+  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] empty_prop empty_nsenv.
 
 (** The setters of [NsState], one per field: with [empty_nsstate], the only
     places that apply [mkNsState] to every field. *)
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_userns (st : NsState) (us : list UserNs) : NsState :=
   mkNsState (ns_mounts st) us (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_mntns (st : NsState) (ns : list MntNs) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) ns (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_pidns (st : NsState) (ps : list PidNs) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) ps (ns_netns st) (ns_utsns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_netns (st : NsState) (ns : list NetNs) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) ns (ns_utsns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_utsns (st : NsState) (us : list UtsNs) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) us (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_sbs (st : NsState) (sbs : list SuperBlock) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) sbs
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_dentries (st : NsState) (ds : list Dentry) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
-            (ns_sbs st) ds (ns_inodes st) (ns_files st) (ns_env st).
+            (ns_sbs st) ds (ns_inodes st) (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_inodes (st : NsState) (ins : list Inode) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
-            (ns_sbs st) (ns_dentries st) ins (ns_files st) (ns_env st).
+            (ns_sbs st) (ns_dentries st) ins (ns_files st) (ns_prop st) (ns_env st).
 
 Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
-            (ns_sbs st) (ns_dentries st) (ns_inodes st) fs (ns_env st).
+            (ns_sbs st) (ns_dentries st) (ns_inodes st) fs (ns_prop st) (ns_env st).
+
+(** The order data of propagation replaced by [pl].  (Not [with_prop]:
+    [Mount.with_prop] sets a mount's peer group and master.) *)
+Definition with_ns_prop (st : NsState) (pl : PropLinks) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
+            (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) pl (ns_env st).
 
 Definition with_env (st : NsState) (e : NsEnv) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
-            (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) e.
+            (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) (ns_prop st) e.
+
+(** The launch's open peer groups ([env_open_groups]) replaced by [gs]. *)
+Definition with_open_groups (st : NsState) (gs : list positive) : NsState :=
+  with_env st (env_with_open_groups (ns_env st) gs).
 
 (** The UTS namespace [n] of the tables. *)
 Definition find_utsns (st : NsState) (n : positive) : option UtsNs :=
