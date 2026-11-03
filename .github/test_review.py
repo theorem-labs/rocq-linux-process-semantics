@@ -872,6 +872,10 @@ class HoldingsTest(unittest.TestCase):
         # the checks that run: Model Armor always, and only checks whose settings are all there
         listed = e["SCREEN_CHECKS"].split(",")
         self.assertIn("model_armor", listed)
+        # the Claude check runs, under the screen's own service account and rule (rocq-linux-process-semantics-screen)
+        self.assertIn("claude", listed)
+        self.assertEqual((e["ANTHROPIC_SERVICE_ACCOUNT_ID"], e["ANTHROPIC_FEDERATION_RULE_ID"]),
+                         ("svac_01JFhEhPizCyTiK2i22mRJ8a", "fdrl_01SQMHj4Tw85dV4DNYWQDKeA"))
         self.assertTrue(set(listed) <= {"model_armor", "prompt_shields", "claude"}, listed)
         needs = {"model_armor": ["MODEL_ARMOR_URL", "MODEL_ARMOR_TEMPLATE", "GCP_SERVICE_ACCOUNT"],
                  "prompt_shields": ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "CONTENT_SAFETY_URL"],
