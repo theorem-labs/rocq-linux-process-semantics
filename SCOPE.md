@@ -531,19 +531,24 @@ not apply.
   unchanged. A dump keeps running: once the acknowledgement is read,
   `netlink_recvmsg` runs the dump again from its first part, so the
   dump's datagrams follow the acknowledgement. The namespace model admits
-  that outcome (`Ns.Net.nl_handler_errnos`). Under forced-only, this one
-  injected refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`)
-  is given the call's whole outcome, but the namespace model's filter
-  (`Ns.Spec.ns_refusal`) reads only the state before the call and the
-  call's effect, not the state after it, where the acknowledgement lives.
+  that outcome (`Ns.Net.nl_handler_errnos`). Its effect is the answer's
+  own, the request's length; only the state after the call, where the
+  acknowledgement lives, shows the failure. The refusal filter
+  (`Ns.Ext.ext_refusal`) is given the call's whole outcome, and under
+  forced-only the namespace model's filter removes this outcome wherever
+  the model also admits the answer without the failure
+  (`Ns.Spec.ns_alloc_refusal`, `Ns.Net.nl_alloc_after`). Under may-fail
+  it stays.
 - A loopback device can come up without its address. When `lo` comes
   up, `inetdev_event` adds 127.0.0.1/8 only if `inet_alloc_ifa` can
-  allocate it (`net/ipv4/devinet.c`, v6.18.44); otherwise the device is
+  allocate it (`net/ipv4/devinet.c`, v6.18.46); otherwise the device is
   up with no address, and the request is still acknowledged with 0. The
   namespace model admits that outcome beside the one with the address
-  (`Ns.Net.lo_up_noaddr`). It is an allocation failure, but its effect is
-  the success's own, so for the reason above forced-only does not remove
-  it either.
+  (`Ns.Net.lo_up_noaddr`). It is an allocation failure whose effect is
+  the success's own, so as above only the state after the call shows it:
+  under forced-only the filter removes it and keeps the outcome with the
+  address, and under may-fail both stay. `Ns.Net.nl_alloc_after` gives
+  the kernel lines of both failures.
 - A write to a tmpfs file can stop short. When a later page of the write
   cannot be allocated or read, `generic_perform_write` (`mm/filemap.c`,
   v6.18.44) returns the bytes it has already written, a count that ends

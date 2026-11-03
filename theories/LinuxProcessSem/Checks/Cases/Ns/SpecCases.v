@@ -226,11 +226,11 @@ Proof.
 Qed.
 
 (** THE FILTER READS THE WHOLE OUTCOME AND KEEPS ITS ANSWERS.  The core
-    filters a claimed call's [EOk] outcome ([Ext.ext_refusal]), and
-    [Spec.ns_refusal] filters it as [Spec.ns_refusal_eff] filters its
-    effect ([Spec.ns_refusal_outcome_eff]), whatever model, context, state
-    and events it leaves: the [mmap] answers above are the same on
-    outcomes. *)
+    filters a claimed call's [EOk] outcome ([Ext.ext_refusal]), and for
+    every call but [sendto] [Spec.ns_refusal] filters it as
+    [Spec.ns_refusal_eff] filters its effect ([Spec.ns_refusal_outcome_eff]),
+    whatever model, context, state and events it leaves: the [mmap]
+    answers above are the same on outcomes. *)
 Example mmap_enomem_outcome_filter : forall m' ctx' st' evs,
   ns_refusal forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) one_mount
     (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
@@ -242,12 +242,12 @@ Proof.
   split.
   - apply (proj2 (ns_refusal_outcome_eff forced_only_cfg mmap_small Cases.Prelude.tight_model
                     (task 2 18) one_mount (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
-                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl)).
+                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl eq_refl)).
     exact Hs.
   - intros H. apply Hl.
     apply (proj1 (ns_refusal_outcome_eff forced_only_cfg mmap_large Cases.Prelude.tight_model
                     (task 2 18) one_mount (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
-                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl)).
+                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl eq_refl)).
     exact H.
 Qed.
 

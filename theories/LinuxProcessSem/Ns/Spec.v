@@ -170,38 +170,64 @@ Definition ns_refusal_eff (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ct
             ns_spec i m ctx st (EOk eff' m' ctx' st' evs')
             /\ ns_witness i (eff_ret eff) (eff_ret eff') = true.
 
+(** The forced-only filter of the allocation failures [sendto] (206)
+    shows only in the state after it ([Net.nl_alloc_after]): outside the
+    released world, with the allocation family off, an answer whose state
+    [st'] shows one is removed where the model also admits the same effect
+    with a state that shows none, the answer reached without the failure.
+    With the allocation family on it removes nothing. *)
+Definition ns_alloc_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
+    (st : NsState) (eff : SyscallEffect) (st' : NsState) : Prop :=
+  negb (flat_view ctx st) && Z.eqb (ns_sysno i) 206 && negb (family_may_fail cfg FamAlloc)
+  && nl_alloc_after i m st st' = true
+  /\ exists m2 ctx2 st2 evs2,
+       ns_spec i m ctx st (EOk eff m2 ctx2 st2 evs2) /\ nl_alloc_after i m st st2 = false.
+
 (** The forced-only filter of [ns_ext] ([Ext.ext_refusal]): an [EOk]
-    outcome is filtered as its effect is ([ns_refusal_eff]); the model,
-    context and state it leaves are not read.  [EUnmodeled] is never
-    filtered. *)
+    outcome is filtered as its effect is ([ns_refusal_eff]), or as an
+    allocation failure its state shows ([ns_alloc_refusal]).
+    [EUnmodeled] is never filtered. *)
 Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (o : ext_outcome) : Prop :=
   match o with
-  | EOk eff _ _ _ _ => ns_refusal_eff cfg i m ctx st eff
+  | EOk eff _ _ st' _ => ns_refusal_eff cfg i m ctx st eff \/ ns_alloc_refusal cfg i m ctx st eff st'
   | EUnmodeled => False
   end.
 
-(** The filter of an outcome is the filter of its effect, in every world:
-    the filter keeps every answer it kept when it read the effect alone,
-    and removes no other. *)
+(** The filter of an outcome is the filter of its effect for every call
+    but [sendto], and for [sendto] too while the allocation family may
+    fail: there the filter keeps every answer it kept when it read the
+    effect alone, and removes no other. *)
 Lemma ns_refusal_outcome_eff : forall cfg i m ctx st o eff,
   outcome_eff o = Some eff ->
+  (family_may_fail cfg FamAlloc || negb (Z.eqb (ns_sysno i) 206)) = true ->
   (ns_refusal cfg i m ctx st o <-> ns_refusal_eff cfg i m ctx st eff).
 Proof.
-  intros cfg i m ctx st o eff Ho.
+  intros cfg i m ctx st o eff Ho Hk.
   destruct o as [eff0 m' ctx' st' evs|]; cbn in Ho; [|discriminate Ho].
-  injection Ho as Ho. subst eff0. split; intros H; exact H.
+  injection Ho as Ho. subst eff0. split.
+  - intros [H | H]; [exact H|]. exfalso.
+    destruct H as [Hb _].
+    apply andb_prop in Hb as [Hb _]. apply andb_prop in Hb as [Hb Hf].
+    apply andb_prop in Hb as [_ He].
+    apply negb_true_iff in Hf. rewrite Hf, He in Hk. cbn in Hk. discriminate Hk.
+  - intros H. left. exact H.
 Qed.
 
 Lemma ns_refusal_coherent : forall cfg i m ctx st o eff,
   flat_view ctx st = true -> ns_claims i = true -> outcome_eff o = Some eff ->
   (ns_refusal cfg i m ctx st o <-> spurious_refusal_cfg cfg i m eff).
 Proof.
-  intros cfg i m ctx st o eff H _ Ho. split.
-  - intros Hr. apply (proj1 (ns_refusal_outcome_eff cfg i m ctx st o eff Ho)) in Hr.
-    unfold ns_refusal_eff in Hr. rewrite H in Hr. exact Hr.
-  - intros Hs. apply (proj2 (ns_refusal_outcome_eff cfg i m ctx st o eff Ho)).
-    unfold ns_refusal_eff. rewrite H. exact Hs.
+  intros cfg i m ctx st o eff H _ Ho.
+  destruct o as [eff0 m' ctx' st' evs|]; cbn in Ho; [|discriminate Ho].
+  injection Ho as Ho. subst eff0. split.
+  - intros [Hr | Hr].
+    + unfold ns_refusal_eff in Hr. rewrite H in Hr. exact Hr.
+    + exfalso. destruct Hr as [Hb _].
+      apply andb_prop in Hb as [Hb _]. apply andb_prop in Hb as [Hb _].
+      apply andb_prop in Hb as [Hv _].
+      rewrite H in Hv. cbn in Hv. discriminate Hv.
+  - intros Hs. left. unfold ns_refusal_eff. rewrite H. exact Hs.
 Qed.
 
 (** A pass-through call gets the released filter in every world. *)
@@ -267,7 +293,15 @@ Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st o,
   cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st o -> ns_refusal cfg1 i m ctx st o.
 Proof.
   intros cfg1 cfg2 i m ctx st [eff m' ctx' st' evs|] Hle.
-  - exact (ns_refusal_eff_mono cfg1 cfg2 i m ctx st eff Hle).
+  - intros [H | [Hb Hw]].
+    + left. exact (ns_refusal_eff_mono cfg1 cfg2 i m ctx st eff Hle H).
+    + right. split; [|exact Hw].
+      apply andb_prop in Hb as [Hb HN]. apply andb_prop in Hb as [Hb HF].
+      assert (HF1 : negb (family_may_fail cfg1 FamAlloc) = true).
+      { apply negb_true_iff in HF. apply negb_true_iff.
+        destruct (family_may_fail cfg1 FamAlloc) eqn:E1; [|reflexivity].
+        rewrite (Hle _ E1) in HF. discriminate HF. }
+      rewrite Hb, HF1, HN. reflexivity.
   - intros H. exact (False_ind _ H).
 Qed.
 
