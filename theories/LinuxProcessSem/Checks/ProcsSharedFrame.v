@@ -152,25 +152,203 @@ Proof.
   fs_frame H.
 Qed.
 
+(** OPENAT, ONE SUB-CHECKER AT A TIME.  Unfolding the whole of
+    [check_openat] at once multiplies every guard of every arm into
+    one case split; each lemma below unfolds one level and closes
+    the calls below it by their lemmas. *)
+Lemma openat_read_fs : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_read in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_create_fs : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_create, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_append_fs : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros excl p eff m m' evs H.
+  unfold Open.check_openat_append, check_open_append in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_rdwr_fs : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros creat trunc p eff m m' evs H.
+  unfold Open.check_openat_rdwr, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_rdwr_excl_fs : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_rdwr_excl, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_excl_fs : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_excl, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_dir_fs : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_dir in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_localtime_fs : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_localtime in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_devnull_fs : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_devnull, Open.check_open_devnull in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_urandom_fs : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_urandom, Open.check_open_urandom in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_proc_result_fs : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros o eff m m' evs H.
+  unfold Open.check_proc_open_result in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_tmp H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_fs in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_fs in H; exact H
+  end.
+
+Lemma openat_tmp_fs : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros n p flags eff m m' evs H.
+  unfold Open.check_openat_tmp in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_tmp H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_sep H :=
+  lazymatch type of H with
+  | Open.check_openat_localtime _ _ _ = CheckOk _ _ => apply openat_localtime_fs in H; exact H
+  | Open.check_openat_devnull _ _ _ = CheckOk _ _ => apply openat_devnull_fs in H; exact H
+  | Open.check_openat_urandom _ _ _ = CheckOk _ _ => apply openat_urandom_fs in H; exact H
+  | Open.check_openat_tmp _ _ _ _ _ = CheckOk _ _ => apply openat_tmp_fs in H; exact H
+  end.
+
+Lemma openat_sep_fs : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_sep in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_sep H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_resolved H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_fs in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_fs in H; exact H
+  | Open.check_openat_excl _ _ _ = CheckOk _ _ => apply openat_excl_fs in H; exact H
+  | Open.check_openat_dir _ _ _ = CheckOk _ _ => apply openat_dir_fs in H; exact H
+  | Open.check_openat_append _ _ _ _ = CheckOk _ _ => apply openat_append_fs in H; exact H
+  | Open.check_openat_rdwr _ _ _ _ _ = CheckOk _ _ => apply openat_rdwr_fs in H; exact H
+  | Open.check_openat_rdwr_excl _ _ _ = CheckOk _ _ => apply openat_rdwr_excl_fs in H; exact H
+  | Open.check_openat_sep _ _ _ _ = CheckOk _ _ => apply openat_sep_fs in H; exact H
+  end.
+
+Lemma openat_resolved_fs : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_resolved in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_resolved H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_proc H :=
+  lazymatch type of H with
+  | Open.check_proc_open_result _ _ _ = CheckOk _ _ => apply openat_proc_result_fs in H; exact H
+  end.
+
+Lemma openat_proc_fs : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros c flags eff m m' evs H.
+  unfold Open.check_openat_proc in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_proc H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_body H :=
+  lazymatch type of H with
+  | Open.check_openat_proc _ _ _ _ = CheckOk _ _ => apply openat_proc_fs in H; exact H
+  | Open.check_openat_resolved _ _ _ _ = CheckOk _ _ => apply openat_resolved_fs in H; exact H
+  end.
+
+Lemma openat_body_fs : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold Open.check_openat_body in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_body H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_top H :=
+  lazymatch type of H with
+  | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_fs in H; exact H
+  end.
+
 Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   fs_grows (m_fs m) (m_fs m').
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  (* openat's body and its copy-in wrapper are [Local] to
-     [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
-     space, and naming them here is what lets [fs_frame] see that. *)
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
-    Open.check_openat_sep, Open.check_openat_localtime,
-    Open.check_openat_devnull, Open.check_open_devnull,
-    Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_tmp,
-    Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
-    Open.check_openat_dir, Open.check_openat_append,
-    Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    Open.check_openat_proc, Open.check_proc_open_result,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
-  fs_frame H.
+  unfold check_openat in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_top H || fs_done H); try fs_leaf.
 Qed.
 
 Lemma check_lseek_fs : forall fd off whence eff m m' evs,
