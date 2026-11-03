@@ -575,7 +575,8 @@ Proof.
     with (match stack_to_mem init_sp (entry_stack_image ph init_sp argv envp uid hw init_rnd) addr with
           | Some b => Some b
           | None =>
-              if andb (Z.leb (bv_unsigned init_sp - stack_max_size)
+              if andb (Z.leb (stack_window_lo init_sp
+                                (entry_stack_image ph init_sp argv envp uid hw init_rnd))
                              (bv_unsigned addr))
                       (Z.ltb (bv_unsigned addr) (bv_unsigned init_sp))
               then Some (Z_to_bv 8 0) else None

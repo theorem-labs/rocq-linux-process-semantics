@@ -2669,8 +2669,9 @@ Qed.
 (* THE WRAPPER BRIDGE                                                 *)
 (*                                                                   *)
 (* This repo's [init_machine_state] sets [ms_mem] to a wrapper that,  *)
-(* for stack addresses below [sp] (and above [sp - stack_max_size]),  *)
-(* returns [Some 0], else defers to the raw [stack_to_mem].  Every    *)
+(* for stack addresses below [sp] (and at or above                    *)
+(* [Run.stack_window_lo]), returns [Some 0], else defers to the raw   *)
+(* [stack_to_mem].  Every                                             *)
 (* read the binaries perform is at [addr >= sp], where the zero-fill  *)
 (* guard is false, so the wrapper agrees with [stack_to_mem].         *)
 (* ================================================================= *)
@@ -2707,7 +2708,8 @@ Definition wrap_mem (ph : PhdrInfo) (sp : word) (argv envp : list (list byte))
     match stack_to_mem sp (entry_stack_image ph sp argv envp uid hw rnd) addr with
     | Some b => Some b
     | None =>
-      if andb (Z.leb (bv_unsigned sp - stack_max_size) (bv_unsigned addr))
+      if andb (Z.leb (stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd))
+                     (bv_unsigned addr))
               (Z.ltb (bv_unsigned addr) (bv_unsigned sp))
       then Some (Z_to_bv 8 0) else None
     end.
