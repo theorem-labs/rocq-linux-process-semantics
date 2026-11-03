@@ -274,9 +274,11 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
     the change of every mount it reaches ([Propagation.change_type]).
     MS_SHARED's new groups take numbers the allocator may refuse (ENOMEM,
     ENOSPC): environment refusals of [mount40_injected].  No answer when
-    a mount the change reaches can receive an event from an open group
-    ([Propagation.targets_open]): the start of the path walk ("/", ".")
-    and the subtree MS_REC reaches are tested here, not by the walk. *)
+    a mount the change reads can receive an event from an open group
+    ([Propagation.targets_open]): a mount it changes (the target, which
+    the walk does not test when the path is "/" or ".", and with MS_REC
+    its subtree), a slave it hands over ([transfer_propagation],
+    fs/pnode.c:74-88), or a mount whose slave list it changes. *)
 Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m : Model)
     (ctx : NsCtx) (st : NsState) (target td : positive) (flags : Z) : ext_outcome :=
   match find_mount (ns_mounts st) target with
@@ -291,7 +293,8 @@ Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m :
                | None => EUnmodeled
                | Some false => err reads EPERM m ctx st
                | Some true =>
-                   if targets_open st target (has flags MS_REC) then EUnmodeled
+                   if targets_open st (Some (propagation_type flags)) target (has flags MS_REC)
+                   then EUnmodeled
                    else mount_ok reads m ctx
                           (change_type (propagation_type flags) st target (has flags MS_REC))
                end
@@ -714,17 +717,27 @@ Definition setattr_writer_busy (st : NsState) (targets : list positive) : bool :
     allocator may refuse: ENOMEM and ENOSPC, environment refusals of
     [mount442_injected].  A refused call leaves the groups as they were
     ([cleanup_group_ids], 4831-4833).  No answer, after the namespace
-    check, when a mount of the selected tree can receive an event from an
-    open group ([Propagation.targets_open]): the host can add mounts to
-    the tree, whose flags and writers the checks would also read, and a
-    propagation change reads the group's members outside the tables. *)
+    check, when a mount the call reads can receive an event from an open
+    group ([Propagation.targets_open]): a mount of the selected tree, and
+    with a propagation type a slave the change hands over or a mount whose
+    slave list it changes.  The rule of open groups gives a call that
+    reads such a mount no answer ([Tables.env_open_groups]), so the test
+    comes before the EPERM and EBUSY checks of [mount_setattr_prepare]
+    (4710-4743).  With AT_RECURSIVE the host can also add mounts to the
+    tree, whose flags and writers those checks would read.  Without it
+    the checks read only the target (the loop returns after the first
+    mount, 4733-4734), which no host event changes: an open target still
+    has no answer, even where Linux decides EPERM or EBUSY from it alone,
+    and only a launch that names an open group reaches that case
+    ([Propagation.targets_open_closed]).  The flags do not change a
+    mount's group or master, so the test reads [st]. *)
 Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
     (prop : option PropType) (recursive : bool)
     (m : Model) (ctx : NsCtx) (st : NsState) (mt d : positive) : ext_outcome :=
   match find_mount (ns_mounts st) mt, path_mounted st mt d with
   | Some mount, Some true =>
       if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
-      else if targets_open st mt recursive then EUnmodeled
+      else if targets_open st prop mt recursive then EUnmodeled
       else if mf_ro (at_set change) && setattr_writer_busy st (setattr_targets (ns_mounts st) mt recursive)
       then err reads EBUSY m ctx st
       else match mount_setattr (ns_mounts st) mt recursive change with

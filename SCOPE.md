@@ -558,10 +558,13 @@ not apply.
   (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), a
   propagation change (`mount(2)` with `MS_SHARED`, `MS_SLAVE`,
   `MS_PRIVATE` or `MS_UNBINDABLE`) or a `mount_setattr` whose target, or
-  with `MS_REC` or `AT_RECURSIVE` whose subtree, holds one
+  with `MS_REC` or `AT_RECURSIVE` whose subtree, holds one, or, for a
+  change to slave, private or unbindable, whose slaves it hands over, or
+  the mounts whose slave lists it changes, hold one
   (`Ns.Propagation.targets_open`: `change_mnt_propagation` takes the next
   peer among the group's members outside the tables too,
-  `fs/pnode.c:101-116`), an
+  `fs/pnode.c:101-116`, and `transfer_propagation` sets the master of
+  each slave it hands over, `fs/pnode.c:74-88`), an
   `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
   and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
   `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,
