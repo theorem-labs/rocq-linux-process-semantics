@@ -1,0 +1,37 @@
+; The generated member of this example, modelled on the `(subdir
+; rwx_flag_ns ...)` stanza of ../dune.  The rules of rwx_flag_ns sit in
+; ../dune because that file holds one `(subdir <name> ...)` block per
+; example; this example keeps its rule next to its own files.  dune reads
+; a `dune` file in a subdirectory of an `(include_subdirs qualified)`
+; theory and runs its rules (measured with dune 3.23.0 in the release
+; checker image).
+;
+; vdso_clock has ONE binary, so there is no Checker.v rule here.
+; tools/gen_checker.py renders the equivalence checker, which ascribes
+; Proof.strong_universal for a SOURCE and a TARGET image; this example has
+; no such pair.  `python3 tools/gen_checker.py --check` reads ../dune
+; only, so it is unaffected by this file.
+;
+; tools/gen_fd_lemmas.py always reads two images (see DEFAULT_IMAGES in
+; it).  Both flags therefore name the one image of this example.  The
+; generated file holds the fetch and decode lemmas twice: the S-prefixed
+; lemmas (SF_<addr>, SD_<addr>) and the T-prefixed lemmas are the same
+; facts about the same binary.  The proof uses the S-prefixed ones.
+; Measured in the checker image: 1209 instruction words, every word
+; decodes, 1.4 s to generate.
+;
+; The executable LOAD segment of this binary is r-x and holds .text
+; alone, so the generator locates the range itself and no
+; --source-text/--target-text is needed.
+
+(rule
+ (target vdso_clock_code.v)
+ (deps
+  %{project_root}/tools/gen_fd_lemmas.py
+  (glob_files *MemImage.v)
+  (glob_files *MemImage_seg_*.hex)
+  (glob_files %{project_root}/theories/Riscv/*.vo))
+ (action
+  (run python3 %{project_root}/tools/gen_fd_lemmas.py vdso_clock
+   --source-image VdsoClockMemImage --target-image VdsoClockMemImage
+   --examples-dir .. --loadpath %{project_root}/theories --out %{target})))

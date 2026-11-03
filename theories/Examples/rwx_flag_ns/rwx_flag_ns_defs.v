@@ -91,3 +91,103 @@ Proof.
     [ vm_compute; reflexivity | vm_compute; reflexivity | lia
     | exact Hlo | exact Hhi ].
 Qed.
+
+(* ######################################################################### *)
+(* The run's segment list: the image's own, then the vDSO pair               *)
+(* ######################################################################### *)
+
+(** A run reads [Run.run_segments]: the image's LOAD segments followed by
+    the vDSO pair.  The generated fetch facts and the store lemmas above
+    are stated over the image's own list, and they carry over to the
+    run's list unchanged because every reader they go through —
+    [find_segment] under [code_read], [code_read_wx] and [wview] — scans
+    head first, so a hit among the image's segments is the same hit in
+    any longer list. *)
+Lemma find_segment_app : forall segs vt a n seg,
+  find_segment segs a n = Some seg -> find_segment (segs ++ vt) a n = Some seg.
+Proof.
+  induction segs as [|s rest IH]; intros vt a n seg H; [discriminate|].
+  cbn [find_segment app] in *.
+  match goal with |- (if ?c then _ else _) = _ => destruct c end;
+    [exact H | exact (IH vt a n seg H)].
+Qed.
+
+Lemma code_read_app : forall segs vt (a : word) n bs,
+  code_read segs a n = Some bs -> code_read (segs ++ vt) a n = Some bs.
+Proof.
+  intros segs vt a n bs H. unfold code_read in *.
+  destruct (find_segment segs (bv_unsigned a) (Z.of_N n)) as [seg|] eqn:Hf;
+    [|discriminate].
+  rewrite (find_segment_app segs vt _ _ seg Hf). exact H.
+Qed.
+
+Lemma code_read_wx_app : forall segs vt (a : word) n bs,
+  code_read_wx segs a n = Some bs -> code_read_wx (segs ++ vt) a n = Some bs.
+Proof.
+  intros segs vt a n bs H. unfold code_read_wx in *.
+  destruct (find_segment segs (bv_unsigned a) (Z.of_N n)) as [seg|] eqn:Hf;
+    [|discriminate].
+  rewrite (find_segment_app segs vt _ _ seg Hf). exact H.
+Qed.
+
+Lemma fetch_word_app : forall segs vt (pc : word) w,
+  fetch_word segs pc = Some w -> fetch_word (segs ++ vt) pc = Some w.
+Proof.
+  intros segs vt pc w H. unfold fetch_word in *.
+  destruct (negb (Z.eqb (bv_unsigned pc mod 2) 0)%Z); [discriminate|].
+  destruct (code_read segs pc 4) as [bs|] eqn:Hc; [|discriminate].
+  rewrite (code_read_app segs vt pc 4 bs Hc). exact H.
+Qed.
+
+Lemma fetch_word_wx_app : forall segs vt (pc : word) w,
+  fetch_word_wx segs pc = Some w -> fetch_word_wx (segs ++ vt) pc = Some w.
+Proof.
+  intros segs vt pc w H. unfold fetch_word_wx in *.
+  destruct (negb (Z.eqb (bv_unsigned pc mod 2) 0)%Z); [discriminate|].
+  destruct (code_read_wx segs pc 4) as [bs|] eqn:Hc; [|discriminate].
+  rewrite (code_read_wx_app segs vt pc 4 bs Hc). exact H.
+Qed.
+
+Lemma wview_app : forall segs vt m (a : word) b,
+  wview segs m a = Some b -> wview (segs ++ vt) m a = Some b.
+Proof.
+  intros segs vt m a b H. unfold wview in *.
+  destruct (m a) as [b'|]; [exact H|].
+  destruct (find_segment segs (bv_unsigned a) 1) as [seg|] eqn:Hf; [|discriminate].
+  rewrite (find_segment_app segs vt _ _ seg Hf). exact H.
+Qed.
+
+Lemma store_ok_app : forall segs vt m n (a : word),
+  store_ok segs m a n = true -> store_ok (segs ++ vt) m a n = true.
+Proof.
+  intros segs vt m n. induction n as [|n IH]; intros a H; [reflexivity|].
+  cbn [store_ok] in *.
+  destruct (wview segs m a) as [b|] eqn:Hw; [|discriminate].
+  rewrite (wview_app segs vt m a b Hw). exact (IH _ H).
+Qed.
+
+(** The source's all-w+x fact at the run's list: neither vDSO segment is
+    executable (the model does not run the vDSO's bytes; see
+    [Run.vdso_segments]), so the static fetch still declines
+    everywhere. *)
+Lemma no_ro_exec_app : forall segs vt,
+  no_ro_exec segs = true -> no_ro_exec vt = true -> no_ro_exec (segs ++ vt) = true.
+Proof.
+  intros segs vt H1 H2. unfold no_ro_exec in *. rewrite forallb_app, H1, H2. reflexivity.
+Qed.
+
+Local Transparent vdso_segments.
+Lemma no_ro_exec_vdso : forall kb sp mbase, no_ro_exec (vdso_segments kb sp mbase) = true.
+Proof.
+  intros kb sp mbase. unfold vdso_segments. cbv zeta.
+  match goal with |- no_ro_exec (if ?c then _ else _) = _ => destruct c end;
+    reflexivity.
+Qed.
+Local Opaque vdso_segments.
+
+Lemma source_run_no_ro_exec : forall inp sp mbase,
+  no_ro_exec (run_segments source_segs inp sp mbase) = true.
+Proof.
+  intros inp sp mbase. unfold run_segments.
+  apply no_ro_exec_app; [exact source_no_ro_exec | apply no_ro_exec_vdso].
+Qed.

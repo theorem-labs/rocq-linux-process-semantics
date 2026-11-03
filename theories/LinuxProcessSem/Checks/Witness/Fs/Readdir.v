@@ -204,9 +204,13 @@ Definition getdents64_witness (fd dirent count : word) (i : SyscallInput) (m : M
   | Some (FdFileRW _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdPipe _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdSocket _)  => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdDgram _)   => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdEventfd _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdOpaque o) => getdents64_opaque_witness fd o dirent count i m
+  | Some (FdAnon _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some FdDir =>
       if getdents64_no_room count
       then ret_outcome (errno_ret EINVAL) m
