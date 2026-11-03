@@ -327,6 +327,11 @@ Definition inode_exec_bit (cr : WalkCreds) (ino : Inode) : bool :=
        then Z.testbit (ino_perm ino) 3
        else Z.testbit (ino_perm ino) 0.
 
+(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h:50-51):
+    the id no namespace maps, which [vfsuid_valid] refuses
+    (include/linux/mnt_idmapping.h:55-58). *)
+Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
+
 (** [kuid_has_mapping] (include/linux/uidgid.h) through [map_id_up]
     (kernel/user_namespace.c): a kernel id has a mapping when an extent's
     lower range holds it. *)

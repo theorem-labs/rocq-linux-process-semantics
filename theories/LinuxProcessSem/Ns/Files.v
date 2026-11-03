@@ -20,12 +20,12 @@
       kernel needs the path of another kind of descriptor, the arm
       declines;
     - search, read and write permission follow [inode_permission],
-      [sb_permission], [generic_permission] and [acl_permission_check]
-      (fs/namei.c) and [capable_wrt_inode_uidgid] (kernel/capability.c),
-      with no ACL, no idmapped mount and no security module but the
-      capability one; for a /proc/sys/user file, its own [->permission],
-      [proc_sys_permission], in place of [generic_permission]
-      ([inode_or_sysctl_permission]);
+      [sb_permission], [HAS_UNMAPPED_ID], [generic_permission] and
+      [acl_permission_check] (fs/namei.c, include/linux/fs.h) and
+      [capable_wrt_inode_uidgid] (kernel/capability.c), with no ACL, no
+      idmapped mount and no security module but the capability one; for a
+      /proc/sys/user file, its own [->permission], [proc_sys_permission],
+      in place of [generic_permission] ([inode_or_sysctl_permission]);
     - a write to user memory goes through [Arm.put_ok]: EFAULT outside
       [access_ok], and a range that is not wholly writable declines;
     - the environment's refusals (an allocation, the host file system's
@@ -371,8 +371,17 @@ Definition generic_permission (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (eff
 Definition proc_fd_dir (l : Loc) : bool :=
   match l with LProcTask _ _ [n] => bytes_eqb n proc_fd_name | _ => false end.
 
-(** [inode_permission] (fs/namei.c): [sb_permission]'s EROFS for a write
-    to a regular file, directory or link of a read-only superblock; then
+(** [HAS_UNMAPPED_ID] (include/linux/fs.h:2587-2591): the inode's uid or
+    gid is INVALID.  The model has no idmapped mount, so the vfsuid and
+    vfsgid are the inode's kernel ids ([make_vfsuid] of [nop_mnt_idmap],
+    fs/mnt_idmapping.c:86-87). *)
+Definition has_unmapped_id (a : ObjAttr) : bool := kid_invalid (oa_uid a) || kid_invalid (oa_gid a).
+
+(** [inode_permission] (fs/namei.c:568-602): [sb_permission]'s EROFS for a
+    write to a regular file, directory or link of a read-only superblock
+    (544-554, 573-575); for a write, EACCES when the inode's uid or gid is
+    INVALID ([HAS_UNMAPPED_ID], 589-590; the tables hold no immutable
+    inode, so the EPERM of 581-582 before it never answers); then
     [generic_permission], or [proc_fd_permission] (fs/proc/fd.c), which
     lets the task's own thread group into its fd directory.  [None]: the
     access is granted. *)
@@ -380,6 +389,7 @@ Definition inode_permission (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (eff :
     (sb : SuperBlock) (a : ObjAttr) (mask : Z) : option Z :=
   if has mask MAY_WRITE && sb_rdonly sb && (kind_is IReg a || kind_is IDir a || kind_is ILnk a)
   then Some EROFS
+  else if has mask MAY_WRITE && has_unmapped_id a then Some EACCES
   else if proc_fd_dir l || generic_permission st ctx cr eff a mask then None
   else Some EACCES.
 
@@ -537,14 +547,20 @@ Definition sysctl_perm_ok (U : list UserNs) (c : IdCred) (owner : positive) (mas
     check uses.  The inode of a /proc/sys/user file has the [->permission]
     [proc_sys_permission] (fs/proc/proc_sysctl.c:792-819), which
     [do_inode_permission] (fs/namei.c:521-534) calls in place of
-    [generic_permission]: after [sb_permission]'s EROFS, EACCES unless
-    [sysctl_perm] grants the access in the set of the caller's user
-    namespace, with no capability override ("sysctl entries that are not
-    writeable, are _NOT_ writeable, capabilities or not"). *)
+    [generic_permission]: after [sb_permission]'s EROFS and, for a write,
+    [HAS_UNMAPPED_ID]'s EACCES (589-590), EACCES unless [sysctl_perm]
+    grants the access in the set of the caller's user namespace, with no
+    capability override ("sysctl entries that are not writeable, are _NOT_
+    writeable, capabilities or not").  Linux's inodes there are root's
+    ([proc_sys_make_inode], fs/proc/proc_sysctl.c:490-493; the set's root,
+    kernel/ucount.c:58-61, has no [set_ownership]), so the
+    [HAS_UNMAPPED_ID] test refuses nothing on tables that hold them as
+    Linux does; it is kept for Linux's order. *)
 Definition inode_or_sysctl_permission (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (eff : Z) (l : Loc) (sb : SuperBlock) (a : ObjAttr) (mask : Z) : option Z :=
   if is_user_sys_file st l && negb (has mask MAY_WRITE && sb_rdonly sb)
-  then (if sysctl_perm_ok (ns_userns st) (task_cred m ctx) (cx_user ctx) mask then None
+  then (if has mask MAY_WRITE && has_unmapped_id a then Some EACCES
+        else if sysctl_perm_ok (ns_userns st) (task_cred m ctx) (cx_user ctx) mask then None
         else Some EACCES)
   else inode_permission st ctx cr eff l sb a mask.
 

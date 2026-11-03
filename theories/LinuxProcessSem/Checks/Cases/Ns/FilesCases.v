@@ -819,3 +819,72 @@ Proof.
   - intros H. apply (proj1 (open2_nope_filter _)) in H. destruct H as [Hoff _].
     vm_compute in Hoff. discriminate Hoff.
 Qed.
+
+(* ---- inodes whose uid or gid is INVALID ------------------------------- *)
+
+(** [inode_permission] refuses every access with MAY_WRITE to an inode
+    whose uid or gid is INVALID (4294967295) with EACCES, after
+    [sb_permission]'s EROFS and before the mode bits are read
+    ([HAS_UNMAPPED_ID], fs/namei.c:589-590; include/linux/fs.h:2587-2591).
+    In tmpfs on /tmp: "u", a regular file 0666 owned by
+    4294967295:1002; "g", a regular file 0644 owned by 1000:4294967295;
+    "ud", a directory 0777 owned by 4294967295:4294967295.  On the
+    read-only mount /ro, whose superblock is writable: "u", as /tmp's.
+    The caller (fsuid 1000, fsgid 1002) has the write by the mode bits of
+    each, so before this test each write below was granted, or refused by
+    the read-only mount. *)
+Definition W_unmapped : NsState :=
+  with_tree W
+    (ns_dentries W ++
+     [dent 23 2 (Some 20%positive) (bytes [117]) 23;
+      dent 24 2 (Some 20%positive) (bytes [103]) 24;
+      dent 25 2 (Some 20%positive) (bytes [117; 100]) 25;
+      dent 26 4 (Some 40%positive) (bytes [117]) 26])
+    (ns_inodes W ++ [reg 23 438 4294967295 1002; reg 24 420 1000 4294967295;
+                     dir 25 511 4294967295 4294967295; reg 26 438 4294967295 1002]).
+
+Definition s_tmp_u : list Z := s_tmp ++ [47; 117].                          (* /tmp/u *)
+Definition s_tmp_g : list Z := s_tmp ++ [47; 103].                          (* /tmp/g *)
+Definition s_tmp_ud_new : list Z := s_tmp ++ [47; 117; 100; 47; 110; 101; 119].  (* /tmp/ud/new *)
+Definition s_ro_u : list Z := s_ro ++ [47; 117].                            (* /ro/u *)
+
+(** An open for writing ([may_open], fs/namei.c:3565, with [ACC_MODE]'s
+    MAY_WRITE): EACCES, where it gave descriptor 3; an open for reading
+    asks no MAY_WRITE and still gives descriptor 3. *)
+Example openat_write_unmapped_owner :
+  ret_of (openat_fn (open_in s_tmp_u 1 0) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (openat_fn (open_in s_tmp_u 0 0) m3 c0 W_unmapped) = Some 3.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** The same through openat2 (one [do_filp_open] for both calls). *)
+Example openat2_write_unmapped_owner :
+  ret_of (fst (fst (openat2_fn (open2 CWD s_tmp_u 1 0 24) m3 c0 W_unmapped))) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** faccessat W_OK ([do_faccessat], fs/open.c:509, mask [mode | MAY_ACCESS]):
+    EACCES, where it answered 0, though the caller owns "g"; R_OK still
+    answers 0. *)
+Example faccessat_write_unmapped_group :
+  ret_of (faccessat_fn (access_in s_tmp_g 2) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_tmp_g 4) m3 c0 W_unmapped) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** An O_CREAT open of a free name in "ud" ([may_o_create],
+    fs/namei.c:3622-3623, MAY_WRITE|MAY_EXEC on the directory): EACCES,
+    where it created the file and gave descriptor 3.  The walk's search of
+    "ud" asks MAY_EXEC alone and passes. *)
+Example openat_create_unmapped_dir :
+  ret_of (openat_fn (open_in s_tmp_ud_new creat_excl 438) m3 c0 W_unmapped) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** On a read-only mount whose superblock is writable, [sb_permission]
+    does not refuse (fs/namei.c:550, [sb_rdonly]), so the EACCES comes
+    before the mount's EROFS: an open for writing ([may_open], 3973, runs
+    before [vfs_open]'s [file_get_write_access], fs/open.c:926) and
+    faccessat W_OK ([inode_permission] at fs/open.c:509, then
+    [__mnt_is_readonly] at 523-524) answer EACCES, where they answered
+    EROFS. *)
+Example unmapped_owner_before_readonly_mount :
+  ret_of (openat_fn (open_in s_ro_u 1 0) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_ro_u 2) m3 c0 W_unmapped) = Some (-13).
+Proof. split; vm_compute; reflexivity. Qed.
