@@ -241,10 +241,11 @@ class Runner(unittest.TestCase):
 class TrustTest(Runner):
     """The trust job: who is reviewed without being asked, and who is screened first."""
 
-    def trust(self, event, author="", actor="", number="7", screen=""):
+    def trust(self, event, author="", actor="", number="7", screen="", measure=""):
         s = step("trust", "Whether the author and the account that started the run have write access")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number, SCREEN=screen,
+                               MEASURE=measure,
                                RUN_ID="100", OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
 
     def assertReview(self, want, *args, **kwargs):
@@ -316,6 +317,14 @@ class TrustTest(Runner):
         self.assertReview("screen", "workflow_dispatch", "", "alice", screen="true")
         self.assertReview("review", "workflow_dispatch", "", "alice", screen="false")
         self.assertReview(None, "workflow_dispatch", "", "dependabot[bot]", screen="true")
+
+    def test_a_maintainer_can_measure_the_screen(self):
+        rc, out, got = self.trust("workflow_dispatch", "", "alice", number="", measure="true")
+        self.assertEqual((rc, got.get("route"), got.get("number"), got.get("outsider")), (0, "measure", "", ""), out)
+        self.assertReview(None, "workflow_dispatch", "", "dependabot[bot]", number="", measure="true")
+        # only by hand: an event's measure input does not exist
+        self.permissions(mallory="read")
+        self.assertReview("screen", "issues", "mallory", "mallory", measure="true")
 
     def test_a_permission_github_does_not_give_stops_the_run(self):
         rc, out, got = self.trust("pull_request_target", "alice", "alice")
@@ -704,6 +713,18 @@ class RouteTest(unittest.TestCase):
 
     def test_at_the_limit_it_is_held_without_a_screen(self):
         self.assertEqual(self.ran({"route": "limit", "outsider": "mallory", "number": "7"}), {"hold"})
+
+    def test_a_measurement_runs_the_screen_job_alone(self):
+        self.assertEqual(self.ran({"route": "measure", "number": ""}, outputs={"gather": {}}), {"screen"})
+        steps = {x.get("name") or x.get("uses", "").split("@")[0]: x.get("if") for x in JOBS["screen"]["steps"]}
+        self.assertEqual(steps["Screen"], "needs.trust.outputs.route != 'measure'")
+        self.assertEqual(steps["Measure"], "needs.trust.outputs.route == 'measure'")
+        self.assertEqual(steps["Take the gathered pull request or issue"], "needs.trust.outputs.route != 'measure'")
+        self.assertEqual(steps["actions/download-artifact"], "needs.trust.outputs.route != 'measure'")
+        m = step("screen", "Measure")
+        self.assertEqual(m["run"], "python3 .github/screen.py --measure")
+        self.assertEqual(m["env"]["MEASURE_SET"], "measure/set-v1.json")
+        self.assertTrue(m["env"]["MEASURE_OBJECT"].startswith("measure/runs/"))
 
     def test_no_route_runs_nothing(self):
         self.assertEqual(self.ran({}), set())
