@@ -4552,8 +4552,9 @@ Ltac valid_urandom_default :=
 Definition MAX_LFS_FILESIZE : Z := 9223372036854775807%Z.
 
 (** THE DESCRIPTOR-NUMBER CEILING: [sysctl_nr_open_max], which fs/file.c
-    computes as [__const_min(INT_MAX, ~(size_t)0/sizeof(void *)) &
-    -BITS_PER_LONG], 2,147,483,584 on a 64-bit kernel (Linux v6.18.46).
+    computes as the smaller of INT_MAX and the largest pointer count a
+    [size_t] holds, masked down to a multiple of BITS_PER_LONG:
+    2,147,483,584 on a 64-bit kernel (Linux v6.18.46).
     [sysctl_nr_open] is at most this, a table never grows past
     [sysctl_nr_open], and so no descriptor number reaches it.
     RLIMIT_NOFILE is NOT a bound on an inherited number: Linux checks it

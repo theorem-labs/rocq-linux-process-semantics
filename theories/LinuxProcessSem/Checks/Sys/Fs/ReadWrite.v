@@ -2226,6 +2226,7 @@ Proof.
       | Hst : fst (stream_take _ _) = ?bs |- _ =>
           rewrite (proj2 (listN_eqb_eq _ _) Hst)
       end.
+      bool_true. cbn. now rewrite app_nil_r.
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { (* the range is refused: -EFAULT *)
       cbn; rewrite bv_eqb_refl; reflexivity. }
