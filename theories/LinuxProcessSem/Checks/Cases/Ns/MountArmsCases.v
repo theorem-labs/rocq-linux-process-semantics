@@ -196,6 +196,39 @@ Example mount_private_nonroot :
                    (state false false [])) = Some (-EINVAL).
 Proof. vm_compute. reflexivity. Qed.
 
+(** [do_change_type] (fs/namespace.c:2856-2887): MS_SHARED with MS_REC gives
+    each mount of the subtree a new group of its own (2877-2881, 2453-2456);
+    a propagation flag with another flag of the low 32 bits is EINVAL
+    (2845-2846), as are two propagation flags (2848-2849); bits 32 to 63 do
+    not reach the test (2856: [int ms_flags]); with no CAP_SYS_ADMIN over the
+    owner of the mount's namespace, EPERM (2831-2832). *)
+Example mount_shared_recursive :
+  option_map (map mnt_peer) (mounts_of
+    (mount_fn (mount_input s_root s_root (MS_SHARED + MS_REC)) base_model c_admin
+              (state false false [])))
+  = Some [Some 2%positive; Some 3%positive; Some 4%positive; Some 5%positive].
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_private_rdonly :
+  ret_of (mount_fn (mount_input s_root s_root (MS_PRIVATE + MS_RDONLY)) base_model c_admin
+                   (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_shared_slave :
+  ret_of (mount_fn (mount_input s_root s_root (MS_SHARED + MS_SLAVE)) base_model c_admin
+                   (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_private_high_bit :
+  ret_of (mount_fn (mount_input s_root s_root (MS_PRIVATE + 2 ^ 40)) base_model c_admin
+                   (state false false [])) = Some 0.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_change_no_admin :
+  ret_of (mount_change_type [] (mount_input s_root s_root MS_PRIVATE) base_model c_none
+                            (state false false []) 1 1 MS_PRIVATE) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
 (** May_mount checks CAP_SYS_ADMIN over the mount namespace's owner. *)
 Example mount_needs_admin :
   ret_of (mount_fn (mount_input s_src s_bind MS_BIND) base_model c_none

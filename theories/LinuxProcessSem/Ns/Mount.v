@@ -409,8 +409,10 @@ Qed.
    a slave's master is the peer group it receives from.  The kernel's
    [mnt_master] names one member of that group, and [transfer_propagation]
    moves a slave to another member whenever its master leaves the group, so
-   the group is what a slave receives from.  MS_SHARED and MS_UNBINDABLE
-   are not modelled here. *)
+   the group is what a slave receives from.  This is the group level of
+   MS_SLAVE and MS_PRIVATE; [Propagation.change_type] adds MS_SHARED,
+   MS_UNBINDABLE and the order of rings and slave lists, and on the table
+   gives what [change_propagation] gives ([change_type_group_level]). *)
 
 Inductive PropChange := PropPrivate | PropSlave.
 

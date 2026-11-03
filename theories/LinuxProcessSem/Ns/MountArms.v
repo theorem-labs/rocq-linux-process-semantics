@@ -5,22 +5,23 @@
     path walk of [Ns.Walk].  New filesystem instances remain the named
     [do_new_mount] hook for the companion filesystem-instance model.
 
-    Linux 6.18.44 sources:
+    Linux v6.18.46 sources:
     - [SYSCALL_DEFINE5(mount)], [do_mount], [path_mount], [may_mount],
       [do_loopback], [__do_loopback], [do_change_type], and [do_new_mount],
-      fs/namespace.c:2954-3007, 3963-4051, 4216-4244;
+      fs/namespace.c:2002-2005, 2823-2887, 2954-3009, 3681-3732,
+      3963-4052, 4216-4248;
     - [SYSCALL_DEFINE2(umount)], [ksys_umount], [path_umount], and
       [can_umount], fs/namespace.c:2016-2071;
-    - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4551-4633, and
-      [chroot_fs_refs], fs/fs_struct.c:55-78;
+    - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4556-4638, and
+      [chroot_fs_refs], fs/fs_struct.c:55-81;
     - [SYSCALL_DEFINE5(mount_setattr)], [wants_mount_setattr],
       [build_mount_kattr], [do_mount_setattr], [mount_setattr_prepare], and
-      [mnt_hold_writers], fs/namespace.c:596-655, 4705-4739, 4776-4829,
-      4896-5030. *)
+      [mnt_hold_writers], fs/namespace.c:613-642, 4710-4743, 4781-4838,
+      4901-5038. *)
 
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount NewMount Userns Walk Arm Task Files.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Propagation NewMount Userns Walk Arm Task Files.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -191,9 +192,20 @@ Definition one_propagation (flags : Z) : bool :=
   || (slave && negb shared && negb private && negb unbindable)
   || (unbindable && negb shared && negb private && negb slave).
 
+(** A flag of the low 32 bits other than the four propagation types,
+    MS_REC and MS_SILENT: [do_change_type] takes [int ms_flags]
+    (fs/namespace.c:2856), so bits 32 to 63 never reach
+    [flags_to_propagation_type] (fs/namespace.c:2840-2851). *)
 Definition propagation_extra (flags : Z) : bool :=
-  negb (Z.eqb (Z.land flags
+  negb (Z.eqb (Z.land (Z.land flags 4294967295)
     (Z.lnot (MS_SHARED + MS_PRIVATE + MS_SLAVE + MS_UNBINDABLE + MS_REC + MS_SILENT))) 0).
+
+(** The type of a flag word that [one_propagation] accepts. *)
+Definition propagation_type (flags : Z) : PropType :=
+  if has flags MS_SHARED then PShared
+  else if has flags MS_SLAVE then PSlave
+  else if has flags MS_PRIVATE then PPrivate
+  else PUnbindable.
 
 Definition follow_walk_flags : WalkFlags := mkWalkFlags true false false false false.
 Definition directory_walk_flags : WalkFlags := mkWalkFlags true true false false false.
@@ -227,8 +239,14 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
       end
   end.
 
-(** [do_change_type] (fs/namespace.c:2856-2881).  Shared and unbindable
-    propagation need group allocation or state the present mount tree omits. *)
+(** [do_change_type] (fs/namespace.c:2856-2887), in its order: the path is
+    not the root of its mount (EINVAL); a flag word that is not one
+    propagation type with MS_REC and MS_SILENT at most (EINVAL,
+    [flags_to_propagation_type]); no CAP_SYS_ADMIN over the owner of the
+    mount's namespace (EPERM, [may_change_propagation], 2823-2834); then
+    the change of every mount it reaches ([Propagation.change_type]).
+    MS_SHARED's new groups take numbers the allocator may refuse (ENOMEM,
+    ENOSPC): environment refusals of [mount40_injected]. *)
 Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m : Model)
     (ctx : NsCtx) (st : NsState) (target td : positive) (flags : Z) : ext_outcome :=
   match find_mount (ns_mounts st) target with
@@ -238,19 +256,13 @@ Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m :
       | Some false => err reads EINVAL m ctx st
       | None => EUnmodeled
       | Some true =>
-          if negb (one_propagation flags) then err reads EINVAL m ctx st
-          else if propagation_extra flags then EUnmodeled
+          if negb (one_propagation flags) || propagation_extra flags then err reads EINVAL m ctx st
           else match mount_may_change m ctx st mt with
                | None => EUnmodeled
                | Some false => err reads EPERM m ctx st
                | Some true =>
-                   if has flags MS_SLAVE
-                   then mount_mresult reads
-                          (change_propagation (ns_mounts st) target (has flags MS_REC) PropSlave) m ctx st
-                   else if has flags MS_PRIVATE
-                   then mount_mresult reads
-                          (change_propagation (ns_mounts st) target (has flags MS_REC) PropPrivate) m ctx st
-                   else EUnmodeled
+                   mount_ok reads m ctx
+                     (change_type (propagation_type flags) st target (has flags MS_REC))
                end
       end
   end.
@@ -715,7 +727,11 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       [shmem_fill_super] gives the new instance room for at least one
       inode (mm/shmem.c:5092-5093).  The tables also answer ENOSPC, at the
       mount limit ([Mount.bind_mount], [NewMount.new_mount]:
-      [count_mounts]), so ENOSPC is in [ni_forced].
+      [count_mounts]), so ENOSPC is in [ni_forced].  With MS_SHARED
+      ([do_change_type], fs/namespace.c:2877-2881), ENOMEM and ENOSPC also
+      from the group-id allocator ([mnt_alloc_group_id],
+      fs/namespace.c:239-247; [ida_alloc_min], lib/idr.c:470, 477), an
+      allocation, so FamAlloc.
     Each row also lists the errnos its arm answers from the tables
     ([Arm.ni_answers]): the path copies, the walks and the call's own
     checks. *)
