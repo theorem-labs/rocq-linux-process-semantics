@@ -270,9 +270,17 @@ Proof. vm_compute. reflexivity. Qed.
 (** The five syscall arms are exported by their Linux RISC-V numbers. *)
 Example net_arm_numbers : map fst net_arms = [29; 198; 200; 206; 207] := eq_refl.
 
-(** Net arms publish every allocation and security-hook refusal family. *)
-Example net_injected_numbers : map ni_no net_injected = [198; 200; 206; 207].
-Proof. vm_compute. reflexivity. Qed.
+(** Net arms export their environment refusals: socket's allocation
+    failures, netlink_insert's (bind, and sendto's autobind), sendto's skb
+    allocation, recvfrom's pending ENOBUFS.  recvfrom's EAGAIN on an empty
+    queue and bind's EADDRINUSE, the tables' answers, are no refusal. *)
+Example net_injected_rows :
+  map ni_no net_injected = [198; 200; 206; 207]
+  /\ ni_errno socket_injected ENFILE = true /\ ni_errno bind_injected EOVERFLOW = true
+  /\ ni_errno sendto_injected ENOBUFS = true /\ ni_errno sendto_injected EOVERFLOW = true
+  /\ ni_errno recvfrom_injected ENOBUFS = true /\ ni_errno recvfrom_injected EAGAIN = false
+  /\ ni_errno bind_injected EADDRINUSE = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* =========================================================================
    The full recvfrom arm

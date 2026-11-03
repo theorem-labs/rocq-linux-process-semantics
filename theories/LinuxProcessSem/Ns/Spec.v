@@ -68,12 +68,15 @@ Proof. intros i m ctx st Hflat _ o. unfold ns_spec. rewrite Hflat. reflexivity. 
    Injected refusals
    ========================================================================= *)
 
-(** The injected refusals of the namespace arms [ns_table] holds.  An answer
-    of a namespace arm whose refusals are not listed is never filtered.  The
-    pass-through calls ([Pass.pass_numbers]) are not listed here: their
-    answer is the released answer in every world, so [ns_refusal] gives them
-    the released filter itself ([Run.spurious_refusal_cfg], which also
-    knows [brk]'s refusal by value). *)
+(** The injected refusals of the namespace arms [ns_table] holds, with the
+    kernel functions that return them in each arm file; no security module
+    but the capability one runs (SCOPE.md), so none of its refusals is
+    listed.  An answer of a namespace arm whose refusals are not listed is
+    never filtered.  The pass-through calls ([Pass.pass_numbers]) are not
+    listed here: their answer is the released answer in every world, so
+    [ns_refusal] gives them the released filter itself
+    ([Run.spurious_refusal_cfg], which also knows [brk]'s refusal by
+    value). *)
 Definition ns_injected_table : list NsInjected :=
   task_injected ++ file_injected ++ fsops_injected ++ user_injected ++ mount_injected
   ++ net_injected.
@@ -92,6 +95,23 @@ Definition ns_matching (i : SyscallInput) (ret : word) : list ((Z -> bool) * Spu
   | None => []
   end.
 
+(** [ret] is an errno the tables can force for this call although the
+    environment can inject it too ([ni_forced]). *)
+Definition ns_forced (i : SyscallInput) (ret : word) : bool :=
+  match lookup_ns_injected ns_injected_table (ns_sysno i) with
+  | Some r => errno_in (ni_forced r) (Z.opp (bv_signed ret))
+  | None => false
+  end.
+
+(** The answer [ret'] shows that the state did not force the refusal [ret]:
+    it matches no pair, or it is an errno the tables can force while [ret]
+    is not one.  Every answer that matches no pair is kept, and so is every
+    [ni_forced] errno where no answer matches no pair; so the filter never
+    removes every answer the model admits. *)
+Definition ns_witness (i : SyscallInput) (ret ret' : word) : bool :=
+  match ns_matching i ret' with [] => true | _ :: _ => false end
+  || (ns_forced i ret' && negb (ns_forced i ret)).
+
 (** [ret] is an injected refusal every family of which [cfg] switches off:
     it matches some pair, and every pair it matches is of a family that may
     not fail.  A refusal one enabled family can produce is never filtered. *)
@@ -106,20 +126,45 @@ Definition ns_refusal_off_b (cfg : SpuriousCfg) (i : SyscallInput) (ret : word) 
     answer is the released answer, [Pass.pass_arms_released], so the
     released question "did the state force this refusal?" is the same
     question); elsewhere, a refusal of switched-off families where the
-    model also admits an answer that is no refusal at all (the state did
-    not force the refusal). *)
+    model also admits an answer that shows the state did not force it
+    ([ns_witness]): one that is no refusal at all, or the tables' own
+    answer where that is an errno the environment can also inject (a count
+    limit's ENOSPC against an allocation's ENOMEM). *)
 Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (eff : SyscallEffect) : Prop :=
   if flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers
   then spurious_refusal_cfg cfg i m eff
   else ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
-            ns_spec i m ctx st (EOk eff' m' ctx' st' evs') /\ ns_matching i (eff_ret eff') = [].
+            ns_spec i m ctx st (EOk eff' m' ctx' st' evs')
+            /\ ns_witness i (eff_ret eff) (eff_ret eff') = true.
 
 Lemma ns_refusal_coherent : forall cfg i m ctx st eff,
   flat_view ctx st = true -> ns_claims i = true ->
   (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
 Proof. intros cfg i m ctx st eff H _. unfold ns_refusal. rewrite H. reflexivity. Qed.
+
+(** A pass-through call gets the released filter in every world. *)
+Lemma ns_refusal_pass : forall cfg i m ctx st eff,
+  In (ns_sysno i) pass_numbers ->
+  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros cfg i m ctx st eff H. unfold ns_refusal.
+  assert (Hp : existsb (Z.eqb (ns_sysno i)) pass_numbers = true).
+  { apply existsb_exists. exists (ns_sysno i). split; [exact H | apply Z.eqb_refl]. }
+  rewrite Hp, orb_true_r. reflexivity.
+Qed.
+
+(** Outside the released world, for a call that does not pass through,
+    the filter is the namespace one. *)
+Lemma ns_refusal_ns : forall cfg i m ctx st eff,
+  (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers) = false ->
+  (ns_refusal cfg i m ctx st eff
+   <-> ns_refusal_off_b cfg i (eff_ret eff) = true
+       /\ exists eff' m' ctx' st' evs',
+            ns_spec i m ctx st (EOk eff' m' ctx' st' evs')
+            /\ ns_witness i (eff_ret eff) (eff_ret eff') = true).
+Proof. intros cfg i m ctx st eff H. unfold ns_refusal. rewrite H. reflexivity. Qed.
 
 (** More families allowed to fail filter fewer answers. *)
 Lemma ns_refusal_off_b_mono : forall cfg1 cfg2 i ret,

@@ -297,5 +297,5 @@ Definition task_arms : list (Z * NsArm) :=
 (** The environment's refusals of these arms, for the forced-only filter:
     [prepare_creds]'s ENOMEM. *)
 Definition task_injected : list NsInjected :=
-  [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)];
-   mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)]].
+  [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [];
+   mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] []].

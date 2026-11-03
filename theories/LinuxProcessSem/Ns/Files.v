@@ -26,22 +26,17 @@
       capability one;
     - a write to user memory goes through [Arm.put_ok]: EFAULT outside
       [access_ok], and a range that is not wholly writable declines;
-    - allocation, security-module, and filesystem I/O refusals are admitted
-      after the deterministic operation reaches them, and listed below in
-      [file_injected]. *)
+    - the environment's refusals (an allocation, the host file system's
+      I/O, a tmpfs create's space) are admitted after any answer of the
+      arm, call by call as [file_injected] lists them with the kernel
+      functions that return them.  No security module but the capability
+      one runs (SCOPE.md), so no refusal of one is admitted. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task.
 Import ListNotations.
 Local Open Scope Z_scope.
-
-Definition EIO : Z := 5.
-
-(** The environment failures this file represents after the path and
-    descriptor checks have passed. *)
-Definition file_env_errno (e : Z) : bool :=
-  (e =? ENOMEM) || (e =? ENFILE) || (e =? EIO) || ((1 <=? e) && (e <=? 4095)).
 
 (* =========================================================================
    Constants (include/uapi/asm-generic/fcntl.h, include/uapi/linux/fcntl.h,
@@ -807,9 +802,7 @@ Definition openat_how (i : SyscallInput) : OpenHow :=
 Definition openat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   fst (fst (open_common i m ctx st [] (in_arg i 0) (in_arg i 1) (openat_how i))).
 
-Definition openat_arm : NsArm := fun i m ctx st o =>
-  o = openat_fn i m ctx st
-  \/ injected_after file_env_errno (openat_fn i m ctx st) m ctx st o.
+Definition openat_arm : NsArm := fun i m ctx st o => o = openat_fn i m ctx st.
 
 (** [SYSCALL_DEFINE4(openat2)] (fs/open.c): a size below
     OPEN_HOW_SIZE_VER0 (24) is EINVAL, above a page E2BIG;
@@ -837,14 +830,14 @@ Definition openat2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
        end.
 
 (** [openat2] (437): as [openat], with the open_how's resolve bits.  Kind:
-    over: under RESOLVE_IN_ROOT a walk that took a ".." may also answer
-    EAGAIN ([handle_dots], fs/namei.c: a rename or mount anywhere in the
-    system during the walk). *)
+    as [openat]; besides, under RESOLVE_IN_ROOT a walk that took a ".." may
+    answer EAGAIN ([handle_dots], fs/namei.c: a rename or a mount anywhere
+    in the system during the walk), the environment's interruption, which
+    [openat2_injected] lists for the forced-only filter. *)
 Definition openat2_arm : NsArm := fun i m ctx st o =>
   let r := openat2_fn i m ctx st in
   o = fst (fst r)
-  \/ (snd r = true /\ o = err (snd (fst r)) EAGAIN m ctx st)
-  \/ injected_after file_env_errno (fst (fst r)) m ctx st o.
+  \/ (snd r = true /\ o = err (snd (fst r)) EAGAIN m ctx st).
 
 (* =========================================================================
    close, fcntl
@@ -1132,9 +1125,7 @@ Definition faccessat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
         end
     end.
 
-Definition faccessat_arm : NsArm := fun i m ctx st o =>
-  o = faccessat_fn i m ctx st
-  \/ injected_after file_env_errno (faccessat_fn i m ctx st) m ctx st o.
+Definition faccessat_arm : NsArm := fun i m ctx st o => o = faccessat_fn i m ctx st.
 
 (* =========================================================================
    statfs, fstatfs
@@ -1581,25 +1572,64 @@ Definition getdents64_arm : NsArm := fun i m ctx st o =>
    The arms
    ========================================================================= *)
 
-(** The environment refusals of the path and descriptor arms.  ENOMEM and
-    ENFILE are allocation failures, EIO is filesystem I/O, and the final
-    predicate is a security module's errno. *)
-Definition file_injected : list NsInjected :=
-  map (fun n => mkNsInjected n
-    [(fun e => (e =? ENOMEM) || (e =? ENFILE), FamAlloc);
-     (fun e => e =? EIO, FamFs);
-     (fun e => (1 <=? e) && (e <=? 4095), FamCred)])
-    [17; 25; 43; 44; 48; 49; 50; 56; 57; 61; 78; 79; 80; 437].
+(** The environment's refusals of the path and descriptor arms, Linux
+    6.18.44, call by call; an arm with a row admits the row's errnos after
+    any answer ([Arm.with_injected]).  No security module but the
+    capability one runs (SCOPE.md), so no refusal of one is admitted.
+    - [getcwd] (17): ENOMEM, [__getname] in [SYSCALL_DEFINE2(getcwd)]
+      (fs/d_path.c).
+    - [statfs] (43), [faccessat] (48), [chdir] (49), [readlinkat] (78),
+      [newfstatat] (79), which read a name and walk it: [Arm.walk_pairs].
+      ENOMEM also comes from [faccessat]'s [access_override_creds]
+      ([prepare_creds], fs/open.c) and from [readlinkat]'s procfs links
+      ([do_proc_readlink], fs/proc/base.c; [proc_self_get_link],
+      fs/proc/self.c); EIO also from the host file system's [->get_link]
+      reading a link's text.
+    - [openat] (56): the walk's; ENOMEM from [alloc_fd]'s [expand_files]
+      (fs/file.c) and from a procfs file's [->open] ([single_open],
+      [seq_open], fs/seq_file.c); ENFILE and ENOMEM from
+      [alloc_empty_file] (fs/file_table.c); a tmpfs create's ENOSPC
+      ([__shmem_get_inode]: [shmem_reserve_inode], or [new_inode] failing,
+      mm/shmem.c) and ENOMEM ([simple_offset_add], fs/libfs.c); EIO from a
+      host file's [->open].
+    - [openat2] (437): [openat]'s, and the EAGAIN of [openat2_arm] after a
+      scoped "..", an interruption (FamIntr).
+    - [getdents64] (61): none on the task's own fd directory
+      ([proc_readfd_common], fs/proc/fd.c); on a descriptor of the released
+      model the arm answers as the released arm does, so the released
+      arm's refusals ([Arm.released_pairs]), which the arm admits already.
+    - none for [fcntl] (25), [fstatfs] (44), [fchdir] (50), [close] (57)
+      and [fstat] (80): F_GETFD, F_SETFD and F_GETFL allocate nothing;
+      [statfs_by_dentry] and [vfs_getattr] (fs/statfs.c, fs/stat.c) reach
+      a [->statfs] and a [->getattr] that do not fail on tmpfs, procfs,
+      devpts or a host disk file system; [fchdir]'s [file_permission] and
+      [set_fs_pwd] (fs/open.c) allocate nothing; [filp_flush] does not
+      fail on the objects the model mints; and the released arms of these
+      numbers inject nothing. *)
+Definition getcwd_injected : NsInjected := mkNsInjected 17 [(errno_in [ENOMEM], FamAlloc)] [].
 
-(** The arms of this file by call number, for [Ns.Spec.ns_table].  Every
-    listed arm has the environment alternative after one successful
-    deterministic witness, so its ledger cannot list an unreachable
-    refusal. *)
+Definition open_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM; ENFILE], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
+
+Definition openat_injected : NsInjected := mkNsInjected 56 open_pairs [].
+
+Definition openat2_injected : NsInjected :=
+  mkNsInjected 437 ((errno_in [EAGAIN], FamIntr) :: open_pairs) [].
+
+Definition getdents64_injected : NsInjected := mkNsInjected 61 (released_pairs 61) [].
+
+Definition file_injected : list NsInjected :=
+  [getcwd_injected; openat_injected; getdents64_injected; openat2_injected]
+  ++ map (fun n => mkNsInjected n walk_pairs []) [43; 48; 49; 78; 79].
+
+(** The arms of this file by call number, for [Ns.Spec.ns_table], each
+    with its row's refusals; [openat2]'s EAGAIN is its arm's own. *)
 Definition file_arms : list (Z * NsArm) :=
-  [(17, with_injected file_env_errno getcwd_arm); (25, with_injected file_env_errno fcntl_arm);
-   (43, with_injected file_env_errno statfs_arm); (44, with_injected file_env_errno fstatfs_arm);
-   (48, with_injected file_env_errno faccessat_arm); (49, with_injected file_env_errno chdir_arm);
-   (50, with_injected file_env_errno fchdir_arm); (56, with_injected file_env_errno openat_arm);
-   (57, with_injected file_env_errno close_arm); (61, with_injected file_env_errno getdents64_arm);
-   (78, with_injected file_env_errno readlinkat_arm); (79, with_injected file_env_errno newfstatat_arm);
-   (80, with_injected file_env_errno fstat_arm); (437, with_injected file_env_errno openat2_arm)].
+  [(17, with_injected (ni_errno getcwd_injected) getcwd_arm); (25, fcntl_arm);
+   (43, with_injected (pairs_errno walk_pairs) statfs_arm); (44, fstatfs_arm);
+   (48, with_injected (pairs_errno walk_pairs) faccessat_arm);
+   (49, with_injected (pairs_errno walk_pairs) chdir_arm); (50, fchdir_arm);
+   (56, with_injected (ni_errno openat_injected) openat_arm); (57, close_arm);
+   (61, getdents64_arm); (78, with_injected (pairs_errno walk_pairs) readlinkat_arm);
+   (79, with_injected (pairs_errno walk_pairs) newfstatat_arm); (80, fstat_arm);
+   (437, with_injected (pairs_errno open_pairs) openat2_arm)].

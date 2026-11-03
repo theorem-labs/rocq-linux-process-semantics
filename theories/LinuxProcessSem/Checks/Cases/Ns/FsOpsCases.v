@@ -372,20 +372,15 @@ Example fchmod_refusals :
                (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
-(** A security module's refusal comes only after its hook: for fchmod
-    after EROFS (a writable tmpfs file: yes; a read-only mount or an O_PATH
-    file: no); for unlinkat after the lookup (an existing name: yes; a bad
-    flag, a missing name or a trailing slash after a file: no). *)
-Example fchmod_hook_places :
-  fchmod_hook_reached base_model base_ctx file_state chmod_file = true
-  /\ fchmod_hook_reached base_model base_ctx existing_ro_state chmod_file = false
-  /\ fchmod_hook_reached base_model base_ctx file_state
-       (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0)) = false.
-Proof. vm_compute. repeat split; reflexivity. Qed.
-
-Example unlinkat_hook_places :
-  unlinkat_hook_reached (unlink_call s_f 0) base_model base_ctx file_state = true
-  /\ unlinkat_hook_reached (unlink_call s_f 1) base_model base_ctx file_state = false
-  /\ unlinkat_hook_reached (unlink_call s_new 0) base_model base_ctx file_state = false
-  /\ unlinkat_hook_reached (unlink_call s_f_slash 0) base_model base_ctx file_state = false.
+(** The environment's refusals ([fsops_injected]): a tmpfs create's space
+    and allocation failures and its walk's; unlinkat's walk's, and no
+    security module's (ENOENT and EACCES, the tables' answers, are not
+    refusals); write's, the released arm's ENOMEM, for a descriptor of the
+    released model; none for fchmod. *)
+Example fsops_rows :
+  map ni_no fsops_injected = [34; 35; 36; 64]
+  /\ ni_errno mkdirat_injected ENOSPC = true /\ ni_errno symlinkat_injected ENOMEM = true
+  /\ ni_errno unlinkat_injected ENOMEM = true /\ ni_errno unlinkat_injected EIO = true
+  /\ ni_errno unlinkat_injected ENOENT = false /\ ni_errno unlinkat_injected EACCES = false
+  /\ ni_errno write_injected ENOMEM = true.
 Proof. vm_compute. repeat split; reflexivity. Qed.

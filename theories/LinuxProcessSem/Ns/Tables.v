@@ -33,6 +33,7 @@ Import ListNotations.
     errno-base.h and errno.h), named once for every file of the model. *)
 Definition EPERM : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
+Definition EIO : Z := 5%Z.
 Definition E2BIG : Z := 7%Z.
 Definition EACCES : Z := 13%Z.
 Definition EBUSY : Z := 16%Z.

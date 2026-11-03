@@ -213,8 +213,8 @@ Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
 
 (** [mkdirat] (34): [do_mkdirat], [filename_create], [vfs_mkdir] and
     [vfs_prepare_mode] in fs/namei.c, then [shmem_mkdir] in mm/shmem.c.
-    Kind: exact on tmpfs; host creation declines; ENOSPC and ENOMEM are
-    environment outcomes in [fsops_injected]. *)
+    Kind: exact on tmpfs; host creation declines; the environment's
+    refusals are in [fsops_injected]. *)
 Definition mkdirat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   create_at i m ctx st (in_arg i 0) (in_arg i 1) (bv_unsigned (in_arg i 2)) CDir
             (path_reads i (in_arg i 1)).
@@ -222,7 +222,7 @@ Definition mkdirat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
 (** [symlinkat] (36): [do_symlinkat], [filename_create] and [vfs_symlink]
     in fs/namei.c, then [shmem_symlink] in mm/shmem.c.  The target is read
     before the destination name.  Kind: exact on tmpfs; host creation
-    declines; ENOSPC and ENOMEM are environment outcomes. *)
+    declines; the environment's refusals are in [fsops_injected]. *)
 Definition symlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let oldp := in_arg i 0 in
   let reads := path_reads i oldp ++ path_reads i (in_arg i 2) in
@@ -235,19 +235,9 @@ Definition symlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
       else create_at i m ctx st (in_arg i 1) (in_arg i 2) 0 (CLink target) reads
   end.
 
-Definition create_injected (core : ext_outcome) (m : Model) (ctx : NsCtx) (st : NsState) (e : Z)
-    : option ext_outcome :=
-  match core with EOk _ _ _ _ _ => Some (ns_errno e m ctx st) | EUnmodeled => None end.
+Definition mkdirat_arm : NsArm := fun i m ctx st o => o = mkdirat_fn i m ctx st.
 
-Definition mkdirat_arm : NsArm := fun i m ctx st o =>
-  o = mkdirat_fn i m ctx st
-  \/ create_injected (mkdirat_fn i m ctx st) m ctx st ENOSPC = Some o
-  \/ create_injected (mkdirat_fn i m ctx st) m ctx st ENOMEM = Some o.
-
-Definition symlinkat_arm : NsArm := fun i m ctx st o =>
-  o = symlinkat_fn i m ctx st
-  \/ create_injected (symlinkat_fn i m ctx st) m ctx st ENOSPC = Some o
-  \/ create_injected (symlinkat_fn i m ctx st) m ctx st ENOMEM = Some o.
+Definition symlinkat_arm : NsArm := fun i m ctx st o => o = symlinkat_fn i m ctx st.
 
 (* =========================================================================
    Procfs text
@@ -568,11 +558,6 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
    fchmod and unlinkat
    ========================================================================= *)
 
-(** A security module's refusal ([security_path_chmod],
-    [security_inode_setattr], [security_path_unlink],
-    [security_inode_unlink]): any errno. *)
-Definition lsm_errno (e : Z) : bool := (1 <=? e) && (e <=? 4095).
-
 (** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h): the
     id no namespace maps, which [vfsuid_valid] refuses. *)
 Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
@@ -607,8 +592,9 @@ Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
     the task has no CAP_FSETID over it.  For a tmpfs file or directory
     only: the tables hold no immutable or append-only inode, no seal, no
     ACL and no lease.  A procfs, devpts, host or anonymous file declines.
-    The security module's refusals come after EROFS ([fsops_injected]).
-    Kind: exact. *)
+    No environment refusal: [chmod_common] and [shmem_setattr] allocate
+    nothing for an inode with no ACL, and no security module but the
+    capability one runs (SCOPE.md).  Kind: exact. *)
 Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile)
     : ext_outcome :=
   let mode := Z.land (bv_unsigned (in_arg i 1)) S_IALLUGO in
@@ -633,29 +619,9 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
   | _ => EUnmodeled
   end.
 
-(** [security_path_chmod] runs after [mnt_want_write] (fs/open.c:638-645):
-    the answers before it (EBADF, EROFS, a file the arm declines) have no
-    security-module alternative. *)
-Definition fchmod_hook_reached (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile) : bool :=
-  match nf_kind f with
-  | NfFile l _ | NfDir l _ =>
-      match l, loc_mnt_sb st l with
-      | LDentry _ d, Some (mt, sb) =>
-          match sb_kind sb, dentry_inode st d, loc_attr m ctx st l with
-          | SbTmpfs, Some _, Some _ => negb (mf_ro (mnt_flags mt) || sb_rdonly sb)
-          | _, _, _ => false
-          end
-      | _, _ => false
-      end
-  | _ => false
-  end.
-
 Definition fchmod_arm : NsArm := fun i m ctx st o =>
   match ns_file_of m st (fd_word (in_arg i 0)) with
-  | Some (_, f) =>
-      o = fchmod_fn i m ctx st f
-      \/ (fchmod_hook_reached m ctx st f = true
-          /\ injected_after lsm_errno (fchmod_fn i m ctx st f) m ctx st o)
+  | Some (_, f) => o = fchmod_fn i m ctx st f
   | None => released i m ctx st o
   end.
 
@@ -748,8 +714,8 @@ Definition unlink_at_parent (m : Model) (ctx : NsCtx) (st : NsState) (reads : li
     then [do_unlinkat]: the path ([getname]: EFAULT, ENAMETOOLONG, ENOENT
     for an empty one), the parent walk ([filename_parentat]) and its
     errors, a last component that is "." or ".." or the root, EISDIR, and
-    [unlink_at_parent].  The security module's refusals come after the
-    lookup ([fsops_injected]).  Kind: exact on tmpfs. *)
+    [unlink_at_parent].  The environment's refusals are in
+    [fsops_injected].  Kind: exact on tmpfs. *)
 Definition unlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let pathp := in_arg i 1 in
   let flags := s32 (in_arg i 2) in
@@ -772,57 +738,42 @@ Definition unlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsStat
         end
     end.
 
-(** [security_path_unlink] runs after the lookup found the name and the
-    trailing-slash check passed (fs/namei.c:4729-4738): the answers before
-    it have no security-module alternative. *)
-Definition unlinkat_hook_reached (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
-  let flags := s32 (in_arg i 2) in
-  if negb (Z.eqb (Z.land flags (Z.lnot AT_REMOVEDIR)) 0) || has flags AT_REMOVEDIR then false
-  else
-    match path_arg i (in_arg i 1) with
-    | POk ((_ :: _) as p) =>
-        match walk_parent_from m ctx st (walk_creds m) (in_arg i 0) p
-                               (mkWalkFlags false false false false false) with
-        | ((WOk ((LDentry mn d) as parent), name, LastNorm), _) =>
-            match loc_mnt_sb st parent, loc_attr m ctx st parent with
-            | Some (mt, sb), Some _ =>
-                match sb_kind sb with
-                | SbTmpfs =>
-                    negb (mf_ro (mnt_flags mt) || sb_rdonly sb) && negb (Nat.ltb NAME_MAX (length name))
-                    && match child_dentry st d name with
-                       | Some x => match loc_attr m ctx st (LDentry mn (d_id x)) with
-                                   | Some _ => negb (path_trailing_slash p)
-                                   | None => false
-                                   end
-                       | None => false
-                       end
-                | _ => false
-                end
-            | _, _ => false
-            end
-        | _ => false
-        end
-    | _ => false
-    end.
-
-Definition unlinkat_arm : NsArm := fun i m ctx st o =>
-  o = unlinkat_fn i m ctx st
-  \/ (unlinkat_hook_reached i m ctx st = true
-      /\ injected_after lsm_errno (unlinkat_fn i m ctx st) m ctx st o).
+Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx st.
 
 (* =========================================================================
    Exports
    ========================================================================= *)
 
-Definition fsops_arms : list (Z * NsArm) :=
-  [(34, mkdirat_arm); (35, unlinkat_arm); (36, symlinkat_arm); (52, fchmod_arm); (63, read_arm);
-   (64, write_arm)].
+(** The environment's refusals of these arms, Linux 6.18.44; an arm with a
+    row admits the row's errnos after any answer ([Arm.with_injected]).  No
+    security module but the capability one runs (SCOPE.md), so neither
+    [security_path_unlink] nor [security_path_chmod] refuses.
+    - [mkdirat] (34) and [symlinkat] (36): the parent walk's and
+      [lookup_one_qstr_excl]'s ([Arm.walk_pairs]); the tmpfs create's
+      ENOSPC ([__shmem_get_inode]: [shmem_reserve_inode], or [new_inode]
+      failing, mm/shmem.c) and ENOMEM ([simple_offset_add], fs/libfs.c);
+      [shmem_symlink]'s copy of the target, ENOMEM ([kmemdup]) or, for a
+      long one, [shmem_get_folio]'s ENOSPC or ENOMEM.
+    - [unlinkat] (35): the parent walk's and [lookup_one_qstr_excl]'s
+      ([Arm.walk_pairs]); [shmem_unlink] does not fail.
+    - [write] (64): on a descriptor of the released model the arm answers
+      as the released arm does, so the released arm's refusals
+      ([Arm.released_pairs]), which the arm admits already.
+    - none for [fchmod] (52) (see [fchmod_fn]); its released arm injects
+      nothing. *)
+Definition create_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
 
-(** ENOSPC and ENOMEM are allocation and filesystem-space outcomes after a
-    tmpfs create reaches its file-system operation; unlinkat and fchmod
-    admit a security module's errno. *)
+Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs [].
+Definition unlinkat_injected : NsInjected := mkNsInjected 35 walk_pairs [].
+Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs [].
+Definition write_injected : NsInjected := mkNsInjected 64 (released_pairs 64) [].
+
+Definition fsops_arms : list (Z * NsArm) :=
+  [(34, with_injected (ni_errno mkdirat_injected) mkdirat_arm);
+   (35, with_injected (ni_errno unlinkat_injected) unlinkat_arm);
+   (36, with_injected (ni_errno symlinkat_injected) symlinkat_arm); (52, fchmod_arm);
+   (63, read_arm); (64, write_arm)].
+
 Definition fsops_injected : list NsInjected :=
-  [mkNsInjected 34 [(fun e => e =? ENOSPC, FamFs); (fun e => e =? ENOMEM, FamAlloc)];
-   mkNsInjected 35 [(lsm_errno, FamCred)];
-   mkNsInjected 36 [(fun e => e =? ENOSPC, FamFs); (fun e => e =? ENOMEM, FamAlloc)];
-   mkNsInjected 52 [(lsm_errno, FamCred)]].
+  [mkdirat_injected; unlinkat_injected; symlinkat_injected; write_injected].

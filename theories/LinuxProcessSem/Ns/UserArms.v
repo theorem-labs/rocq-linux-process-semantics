@@ -14,15 +14,15 @@
     namespace, ENOSPC, and at a namespace that is not sealed ENOSPC or not
     ([Userns.ucount_check]); a chrooted task ([current_chrooted]: its root
     is not the root of the topmost mount on its mount namespace's root),
-    EPERM; an owner or group the parent does not map, EPERM; then a
-    security module's refusal ([security_create_user_ns], any errno from 1
-    to 4095), an allocation failure (ENOMEM) and [set_cred_ucounts]'
-    EAGAIN, all the environment's; else the new namespace, the task in it
-    with every capability in its permitted, effective and bounding sets,
-    none inheritable or ambient, and securebits cleared.  [commit_creds]
-    resets neither the parent-death signal nor the dumpable mode: the new
-    namespace is a child of the old one owned by the task's euid, so
-    [cred_cap_issubset] holds.
+    EPERM; an owner or group the parent does not map, EPERM; then the
+    environment's refusals ([env_refusal]: an allocation's ENOMEM, ENOSPC
+    or EAGAIN; no security module but the capability one runs, so
+    [security_create_user_ns] refuses nothing); else the new namespace,
+    the task in it with every capability in its permitted, effective and
+    bounding sets, none inheritable or ambient, and securebits cleared.
+    [commit_creds] resets neither the parent-death signal nor the dumpable
+    mode: the new namespace is a child of the old one owned by the task's
+    euid, so [cred_cap_issubset] holds.
 
     Any other flag set declines.  Kind: exact inside the tree; over at a
     namespace that is not sealed and for the environment's refusals. *)
@@ -79,17 +79,24 @@ Definition in_new_userns (ctx : NsCtx) (n : positive) : NsCtx :=
           (cx_umask ctx) (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 (cx_cloexec ctx)
           (cx_no_new_privs ctx) (cx_dumpable ctx).
 
-(** The environment's refusals after the flag checks: [prepare_creds] and
-    the namespace's allocation (ENOMEM), [alloc_ucounts] (ENOSPC through
-    [inc_user_namespaces]), [set_cred_ucounts] (EAGAIN) and
-    [security_create_user_ns] (any errno from 1 to 4095).  [user_injected]
-    lists them for the forced-only filter. *)
+(** The environment's refusals after the flag checks, Linux 6.18.44:
+    ENOMEM from [unshare_userns]'s [prepare_creds] (kernel/cred.c) and from
+    [create_user_ns]'s [kmem_cache_zalloc], [setup_userns_sysctls] and
+    [ns_common_init] (kernel/nscommon.c), whose [proc_alloc_inum]
+    (fs/proc/generic.c) is ENOSPC too once every inode number is taken;
+    ENOSPC from [inc_user_namespaces] when [alloc_ucounts] cannot allocate
+    (kernel/ucount.c); EAGAIN from [set_cred_ucounts] when [alloc_ucounts]
+    cannot allocate (kernel/cred.c, called by [ksys_unshare],
+    kernel/fork.c).  [user_injected] lists them for the forced-only
+    filter.  The tables also answer ENOSPC ([unshare_exact]: a parent above
+    level 32, a count at its limit), so ENOSPC is in its [ni_forced]. *)
+Definition user_env_errnos : list Z := [ENOMEM; ENOSPC; EAGAIN].
+
 Definition env_refusal (o : ext_outcome) (m : Model) (ctx : NsCtx) (st : NsState) : Prop :=
-  exists e, 1 <= e <= 4095 /\ o = ns_errno e m ctx st.
+  exists e, errno_in user_env_errnos e = true /\ o = ns_errno e m ctx st.
 
 Definition user_injected : list NsInjected :=
-  [mkNsInjected 97 [(fun e => (e =? ENOMEM) || (e =? ENOSPC) || (e =? EAGAIN), FamAlloc);
-                    (fun e => (1 <=? e) && (e <=? 4095), FamCred)]].
+  [mkNsInjected 97 [(errno_in user_env_errnos, FamAlloc)] [ENOSPC]].
 
 (** What [create_user_ns] answers from the tables, in its order, once the
     environment refuses nothing. *)

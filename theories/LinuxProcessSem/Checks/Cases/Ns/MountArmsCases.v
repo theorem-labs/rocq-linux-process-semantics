@@ -283,10 +283,16 @@ Example mount_options_first_fault :
   = MOErr [(Z_to_bv 64 DATA, 1%nat)] EFAULT.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Every mount arm exports its allocation and security environment
-    refusals. *)
-Example mount_injected_numbers : map ni_no mount_injected = [39; 40; 41; 442].
-Proof. vm_compute. reflexivity. Qed.
+(** Every mount arm exports its environment refusals: the walk's ENOMEM
+    and EIO, and for mount also a new instance's ENOSPC and EMFILE; ENOSPC
+    is also the tables' answer at the mount limit ([ni_forced]).  EPERM and
+    EINVAL, the tables' answers, are no refusal. *)
+Example mount_injected_rows :
+  map ni_no mount_injected = [40; 39; 41; 442]
+  /\ map ni_forced mount_injected = [[ENOSPC]; []; []; []]
+  /\ ni_errno mount40_injected EMFILE = true /\ ni_errno mount40_injected EIO = true
+  /\ ni_errno mount40_injected EPERM = false /\ ni_errno mount40_injected EINVAL = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 Example mount_arm_numbers : map fst mount_arms = [39; 40; 41; 442].
 Proof. vm_compute. reflexivity. Qed.

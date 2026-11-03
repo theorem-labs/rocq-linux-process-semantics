@@ -209,12 +209,47 @@ Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
   find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
 
 (** The environment's refusals of one call number: a list of pairs, each an
-    errno predicate and the family that injects it.  One errno can be in
-    two pairs (an allocation failure and any errno of a security module). *)
+    errno predicate and the family that injects it, and [ni_forced], the
+    errnos of those pairs that the tables can also force for that call (the
+    count limits' ENOSPC of [unshare] and [mount]).  An answer the tables
+    force is the answer [Spec.ns_refusal] needs to remove a refusal the
+    state did not force; one in [ni_forced] is such an answer for a refusal
+    whose errno is not in [ni_forced]. *)
 Record NsInjected := mkNsInjected {
-  ni_no    : Z;
-  ni_pairs : list ((Z -> bool) * SpuriousFamily)
+  ni_no     : Z;
+  ni_pairs  : list ((Z -> bool) * SpuriousFamily);
+  ni_forced : list Z
 }.
+
+(** [e] is one of [es]. *)
+Definition errno_in (es : list Z) (e : Z) : bool := existsb (Z.eqb e) es.
+
+(** [e] is an errno some pair of [ps] matches. *)
+Definition pairs_errno (ps : list ((Z -> bool) * SpuriousFamily)) (e : Z) : bool :=
+  existsb (fun p => fst p e) ps.
+
+(** The errnos an arm whose environment refusals are [r] admits after its
+    deterministic answer ([with_injected]). *)
+Definition ni_errno (r : NsInjected) : Z -> bool := pairs_errno (ni_pairs r).
+
+(** The environment's refusals of a path walk ([Walk.walk]) and the name it
+    reads, Linux 6.18.44: ENOMEM from [getname_flags] (fs/namei.c:
+    [__getname], or [kzalloc] for a long name) and from [d_alloc_parallel]
+    (fs/dcache.c, called by [__lookup_slow], fs/namei.c) or [d_alloc]
+    (called by [lookup_one_qstr_excl]) for a name the dentry cache does not
+    hold; EIO from the host file system's [->lookup], which those two call
+    for such a name and which reads the directory from the host's disk. *)
+Definition walk_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO], FamFs)].
+
+(** The released arm's injected refusals of call [n] ([Run.injected_arm]),
+    as one pair: the refusals an arm that gives a descriptor of the
+    released model the released answer admits for that descriptor. *)
+Definition released_pairs (n : Z) : list ((Z -> bool) * SpuriousFamily) :=
+  match injected_arm n with
+  | Some a => [(errno_in (ia_errnos a), ia_family a)]
+  | None => []
+  end.
 
 (** A failure chosen by the environment after a deterministic arm has
     reached its operation.  It keeps the copy-ins already made, writes

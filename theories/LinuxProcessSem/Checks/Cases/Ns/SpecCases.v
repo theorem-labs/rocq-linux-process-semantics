@@ -6,8 +6,11 @@
     has exactly the released answers ([ns_spec_flat]). *)
 
 From Stdlib Require Import ZArith List.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Files Spec.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require SpuriousCfg.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Prelude.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Mm Require Mmap.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Files Pass Spec.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -189,3 +192,34 @@ Example top_root_not_chrooted :
   UserArms.current_chrooted rootfs_world
     (mkNsCtx 1 1 1 1 [] (2%positive, 2%positive) (2%positive, 2%positive) 18 (mkCaps 0 0 0 0 0) 0 []
              (Some false) (Some 1%Z)) = Some false := eq_refl.
+
+(** A pass-through call outside the released world gets the released
+    forced-only filter ([Spec.ns_refusal_pass]): an anonymous [mmap] of a
+    task in [one_mount] within the budget has its injected ENOMEM removed,
+    as in the released world, because the grant is also an answer
+    ([Checks.SpuriousCfg.mmap_enomem_spurious_within_budget]); beyond the
+    budget ENOMEM is forced and kept
+    ([Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget]). *)
+Definition mmap_small : SyscallInput := Cases.Mm.Mmap.mmap_at_in 131072 4096.
+Definition mmap_large : SyscallInput := Cases.Mm.Mmap.mmap_in 8192.
+
+Lemma mmap_passes : forall i, ns_sysno i = 222%Z -> In (ns_sysno i) pass_numbers.
+Proof. intros i ->. vm_compute. repeat (first [left; reflexivity | right]). Qed.
+
+Example mmap_enomem_filter_outside_released :
+  flat_view (task 2 18) one_mount = false
+  /\ ns_refusal forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) one_mount
+                (Checks.SpuriousCfg.errno_eff ENOMEM)
+  /\ ~ ns_refusal forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18) one_mount
+                  (Checks.SpuriousCfg.errno_eff ENOMEM).
+Proof.
+  split; [reflexivity|].
+  split.
+  - apply (proj2 (ns_refusal_pass forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18)
+                    one_mount (Checks.SpuriousCfg.errno_eff ENOMEM) (mmap_passes mmap_small eq_refl))).
+    exact Checks.SpuriousCfg.mmap_enomem_spurious_within_budget.
+  - intros H.
+    apply (proj1 (ns_refusal_pass forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18)
+                    one_mount (Checks.SpuriousCfg.errno_eff ENOMEM) (mmap_passes mmap_large eq_refl))) in H.
+    exact (Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget H).
+Qed.
