@@ -346,16 +346,42 @@ Qed.
     of it:
     - [read] (63) of an eventfd: the arm admits every value Linux can
       return and keeps no counter ([FsOps.eventfd_read_arm]);
+    - [read] (63) of an inherited file that holds its offset
+      ([State.OInherited] with [Some]): Linux keeps one [f_pos] for the
+      description, which every table that names it shares ([dup_fd],
+      fs/file.c; [ksys_read], fs/read_write.c; v6.18.46).  The model
+      holds that offset live in ONE entry of the configuration: the
+      namespace word leaves it with the child and the caller keeps
+      [OInherited None] ([Kernel.Fork.forfeit_inherited]), on which every
+      call that reads or moves the offset declines; the fork word, [dup]
+      and [F_DUPFD] decline on a live one.  So no modeled peer moves it,
+      and SCOPE.md assumes that no process outside the model does;
     - [writev] (66) of a standard channel: the answer depends only on the
       launch fact [State.m_channel_reader], and what it writes is the
       trace's [WriteEv];
     - [close] (57) of an opaque descriptor (an O_PATH or /proc/sys file,
-      an eventfd, a namespace file): Linux's close of these drops a
-      reference and nothing a peer observes; a namespace file another
-      process still names is freed early ([Arm.release_handle]), and that
-      process's later use declines;
+      an eventfd, a namespace file, an inherited file): Linux's close of
+      these drops a reference and nothing a peer observes; a namespace
+      file another process still names is freed early
+      ([Arm.release_handle]), and that process's later use declines; an
+      inherited file's close clears this table's slot (the table is a
+      copy after a clone without CLONE_FILES), and the description's
+      offset, which only this entry holds live, is read by no other
+      modeled holder;
     - [fcntl] (25) F_GETFD (1) and F_SETFD (2): the close-on-exec bit is
       the caller's descriptor table's.
+    THE INODES AND DENTRIES of the namespace model are in [NsState] too,
+    one copy for every process, as Linux keeps one:
+    - [fchmod] (52) of a namespace file writes the inode's mode there
+      ([FsOps.set_inode_perm], [FsOps.set_inode_perm_frame]), so a peer
+      that reads the inode afterwards reads the new mode, as in Linux; a
+      peer in the released world reads no inode of the namespace model,
+      and [FsOps.fchmod_fn] declines every file but a tmpfs one;
+    - [unlinkat] (35) marks the dentry unlinked there
+      ([FsOps.set_unlinked], [FsOps.set_unlinked_frame]) and returns the
+      caller's model as it was.  This guard does not list it: it is one
+      of the core's gated numbers ([Procs.multiproc_gated_sysnos]), which
+      [Procs.multiproc_base] admits.
     THE ADDRESS SPACE is per process in Linux after a clone without
     CLONE_VM ([dup_mm], kernel/fork.c) and per process in the core, so the
     memory calls are admitted: [brk] 214, [munmap] 215, [mremap] 216,
@@ -365,17 +391,21 @@ Qed.
     system is kept per process.  [capget] 90 reads the task's own sets.
     Every other claimed call is not admitted while another process lives:
     the core makes it a model error, never a wrong answer.  That covers
-    time ([clock_gettime] 113: the core keeps a clock per process), the
-    released file system, pipes and sockets of the released model, and
-    every call this child does not make.  Widening the list is one more
-    row of this argument. *)
+    the released file system, pipes and sockets of the released model,
+    and every call this child does not make.  Time is not among them:
+    [clock_gettime] 113 is one of the core's synced numbers
+    ([Procs.multiproc_synced_sysnos]), which [Procs.multiproc_base]
+    admits, and the core brings the caller's clock up to every peer's
+    before it answers ([Procs.pstep_sync]).  Widening the list is one
+    more row of this argument. *)
 Definition ns_mp_any_fd : list Z :=
   [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 166; 167; 172; 198;
    214; 215; 216; 226; 233; 437; 442]%Z.
 
-(** [ioctl], [getdents64], [read], [write], [fstat], [bind], [sendto] and
-    [recvfrom], admitted on a descriptor of the namespace model only. *)
-Definition ns_mp_nsfile_calls : list Z := [29; 61; 63; 64; 80; 200; 206; 207]%Z.
+(** [ioctl], [getdents64], [fchmod], [read], [write], [fstat], [bind],
+    [sendto] and [recvfrom], admitted on a descriptor of the namespace
+    model only. *)
+Definition ns_mp_nsfile_calls : list Z := [29; 52; 61; 63; 64; 80; 200; 206; 207]%Z.
 
 Definition ns_multiproc_call (i : SyscallInput) (m : Model) : bool :=
   let n := ns_sysno i in
@@ -388,10 +418,12 @@ Definition ns_multiproc_call (i : SyscallInput) (m : Model) : bool :=
   let evfd := match eventfd_flags_of m fd with Some _ => true | None => false end in
   let opaque := match e with Some x => fd_entry_opaque x | None => false end in
   let chan := match e with Some (FdChannel _) => true | _ => false end in
+  let inh := match e with Some x => Fork.inherited_live_b x | None => false end in
   let cmd := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
   existsb (Z.eqb n) ns_mp_any_fd
   || (existsb (Z.eqb n) ns_mp_nsfile_calls && nsfile)
   || (Z.eqb n 63 && evfd)
+  || (Z.eqb n 63 && inh)
   || (Z.eqb n 66 && chan)
   || (Z.eqb n 57 && opaque)
   || (Z.eqb n 25 && (nsfile || Z.eqb cmd 1 || Z.eqb cmd 2))

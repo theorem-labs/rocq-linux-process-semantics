@@ -262,8 +262,10 @@ Proof. vm_compute. reflexivity. Qed.
     so it could not reach this clone at all.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
     file still declines both words.  Two other kinds decline
-    ([clone_declines_procfd_dir_and_signalfd] below), and so does a live
-    inherited file ([Checks.Cases.Fs.Inherited]). *)
+    ([clone_declines_procfd_dir_and_signalfd] below).  An inherited
+    file passes when it holds no offset; a live one declines the fork
+    word, and the namespace word takes its offset from the caller
+    ([Checks.Cases.Fs.Inherited]). *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));

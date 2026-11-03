@@ -29,9 +29,11 @@
     - THE KIND: [write], [lseek] and [fstat] decline on a key; [close]
       answers 0 and frees the slot; [fcntl]'s [F_GETFD] admits 0 and
       FD_CLOEXEC, as on every kind, and rejects 2.
-    - THE CLONE GATE: a [clone] by a caller that holds a key with its
-      offset declines, with either word; the same clone without the key
-      answers a pid. *)
+    - THE CLONE: a [clone] by a caller that holds a key with its offset
+      declines with the fork word; with the namespace word it answers the
+      pid and the caller keeps the key without its offset, so its later
+      [read] declines and its [close] answers.  The same clones without
+      the key answer the pid with the table as it was. *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -288,15 +290,52 @@ Definition inh_clone_key : Model :=
   with_fds (fd_insert (m_fds inh_clone_plain) 3
               (FdOpaque (OInherited (Some (inh_key, 0))))) inh_clone_plain.
 
-(** A caller that holds a key with its offset: the child would share the
-    description's offset ([dup_fd], fs/file.c, v6.18.46), which the
-    model holds in the caller's entry alone, so both words decline. *)
-Example inherited_key_clone_declines :
+(** A caller that holds a key with its offset.  The child shares the
+    description's offset ([dup_fd], fs/file.c, v6.18.46), which the model
+    holds in one entry, so the fork word declines.  The namespace word
+    answers the pid, and the caller keeps the key as [OInherited None]
+    ([Kernel.Fork.forfeit_model]): the child, built from the table before
+    the call, holds the offset. *)
+Example inherited_key_clone_forfeits :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_key
   = CheckUnmodeled
   /\ check_syscall (clone_in inh_ns_clone_flags) (mkEffect 4242 [] []) inh_clone_key
-     = CheckUnmodeled.
-Proof. split; vm_compute; reflexivity. Qed.
+     = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) []
+  /\ fd_lookup (m_fds (forfeit_model inh_clone_key)) 3
+     = Some (FdOpaque (OInherited None)).
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; check_eq.
+Qed.
+
+(** THE CALLER AFTER THE NAMESPACE CLONE: its [read] of the key declines,
+    and its [close] answers 0 and frees the slot.  THE CONTROL is the same
+    read before the clone, which answers the four bytes. *)
+Definition inh_after_clone : Model :=
+  with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key).
+
+Example inherited_caller_after_clone :
+  check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) inh_after_clone
+  = CheckUnmodeled
+  /\ match check_syscall (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+             (mkEffect 0 [] []) inh_after_clone with
+     | CheckOk m [] => fd_lookup (m_fds m) 3 = None
+     | _ => False
+     end
+  /\ match check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) inh_clone_key with
+     | CheckOk m [] =>
+         fd_lookup (m_fds m) 3 = Some (FdOpaque (OInherited (Some (inh_key, 4))))
+     | _ => False
+     end.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** The fork word passes a table whose key holds no offset: what declines
+    is the live offset, not the kind. *)
+Example inherited_forfeited_key_passes_the_fork_word :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] [])
+    (forfeit_model inh_clone_key)
+  = CheckOk (with_child (Z_to_bv 64 4243) (forfeit_model inh_clone_key)) [].
+Proof. check_eq. Qed.
 
 (** THE CONTROL: the same clones without the key answer the pid. *)
 Example inherited_no_key_clone_answers :
