@@ -980,6 +980,7 @@ Proof.
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hna
     | erewrite check_futex_frame by eassumption; exact Hna
     | erewrite check_set_robust_list_frame by eassumption; exact Hna
+    | erewrite check_setns_frame by eassumption; exact Hna
     | erewrite check_clone_frame by eassumption; exact Hna
     | erewrite check_clone3_frame by eassumption; exact Hna
     | erewrite check_close_range_frame by eassumption; exact Hna
