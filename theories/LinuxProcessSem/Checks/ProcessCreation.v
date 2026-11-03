@@ -285,19 +285,43 @@ Qed.
     [copy_files] duplicates the descriptor table while both tables point
     at the same [struct file], and [State.FdEntry] inlines the offset
     into the descriptor, so the sharing is not expressible.  The spec
-    declines rather than pretending otherwise, and this says so. *)
+    declines rather than pretending otherwise, and this says so.  The
+    gate is asked of the table the namespace word leaves the caller
+    ([Kernel.Fork.forfeit_inherited]); a table that fails it fails the
+    fork word's gate as well ([Kernel.Fork.forfeit_inherited_gate]). *)
 Lemma clone_open_file_unmodeled : forall flags i m,
-  clone_no_shared_file_b (m_fds m) = false -> clone_spec flags i m Unmodeled.
+  clone_no_shared_file_b (forfeit_inherited (m_fds m)) = false ->
+  clone_spec flags i m Unmodeled.
 Proof.
-  intros flags i m Hfd. unfold clone_spec.
+  intros flags i m Hfd.
+  assert (Hfd0 : clone_no_shared_file_b (m_fds m) = false).
+  { destruct (clone_no_shared_file_b (m_fds m)) eqn:Hg; [|reflexivity].
+    rewrite (forfeit_inherited_gate _ Hg), Hg in Hfd. discriminate Hfd. }
+  unfold clone_spec.
   destruct (clone_fork_flags_b flags); cbv iota.
   { unfold clone_resolve.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-    rewrite Hfd. cbv iota. apply unmodeled_intro. }
+    rewrite Hfd0. cbv iota. apply unmodeled_intro. }
   destruct (clone_ns_flags_b flags); cbv iota; [|apply unmodeled_intro].
   unfold clone_ns_resolve.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
   rewrite Hfd. cbv iota. apply unmodeled_intro.
+Qed.
+
+(** A LIVE INHERITED DESCRIPTOR closes the gate of every table that
+    holds it, so the fork word declines while the caller holds one.  The
+    namespace word asks the gate of the table the caller keeps, which
+    holds none ([Kernel.Fork.forfeit_inherited_no_live]). *)
+Lemma clone_gate_live_inherited : forall fds k bs off,
+  fd_lookup fds k = Some (FdOpaque (OInherited (Some (bs, off)))) ->
+  clone_no_shared_file_b fds = false.
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k bs off H; [discriminate H|].
+  cbn [fd_lookup] in H. unfold clone_no_shared_file_b. cbn [forallb snd].
+  destruct (bv_eqb k0 k).
+  - injection H as ->. reflexivity.
+  - apply andb_false_iff. right.
+    pose proof (IH k bs off H) as Hr. unfold clone_no_shared_file_b in Hr. exact Hr.
 Qed.
 
 (** No admitted errno encodes 0. *)
@@ -339,7 +363,8 @@ Proof.
   - destruct (clone_ns_flags_b flags); cbv iota in H;
       [|unfold unmodeled in H; discriminate].
     unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
-    destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+      hall Hg; inv_ok.
     all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
     all: cbn [eff_ret].
     all: try (match goal with
@@ -511,7 +536,8 @@ Lemma clone_ns_resolve_declines_or_sets_children : forall i m eff m' evs,
 Proof.
   intros i m eff m' evs H.
   unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok.
   all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
   (* one goal per alternative: an errno in 1..4095 but -EINTR, and a pid *)
   - match goal with
@@ -634,16 +660,20 @@ Proof.
 Qed.
 
 (** THE PID IS RECORDED.  On the success branch of 220 and 435 the
-    post-model is exactly [State.with_child] of the returned pid: the
-    child bit set, the pid appended at the tail of
-    [State.procst_child_pids] (oldest first, as [copy_process]'s
-    [list_add_tail] keeps [task->children], kernel/fork.c, read at
-    v6.18.44; identical at v6.18.46), and nothing else moved.  A reap
-    removes the pid again; the multi-process core's invariant that the
-    list names exactly the caller's children starts from this lemma. *)
+    post-model is exactly [State.with_child] of the returned pid over the
+    model the caller keeps ([Kernel.Fork.forfeit_model]): the child bit
+    set, the pid appended at the tail of [State.procst_child_pids]
+    (oldest first, as [copy_process]'s [list_add_tail] keeps
+    [task->children], kernel/fork.c, read at v6.18.44; identical at
+    v6.18.46), each live inherited descriptor without its offset, and
+    nothing else moved.  On the fork word and on every table without a
+    live inherited descriptor that model is the caller's own
+    ([Kernel.Fork.forfeit_model_gate]).  A reap removes the pid again;
+    the multi-process core's invariant that the list names exactly the
+    caller's children starts from this lemma. *)
 Local Lemma clone_resolve_records_pid : forall i m eff m' evs,
   clone_resolve i m (Ok eff m' evs) ->
-  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) m.
+  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) (forfeit_model m).
 Proof.
   intros i m eff m' evs H He.
   unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
@@ -654,16 +684,17 @@ Proof.
         assert (Hyes := errno_ret_error_b e H1 H2)
     end.
     cbn [eff_ret] in He. congruence.
-  - reflexivity.
+  - apply negb_false_iff in Hg. rewrite (forfeit_model_gate m Hg). reflexivity.
 Qed.
 
 Local Lemma clone_ns_resolve_records_pid : forall i m eff m' evs,
   clone_ns_resolve i m (Ok eff m' evs) ->
-  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) m.
+  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) (forfeit_model m).
 Proof.
   intros i m eff m' evs H He.
   unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok.
   all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
   - match goal with
     | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
@@ -677,7 +708,7 @@ Lemma clone_success_records_pid : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
   addr_is_error_b (eff_ret eff) = false ->
-  m' = with_child (eff_ret eff) m.
+  m' = with_child (eff_ret eff) (forfeit_model m).
 Proof.
   intros i m eff m' evs [Hno|Hno] H He.
   - apply (clone_is_clone_spec i m _ Hno) in H.
@@ -713,7 +744,7 @@ Corollary check_clone_success_records_pid : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   check_syscall i eff m = CheckOk m' evs ->
   addr_is_error_b (eff_ret eff) = false ->
-  m' = with_child (eff_ret eff) m.
+  m' = with_child (eff_ret eff) (forfeit_model m).
 Proof.
   intros i m eff m' evs Hno H He.
   apply clone_success_records_pid with (i := i) (evs := evs); [exact Hno| |exact He].

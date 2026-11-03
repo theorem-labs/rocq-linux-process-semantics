@@ -669,7 +669,7 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
-                    (* FOUR OPAQUE OBJECTS PASS, each for its own
+                    (* FIVE OPAQUE OBJECTS PASS, each for its own
                        reason, and the reason is in every case that no
                        answer the model gives depends on the state the
                        child's second reference shares ([copy_files] ->
@@ -705,6 +705,12 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
                          F_SETFD/F_GETFD declines on this kind.
+                       - an inherited file whose offset the model no
+                         longer holds ([OInherited None]; see
+                         [forfeit_inherited] below) shares an [f_pos]
+                         and [f_flags] that nothing modeled reads on it:
+                         every arm but close, close_range and fcntl's
+                         F_SETFD/F_GETFD declines on it, as on [ONsFile].
                        THREE DECLINE, fail-closed:
                        - the /proc/self/fd directory ([OProcFdDir])
                          shares the [f_pos] that [getdents64] reads and
@@ -715,12 +721,17 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          [signalfd4] on the same descriptor may change in
                          either process (fs/signalfd.c [do_signalfd4],
                          read at v6.18.44; identical at v6.18.46).
-                       - an inherited file ([OInherited]) shares the
-                         [f_pos] that [read] moves, and the model holds
-                         that offset in the entry ([ReadWrite.read_spec]),
-                         for the [FdFile] reason above. *)
-                    | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _) => true
-                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited _) => false
+                       - a live inherited file ([OInherited (Some _)])
+                         shares the [f_pos] that [read] moves, and the
+                         model holds that offset in the entry
+                         ([ReadWrite.read_spec]), for the [FdFile] reason
+                         above.  The namespace word asks this gate of
+                         the table [forfeit_inherited] leaves the
+                         caller, which holds no live one
+                         ([clone_ns_resolve]). *)
+                    | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _
+                                | OInherited None) => true
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)) => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -812,6 +823,126 @@ Definition clone_ns_flags_b (flags : word) : bool :=
   Z.eqb (Z.land (bv_unsigned flags) (Z.lnot clone_ns_mask)) SIGCHLD
   && negb (Z.eqb (Z.land (bv_unsigned flags) clone_ns_mask) 0).
 
+(** THE PARENT GIVES UP THE OFFSET OF EACH INHERITED DESCRIPTOR at a
+    namespace-word clone.
+
+    Linux: the clone has no CLONE_FILES, so [copy_files] copies the
+    table with [dup_fd], and each copied slot takes one more reference
+    on the SAME [struct file] (kernel/fork.c [copy_files]; fs/file.c
+    [dup_fd]; v6.18.46).  The offset is that file's [f_pos], and a
+    [read] through either table moves it ([ksys_read],
+    fs/read_write.c).  The model holds the offset of an inherited file
+    inside the descriptor's entry ([State.OInherited]), so two tables
+    that both held it live would hold two offsets for one.
+
+    So the caller keeps each such descriptor as [OInherited None], which
+    holds no offset: [close], [close_range] and [fcntl]'s [F_GETFD] and
+    [F_SETFD] answer on it, and every call that reads or moves the offset
+    declines.  The child is built from the caller's table BEFORE the call
+    (the multi-process core's [Procs.child_entry]), so it keeps the live
+    entry, and after the clone the child is the only process of the
+    configuration that holds the offset.  In a one-process run the child
+    is not modeled, and the caller holds no offset an unseen child could
+    move. *)
+Definition inherited_live_b (e : FdEntry) : bool :=
+  match e with
+  | FdOpaque (OInherited (Some _)) => true
+  | _ => false
+  end.
+
+Definition forfeit_entry (e : FdEntry) : FdEntry :=
+  match e with
+  | FdOpaque (OInherited (Some _)) => FdOpaque (OInherited None)
+  | _ => e
+  end.
+
+Definition forfeit_inherited (fds : list (word * FdEntry)) : list (word * FdEntry) :=
+  map (fun kv => (fst kv, forfeit_entry (snd kv))) fds.
+
+(** The caller's model after a successful namespace-word clone, before
+    the child is recorded. *)
+Definition forfeit_model (m : Model) : Model :=
+  with_fds (forfeit_inherited (m_fds m)) m.
+
+Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = false.
+Proof.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
+Qed.
+
+Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
+Proof.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o] H; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  discriminate H.
+Qed.
+
+(** No entry the caller keeps holds a live offset... *)
+Lemma forfeit_inherited_no_live : forall fds,
+  forallb (fun kv => negb (inherited_live_b (snd kv))) (forfeit_inherited fds) = true.
+Proof.
+  intros fds. unfold forfeit_inherited. apply forallb_forall.
+  intros kv Hin. apply in_map_iff in Hin as (kv0 & <- & _). cbn [snd].
+  rewrite forfeit_entry_not_live. reflexivity.
+Qed.
+
+(** ...the caller keeps every descriptor number it had... *)
+Lemma forfeit_inherited_keys : forall fds, map fst (forfeit_inherited fds) = map fst fds.
+Proof.
+  intros fds. unfold forfeit_inherited. rewrite map_map. reflexivity.
+Qed.
+
+Lemma fd_lookup_forfeit_inherited : forall fds k,
+  fd_lookup (forfeit_inherited fds) k = option_map forfeit_entry (fd_lookup fds k).
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k; [reflexivity|].
+  cbn [forfeit_inherited map fst snd fd_lookup].
+  destruct (bv_eqb k0 k); [reflexivity|]. exact (IH k).
+Qed.
+
+(** ...and a table without a live inherited entry is left as it was, so
+    every table the gate passed before this change it passes unchanged. *)
+Lemma forfeit_inherited_id : forall fds,
+  forallb (fun kv => negb (inherited_live_b (snd kv))) fds = true ->
+  forfeit_inherited fds = fds.
+Proof.
+  induction fds as [|[k e] r IH]; intros H; [reflexivity|].
+  cbn [forallb snd] in H. apply andb_true_iff in H as [He Hr].
+  apply negb_true_iff in He.
+  cbn [forfeit_inherited map fst snd].
+  rewrite (forfeit_entry_id e He). f_equal. exact (IH Hr).
+Qed.
+
+Lemma clone_no_shared_file_b_no_live : forall fds,
+  clone_no_shared_file_b fds = true ->
+  forallb (fun kv => negb (inherited_live_b (snd kv))) fds = true.
+Proof.
+  intros fds H. unfold clone_no_shared_file_b in H.
+  rewrite forallb_forall in H. apply forallb_forall.
+  intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
+  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o];
+    try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  cbn in H. discriminate H.
+Qed.
+
+Lemma forfeit_inherited_gate : forall fds,
+  clone_no_shared_file_b fds = true -> forfeit_inherited fds = fds.
+Proof.
+  intros fds H. exact (forfeit_inherited_id fds (clone_no_shared_file_b_no_live fds H)).
+Qed.
+
+(** ...and a model whose table the gate passes is its own
+    [forfeit_model]: on the fork word, and on every table that holds no
+    live inherited descriptor, the namespace word records the child in
+    the model as it was. *)
+Lemma forfeit_model_gate : forall m,
+  clone_no_shared_file_b (m_fds m) = true -> forfeit_model m = m.
+Proof.
+  intros m Hg. unfold forfeit_model. rewrite (forfeit_inherited_gate _ Hg).
+  destruct m as [[t p] vm io fs pr lim tm]. reflexivity.
+Qed.
+
 (** The resolution of the namespace word.
 
     THE PARENT'S VIEW OF THIS CALL DELIBERATELY MODELS NO CHILD.  The
@@ -846,9 +977,14 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       [State.with_child] (the child bit and the pid), which
       [Kernel.Exit.wait4_spec]'s -ECHILD reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
       No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
-      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
-      descriptors and [fs_struct] are not touched: [copy_creds],
-      [copy_namespaces] and [copy_fs] act on the new task [p].
+      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces
+      and [fs_struct] are not touched: [copy_creds], [copy_namespaces]
+      and [copy_fs] act on the new task [p].  Its descriptor table is
+      not touched in Linux either, but the model's copy of it is: each
+      live inherited descriptor becomes [OInherited None]
+      ([forfeit_model], above), because the description it names was
+      made before the clone and its offset now lives in the child's
+      entry alone.
     - FAILURE: EVERY ERRNO FROM 1 TO 4095 BUT -EINTR ([Syscall.errno_any]).  The
       failures of this word run through everything a plain fork's do
       ([clone_errnos]) and then through [create_user_ns] (-ENOSPC past 32
@@ -878,14 +1014,17 @@ Definition clone_ns_flags_b (flags : word) : bool :=
 
     The [clone_no_shared_file_b] gate is the one [clone_resolve] has, for
     the same reason: a child given a copy of the descriptor table shares
-    every [struct file] with the caller whatever namespaces it runs in. *)
+    every [struct file] with the caller whatever namespaces it runs in.
+    It is asked of the table the caller KEEPS ([forfeit_inherited]), so
+    a live inherited descriptor passes it here and declines the fork
+    word. *)
 Definition clone_ns_resolve : Sys SyscallEffect :=
   m <- get_model ;;
-  if negb (clone_no_shared_file_b (m_fds m)) then unmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then unmodeled
   else
     alt (e <- errno_any ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify (with_child pid) ;;
+         modify (fun m0 => with_child pid (forfeit_model m0)) ;;
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to

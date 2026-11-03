@@ -59,13 +59,18 @@ Proof.
 Qed.
 
 (** The namespace word's resolution admits every errno but -EINTR, so
-    the same -EAGAIN outcome witnesses it. *)
+    the same -EAGAIN outcome witnesses it, behind its own gate: the one
+    asked of the table the caller keeps ([Kernel.Fork.forfeit_inherited]). *)
+Definition clone_ns_resolve_witness (m : Model) : outcome SyscallEffect :=
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then Unmodeled
+  else ret_outcome (errno_ret EAGAIN) m.
+
 Lemma clone_ns_resolve_witness_ok : forall i m,
-  clone_ns_resolve i m (clone_resolve_witness m).
+  clone_ns_resolve i m (clone_ns_resolve_witness m).
 Proof.
-  intros. unfold clone_ns_resolve, clone_resolve_witness.
+  intros. unfold clone_ns_resolve, clone_ns_resolve_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))); cbv iota;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota;
     [apply unmodeled_intro|].
   apply alt_l. eapply bind_step.
   { apply (choose_ok _ EAGAIN). cbv beta. unfold EAGAIN, EINTR. lia. }
@@ -74,7 +79,7 @@ Qed.
 
 Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
   if clone_fork_flags_b flags then clone_resolve_witness m
-  else if clone_ns_flags_b flags then clone_resolve_witness m
+  else if clone_ns_flags_b flags then clone_ns_resolve_witness m
   else Unmodeled.
 
 Lemma clone_witness_ok : forall flags i m,
