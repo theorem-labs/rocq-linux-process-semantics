@@ -212,10 +212,15 @@ Record ProcessEntry := mkEntry {
     ([meta_look]).
 
     [pm_sid]: the session id the process inherited at its clone, when the
-    core knows it: its parent's tid if the parent had led a session by
-    then ([setsid]), else what the parent inherited.  [None] for the root,
-    whose session the launching environment chose.  Read by getsid
-    ([answer_ok_b]). *)
+    core knows it, ALWAYS IN THE HOST'S PID NUMBERING: if the parent had
+    led a session by then ([setsid]), the parent's pid, which is its table
+    key for an entry that is not the root and its pinned tid for the root;
+    else what the parent inherited.  [None] for the root, whose session the
+    launching environment chose.  A setsid answered by the namespace layer
+    in a new pid namespace sets [m_setsid_succeeded] and never writes a
+    namespace pid into [m_tid], so the key, not [m_tid], is the session id
+    of such a leader; translating it into a reader's pid namespace is the
+    job of a getsid arm of that layer.  Read by getsid ([answer_ok_b]). *)
 Record ProcMeta := mkMeta {
   pm_ns_stale : Z;
   pm_sid      : option word
@@ -813,7 +818,9 @@ Definition child_meta (P : pconfig) (e : ProcessEntry) (cctx : NsCtx) : ProcMeta
   let pm := meta_look (sh_meta (pcfg_shared P)) (pe_pid e) in
   mkMeta (ns_stale_child (pm_ns_stale pm)
             (clone_flags_of (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) cctx)
-         (if m_setsid_succeeded (pe_model e) then m_tid (pe_model e) else pm_sid pm).
+         (if m_setsid_succeeded (pe_model e)
+          then (if bv_eqb (pe_pid e) (pcfg_root P) then m_tid (pe_model e) else Some (pe_pid e))
+          else pm_sid pm).
 
 (** The configuration a successful clone steps to.  Under no extension the
     child's context is the parent's, so every namespace its flag word asks
