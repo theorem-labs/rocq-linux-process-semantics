@@ -389,3 +389,70 @@ Example removal_leaves_no_name_and_keeps_the_file :
   | None => False
   end.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** THE ROUTES OF AN OPEN UNDER /proc, ONE CASE EACH
+    ([Fs.Open.openat_proc_spec]).  After the tmpfile sequence, fd 3
+    holds the unnamed file, so "/proc/self/fd/3" names it.
+    - O_PATH|O_LARGEFILE on "/proc/self/fd/3": an O_PATH descriptor on
+      the procfs name ([State.OProcPath]).  The O_PATH word is answered
+      the same on every procfs name, links out of procfs included; that
+      definition says why that is sound (nothing reads an O_PATH
+      descriptor's object).  [do_dentry_open] gives an O_PATH file
+      FMODE_PATH and no [->open] (fs/open.c).
+    - O_RDONLY|O_LARGEFILE|O_CLOEXEC on "/proc/sys/kernel/overflowuid":
+      [State.OProcFile] ([proc_sys_open], fs/proc/proc_sysctl.c).
+    - the same on "/proc/sys/kernel/overflowgid": [State.OProcFile].
+    - O_RDONLY|O_LARGEFILE on "/proc/self/fd/3", which stands for every
+      word but O_PATH on that name: the reopen of descriptor 3
+      ([Fs.Open.openat_procfd_spec]), a second descriptor on the same
+      unnamed file ([State.FdAnon]); the magic link's [proc_fd_link]
+      (fs/proc/fd.c) hands back the file's own path and
+      [proc_pid_get_link] (fs/proc/base.c) jumps to it ([nd_jump_link],
+      fs/namei.c).
+    fs/open.c, fs/proc/proc_sysctl.c, fs/proc/fd.c, fs/proc/base.c,
+    fs/namei.c: read at v6.18.44; identical at v6.18.46. *)
+Definition fd_at (r : option check_result) (fd : Z) : option FdEntry :=
+  match r with
+  | Some (CheckOk m _) => fd_lookup (m_fds m) (w fd)
+  | _ => None
+  end.
+
+Definition overflowuid_name : list Z :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101; 108;
+   47; 111; 118; 101; 114; 102; 108; 111; 119; 117; 105; 100]%Z.
+   (* "/proc/sys/kernel/overflowuid" *)
+Definition overflowgid_name : list Z :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101; 108;
+   47; 111; 118; 101; 114; 102; 108; 111; 119; 103; 105; 100]%Z.
+   (* "/proc/sys/kernel/overflowgid" *)
+
+(** openat(AT_FDCWD, name, O_RDONLY|O_LARGEFILE|O_CLOEXEC), bubblewrap's
+    word for the sysctl reads (0x88000). *)
+Definition sysctl_open_in (n : list Z) : SyscallInput :=
+  mk 56 [at_fdcwd; proc_a; 557056; 0]%Z [(proc_a, cstr n)].
+
+Example proc_open_route_o_path_on_proc_self_fd :
+  fd_at (after tmpfile_and_write (proc_open_in [51]%Z 2129920 0)
+           (at_proc [51]%Z (ok_eff 4))) 4
+  = Some (FdOpaque (OProcPath (bytes_of (proc_name [51]%Z)))).
+Proof. check_eq. Qed.
+
+Example proc_open_route_sysctl_overflowuid :
+  fd_at (after tmpfile_and_write (sysctl_open_in overflowuid_name)
+           (with_copyins [(w proc_a, 29%nat)] (ok_eff 4))) 4
+  = Some (FdOpaque (OProcFile (bytes_of overflowuid_name))).
+Proof. check_eq. Qed.
+
+Example proc_open_route_sysctl_overflowgid :
+  fd_at (after tmpfile_and_write (sysctl_open_in overflowgid_name)
+           (with_copyins [(w proc_a, 29%nat)] (ok_eff 4))) 4
+  = Some (FdOpaque (OProcFile (bytes_of overflowgid_name))).
+Proof. check_eq. Qed.
+
+Example proc_open_route_reopen_on_proc_self_fd :
+  match fd_at (after tmpfile_and_write (proc_open_in [51]%Z 32768 0)
+                 (at_proc [51]%Z (ok_eff 4))) 4 with
+  | Some (FdAnon _ af) => af_data af = hello /\ af_rd af = true /\ af_wr af = false
+  | _ => False
+  end.
+Proof. vm_compute. repeat split; reflexivity. Qed.
