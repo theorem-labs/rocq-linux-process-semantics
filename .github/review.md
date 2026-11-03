@@ -5,9 +5,13 @@
 or the account that started the run, has no write access, an automated
 screen reads the pull request or the issue first (`.github/screen.py`), and
 the review runs only when the screen passes it; otherwise the pull request
-or the issue gets the label `review-held`, and a maintainer decides. A
-maintainer can also ask for a review. The review is advice. A maintainer
-decides what to merge.
+or the issue gets the label `review-held`, and a maintainer decides. The
+events of an account without write access (opening, reopening or pushing)
+reach the screen at most three times in an hour; later ones are held without
+a screen, and the item is screened again automatically after that hour. So
+is an item the screen passed whose review met the hourly limit of such
+reviews, or did not finish (up to three tries). A maintainer can also ask for
+a review. The review is advice. A maintainer decides what to merge.
 
 The review uses the copy of this file on `main`, so a change to it takes
 effect after it merges.
