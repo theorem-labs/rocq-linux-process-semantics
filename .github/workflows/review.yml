@@ -161,20 +161,21 @@ env:
   # issue or push in that hour is held without a screen. Every run its event started that the trust job did not skip
   # counts, the held ones too, so a burst stays held until an hour has passed since its runs.
   # The rescreens of its held items count toward the same limit, with its events: so N, the most rescreens of one
-  # account that are screened in an hour, is this number, 3, less what its own events used. (The rescreen job starts
-  # up to 3 an hour whatever its events used, and the trust job holds the extra ones at the limit.) One count and one
-  # limit, because a rescreen is the screen that the held event did not get: it gives an account no more screens an
-  # hour than its events alone could, which keeps it under SCREENED_HOURLY_CAP, so one account cannot fill that pool. A
-  # smaller N for rescreens would only leave a burst held for longer; an account that keeps opening, pushing or
-  # reopening stays held. An account with write access has no such limit (a writer's push to an outsider's item, whose
-  # cap or transient hold names the writer's run): the rescreen job still starts at most this number of its rescreens
-  # an hour.
+  # account that are screened in an hour, is this number less what its own events used. (The rescreen job starts up
+  # to this number of an account's rescreens an hour whatever its events used, and the trust job holds the extra ones
+  # at the limit.) One count and one limit, because a rescreen is the screen that the held event did not get: it gives
+  # an account no more screens an hour than its events alone could, which keeps it under SCREENED_HOURLY_CAP, so one
+  # account cannot fill that pool. A smaller N for rescreens would only leave a burst held for longer; an account that
+  # keeps opening, pushing or reopening stays held. An account with write access has no such limit (a writer's push to
+  # an outsider's item, whose cap or transient hold names the writer's run): the rescreen job still starts at most this
+  # number of its rescreens an hour.
   OUTSIDE_HOURLY_LIMIT: "3"
   # The label a held pull request or issue gets, and the marker of the comment that says so.
   HELD_LABEL: review-held
   # The most times the review of a screened item that the screen passed may fail, or run out of time, before a person
-  # decides: each such hold is tried again with no person (the rescreen job), and the third one is not. A review stopped
-  # at SCREENED_HOURLY_CAP is not such a failure, and is tried again whatever this number: the cap is not the item's.
+  # decides: each such hold is tried again with no person (the rescreen job) while it has failed fewer times than this
+  # number, and the hold of the last failure is not. A review stopped at SCREENED_HOURLY_CAP is not such a failure,
+  # and is tried again whatever this number: the cap is not the item's.
   # It is also the most rescreens of a held item, since its hold, that may end with neither a new hold nor a posted
   # review (a run that failed on a GitHub read, say) before the rescreen job leaves it to a person.
   REVIEW_TRIES: "3"
@@ -770,7 +771,20 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT" || stop "the count could not be written."
           echo "$count reviews ($POOL) called the model, or may, in the last hour."
 
-      # Fails only when the count is at the cap: the hold job reads this step's failure as the cap reached.
+      # A count that is not a number, or a cap that is not one, lets no model run. It fails here, in a step of its own,
+      # so that the hold job reads it as a review that did not finish (a try counts), not as the cap reached.
+      - name: Check the count and the cap
+        env:
+          COUNT: ${{ steps.count.outputs.count }}
+          CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
+        run: |
+          set -uo pipefail
+          [[ $COUNT =~ ^[0-9]+$ && $CAP =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::no count of the hour's reviews ($COUNT) or no cap ($CAP). No model ran."; exit 1; }
+          echo "A count of $COUNT against a cap of $CAP."
+
+      # Runs after the two steps above have passed, so it fails only when the count is at the cap: the hold job reads
+      # this step's failure as the cap reached.
       - name: Hold at the hourly cap
         env:
           COUNT: ${{ steps.count.outputs.count }}
@@ -778,9 +792,6 @@ jobs:
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
         run: |
           set -uo pipefail
-          # No count, or not a number, is no count under the cap: no model runs.
-          [[ $COUNT =~ ^[0-9]+$ && $CAP =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::no count of the hour's reviews ($COUNT) or no cap ($CAP). No model ran."; exit 1; }
           if (( COUNT >= CAP )); then
             echo "::error::HELD: $COUNT reviews ($POOL) called the model, or may, in the last hour: the cap is $CAP." \
               "No model ran. A maintainer can re-run this run once the hour has passed."
@@ -1186,8 +1197,8 @@ jobs:
           set -euo pipefail
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
-          # Without a posted review the label never comes off, so the same item would be screened and reviewed again
-          # every hour.
+          # Without a posted review the label never comes off, so every held item would be screened and reviewed again
+          # up to REVIEW_TRIES times for nothing, and then left to a person.
           if [ "$POST_REVIEW" != true ]; then
             echo "::notice::POST_REVIEW is not true: reviews are not posted, so held items are not screened again."
             exit 0

@@ -1250,6 +1250,7 @@ class CapTest(Runner):
     """HOURLY_CAP and SCREENED_HOURLY_CAP count apart: accounts without write access cannot use up writers' reviews."""
 
     COUNT = "Count the reviews of the last hour"
+    CHECK = "Check the count and the cap"
     CAP = "Hold at the hourly cap"
 
     def step_env(self, name, route):
@@ -1259,8 +1260,7 @@ class CapTest(Runner):
 
     def cap(self, route, jobs, event="pull_request_target"):
         """jobs: names of review jobs of earlier runs whose Review step ran in the last hour, each run of event. Runs
-        the count, then the cap's step with the count, as the job does; the cap's step does not run when the count
-        fails."""
+        the count, the check and the cap's step, as the job does; a step does not run when one before it fails."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
             {"id": 10 + i, "created_at": "2099-01-01T00:00:00Z", "event": event} for i in range(len(jobs))]})
         for i, name in enumerate(jobs):
@@ -1272,7 +1272,10 @@ class CapTest(Runner):
                                        **self.step_env(self.COUNT, route))
         if rc != 0:
             return rc, out
-        rc, out, _ = self.run_script(step("review", self.CAP)["run"], COUNT=got["count"], **self.step_env(self.CAP, route))
+        for name in (self.CHECK, self.CAP):
+            rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"], **self.step_env(name, route))
+            if rc != 0:
+                break
         return rc, out
 
     def test_a_forks_own_runs_do_not_fill_the_cap(self):
@@ -1283,11 +1286,15 @@ class CapTest(Runner):
         self.assertEqual(self.cap("screen", ["review (screened)"] * screened, event="workflow_dispatch")[0], 1)
 
     def test_a_count_that_fails_stops_before_the_caps_step(self):
-        """The hold job reads a failure of the cap's step as the cap reached: a failed read must not be one."""
+        """The hold job reads a failure of the cap's step as the cap reached: a failed read, or a count that is not a
+        number, must not be one. Each fails a step of its own before the cap's."""
         names = [s.get("name") for s in JOBS["review"]["steps"]]
-        self.assertEqual(names.index(self.CAP), names.index(self.COUNT) + 1)
+        self.assertEqual(names.index(self.CHECK), names.index(self.COUNT) + 1)
+        self.assertEqual(names.index(self.CAP), names.index(self.CHECK) + 1)
         self.assertLess(names.index(self.CAP), names.index("Review"))
-        self.assertEqual(step("review", self.CAP)["env"]["COUNT"], "${{ steps.count.outputs.count }}")
+        for name in (self.CHECK, self.CAP):
+            self.assertEqual(step("review", name)["env"]["COUNT"], "${{ steps.count.outputs.count }}")
+            self.assertNotIn("if", step("review", name))
         self.assertEqual(step("review", self.COUNT)["id"], "count")
         rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
                                      **self.step_env(self.COUNT, "screen"))   # no runs served: GitHub's 404
@@ -1300,18 +1307,30 @@ class CapTest(Runner):
 
     def test_a_count_that_cannot_be_written_or_is_empty_lets_no_review_run(self):
         """An empty count would read as 0 and let the review run with no cap. The count step stops when its output
-        cannot be written, and the cap's step refuses a count that is not a number."""
+        cannot be written, and the check step refuses a count or a cap that is not a number. The cap's step itself
+        does no such check, so its failure stays the cap reached alone."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
                                      GITHUB_OUTPUT=self.dir, **self.step_env(self.COUNT, "screen"))
         self.assertEqual(rc, 1, out)
         self.assertIn("the count could not be written", out)
-        for count in ("", "x", "-1"):
-            with self.subTest(count=count):
-                rc, out, _ = self.run_script(step("review", self.CAP)["run"], COUNT=count,
-                                             **self.step_env(self.CAP, "screen"))
+        for count, cap in (("", None), ("x", None), ("-1", None), ("2", "x"), ("2", "0")):
+            with self.subTest(count=count, cap=cap):
+                env = self.step_env(self.CHECK, "screen")
+                if cap is not None:
+                    env["CAP"] = cap
+                rc, out, _ = self.run_script(step("review", self.CHECK)["run"], COUNT=count, **env)
                 self.assertEqual(rc, 1, out)
                 self.assertIn("No model ran", out)
+        rc, out, _ = self.run_script(step("review", self.CHECK)["run"], COUNT="2", **self.step_env(self.CHECK, "screen"))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("=~", step("review", self.CAP)["run"])
+
+    def test_a_check_that_fails_is_held_as_a_review_that_did_not_finish(self):
+        """Its failure leaves the cap's step skipped, which the hold job counts as a try, not as the cap."""
+        hold = step("hold", "Label it and say that it was held")["run"]
+        self.assertIn('select(.name == "Hold at the hourly cap" and .conclusion == "failure")', hold)
+        self.assertNotIn(self.CHECK, hold)
 
     def test_screened_reviews_do_not_use_up_the_writers_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
@@ -1604,8 +1623,8 @@ class RescreenJobTest(Held):
         return rc, out, runs
 
     def test_nothing_is_started_when_reviews_are_not_posted(self):
-        """Without a posted review the label never comes off, so the same item would be screened and reviewed every
-        hour, with no end."""
+        """Without a posted review the label never comes off, so every held item would be screened and reviewed again
+        up to REVIEW_TRIES times for nothing, and then left to a person."""
         self.items((7, "open"))
         self.held(7, limit_hold(50))
         self.origin(50, "mallory")
