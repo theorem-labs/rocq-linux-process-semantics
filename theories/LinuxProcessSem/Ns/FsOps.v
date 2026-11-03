@@ -468,6 +468,23 @@ Definition tmpfs_wrote (m : Model) (ctx : NsCtx) (st : NsState) (h : N) (l : Loc
       (set_file_kind (set_inode_bytes st (ino_id ino) (file_write (ino_bytes ino) (Z_to_bv 64 start) bs))
                      h (NfFile l (start + n))).
 
+(** [f] is a file of /proc/sys/user ([user_sys_name]), whose writes go
+    through [proc_sys_call_handler] (fs/proc/proc_sysctl.c). *)
+Definition sysctl_file (st : NsState) (f : NsFile) : bool :=
+  match nf_kind f with
+  | NfUserNsFile l _ _ =>
+      match map_kind_at l with
+      | Some _ => false
+      | None => negb (setgroups_at l) && match user_sys_name st l with Some _ => true | None => false end
+      end
+  | _ => false
+  end.
+
+(** [KMALLOC_MAX_SIZE] (include/linux/slab.h): 1 << ([MAX_PAGE_ORDER] +
+    [PAGE_SHIFT]), with [MAX_PAGE_ORDER] 10 (include/linux/mmzone.h; RISC-V
+    sets no CONFIG_ARCH_FORCE_MAX_ORDER) and 4 KiB pages: 4 MiB. *)
+Definition KMALLOC_MAX_SIZE : Z := 4194304.
+
 (** [write] (64) on an [ONsFile].  Map and setgroups writes delegate their
     ordered permission checks to [map_write] and [setgroups_write].  A
     /proc/sys/user/max_user_namespaces write follows [proc_sys_call_handler]
@@ -476,17 +493,22 @@ Definition tmpfs_wrote (m : Model) (ctx : NsCtx) (st : NsState) (h : N) (l : Loc
     [shmem_file_write_iter]; kernel/user_namespace.c [proc_uid_map_write],
     [proc_gid_map_write], [proc_setgroups_write]; kernel/sysctl.c
     [proc_doulongvec_minmax], [__do_proc_doulongvec_minmax], [proc_get_long];
-    and fs/proc/proc_sysctl.c [proc_sys_call_handler].  This is the answer
-    when the environment fails nothing.  Kind ([write_arm]): on tmpfs and
-    the named procfs files, this answer, beside it [write_env]'s refusals,
-    and on tmpfs [write_short]'s short counts; over, since the arm admits
-    [write_env]'s refusals after every answer, also where Linux allocates
-    nothing first (a write of no bytes to tmpfs, a map write that
+    and fs/proc/proc_sysctl.c [proc_sys_call_handler], which answers
+    ENOMEM, before its [kvzalloc] and its copy of the buffer, for a count
+    of [KMALLOC_MAX_SIZE] or more (fs/proc/proc_sysctl.c:580-582).  This is
+    the answer when the environment fails nothing.  Kind ([write_arm]): on
+    tmpfs and the named procfs files, this answer, beside it [write_env]'s
+    refusals, and on tmpfs [write_short]'s short counts; over, since the
+    arm admits [write_env]'s refusals after every answer, also where Linux
+    allocates nothing first (a write of no bytes to tmpfs, a map write that
     [map_write] refuses before [memdup_user_nul]).  Host regular files and
     other kinds decline. *)
 Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) : ext_outcome :=
   if negb (file_can_write f) then ns_errno EBADF m ctx st
+  else if sysctl_file st f && access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))
+          && (KMALLOC_MAX_SIZE <=? rw_count_clamp (in_arg i 2))
+  then ns_errno ENOMEM m ctx st
   else match write_bytes i with
        | WFault => ns_errno EFAULT m ctx st
        | WBytesOver => EUnmodeled
@@ -543,8 +565,9 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     - a tmpfs regular file: [shmem_write_begin]'s [shmem_get_folio]
       (mm/shmem.c), ENOSPC past the size limit
       ([shmem_inode_acct_blocks]), ENOMEM for the folio, and EIO for a
-      hardware-poisoned page or a swapped-out one that cannot be read
-      back;
+      hardware-poisoned page ([shmem_write_begin], mm/shmem.c:3335-3338)
+      or a swapped-out one that cannot be read back ([shmem_swapin_folio],
+      mm/shmem.c:2306-2307 and 2402-2403);
     - a uid_map or gid_map: [map_write] (kernel/user_namespace.c), ENOMEM
       from [memdup_user_nul], [insert_extent] and [sort_idmaps];
     - /proc/sys/user/max_user_namespaces: [proc_sys_call_handler]
@@ -570,7 +593,10 @@ Definition write_env (st : NsState) (f : NsFile) (e : Z) : bool :=
      | _ => false
      end.
 
-(** [write_env]'s refusals as pairs, for the forced-only filter. *)
+(** [write_env]'s refusals as pairs, for the forced-only filter, by cause
+    ([Arm.NsInjected]): ENOMEM is an allocation (the folio, [map_write]'s
+    buffers, [kvzalloc]); ENOSPC, the tmpfs instance's size limit, and EIO,
+    a page that cannot be read back, are its state. *)
 Definition write_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM], FamAlloc); (errno_in [ENOSPC; EIO], FamFs)].
 
@@ -836,26 +862,44 @@ Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx s
     [security_path_unlink] nor [security_path_chmod] refuses.
     - [mkdirat] (34) and [symlinkat] (36): the parent walk's and
       [lookup_one_qstr_excl]'s ([Arm.walk_pairs]); the tmpfs create's
-      ENOSPC ([__shmem_get_inode]: [shmem_reserve_inode], or [new_inode]
-      failing, mm/shmem.c) and ENOMEM ([simple_offset_add], fs/libfs.c);
-      [shmem_symlink]'s copy of the target, ENOMEM ([kmemdup]) or, for a
-      long one, [shmem_get_folio]'s ENOSPC or ENOMEM.
+      ENOSPC and ENOMEM; [shmem_symlink]'s copy of the target, ENOMEM
+      ([kmemdup]) or, for a long one, [shmem_get_folio]'s ENOSPC (the size
+      limit) or ENOMEM.  The create's ENOSPC has two causes in
+      [__shmem_get_inode] (mm/shmem.c), so it is in two families
+      ([Arm.NsInjected]): [new_inode] failing, an allocation (FamAlloc, as
+      for a new tmpfs's root in [MountArms.mount40_injected]), and
+      [shmem_reserve_inode] at the instance's inode limit, its state
+      (FamFs).  The create's ENOMEM is [simple_offset_add]'s (fs/libfs.c).
     - [unlinkat] (35): the parent walk's and [lookup_one_qstr_excl]'s
       ([Arm.walk_pairs]); [shmem_unlink] does not fail.
     - [write] (64): on a file of the model, [write_env]'s ([write_pairs]),
-      and none for [write_short]'s counts, which are no refusal;
-      on a descriptor of the released model the arm answers as the
-      released arm does, so the released arm's refusals
-      ([Arm.released_pairs]), which the arm admits already.
+      and none for [write_short]'s counts, which are no refusal.  ENOMEM
+      is also the tables' answer, for a sysctl write of [KMALLOC_MAX_SIZE]
+      bytes or more ([write_fn]), so it is in [ni_forced].  On a
+      descriptor of the released model the arm answers as the released
+      arm does, and [Spec.ns_refusal] gives it the released filter itself
+      ([Spec.released_fd_call]), so the released table's family for that
+      answer's ENOMEM (fs, [Run.injected_table]) holds there as in the
+      released world; the row is the model's own files' alone.
     - none for [fchmod] (52) (see [fchmod_fn]); its released arm injects
-      nothing. *)
+      nothing.
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]): the path copy, the walk, the call's own checks,
+    and for [write] [map_write]'s and [setgroups_write]'s. *)
 Definition create_pairs : list ((Z -> bool) * SpuriousFamily) :=
-  [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
+  [(errno_in [ENOMEM; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
 
-Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs [].
-Definition unlinkat_injected : NsInjected := mkNsInjected 35 walk_pairs [].
-Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs [].
-Definition write_injected : NsInjected := mkNsInjected 64 (released_pairs 64 ++ write_pairs) [].
+Definition create_answers : list Z :=
+  [EFAULT; ENAMETOOLONG; ENOENT; EEXIST; EPERM; EROFS; EOVERFLOW; EACCES; EBADF; ENOTDIR; ELOOP].
+
+Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs create_answers [].
+Definition unlinkat_injected : NsInjected :=
+  mkNsInjected 35 walk_pairs
+    [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; EISDIR; ENOTDIR; EROFS; EOVERFLOW; EACCES; EPERM; EBUSY;
+     EBADF; ELOOP] [].
+Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs create_answers [].
+Definition write_injected : NsInjected :=
+  mkNsInjected 64 write_pairs [EBADF; EFAULT; EISDIR; EINVAL; EPERM; ENOMEM] [ENOMEM].
 
 Definition fsops_arms : list (Z * NsArm) :=
   [(34, with_injected (ni_errno mkdirat_injected) mkdirat_arm);

@@ -24,7 +24,8 @@
       [netif_set_allmulti] (net/core/dev.c); bringing a loopback device up
       runs [inetdev_event]'s NETDEV_UP arm (net/ipv4/devinet.c), which adds
       127.0.0.1/8 through [inet_insert_ifa]: a refused duplicate when that
-      address is already there;
+      address is already there, and no address when [inet_alloc_ifa]
+      fails ([lo_up_noaddr]);
     - an IPv4 address: [inet_rtm_newaddr], [inet_validate_rtm],
       [inet_rtm_to_ifa], [find_matching_ifa], [__inet_insert_ifa],
       [set_ifa_lifetime], [inet_fill_ifaddr], [inet_dump_addr],
@@ -97,7 +98,8 @@
     rather than a stored [sk_err]; a handler's own allocation failure is
     the error of the acknowledgement [sendto] queues, and a dump that fails
     so keeps running, its datagrams behind that acknowledgement
-    ([nl_handler_errnos]).
+    ([nl_handler_errnos]); a loopback device brought up while its address
+    cannot be allocated is up with no address ([lo_up_noaddr]).
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -400,6 +402,27 @@ Definition set_link_flags (d : NetIf) (ifl ich : Z) : NetIf :=
   let addrs := if negb (Z.testbit f 0) && Z.testbit f' 0 && is_loopback d
                then lo_up_addrs (if_addrs d) else if_addrs d in
   mkNetIf (if_index d) (if_name d) f' addrs.
+
+(** The interfaces a request leaves when, as a loopback device comes up,
+    [inetdev_event]'s [inet_alloc_ifa] fails (net/ipv4/devinet.c:1613-1629):
+    the device is up, and 127.0.0.1/8 is not added; the request is still
+    acknowledged with 0, as [inetdev_event] returns NOTIFY_DONE whatever
+    happened (devinet.c:1668).  [ifs] are the interfaces before the
+    request, [ifs'] the ones [rt_handle] gives. *)
+Definition lo_up_noaddr (ifs ifs' : list NetIf) : list NetIf :=
+  map (fun d' => match if_by_index ifs (if_index d') with
+                 | Some d => if negb (is_up d) && is_up d' && is_loopback d'
+                             then mkNetIf (if_index d') (if_name d') (if_flags d') (if_addrs d)
+                             else d'
+                 | None => d'
+                 end) ifs'.
+
+(** The request brings a loopback device of [ifs] up. *)
+Definition lo_comes_up (ifs ifs' : list NetIf) : bool :=
+  existsb (fun d' => match if_by_index ifs (if_index d') with
+                     | Some d => negb (is_up d) && is_up d' && is_loopback d'
+                     | None => false
+                     end) ifs'.
 
 (* =========================================================================
    Messages
@@ -1123,7 +1146,9 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                                               | None => st
                                               end) dgs
                                     \/ (reply_dumps r = true
-                                        /\ exists e, fails e /\ o = sent st (handler_fail_ack p dg e :: dgs))))
+                                        /\ exists e, fails e /\ o = sent st (handler_fail_ack p dg e :: dgs))
+                                    \/ (exists l, ifs = Some l /\ lo_comes_up (netns_ifs x) l = true
+                                        /\ o = sent (set_netns_ifs st n (lo_up_noaddr (netns_ifs x) l)) dgs)))
                                  \/ (reply_dumps r = false
                                      /\ exists e, fails e /\ o = sent st [handler_fail_ack p dg e])
                              end
@@ -1136,10 +1161,17 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     [access_ok] refuses) before the descriptor, then [netlink_sendto].
     Kind: exact on the namespace's new state and on acknowledgements, over
     on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an
-    autobind) and [nl_alloc_errnos] beside the answer, and beside a request
+    autobind) and [nl_alloc_errnos] beside the answer; beside a request
     that reaches an rtnetlink handler ([handler_reached]), the
     acknowledgement of its allocation failure ([nl_handler_errnos]) with
-    the namespace unchanged and, for a dump, the dump behind it.
+    the namespace unchanged and, for a dump, the dump behind it; and beside
+    a request that brings a loopback device up, the same answer with the
+    device up and no address added, when [inetdev_event]'s
+    [inet_alloc_ifa] fails ([lo_up_noaddr]).  Those last two are the
+    environment's allocation failures, but the call's effect is the
+    answer's own (the length), so the forced-only filter, which sees the
+    effect and not the namespace or the queue after it, does not remove
+    them (SCOPE.md).
     Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its
@@ -1352,14 +1384,19 @@ Definition nl_pending_errnos : list Z := [ENOBUFS].
     [nl_insert_errnos].  [sendto]: [netlink_autobind]'s
     [nl_insert_errnos] and [netlink_sendmsg]'s [nl_alloc_errnos].
     [recvfrom]: [nl_pending_errnos].  [ioctl] SIOCGIFINDEX allocates
-    nothing ([dev_ioctl], net/core/dev_ioctl.c). *)
+    nothing ([dev_ioctl], net/core/dev_ioctl.c).  Each row also lists the
+    errnos its arm answers from the tables ([Arm.ni_answers]); [sock_of]'s
+    EBADF and ENOTSOCK among them. *)
 Definition socket_injected : NsInjected :=
-  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc)] [].
-Definition bind_injected : NsInjected := mkNsInjected 200 [(errno_in nl_insert_errnos, FamNet)] [].
+  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc)] [EINVAL; EMFILE] [].
+Definition bind_injected : NsInjected :=
+  mkNsInjected 200 [(errno_in nl_insert_errnos, FamNet)] [EBADF; ENOTSOCK; EINVAL; EFAULT; EADDRINUSE] [].
 Definition sendto_injected : NsInjected :=
-  mkNsInjected 206 [(errno_in nl_insert_errnos, FamNet); (errno_in nl_alloc_errnos, FamAlloc)] [].
+  mkNsInjected 206 [(errno_in nl_insert_errnos, FamNet); (errno_in nl_alloc_errnos, FamAlloc)]
+               [EFAULT; EBADF; ENOTSOCK; EINVAL; EOPNOTSUPP; ENODATA; EPERM] [].
 Definition recvfrom_injected : NsInjected :=
-  mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)] [].
+  mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)]
+               [EFAULT; EBADF; ENOTSOCK; EOPNOTSUPP; EAGAIN; EINVAL] [].
 
 (** The five arms by call number, for [Spec.ns_table], each with its row's
     refusals. *)

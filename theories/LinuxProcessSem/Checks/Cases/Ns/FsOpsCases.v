@@ -375,8 +375,8 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not
-    refusals); write's, the released arm's ENOMEM, for a descriptor of the
-    released model; none for fchmod. *)
+    refusals); write's on the model's own files ([write_env]); none for
+    fchmod. *)
 Example fsops_rows :
   map ni_no fsops_injected = [34; 35; 36; 64]
   /\ ni_errno mkdirat_injected ENOSPC = true /\ ni_errno symlinkat_injected ENOMEM = true
@@ -429,4 +429,51 @@ Proof.
   - intros o [_ H]. hnf in H. destruct H as (k & Hk & ->).
     destruct k as [|[|k]]; vm_compute in Hk; try discriminate Hk.
     vm_compute. reflexivity.
+Qed.
+
+(** A write of [KMALLOC_MAX_SIZE] bytes or more to
+    /proc/sys/user/max_user_namespaces: [proc_sys_call_handler] answers
+    ENOMEM before it allocates or copies anything, so an unreadable buffer
+    gets it too; one byte less, the copy is reached, and an unreadable
+    buffer declines here.  That ENOMEM is the tables' answer, which the
+    write row lists in [ni_forced]. *)
+Definition big_write (count : Z) : SyscallInput :=
+  call 64 [3; BUF; count] (fun _ => None) (fun _ => None).
+
+Example write_sysctl_large_enomem :
+  ret_of (write_fn (big_write KMALLOC_MAX_SIZE) base_model resource_ctx sys_state 1%N sys_file)
+    = Some (-12)
+  /\ ret_of (write_fn (big_write (2 ^ 30)) base_model resource_ctx sys_state 1%N sys_file) = Some (-12)
+  /\ write_fn (big_write (KMALLOC_MAX_SIZE - 1)) base_model resource_ctx sys_state 1%N sys_file
+     = EUnmodeled
+  /\ ni_forced write_injected = [ENOMEM].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** With descriptor 3 naming that file, every answer the write arm admits
+    to such a write is ENOMEM: the tables' answer, the environment's
+    ENOMEM after it ([write_env]), and no short count (not tmpfs).  So no
+    answer shows that the state did not force the ENOMEM, and the
+    forced-only filter keeps it ([Spec.ns_witness]). *)
+Definition sys_model : Model :=
+  with_fds (fd_insert (m_fds base_model) (Z_to_bv 64 3) (ns_fd_entry 1)) base_model.
+Definition sys_open_state : NsState := with_files sys_state [(1%N, sys_file)].
+
+Example write_sysctl_large_only_enomem : forall o,
+  write_arm (big_write KMALLOC_MAX_SIZE) sys_model resource_ctx sys_open_state o ->
+  ret_of o = Some (-12).
+Proof.
+  intros o H. unfold write_arm in H.
+  replace (ns_file_of sys_model sys_open_state (fd_word (in_arg (big_write KMALLOC_MAX_SIZE) 0)))
+    with (Some (1%N, sys_file)) in H by (vm_compute; reflexivity).
+  cbv beta iota in H.
+  replace (write_fn (big_write KMALLOC_MAX_SIZE) sys_model resource_ctx sys_open_state 1%N sys_file)
+    with (ns_errno ENOMEM sys_model resource_ctx sys_open_state) in H by (vm_compute; reflexivity).
+  destruct H as [-> | [H | [_ H]]].
+  - vm_compute. reflexivity.
+  - hnf in H. destruct H as (e & He & ->).
+    assert (Hw : write_env sys_open_state sys_file e = errno_in [ENOMEM] e)
+      by (vm_compute; reflexivity).
+    rewrite Hw in He. unfold errno_in in He. cbn [existsb] in He. rewrite orb_false_r in He.
+    apply Z.eqb_eq in He. subst e. vm_compute. reflexivity.
+  - vm_compute in H. destruct H.
 Qed.

@@ -1568,6 +1568,18 @@ Definition getdents64_arm : NsArm := fun i m ctx st o =>
       end
   end.
 
+(** ON AN OPEN DESCRIPTOR OF THE RELEASED MODEL THE ARM HAS EXACTLY THE
+    RELEASED ANSWERS, in every world. *)
+Theorem getdents64_arm_released : forall i m ctx st o,
+  fd_lookup (m_fds m) (fd_word (in_arg i 0)) <> None ->
+  ns_file_of m st (fd_word (in_arg i 0)) = None ->
+  (getdents64_arm i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hfd Hns. unfold getdents64_arm. cbv zeta.
+  destruct (fd_lookup (m_fds m) (fd_word (in_arg i 0))) as [x|] eqn:E; [|exfalso; congruence].
+  rewrite Hns. reflexivity.
+Qed.
+
 (* =========================================================================
    The arms
    ========================================================================= *)
@@ -1588,16 +1600,21 @@ Definition getdents64_arm : NsArm := fun i m ctx st o =>
     - [openat] (56): the walk's; ENOMEM from [alloc_fd]'s [expand_files]
       (fs/file.c) and from a procfs file's [->open] ([single_open],
       [seq_open], fs/seq_file.c); ENFILE and ENOMEM from
-      [alloc_empty_file] (fs/file_table.c); a tmpfs create's ENOSPC
-      ([__shmem_get_inode]: [shmem_reserve_inode], or [new_inode] failing,
-      mm/shmem.c) and ENOMEM ([simple_offset_add], fs/libfs.c); EIO from a
-      host file's [->open].
+      [alloc_empty_file] (fs/file_table.c); a tmpfs create's ENOSPC and
+      ENOMEM.  The create's ENOSPC has two causes in [__shmem_get_inode]
+      (mm/shmem.c), so it is in two families ([Arm.NsInjected]):
+      [new_inode] failing, an allocation (FamAlloc, as for a new tmpfs's
+      root in [MountArms.mount40_injected]), and [shmem_reserve_inode] at
+      the instance's inode limit, its state (FamFs).  The create's ENOMEM
+      is [simple_offset_add]'s (fs/libfs.c).  EIO from a host file's
+      [->open].
     - [openat2] (437): [openat]'s, and the EAGAIN of [openat2_arm] after a
       scoped "..", an interruption (FamIntr).
     - [getdents64] (61): none on the task's own fd directory
-      ([proc_readfd_common], fs/proc/fd.c); on a descriptor of the released
-      model the arm answers as the released arm does, so the released
-      arm's refusals ([Arm.released_pairs]), which the arm admits already.
+      ([proc_readfd_common], fs/proc/fd.c), so no row.  On a descriptor of
+      the released model the arm answers as the released arm does, and
+      [Spec.ns_refusal] gives it the released filter itself
+      ([Spec.released_fd_call]).
     - none for [fcntl] (25), [fstatfs] (44), [fchdir] (50), [close] (57)
       and [fstat] (80): F_GETFD, F_SETFD and F_GETFL allocate nothing;
       [statfs_by_dentry] and [vfs_getattr] (fs/statfs.c, fs/stat.c) reach
@@ -1605,22 +1622,40 @@ Definition getdents64_arm : NsArm := fun i m ctx st o =>
       devpts or a host disk file system; [fchdir]'s [file_permission] and
       [set_fs_pwd] (fs/open.c) allocate nothing; [filp_flush] does not
       fail on the objects the model mints; and the released arms of these
-      numbers inject nothing. *)
-Definition getcwd_injected : NsInjected := mkNsInjected 17 [(errno_in [ENOMEM], FamAlloc)] [].
+      numbers inject nothing.
+    Each row lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]): the argument checks, the path copy ([path_arg]),
+    the walk ([Walk.walk], [walk_from], [walk_parent_from]) and the call's
+    own checks.  None of them is an errno a pair matches, so no row has a
+    forced errno. *)
+Definition getcwd_injected : NsInjected :=
+  mkNsInjected 17 [(errno_in [ENOMEM], FamAlloc)] [ENAMETOOLONG; ERANGE; EFAULT] [].
 
 Definition open_pairs : list ((Z -> bool) * SpuriousFamily) :=
-  [(errno_in [ENOMEM; ENFILE], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
+  [(errno_in [ENOMEM; ENFILE; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
 
-Definition openat_injected : NsInjected := mkNsInjected 56 open_pairs [].
+(** [openat]'s answers: [build_open_flags]' EINVAL, the path's EFAULT,
+    ENAMETOOLONG and ENOENT, [get_unused_fd_flags]' EMFILE, the walk's,
+    and [open_existing]'s and [create_file]'s EACCES, ELOOP, EISDIR,
+    EEXIST, EROFS and EOVERFLOW. *)
+Definition open_answers : list Z :=
+  [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; EMFILE; EBADF; ENOTDIR; EACCES; ELOOP; EISDIR; EEXIST;
+   EROFS; EOVERFLOW].
 
+Definition openat_injected : NsInjected := mkNsInjected 56 open_pairs open_answers [].
+
+(** [openat2] answers [openat]'s, its open_how's E2BIG, and the scoped
+    walk's EXDEV. *)
 Definition openat2_injected : NsInjected :=
-  mkNsInjected 437 ((errno_in [EAGAIN], FamIntr) :: open_pairs) [].
-
-Definition getdents64_injected : NsInjected := mkNsInjected 61 (released_pairs 61) [].
+  mkNsInjected 437 ((errno_in [EAGAIN], FamIntr) :: open_pairs) (E2BIG :: EXDEV :: open_answers) [].
 
 Definition file_injected : list NsInjected :=
-  [getcwd_injected; openat_injected; getdents64_injected; openat2_injected]
-  ++ map (fun n => mkNsInjected n walk_pairs []) [43; 48; 49; 78; 79].
+  [getcwd_injected; openat_injected; openat2_injected;
+   mkNsInjected 43 walk_pairs [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP] [];
+   mkNsInjected 48 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; EBADF; ENOTDIR; EACCES; ELOOP; EROFS] [];
+   mkNsInjected 49 walk_pairs [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP] [];
+   mkNsInjected 78 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; EBADF; ENOTDIR; EACCES; ELOOP] [];
+   mkNsInjected 79 walk_pairs [EBADF; EINVAL; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP] []].
 
 (** The arms of this file by call number, for [Ns.Spec.ns_table], each
     with its row's refusals; [openat2]'s EAGAIN is its arm's own. *)

@@ -400,7 +400,7 @@ Proof.
   hnf. right. hnf. left. exists lo_env, lo_dump.
   split; [vm_compute; reflexivity|].
   split; [vm_compute; reflexivity|].
-  right. split; [vm_compute; reflexivity|].
+  right. left. split; [vm_compute; reflexivity|].
   exists ENOBUFS. split; [split; vm_compute; reflexivity | vm_compute; reflexivity].
 Qed.
 
@@ -409,6 +409,71 @@ Example getlink_handler_failure_kept :
 Proof.
   intros H.
   apply (proj1 (ns_refusal_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+                  ltac:(vm_compute; reflexivity))) in H.
+  destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+Qed.
+
+(* =========================================================================
+   The loopback device brought up without its address
+   ========================================================================= *)
+
+(** A bound socket (port 2) of the sealed namespace 2, whose [lo] is down,
+    sends [newlink_req] (IFF_UP on lo, with NLM_F_ACK), from a task of user
+    namespace 2 with CAP_NET_ADMIN ([up_ctx]).  [ns_spec] admits two
+    answers: lo up with 127.0.0.1/8, and, when [inetdev_event]'s
+    [inet_alloc_ifa] fails, lo up with no address.  Both return the
+    request's length with the same effect ([up_eff]) and queue the same
+    acknowledgement of 0, so the forced-only filter, which sees the
+    effect, keeps both (SCOPE.md). *)
+Definition admin : IdCred := mkIdCred 2 65534 65534 (2 ^ CAP_NET_ADMIN).
+Definition up_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 admin.
+Definition up_state : NsState :=
+  mkNsState [] users [] [] [net2 [lo IFF_LOOPBACK []]] [] [] [] [(7%N, up_file)] (ns_env empty_nsstate).
+Definition up_ctx : NsCtx :=
+  mkNsCtx 2 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18
+          (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0) 0 [] (Some false) (Some 1).
+Definition up_len : Z := Z.of_nat (length newlink_req).
+Definition up_mem : word -> option byte :=
+  fun a => let k := bv_unsigned a - 65536 in
+           if (0 <=? k) && (k <? up_len) then Some (nth (Z.to_nat k) newlink_req (Z_to_bv 8 0))
+           else None.
+Definition up_in : SyscallInput :=
+  mkInput (Z_to_bv 64 206) (map (Z_to_bv 64) [3; 65536; up_len; 0; 0; 0]) up_mem up_mem.
+
+Definition up_eff : SyscallEffect :=
+  mkEffectU (Z_to_bv 64 up_len) [] [] [] [] [(Z_to_bv 64 65536, Z.to_nat up_len)].
+Definition up_out (ifs : list NetIf) : ext_outcome :=
+  EOk up_eff rcv_model up_ctx
+      (set_file (set_netns_ifs up_state 2 ifs) 7 (netlink_file up_file 2 2 [nl_ack 2 newlink_req 0]))
+      [].
+
+Example lo_up_without_address :
+  lo_up_noaddr [lo IFF_LOOPBACK []] [lo_up] = [lo (IFF_UP + IFF_LOOPBACK) []]
+  /\ ns_spec up_in rcv_model up_ctx up_state (up_out [lo_up])
+  /\ ns_spec up_in rcv_model up_ctx up_state (up_out [lo (IFF_UP + IFF_LOOPBACK) []]).
+Proof.
+  split; [vm_compute; reflexivity|].
+  (* Head reductions only, as for [getlink_handler_failure_admitted]. *)
+  split.
+  - hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+    hnf. right. hnf. left. exists lo_env, [nl_ack 2 newlink_req 0].
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    left. vm_compute. reflexivity.
+  - hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+    hnf. right. hnf. left. exists lo_env, [nl_ack 2 newlink_req 0].
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    right. right. exists [lo_up].
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity | vm_compute; reflexivity].
+Qed.
+
+Example lo_up_without_address_kept :
+  ~ ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state up_eff.
+Proof.
+  intros H.
+  apply (proj1 (ns_refusal_ns forced_only_cfg up_in rcv_model up_ctx up_state up_eff
                   ltac:(vm_compute; reflexivity))) in H.
   destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
 Qed.

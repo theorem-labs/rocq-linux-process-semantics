@@ -72,11 +72,14 @@ Proof. intros i m ctx st Hflat _ o. unfold ns_spec. rewrite Hflat. reflexivity. 
     kernel functions that return them in each arm file; no security module
     but the capability one runs (SCOPE.md), so none of its refusals is
     listed.  An answer of a namespace arm whose refusals are not listed is
-    never filtered.  The pass-through calls ([Pass.pass_numbers]) are not
-    listed here: their answer is the released answer in every world, so
-    [ns_refusal] gives them the released filter itself
-    ([Run.spurious_refusal_cfg], which also knows [brk]'s refusal by
-    value). *)
+    never filtered.  Two kinds of answer are not listed here, because their
+    answer is the released answer and [ns_refusal] gives them the released
+    filter itself ([Run.spurious_refusal_cfg], which also knows [brk]'s
+    refusal by value): the pass-through calls ([Pass.pass_numbers]) in
+    every world, and a call on a descriptor of the released model
+    ([released_fd_call]).  Each row also lists the errnos its arm answers
+    from the tables ([Arm.ni_answers]); [ns_injected_forced] below checks
+    the rule [ns_witness] needs of them. *)
 Definition ns_injected_table : list NsInjected :=
   task_injected ++ file_injected ++ fsops_injected ++ user_injected ++ mount_injected
   ++ net_injected.
@@ -107,7 +110,13 @@ Definition ns_forced (i : SyscallInput) (ret : word) : bool :=
     it matches no pair, or it is an errno the tables can force while [ret]
     is not one.  Every answer that matches no pair is kept, and so is every
     [ni_forced] errno where no answer matches no pair; so the filter never
-    removes every answer the model admits. *)
+    removes every answer the model admits.  This is sound only because
+    every errno the tables answer that a pair matches is in [ni_forced]:
+    otherwise that answer, forced by the state, would be removed beside an
+    injected [ni_forced] errno.  [Arm.ni_forced_ok] states that rule of a
+    row, [ns_injected_forced] checks it of every row by computation, so a
+    row that breaks it does not compile, and [ns_forced_rule] states it as
+    a lemma. *)
 Definition ns_witness (i : SyscallInput) (ret ret' : word) : bool :=
   match ns_matching i ret' with [] => true | _ :: _ => false end
   || (ns_forced i ret' && negb (ns_forced i ret)).
@@ -121,18 +130,40 @@ Definition ns_refusal_off_b (cfg : SpuriousCfg) (i : SyscallInput) (ret : word) 
   | ps => forallb (fun p => negb (family_may_fail cfg (snd p))) ps
   end.
 
+(** The call [i] names a descriptor of the released model, on which its
+    namespace arm answers exactly as the released arm does: [write] (64)
+    on a descriptor that is not one of the namespace model's files, and
+    [getdents64] (61) on such a descriptor that is open
+    ([released_fd_call_released]).  No other call with a row in
+    [ns_injected_table] gives the released arm's answer on such a
+    descriptor (the net arms answer [Net.sock_of]'s EBADF or ENOTSOCK, or
+    decline), and the calls that do ([read], [close], [fcntl], [fstat],
+    [fchmod]) have no row here and no injecting released arm, so both
+    filters keep every answer of theirs. *)
+Definition released_fd_call (i : SyscallInput) (m : Model) (st : NsState) : bool :=
+  if Z.eqb (ns_sysno i) 64 then
+    match ns_file_of m st (fd_word (in_arg i 0)) with None => true | Some _ => false end
+  else if Z.eqb (ns_sysno i) 61 then
+    match fd_lookup (m_fds m) (fd_word (in_arg i 0)) with
+    | Some _ => match ns_file_of m st (fd_word (in_arg i 0)) with None => true | Some _ => false end
+    | None => false
+    end
+  else false.
+
 (** The forced-only filter of [ns_ext]: the released filter for a task in
-    the released world, and for a pass-through call in every world (its
-    answer is the released answer, [Pass.pass_arms_released], so the
-    released question "did the state force this refusal?" is the same
-    question); elsewhere, a refusal of switched-off families where the
-    model also admits an answer that shows the state did not force it
-    ([ns_witness]): one that is no refusal at all, or the tables' own
-    answer where that is an errno the environment can also inject (a count
-    limit's ENOSPC against an allocation's ENOMEM). *)
+    the released world, for a pass-through call in every world (its
+    answer is the released answer, [Pass.pass_arms_released]), and for a
+    call on a descriptor of the released model ([released_fd_call]), so
+    the released question "did the state force this refusal?" is the same
+    question, under the released table's family; elsewhere, a refusal of
+    switched-off families where the model also admits an answer that
+    shows the state did not force it ([ns_witness]): one that is no
+    refusal at all, or the tables' own answer where that is an errno the
+    environment can also inject (a count limit's ENOSPC against an
+    allocation's ENOMEM). *)
 Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (eff : SyscallEffect) : Prop :=
-  if flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers
+  if flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st
   then spurious_refusal_cfg cfg i m eff
   else ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
@@ -155,10 +186,19 @@ Proof.
   rewrite Hp, orb_true_r. reflexivity.
 Qed.
 
-(** Outside the released world, for a call that does not pass through,
-    the filter is the namespace one. *)
+(** A call on a descriptor of the released model gets the released filter
+    in every world, under the released table's family. *)
+Lemma ns_refusal_released_fd : forall cfg i m ctx st eff,
+  released_fd_call i m st = true ->
+  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros cfg i m ctx st eff H. unfold ns_refusal. rewrite H, orb_true_r. reflexivity.
+Qed.
+
+(** Elsewhere outside the released world the filter is the namespace
+    one. *)
 Lemma ns_refusal_ns : forall cfg i m ctx st eff,
-  (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers) = false ->
+  (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st) = false ->
   (ns_refusal cfg i m ctx st eff
    <-> ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
@@ -183,7 +223,7 @@ Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st eff,
   cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st eff -> ns_refusal cfg1 i m ctx st eff.
 Proof.
   intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal.
-  destruct (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers).
+  destruct (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st).
   - unfold spurious_refusal_cfg, injected_family_off.
     destruct (injected_arm (bv_unsigned (in_sysno i))) as [a|]; [|intros [Hc _]; discriminate Hc].
     intros [Hoff Hrest]. split; [|exact Hrest].
@@ -319,6 +359,39 @@ Proof.
   apply List.NoDup_nil.
 Qed.
 
+(** THE RULE [ns_witness] NEEDS, CHECKED OF EVERY ROW: each row's
+    [ni_forced] is exactly the errnos of its [ni_answers] that a pair
+    matches ([Arm.ni_forced_ok]); today ENOSPC for [unshare] and [mount],
+    ENOMEM for [write].  A row whose tables answer an errno a pair matches
+    without listing it in [ni_forced] fails this computation, and the file
+    does not compile ([Checks.Cases.Ns.SpecCases.bad_row_fails] shows the
+    check refusing such a row). *)
+Lemma ns_injected_forced : forallb ni_forced_ok ns_injected_table = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma lookup_ns_injected_in : forall t n r, lookup_ns_injected t n = Some r -> In r t.
+Proof.
+  induction t as [|r0 t IH]; intros n r; cbn [lookup_ns_injected]; [intros H; discriminate H|].
+  destruct (Z.eqb (ni_no r0) n); intros H.
+  - injection H as <-. apply in_eq.
+  - apply in_cons. exact (IH n r H).
+Qed.
+
+(** The rule as a lemma: an errno the tables answer for call [n] that a
+    pair of [n]'s row matches is in that row's [ni_forced]. *)
+Lemma ns_forced_rule : forall n r e,
+  lookup_ns_injected ns_injected_table n = Some r ->
+  In e (ni_answers r) -> ni_errno r e = true -> In e (ni_forced r).
+Proof.
+  intros n r e Hr Ha He.
+  pose proof (proj1 (forallb_forall _ _) ns_injected_forced r (lookup_ns_injected_in _ _ _ Hr)) as Hok.
+  unfold ni_forced_ok in Hok. apply andb_true_iff in Hok. destruct Hok as [Hok _].
+  pose proof (proj1 (forallb_forall _ _) Hok e Ha) as He'. cbv beta in He'.
+  rewrite He in He'. cbn [negb orb] in He'.
+  unfold errno_in in He'. apply existsb_exists in He'. destruct He' as (x & Hx & Hxe).
+  apply Z.eqb_eq in Hxe. subst x. exact Hx.
+Qed.
+
 (** The calls the core answers ([core_sysnos]: clone, wait4, clone3) are
     not claimed, so no arm is listed for them. *)
 Lemma ns_table_not_core : forall n, In n core_sysnos -> ~ In n (map fst ns_table).
@@ -356,6 +429,39 @@ Theorem ns_spec_write_released : forall i m ctx st o,
 Proof.
   intros i m ctx st o Hn Hr. unfold ns_spec. destruct (flat_view ctx st); [reflexivity|].
   rewrite Hn, lookup_write. apply write_arm_released. exact Hr.
+Qed.
+
+Lemma lookup_getdents64 : lookup_ns_arm ns_table 61%Z = Some getdents64_arm.
+Proof. reflexivity. Qed.
+
+(** The same for getdents64, on an open descriptor that is not one of the
+    namespace model's own files. *)
+Theorem ns_spec_getdents64_released : forall i m ctx st o,
+  ns_sysno i = 61%Z -> fd_lookup (m_fds m) (fd_word (in_arg i 0)) <> None ->
+  ns_file_of m st (fd_word (in_arg i 0)) = None ->
+  (ns_spec i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hn Hfd Hr. unfold ns_spec. destruct (flat_view ctx st); [reflexivity|].
+  rewrite Hn, lookup_getdents64. apply getdents64_arm_released; [exact Hfd | exact Hr].
+Qed.
+
+(** So [released_fd_call] names calls whose answers are exactly the
+    released ones, in every world: the released filter asks of them the
+    question it asks in the released world. *)
+Theorem released_fd_call_released : forall i m ctx st o,
+  released_fd_call i m st = true -> (ns_spec i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o. unfold released_fd_call.
+  destruct (Z.eqb (ns_sysno i) 64) eqn:E64.
+  - destruct (ns_file_of m st (fd_word (in_arg i 0))) eqn:Ens; intros H; [discriminate H|].
+    apply ns_spec_write_released; [apply Z.eqb_eq; exact E64 | exact Ens].
+  - destruct (Z.eqb (ns_sysno i) 61) eqn:E61; [|intros H; discriminate H].
+    destruct (fd_lookup (m_fds m) (fd_word (in_arg i 0))) eqn:Efd; [|intros H; discriminate H].
+    destruct (ns_file_of m st (fd_word (in_arg i 0))) eqn:Ens; intros H; [discriminate H|].
+    apply ns_spec_getdents64_released.
+    + apply Z.eqb_eq. exact E61.
+    + rewrite Efd. discriminate.
+    + exact Ens.
 Qed.
 
 (** Each pass-through number ([Ns.Pass]) has exactly the released answers

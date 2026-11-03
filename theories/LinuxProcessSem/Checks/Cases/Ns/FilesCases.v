@@ -674,12 +674,13 @@ Example getdents64_fault_advances_position :
   end = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The rows of the exported table: getcwd, openat, getdents64 (the
-    released arm's refusal, for a descriptor of the released model),
-    openat2, and the five calls that read a name and walk it; fcntl,
-    fstatfs, fchdir, close and fstat have no environment refusal. *)
+(** The rows of the exported table: getcwd, openat, openat2, and the five
+    calls that read a name and walk it; fcntl, fstatfs, fchdir, close and
+    fstat have no environment refusal, and getdents64 none on the task's
+    own fd directory (on a descriptor of the released model the released
+    filter applies, [Spec.released_fd_call]). *)
 Example file_injected_numbers :
-  map ni_no file_injected = [17; 56; 61; 437; 43; 48; 49; 78; 79].
+  map ni_no file_injected = [17; 56; 437; 43; 48; 49; 78; 79].
 Proof. vm_compute. reflexivity. Qed.
 
 (* ---- the forced-only filter on openat and openat2 ---------------------- *)

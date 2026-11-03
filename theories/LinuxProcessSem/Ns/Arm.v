@@ -208,17 +208,31 @@ Definition release_handle (fds' : list (word * FdEntry)) (st : NsState) (h : N) 
 Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
   find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
 
-(** The environment's refusals of one call number: a list of pairs, each an
-    errno predicate and the family that injects it, and [ni_forced], the
-    errnos of those pairs that the tables can also force for that call (the
-    count limits' ENOSPC of [unshare] and [mount]).  An answer the tables
-    force is the answer [Spec.ns_refusal] needs to remove a refusal the
-    state did not force; one in [ni_forced] is such an answer for a refusal
-    whose errno is not in [ni_forced]. *)
+(** The environment's refusals of one call number, and what its tables
+    answer:
+    - [ni_pairs]: a list of pairs, each an errno predicate and the family
+      that injects it.  A pair's family is its failure's kernel cause: an
+      allocation that fails is FamAlloc; a file system's state (a tmpfs
+      instance's inode or size limit, a page that cannot be read back, a
+      host disk's I/O error) is FamFs.  An errno that two causes return is
+      in the pairs of both families: a tmpfs create's ENOSPC is
+      [new_inode]'s allocation (FamAlloc) or [shmem_reserve_inode]'s inode
+      limit (FamFs), mm/shmem.c [__shmem_get_inode].
+    - [ni_answers]: every errno the call's arm answers from the tables, so
+      when the environment refuses nothing.
+    - [ni_forced]: the errnos of [ni_answers] that some pair matches (the
+      count limits' ENOSPC of [unshare] and [mount], the ENOMEM of a large
+      sysctl write).
+    An answer the tables force is the answer [Spec.ns_refusal] needs to
+    remove a refusal the state did not force; one in [ni_forced] is such an
+    answer for a refusal whose errno is not in [ni_forced].  That needs
+    [ni_forced] to hold every errno of [ni_answers] a pair matches:
+    [ni_forced_ok]. *)
 Record NsInjected := mkNsInjected {
-  ni_no     : Z;
-  ni_pairs  : list ((Z -> bool) * SpuriousFamily);
-  ni_forced : list Z
+  ni_no      : Z;
+  ni_pairs   : list ((Z -> bool) * SpuriousFamily);
+  ni_answers : list Z;
+  ni_forced  : list Z
 }.
 
 (** [e] is one of [es]. *)
@@ -232,6 +246,14 @@ Definition pairs_errno (ps : list ((Z -> bool) * SpuriousFamily)) (e : Z) : bool
     deterministic answer ([with_injected]). *)
 Definition ni_errno (r : NsInjected) : Z -> bool := pairs_errno (ni_pairs r).
 
+(** The rule of a row: its [ni_forced] is exactly the errnos of its
+    [ni_answers] that some pair matches.  [Spec.ns_injected_forced] checks
+    it of every row of [Spec.ns_injected_table], so a row that breaks it
+    does not compile. *)
+Definition ni_forced_ok (r : NsInjected) : bool :=
+  forallb (fun e => negb (ni_errno r e) || errno_in (ni_forced r) e) (ni_answers r)
+  && forallb (fun e => ni_errno r e && errno_in (ni_answers r) e) (ni_forced r).
+
 (** The environment's refusals of a path walk ([Walk.walk]) and the name it
     reads, Linux 6.18.44: ENOMEM from [getname_flags] (fs/namei.c:
     [__getname], or [kzalloc] for a long name) and from [d_alloc_parallel]
@@ -241,15 +263,6 @@ Definition ni_errno (r : NsInjected) : Z -> bool := pairs_errno (ni_pairs r).
     for such a name and which reads the directory from the host's disk. *)
 Definition walk_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO], FamFs)].
-
-(** The released arm's injected refusals of call [n] ([Run.injected_arm]),
-    as one pair: the refusals an arm that gives a descriptor of the
-    released model the released answer admits for that descriptor. *)
-Definition released_pairs (n : Z) : list ((Z -> bool) * SpuriousFamily) :=
-  match injected_arm n with
-  | Some a => [(errno_in (ia_errnos a), ia_family a)]
-  | None => []
-  end.
 
 (** A failure chosen by the environment after a deterministic arm has
     reached its operation.  It keeps the copy-ins already made, writes
