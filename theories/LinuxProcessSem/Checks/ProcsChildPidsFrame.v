@@ -86,18 +86,17 @@ Lemma check_read_cp : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero, check_read_opaque, check_read_proc,
-    check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
-  cbv zeta in H. cp_frame2 H.
+    check_access_ok_zero in H.
+  cbv zeta in H.
+  repeat (vm_step H || cp_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
 Qed.
 
 Lemma check_write_cp : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero,
-    check_write_opaque, check_write_eventfd in H.
-  cp_frame2 H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+  repeat (vm_step H || cp_done H || (apply check_write_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
 Qed.
 
 Lemma check_pread64_cp : forall i fd buf count pos eff m m' evs,
@@ -258,8 +257,8 @@ Lemma check_getdents64_cp : forall i fd dirent count eff m m' evs,
   check_getdents64 i fd dirent count eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
   intros i fd dirent count eff m m' evs H.
-  unfold check_getdents64, check_getdents64_opaque, check_procfd_getdents in H.
-  cbv zeta in H. cp_frame2 H.
+  unfold check_getdents64 in H.
+  repeat (vm_step H || cp_done H || (apply check_getdents64_opaque_fds in H; destruct H as ((fds & ->) & ->))); try reflexivity.
 Qed.
 
 Lemma check_flock_cp : forall fd cmd eff m m' evs,
@@ -517,7 +516,7 @@ Lemma check_fstat_opaque_cp : forall i o statbuf eff m m' evs,
   check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
   intros i o statbuf eff m m' evs H.
-  unfold check_fstat_opaque, check_fstat_procfd_dir in H. cp_frame2 H.
+  apply check_fstat_opaque_keeps in H as (-> & _). reflexivity.
 Qed.
 
 Lemma check_fstat_cp : forall i fd statbuf eff m m' evs,
