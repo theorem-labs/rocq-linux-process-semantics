@@ -379,7 +379,7 @@ Local Definition check_openat_urandom (flags : word) (eff : SyscallEffect)
   end.
 
 (** Mirrors [Open.openat_tmp_spec]; that definition carries the premise,
-    the three shapes and the reason each decline is a decline. *)
+    the four shapes and the reason each decline is a decline. *)
 Local Definition check_openat_tmp (n p : path) (flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if Nat.ltb NAME_MAX (length n) then CheckUnmodeled
@@ -392,7 +392,57 @@ Local Definition check_openat_tmp (n p : path) (flags : word)
           | Some _ => check_openat_read p eff m
           end)
   else if Z.eqb fl wr_create_flags then check_openat_create p eff m
+  else if Z.eqb fl rdwr_excl_create_flags then check_openat_rdwr_excl p eff m
   else CheckUnmodeled.
+
+(** The model a "/proc/self/fd/N" open that succeeded on descriptor
+    [fd] leaves, for the two words that touch no contents: the new
+    descriptor on the same unnamed file [id], at [f_pos] 0, with the
+    access mode and O_APPEND the word asks for, and the file's contents
+    and pin copied from the entry at N ([State.FdAnon]'s invariant). *)
+Local Definition procfd_reopen_model (id : word) (af : AnonFile)
+    (rd wr app : bool) (fd : word) (m : Model) : Model :=
+  with_fds (fd_insert (m_fds m) fd
+    (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) rd wr app (af_pin af)))) m.
+
+(** The O_WRONLY|O_CREAT|O_TRUNC reopen's model: the file emptied for
+    EVERY descriptor of [id] ([State.anon_set_data]), then the new
+    write-only descriptor at [f_pos] 0 on the empty file. *)
+Local Definition procfd_trunc_model (id : word) (af : AnonFile) (fd : word)
+    (m : Model) : Model :=
+  with_fds (fd_insert (anon_set_data (m_fds m) id []) fd
+    (FdAnon id (mkAnonFile [] (Z_to_bv 64 0) false true false (af_pin af)))) m.
+
+(** Mirrors [Open.openat_procfd_spec], branch for branch: the three
+    words, then -ENOENT for a descriptor number nothing holds, then, on
+    an [FdAnon] whose file's descriptors agree ([State.anon_agree]; the
+    decline otherwise), the reopen in one of three shapes, and the
+    decline of every other kind at N.  Each reopen is
+    [check_open_result]'s shape, whose errno alternatives are
+    [openat_errnos]'. *)
+Local Definition check_openat_procfd (n flags : word) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
+  if negb (Z.eqb fl 0 || Z.eqb fl wr_create_flags
+           || Z.eqb fl append_create_flags)%bool then CheckUnmodeled
+  else
+  match fd_lookup (m_fds m) n with
+  | None => check_ret_only eff (errno_ret ENOENT) m []
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
+      else
+      if Z.eqb fl 0 then
+        check_open_result eff m (fun fd => procfd_reopen_model id af true false false fd m)
+      else if Z.eqb fl wr_create_flags then
+        check_open_result eff m (fun fd => procfd_trunc_model id af fd m)
+      else
+        check_open_result eff m (fun fd => procfd_reopen_model id af false true true fd m)
+  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
+  | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
+  | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
+  | Some (FdDgram _) | Some (FdOpaque _) => CheckUnmodeled
+  end.
 
 (** Mirrors [Open.openat_sep_spec]: the separator-bearing pathnames
     that are answered, ahead of the decline. *)
@@ -454,7 +504,10 @@ Local Definition check_openat_proc (c : path) (flags : word)
   then check_proc_open_result (OProcFile c) eff m
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
   then check_proc_open_result (OProcFdDir flags (Some (Z_to_bv 64 0))) eff m
-  else CheckUnmodeled.
+  else match proc_self_fd c with
+       | Some n => check_openat_procfd n flags eff m
+       | None => CheckUnmodeled
+       end.
 
 Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -755,8 +808,43 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate].
     now apply check_openat_read_sound_ok. }
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-              wr_create_flags); [|discriminate].
-  now apply check_openat_create_sound_ok.
+              wr_create_flags); [now apply check_openat_create_sound_ok|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+              rdwr_excl_create_flags); [|discriminate].
+  now apply check_openat_rdwr_excl_sound_ok.
+Qed.
+
+Local Lemma check_openat_procfd_sound_ok : forall i n flags eff m m' evs,
+  check_openat_procfd n flags eff m = CheckOk m' evs ->
+  openat_procfd_spec n flags m i m (Ok eff m' evs).
+Proof.
+  intros i n flags eff m m' evs H.
+  unfold check_openat_procfd, openat_procfd_spec in *. cbv zeta in *.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       wr_create_flags
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       append_create_flags)%bool); [discriminate|].
+  destruct (fd_lookup (m_fds m) n)
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    try discriminate.
+  - destruct (negb (anon_agree (m_fds m) id af)); [discriminate|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
+    { exact (check_open_result_sound_ok i eff m
+        (fun fd => with_fds (fd_insert (m_fds m) fd
+          (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false
+                                 (af_pin af))))) m' evs H). }
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                wr_create_flags).
+    { exact (check_open_result_sound_ok i eff m
+        (fun fd => with_fds (fd_insert (anon_set_data (m_fds m) id []) fd
+          (FdAnon id (mkAnonFile [] (Z_to_bv 64 0) false true false
+                                 (af_pin af))))) m' evs H). }
+    exact (check_open_result_sound_ok i eff m
+      (fun fd => with_fds (fd_insert (m_fds m) fd
+        (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) false true true
+                               (af_pin af))))) m' evs H).
+  - now apply check_ret_only_sound_ok.
 Qed.
 
 Local Lemma check_openat_sep_sound_ok : forall i p flags eff m m' evs,
@@ -855,24 +943,9 @@ Proof.
     [now apply check_proc_open_result_sound_ok|].
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [now apply check_proc_open_result_sound_ok|discriminate].
-Qed.
-
-Local Lemma check_openat_proc_sound_unmodeled : forall i c flags eff m,
-  check_openat_proc c flags eff m = CheckUnmodeled ->
-  openat_proc_spec c flags m i m Unmodeled.
-Proof.
-  intros i c flags eff m H.
-  unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
-  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
-  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
-            && proc_sys_file_b c);
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
-  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-            && path_eqb c proc_self_fd_path);
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)
-    |apply unmodeled_intro].
+    [now apply check_proc_open_result_sound_ok|].
+  destruct (proc_self_fd c) as [n|];
+    [now apply check_openat_procfd_sound_ok|discriminate].
 Qed.
 
 Local Lemma check_openat_body_spec_sound_ok :
@@ -1117,8 +1190,54 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|]; [|apply unmodeled_intro].
     exfalso. now apply check_openat_read_no_unmodeled in H. }
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-              wr_create_flags); [|apply unmodeled_intro].
-  exfalso. now apply check_openat_create_no_unmodeled in H.
+              wr_create_flags);
+    [exfalso; now apply check_openat_create_no_unmodeled in H|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+              rdwr_excl_create_flags); [|apply unmodeled_intro].
+  exfalso. now apply check_openat_rdwr_excl_no_unmodeled in H.
+Qed.
+
+Local Lemma check_openat_procfd_sound_unmodeled : forall i n flags eff m,
+  check_openat_procfd n flags eff m = CheckUnmodeled ->
+  openat_procfd_spec n flags m i m Unmodeled.
+Proof.
+  intros i n flags eff m H.
+  unfold check_openat_procfd, openat_procfd_spec in *. cbv zeta in *.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       wr_create_flags
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       append_create_flags)%bool); [apply unmodeled_intro|].
+  destruct (fd_lookup (m_fds m) n)
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    try apply unmodeled_intro.
+  - destruct (negb (anon_agree (m_fds m) id af)); [apply unmodeled_intro|].
+    exfalso.
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
+      [now apply check_open_result_no_unmodeled in H|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                wr_create_flags);
+      now apply check_open_result_no_unmodeled in H.
+  - exfalso. now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Local Lemma check_openat_proc_sound_unmodeled : forall i c flags eff m,
+  check_openat_proc c flags eff m = CheckUnmodeled ->
+  openat_proc_spec c flags m i m Unmodeled.
+Proof.
+  intros i c flags eff m H.
+  unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
+  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+            && proc_sys_file_b c);
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (proc_self_fd c) as [n|];
+    [exact (check_openat_procfd_sound_unmodeled i n flags eff m H)
+    |apply unmodeled_intro].
 Qed.
 
 Local Lemma check_openat_sep_sound_unmodeled : forall i p flags eff m,
@@ -1598,9 +1717,46 @@ Proof.
       [apply check_openat_read_complete_ok
       |unfold unmodeled; intro Hu; discriminate Hu]. }
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-              wr_create_flags);
-    [apply check_openat_create_complete_ok
+              wr_create_flags); [apply check_openat_create_complete_ok|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+              rdwr_excl_create_flags);
+    [apply check_openat_rdwr_excl_complete_ok
     |unfold unmodeled; intro Hu; discriminate Hu].
+Qed.
+
+Local Lemma check_openat_procfd_complete_ok : forall i n flags eff m m' evs,
+  openat_procfd_spec n flags m i m (Ok eff m' evs) ->
+  check_openat_procfd n flags eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i n flags eff m m' evs.
+  unfold openat_procfd_spec, check_openat_procfd. cbv zeta.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       wr_create_flags
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       append_create_flags)%bool);
+    [unfold unmodeled; intro Hu; discriminate Hu|].
+  destruct (fd_lookup (m_fds m) n)
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    try (unfold unmodeled; intro Hu; discriminate Hu).
+  - destruct (negb (anon_agree (m_fds m) id af));
+      [unfold unmodeled; intro Hu; discriminate Hu|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
+    { exact (check_open_result_complete_ok i eff m
+        (fun fd => with_fds (fd_insert (m_fds m) fd
+          (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false
+                                 (af_pin af))))) m' evs). }
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                wr_create_flags).
+    { exact (check_open_result_complete_ok i eff m
+        (fun fd => with_fds (fd_insert (anon_set_data (m_fds m) id []) fd
+          (FdAnon id (mkAnonFile [] (Z_to_bv 64 0) false true false
+                                 (af_pin af))))) m' evs). }
+    exact (check_open_result_complete_ok i eff m
+      (fun fd => with_fds (fd_insert (m_fds m) fd
+        (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) false true true
+                               (af_pin af))))) m' evs).
+  - apply check_ret_only_complete_ok.
 Qed.
 
 Local Lemma check_openat_sep_complete_ok : forall i p flags eff m m' evs,
@@ -1679,7 +1835,9 @@ Proof.
     [apply check_proc_open_result_complete_ok|].
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [apply check_proc_open_result_complete_ok
+    [apply check_proc_open_result_complete_ok|].
+  destruct (proc_self_fd c) as [n|];
+    [apply check_openat_procfd_complete_ok
     |unfold unmodeled; intro Hu; discriminate Hu].
 Qed.
 
@@ -2048,8 +2206,45 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|]; [|reflexivity].
     intro H. exfalso. exact (openat_read_spec_no_unmodeled p m i H). }
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-              wr_create_flags); [|reflexivity].
-  intro H. exfalso. exact (openat_create_spec_no_unmodeled p m i H).
+              wr_create_flags).
+  { intro H. exfalso. exact (openat_create_spec_no_unmodeled p m i H). }
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+              rdwr_excl_create_flags); [|reflexivity].
+  intro H. exfalso. exact (openat_rdwr_excl_spec_no_unmodeled p m i H).
+Qed.
+
+Local Lemma check_openat_procfd_complete_unmodeled : forall i n flags eff m,
+  openat_procfd_spec n flags m i m Unmodeled ->
+  check_openat_procfd n flags eff m = CheckUnmodeled.
+Proof.
+  intros i n flags eff m.
+  unfold openat_procfd_spec, check_openat_procfd. cbv zeta.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       wr_create_flags
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       append_create_flags)%bool); [reflexivity|].
+  destruct (fd_lookup (m_fds m) n)
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    try (intros _; reflexivity).
+  - destruct (negb (anon_agree (m_fds m) id af)); [intros _; reflexivity|].
+    intro H. exfalso.
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
+    { exact (open_result_spec_no_unmodeled m
+        (fun fd => with_fds (fd_insert (m_fds m) fd
+          (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false
+                                 (af_pin af))))) i H). }
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                wr_create_flags).
+    { exact (open_result_spec_no_unmodeled m
+        (fun fd => with_fds (fd_insert (anon_set_data (m_fds m) id []) fd
+          (FdAnon id (mkAnonFile [] (Z_to_bv 64 0) false true false
+                                 (af_pin af))))) i H). }
+    exact (open_result_spec_no_unmodeled m
+      (fun fd => with_fds (fd_insert (m_fds m) fd
+        (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) false true true
+                               (af_pin af))))) i H).
+  - intro H. exfalso. exact (ret_only_no_unmodeled (errno_ret ENOENT) i m H).
 Qed.
 
 Local Lemma check_openat_sep_complete_unmodeled : forall i p flags eff m,
@@ -2119,7 +2314,9 @@ Proof.
     [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)
+    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
+  destruct (proc_self_fd c) as [n|];
+    [apply check_openat_procfd_complete_unmodeled
     |unfold unmodeled; intros _; reflexivity].
 Qed.
 
@@ -2315,6 +2512,9 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdSocket _) => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_ISSOCK too *)
+  | Some (FdDgram _) => check_ret_only eff (errno_ret EINVAL) m []  (* and a datagram socket *)
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret EINVAL) m []  (* no type bits: not S_ISREG *)
   | Some (FdPipe _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR again *)
@@ -2339,6 +2539,16 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
             check_ret_only eff (Z_to_bv 64 0)
               (with_fs (fs_set (m_fs m) p (file_truncate data len)) m) []
       end
+  | Some (FdAnon id af) =>
+      (* declined unless the file's descriptors agree ([State.anon_agree]);
+         then a regular file: -EINVAL on a read-only descriptor, otherwise
+         the new contents for EVERY descriptor of the file, offsets kept *)
+      if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
+      else if negb (af_wr af) then check_ret_only eff (errno_ret EINVAL) m []
+      else if negb (modeled_truncate_gap (af_data af) len) then CheckUnmodeled
+      else
+        check_ret_only eff (Z_to_bv 64 0)
+          (with_fds (anon_set_data (m_fds m) id (file_truncate (af_data af) len)) m) []
   end.
 
 Lemma check_ftruncate_sound_ok : forall fd len eff m m' evs i,
@@ -2350,12 +2560,25 @@ Proof.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
+  (* the opaque kinds: [CheckUnmodeled] *)
   all: try discriminate.
-  (* the two writable-file arms are the only ones that change the model *)
+  (* the unnamed file: the agreement test, the access-mode test, then the
+     contents written to every descriptor of the file *)
+  4: { destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; [discriminate|].
+       destruct (negb (af_wr af)) eqn:Hwr.
+       { apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
+         eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd;
+           srw Hag; srw Hwr; apply pure_ok. }
+       destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hgap;
+         [discriminate|].
+       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
+       eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd; srw Hag;
+         srw Hwr; srw Hgap; eapply bind_ok0; [apply modify_ok|]; apply pure_ok. }
+  (* the writable named-file arms *)
   all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [|discriminate].
   all: destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; [discriminate|].
   all: apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
@@ -2371,11 +2594,20 @@ Proof.
   unfold check_ftruncate in H. unfold ftruncate_spec.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   (* the opaque kinds: the spec declines outright *)
   all: try (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
             srw Hfd; apply unmodeled_intro).
+  4: { destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag.
+       { eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           srw Hfd; srw Hag; apply unmodeled_intro. }
+       destruct (negb (af_wr af)) eqn:Hwr;
+         [now apply check_ret_only_no_unmodeled in H|].
+       destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hgap;
+         [ eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           srw Hfd; srw Hag; srw Hwr; srw Hgap; apply unmodeled_intro
+         | now apply check_ret_only_no_unmodeled in H ]. }
   (* every destruct precedes the bind: the spec's [fs_lookup] sits under
      [get_model]'s binder, so it is only rewritable once [get_model_ok]
      has instantiated it *)
@@ -2396,11 +2628,15 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
          inv_ok);
+    try (destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; hall Hag; inv_ok);
+    try (destruct (negb (af_wr af)) eqn:Hwr; hall Hwr; inv_ok);
+    try (destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hagap;
+         hall Hagap; inv_ok);
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
 Qed.
 
@@ -2412,11 +2648,15 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
          inv_ok);
+    try (destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; hall Hag; inv_ok);
+    try (destruct (negb (af_wr af)) eqn:Hwr; hall Hwr; inv_ok);
+    try (destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hagap;
+         hall Hagap; inv_ok);
     first [reflexivity | discriminate].
 Qed.
 

@@ -422,9 +422,13 @@ Definition check_getdents64 (i : SyscallInput) (fd dirent count : word)
   | Some (FdFileRW _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdSocket _)  => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdStream _ _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdDgram _)   => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdOpaque o) => check_getdents64_opaque i fd o dirent count eff m
+  | Some (FdAnon _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdDir =>
       if getdents64_no_room count then
         match eff with
@@ -446,7 +450,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
     try discriminate;
     (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
-    (* the five -ENOTDIR arms and the -EBADF one are plain returns *)
+    (* the -ENOTDIR arms and the -EBADF one are plain returns *)
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
   (* the opaque kinds *)
