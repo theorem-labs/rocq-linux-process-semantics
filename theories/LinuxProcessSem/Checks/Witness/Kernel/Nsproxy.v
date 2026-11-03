@@ -29,7 +29,7 @@ Lemma setns_witness_ok : forall fd i m, setns_spec fd i m (setns_witness fd m).
 Proof.
   intros. unfold setns_spec, setns_witness.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl]]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl|live]]|] eqn:Hfd;
     (eapply bind_step; [apply get_model_ok|]);
     cbv beta iota zeta; srw Hfd; solve [apply pure_ok | apply unmodeled_intro].
 Qed.

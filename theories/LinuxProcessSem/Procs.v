@@ -391,7 +391,14 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     [Fork.clone_no_shared_file_b] lets through a clone because no modeled
     arm reads state the copy shares, and every file, socket or pipe
     descriptor was made after the last clone, so pipes and sockets are
-    private here.  setns (268) reads only the kind of the caller's
+    private here.  The one descriptor made BEFORE a clone that a peer
+    can share is an inherited file ([State.OInherited]), and its offset
+    is live in exactly one entry of the configuration: a clone of either
+    word leaves the caller [OInherited None], which holds no offset, and
+    the child the live entry ([Fork.forfeit_inherited]), and no modeled
+    call copies an opaque descriptor within one table
+    ([File.dup_modeled_entry]).  So no peer's call moves the offset a
+    call here reads.  setns (268) reads only the kind of the caller's
     descriptor (an O_PATH file, a namespace model descriptor, or any
     other), which no process changes, and answers an errno that changes
     nothing.  Two class-(A) calls are admitted with a gate as well.
@@ -412,7 +419,12 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     a peer holds that names [m_fsys] is a file descriptor ([FdFile p off]
     and its three siblings: a path and an offset of its own, opened after
     the last clone, so its own open file description as in Linux) and a
-    stat pin (fstat's, which holds no size or time).  Both stay valid
+    stat pin (fstat's, which holds no size or time).  An inherited file
+    ([State.OInherited]) names no path of [m_fsys]: it holds its bytes and
+    its offset in the entry, it was opened before the clone, and its offset
+    is live in exactly one entry of the configuration (class (A) above), so
+    a [read] through it moves an offset no peer holds.  The descriptors
+    and pins stay valid
     because no (B) call removes a path from [m_fsys]: the writers insert or
     replace ([Fs.fs_set]), and removal is unlinkat's, which is (C).  A
     truncation (openat's O_TRUNC, ftruncate) under a peer's offset past the

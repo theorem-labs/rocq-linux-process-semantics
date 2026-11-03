@@ -40,9 +40,10 @@ Open Scope sys_scope.
     gives reads [nstype], so [nstype] is not an argument.
 
     EVERY OTHER KIND IS -EINVAL, in one row, because the kernel's test is
-    one else-branch: a regular file of the image, a directory, a socket,
-    a pipe end, /dev/null, /dev/urandom, a /proc/sys leaf, an eventfd,
-    the /proc/self/fd directory and a signalfd are each neither a
+    one else-branch: a regular file of the image, an inherited regular
+    file ([State.OInherited], either form), a directory, a socket, a pipe
+    end, /dev/null, /dev/urandom, a /proc/sys leaf, an eventfd, the
+    /proc/self/fd directory and a signalfd are each neither a
     namespace file nor a pidfd.  The standard channels are in that row on
     the assumption the model already makes for fds 0, 1 and 2, that they
     are pipes, sockets or terminals ([State.FdChannel]; [Fs.Sync.fsync_spec]'s

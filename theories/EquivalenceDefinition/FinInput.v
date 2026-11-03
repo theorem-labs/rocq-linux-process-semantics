@@ -362,10 +362,11 @@ Qed.
 
 (** A [State.ProcInput] A FINITE RECORD CAN DENOTE.  The other fields
     the record recurses over are already inductive — two byte-string
-    lists and two [Fs.Fs] tables — so the two clauses here are the whole
-    of what "finite input" adds.
+    lists and two [Fs.Fs] tables — so the first two clauses here are the
+    whole of what finiteness adds; the third, below, says which launch a
+    record denotes.
 
-    THE TWO CLAUSES ARE NOT THE SAME SHAPE.
+    THE FIRST TWO CLAUSES ARE NOT THE SAME SHAPE.
     Standard input must END: a pipe that closes is a real pipe, a
     classifier task has to be able to express one, and [fin_stdin]
     denotes exactly the bytes it lists.  The RANDOM stream must NOT end,
@@ -385,6 +386,14 @@ Qed.
     lemmas rather than as a claim: a witness both predicates accept, so
     the quantifier a classifier obligation ranges over is not empty.
 
+    THE THIRD CLAUSE PINS THE INHERITED DESCRIPTORS EMPTY
+    ([State.in_inherited_fds]).  A finite record denotes a launch with
+    descriptors 0, 1 and 2 only ([to_proc_input] builds [[]]), as
+    [Run.valid_input] does, so the finite quantifier and the valid one
+    agree on it and [finite_input_surjection] stays exact.  A list of
+    inherited files is finite too; a classifier statement about a keyed
+    launch would add a record field for it, and none is stated.
+
     Read through the projections rather than by matching on the
     record, following the convention [State.ProcInput]'s own header sets
     out: a projection reduces whatever the record is, so this predicate
@@ -393,13 +402,16 @@ Definition padded_urandom (s : InputStream) : Prop :=
   exists l, s = stream_of_list_then l State.default_urandom.
 
 Definition finite_input (inp : ProcInput) : Prop :=
-  finite_stream (in_stdin inp) /\ padded_urandom (in_urandom inp).
+  finite_stream (in_stdin inp) /\ padded_urandom (in_urandom inp)
+  /\ in_inherited_fds inp = [].
 
 (** A process input with the standard-input stream and the random
     device's stream each replaced by the list of bytes it delivers.
     Field-for-field [State.ProcInput] — SAME NAMES IN THE SAME ORDER,
     including the two ENVIRONMENT fields [State.in_urandom] and
-    [State.in_tmp] at the end — with [fin_stdin] and [fin_urandom] the
+    [State.in_tmp] at the end, and every field but the last,
+    [State.in_inherited_fds], which [finite_input] pins empty — with
+    [fin_stdin] and [fin_urandom] the
     two that differ in TYPE: inductive where the original is
     coinductive, which is the reason this record exists (see the header:
     a weight function has to recurse on something).
@@ -556,7 +568,8 @@ Record FinProcInput := mkFinProcInput {
 (** The process input a [FinProcInput] denotes.  Built with
     [State.ProcInput]'s constructor and reading the finite record by its
     projections; every statement about the result goes back through
-    [State.ProcInput]'s projections, which reduce. *)
+    [State.ProcInput]'s projections, which reduce.  The denoted launch
+    inherits no descriptor above 2 ([finite_input]'s third clause). *)
 Definition to_proc_input (f : FinProcInput) : ProcInput :=
   mkProcInput_full (fin_argv f) (fin_envp f) (fin_image_fs f)
               (stream_of_list (fin_stdin f))
@@ -566,7 +579,7 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
               (stream_of_list_then (fin_urandom f) State.default_urandom)
               (fin_tmp f) (fin_kernel f) (fin_execfn f)
               (fin_channel_reader f) (fin_sigpipe_default f)
-              (fin_sigpipe_terminal f) (fin_ppid f) (fin_cap_inheritable f).
+              (fin_sigpipe_terminal f) (fin_ppid f) (fin_cap_inheritable f) [].
 
 (** Validity of a finite input is validity of the input it denotes —
     [Run.valid_input] and nothing else.  Deliberately not a new
@@ -844,9 +857,9 @@ Qed.
 (** Everything in the image is finite. *)
 Lemma finite_input_to_proc_input : forall f, finite_input (to_proc_input f).
 Proof.
-  intros f. unfold finite_input, to_proc_input. cbn [in_stdin in_urandom].
+  intros f. unfold finite_input, to_proc_input. cbn [in_stdin in_urandom in_inherited_fds].
   split; [apply finite_stream_stream_of_list|].
-  exists (fin_urandom f). reflexivity.
+  split; [exists (fin_urandom f); reflexivity | reflexivity].
 Qed.
 
 (** [to_proc_input] is injective ON EVERY FIELD BUT THE RANDOM ONE,
@@ -939,14 +952,15 @@ Qed.
 Lemma finite_input_surjection : forall inp,
   finite_input inp -> exists f, inp = to_proc_input f.
 Proof.
-  (* [State.ProcInput]'s constructor order, the nine TRAILING
+  (* [State.ProcInput]'s constructor order, the ten TRAILING
      DECLARATION fields last: argv, envp, image, stdin, ids, queue,
      limits, declarations, then [in_urandom], [in_tmp], [in_kernel],
      [in_execfn], [in_channel_reader], [in_sigpipe_default],
-     [in_sigpipe_terminal], [in_ppid] and [in_cap_inheritable] *)
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci] Hfin.
-  unfold finite_input in Hfin. cbn [in_stdin in_urandom] in Hfin.
-  destruct Hfin as [Hfin [lr Hlr]].
+     [in_sigpipe_terminal], [in_ppid], [in_cap_inheritable] and
+     [in_inherited_fds] *)
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd] Hfin.
+  unfold finite_input in Hfin. cbn [in_stdin in_urandom in_inherited_fds] in Hfin.
+  destruct Hfin as [Hfin [[lr Hlr] Hifd]]. subst ifd.
   destruct (finite_stream_of_list _ Hfin) as [l Hl].
   exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm kb xf cr sd st pp ci).
   unfold to_proc_input.
@@ -1014,7 +1028,8 @@ Lemma valid_input_stdin_irrelevant : forall inp s,
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
                  (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)).
+                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
+                 (in_inherited_fds inp)).
 Proof. intros inp s H. exact H. Qed.
 
 (** THE RANDOM DEVICE'S STREAM IS NOT LIKE STANDARD INPUT.
@@ -1037,7 +1052,8 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
                  r (in_tmp inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)).
+                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
+                 (in_inherited_fds inp)).
 Proof.
   intros inp r H Hr.
   (* NO CONJUNCT COUNT.  [valid_input] grows a conjunct whenever the
@@ -1096,7 +1112,8 @@ Lemma valid_input_tmp_arbitrary : forall inp t,
                  (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t
                  (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)).
+                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
+                 (in_inherited_fds inp)).
 Proof.
   intros inp t Him H. unfold valid_input in H |- *.
   destruct H as (Ha & He & _ & Hrest).
@@ -1228,7 +1245,8 @@ Lemma valid_input_not_finite : forall inp,
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
                  (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp))
+                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
+                 (in_inherited_fds inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
@@ -1236,7 +1254,7 @@ Lemma valid_input_not_finite : forall inp,
                       (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
                       (in_channel_reader inp) (in_sigpipe_default inp)
                       (in_sigpipe_terminal inp) (in_ppid inp)
-                      (in_cap_inheritable inp)).
+                      (in_cap_inheritable inp) (in_inherited_fds inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.

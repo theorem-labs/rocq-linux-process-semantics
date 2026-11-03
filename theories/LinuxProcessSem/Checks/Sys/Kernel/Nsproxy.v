@@ -35,7 +35,7 @@ Proof.
   intros fd eff m m' evs i H.
   unfold check_setns in H. unfold setns_spec.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl]]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl|live]]|] eqn:Hfd;
     try discriminate;
     apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
     (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
@@ -50,7 +50,7 @@ Lemma check_setns_sound_unmodeled : forall fd eff m i,
 Proof.
   intros fd eff m i H. unfold check_setns in H. unfold setns_spec.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl]]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl|live]]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota. srw Hfd.
   apply unmodeled_intro.
@@ -63,7 +63,7 @@ Proof.
   unfold setns_spec in H. unfold check_setns. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl]]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl|live]]|] eqn:Hfd;
     hall Hfd; inv_ok;
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
 Qed.
@@ -74,6 +74,6 @@ Proof.
   intros fd m i eff H.
   unfold setns_spec in H. unfold check_setns. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl]]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |[p|p|fl|h|fl pos|mask fl|live]]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate; reflexivity.
 Qed.

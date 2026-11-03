@@ -1128,6 +1128,11 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                        (* a signalfd: [signalfd_fops] (fs/signalfd.c,
                                           v6.18.44; identical at v6.18.46) is not
                                           [socket_file_ops] *)
+  | Some (FdOpaque (OInherited _)) => inr ENOTSOCK
+                                       (* an inherited regular file: its [f_op]
+                                          is its file system's, not
+                                          [socket_file_ops] (net/socket.c,
+                                          [sock_from_file], v6.18.46) *)
   | Some (FdSocket sk)  => inl sk
   end.
 

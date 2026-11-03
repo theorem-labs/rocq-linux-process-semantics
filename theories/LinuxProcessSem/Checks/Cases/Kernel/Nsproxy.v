@@ -102,6 +102,27 @@ Example setns_pipe_einval :
   /\ check_syscall (setns_in 5 0) (mkEffect 0 [] []) setns_model = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
+(** [setns_model] with an inherited file at 7 whose offset the model
+    holds, and at 8 one whose offset it does not ([State.OInherited]). *)
+Definition setns_inherited_model : Model :=
+  with_fds (fd_insert (fd_insert (m_fds setns_model)
+              7 (FdOpaque (OInherited (Some ([107; 101; 121; 10], 0)))))
+              8 (FdOpaque (OInherited None))) setns_model.
+
+(** S6.  An inherited file is a regular file, neither a namespace file
+    nor a pidfd, so -EINVAL in either form (kernel/nsproxy.c:553-555).
+    CONTROL: the 0 of a join. *)
+Example setns_inherited_einval :
+  check_syscall (setns_in 7 0) (mkEffect (errno_ret EINVAL) [] []) setns_inherited_model
+  = CheckOk setns_inherited_model []
+  /\ check_syscall (setns_in 8 0) (mkEffect (errno_ret EINVAL) [] [])
+       setns_inherited_model
+     = CheckOk setns_inherited_model []
+  (* the control *)
+  /\ check_syscall (setns_in 7 0) (mkEffect 0 [] []) setns_inherited_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
 (** U2, UNCHANGED.  A descriptor of the namespace and mount model may be
     a namespace file, so the call may join: declined, for the 0 and for
     the -EINVAL alike.  CONTROL: the eventfd beside it is answered. *)
