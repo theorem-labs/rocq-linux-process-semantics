@@ -1799,10 +1799,17 @@ Definition open_cloexec_b (flags : word) : bool :=
 
 (** The model after an answered [openat] returned [r]: a descriptor
     ([r] not an error) gets the bit [open_cloexec_b flags]; an errno
-    answer installed nothing and changes nothing. *)
+    answer installed nothing and changes nothing.  The [fd_lookup] test
+    never fails on an answered success, since every success shape above
+    installs the descriptor it returns; it makes "every key names an
+    open descriptor" ([Checks.CloexecKeys.cloexec_keys_open]) hold by
+    construction rather than by a walk over the shapes. *)
 Definition open_cloexec_model (flags r : word) (m : Model) : Model :=
   if addr_is_error_b r then m
-  else with_cloexec (cloexec_set (m_cloexec m) r (open_cloexec_b flags)) m.
+  else match fd_lookup (m_fds m) r with
+       | Some _ => with_cloexec (cloexec_set (m_cloexec m) r (open_cloexec_b flags)) m
+       | None => m
+       end.
 
 (** [openat]: [openat_table_spec], then the new descriptor's
     close-on-exec bit recorded.  Every success shape above returns the

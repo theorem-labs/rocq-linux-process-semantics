@@ -1851,7 +1851,8 @@ Proof.
   destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
     try discriminate H.
   injection H as <- <-. apply check_openat_table_frame in E.
-  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); exact E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_frame : forall fd eff m m' evs,

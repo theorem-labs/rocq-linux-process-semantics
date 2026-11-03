@@ -1273,6 +1273,10 @@ Proof.
   - exfalso. now apply check_ret_only_no_unmodeled in Hresult.
 Qed.
 
+(** The descriptor [fd_insert] just installed is found. *)
+Lemma fd_lookup_fd_insert_same : forall fds k e, fd_lookup (fd_insert fds k e) k = Some e.
+Proof. intros. unfold fd_insert. cbn [fd_lookup]. rewrite bv_eqb_refl. reflexivity. Qed.
+
 (** [check_openat] is [check_openat_table] followed by the returned
     descriptor's close-on-exec bit ([Open.open_cloexec_model]).  On an
     errno answer that step changes nothing, so a table result that is a
@@ -1351,7 +1355,8 @@ Proof.
   apply (check_openat_open_result _ _ _ _ _ _ _
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFile p (Z_to_bv 64 0))) model));
-    [intros fd Hfd; unfold open_cloexec_model; rewrite Hfd; reflexivity|].
+    [intros fd Hfd; cbv beta; unfold open_cloexec_model;
+     rewrite Hfd, m_fds_with_fds, fd_lookup_fd_insert_same; reflexivity|].
   unfold check_openat_table.
   rewrite (modeled_open_flags_rd _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
@@ -1405,7 +1410,8 @@ Proof.
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFileW p (Z_to_bv 64 0)))
                         (with_fs (fs_set (m_fs model) p []) model)));
-    [intros fd Hfd; unfold open_cloexec_model; rewrite Hfd; reflexivity|].
+    [intros fd Hfd; cbv beta; unfold open_cloexec_model;
+     rewrite Hfd, m_fds_with_fds, fd_lookup_fd_insert_same; reflexivity|].
   unfold check_openat_table.
   rewrite (modeled_open_flags_wr _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
