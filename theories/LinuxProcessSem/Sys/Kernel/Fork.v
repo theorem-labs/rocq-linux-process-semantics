@@ -705,7 +705,7 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
                          F_SETFD/F_GETFD declines on this kind.
-                       TWO DECLINE, fail-closed:
+                       THREE DECLINE, fail-closed:
                        - the /proc/self/fd directory ([OProcFdDir])
                          shares the [f_pos] that [getdents64] reads and
                          moves, and the model holds that position in the
@@ -714,9 +714,13 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        - a signalfd ([OSignalFd]) shares its mask, which
                          [signalfd4] on the same descriptor may change in
                          either process (fs/signalfd.c [do_signalfd4],
-                         read at v6.18.44; identical at v6.18.46). *)
+                         read at v6.18.44; identical at v6.18.46).
+                       - an inherited file ([OInherited]) shares the
+                         [f_pos] that [read] moves, and the model holds
+                         that offset in the entry ([ReadWrite.read_spec]),
+                         for the [FdFile] reason above. *)
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _) => true
-                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _) => false
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited _) => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which

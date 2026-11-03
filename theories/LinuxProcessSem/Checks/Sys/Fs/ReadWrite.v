@@ -880,7 +880,7 @@ Definition check_read_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word
   match o with
   | OProcFile _ => check_read_proc i buf count eff m
   | OEventFd fl => check_read_eventfd i fl buf count eff m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ | OInherited _ => CheckUnmodeled
   end.
 
 Lemma check_read_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -904,7 +904,8 @@ Proof.
     [ apply unmodeled_intro
     | eapply check_read_proc_sound_unmodeled; exact H
     | eapply check_read_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 Lemma check_read_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -917,6 +918,7 @@ Proof.
     [ unfold unmodeled in H; discriminate H
     | now apply check_read_proc_complete_ok
     | now apply check_read_eventfd_complete_ok
+    | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
@@ -932,7 +934,7 @@ Proof.
     [ reflexivity
     | now apply check_read_proc_complete_unmodeled
     | now apply check_read_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity ].
+    | reflexivity | reflexivity | reflexivity | reflexivity ].
 Qed.
 
 (** What an opaque descriptor's read delivers is under the clamp: a
@@ -950,12 +952,13 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, and
-    the decline on the other five objects. *)
+    the decline on the other six objects. *)
 Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OEventFd fl => check_write_eventfd i fl buf count eff m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
+  | OInherited _ => CheckUnmodeled
   end.
 
 Lemma check_write_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -977,7 +980,8 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [ apply unmodeled_intro | apply unmodeled_intro
     | eapply check_write_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -992,6 +996,7 @@ Proof.
     | now apply check_write_eventfd_complete_ok
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
+    | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
 Qed.
 
@@ -1004,7 +1009,7 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [ reflexivity | reflexivity
     | now apply check_write_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity ].
+    | reflexivity | reflexivity | reflexivity | reflexivity ].
 Qed.
 
 Definition check_read (i : SyscallInput) (fd buf count : word)
@@ -1190,7 +1195,38 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
       else check_read_urandom i buf count eff m   (* the declared stream *)
-  | Some (FdOpaque o) => check_read_opaque i o buf count eff m
+  | Some (FdOpaque o) =>
+      match o with
+      | OInherited (Some (data, off)) =>
+          (* a live inherited file: the [FdFile] arm above, on the bytes
+             the entry holds, with the entry written back under this kind *)
+          if negb (access_okb buf (bv_unsigned count))
+          then check_ret_only eff (errno_ret EFAULT) m []
+          else
+          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
+          match read_bytes_map (in_wmem i) buf (len_word bs) with
+          | None =>                  (* the DELIVERED prefix is not fully writable *)
+              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+              | None => check_ret_only eff (errno_ret EFAULT) m []
+                                     (* not even the first delivered byte: -EFAULT *)
+              | Some _ => CheckUnmodeled   (* partially writable: fail closed *)
+              end
+          | Some _ =>
+              let m' := with_fds
+                          (fd_insert (m_fds m) fd
+                             (FdOpaque (OInherited (Some (data, off + len_word bs))))) m in
+              match bs, eff with
+              | [], _ => check_ret_only eff (Z_to_bv 64 0) m' []
+              | _ :: _, mkEffectU ret [(a, bs')] [] [] [] [] =>
+                  if bv_eqb a buf && listN_eqb bs' bs
+                     && bv_eqb ret (len_word bs)
+                  then CheckOk m' []
+                  else CheckReject
+              | _, _ => CheckReject
+              end
+          end
+      | _ => check_read_opaque i o buf count eff m
+      end
   | Some (FdPipe id w) =>
       if w then check_ret_only eff (errno_ret EBADF) m []   (* write end: -EBADF *)
       else
@@ -1546,13 +1582,57 @@ Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read in H. unfold read_spec.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
-  all: try (match goal with
-            | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                cbv beta iota in H;
-                eapply bind_ok0; [apply input_ok|]; cbv beta;
-                eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
-                srw Hfd; apply check_read_opaque_sound_ok; exact H
-            end).
+  11:{ (* the opaque kinds: a live inherited file reads as the file arm
+          below reads, on the bytes its entry holds; every other kind is
+          [check_read_opaque] *)
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+         try (cbv beta iota in H;
+              eapply bind_ok0; [apply input_ok|]; cbv beta;
+              eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
+              srw Hfd; apply check_read_opaque_sound_ok; exact H).
+       cbv beta iota in H.
+       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+       { (* the range is refused: -EFAULT *)
+         apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+         eapply bind_ok0; [apply input_ok|]. cbv beta.
+         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
+         apply pure_ok. }
+       cbv zeta in H.
+       destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
+         as [|b bsr] eqn:Hbs.
+       + (* zero-byte read: canonical empty-writes shape *)
+         destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
+           as [bs0|] eqn:Hw; cbv beta iota zeta in H;
+           [|rewrite read_bytes_map_nil in Hw; discriminate].
+         apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+         eapply bind_ok0; [apply input_ok|]. cbv beta.
+         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+         srw Hfd. srw Hbs. srw Hw.
+         eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+       + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
+           as [bs0|] eqn:Hw; cbv beta iota zeta in H.
+         2: { (* the delivered prefix is not fully writable *)
+           destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
+             [discriminate|].
+           (* not even its first byte can land: -EFAULT *)
+           apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+           eapply bind_ok0; [apply input_ok|]. cbv beta.
+           eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hbs. srw Hw. srw Hw1. apply pure_ok. }
+         destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
+           destruct zs as [|? ?]; destruct us as [|? ?];
+           destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
+         destruct (bv_eqb a buf && listN_eqb bs' (b :: bsr)
+                   && bv_eqb ret (len_word (b :: bsr))) eqn:Hb; [|discriminate].
+         inversion H; clear H; subst.
+         apply andb_true_iff in Hb as [Hb HC].
+         apply andb_true_iff in Hb as [HA HB].
+         apply bv_eqb_eq in HA; subst a. apply listN_eqb_eq in HB; subst bs'.
+         apply bv_eqb_eq in HC; subst ret.
+         eapply bind_ok0; [apply input_ok|]. cbv beta.
+         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+         srw Hfd. srw Hbs. srw Hw.
+         eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
   9:{ (* /dev/null: -EBADF without FMODE_READ, else the range verdict and 0 *)
       destruct rd; cbn [negb] in H; cbv beta iota in H;
         [ unfold check_access_ok_zero in H;
@@ -1922,13 +2002,37 @@ Proof.
   intros i fd buf count eff m H.
   unfold check_read in H. unfold read_spec.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
-  all: try (match goal with
-            | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
-                eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
-                srw Hfd; cbv beta iota in H;
-                eapply check_read_opaque_sound_unmodeled; exact H
-            end).
+  11:{ (* the opaque kinds: a live inherited file as the file arm below,
+          every other kind through [check_read_opaque] *)
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+         try (eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+              eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+              srw Hfd; cbv beta iota in H;
+              eapply check_read_opaque_sound_unmodeled; exact H).
+       cbv beta iota in H.
+       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+       { now apply check_ret_only_no_unmodeled in H. }
+       cbv zeta in H.
+       destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
+         as [|b bsr] eqn:Hbs.
+       + destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
+           as [bs0|] eqn:Hw; cbv beta iota zeta in H.
+         * now apply check_ret_only_no_unmodeled in H.
+         * rewrite read_bytes_map_nil in Hw; discriminate.
+       + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
+           as [bs0|] eqn:Hw; cbv beta iota zeta in H.
+         * destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
+             destruct zs as [|? ?]; destruct us as [|? ?];
+             destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
+           destruct (bv_eqb a buf && listN_eqb bs' (b :: bsr)
+                     && bv_eqb ret (len_word (b :: bsr))); discriminate.
+         * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
+           -- (* partially writable destination: fail closed *)
+              eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+              eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+              srw Hfd. srw Hbs. srw Hw. srw Hw1. apply unmodeled_intro.
+           -- (* nothing writable at all: -EFAULT, never [CheckUnmodeled] *)
+              now apply check_ret_only_no_unmodeled in H. }
   9:{ destruct rd; cbn [negb] in H; cbv beta iota in H;
         [ unfold check_access_ok_zero in H;
           destruct (access_okb buf (bv_unsigned count)) | ];
@@ -2167,12 +2271,31 @@ Proof.
   intros i fd buf count eff m m' evs H.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok.
-  all: try (match goal with
-            | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                cbv beta iota in *;
-                apply check_read_opaque_complete_ok; assumption
-            end).
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  11:{ (* the opaque kinds: a live inherited file as the file arm below,
+          every other kind through [check_read_opaque] *)
+       hall Hfd; inv_ok.
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv beta iota zeta in *;
+         try (apply check_read_opaque_complete_ok; assumption).
+       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
+       { (* the range is refused: -EFAULT *)
+         cbn; rewrite bv_eqb_refl; reflexivity. }
+       unfold delivered_writes in *.
+       destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
+         as [|b bsr] eqn:Hbs; hall Hbs; inv_ok.
+       + (* zero-byte read *)
+         destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
+           as [bs0|] eqn:Hw; hall Hw; inv_ok;
+           [ cbn; rewrite bv_eqb_refl; reflexivity
+           | rewrite read_bytes_map_nil in Hw; discriminate ].
+       + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
+           as [bs0|] eqn:Hw; hall Hw; inv_ok.
+         2: { (* the delivered prefix is not fully writable *)
+           destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
+             hall Hw1; inv_ok.
+           (* nothing writable: -EFAULT *) reflexivity. }
+         bool_true. rewrite (proj2 (listN_eqb_eq _ _) eq_refl). cbn. reflexivity. }
+  all: hall Hfd; inv_ok.
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; [reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { (* the range is refused: -EFAULT *)
@@ -2325,13 +2448,26 @@ Proof.
   intros i fd buf count m eff H.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok;
-    try discriminate.
-  all: try (match goal with
-            | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                cbv beta iota in *;
-                apply check_read_opaque_complete_unmodeled; assumption
-            end).
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  11:{ (* the opaque kinds: a live inherited file as the file arm below,
+          every other kind through [check_read_opaque] *)
+       hall Hfd; inv_ok.
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv beta iota zeta in *;
+         try (apply check_read_opaque_complete_unmodeled; assumption).
+       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
+         try discriminate.
+       destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
+         as [|b bsr] eqn:Hbs; hall Hbs; inv_ok.
+       + (* a zero-byte read answers on both sides; only the impossible
+            [None] on an empty range is left, and [Hw] refutes it *)
+         destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
+           as [bs0|] eqn:Hw; hall Hw; inv_ok.
+         rewrite read_bytes_map_nil in Hw; discriminate.
+       + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
+           as [bs0|] eqn:Hw; hall Hw; inv_ok; try discriminate.
+         destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
+           hall Hw1; inv_ok; try discriminate; reflexivity. }
+  all: hall Hfd; inv_ok; try discriminate.
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; try discriminate.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.

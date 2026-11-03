@@ -607,7 +607,8 @@ Definition write_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
   end.
 
 (** [read] on an opaque descriptor ([State.OpaqueFd]), one arm per
-    object. *)
+    object.  A live inherited file never reaches this function:
+    [read_spec] answers it first, as the read-only file it is. *)
 Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
   | OProcFile _ => read_proc_spec buf count
@@ -630,6 +631,11 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
       (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46) answers from the pending
          signals and their [siginfo], which this arm does not model *)
+  | OInherited _ => unmodeled
+      (* FAIL-CLOSED: [read_spec] answers a live inherited file
+         ([OInherited (Some _)]) before it reaches this arm; on one whose
+         offset the model does not hold ([OInherited None]) the answer
+         depends on that offset *)
   end.
 
 (** [write] on an opaque descriptor ([State.OpaqueFd]): only the eventfd
@@ -638,10 +644,12 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
   match o with
   | OEventFd fl => write_eventfd_spec fl buf count
       (* an eventfd: see [write_eventfd_spec] *)
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => unmodeled
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
+  | OInherited _ => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
-         -EBADF; a /proc/sys file opened O_RDONLY and the /proc/self/fd
-         directory (O_RDONLY) are [vfs_write]'s FMODE_WRITE -EBADF; a
+         -EBADF; a /proc/sys file opened O_RDONLY, the /proc/self/fd
+         directory (O_RDONLY) and an inherited file (read-only) are
+         [vfs_write]'s FMODE_WRITE -EBADF; a
          signalfd has no [.write], so [vfs_write]'s FMODE_CAN_WRITE test
          answers -EINVAL; and an [ONsFile]'s object is of unknown type
          (fs/read_write.c, fs/file.c, fs/signalfd.c, read at v6.18.44;
@@ -1078,8 +1086,41 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  queue [word_to_nat count] would have left *)
           end
       end
-  | Some (FdOpaque o) => read_opaque_spec o buf count
-      (* one arm per opaque object: see [read_opaque_spec] *)
+  | Some (FdOpaque o) =>
+      match o with
+      | OInherited (Some (data, off)) =>
+          (* A LIVE INHERITED FILE ([State.OInherited]): THE [FdFile] ARM
+             ABOVE, WORD FOR WORD, on the bytes the entry holds instead of
+             the bytes at a path, with the entry written back under this
+             kind.  The object is a read-only regular file that the
+             launch's parent opened, so [vfs_read] tests FMODE_READ and
+             runs the file's [read_iter] as for a file the process opened
+             itself, and [ksys_read] stores the moved position in [f_pos]
+             (fs/read_write.c, Linux v6.18.46), which this entry holds.
+             The bytes are the launch's ([State.ProcInput.in_inherited_fds]),
+             so no [fs_lookup] guards them *)
+          if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+            (* [vfs_read]'s [access_ok], exactly as on the file arm *)
+          else
+          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
+          match read_bytes_map (in_wmem i) buf (len_word bs) with
+          | None =>
+              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+              | None => err_ret EFAULT               (* not even the first delivered byte can
+                                                    land: real -EFAULT, offset unchanged *)
+              | Some _ => unmodeled                  (* partially writable destination: fail
+                                                    closed, as on the file arm *)
+              end
+          | Some _ =>
+              let deliver :=
+                set_fds (fd_insert (m_fds m) fd
+                           (FdOpaque (OInherited (Some (data, off + len_word bs))))) ;;
+                pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in
+              deliver
+          end
+      | _ => read_opaque_spec o buf count
+          (* one arm per opaque object: see [read_opaque_spec] *)
+      end
   end.
 
 (** [write fd buf count].

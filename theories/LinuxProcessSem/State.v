@@ -2760,11 +2760,14 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
-(** The six kernel objects behind [FdOpaque].  The model holds NO
-    CONTENTS for any of them: what a read returns, what a stat reports
-    and what an eventfd counts are the environment's or are declined.
-    Two of them carry one piece of kernel state each, and nothing more:
-    the /proc/self/fd directory its position, the signalfd its mask.
+(** The seven kernel objects behind [FdOpaque].  The model holds NO
+    CONTENTS for any of them but one: what a read returns, what a stat
+    reports and what an eventfd counts are the environment's or are
+    declined.  The exception is an inherited file, whose bytes are an
+    input of the launch ([ProcInput.in_inherited_fds]).  Three of them
+    carry one piece of kernel state each, and nothing more: the
+    /proc/self/fd directory its position, the signalfd its mask, the
+    inherited file its offset while the model holds it.
 
     - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
       name [p] (an absolute path at or under "/proc";
@@ -2821,14 +2824,32 @@ Definition PipeBuf : Type := list byte * Z.
       [signotset]) and the [SFD_] flag word it was created with.  Only
       [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
       poll and every other arm decline it.
-        fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
+        fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46.
+    - [OInherited live]: a descriptor the launch inherited
+      ([ProcInput.in_inherited_fds]): an open file description of a
+      regular file, read-only, that the process's parent opened and
+      that an execve kept, because its close-on-exec bit was clear
+      ([do_close_on_exec] closes only the slots whose bit is set, and a
+      kept slot names the same [struct file]).  [live] is
+      [Some (bs, off)] while the model holds the description's offset:
+      [bs] is the file's bytes, a launch input, and [off] is [f_pos],
+      which [Fs.ReadWrite.read_spec] answers from and moves as it does
+      on a read-only file.  [None] is a description whose offset the
+      model does not hold.  On either, [close], [close_range],
+      [F_SETFD] and [F_GETFD] answer, as they do on every kind; every
+      other arm declines it.  The model holds no inode identity for the
+      file: no path of the run's file system names it, which SCOPE.md
+      states as an assumption.
+        fs/exec.c [begin_new_exec], fs/file.c [do_close_on_exec], fs/read_write.c
+        [ksys_read]: read at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)
   | OEventFd (flags : word)
   | ONsFile (h : N)
   | OProcFdDir (flags : word) (pos : option word)
-  | OSignalFd (mask flags : word).
+  | OSignalFd (mask flags : word)
+  | OInherited (live : option (list byte * word)).
 
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
@@ -2979,16 +3000,19 @@ Inductive OpaqueFd :=
       environment's /dev/urandom is the random device -- is stated once, at
       the openat arm, and pointed to from everywhere else.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
-      CONTENTS for; [OpaqueFd] above says which six objects.  The
-      descriptor is in the table so that its NUMBER is tracked (the
+      CONTENTS for, but one; [OpaqueFd] above says which seven objects.
+      The descriptor is in the table so that its NUMBER is tracked (the
       lowest-free-fd rule, [close], and a statement that reads "this fd
       is held at the clone" all need it), and nothing else about the
-      object is: no bytes and no counter, and a position and a mask only
-      for the two objects [OpaqueFd] names.  Every arm that
-      reads one either derives its answer from the Linux source for
-      that kind of object or declines; none of them answers from what
-      an existing kind would answer, because none of the six is a
-      file, a device, a socket or a pipe end the existing arms know. *)
+      object is: no counter, no bytes but an inherited file's, which are
+      a launch input, and a position or a mask only for the three
+      objects [OpaqueFd] names.  Every arm that reads one either
+      derives its answer from the Linux source for that kind of object
+      or declines.  One arm answers as an existing kind does, and for
+      the reason that it is the same object: [Fs.ReadWrite.read_spec]
+      reads a live inherited file as it reads an [FdFile], because the
+      object is a read-only regular file; it takes the bytes from the
+      entry instead of from a path. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -3002,7 +3026,7 @@ Inductive FdEntry :=
   | FdUrandom
   | FdOpaque (o : OpaqueFd).
 
-(** Is [e] one of the six opaque objects?  The one classifier over
+(** Is [e] one of the seven opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
     the kind it is about, and any constructor added later is, by
     definition, not that kind.  The arms that decline [FdOpaque] ahead
@@ -7311,21 +7335,44 @@ Record ProcInput := mkProcInput_full {
        into [procst_cap_inheritable], and [capset] may change the copy.
        Every word is an input.  Kernel citations: [cred->cap_inheritable],
        include/linux/cred.h, and [cap_capset], security/commoncap.c,
-       read at v6.18.44 and identical at v6.18.46 *)
+       read at v6.18.44 and identical at v6.18.46 *);
+  in_inherited_fds : list (word * list byte)
+    (* THE LAUNCH'S INHERITED DESCRIPTORS ABOVE 2: each a descriptor
+       number and the bytes of the regular file its open file
+       description reads, open read-only at offset 0.  An execve keeps
+       every descriptor whose close-on-exec bit is clear, on the same
+       [struct file] ([do_close_on_exec], fs/file.c, called from
+       [begin_new_exec], fs/exec.c; v6.18.46), so a launcher that opens
+       a file without O_CLOEXEC and then execs the program hands the
+       program that descriptor.  The model holds the file's bytes as an
+       input of the run, like [in_stdin] and [in_urandom], and not as a
+       path of the file system: the process reaches the file only
+       through the descriptor.  [init_model] puts each element after
+       descriptors 0, 1 and 2 as [FdOpaque (OInherited (Some (bs, 0)))]
+       ([inherited_table]).
+
+       [Run.valid_input] and every sibling launch predicate PIN THE LIST
+       EMPTY, so every statement written before the field keeps its
+       domain: a launch with descriptors 0, 1 and 2 and no other.  The
+       launch that has inherited descriptors is named by
+       [Run.valid_input_inherited], which admits a list
+       [Run.inherited_fds_ok] accepts and states the assumption such a
+       launch rests on.  The field is appended after every field the
+       record had, as [mkProcInput]'s note asks *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the nine
+(** THE POSITIONAL-LITERAL FORM: every field except the ten
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
     [in_kernel], [in_execfn], [in_channel_reader],
     [in_sigpipe_default], [in_sigpipe_terminal], [in_ppid],
-    [in_cap_inheritable]).
+    [in_cap_inheritable], [in_inherited_fds]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last nine with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    last ten with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
     DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
-    SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0 and AN EMPTY
-    INHERITABLE SET: [default_urandom],
+    SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0, AN EMPTY
+    INHERITABLE SET and NO INHERITED DESCRIPTOR: [default_urandom],
     which is zero bytes
     forever; a private /tmp that starts empty; [default_kernel], a
     kernel built without transparent huge pages; [default_execfn], the
@@ -7333,13 +7380,16 @@ Record ProcInput := mkProcInput_full {
     [in_channel_reader] existed was already assuming; [true] again,
     the SIG_DFL launch [Run.valid_input] pins; [false], the
     declined SIGPIPE death [Run.valid_input] pins
-    ([mkProcInput_sigpipe_terminal] proves it is the literal); and the
-    literal 0 for each word.  So a literal written
+    ([mkProcInput_sigpipe_terminal] proves it is the literal); the
+    literal 0 for each word; and the literal [[]], the empty list of
+    inherited descriptors [Run.valid_input] pins
+    ([mkProcInput_inherited_fds]).  So a literal written
     through this name denotes an input in an environment that holds no
     file of its own, on an ordinary kernel, launched as "a", whose
     standard output is read, whose SIGPIPE is at SIG_DFL, whose
     write to a reader-less descriptor declines, whose parent is observed
-    as pid 0, and whose inheritable set is empty.
+    as pid 0, whose inheritable set is empty, and which inherits no
+    descriptor above 2.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -7366,7 +7416,7 @@ Definition mkProcInput
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
     default_kernel default_execfn true true false (Z_to_bv 64 0)
-    (Z_to_bv 64 0).
+    (Z_to_bv 64 0) [].
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
@@ -7396,6 +7446,33 @@ Lemma mkProcInput_cap_inheritable :
        hwcap abort_terminal va_size) = Z_to_bv 64 0.
 Proof. reflexivity. Qed.
 
+(** The inherited-descriptor default is the LITERAL [[]], not a
+    variable: every input built through [mkProcInput] is a launch with
+    descriptors 0, 1 and 2 only, which is what [Run.valid_input] pins. *)
+Lemma mkProcInput_inherited_fds :
+  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_inherited_fds
+    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = [].
+Proof. reflexivity. Qed.
+
+(** [inp] with its inherited descriptors replaced by [l], every other
+    field kept.  The fixtures that need a keyed launch build it from an
+    ordinary one with this, so they name no other field by position. *)
+Definition with_inherited_fds (l : list (word * list byte)) (inp : ProcInput)
+    : ProcInput :=
+  mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) (in_stdin inp)
+    (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp) (in_nofile inp)
+    (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
+    (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+    (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
+    (in_ppid inp) (in_cap_inheritable inp) l.
+
+Lemma in_inherited_fds_with_inherited_fds : forall l inp,
+  in_inherited_fds (with_inherited_fds l inp) = l.
+Proof. reflexivity. Qed.
+
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
 
@@ -7417,7 +7494,8 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
   fs_seed_tmp (in_image_fs inp) (in_tmp inp).
 
 (* =========================================================================
-   Initial model: fds 0/1/2 bound to the three standard channels;
+   Initial model: fds 0/1/2 bound to the three standard channels, and
+   after them the launch's inherited descriptors ([inherited_table]);
    [reserved] is the address space the kernel used at [execve] (the
    page-rounded LOAD segments, built by [Run.segments_reserved]), which
    the allocator may never grant; [brk0] is the ASLR-placed initial
@@ -7471,6 +7549,14 @@ Definition init_reserved (reserved : list (word * word))
   ++ vdso_reserved kb
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+
+(** THE INHERITED DESCRIPTORS' TABLE ENTRIES: each element of
+    [ProcInput.in_inherited_fds] as a live [OInherited] at offset 0, in
+    the order the list gives.  [init_model] puts them after descriptors 0,
+    1 and 2, so a lookup of one of those three never reaches them. *)
+Definition inherited_table (l : list (word * list byte))
+    : list (word * FdEntry) :=
+  map (fun kv => (fst kv, FdOpaque (OInherited (Some (snd kv, Z_to_bv 64 0))))) l.
 
 (** BUILT WITH ONE CONSTRUCTOR, not with a chain of [with_*] setters,
     and that is a performance fact worth stating where it is easy to
@@ -7532,9 +7618,10 @@ Definition init_reserved (reserved : list (word * word))
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
   mkModelOf
-    (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
-                 (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-                 (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
+    (mkFdState ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+                  (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+                  (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
+                ++ inherited_table (in_inherited_fds inp)) [])
     (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
@@ -7572,9 +7659,10 @@ Definition init_model_setter_chain (reserved : list (word * word))
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
     (mkModel
-       [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
-         (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
+       ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
+        ++ inherited_table (in_inherited_fds inp))
        (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
           [] [] brk0 brk0 lim mbase sp)
        (in_stdin inp)
@@ -10801,12 +10889,29 @@ Lemma m_sigaltstack_installed_init_model : forall reserved brk0 mbase sp lim inp
   m_sigaltstack_installed (init_model reserved brk0 mbase sp lim inp) = false.
 Proof. reflexivity. Qed.
 
+(** The launch's table: the three standard channels, then the inherited
+    descriptors. *)
 Lemma m_fds_init_model : forall reserved brk0 mbase sp lim inp,
   m_fds (init_model reserved brk0 mbase sp lim inp) =
   [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
      (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-     (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ].
+     (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
+  ++ inherited_table (in_inherited_fds inp).
 Proof. reflexivity. Qed.
+
+(** ... and for a launch that inherits nothing, which is every launch
+    [Run.valid_input] admits ([Run.valid_input_no_inherited]), the three
+    channels alone. *)
+Lemma m_fds_init_model_no_inherited : forall reserved brk0 mbase sp lim inp,
+  in_inherited_fds inp = [] ->
+  m_fds (init_model reserved brk0 mbase sp lim inp) =
+  [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+     (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+     (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ].
+Proof.
+  intros reserved brk0 mbase sp lim inp H.
+  rewrite m_fds_init_model, H. reflexivity.
+Qed.
 
 
 Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp lim inp,
