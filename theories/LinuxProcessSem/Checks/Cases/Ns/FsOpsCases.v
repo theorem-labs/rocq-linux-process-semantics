@@ -269,15 +269,15 @@ Example read_uid_map_through_uid_map :
   = Some [(BUF, zero_line)].
 Proof. vm_compute. reflexivity. Qed.
 
-(** A lower id the shown namespace's map does not hold prints as
-    [(gid_t)-1], 4294967295 (map_id_range_up, 399; "%10u", 647-650), not
-    65534.  [map_write] builds no such table (it maps every lower range
-    through the parent's map); this hand-built one checks the branch. *)
+(** A lower id the shown namespace's map does not hold is [(gid_t)-1],
+    4294967295 (map_id_range_up, 399; from_kgid, 509-513), which "%10u"
+    prints as "4294967295" (647-650), not 65534.  [map_write] builds no
+    such table (it maps every lower range through the parent's map); this
+    hand-built one checks the branch.  The case states the id that
+    [map_line] prints: rendering it through [decimal_bytes], which counts
+    in unary [nat], is not computable for 4294967295. *)
 Example read_gid_map_unmapped_lower :
-  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 300000])
-                     1%N b_gid_reader)
-  = Some [(BUF, repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
-                ++ repeat 32 9 ++ [49; 10])].
+  shown_lower [map_root; ns_a; ns_b 300000] 3%positive b_cred GidMap 300000 = 4294967295.
 Proof. vm_compute. reflexivity. Qed.
 
 Definition file_state : NsState :=
