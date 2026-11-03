@@ -723,6 +723,10 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(steps["actions/download-artifact"], "needs.trust.outputs.route != 'measure'")
         m = step("screen", "Measure")
         self.assertTrue(m["run"].endswith("python3 .github/screen.py --measure\n"), m["run"])
+        # a measurement runs longer than 10 minutes: its Google token lasts an hour, the screen's 10 minutes
+        lifetime = step("screen", "Sign in to Google Cloud")["with"]["access_token_lifetime"]
+        self.assertEqual(evaluate(lifetime, {"needs.trust.outputs.route": "measure"}), "3600s")
+        self.assertEqual(evaluate(lifetime, {"needs.trust.outputs.route": "screen"}), "600s")
         self.assertEqual(m["env"]["MEASURE_SET"], "${{ inputs.measure_set }}")
         self.assertIn("^measure/set-v[0-9]+\\.json$", m["run"])
         self.assertTrue(m["env"]["MEASURE_OBJECT"].startswith("measure/runs/"))
