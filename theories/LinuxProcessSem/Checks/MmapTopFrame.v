@@ -104,7 +104,7 @@ Lemma check_mmap_top_frame : forall addr len prot flags fd off eff m m' evs,
   top_fields_kept (m_vmmaps m) (m_vmmaps m').
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only in H. walk H. all: leaf H.
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H. walk H. all: leaf H.
 Qed.
 
 Lemma check_munmap_top_frame : forall addr len eff m m' evs,
