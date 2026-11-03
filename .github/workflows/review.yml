@@ -56,9 +56,9 @@
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
 #           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
-#           refs/heads/main, for the three events below, and refuses a job in review-screen, so the screen job cannot
-#           get the review's Claude token. The review job cannot get the screen's tokens either: they need the
-#           environment.
+#           refs/heads/main, for the events pull_request_target, issues and workflow_dispatch (a rescreen is one), and
+#           refuses a job in review-screen, so the screen job cannot get the review's Claude token. The review job
+#           cannot get the screen's tokens either: they need the environment.
 #   post    posts that comment, or replaces the one it posted before, when POST_REVIEW says so, and takes the label
 #           review-held off.
 #   hold    labels a held pull request or issue review-held and says so in a comment. It holds no model, and has no
@@ -80,13 +80,13 @@
 # it. This file needs a repository policy that targets the workflow path .github/workflows/review.yml and allows the
 # events pull_request_target, issues, workflow_dispatch and schedule, and lets github-actions[bot] start a run (the
 # rescreen job's dispatch). Without it, a pull request is reviewed only when someone with write access asks for it,
-# and an item held at the limit is not screened again.
+# and an item held for a reason not its own is not screened again.
 #
 # Never re-run this workflow with debug logging. A debug run prints the whole conversation with the model, with the
 # pull request's or the issue's text, in the run's log, and anyone can read the logs of a public repository.
 name: review
 run-name: >-
-  ${{ github.event_name == 'schedule' && 'rescreen the items held at the limit'
+  ${{ github.event_name == 'schedule' && 'rescreen the held items'
   || inputs.measure && 'measure the screen'
   || inputs.rescreen && format('rescreen #{0} of {1}', inputs.number, inputs.account)
   || format('review #{0}', github.event.pull_request.number || github.event.issue.number || inputs.number) }}
@@ -124,11 +124,11 @@ on:
         type: number
         default: 3
       rescreen:
-        description: Screen again an item held at the hourly limit (the rescreen job sets it; the trust job checks the hold)
+        description: Screen again an item held for a reason not its own (the rescreen job sets it; the trust job checks the hold)
         type: boolean
         default: false
       account:
-        description: With rescreen, the account the hourly limit held, which the item's hold must name
+        description: With rescreen, the account whose event the item's hold names
         type: string
         default: ""
 
@@ -591,7 +591,8 @@ jobs:
       CONTENT_SAFETY_URL: https://theorem-review-screen.cognitiveservices.azure.com
       # Anthropic: Theorem's organization, the service account review-screen (not the review's oss-verify-ci), its
       # workspace, and the federation rule rocq-linux-process-semantics-screen, which admits only this file's jobs in
-      # review-screen on main, for the three events, with the scope workspace:inference.
+      # review-screen on main, for the events pull_request_target, issues and workflow_dispatch, with the scope
+      # workspace:inference.
       ANTHROPIC_URL: https://api.anthropic.com
       ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
       ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
@@ -1051,20 +1052,24 @@ jobs:
           [[ $tries =~ ^[0-9]+$ ]] || tries=0
           kind=""
           # The rescreen job takes a hold with a marker once its comment is an hour old, at its next run of the four
-          # each hour.
+          # each hour. A limit hold says what happens if the account is still at its limit; the other holds say only
+          # that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
-          again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes. If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
+          again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
+          again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
+          again_other="$again If it is held again, this comment says why."
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             kind=limit
-            why="The account behind its latest event has no write access to this repository, and its pull requests, issues and pushes have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for the automated review. $again"
+            why="The account behind its latest event has no write access to this repository, and its pull requests, issues and pushes have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for the automated review. $again_limit"
           elif [ -z "$OUTSIDER" ]; then
             why="A maintainer asked for the automated screen first, and the screen did not pass it, or the automated review after it did not finish. A maintainer will look at it."
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             if [ "$REVIEW" = cancelled ]; then
               # A newer run of the item (its next push, or its rescreen) cancels this run's review: that run decides.
-              # Not a newer run that its trust job skipped (an edit of a pull request that left its base as it was):
-              # it decides nothing, so this run holds the item.
+              # Not a newer run whose trust job was skipped (an edit of a pull request that left its base as it was),
+              # failed or was cancelled: it decides nothing, so this run holds the item. A trust job not listed yet,
+              # still running, or passed may still decide.
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
                 -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
@@ -1076,10 +1081,10 @@ jobs:
                 trust=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
                   --jq '.jobs[] | select(.name == "trust") | .conclusion // "running"') \
                   || { echo "::error::the jobs of run $id could not be read"; exit 1; }
-                if [ "$trust" != skipped ]; then
-                  echo "A newer run of #$NUMBER cancelled this run's review: that run decides."
-                  exit 0
-                fi
+                case $trust in
+                  skipped|failure|cancelled) ;;
+                  *) echo "A newer run of #$NUMBER cancelled this run's review: that run decides."; exit 0 ;;
+                esac
               done
             fi
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run.
@@ -1088,12 +1093,12 @@ jobs:
               || { echo "::warning::the jobs of this run could not be read: the hold counts as a review that did not finish."; capped=""; }
             if [ -n "$capped" ]; then
               kind=cap
-              why="It comes from an account without write access to this repository. The automated screen passed it, but the automated reviews of such items had reached their limit of $SCREENED_HOURLY_CAP an hour. $again"
+              why="It comes from an account without write access to this repository. The automated screen passed it, but the automated reviews of such items had reached their limit of $SCREENED_HOURLY_CAP an hour. $again_other"
             else
               tries=$((tries + 1))
               if (( tries < REVIEW_TRIES )); then
                 kind=transient
-                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish ($tries of the $REVIEW_TRIES times it is tried). $again"
+                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish ($tries of the $REVIEW_TRIES times it is tried). $again_other"
               else
                 why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish, $tries times. A maintainer will look at it."
               fi
@@ -1144,13 +1149,19 @@ jobs:
     concurrency: {group: review-rescreen, cancel-in-progress: false}
     permissions: {actions: write, issues: read, pull-requests: read}
     steps:
-      - name: Start the screen again of each item held at the limit over an hour ago
+      - name: Start the screen again of each held item whose hold is over an hour old
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
+          # Without a posted review the label never comes off, so the same item would be screened and reviewed again
+          # every hour.
+          if [ "$POST_REVIEW" != true ]; then
+            echo "::notice::POST_REVIEW is not true: reviews are not posted, so held items are not screened again."
+            exit 0
+          fi
           # held
           # limit_hold <number>: "<time> <run> <tries> <kind>" of the newest hold comment of <number> when it is one
           # that the rescreen job tries again (its marker <!-- review-held-<kind> <run> <tries> -->): <kind> is limit
@@ -1245,7 +1256,7 @@ jobs:
             if gh api --method POST "repos/$REPO/actions/workflows/review.yml/dispatches" -f ref=main \
                 -f "inputs[number]=$number" -f "inputs[rescreen]=true" -f "inputs[account]=$account" > /dev/null; then
               used[$account]=$(( ${used[$account]:-0} + 1 ))
-              echo "#$number: screened again (held at the limit at $at, for $account)."
+              echo "#$number: screened again (held at $at, for $account)."
             else
               echo "::error::the rescreen of #$number could not be started."
               failed=1

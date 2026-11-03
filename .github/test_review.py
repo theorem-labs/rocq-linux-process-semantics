@@ -1083,15 +1083,19 @@ class HoldTest(Runner):
                                "number=7`.")
 
     AGAIN = (r"It is screened again automatically, with no maintainer, from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} "
-             r"UTC, by a check that runs every 15 minutes\. If that account is still at the limit then, the check tries "
-             r"again later, and if the item is held again, this comment gives the new time\.")
+             r"UTC, by a check that runs every 15 minutes\. ")
+    # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
+    # be held for another reason, says only that a new hold says why.
+    AGAIN_LIMIT = AGAIN + (r"If that account is still at the limit then, the check tries again later, and if the item "
+                           r"is held again, this comment gives the new time\. ")
+    AGAIN_OTHER = AGAIN + r"If it is held again, this comment says why\. "
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
         of the screen carries no such marker, so it is never screened again on its own."""
         _calls, _post, body = self.hold("limit", tries="1")
         self.assertIn(f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour", body)
-        self.assertRegex(body, self.AGAIN)
+        self.assertRegex(body, self.AGAIN_LIMIT)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
 
@@ -1106,7 +1110,8 @@ class HoldTest(Runner):
     def test_a_review_stopped_at_the_cap_is_tried_again_and_counts_no_try(self):
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", capped=True)
         self.assertIn(f"had reached their limit of {WF['env']['SCREENED_HOURLY_CAP']} an hour", body)
-        self.assertRegex(body, self.AGAIN)
+        self.assertRegex(body, self.AGAIN_OTHER)
+        self.assertNotIn("account is still at the limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
 
     def test_a_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
@@ -1125,7 +1130,8 @@ class HoldTest(Runner):
                     self.setUp()
                     _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(before))
                     self.assertIn(f"did not finish ({before + 1} of the {self.TRIES} times it is tried)", body)
-                    self.assertRegex(body, self.AGAIN)
+                    self.assertRegex(body, self.AGAIN_OTHER)
+                    self.assertNotIn("account is still at the limit", body)
                     self.assertTrue(body.endswith(f"\n\n<!-- review-held-transient 50 {before + 1} -->"), body)
             with self.subTest(review=review, before=self.TRIES - 1):
                 self.tearDown()
@@ -1149,7 +1155,8 @@ class HoldTest(Runner):
         self.setUp()
         _calls, _post, body = self.hold("screen", review="cancelled", origin="50",
                                         runs=[(90, "review #7"), (102, "review #70"), (103, "rescreen #70 of eve"),
-                                              (104, "review #7", "skipped")])
+                                              (104, "review #7", "skipped"), (105, "review #7", "failure"),
+                                              (106, "rescreen #7 of mallory", "cancelled")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
     def test_a_later_hold_replaces_the_comment(self):
@@ -1321,7 +1328,7 @@ class BunTest(Runner):
                 os.remove(path)
 
 
-RESCREEN_JOB = "Start the screen again of each item held at the limit over an hour ago"
+RESCREEN_JOB = "Start the screen again of each held item whose hold is over an hour old"
 OLD, NEW = "2000-01-01T00:00:00Z", "2999-01-01T00:00:00Z"   # a hold over an hour old, and one under it
 BOT = "github-actions[bot]"
 
@@ -1555,10 +1562,11 @@ class RescreenJobTest(Held):
         self.serve(f"repos/{REPO}/issues", [{"number": i[0], "state": i[1], **({"draft": i[2]} if len(i) > 2 else {})}
                                             for i in items])
 
-    def started(self):
+    def started(self, post_review=None):
         rc, out, _ = self.run_script(step("rescreen", RESCREEN_JOB)["run"],
                                      OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
-                                     HELD_LABEL=WF["env"]["HELD_LABEL"])
+                                     HELD_LABEL=WF["env"]["HELD_LABEL"],
+                                     POST_REVIEW=WF["env"]["POST_REVIEW"] if post_review is None else post_review)
         runs = []
         for call in gh_calls(self.api):
             if call[:3] == ["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]:
@@ -1566,6 +1574,23 @@ class RescreenJobTest(Held):
                 self.assertEqual(f["ref"], "main")
                 runs.append((f["inputs[number]"], f["inputs[rescreen]"], f["inputs[account]"]))
         return rc, out, runs
+
+    def test_nothing_is_started_when_reviews_are_not_posted(self):
+        """Without a posted review the label never comes off, so the same item would be screened and reviewed every
+        hour, with no end."""
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.assertEqual(WF["env"]["POST_REVIEW"], "true")
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+        self.tearDown()
+        self.setUp()
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        rc, out, runs = self.started(post_review="false")
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn("POST_REVIEW is not true", out)
 
     def test_the_selection(self):
         """A hold at the limit over an hour old is picked; a fresh one, a hold of the screen, a closed item, an
@@ -1726,7 +1751,7 @@ class RescreenJobTest(Held):
                "inputs.account": "mallory"}
         self.assertEqual(evaluate(WF["run-name"], ctx), "rescreen #7 of mallory")
         self.assertEqual(evaluate(WF["run-name"], {"github.event_name": "schedule"}),
-                         "rescreen the items held at the limit")
+                         "rescreen the held items")
         self.assertEqual(evaluate(WF["run-name"], dict(ctx, **{"inputs.rescreen": False})), "review #7")
         self.assertIn("rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\\[bot\\])?)$'",
                       step("rescreen", RESCREEN_JOB)["run"])
