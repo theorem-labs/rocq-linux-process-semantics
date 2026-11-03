@@ -17,16 +17,29 @@ permissions:
   contents: read
 
 jobs:
-  # Decides from this event's own diff whether the Rocq lanes run: against the
-  # base for a pull request, against the previous tip of main for a push (so
-  # every commit of a multi-commit push counts). Only a change that touches
-  # nothing but *.md files and LICENSE skips them.
+  # Decides from this event's own diff which jobs run: against the base for a
+  # pull request, against the previous tip of main for a push (so every
+  # commit of a multi-commit push counts).
+  #
+  #   build    (the Rocq lanes and `opam install`) is false only when every
+  #            changed path is *.md, LICENSE or one of the review workflow's
+  #            own files below. Every other .github/ file stays an input:
+  #            the lanes run .github/check_assumptions.py.
+  #   review   (the review workflow's tests) is true when one of the review
+  #            workflow's own files changed: .github/workflows/review.yml,
+  #            .github/test_review.py, .github/test_screen.py,
+  #            .github/screen.py, .github/review.md. The tests read the
+  #            workflow and import the screen.
+  #
+  # It fails safe: no usable base, an empty diff or a change to this file
+  # runs every job.
   route:
     name: Route
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       build: ${{ steps.route.outputs.build }}
+      review: ${{ steps.route.outputs.review }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,6 +51,11 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          everything() {
+            echo "$1; running everything."
+            { echo build=true; echo review=true; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           case "$EVENT" in
             pull_request) base="$PR_BASE"; range="$base...HEAD" ;;
             push) base="$PUSH_BEFORE"; range="$base..HEAD" ;;
@@ -45,19 +63,28 @@ jobs:
           esac
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] \
              || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "No usable base ($EVENT); running everything."
-            echo build=true >> "$GITHUB_OUTPUT"
-            exit 0
+            everything "No usable base ($EVENT)"
           fi
           git diff --name-only --no-renames "$range" > "$RUNNER_TEMP/changed"
           echo "Changed files:"; cat "$RUNNER_TEMP/changed"
-          rc=0; grep -Eqv '(\.md|^LICENSE)$' "$RUNNER_TEMP/changed" || rc=$?
-          case "$rc" in
-            0) echo build=true >> "$GITHUB_OUTPUT" ;;
-            1) echo "Only *.md and LICENSE changed; skipping the Rocq lanes."
-               echo build=false >> "$GITHUB_OUTPUT" ;;
-            *) echo "grep failed ($rc)"; exit 1 ;;
-          esac
+          # An empty diff said nothing, which is what a wrong base looks like.
+          [ -s "$RUNNER_TEMP/changed" ] || everything "The diff against $base is empty"
+          grep -qx '\.github/workflows/ci\.yml' "$RUNNER_TEMP/changed" \
+            && everything "This workflow changed"
+          review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md)$'
+          # grep answers 0 when a line matches, 1 when none does, 2 or more on an error.
+          answer() {
+            rc=0; grep "$@" "$RUNNER_TEMP/changed" || rc=$?
+            case "$rc" in
+              0) echo true ;;
+              1) echo false ;;
+              *) echo "grep failed ($rc)" >&2; return 1 ;;
+            esac
+          }
+          build=$(answer -Eqv "(\.md$|^LICENSE$|$review_files)")
+          review=$(answer -Eq "$review_files")
+          echo "build=$build review=$review"
+          { echo "build=$build"; echo "review=$review"; } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and check (Rocq ${{ matrix.rocq }})
@@ -186,10 +213,12 @@ jobs:
 
   # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed and
   # who is screened first, which jobs run on each route, which comments the review reads, and what the posted comment
-  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). It is quick, so it runs on
-  # every change, a change to *.md only included.
+  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). It runs when the route's
+  # `review` answer is true: a change to the review workflow's own files, or to this file.
   review-workflow:
     name: Review workflow
+    needs: route
+    if: needs.route.outputs.review == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -313,9 +342,8 @@ jobs:
           done
 
   # The one check to require: it always runs, and passes only when the route
-  # succeeded, the review workflow's tests passed, and every lane the route
-  # started passed (a lane the route skipped counts as passed). All three Rocq
-  # lanes stay blocking.
+  # succeeded with a decision and every job it started passed (a job the
+  # route skipped counts as passed). All three Rocq lanes stay blocking.
   ci:
     name: CI
     needs: [route, build, opam, review-workflow]
@@ -326,15 +354,24 @@ jobs:
       - env:
           ROUTE: ${{ needs.route.result }}
           BUILD_ROUTED: ${{ needs.route.outputs.build }}
+          REVIEW_ROUTED: ${{ needs.route.outputs.review }}
           BUILD: ${{ needs.build.result }}
           OPAM: ${{ needs.opam.result }}
           REVIEW_WORKFLOW: ${{ needs.review-workflow.result }}
         run: |
-          echo "route=$ROUTE build-routed=$BUILD_ROUTED build=$BUILD opam=$OPAM review-workflow=$REVIEW_WORKFLOW"
+          echo "route=$ROUTE build-routed=$BUILD_ROUTED review-routed=$REVIEW_ROUTED build=$BUILD opam=$OPAM review-workflow=$REVIEW_WORKFLOW"
           [ "$ROUTE" = success ] || { echo "route did not succeed"; exit 1; }
-          [ "$REVIEW_WORKFLOW" = success ] || { echo "the review workflow's tests did not pass"; exit 1; }
           if [ "$BUILD_ROUTED" = true ]; then
             [ "$BUILD" = success ] && [ "$OPAM" = success ] || { echo "a lane did not pass"; exit 1; }
-          else
+          elif [ "$BUILD_ROUTED" = false ]; then
             [ "$BUILD" = skipped ] && [ "$OPAM" = skipped ] || { echo "unexpected lane result"; exit 1; }
+          else
+            echo "the route decided nothing for the lanes"; exit 1
+          fi
+          if [ "$REVIEW_ROUTED" = true ]; then
+            [ "$REVIEW_WORKFLOW" = success ] || { echo "the review workflow's tests did not pass"; exit 1; }
+          elif [ "$REVIEW_ROUTED" = false ]; then
+            [ "$REVIEW_WORKFLOW" = skipped ] || { echo "unexpected review workflow result"; exit 1; }
+          else
+            echo "the route decided nothing for the review workflow"; exit 1
           fi
