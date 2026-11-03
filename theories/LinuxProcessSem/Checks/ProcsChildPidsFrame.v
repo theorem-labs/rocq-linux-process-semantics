@@ -962,6 +962,14 @@ Proof.
   unfold check_set_robust_list in H. cp_frame2 H.
 Qed.
 
+Lemma check_setns_cp : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros fd eff m m' evs H.
+  unfold check_setns in H. cp_frame2 H.
+Qed.
+
 (** The memory-management arms build their post-models through the
     wrappers of [Sys.Mm]; two of them branch or recurse, so they get a
     lemma, and every other wrapper keeps [cp_of] by conversion. *)
@@ -1292,6 +1300,7 @@ Proof.
         | eapply check_pipe2_cp; eassumption
         | eapply check_futex_cp; eassumption
         | eapply check_set_robust_list_cp; eassumption
+        | eapply check_setns_cp; eassumption
         | eapply check_madvise_cp; eassumption
         | eapply check_rt_sigprocmask_cp; eassumption
         | eapply check_tkill_cp; eassumption

@@ -124,7 +124,12 @@ Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInp
   match o with
   | OProcFile _ => read_proc_witness buf count i m
   | OEventFd fl => read_eventfd_witness fl buf count i m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ => ret_outcome (errno_ret EBADF) m
+  | OProcFdDir _ _ =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m
+      else ret_outcome (errno_ret EISDIR) m
+  | ONsFile _ | OSignalFd _ _ => Unmodeled
   end.
 
 Lemma read_opaque_witness_ok : forall o buf count i m,
@@ -132,8 +137,12 @@ Lemma read_opaque_witness_ok : forall o buf count i m,
 Proof.
   intros. unfold read_opaque_spec, read_opaque_witness.
   destruct o; cbv beta iota;
-    [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    [ unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply read_proc_witness_ok | apply read_eventfd_witness_ok
+    | apply unmodeled_intro
+    | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota;
+        unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply unmodeled_intro ].
 Qed.
 
 (** [ReadWrite.write_eventfd_spec]: the -EFAULT, the -EINVAL, the failed
@@ -171,13 +180,15 @@ Proof.
   - unfold ret_only, ret_outcome. apply pure_ok.
 Qed.
 
-(** [ReadWrite.write_opaque_spec]: the eventfd's witness, [Unmodeled] on
-    the other five objects. *)
+(** [ReadWrite.write_opaque_spec]: the eventfd's witness, the errno of
+    four objects, [Unmodeled] on [State.ONsFile]. *)
 Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_witness fl buf count i m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ | OProcFile _ | OProcFdDir _ _ => ret_outcome (errno_ret EBADF) m
+  | OSignalFd _ _ => ret_outcome (errno_ret EINVAL) m
+  | ONsFile _ => Unmodeled
   end.
 
 Lemma write_opaque_witness_ok : forall o buf count i m,
@@ -185,8 +196,12 @@ Lemma write_opaque_witness_ok : forall o buf count i m,
 Proof.
   intros. unfold write_opaque_spec, write_opaque_witness.
   destruct o; cbv beta iota;
-    [ apply unmodeled_intro | apply unmodeled_intro | apply write_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    [ unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply write_eventfd_witness_ok
+    | apply unmodeled_intro
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok ].
 Qed.
 
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
