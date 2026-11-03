@@ -29,6 +29,11 @@ Definition m0 : Model := UtsCases.m0.
 Definition c_ctx : NsCtx := UtsCases.c_ctx.
 Definition c_st : NsState := UtsCases.c_st.
 
+(** [C]'s state carries the default launch value: no environment reaper
+    calls [setpgid] on [C] before its [setsid]. *)
+Example c_st_launch_default : env_foreign_pgroups (ns_env c_st) = false.
+Proof. vm_compute. reflexivity. Qed.
+
 (** bubblewrap's [setsid()] in [C], pid 1 of the pid namespace the clone
     made: no session led yet, and no process group can be 1 there (no
     modelled call makes one, and the launch value [env_foreign_pgroups]

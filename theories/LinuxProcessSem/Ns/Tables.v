@@ -351,9 +351,10 @@ Definition default_mi_env : MiEnv :=
     parent exits, its child is reparented to a reaper the environment
     owns, and that reaper may call [setpgid(child, child)] before the
     child execs, after which the child's [setsid] answers EPERM
-    (kernel/sys.c:1284-1285).  [false], the default, assumes no such
-    reaper acts; a statement that does not want that assumption names
-    [true] ([Task.setsid_arm]). *)
+    (kernel/sys.c:1284-1285).  [false], the default, assumes that no
+    environment reaper calls [setpgid] on the caller before the caller's
+    [setsid]; a statement that wants that case names
+    [env_foreign_pgroups := true] ([Task.setsid_arm]). *)
 Record NsEnv := mkNsEnv {
   env_mount_max       : Z;
   env_proc_entries    : list ProcEntry;
