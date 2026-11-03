@@ -1585,6 +1585,19 @@ Definition proc_sys_overflowgid_path : path :=
 Definition proc_sys_file_b (p : path) : bool :=
   path_eqb p proc_sys_overflowuid_path || path_eqb p proc_sys_overflowgid_path.
 
+(** "/proc/self". *)
+Definition proc_self_path : path :=
+  proc_root_path ++ [slash_byte; Z_to_bv 8 115; Z_to_bv 8 101; Z_to_bv 8 108; Z_to_bv 8 102].
+
+(** Is the first component of [p] "fd"?  The components are the ones
+    [link_path_walk] walks ([path_components_aux]), so "fd", "fd/3" and
+    "fd//3" say yes, and "fdinfo/3" and "./fd" say no. *)
+Definition first_component_fd_b (p : path) : bool :=
+  match path_components_aux [] p with
+  | c :: _ => path_eqb c [Z_to_bv 8 102; Z_to_bv 8 100]
+  | [] => false
+  end.
+
 (** The procfs name an [openat] reaches, or [None] where this section
     does not apply.
 
@@ -1600,8 +1613,23 @@ Definition proc_sys_file_b (p : path) : bool :=
       tested before the table is read: it is not a descriptor, and the
       test keeps the answer for a relative name from depending on what
       the table holds at the number [AT_FDCWD32].
+    - ONE RELATIVE JOIN IS [None]: a name whose first component is "fd"
+      ([first_component_fd_b]) relative to an O_PATH descriptor on
+      "/proc/self".  An O_PATH|O_NOFOLLOW open of "/proc/self" holds the
+      symlink itself ([proc_setup_self] makes its inode S_IFLNK,
+      fs/proc/self.c), and for any name relative to it [path_init]'s
+      [if (*s && unlikely(!d_can_lookup(dentry)))] answers -ENOTDIR.  The
+      model does not record O_NOFOLLOW, and "/proc/self/fd/N" is a name
+      [openat_proc_spec] READS through (the reopen of descriptor N,
+      [openat_procfd_spec]), so the join is declined for every word.
+      Without O_NOFOLLOW Linux follows the link and answers the join, so
+      this is a narrowing: "fd/N" relative to "/proc", and the absolute
+      name, are the forms answered.  Every other join relative to
+      "/proc/self" gives a name only O_PATH answers, as an [OProcPath],
+      and nothing reads an [OProcPath]'s object ([openat_proc_spec]).
 
-    fs/namei.c [path_init]: read at v6.18.44; identical at v6.18.46. *)
+    fs/namei.c [path_init], fs/proc/self.c [proc_setup_self]: read at
+    v6.18.44; identical at v6.18.46. *)
 Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
     (p : path) : option path :=
   match p with
@@ -1613,7 +1641,9 @@ Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
         match fd_lookup fds dirfd with
         | Some (FdOpaque (OProcPath q)) =>
             let c := q ++ slash_byte :: p in
-            if proc_path_b c then Some c else None
+            if proc_path_b c
+               && negb (path_eqb q proc_self_path && first_component_fd_b p)
+            then Some c else None
         | _ => None
         end
   | [] => None
