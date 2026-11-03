@@ -39,10 +39,9 @@
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
 #           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
-#           refs/heads/main, for the three events below. That rule is to refuse a job in review-screen too; until it
-#           does, the screen job could exchange its identity token for the review's Claude token, though the only
-#           code it runs is .github/screen.py from main. The review job cannot get the screen's tokens: they need
-#           the environment.
+#           refs/heads/main, for the three events below, and refuses a job in review-screen, so the screen job cannot
+#           get the review's Claude token. The review job cannot get the screen's tokens either: they need the
+#           environment.
 #   post    posts that comment, or replaces the one it posted before, when POST_REVIEW says so, and takes the label
 #           review-held off.
 #   hold    labels a held pull request or issue review-held and says so in a comment. It holds no model, and has no
@@ -415,24 +414,25 @@ jobs:
       MODEL_ARMOR_TEMPLATE: projects/theorem-agent-infra/locations/us/templates/review-screen
       STORAGE_URL: https://storage.googleapis.com
       REASON_BUCKET: theorem-agent-infra-review-screen-reasons
-      # Azure: Theorem's tenant, the managed identity review-screen and the Content Safety account.
+      # Azure: Theorem's tenant, the managed identity review-screen, whose federated credential admits this
+      # repository's jobs in review-screen, and whose role allows text:shieldPrompt on the Content Safety account and
+      # nothing else.
       AZURE_LOGIN_URL: https://login.microsoftonline.com
       AZURE_TENANT_ID: aaa6ad34-51af-41e7-891f-f16f5c53c396
-      # Empty until the managed identity exists: Prompt Shields then does not run, and the verdict says so.
-      AZURE_CLIENT_ID: ""
+      AZURE_CLIENT_ID: 878cb696-144f-4c60-b04c-3974fad24e96
       CONTENT_SAFETY_URL: https://theorem-review-screen.cognitiveservices.azure.com
-      # Anthropic: Theorem's organization, the service account review-screen, its workspace, and the federation rule
-      # that admits this file's jobs in review-screen on main. The account and the rule ids are empty until they exist:
-      # the Claude check then does not run, and the verdict says so.
+      # Anthropic: Theorem's organization, the service account review-screen (not the review's oss-verify-ci), its
+      # workspace, and the federation rule rocq-linux-process-semantics-screen, which admits only this file's jobs in
+      # review-screen on main, for the three events, with the scope workspace:inference.
       ANTHROPIC_URL: https://api.anthropic.com
       ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
       ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
-      ANTHROPIC_SERVICE_ACCOUNT_ID: ""
-      ANTHROPIC_FEDERATION_RULE_ID: ""
+      ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01JFhEhPizCyTiK2i22mRJ8a
+      ANTHROPIC_FEDERATION_RULE_ID: fdrl_01SQMHj4Tw85dV4DNYWQDKeA
       SCREEN_MODEL: claude-haiku-5-5
-      # The checks that run: model_armor always, and prompt_shields and claude once their identities above are set.
-      # A listed check whose settings are missing holds every item; a check leaves only by leaving this list.
-      SCREEN_CHECKS: model_armor
+      # The checks that run, all three. A listed check whose settings are missing, or that cannot answer (a 429 of
+      # Prompt Shields' free tier among the causes), holds the item; a check leaves only by leaving this list.
+      SCREEN_CHECKS: model_armor,prompt_shields,claude
     steps:
       # main's .github/, for screen.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
