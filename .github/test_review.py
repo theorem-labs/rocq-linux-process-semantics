@@ -1036,7 +1036,7 @@ class HoldTest(Runner):
                  uncounted=False, runs=()):
         """Run the hold step; capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews
         failed, so it stopped before the cap's step; runs: this workflow's runs, (id, name[, its trust job's
-        conclusion, success when absent, None for not listed yet])."""
+        conclusion, success when absent, None for not listed yet[, its event, pull_request_target when absent]])."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
         self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
@@ -1048,8 +1048,8 @@ class HoldTest(Runner):
                 {"name": "Hold at the hourly cap",
                  "conclusion": "skipped" if uncounted else "failure" if capped else "success"},
                 {"name": "Review", "conclusion": "skipped" if capped or uncounted else "failure"}]}]})
-        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs",
-                   {"workflow_runs": [{"id": r[0], "display_title": r[1]} for r in runs]})
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+            {"id": r[0], "display_title": r[1], "event": r[3] if len(r) > 3 else "pull_request_target"} for r in runs]})
         for r in runs:
             trust = r[2] if len(r) > 2 else "success"
             self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
@@ -1156,7 +1156,10 @@ class HoldTest(Runner):
         _calls, _post, body = self.hold("screen", review="cancelled", origin="50",
                                         runs=[(90, "review #7"), (102, "review #70"), (103, "rescreen #70 of eve"),
                                               (104, "review #7", "skipped"), (105, "review #7", "failure"),
-                                              (106, "rescreen #7 of mallory", "cancelled")])
+                                              (106, "rescreen #7 of mallory", "cancelled"),
+                                              # a fork's own copy of this file, which names its runs as it likes
+                                              (107, "review #7", "success", "pull_request"),
+                                              (108, "rescreen #7 of mallory", "success", "pull_request")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
     def test_a_later_hold_replaces_the_comment(self):
@@ -1655,6 +1658,16 @@ class RescreenJobTest(Held):
                     rc, out, runs = self.started()
                     self.assertEqual((rc, runs), (0, [("8", "true", "eve")]), out)
                     self.assertIn("#7: a run of it has not finished", out)
+
+    def test_a_forks_own_run_holds_no_item_back(self):
+        """A fork's pull request can run its own copy of this file (event pull_request), named as it likes: such a run
+        does not keep another item from being screened again."""
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.runs((10, "mallory", "pull_request", "review #7", "in_progress"),
+                  (11, "mallory", "pull_request", "rescreen #7 of mallory", "in_progress"))
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
 
     def test_a_draft_is_left_alone(self):
         """The trust job takes no draft, and a run it stops would still count toward the account's limit, held

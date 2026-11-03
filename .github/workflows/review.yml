@@ -155,12 +155,14 @@ env:
   # issue or push in that hour is held without a screen. Every run its event started that the trust job did not skip
   # counts, the held ones too, so a burst stays held until an hour has passed since its runs.
   # The rescreens of its held items count toward the same limit, with its events: so N, the most rescreens of one
-  # account in an hour, is this number, 3, less what its own events used. One count and one limit, because a rescreen
-  # is the screen that the held event did not get: it gives an account no more screens an hour than its events alone
-  # could, which keeps it under SCREENED_HOURLY_CAP, so one account cannot fill that pool. A smaller N for rescreens
-  # would only leave a burst held for longer; an account that keeps opening, pushing or reopening stays held. An
-  # account with write access has no such limit (a writer's push to an outsider's item, whose cap or transient hold
-  # names the writer's run): the rescreen job still starts at most this number of its rescreens an hour.
+  # account that are screened in an hour, is this number, 3, less what its own events used. (The rescreen job starts
+  # up to 3 an hour whatever its events used, and the trust job holds the extra ones at the limit.) One count and one
+  # limit, because a rescreen is the screen that the held event did not get: it gives an account no more screens an
+  # hour than its events alone could, which keeps it under SCREENED_HOURLY_CAP, so one account cannot fill that pool. A
+  # smaller N for rescreens would only leave a burst held for longer; an account that keeps opening, pushing or
+  # reopening stays held. An account with write access has no such limit (a writer's push to an outsider's item, whose
+  # cap or transient hold names the writer's run): the rescreen job still starts at most this number of its rescreens
+  # an hour.
   OUTSIDE_HOURLY_LIMIT: "3"
   # The label a held pull request or issue gets, and the marker of the comment that says so.
   HELD_LABEL: review-held
@@ -343,7 +345,8 @@ jobs:
             # GitHub lets only an account with write access start a run by hand; an App must be one of the APPS, as the
             # Review step's allowed_bots says. A rescreen may come from github-actions[bot] too: a dispatch made with the
             # token of a job of this repository given actions: write, which the rescreen job is. Whoever started it, a
-            # rescreen is checked against the hold, screened unless both accounts are writers, and counted.
+            # rescreen is checked against the hold, screened unless both accounts are writers, and, for an account
+            # without write access, counted.
             workflow_dispatch)
               if [[ $ACTOR == *'[bot]' && ! ($RESCREEN == true && $ACTOR == 'github-actions[bot]') ]]; then
                 known "$ACTOR" || { echo "::notice::No review of #$NUMBER: the App that started this run ($ACTOR)" \
@@ -1078,7 +1081,9 @@ jobs:
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
                 -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
-                  | select(.id > ($ENV.RUN_ID | tonumber) and ((.display_title // "") == "review #" + $ENV.NUMBER
+                  | select(.id > ($ENV.RUN_ID | tonumber)
+                           and (.event == "pull_request_target" or .event == "issues" or .event == "workflow_dispatch")
+                           and ((.display_title // "") == "review #" + $ENV.NUMBER
                            or ((.display_title // "") | startswith("rescreen #" + $ENV.NUMBER + " of ")))) | .id') \
                 || { echo "::error::the runs of this workflow could not be read"; exit 1; }
               for id in $newer; do
@@ -1214,7 +1219,10 @@ jobs:
           rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\[bot\])?)$'
           review_re='^review #([0-9]+)$'
           while read -r created status event title; do
-            if [[ ${title:-} =~ $review_re ]]; then
+            # Only this workflow's own events name a run: a fork's pull request can run its own copy of this file
+            # (event pull_request) under any name.
+            if [[ ($event == pull_request_target || $event == issues || $event == workflow_dispatch) \
+                  && ${title:-} =~ $review_re ]]; then
               [ "$status" = completed ] || running[${BASH_REMATCH[1]}]=1
             elif [[ $event == workflow_dispatch && ${title:-} =~ $rescreen_re ]]; then
               [ "$status" = completed ] || running[${BASH_REMATCH[1]}]=1
