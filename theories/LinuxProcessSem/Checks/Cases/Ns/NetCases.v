@@ -385,9 +385,8 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 Definition snd_len : Z := Z.of_nat (length getlink_req).
 Definition snd_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 capable.
 Definition snd_state : NsState :=
-  mkNsState [] users [] [] [net2 [lo_up]] [] [] [] [(7%N, snd_file)] (ns_env empty_nsstate).
-Definition snd_ctx : NsCtx :=
-  mkNsCtx 1 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 (mkCaps 0 0 0 0 0) 0 [].
+  with_files (with_netns (with_userns empty_nsstate users) [net2 [lo_up]]) [(7%N, snd_file)].
+Definition snd_ctx : NsCtx := with_net_ns init_nsctx 2.
 Definition snd_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in
            if (0 <=? k) && (k <? snd_len) then Some (nth (Z.to_nat k) getlink_req (Z_to_bv 8 0))
@@ -483,10 +482,9 @@ Qed.
 Definition admin : IdCred := mkIdCred 2 65534 65534 (2 ^ CAP_NET_ADMIN).
 Definition up_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 admin.
 Definition up_state : NsState :=
-  mkNsState [] users [] [] [net2 [lo IFF_LOOPBACK []]] [] [] [] [(7%N, up_file)] (ns_env empty_nsstate).
+  with_files (with_netns (with_userns empty_nsstate users) [net2 [lo IFF_LOOPBACK []]]) [(7%N, up_file)].
 Definition up_ctx : NsCtx :=
-  mkNsCtx 2 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0) 0 [].
+  with_caps (with_net_ns (with_user_ns init_nsctx 2) 2) (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0).
 Definition up_len : Z := Z.of_nat (length newlink_req).
 Definition up_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in

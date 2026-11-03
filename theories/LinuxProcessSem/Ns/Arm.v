@@ -2,9 +2,10 @@
 
     The arm type and the helpers every arm uses: an answer that only sets
     the return register, the open file a descriptor names, a fresh handle,
-    the task's pid, the context setters, and what a path walk needs from
-    the process ([walk_creds], [fd_loc_of]).  The released answer an arm
-    falls back to is [Ext.released]. *)
+    the task's pid, and what a path walk needs from the process
+    ([walk_creds], [fd_loc_of]).  The context and state setters are in
+    [Ns.Tables].  The released answer an arm falls back to is
+    [Ext.released]. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -100,8 +101,9 @@ Definition host_loc (st : NsState) (p : list byte) : option Loc :=
           let r := ns_top st r0 in
           let root := (mnt_id r, mnt_root r) in
           let full := (2 ^ 41 - 1)%Z in
-          let hctx := mkNsCtx (uns_id u) (mntns_id n) (cx_pidns init_nsctx) (cx_net init_nsctx) []
-                              root root (cx_umask init_nsctx) (mkCaps full full 0 full 0) 0 [] in
+          let hctx := with_caps (with_cwd (with_root (with_mount_ns (with_user_ns init_nsctx (uns_id u))
+                                                                    (mntns_id n)) root) root)
+                                (mkCaps full full 0 full 0) in
           match walk st hctx (mkWalkCreds 0 0 []) (fun _ => None) (LDentry (fst root) (snd root)) p
                      (mkWalkFlags true false false false false) with
           | (WOk l, _) => Some l
@@ -168,15 +170,6 @@ Definition u32_bytes (v : Z) : list byte := Z_to_le_bytes 4 v.
 Definition s32 (w : word) : Z :=
   let v := Z.land (bv_unsigned w) 4294967295 in
   if (v <? 2147483648)%Z then v else (v - 4294967296)%Z.
-
-Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
-
-(** The descriptors marked close-on-exec replaced by [l]. *)
-Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l.
 
 (** Descriptor [fd] marked close-on-exec when [on], unmarked otherwise. *)
 Definition set_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=

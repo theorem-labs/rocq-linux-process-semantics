@@ -17,20 +17,29 @@ Definition creds (id : Z) : Creds :=
 Definition nf : MountFlags := mkMountFlags false false false false.
 Definition full : list IdExtent := [mkExtent 0 0 4294967295].
 
+(** Tables with mounts [ms], user namespaces [us] and pid namespaces [ps],
+    mount namespace 1 (the host's, root mount 1) and network namespace 1
+    (the host's). *)
+Definition tables (ms : list Mount) (us : list UserNs) (ps : list PidNs) : NsState :=
+  let st := with_mounts empty_nsstate ms in
+  let st := with_userns st us in
+  let st := with_mntns st [mkMntNs 1 1 1 true] in
+  let st := with_pidns st ps in
+  with_netns st [mkNetNs 1 1 [] false].
+
 (** The host: user namespace 1 (initial, every id mapped), mount namespace
-    1 (the host's, root mount 1 at dentry 1), pid namespace 1 and network
-    namespace 1, all the host's. *)
+    1 (the host's, root mount 1 at dentry 1), pid namespace 1, network
+    namespace 1 and UTS namespace 1, all the host's. *)
 Definition host : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
-            [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0] [mkNetNs 1 1 [] false]
-            [] [] [] [] (ns_env empty_nsstate).
+  tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
+         [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+         [mkPidNs 1 None 1 0 0].
 
 Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
+Definition fullcaps : CapSets := mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0.
 
 (** The caller: pid 136 of the host. *)
-Definition caller : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18 nocaps 0 [].
+Definition caller : NsCtx := with_caps (with_pids init_nsctx [(1%positive, 136)]) nocaps.
 
 Definition SIGCHLD : Z := 17.
 Definition ALL_NS : Z :=
@@ -41,14 +50,22 @@ Definition child_of (o : CloneNs) : option NsCtx := match o with CnOk c _ _ => S
 Definition st_of (o : CloneNs) : option NsState := match o with CnOk _ _ s => Some s | _ => None end.
 Definition ret_of (o : CloneNs) : option (option Z) := match o with CnOk _ r _ => Some r | _ => None end.
 
-(** The child is in a new user, mount, pid and network namespace (2 each),
-    pid 1 in its own and 138 in the host's, with every capability, its
-    root on the copy of the root mount, and, having left the released
-    world, a no_new_privs bit and dumpable mode the model does not know. *)
+(** The child is in a new user, mount, pid, network and UTS namespace (2
+    each), pid 1 in its own and 138 in the host's, with every capability
+    and its root on the copy of the root mount.  Its no_new_privs bit and
+    dumpable mode are its process record's ([Procs.child_proc]), not this
+    context's. *)
 Example clone_all_child : forall m,
   child_of (clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138)
-  = Some (mkNsCtx 2 2 2 2 [(2%positive, 1); (1%positive, 138)] (2%positive, 1%positive)
-                  (2%positive, 1%positive) 18 (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 []).
+  = Some (let c := with_user_ns init_nsctx 2 in
+          let c := with_mount_ns c 2 in
+          let c := with_pid_ns c 2 in
+          let c := with_net_ns c 2 in
+          let c := with_uts_ns c 2 in
+          let c := with_pids c [(2%positive, 1); (1%positive, 138)] in
+          let c := with_root c (2%positive, 1%positive) in
+          let c := with_cwd c (2%positive, 1%positive) in
+          with_caps c fullcaps).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** As on Linux: the host's mount namespace has rootfs (mount 1) as its root
@@ -58,14 +75,12 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     child's later pivot_root does not stop at "the root mount has no
     parent" (EINVAL). *)
 Definition host_rootfs : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None;
-             mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
-            [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0] [mkNetNs 1 1 [] false]
-            [] [] [] [] (ns_env empty_nsstate).
+  tables [mkMount 1 1 None 1 1 1 nf nf false false None None;
+          mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
+         [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+         [mkPidNs 1 None 1 0 0].
 
-Definition caller_rootfs : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 136)] (2%positive, 2%positive) (2%positive, 2%positive) 18 nocaps 0 [].
+Definition caller_rootfs : NsCtx := with_cwd (with_root caller (2%positive, 2%positive)) (2%positive, 2%positive).
 
 Example clone_root_mount_has_parent : forall m,
   match clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller_rootfs host_rootfs 138 with
@@ -102,8 +117,8 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     CLONE_NEWUSER needs CAP_SYS_ADMIN there: a task without it gets
     EPERM. *)
 Definition no_admin_inside : NsCtx :=
-  mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          nocaps 0 [].
+  with_caps (with_pids (with_pid_ns (with_user_ns init_nsctx 2) 2) [(2%positive, 1); (1%positive, 136)])
+            nocaps.
 
 (** A task in the released world that makes no namespace: the core's own
     clone decides the flag word (CLONE_VM here), and the namespace model
@@ -120,15 +135,12 @@ Proof. intros m. apply clone_ns_flat_fork_ok; reflexivity. Qed.
     the host), a plain fork with host pid 140 gives pid 2 there and 140 on
     the host, and the shell's call returns 2. *)
 Definition inside : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
-            [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
-             mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0; mkPidNs 2 (Some 1%positive) 2 1 1]
-            [mkNetNs 1 1 [] false] [] [] [] [] (ns_env empty_nsstate).
+  tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
+         [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
+          mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+         [mkPidNs 1 None 1 0 0; mkPidNs 2 (Some 1%positive) 2 1 1].
 
-Definition shell : NsCtx :=
-  mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [].
+Definition shell : NsCtx := with_caps no_admin_inside fullcaps.
 
 Example clone_newns_inside_needs_admin : forall m,
   clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) no_admin_inside inside 140
@@ -193,14 +205,11 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A pid namespace at level 32 can have no child: ENOSPC. *)
 Definition deep : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
-            [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0; mkPidNs 7 (Some 1%positive) 1 32 5]
-            [mkNetNs 1 1 [] false] [] [] [] [] (ns_env empty_nsstate).
+  tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
+         [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+         [mkPidNs 1 None 1 0 0; mkPidNs 7 (Some 1%positive) 1 32 5].
 
-Definition admin_in_deep : NsCtx :=
-  mkNsCtx 1 1 7 1 [(7%positive, 1)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [].
+Definition admin_in_deep : NsCtx := with_caps (with_pids (with_pid_ns init_nsctx 7) [(7%positive, 1)]) fullcaps.
 
 Example clone_pid_level_32 : forall m,
   clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.

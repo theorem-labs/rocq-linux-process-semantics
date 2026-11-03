@@ -28,11 +28,12 @@ Definition init_uns (max : Z) (sealed : bool) : UserNs :=
   mkUserNs 1 None 0 0 (Some full) (Some full) true true max sealed.
 
 Definition world (us : list UserNs) : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] us
-            [mkMntNs 1 1 1 false] [] [] [] [] [] [] (ns_env empty_nsstate).
+  let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] in
+  let w := with_userns w us in
+  with_mntns w [mkMntNs 1 1 1 false].
 
 Definition task (user : positive) (root : positive * positive) (caps : CapSets) : NsCtx :=
-  mkNsCtx user 1 1 1 [(1%positive, 2)] root root 18 caps 0 [].
+  with_caps (with_cwd (with_root (with_pids (with_user_ns init_nsctx user) [(1%positive, 2)]) root) root) caps.
 
 Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 

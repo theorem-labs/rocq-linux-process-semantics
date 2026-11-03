@@ -105,9 +105,17 @@ Definition has_ns_bits (f : Z) : bool := negb (Z.eqb (Z.land f clone_ns_bits) 0)
     host's: its mount namespace is not in the tables or is marked
     [mntns_released]; its user namespace and pid namespace are not in the
     tables or have no parent; its network namespace is not in the tables
-    or is not sealed.  A task the tables know nothing of is in the
-    released world, so is every task of [empty_nsstate]
-    ([flat_view_empty]); a new field of [NsState] must keep that. *)
+    or is not sealed; its UTS namespace is not in the tables, or is the
+    host's ([host_uts]) with both names still the released pin's ([None]).
+    The UTS test asks for both, the id and the names: the id because the
+    host's namespace is the one a write must not change
+    ([Task.sethostname_arm] declines there), the names because the released
+    [uname] answers the pin's, so a namespace that answers otherwise is not
+    the released world (no arm writes the host's names, so on a state the
+    arms reach the names test adds nothing to the id test).  A task the
+    tables know nothing of is in the released world, so is every task of
+    [empty_nsstate] ([flat_view_empty]); a new field of [NsState] must keep
+    that. *)
 Definition flat_view (ctx : NsCtx) (st : NsState) : bool :=
   match find (fun n => Pos.eqb (mntns_id n) (cx_mount ctx)) (ns_mntns st) with
   | Some n => mntns_released n | None => true end
@@ -116,10 +124,20 @@ Definition flat_view (ctx : NsCtx) (st : NsState) : bool :=
   && match find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st) with
      | Some p => match pidns_parent p with None => true | Some _ => false end | None => true end
   && match find (fun n => Pos.eqb (netns_id n) (cx_net ctx)) (ns_netns st) with
-     | Some n => negb (netns_sealed n) | None => true end.
+     | Some n => negb (netns_sealed n) | None => true end
+  && match find_utsns st (cx_uts ctx) with
+     | Some u => Pos.eqb (utsns_id u) host_uts
+                 && match utsns_nodename u, utsns_domainname u with
+                    | None, None => true
+                    | _, _ => false
+                    end
+     | None => true end.
 
+(** [empty_nsstate] holds the host's UTS namespace alone, so a task in it
+    is in the released world, and so is a task in a UTS namespace the
+    tables do not hold. *)
 Lemma flat_view_empty : forall ctx, flat_view ctx empty_nsstate = true.
-Proof. reflexivity. Qed.
+Proof. intros ctx. unfold flat_view, find_utsns. destruct (cx_uts ctx); reflexivity. Qed.
 
 (** The released clone's own answer, seen by the namespace model: the
     child gets the caller's context, the parent the core's pid, the state

@@ -75,8 +75,7 @@ Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
     effective and bounding, none inheritable or ambient, securebits 0
     ([set_cred_user_ns]). *)
 Definition in_new_userns (ctx : NsCtx) (n : positive) : NsCtx :=
-  mkNsCtx n (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx) (cx_cwd ctx)
-          (cx_umask ctx) (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 (cx_cloexec ctx).
+  with_securebits (with_caps (with_user_ns ctx n) (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0)) 0.
 
 (** The environment's refusals after the flag checks, Linux 6.18.44:
     ENOMEM from [unshare_userns]'s [prepare_creds] (kernel/cred.c) and from

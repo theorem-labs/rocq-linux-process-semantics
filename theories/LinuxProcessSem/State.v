@@ -4047,7 +4047,12 @@ Record ProcState := mkProcState {
        in kernel/sys.c, so the model cannot know them; but they do not
        change under a process either.  Nothing in
        [Specs.modeled_sysnos] writes one: [sethostname] (161) and
-       [setdomainname] (162) have no dispatcher arm.  A [choose]
+       [setdomainname] (162) have no dispatcher arm in the released
+       world.  In the namespace world [Ns.Task.sethostname_arm] and
+       [Ns.Task.setdomainname_arm] answer them, write the names into a
+       new UTS namespace's [Ns.Tables.UtsNs] and never into this pin;
+       in the host's namespace they answer EPERM to a caller without
+       CAP_SYS_ADMIN over its owner and otherwise decline.  A [choose]
        resolved afresh at each call would therefore admit a trace in
        which two [uname] calls disagree about which kernel is running,
        which no Linux machine produces -- the same argument
@@ -5029,10 +5034,14 @@ Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
     once and never overwritten: [uname] (160) is a pure read, and the two
     syscalls that WRITE a utsname field -- [sethostname] (161) and
     [setdomainname] (162) -- have no arm in
-    [Sys.SyscallTable.spec_table].  That is what makes the repeat check
-    in [Checks.Sys.Kernel.Sys]'s [check_uname_copy] an equality rather than a
-    relation, and adding either syscall means giving this a second writer
-    in the same commit. *)
+    [Sys.SyscallTable.spec_table].  In the namespace world
+    [Ns.Task.set_uts_fn] answers both: it writes the names into a new UTS
+    namespace's [Ns.Tables.UtsNs], never here; in the host's namespace it
+    answers EPERM to a caller without CAP_SYS_ADMIN over its owner and
+    otherwise declines, so this pin keeps its one writer.  That is what makes the
+    repeat check in [Checks.Sys.Kernel.Sys]'s [check_uname_copy] an
+    equality rather than a relation, and adding either syscall to the
+    released table means giving this a second writer in the same commit. *)
 Definition with_utsname (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
