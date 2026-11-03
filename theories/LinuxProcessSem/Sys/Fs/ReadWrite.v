@@ -607,45 +607,72 @@ Definition write_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
   end.
 
 (** [read] on an opaque descriptor ([State.OpaqueFd]), one arm per
-    object. *)
+    object.  [ksys_read] takes the descriptor with [CLASS(fd_pos, f)],
+    and [vfs_read] then tests FMODE_READ, FMODE_CAN_READ and [access_ok]
+    in that order (fs/read_write.c:704-709, :556-561, v6.18.46). *)
 Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
   | OProcFile _ => read_proc_spec buf count
       (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
   | OEventFd fl => read_eventfd_spec fl buf count
       (* an eventfd: see [read_eventfd_spec] *)
-  | OProcPath _ => unmodeled
-      (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
-         file (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46), which is
-         -EBADF; not written *)
+  | OProcPath _ => err_ret EBADF
+      (* [fdget_pos] is [fdget], that is [__fget_light(fd, FMODE_PATH)],
+         which gives an empty [struct fd] for an O_PATH file, so
+         [ksys_read]'s [ret] stays -EBADF before any buffer is looked at
+         (fs/read_write.c:704-709; fs/file.c:1169-1170, :1179-1182,
+         :1225-1227, v6.18.46) *)
   | ONsFile _ => unmodeled
       (* FAIL-CLOSED: the object behind the handle may be of any type,
          and a read's answer depends on it ([State.ONsFile]) *)
-  | OProcFdDir _ _ => unmodeled
-      (* FAIL-CLOSED: [proc_fd_operations]'s [.read] is
-         [generic_read_dir], -EISDIR after [vfs_read]'s -EFAULT
-         (fs/proc/fd.c, fs/libfs.c, read at v6.18.44; identical at
-         v6.18.46); no program in reach reads it, so it is not written *)
+  | OProcFdDir _ _ =>
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* the directory is open O_RDONLY and [proc_fd_operations] has a
+           [.read], so FMODE_READ and FMODE_CAN_READ are set
+           (fs/open.c:970-972) and [vfs_read]'s [access_ok] is the first
+           test that refuses (fs/read_write.c:560-561, v6.18.46) *)
+      else err_ret EISDIR
+        (* [proc_fd_operations]'s [.read] is [generic_read_dir], which is
+           -EISDIR (fs/proc/fd.c:310-311; fs/libfs.c:224-227, v6.18.46).
+           [rw_verify_area] between the two cannot refuse
+           (fs/read_write.c:451-478): [access_ok] bounds the count by
+           [State.TASK_SIZE], and the position is at most the kernel's
+           [max_fds + 2], because only [getdents64] moves it ([lseek],
+           [dup] and [clone] decline the kind).  The position stays:
+           [ksys_read] stores it back only for a return of 0 or more *)
   | OSignalFd _ _ => unmodeled
       (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46) answers from the pending
          signals and their [siginfo], which this arm does not model *)
   end.
 
-(** [write] on an opaque descriptor ([State.OpaqueFd]): only the eventfd
-    answers. *)
+(** [write] on an opaque descriptor ([State.OpaqueFd]).  [ksys_write]
+    takes the descriptor with [CLASS(fd_pos, f)], and [vfs_write] then
+    tests FMODE_WRITE, FMODE_CAN_WRITE and [access_ok] in that order
+    (fs/read_write.c:727-732, :670-675, v6.18.46), so every answer below
+    but the eventfd's comes before the buffer is looked at. *)
 Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_spec fl buf count
       (* an eventfd: see [write_eventfd_spec] *)
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => unmodeled
-      (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
-         -EBADF; a /proc/sys file opened O_RDONLY and the /proc/self/fd
-         directory (O_RDONLY) are [vfs_write]'s FMODE_WRITE -EBADF; a
-         signalfd has no [.write], so [vfs_write]'s FMODE_CAN_WRITE test
-         answers -EINVAL; and an [ONsFile]'s object is of unknown type
-         (fs/read_write.c, fs/file.c, fs/signalfd.c, read at v6.18.44;
-         identical at v6.18.46).  None of these is written. *)
+  | OProcPath _ => err_ret EBADF
+      (* [fdget_pos] refuses an O_PATH file, as in [read_opaque_spec]
+         (fs/read_write.c:727-732; fs/file.c:1169-1170, :1225-1227) *)
+  | OProcFile _ | OProcFdDir _ _ => err_ret EBADF
+      (* [vfs_write]'s FMODE_WRITE test (fs/read_write.c:670-671): a
+         /proc/sys leaf and the /proc/self/fd directory are opened with
+         the O_RDONLY access mode only ([Open.openat_proc_spec]), and
+         OPEN_FMODE of that is FMODE_READ alone (fs/file_table.c:199;
+         include/linux/fs.h:3981, v6.18.46) *)
+  | OSignalFd _ _ => err_ret EINVAL
+      (* the file is O_RDWR (fs/signalfd.c:280-282), so FMODE_WRITE is
+         set, but [signalfd_fops] has neither [.write] nor [.write_iter]
+         (:241-249), so FMODE_CAN_WRITE is clear (fs/file_table.c:369-371)
+         and [vfs_write] answers -EINVAL (fs/read_write.c:672-673,
+         v6.18.46) *)
+  | ONsFile _ => unmodeled
+      (* FAIL-CLOSED: the object behind the handle may be of any type,
+         and a write's answer depends on it ([State.ONsFile]) *)
   end.
 
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
@@ -2008,8 +2035,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            ledger exactly as the channel and file arms record theirs *)
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* the eventfd answers, the other five decline: see
-         [write_opaque_spec] *)
+      (* the eventfd answers, four objects answer an errno and
+         [State.ONsFile] declines: see [write_opaque_spec] *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES

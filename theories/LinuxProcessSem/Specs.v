@@ -95,6 +95,7 @@
                                                    cap_task_prctl, reached
                                                    through kernel/sys.c's
                                                    security_task_prctl)
+      Sys/Kernel/Nsproxy.v       kernel/nsproxy.c  setns
       Sys/Kernel/Time/Hrtimer.v  kernel/time/hrtimer.c       nanosleep
       Sys/Kernel/Time/PosixTimers.v
                                  kernel/time/posix-timers.c  clock_gettime clock_getres
@@ -121,7 +122,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
   Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
-  Kernel.Signal Kernel.Sys
+  Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
   Net.Socket
   Drivers.Char.Random.

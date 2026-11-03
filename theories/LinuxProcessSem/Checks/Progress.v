@@ -52,7 +52,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Fs.EventPoll Fs.EventFd Fs.Signalfd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
-  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
+  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
   Net.Socket
   Drivers.Char.Random.

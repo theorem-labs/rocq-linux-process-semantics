@@ -2771,14 +2771,17 @@ Definition PipeBuf : Type := list byte * Z.
       [Fs.Open.proc_path_b]).  [do_dentry_open] (fs/open.c) gives such a
       file [empty_fops] and returns before any [->open], and [fdget]
       (fs/file.c) refuses it, so it does no I/O at all; it serves as a
-      directory for [openat] and [newfstatat] relative to it, and
-      [close] removes it.
+      directory for [openat] and [newfstatat] relative to it, [close]
+      removes it, and [read], [write] and [setns] answer the -EBADF of
+      [fdget] ([Fs.ReadWrite.read_opaque_spec],
+      [Fs.ReadWrite.write_opaque_spec], [Kernel.Nsproxy.setns_spec]).
         fs/open.c [do_dentry_open]: read at v6.18.44; identical at v6.18.46.
         fs/file.c [fdget]: read at v6.18.44; identical at v6.18.46.
     - [OProcFile p]: an O_RDONLY descriptor on
       "/proc/sys/kernel/overflowuid" or "/proc/sys/kernel/overflowgid"
       ([Fs.Open.proc_sys_file_b]).  Its reads return bytes of the
-      environment's choice ([Fs.ReadWrite.read_proc_spec]).
+      environment's choice ([Fs.ReadWrite.read_proc_spec]); a write is
+      -EBADF, because it is open read-only.
     - [OEventFd flags]: an eventfd ([Fs.EventFd.eventfd2_spec]),
       carrying the flag word it was created with.  Its counter is not
       modeled: other processes may hold the same counter, so it is the
@@ -2813,14 +2816,16 @@ Definition PipeBuf : Type := list byte * Z.
       [max_fds + 2], and the model does not know [max_fds]; a later
       [getdents64] on it declines ([Fs.Readdir.procfd_getdents_spec]).
       [fstat], [fcntl]'s [F_GETFL], [close], [close_range] and [F_SETFD]
-      and [F_GETFD] answer on it; every other arm declines it.
+      and [F_GETFD] answer on it, [read] answers -EFAULT or -EISDIR and
+      [write] -EBADF; every other arm but [setns] declines it.
         fs/proc/fd.c [proc_readfd_common], [proc_fd_operations]: read at v6.18.44; identical at v6.18.46.
     - [OSignalFd mask flags]: a signalfd ([Fs.Signalfd.signalfd4_spec]),
       carrying the signal mask it reads ([mask], the caller's mask with
       SIGKILL and SIGSTOP removed, as [do_signalfd4] stores it before
-      [signotset]) and the [SFD_] flag word it was created with.  Only
-      [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
-      poll and every other arm decline it.
+      [signotset]) and the [SFD_] flag word it was created with.
+      [close], [close_range], [F_SETFD] and [F_GETFD] answer on it, and
+      [write] answers -EINVAL, because [signalfd_fops] has no write
+      operation; read, poll and every other arm but [setns] decline it.
         fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
@@ -2841,6 +2846,11 @@ Inductive OpaqueFd :=
       Linux reads the direction off the description's [FMODE_*] bits,
       so a process handed a connected socket on fd 0 — every
       inetd-style server — may write it, and this model answers -EBADF.
+      A second ASSUMPTION is the KIND of the far object: a pipe, a
+      socket or a terminal.  The arms that answer from the file's type
+      rest on it: [Fs.ReadWrite.lseek_spec]'s -ESPIPE, [Fs.Sync.fsync_spec]'s
+      -EINVAL (no [.fsync]) and [Kernel.Nsproxy.setns_spec]'s -EINVAL
+      (neither a namespace file nor a pidfd).
     - [FdFile p off]: a file opened O_RDONLY (read-only); write is
       -EBADF.
     - [FdFileW p off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
