@@ -581,7 +581,11 @@ Definition copy_mount_attr (i : SyscallInput) (p : word) (usize : Z) : AttrCopy 
                   (mkMountAttr (attr_word bs 0) (attr_word bs 8) (attr_word bs 16) (attr_word bs 24))
        end.
 
-Inductive AttrBuild := ABok (change : AttrChange) | ABerr (e : Z) | ABover.
+(** A built attribute change: the flags, and the propagation type when
+    [attr.propagation] is not 0 ([kattr->propagation]).  (The type is not a
+    field of [Mount.AttrChange]: [Propagation.PropType] is defined after
+    [Ns.Mount].) *)
+Inductive AttrBuild := ABok (change : AttrChange) (prop : option PropType) | ABerr (e : Z) | ABover.
 
 Definition mount_attr_valid : Z :=
   MOUNT_ATTR_RDONLY + MOUNT_ATTR_NOSUID + MOUNT_ATTR_NODEV + MOUNT_ATTR_NOEXEC
@@ -597,16 +601,16 @@ Definition attr_atime_valid (a : MountAttr) : bool :=
        then (Z.eqb set 0 || Z.eqb set MOUNT_ATTR_NOATIME || Z.eqb set MOUNT_ATTR_STRICTATIME)
        else false.
 
-(** [build_mount_kattr] (fs/namespace.c:4896-4942).  The four basic flags
-    are the handled subset; atime, idmap and no-symlink flags decline only
-    after their kernel validity checks have succeeded. *)
+(** [build_mount_kattr] (fs/namespace.c:4901-4952).  The four basic flags
+    and the four propagation types are the handled subset; atime, idmap and
+    no-symlink flags decline only after their kernel validity checks have
+    succeeded. *)
 Definition build_mount_attr (a : MountAttr) : AttrBuild :=
   if negb (Z.eqb (Z.land (ma_propagation a) (Z.lnot mount_attr_prop_valid)) 0) then ABerr EINVAL
   else if negb (one_propagation (ma_propagation a) || Z.eqb (ma_propagation a) 0) then ABerr EINVAL
   else if negb (Z.eqb (Z.land (Z.lor (ma_set a) (ma_clr a)) (Z.lnot mount_attr_valid)) 0) then ABerr EINVAL
   else if negb (attr_atime_valid a) then ABerr EINVAL
   else if has (ma_clr a) MOUNT_ATTR_IDMAP then ABerr EINVAL
-  else if negb (Z.eqb (ma_propagation a) 0) then ABover
   else if negb (Z.eqb (ma_clr a) 0) then ABover
   else if negb (Z.eqb (ma_userns_fd a) 0) then ABover
   else if negb (Z.eqb (Z.land (ma_set a)
@@ -615,7 +619,8 @@ Definition build_mount_attr (a : MountAttr) : AttrBuild :=
        else ABok (mkAttr
          (mkMountFlags (has (ma_set a) MOUNT_ATTR_RDONLY) (has (ma_set a) MOUNT_ATTR_NOSUID)
                        (has (ma_set a) MOUNT_ATTR_NODEV) (has (ma_set a) MOUNT_ATTR_NOEXEC))
-         (mkMountFlags false false false false)).
+         (mkMountFlags false false false false))
+         (if Z.eqb (ma_propagation a) 0 then None else Some (propagation_type (ma_propagation a))).
 
 Definition mount_setattr_flags_valid (flags : Z) : bool :=
   Z.eqb (Z.land flags (Z.lnot (AT_EMPTY_PATH + AT_RECURSIVE + AT_SYMLINK_NOFOLLOW + AT_NO_AUTOMOUNT))) 0.
@@ -644,25 +649,41 @@ Definition setattr_writer_busy (st : NsState) (targets : list positive) : bool :
         else false
     end) (ns_files st).
 
-(** [do_mount_setattr] (fs/namespace.c:4776-4829): the target must name a
+(** [do_mount_setattr] (fs/namespace.c:4781-4838): the target must name a
     mount root in the caller's namespace before [Mount.mount_setattr]
-    changes the selected tree. *)
-Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange) (recursive : bool)
+    changes the flags of the selected tree; then each mount of it changes
+    its propagation ([mount_setattr_commit], 4763-4777: per mount, the flags
+    and then [change_mnt_propagation]; neither reads what the other
+    writes, so all flags and then all propagation changes is the same).
+    MS_SHARED's new groups ([invent_group_ids], 4804-4810) take numbers the
+    allocator may refuse: ENOMEM and ENOSPC, environment refusals of
+    [mount442_injected].  A refused call leaves the groups as they were
+    ([cleanup_group_ids], 4831-4833). *)
+Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
+    (prop : option PropType) (recursive : bool)
     (m : Model) (ctx : NsCtx) (st : NsState) (mt d : positive) : ext_outcome :=
   match find_mount (ns_mounts st) mt, path_mounted st mt d with
   | Some mount, Some true =>
       if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
       else if mf_ro (at_set change) && setattr_writer_busy st (setattr_targets (ns_mounts st) mt recursive)
       then err reads EBUSY m ctx st
-      else mount_mresult reads (mount_setattr (ns_mounts st) mt recursive change) m ctx st
+      else match mount_setattr (ns_mounts st) mt recursive change with
+           | MErr e => err reads e m ctx st
+           | MOk ms =>
+               mount_ok reads m ctx
+                 (match prop with
+                  | Some k => change_type k (with_mounts st ms) mt recursive
+                  | None => with_mounts st ms
+                  end)
+           end
   | Some _, Some false => err reads EINVAL m ctx st
   | _, _ => EUnmodeled
   end.
 
-(** [mount_setattr] (fs/namespace.c:4993-5030): flag and struct validation,
+(** [mount_setattr] (fs/namespace.c:4998-5038): flag and struct validation,
     [may_mount], and path resolution precede [do_mount_setattr].  Kind:
-    exact for the stated basic attribute subset; all other accepted ABI
-    forms decline. *)
+    exact for the stated basic attribute subset with any propagation type;
+    all other accepted ABI forms decline. *)
 Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     : ext_outcome :=
   let dfd := in_arg i 0 in
@@ -683,7 +704,7 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                match build_mount_attr attr with
                | ABerr e => err attr_reads e m ctx st
                | ABover => EUnmodeled
-               | ABok change =>
+               | ABok change prop =>
                    if Z.eqb (ma_set attr) 0 && Z.eqb (ma_clr attr) 0 && Z.eqb (ma_propagation attr) 0
                    then mount_ok attr_reads m ctx st
                    else
@@ -697,7 +718,7 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                          | WErr e => err reads e m ctx st
                          | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                          | WOk (LDentry mt d) =>
-                             mount_setattr_apply reads change (has flags AT_RECURSIVE) m ctx st mt d
+                             mount_setattr_apply reads change prop (has flags AT_RECURSIVE) m ctx st mt d
                          end
                      end
                end
@@ -707,13 +728,19 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
 Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn i m ctx st.
 
 (** The environment's refusals of the mount namespace calls, Linux
-    6.18.44; each arm admits its row's errnos after any answer
+    v6.18.46; each arm admits its row's errnos after any answer
     ([Arm.with_injected]).  No security module but the capability one runs
     (SCOPE.md), so [security_sb_mount], [security_sb_umount] and
     [security_sb_pivotroot] refuse nothing.
-    - [umount2] (39), [pivot_root] (41), [mount_setattr] (442): the walks'
-      ([Arm.walk_pairs]); [pivot_root]'s ENOMEM also from [lock_mount]'s
-      [get_mountpoint] (fs/namespace.c).
+    - [umount2] (39), [pivot_root] (41): the walks' ([Arm.walk_pairs]);
+      [pivot_root]'s ENOMEM also from [lock_mount]'s [get_mountpoint]
+      (fs/namespace.c).
+    - [mount_setattr] (442): the walks'; with MS_SHARED, ENOMEM and ENOSPC
+      from the group-id allocator ([mnt_alloc_group_id],
+      fs/namespace.c:239-247, through [invent_group_ids], 4804-4808;
+      [ida_alloc_min], lib/idr.c:470, 477), an allocation, so
+      FamAlloc.  The tables never answer ENOSPC for 442, so [ni_forced]
+      stays empty.
     - [mount] (40): the walks'; ENOMEM also from [copy_mount_string] and
       [copy_mount_options], from [lock_mount]'s [get_mountpoint] and
       [clone_mnt]'s [alloc_vfsmnt] (fs/namespace.c), and from a new
@@ -740,17 +767,20 @@ Definition mount40_injected : NsInjected :=
                [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EPERM; ENOSPC]
                [ENOSPC].
 
+Definition mount442_injected : NsInjected :=
+  mkNsInjected 442 (walk_pairs ++ [(errno_in [ENOSPC], FamAlloc)])
+    [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] [].
+
 Definition mount_injected : list NsInjected :=
   [mount40_injected;
    mkNsInjected 39 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EPERM] [];
    mkNsInjected 41 walk_pairs
      [EPERM; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EBUSY] [];
-   mkNsInjected 442 walk_pairs
-     [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] []].
+   mount442_injected].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=
   [(39, with_injected (pairs_errno walk_pairs) umount2_arm);
    (40, with_injected (ni_errno mount40_injected) mount_arm);
    (41, with_injected (pairs_errno walk_pairs) pivot_root_arm);
-   (442, with_injected (pairs_errno walk_pairs) mount_setattr_arm)].
+   (442, with_injected (ni_errno mount442_injected) mount_setattr_arm)].

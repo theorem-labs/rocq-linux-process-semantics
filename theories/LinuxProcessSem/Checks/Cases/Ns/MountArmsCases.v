@@ -7,7 +7,7 @@
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files MountArms.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Propagation Userns Walk Task Files MountArms.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -284,6 +284,53 @@ Example setattr_writer_busy :
   ret_of (mount_setattr_fn (setattr_input (-100) s_tmp 0 MOUNT_ATTR_RDONLY) base_model c_admin
                            (state false false [(8%N, writer_file)])) = Some (-EBUSY).
 Proof. vm_compute. reflexivity. Qed.
+
+(** [do_mount_setattr] with [attr.propagation] (fs/namespace.c:4781-4838):
+    MS_SHARED with AT_RECURSIVE gives each mount of the tree a group of its
+    own ([invent_group_ids], 4804-4805); flags and propagation on one mount
+    are both applied ([mount_setattr_commit], 4766-4774); a change that
+    clears a locked flag is EPERM ([mount_setattr_prepare], 4715-4718) and
+    makes no group ([cleanup_group_ids], 4831-4833). *)
+Definition attr_prop_bytes (set_bits prop : Z) : list byte :=
+  Z_to_le_bytes 8 set_bits ++ Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 prop ++ Z_to_le_bytes 8 0.
+Definition setattr_prop_input (dfd : Z) (path : list Z) (flags set_bits prop : Z) : SyscallInput :=
+  call 442 [dfd; PATH; flags; ATTR; 32]
+    (join_mem (cstr PATH path) (byte_mem ATTR (attr_prop_bytes set_bits prop))).
+
+Example setattr_shared_recursive :
+  option_map (map mnt_peer) (mounts_of
+    (mount_setattr_fn (setattr_prop_input (-100) s_tmp AT_RECURSIVE 0 MS_SHARED) base_model c_admin
+                      (state false false [])))
+  = Some [None; Some 2%positive; Some 3%positive; Some 4%positive].
+Proof. vm_compute. reflexivity. Qed.
+
+Example setattr_flags_and_shared :
+  option_map (map (fun x => (mf_ro (mnt_flags x), mnt_peer x))) (mounts_of
+    (mount_setattr_fn (setattr_prop_input (-100) s_tmp 0 MOUNT_ATTR_RDONLY MS_SHARED) base_model c_admin
+                      (state false false [])))
+  = Some [(false, None); (true, Some 2%positive); (false, None); (false, None)].
+Proof. vm_compute. reflexivity. Qed.
+
+Definition ro_locked_state : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 2 then mnt_with_lock_flags x (mkMountFlags true false false false)
+                                else x) (ns_mounts st)).
+
+Example setattr_shared_locked :
+  ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PShared)
+                              false base_model c_admin ro_locked_state 2 20) = Some (-EPERM)
+  /\ option_map (map mnt_peer) (mounts_of
+       (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PShared)
+                            false base_model c_admin ro_locked_state 2 20))
+     = Some [None; None; None; None].
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Row 442 admits the group-id allocator's ENOSPC, and still satisfies
+    the rule of a row ([Arm.ni_forced_ok]). *)
+Example mount442_row :
+  ni_errno mount442_injected ENOSPC = true /\ ni_errno mount442_injected ENOMEM = true
+  /\ ni_forced_ok mount442_injected = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** can_umount checks may_mount before the path's mount-root check. *)
 Example umount_needs_admin_first :
