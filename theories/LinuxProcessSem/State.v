@@ -2841,14 +2841,15 @@ Definition PipeBuf : Type := list byte * Z.
       which [Fs.ReadWrite.read_spec] answers from and moves as it does
       on a read-only file.  [None] is a description whose offset the
       model does not hold.  On either, [close], [close_range],
-      [F_SETFD] and [F_GETFD] answer, as they do on every kind, and
-      [setns] answers -EINVAL, because the file is neither a namespace
-      file nor a pidfd ([Kernel.Nsproxy.setns_spec]); every other arm
-      declines it.  The model holds no inode identity for the file: no
-      path of the run's file system names it, which SCOPE.md states as
-      an assumption.
+      [F_SETFD] and [F_GETFD] answer, as they do on every kind, [write]
+      answers -EBADF, because the description is read-only
+      ([Fs.ReadWrite.write_opaque_spec]), and [setns] answers -EINVAL,
+      because the file is neither a namespace file nor a pidfd
+      ([Kernel.Nsproxy.setns_spec]); every other arm declines it.  The
+      model holds no inode identity for the file: no path of the run's
+      file system names it, which SCOPE.md states as an assumption.
         fs/exec.c [begin_new_exec], fs/file.c [do_close_on_exec], fs/read_write.c
-        [ksys_read], kernel/nsproxy.c [setns]: read at v6.18.46. *)
+        [ksys_read], [vfs_write], kernel/nsproxy.c [setns]: read at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)

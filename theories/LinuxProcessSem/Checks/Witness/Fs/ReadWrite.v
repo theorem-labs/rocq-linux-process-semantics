@@ -182,15 +182,15 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec]: the eventfd's witness, the errno of
-    four objects, [Unmodeled] on [State.ONsFile] and the inherited
-    file. *)
+    five objects, [Unmodeled] on [State.ONsFile]. *)
 Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_witness fl buf count i m
-  | OProcPath _ | OProcFile _ | OProcFdDir _ _ => ret_outcome (errno_ret EBADF) m
+  | OProcPath _ | OProcFile _ | OProcFdDir _ _ | OInherited _ =>
+      ret_outcome (errno_ret EBADF) m
   | OSignalFd _ _ => ret_outcome (errno_ret EINVAL) m
-  | ONsFile _ | OInherited _ => Unmodeled
+  | ONsFile _ => Unmodeled
   end.
 
 Lemma write_opaque_witness_ok : forall o buf count i m,
@@ -204,7 +204,7 @@ Proof.
     | apply unmodeled_intro
     | unfold err_ret, ret_only, ret_outcome; apply pure_ok
     | unfold err_ret, ret_only, ret_outcome; apply pure_ok
-    | apply unmodeled_intro ].
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok ].
 Qed.
 
 (** [ReadWrite.read_file_data]: the read of a regular file's bytes that

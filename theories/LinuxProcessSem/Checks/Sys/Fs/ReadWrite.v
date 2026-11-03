@@ -979,16 +979,18 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, the
-    -EBADF of the O_PATH descriptor and of the two read-only objects, the
-    signalfd's -EINVAL, and the decline on [State.ONsFile] and the
-    inherited file. *)
+    -EBADF of the O_PATH descriptor and of the three read-only objects
+    (the /proc/sys leaf, the /proc/self/fd directory and the inherited
+    file in either form), the signalfd's -EINVAL, and the decline on
+    [State.ONsFile]. *)
 Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OEventFd fl => check_write_eventfd i fl buf count eff m
-  | OProcPath _ | OProcFile _ | OProcFdDir _ _ => check_ret_only eff (errno_ret EBADF) m []
+  | OProcPath _ | OProcFile _ | OProcFdDir _ _ | OInherited _ =>
+      check_ret_only eff (errno_ret EBADF) m []
   | OSignalFd _ _ => check_ret_only eff (errno_ret EINVAL) m []
-  | ONsFile _ | OInherited _ => CheckUnmodeled
+  | ONsFile _ => CheckUnmodeled
   end.
 
 Lemma check_write_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -1016,7 +1018,7 @@ Proof.
     | apply unmodeled_intro
     | now apply check_ret_only_no_unmodeled in H
     | now apply check_ret_only_no_unmodeled in H
-    | apply unmodeled_intro ].
+    | now apply check_ret_only_no_unmodeled in H ].
 Qed.
 
 Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -1028,7 +1030,6 @@ Proof.
   destruct o; cbv beta iota in H |- *.
   3: now apply check_write_eventfd_complete_ok.
   3: unfold unmodeled in H; discriminate H.
-  5: unfold unmodeled in H; discriminate H.
   all: unfold err_ret, ret_only, pure in H; inversion H; subst;
        now apply check_ret_only_ok_iff.
 Qed.
@@ -1046,7 +1047,7 @@ Proof.
     | reflexivity
     | unfold err_ret, ret_only, pure in H; discriminate H
     | unfold err_ret, ret_only, pure in H; discriminate H
-    | reflexivity ].
+    | unfold err_ret, ret_only, pure in H; discriminate H ].
 Qed.
 
 (** [ReadWrite.read_file_data] as an acceptor: the read of a regular

@@ -712,11 +712,12 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          [forfeit_inherited] below) shares an [f_pos]
                          and [f_flags] that nothing modeled reads on it:
                          close, close_range and fcntl's F_SETFD/F_GETFD
-                         answer on it, as on [ONsFile]; [setns]
-                         (-EINVAL) also answers on it, from the
-                         description's file type, which no holder
-                         changes, and reads neither [f_pos] nor
-                         [f_flags]; every other arm declines on it.
+                         answer on it, as on [ONsFile]; [write] (-EBADF)
+                         and [setns] (-EINVAL) also answer on it, from
+                         the description's access mode and file type,
+                         which no holder changes, and neither answer
+                         depends on [f_pos] or [f_flags]; every other
+                         arm declines on it.
                        THREE DECLINE, fail-closed:
                        - the /proc/self/fd directory ([OProcFdDir])
                          shares the [f_pos] that [getdents64] reads and

@@ -170,10 +170,13 @@ Qed.
     So the child's [read] of it is admitted while the parent lives, and
     its [close] is the opaque case.  THE CONTROLS: the parent's copy after
     the clone, [OInherited None], whose [read] is not admitted, and a
-    [write] of the live one, which reads the offset as well and is not
-    admitted either.  [fchmod] (52) of a namespace file writes the inode
-    in the shared namespace state and is admitted; of a file the released
-    model opened it is not. *)
+    [write] of the live one, which is not admitted either: the released
+    arm answers it -EBADF from the description's access mode
+    ([Fs.ReadWrite.write_opaque_spec]), but this guard lists no call on
+    an inherited file but [read] of a live one and [close], so the core
+    refuses the step while another process lives.  [fchmod] (52) of a
+    namespace file writes the inode in the shared namespace state and is
+    admitted; of a file the released model opened it is not. *)
 Example multiproc_inherited_and_fchmod_rules : forall m,
   (fd3 (call1 63 3) m = Some (FdOpaque (OInherited (Some ([], Z_to_bv 64 0)))) ->
    ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = true)

@@ -26,9 +26,10 @@
       increasing, below [Run.nr_open_max].
     - THE PIN: [Run.valid_input] holds of the plain launch and NOT of the
       keyed one; [Run.valid_input_inherited] holds of the keyed one.
-    - THE KIND: [write], [lseek] and [fstat] decline on a key; [close]
-      answers 0 and frees the slot; [fcntl]'s [F_GETFD] admits 0 and
-      FD_CLOEXEC, as on every kind, and rejects 2.
+    - THE KIND: [write] answers -EBADF on a key, with its offset or
+      without; [lseek] and [fstat] decline on it; [close] answers 0 and
+      frees the slot; [fcntl]'s [F_GETFD] admits 0 and FD_CLOEXEC, as on
+      every kind, and rejects 2.
     - THE CLONE: a successful [clone] of either word, or [clone3] with
       the fork image, by a caller that holds a key with its offset
       answers the pid, and the caller keeps the key without its offset,
@@ -235,23 +236,45 @@ Proof.
 Qed.
 
 (* -------------------------------------------------------------------------
-   The kind: every other call on a key declines, close and F_GETFD answer
+   The kind: write answers -EBADF, lseek and fstat decline, close and
+   F_GETFD answer
    ------------------------------------------------------------------------- *)
 
+(** [write(3, 4096, 1)] with the byte at 4096 readable. *)
+Definition inh_write_in : SyscallInput :=
+  mkInput 64 [3; 4096; 1; 0; 0; 0]
+    (fun a => if bv_eqb a 4096 then Some 122 else None) (fun _ => None).
+
+(** I1.  [write] on a key answers -EBADF, and the model is unchanged,
+    whether the model holds the offset ([OInherited (Some _)]) or not
+    ([OInherited None], the caller's copy after a clone): [ksys_write]
+    takes the descriptor (fs/read_write.c:727-732), and [vfs_write]'s
+    FMODE_WRITE test refuses the read-only description before it looks
+    at the buffer (:670-671, v6.18.46).  THE CONTROL is the 1 byte a
+    write that went through would answer. *)
+Example inherited_key_write_ebadf :
+  check_syscall inh_write_in (mkEffect (errno_ret EBADF) [] [])
+    (inh_model inh_key_launch)
+  = CheckOk (inh_model inh_key_launch) []
+  /\ fd_lookup (m_fds (forfeit_model (inh_model inh_key_launch))) 3
+     = Some (FdOpaque (OInherited None))
+  /\ check_syscall inh_write_in (mkEffect (errno_ret EBADF) [] [])
+       (forfeit_model (inh_model inh_key_launch))
+     = CheckOk (forfeit_model (inh_model inh_key_launch)) []
+  (* the control *)
+  /\ check_syscall inh_write_in (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
+       (inh_model inh_key_launch)
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
 Example inherited_key_other_calls_decline :
-  (* write(3, 4096, 1) *)
-  check_syscall
-    (mkInput 64 [3; 4096; 1; 0; 0; 0]
-       (fun a => if bv_eqb a 4096 then Some 122 else None) (fun _ => None))
-    (with_copyins [(4096, 1%nat)] (mkEffect 1 [] [])) (inh_model inh_key_launch)
-  = CheckUnmodeled
   (* lseek(3, 0, SEEK_SET) *)
-  /\ check_syscall (mkInput 62 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) (inh_model inh_key_launch) = CheckUnmodeled
+  check_syscall (mkInput 62 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) (inh_model inh_key_launch) = CheckUnmodeled
   (* fstat(3, 4096) *)
   /\ check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) inh_wmem)
        (mkEffect 0 [] []) (inh_model inh_key_launch) = CheckUnmodeled.
-Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
+Proof. split; vm_compute; reflexivity. Qed.
 
 Example inherited_key_close_frees_the_slot :
   match check_syscall (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))

@@ -665,12 +665,15 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
   | OProcPath _ => err_ret EBADF
       (* [fdget_pos] refuses an O_PATH file, as in [read_opaque_spec]
          (fs/read_write.c:727-732; fs/file.c:1169-1170, :1225-1227) *)
-  | OProcFile _ | OProcFdDir _ _ => err_ret EBADF
+  | OProcFile _ | OProcFdDir _ _ | OInherited _ => err_ret EBADF
       (* [vfs_write]'s FMODE_WRITE test (fs/read_write.c:670-671): a
          /proc/sys leaf and the /proc/self/fd directory are opened with
          the O_RDONLY access mode only ([Open.openat_proc_spec]), and
          OPEN_FMODE of that is FMODE_READ alone (fs/file_table.c:199;
-         include/linux/fs.h:3981, v6.18.46) *)
+         include/linux/fs.h:3981, v6.18.46).  An inherited file is a
+         read-only description in either form ([State.OInherited]): the
+         access mode belongs to the description, which no holder
+         changes, and not to the offset the model may hold *)
   | OSignalFd _ _ => err_ret EINVAL
       (* the file is O_RDWR (fs/signalfd.c:280-282), so FMODE_WRITE is
          set, but [signalfd_fops] has neither [.write] nor [.write_iter]
@@ -680,11 +683,6 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
   | ONsFile _ => unmodeled
       (* FAIL-CLOSED: the object behind the handle may be of any type,
          and a write's answer depends on it ([State.ONsFile]) *)
-  | OInherited _ => unmodeled
-      (* FAIL-CLOSED: an inherited file is a read-only description in
-         either form, which [vfs_write]'s FMODE_WRITE test refuses with
-         -EBADF (fs/read_write.c:670-671, v6.18.46); this arm does not
-         write it and gives no answer *)
   end.
 
 (** THE READ OF A REGULAR FILE'S BYTES, after [vfs_read]'s [access_ok]:
@@ -2040,9 +2038,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            ledger exactly as the channel and file arms record theirs *)
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* the eventfd answers, four objects answer an errno, and
-         [State.ONsFile] and the inherited file decline: see
-         [write_opaque_spec] *)
+      (* the eventfd answers, five objects answer an errno, and
+         [State.ONsFile] declines: see [write_opaque_spec] *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
