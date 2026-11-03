@@ -563,8 +563,12 @@ Definition attr_size_err (usize : Z) : option Z :=
   else if usize <? MOUNT_ATTR_SIZE_VER0 then Some EINVAL
   else None.
 
-(** [copy_struct_from_user] (lib/struct.c), as called by
-    [wants_mount_setattr] (fs/namespace.c:4965-4996, Linux v6.18.46). *)
+(** [copy_struct_from_user] (include/linux/uaccess.h:389-411, Linux
+    v6.18.46), as called by [wants_mount_setattr] (fs/namespace.c:4981).
+    The size tests come first on purpose: they are [wants_mount_setattr]'s
+    (4973-4976), and [mount_setattr_fn] runs them before [may_mount], so
+    from that caller they never fire here; they keep this function's
+    answer whole for any caller. *)
 Definition copy_mount_attr (i : SyscallInput) (p : word) (usize : Z) : AttrCopy :=
   match attr_size_err usize with
   | Some e => ACerr [] e
