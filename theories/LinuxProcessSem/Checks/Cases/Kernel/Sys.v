@@ -155,10 +155,30 @@ Example uname_pinned_copy_defector_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** …but [nodename] and [domainname] are NOT held to the pin: a process
-    of the host may rename the machine between two calls of this one
-    ([Kernel.Sys.uts_kernel_agree]), so the renamed name is a repeat the
-    pin admits, and the pin itself does not change. *)
+(** The pin holds [version] too: the same release with version "#1" is
+    refused, so [uts_kernel_agree] compares member 3 and not member 2
+    twice. *)
+
+Example uname_pinned_copy_other_version_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_name_of [] uts_release_a [35; 49]%Z [])] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …and a later answer must still be a name Linux can hold: "Linuy" has
+    the pin's release and version, so only the [utsname_wf] conjunct of
+    [Kernel.Sys.uts_repeat_ok] refuses it. *)
+
+Example uname_pinned_copy_wrong_sysname_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_bad_sysname)] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …but [nodename] and [domainname] are NOT held to the pin: another
+    process in the same UTS namespace may rename the machine between two
+    calls of this one ([Kernel.Sys.uts_kernel_agree]), so the renamed
+    name is a repeat the pin admits, and the pin itself does not change. *)
 
 Example uname_pinned_copy_renamed_host :
   check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)

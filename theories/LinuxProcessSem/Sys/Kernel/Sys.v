@@ -997,12 +997,17 @@ Definition utsname_wf (bs : list byte) : bool :=
     pinned: [release] (member 2) and [version] (member 3), byte for
     byte.  [sysname] and [machine] need no comparison, since
     [utsname_wf] already fixes both to their literals.  [nodename]
-    (member 1) and [domainname] (member 5) are NOT repeated: any process
-    of the host with CAP_SYS_ADMIN over the host's UTS namespace may call
-    [sethostname] (161) or [setdomainname] (162) at any time during the
-    run (kernel/sys.c:1419-1443, 1473-1497, Linux v6.18.46), and the next
-    [uname] of this process copies the new member out.  That is an event
-    of the environment, which the model may not assume away. *)
+    (member 1) and [domainname] (member 5) are NOT repeated: another
+    process that shares this process's UTS namespace (the host's, or a
+    sandbox's) may change them at any time during the run, by
+    [sethostname] (161) or [setdomainname] (162) when it holds
+    CAP_SYS_ADMIN over the user namespace that owns that UTS namespace
+    ([ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN)],
+    kernel/sys.c:1419-1443, 1424, 1473-1497, 1478, Linux v6.18.46), or by
+    a write to /proc/sys/kernel/hostname or /proc/sys/kernel/domainname
+    (mode 0644, kernel/utsname_sysctl.c:107-122).  The next [uname] of
+    this process copies the new member out.  That is an event of the
+    environment, which the model may not assume away. *)
 Definition uts_kernel_agree (b0 bs : list byte) : bool :=
   (uts_eqb (uts_field 2 bs) (uts_field 2 b0)
    && uts_eqb (uts_field 3 bs) (uts_field 3 b0))%bool.
@@ -1078,8 +1083,8 @@ Definition uts_repeat_ok (b0 bs : list byte) : Prop :=
     running kernel's and no call changes them, so two calls that
     disagreed about them would be a trace no Linux machine produces.
     [nodename] and [domainname] are CHOSEN AGAIN at each call: another
-    process of the host may change them between two calls of this one
-    ([uts_kernel_agree]'s note).  [State.procst_utsname] argues the
+    process that shares this process's UTS namespace may change them
+    between two calls of this one ([uts_kernel_agree]'s note).  [State.procst_utsname] argues the
     mechanism and the note above [State.Model] compares it against the
     two alternatives.
 

@@ -4372,9 +4372,11 @@ Record ProcState := mkProcState {
        [uname] (160) copies out -- [struct new_utsname], six 65-byte
        C-string fields (include/uapi/linux/utsname.h, Linux v6.18.46,
        commit 1f99e9ab748f) -- pinned the first time a [uname] READS
-       it, exactly as [LimState.limst_core] pins RLIMIT_CORE and
-       [procst_tid] pins the tid.  [None] means no [uname] has
-       observed it yet.
+       it, as [LimState.limst_core] pins RLIMIT_CORE and [procst_tid]
+       pins the tid, except that only part of this pin binds later
+       calls: their [release] and [version] must be the pin's, and their
+       [nodename] and [domainname] are chosen again (below).  [None]
+       means no [uname] has observed it yet.
 
        WHAT THE PIN HOLDS FIXED, AND WHAT IT DOES NOT.  [release] and
        [version] are settled by the kernel BUILD, not by anything in
@@ -4387,8 +4389,9 @@ Record ProcState := mkProcState {
        CPU set it declines to answer for, and the note above [Record
        Model] is where the three mechanisms are compared.  [nodename]
        and [domainname] are NOT held fixed by the pin: another process
-       of the host may call [sethostname] (161) or [setdomainname] (162)
-       between two calls of this one, so [Kernel.Sys.uname_spec] chooses
+       that shares this process's UTS namespace may change them between
+       two calls of this one, by [sethostname] (161), [setdomainname]
+       (162) or a write under /proc/sys/kernel, so [Kernel.Sys.uname_spec] chooses
        them again at every call ([Kernel.Sys.uts_repeat_ok]).  The pin
        still stores all 390 bytes of the first answer; only its [release]
        and [version] constrain later calls.
@@ -4839,7 +4842,9 @@ Record TimeState := mkTimeState {
       [procst_utsname], each
       of which names its own trigger.  The environment chooses, the
       model records what it revealed, and every later query must answer
-      the same.  Right when the value is NOT settled in the input —
+      the same, or, for [procst_utsname], the same [release] and
+      [version] (its own note says why [nodename] and [domainname] are
+      chosen again).  Right when the value is NOT settled in the input —
       because nothing constructing a run would know to supply it — but
       must be self-consistent once seen.
     - CARRIED AND ADVANCED.  [timest_clock], whose own comment gives the

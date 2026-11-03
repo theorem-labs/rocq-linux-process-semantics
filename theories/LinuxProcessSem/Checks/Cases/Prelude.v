@@ -420,10 +420,11 @@ Definition uts_release_b : list Z := [54; 46; 49; 46; 48]%Z.
 Definition uts_demo   : list byte := uts_name_of [] uts_release_a [] [].
 Definition uts_demo_b : list byte := uts_name_of [] uts_release_b [] [].
 
-(** [uts_demo] after a process of the host renamed it: [nodename] "h"
-    and [domainname] "d", the same [release] and [version].  Another
-    process's [sethostname] (161) and [setdomainname] (162) produce
-    exactly this between two [uname] calls of a run. *)
+(** [uts_demo] after another process in the same UTS namespace renamed
+    it: [nodename] "h" and [domainname] "d", the same [release] and
+    [version].  That process's [sethostname] (161) and [setdomainname]
+    (162), or its writes to /proc/sys/kernel/hostname and domainname,
+    produce exactly this between two [uname] calls of a run. *)
 Definition uts_demo_renamed : list byte := uts_name_of [104]%Z uts_release_a [] [100]%Z.
 
 (** A name Linux cannot hold: [sysname] reading "Linuy".  Nothing writes
