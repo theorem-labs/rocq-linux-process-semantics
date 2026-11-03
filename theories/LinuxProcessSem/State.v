@@ -4376,19 +4376,22 @@ Record ProcState := mkProcState {
        [procst_tid] pins the tid.  [None] means no [uname] has
        observed it yet.
 
-       WHY IT IS PINNED RATHER THAN CHOSEN AFRESH.  Three of the six
-       fields -- [nodename], [release] and [version] -- are settled by
-       the kernel BUILD and by the boot-time hostname, not by anything
-       in kernel/sys.c, so the model cannot know them; but they do not
-       change under a process either.  Nothing in
-       [Specs.modeled_sysnos] writes one: [sethostname] (161) and
-       [setdomainname] (162) have no dispatcher arm.  A [choose]
-       resolved afresh at each call would therefore admit a trace in
-       which two [uname] calls disagree about which kernel is running,
-       which no Linux machine produces -- the same argument
+       WHAT THE PIN HOLDS FIXED, AND WHAT IT DOES NOT.  [release] and
+       [version] are settled by the kernel BUILD, not by anything in
+       kernel/sys.c, so the model cannot know them; but no call changes
+       them under a running kernel.  A [choose] resolved afresh for them
+       at each call would admit a trace in which two [uname] calls
+       disagree about which kernel is running, which no Linux machine
+       produces -- the same argument
        [Sys.Kernel.Sched.Syscalls.sched_getaffinity_spec] makes for the
        CPU set it declines to answer for, and the note above [Record
-       Model] is where the three mechanisms are compared.
+       Model] is where the three mechanisms are compared.  [nodename]
+       and [domainname] are NOT held fixed by the pin: another process
+       of the host may call [sethostname] (161) or [setdomainname] (162)
+       between two calls of this one, so [Kernel.Sys.uname_spec] chooses
+       them again at every call ([Kernel.Sys.uts_repeat_ok]).  The pin
+       still stores all 390 bytes of the first answer; only its [release]
+       and [version] constrain later calls.
 
        WHY IT IS PROCESS STATE.  Linux keeps it in the UTS NAMESPACE
        ([current->nsproxy->uts_ns->name], include/linux/utsname.h's
@@ -5146,13 +5149,14 @@ Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
 (** Record the UTS name the environment revealed.
     [Kernel.Sys.uname_spec] is the only caller and it calls this only
     on the branch where [m_utsname] was [None], so the pin is written
-    once and never overwritten: [uname] (160) is a pure read, and the two
-    syscalls that WRITE a utsname field -- [sethostname] (161) and
-    [setdomainname] (162) -- have no arm in
-    [Sys.SyscallTable.spec_table].  That is what makes the repeat check
-    in [Checks.Sys.Kernel.Sys]'s [check_uname_copy] an equality rather than a
-    relation, and adding either syscall means giving this a second writer
-    in the same commit. *)
+    once and never overwritten.  A later [uname] reads the pin's
+    [release] and [version] and chooses [nodename] and [domainname]
+    again ([Kernel.Sys.uts_repeat_ok]), because a process of the host may
+    change those two between calls; so [Checks.Sys.Kernel.Sys]'s
+    [check_uname_copy] tests a relation ([uts_repeat_okb]), not an
+    equality.  An arm for [sethostname] (161) or [setdomainname] (162)
+    in this process writes nothing here: the pin does not hold the two
+    members those calls change. *)
 Definition with_utsname (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)

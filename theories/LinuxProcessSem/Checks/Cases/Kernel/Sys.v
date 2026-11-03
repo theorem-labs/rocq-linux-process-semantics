@@ -135,12 +135,13 @@ Example uname_unterminated_release_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Once pinned, a later uname must repeat it exactly.  The defector
-    below is itself well-formed — [uts_demo_b] would have been accepted
-    as the FIRST answer — so it is refused for disagreeing with the
-    record, not for being a bad name.  That is the whole content of "a
-    machine has one kernel for the life of a process", and it is the
-    conjunct a per-call [choose] would have dropped. *)
+(** Once pinned, a later uname must repeat the pin's [release] and
+    [version].  The defector below is itself well-formed — [uts_demo_b]
+    would have been accepted as the FIRST answer — so it is refused for
+    disagreeing with the record about the release, not for being a bad
+    name.  That is the whole content of "a machine has one kernel for
+    the life of a process", and it is the conjunct a per-call [choose]
+    would have dropped. *)
 
 Example uname_pinned_copy_repeats :
   check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
@@ -153,6 +154,17 @@ Example uname_pinned_copy_defector_rejected :
     (mkEffect 0 [(4096, uts_demo_b)] []) uts_pinned
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
+
+(** …but [nodename] and [domainname] are NOT held to the pin: a process
+    of the host may rename the machine between two calls of this one
+    ([Kernel.Sys.uts_kernel_agree]), so the renamed name is a repeat the
+    pin admits, and the pin itself does not change. *)
+
+Example uname_pinned_copy_renamed_host :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_demo_renamed)] []) uts_pinned
+  = CheckOk uts_pinned [].
+Proof. check_eq. Qed.
 
 (** …and the defector is refused for THAT reason and no other: offered as
     a first answer it is accepted, and pins itself. *)
