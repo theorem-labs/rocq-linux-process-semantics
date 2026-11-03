@@ -184,18 +184,17 @@ Lemma check_read_fs : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero, check_read_opaque, check_read_proc,
-    check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
-  cbv zeta in H. fs_frame H.
+    check_access_ok_zero in H.
+  cbv zeta in H.
+  repeat (vm_step H || fs_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try fs_leaf.
 Qed.
 
 Lemma check_write_fs : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero,
-    check_write_opaque, check_write_eventfd in H.
-  fs_frame H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+  repeat (vm_step H || fs_done H || (apply check_write_opaque_keeps in H; destruct H as [-> ->])); try fs_leaf.
 Qed.
 
 Lemma check_readv_imported_fs : forall i fd r iovs0 eff m m' evs,
@@ -623,13 +622,13 @@ Proof.
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
     unfold check_read, check_read_urandom, check_socket_pending_error,
-      check_access_ok_zero, check_read_opaque, check_read_proc,
-      check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
-    efd_walk H Hfd. all: efd_keep H.
+      check_access_ok_zero in H.
+    efd_walk H Hfd.
+    all: first [ exact (check_read_opaque_keeps _ _ _ _ _ _ _ _ H) | efd_keep H ].
   - assert (Hc : check_syscall i eff m = ca_check arm_write i eff m)
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
-    unfold check_write, check_write_fault_extend, check_access_ok_zero,
-      check_write_opaque, check_write_eventfd in H.
-    efd_walk H Hfd. all: efd_keep H.
+    unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+    efd_walk H Hfd.
+    all: first [ exact (check_write_opaque_keeps _ _ _ _ _ _ _ _ H) | efd_keep H ].
 Qed.

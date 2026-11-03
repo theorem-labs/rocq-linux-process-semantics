@@ -207,8 +207,8 @@ Lemma check_getdents64_sh : forall i fd dirent count eff m m' evs,
   check_getdents64 i fd dirent count eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
   intros i fd dirent count eff m m' evs H.
-  unfold check_getdents64, check_getdents64_opaque, check_procfd_getdents in H.
-  cbv zeta in H. sh_frame2 H.
+  unfold check_getdents64 in H.
+  repeat (vm_step H || sh_done H || (apply check_getdents64_opaque_fds in H; destruct H as ((fds & ->) & ->))); try reflexivity.
 Qed.
 
 Lemma check_pselect6_sh : forall i n32 inp outp exp tsp sig eff m m' evs,
