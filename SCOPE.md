@@ -552,7 +552,10 @@ not apply.
   `Ns.Tables.env_with_overflow_ids`); a statement for a host that may
   write the sysctls during the run names `None`, under which such an id
   is shown as any value from 0 to 65535. A mapped id is exact under
-  every value.
+  every value. A named `u` or `g` outside 0 to 65535 is no value a host
+  can hold, and a stat under it has no answer
+  (`Ns.Files.stat_ids_decided`); so has a stat by a caller whose user
+  namespace the tables do not hold.
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when

@@ -570,21 +570,25 @@ Proof. vm_compute. split; reflexivity. Qed.
     with CAP_FSETID over it ([in_group_or_capable], 2910-2918), and that
     capability needs the directory's uid and gid to map
     ([capable_wrt_inode_uidgid], kernel/capability.c:455-480).  A caller
-    with CAP_FSETID, in neither group 0 nor 4294967295, creates "new" with
-    mode 02775 in the tmpfs directory "/tmp/g" (02777): owned by 0:0, the
-    file keeps S_ISGID (02755 after the umask); owned by 4294967295, it
-    loses it (0755). *)
-Definition W_sgid (owner : Z) : NsState :=
+    outside group 0 creates "new" with mode 02775 in the tmpfs directory
+    "/tmp/g" (02777, owned by 0:0): with CAP_FSETID the file keeps S_ISGID
+    (02755 after the umask), without it the file loses it (0755).  No case
+    uses a directory whose uid or gid is 4294967295: Linux refuses a create
+    there with EACCES before [mode_strip_sgid] ([may_o_create],
+    fs/namei.c:3611-3626, through [inode_permission]'s [HAS_UNMAPPED_ID],
+    589-590), a test the model does not have yet; a separate correction
+    adds it. *)
+Definition W_sgid : NsState :=
   with_tree W (ns_dentries W ++ [dent 23 2 (Some 20%positive) (bytes [103]) 23])
-              (ns_inodes W ++ [dir 23 1535 owner owner]).
+              (ns_inodes W ++ [dir 23 1535 0 0]).
 Definition s_g_new : list Z := s_tmp ++ [47; 103; 47; 110; 101; 119].     (* /tmp/g/new *)
 Definition fsetid_caps : CapSets := mkCaps (2 ^ 4) (2 ^ 4) 0 0 0.
 
-Example openat_create_sgid_invalid_dir_owner :
-  newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps fsetid_caps) (W_sgid 0))
+Example openat_create_sgid_fsetid :
+  newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps fsetid_caps) W_sgid)
   = Some (52, 1517, 1000, 0)
-  /\ newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps fsetid_caps) (W_sgid 4294967295))
-     = Some (52, 493, 1000, 4294967295).
+  /\ newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps no_caps) W_sgid)
+     = Some (52, 493, 1000, 0).
 Proof. vm_compute. split; reflexivity. Qed.
 
 (** The tables [st] with the launch value [env_overflow_ids] set to [o]. *)
@@ -635,23 +639,46 @@ Definition fstat_other (st : NsState) (bs : list byte) : Prop :=
             (ans [] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, bs)] (model_with [(3, 1%N)]) c_child
                  (with_files st [(1%N, other_file)])).
 
-(** A launch that measured kernel.overflowuid and kernel.overflowgid as
-    1234 ([Some (1234, 1234)]): the uid 4294967295 in the initial
-    namespace and the uid 5000 of "other", which namespace 2 does not map,
-    both show 1234 and no other value (kernel/user_namespace.c:471-472;
-    kernel/sys.c:184-193). *)
+(** A launch that measured kernel.overflowuid as 1234 and
+    kernel.overflowgid as 4321 ([Some (1234, 4321)]).  "o" owned by
+    4294967295:4294967295, stated in the initial namespace, and "other"
+    (5000:5000), stated in namespace 2, which maps neither id: st_uid 1234
+    and st_gid 4321, and no other value (kernel/user_namespace.c:471-472,
+    538-539; kernel/sys.c:184-202).  "o" owned by 1000:1000, stated in
+    namespace 2, whose uid map holds kernel uid 1000 and whose gid map
+    holds only kernel gid 1002: st_uid 0 and st_gid 4321. *)
 Example stat_overflow_launch_value :
-  fstat_o c0 (with_overflow (W_owned 4294967295 0) (Some (1234, 1234))) (o_stat 1234 0)
-  /\ (forall v, munged_ok (with_overflow (W_owned 4294967295 0) (Some (1234, 1234))) c0 false
+  fstat_o c0 (with_overflow (W_owned 4294967295 4294967295) (Some (1234, 4321))) (o_stat 1234 4321)
+  /\ (forall v, munged_ok (with_overflow (W_owned 4294967295 4294967295) (Some (1234, 4321))) c0 false
                           4294967295 v = Z.eqb v 1234)
-  /\ fstat_other (with_overflow W (Some (1234, 1234))) (other_stat 1234 1234)
-  /\ (forall v, munged_ok (with_overflow W (Some (1234, 1234))) c_child false 5000 v = Z.eqb v 1234).
+  /\ (forall v, munged_ok (with_overflow (W_owned 4294967295 4294967295) (Some (1234, 4321))) c0 true
+                          4294967295 v = Z.eqb v 4321)
+  /\ fstat_other (with_overflow W (Some (1234, 4321))) (other_stat 1234 4321)
+  /\ fstat_o c_child (with_overflow (W_owned 1000 1000) (Some (1234, 4321))) (o_stat 0 4321)
+  /\ (forall v, munged_ok (with_overflow (W_owned 1000 1000) (Some (1234, 4321))) c_child false 1000 v
+                = Z.eqb v 0)
+  /\ (forall v, munged_ok (with_overflow (W_owned 1000 1000) (Some (1234, 4321))) c_child true 1000 v
+                = Z.eqb v 4321).
 Proof.
-  split; [vm_compute; exists (o_stat 1234 0); repeat split; vm_compute; reflexivity |].
+  split; [vm_compute; exists (o_stat 1234 4321); repeat split; vm_compute; reflexivity |].
   split; [intro v; vm_compute; reflexivity |].
-  split; [vm_compute; exists (other_stat 1234 1234); repeat split; vm_compute; reflexivity |].
-  intro v; vm_compute; reflexivity.
+  split; [intro v; vm_compute; reflexivity |].
+  split; [vm_compute; exists (other_stat 1234 4321); repeat split; vm_compute; reflexivity |].
+  split; [vm_compute; exists (o_stat 0 4321); repeat split; vm_compute; reflexivity |].
+  split; intro v; vm_compute; reflexivity.
 Qed.
+
+(** No answer where the tables do not decide the ids
+    ([stat_ids_decided]): a caller whose user namespace the tables do not
+    hold (Linux gives every task a user namespace with its maps; the model
+    showed 65534 for both ids before), and a launch value outside 0 to
+    65535, which no host can hold (kernel/sys.c:184-202). *)
+Example stat_ids_undecided :
+  fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c0
+            (o_open (with_userns (W_owned 1000 0) [])) EUnmodeled
+  /\ fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c0
+               (o_open (with_overflow (W_owned 4294967295 0) (Some (65536, 0)))) EUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** The same two ids under [None] (the host may write the sysctls during
     the run): any value from 0 to 65535 (kernel/sys.c:191-192). *)
@@ -794,6 +821,18 @@ Example chdir_file : ret_of (chdir_fn (chdir_in s_file) m3 c0 W) = Some (-20).
 Proof. vm_compute. reflexivity. Qed.
 Example chdir_denied : ret_of (chdir_fn (chdir_in s_secret) m3 c0 W) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.
+
+(** [path_permission] with MAY_EXEC|MAY_CHDIR (fs/open.c:565; fchdir's
+    [file_permission], 592) reaches [generic_permission]: a caller in the
+    initial namespace with CAP_DAC_OVERRIDE moves into the mode-0000
+    directory "d" owned by 2000:0, but not when its uid is 4294967295,
+    which the initial namespace does not map
+    ([privileged_wrt_inode_uidgid], kernel/capability.c:455-461): EACCES. *)
+Definition s_d : list Z := [47; 100].                                       (* /d *)
+Example chdir_invalid_owner_not_capable :
+  ret_of (chdir_fn (chdir_in s_d) m3 (c_caps dac_override_caps) (W_owned 4294967295 0)) = Some (-13)
+  /\ ret_of (chdir_fn (chdir_in s_d) m3 (c_caps dac_override_caps) (W_owned 2000 0)) = Some 0.
+Proof. vm_compute. split; reflexivity. Qed.
 
 (** fchdir accepts an O_PATH directory; a file is ENOTDIR; a number that
     is not open is EBADF. *)

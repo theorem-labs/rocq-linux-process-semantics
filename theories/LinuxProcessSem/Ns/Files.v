@@ -962,16 +962,17 @@ Fixpoint map_down (exts : list IdExtent) (k : Z) : option Z :=
     user namespace ([from_kuid], [from_kgid], 441-445, 509-513: the
     initial namespace maps every id but INVALID, kernel/user.c:40-55; a
     child namespace through its map, [map_up]), [v] is that id.  When it
-    does not (an unwritten map, or a namespace the tables do not hold, maps
-    nothing), [v] is the overflow id, the sysctl kernel.overflowuid or
-    kernel.overflowgid (472, 539): the launch value [env_overflow_ids]'s
-    [u] or [g] under [Some (u, g)], any value from 0 to 65535 under [None]
-    (kernel/sys.c:184-202). *)
+    does not (an unwritten map maps nothing), [v] is the overflow id, the
+    sysctl kernel.overflowuid or kernel.overflowgid (472, 539): the launch
+    value [env_overflow_ids]'s [u] or [g] under [Some (u, g)], any value
+    from 0 to 65535 under [None] (kernel/sys.c:184-202).  A caller whose
+    user namespace the tables do not hold has no value here:
+    [stat_answer] declines that state ([stat_ids_decided]). *)
 Definition munged_ok (st : NsState) (ctx : NsCtx) (gid : bool) (k v : Z) : bool :=
-  let mapped :=
-    match find_userns (ns_userns st) (cx_user ctx) with
-    | None => None
-    | Some u =>
+  match find_userns (ns_userns st) (cx_user ctx) with
+  | None => false
+  | Some u =>
+      let mapped :=
         match uns_parent u with
         | None => if kid_invalid k then None else Some k
         | Some _ =>
@@ -979,15 +980,28 @@ Definition munged_ok (st : NsState) (ctx : NsCtx) (gid : bool) (k v : Z) : bool 
             | Some ex => map_up ex k
             | None => None
             end
-        end
-    end in
-  match mapped with
-  | Some x => Z.eqb v x
-  | None => match env_overflow_ids (ns_env st) with
-            | Some (u, g) => Z.eqb v (if gid then g else u)
-            | None => (0 <=? v) && (v <=? 65535)
-            end
+        end in
+      match mapped with
+      | Some x => Z.eqb v x
+      | None => match env_overflow_ids (ns_env st) with
+                | Some (ou, og) => Z.eqb v (if gid then og else ou)
+                | None => (0 <=? v) && (v <=? 65535)
+                end
+      end
   end.
+
+(** The tables decide the [st_uid] and [st_gid] a stat shows when they hold
+    the caller's user namespace, and [env_overflow_ids] is [None] or a pair
+    the sysctls can hold, each from 0 to 65535 (kernel/sys.c:184-202).
+    Linux gives every caller a user namespace with its maps, and no host
+    holds an overflow id outside that range, so in any other state
+    [stat_answer] has no answer. *)
+Definition stat_ids_decided (st : NsState) (ctx : NsCtx) : bool :=
+  match find_userns (ns_userns st) (cx_user ctx) with None => false | Some _ => true end
+  && match env_overflow_ids (ns_env st) with
+     | Some (ou, og) => (0 <=? ou) && (ou <=? 65535) && (0 <=? og) && (og <=? 65535)
+     | None => true
+     end.
 
 (** The field of the 128-byte riscv64 [struct stat]
     (include/uapi/asm-generic/stat.h) that [cp_new_stat] (fs/stat.c:488)
@@ -1004,7 +1018,7 @@ Definition fields_match (n : nat) (fs : list (nat * list byte)) (bs : list byte)
 (** The answer of a stat of [l] into [buf]: [cp_new_stat]'s
     [copy_to_user] (EFAULT), the fields of [stat_fields], an [st_uid] and
     an [st_gid] that [munged_ok] admits for the owner's ids, every other
-    byte the environment's. *)
+    byte the environment's; no answer where [stat_ids_decided] fails. *)
 Definition stat_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (reads : list (word * nat)) (buf : word) (l : Loc) (o : ext_outcome) : Prop :=
   match loc_attr m ctx st l with
@@ -1013,10 +1027,13 @@ Definition stat_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsStat
       match put_ok i buf 128 with
       | PutFault => o = err reads EFAULT m ctx st
       | PutPartial => o = EUnmodeled
-      | PutOk => exists bs, fields_match 128 (stat_fields a) bs = true
-                            /\ munged_ok st ctx false (oa_uid a) (bytes_le_to_Z (firstn 4 (skipn 24 bs))) = true
-                            /\ munged_ok st ctx true (oa_gid a) (bytes_le_to_Z (firstn 4 (skipn 28 bs))) = true
-                            /\ o = ans reads (Z_to_bv 64 0) [(buf, bs)] m ctx st
+      | PutOk =>
+          if stat_ids_decided st ctx
+          then exists bs, fields_match 128 (stat_fields a) bs = true
+                          /\ munged_ok st ctx false (oa_uid a) (bytes_le_to_Z (firstn 4 (skipn 24 bs))) = true
+                          /\ munged_ok st ctx true (oa_gid a) (bytes_le_to_Z (firstn 4 (skipn 28 bs))) = true
+                          /\ o = ans reads (Z_to_bv 64 0) [(buf, bs)] m ctx st
+          else o = EUnmodeled
       end
   end.
 

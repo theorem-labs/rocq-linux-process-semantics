@@ -366,7 +366,9 @@ Definition default_mi_env : MiEnv :=
     unknown, or the host may write them during the run.  The default,
     [Some (65534, 65534)], assumes the kernel's defaults; a statement that
     wants another launch names it with [env_with_overflow_ids]
-    ([Files.munged_ok]). *)
+    ([Files.munged_ok]).  A pair with a value outside 0 to 65535 is no
+    launch a host can have: a stat under it has no answer
+    ([Files.stat_ids_decided]). *)
 Record NsEnv := mkNsEnv {
   env_mount_max       : Z;
   env_proc_entries    : list ProcEntry;
