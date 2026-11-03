@@ -485,6 +485,22 @@ Definition sysctl_file (st : NsState) (f : NsFile) : bool :=
     sets no CONFIG_ARCH_FORCE_MAX_ORDER) and 4 KiB pages: 4 MiB. *)
 Definition KMALLOC_MAX_SIZE : Z := 4194304.
 
+(** [proc_sys_call_handler] (fs/proc/proc_sysctl.c:570-572) runs
+    [sysctl_perm] with MAY_WRITE on every write, not only at the open:
+    [f], a file of /proc/sys/user opened in the set of user namespace
+    [bound] (the opener's), refuses the writer's credential as it is at
+    the write, by the check the open made ([Files.sysctl_perm_ok]).
+    Through [set_permissions] (kernel/ucount.c:42-56) that is
+    CAP_SYS_RESOURCE over [bound] ([cap_capable],
+    security/commoncap.c:68-106), which a writer that has moved to a
+    child user namespace since the open no longer holds: there [bound] is
+    at a level no deeper than the writer's namespace (:88-89). *)
+Definition sysctl_write_refused (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile) : bool :=
+  match nf_kind f with
+  | NfUserNsFile _ bound _ => negb (sysctl_perm_ok (ns_userns st) (task_cred m ctx) bound MAY_WRITE)
+  | _ => false
+  end.
+
 (** [write] (64) on an [ONsFile].  Map and setgroups writes delegate their
     ordered permission checks to [map_write] and [setgroups_write].  A
     /proc/sys/user/max_user_namespaces write follows [proc_sys_call_handler]
@@ -493,19 +509,27 @@ Definition KMALLOC_MAX_SIZE : Z := 4194304.
     [shmem_file_write_iter]; kernel/user_namespace.c [proc_uid_map_write],
     [proc_gid_map_write], [proc_setgroups_write]; kernel/sysctl.c
     [proc_doulongvec_minmax], [__do_proc_doulongvec_minmax], [proc_get_long];
-    and fs/proc/proc_sysctl.c [proc_sys_call_handler], which answers
-    ENOMEM, before its [kvzalloc] and its copy of the buffer, for a count
-    of [KMALLOC_MAX_SIZE] or more (fs/proc/proc_sysctl.c:580-582).  This is
-    the answer when the environment fails nothing.  Kind ([write_arm]): on
-    tmpfs and the named procfs files, this answer, beside it [write_env]'s
-    refusals, and on tmpfs [write_short]'s short counts; over, since the
-    arm admits [write_env]'s refusals after every answer, also where Linux
-    allocates nothing first (a write of no bytes to tmpfs, a map write that
-    [map_write] refuses before [memdup_user_nul]).  Host regular files and
-    other kinds decline. *)
+    and fs/proc/proc_sysctl.c [proc_sys_call_handler], which answers, in
+    this order, EPERM when [sysctl_perm] refuses the writer
+    ([sysctl_write_refused], :570-572), then ENOMEM, before its [kvzalloc]
+    and its copy of the buffer, for a count of [KMALLOC_MAX_SIZE] or more
+    (:580-582).  [__do_proc_doulongvec_minmax] answers 0 for a count of 0
+    (kernel/sysctl.c:897-900), and at an offset other than 0 skips the
+    parse and counts the bytes written (:909-910,
+    [proc_first_pos_non_zero_ignore]).  This is the answer when the
+    environment fails nothing.  Kind ([write_arm]): on tmpfs and the named
+    procfs files, this answer, beside it [write_env]'s refusals, and on
+    tmpfs [write_short]'s short counts; over, since the arm admits
+    [write_env]'s refusals after every answer, also where Linux allocates
+    nothing first (a write of no bytes to tmpfs, a map write that
+    [map_write] refuses before [memdup_user_nul], a sysctl write that
+    [sysctl_perm] refuses).  Host regular files and other kinds decline. *)
 Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) : ext_outcome :=
   if negb (file_can_write f) then ns_errno EBADF m ctx st
+  else if sysctl_file st f && access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))
+          && sysctl_write_refused m ctx st f
+  then ns_errno EPERM m ctx st
   else if sysctl_file st f && access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))
           && (KMALLOC_MAX_SIZE <=? rw_count_clamp (in_arg i 2))
   then ns_errno ENOMEM m ctx st
@@ -541,7 +565,7 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
                    else match user_sys_name st l with
                         | Some name =>
                             if negb (bytes_eqb name name_max_user_namespaces) then EUnmodeled
-                            else if negb (Z.eqb off 0) then
+                            else if negb (Z.eqb off 0) || Z.eqb n 0 then
                                    ans [] (Z_to_bv 64 n) [] m ctx
                                        (set_file_kind st h (NfUserNsFile l bound (off + n)))
                             else match user_limit_value (bytes_z bs), set_user_limit st bound 0 with
@@ -885,7 +909,8 @@ Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx s
       nothing.
     Each row also lists the errnos its arm answers from the tables
     ([Arm.ni_answers]): the path copy, the walk, the call's own checks,
-    and for [write] [map_write]'s and [setgroups_write]'s. *)
+    and for [write] [map_write]'s and [setgroups_write]'s, and a sysctl
+    write's EPERM ([sysctl_write_refused]). *)
 Definition create_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
 

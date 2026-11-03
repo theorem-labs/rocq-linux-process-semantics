@@ -1,12 +1,15 @@
 (** * LinuxProcessSem.Checks.Cases.Ns.FsOpsCases — namespace file operations
 
     Each example computes one [Ns.FsOps] operation over a small tmpfs and
-    procfs namespace. *)
+    procfs namespace; the last runs an open, an unshare and a write in
+    turn. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files Mountinfo FsOps.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require UserArms.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Ns Require FilesCases.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -194,6 +197,15 @@ Example write_max_user_namespaces :
   ret_of (write_fn (write_in [49]) base_model resource_ctx sys_state 1%N sys_file) = Some 1
   /\ limit_of (write_fn (write_in [49]) base_model resource_ctx sys_state 1%N sys_file) = Some 1.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** A write of no bytes at offset 0: [__do_proc_doulongvec_minmax] answers
+    0 for a count of 0 and changes nothing (kernel/sysctl.c:897-900); a
+    value of one space is EINVAL (:953-954). *)
+Example write_max_user_namespaces_empty :
+  ret_of (write_fn (write_in []) base_model resource_ctx sys_state 1%N sys_file) = Some 0
+  /\ limit_of (write_fn (write_in []) base_model resource_ctx sys_state 1%N sys_file) = Some INT_MAX
+  /\ ret_of (write_fn (write_in [32]) base_model resource_ctx sys_state 1%N sys_file) = Some (-22).
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 Definition writes_of (o : ext_outcome) : option (list (Z * list Z)) :=
   match o with
@@ -476,4 +488,76 @@ Proof.
     rewrite Hw in He. unfold errno_in in He. cbn [existsb] in He. rewrite orb_false_r in He.
     apply Z.eqb_eq in He. subst e. vm_compute. reflexivity.
   - vm_compute in H. destruct H.
+Qed.
+
+(** A WRITE CHECKS [sysctl_perm] AGAIN, WITH THE WRITER'S CREDENTIAL AT
+    THE WRITE.  In [FilesCases.W_user_sys], with an initial user namespace
+    that maps every id, a task of that namespace (uid 1000, holding
+    CAP_SYS_RESOURCE) opens /proc/sys/user/max_user_namespaces for
+    writing: descriptor 3, a file of the initial namespace's sysctl set.
+    It calls unshare(CLONE_NEWUSER) and is then in namespace 2, a child of
+    the initial one, with every capability there.  Its write of "1" to
+    descriptor 3 is EPERM.  The Linux path: [ksys_write], [vfs_write],
+    [proc_sys_write], then [proc_sys_call_handler], whose [sysctl_perm]
+    with MAY_WRITE (fs/proc/proc_sysctl.c:570-572, 436-447) calls
+    [set_permissions] (kernel/ucount.c:42-56).  There
+    [ns_capable_noaudit(user_ns, CAP_SYS_RESOURCE)], for the namespace of
+    the set, the initial one, is false for a credential of namespace 2
+    ([cap_capable_helper], security/commoncap.c:88-89: the initial
+    namespace's level is not above namespace 2's).  So the mode is the
+    entry's other read bit, 0444, [test_perm] (proc_sysctl.c:425-434)
+    refuses MAY_WRITE, and the handler answers -EPERM.  The same write
+    before the unshare sets the limit. *)
+Definition sysw : NsState :=
+  let w := FilesCases.W_user_sys in
+  mkNsState (ns_mounts w) [map_root] (ns_mntns w) (ns_pidns w) (ns_netns w) (ns_sbs w)
+            (ns_dentries w) (ns_inodes w) [] (ns_env w).
+Definition sysw_ctx : NsCtx :=
+  FilesCases.ctx_at 1 resource_caps (1%positive, 1%positive) (1%positive, 2%positive).
+Definition sysw_opened : ext_outcome :=
+  openat_fn (FilesCases.open_in FilesCases.s_max_user_namespaces 1 0) FilesCases.m3 sysw_ctx sysw.
+Definition opened_model : Model :=
+  match sysw_opened with EOk _ m _ _ _ => m | EUnmodeled => FilesCases.m3 end.
+Definition opened_ctx : NsCtx :=
+  match sysw_opened with EOk _ _ c _ _ => c | EUnmodeled => sysw_ctx end.
+Definition opened_state : NsState :=
+  match sysw_opened with EOk _ _ _ s _ => s | EUnmodeled => sysw end.
+
+(** unshare(CLONE_NEWUSER)'s success from there ([UserArms.unshare_exact]). *)
+Definition unshare_newuser : SyscallInput :=
+  call 97 [UserArms.CLONE_NEWUSER] (fun _ => None) (fun _ => None).
+Definition sysw_unshared : ext_outcome :=
+  match create_user_ns (ns_userns opened_state) (cx_user opened_ctx)
+                       (bv_unsigned (cr_euid (m_creds opened_model))) false with
+  | NsOk (n, U) => ns_ret (Z_to_bv 64 0) opened_model (UserArms.in_new_userns opened_ctx n)
+                          (with_userns opened_state U)
+  | NsErr e => ns_errno e opened_model opened_ctx opened_state
+  end.
+
+(** The return of [write_fn] on the open file that the call's descriptor
+    names, the answer [write_arm] gives when the environment fails
+    nothing. *)
+Definition write_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : option Z :=
+  match ns_file_of m st (fd_word (in_arg i 0)) with
+  | Some (h, f) => ret_of (write_fn i m ctx st h f)
+  | None => None
+  end.
+
+Example sysctl_write_after_unshare_eperm :
+  ret_of sysw_opened = Some 3
+  /\ write_answer (write_in [49]) opened_model opened_ctx opened_state = Some 1
+  /\ UserArms.unshare_arm unshare_newuser opened_model opened_ctx opened_state sysw_unshared
+  /\ ret_of sysw_unshared = Some 0
+  /\ match sysw_unshared with
+     | EOk _ m ctx st _ => cx_user ctx = 2%positive /\ write_answer (write_in [49]) m ctx st = Some (-1)
+     | EUnmodeled => False
+     end.
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  split.
+  - rewrite (UserArms.unshare_arm_newuser _ _ _ _ _ map_root false);
+      [left; vm_compute; reflexivity | vm_compute; reflexivity | vm_compute; reflexivity
+      | vm_compute; reflexivity].
+  - vm_compute. repeat split; reflexivity.
 Qed.

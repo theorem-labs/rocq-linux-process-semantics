@@ -870,9 +870,14 @@ Definition sock_of (m : Model) (st : NsState) (fd : word) : SockRes :=
    socket (198)
    ========================================================================= *)
 
-(** The allocation failures of a socket's creation: [sock_alloc] and
-    [unix_create1]'s -ENFILE, [sk_alloc]'s -ENOMEM, and [sock_map_fd]'s
-    file allocation ([alloc_file_pseudo]) and table growth. *)
+(** The failures of a socket's creation beside its answer: [sock_alloc]'s
+    -ENFILE when [new_inode_pseudo] cannot allocate the socket's inode
+    (net/socket.c:632-639, 1570-1575), [sk_alloc]'s -ENOMEM,
+    [unix_create1]'s -ENFILE when the AF_UNIX sockets pass twice the
+    system-wide file limit (net/unix/af_unix.c:1101-1105), and
+    [sock_map_fd]'s table growth (-ENOMEM) and file allocation
+    ([alloc_file_pseudo]: -ENOMEM, and [alloc_empty_file]'s -ENFILE at the
+    system-wide file limit, fs/file_table.c:248-255, 278). *)
 Definition socket_create_errnos : list Z := [ENOMEM; ENFILE].
 
 Definition new_socket_kind (ctx : NsCtx) (fam base pro : Z) : option NsFileKind :=
@@ -925,8 +930,10 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
    ========================================================================= *)
 
 (** [netlink_insert]'s failures other than a held port: the hash table's
-    allocation (-ENOMEM) and its -EBUSY, which [netlink_insert] reports as
-    -EOVERFLOW. *)
+    allocation (-ENOMEM, [bucket_table_alloc] in [rhashtable_insert_rehash],
+    lib/rhashtable.c:466-470) and its -EBUSY (:458), which
+    [netlink_insert] reports as -EOVERFLOW
+    (net/netlink/af_netlink.c:573-574). *)
 Definition nl_insert_errnos : list Z := [ENOMEM; EOVERFLOW].
 
 (** The port a socket of namespace [x] has once bound: [port] when it has
@@ -1380,19 +1387,40 @@ Definition nl_pending_errnos : list Z := [ENOBUFS].
 (** The environment's refusals of the net arms, Linux 6.18.44; an arm with
     a row admits the row's errnos after any answer ([Arm.with_injected]),
     and where the kernel's order matters the arm places them itself.
-    [socket]: [socket_create_errnos].  [bind]: [netlink_insert]'s
-    [nl_insert_errnos].  [sendto]: [netlink_autobind]'s
-    [nl_insert_errnos] and [netlink_sendmsg]'s [nl_alloc_errnos].
-    [recvfrom]: [nl_pending_errnos].  [ioctl] SIOCGIFINDEX allocates
-    nothing ([dev_ioctl], net/core/dev_ioctl.c).  Each row also lists the
-    errnos its arm answers from the tables ([Arm.ni_answers]); [sock_of]'s
-    EBADF and ENOTSOCK among them. *)
+    - [socket]: [socket_create_errnos].  Their ENFILE has two causes, so it
+      is in two families ([Arm.NsInjected]): [sock_alloc]'s inode, an
+      allocation (FamAlloc), and the file limits of [alloc_empty_file] and
+      [unix_create1], counts of the file table (FamFd, as in
+      [Files.open_pairs]).  The released [socket] row (AF_INET sockets,
+      [Run.injected_table]) gives its ENOMEM, EMFILE and ENFILE the one
+      family FamFd: the two worlds agree on ENFILE's FamFd, and that row
+      cannot also give [sock_alloc]'s ENFILE and the ENOMEMs FamAlloc while
+      it has one family (a released FamAlloc row needs the budget
+      dispatcher, [Run.alloc_family_dispatched]).
+    - [bind]: [netlink_insert]'s [nl_insert_errnos], by cause
+      ([nl_insert_pairs]).  [sendto]: [netlink_autobind]'s
+      [nl_insert_errnos], and [netlink_sendmsg]'s [nl_alloc_errnos].
+    - [recvfrom]: [nl_pending_errnos].
+    - none for [ioctl]: SIOCGIFINDEX allocates nothing ([dev_ioctl],
+      net/core/dev_ioctl.c).
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]); [sock_of]'s EBADF and ENOTSOCK among them. *)
 Definition socket_injected : NsInjected :=
-  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc)] [EINVAL; EMFILE] [].
+  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc); (errno_in [ENFILE], FamFd)]
+               [EINVAL; EMFILE] [].
+
+(** [nl_insert_errnos] by kernel cause: the ENOMEM of
+    [bucket_table_alloc] is an allocation (FamAlloc); the EOVERFLOW of the
+    table's -EBUSY is the table's state (FamNet).  No released row answers
+    them: the released model makes no netlink socket, and its [bind] row
+    (FamNet) is [inet_csk_get_port]'s EADDRINUSE. *)
+Definition nl_insert_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM], FamAlloc); (errno_in [EOVERFLOW], FamNet)].
+
 Definition bind_injected : NsInjected :=
-  mkNsInjected 200 [(errno_in nl_insert_errnos, FamNet)] [EBADF; ENOTSOCK; EINVAL; EFAULT; EADDRINUSE] [].
+  mkNsInjected 200 nl_insert_pairs [EBADF; ENOTSOCK; EINVAL; EFAULT; EADDRINUSE] [].
 Definition sendto_injected : NsInjected :=
-  mkNsInjected 206 [(errno_in nl_insert_errnos, FamNet); (errno_in nl_alloc_errnos, FamAlloc)]
+  mkNsInjected 206 (nl_insert_pairs ++ [(errno_in nl_alloc_errnos, FamAlloc)])
                [EFAULT; EBADF; ENOTSOCK; EINVAL; EOPNOTSUPP; ENODATA; EPERM] [].
 Definition recvfrom_injected : NsInjected :=
   mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)]

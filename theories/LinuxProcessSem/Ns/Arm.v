@@ -214,12 +214,19 @@ Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
       that injects it.  A pair's family is its failure's kernel cause: an
       allocation that fails is FamAlloc; a file system's state (a tmpfs
       instance's inode or size limit, a page that cannot be read back, a
-      host disk's I/O error) is FamFs.  An errno that two causes return is
-      in the pairs of both families: a tmpfs create's ENOSPC is
+      host disk's I/O error) is FamFs; a count limit of the file table
+      ([alloc_empty_file]'s system-wide limit, ENFILE, fs/file_table.c) is
+      FamFd, the family of the released table's [pipe2], [socket],
+      [socketpair] and [accept] rows; a netlink table's state
+      ([netlink_insert]'s EOVERFLOW) is FamNet.  An errno that two causes
+      return is in the pairs of both families: a tmpfs create's ENOSPC is
       [new_inode]'s allocation (FamAlloc) or [shmem_reserve_inode]'s inode
-      limit (FamFs), mm/shmem.c [__shmem_get_inode].
+      limit (FamFs), mm/shmem.c [__shmem_get_inode]; [socket]'s ENFILE is
+      [sock_alloc]'s allocation (FamAlloc) or a file limit (FamFd).
     - [ni_answers]: every errno the call's arm answers from the tables, so
-      when the environment refuses nothing.
+      when the environment refuses nothing.  Nothing ties this list to the
+      arm's code: an arm that comes to answer another errno from the tables
+      needs it added here.
     - [ni_forced]: the errnos of [ni_answers] that some pair matches (the
       count limits' ENOSPC of [unshare] and [mount], the ENOMEM of a large
       sysctl write).

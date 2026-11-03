@@ -436,9 +436,10 @@ not apply.
   assumption. Beside the tables' answer, an arm of `Ns.Spec.ns_table`
   admits only the environment refusals its file lists, each with the
   Linux v6.18.44 function that returns it (`Ns.Spec.ns_injected_table`):
-  an allocation failure (`-ENOMEM`, `-ENFILE`, `-ENOSPC`, `-EMFILE`,
-  `-ENOBUFS`, and `set_cred_ucounts`'s `-EAGAIN`), a full netlink hash
-  table (`-EOVERFLOW`), a tmpfs instance at its inode or size limit
+  an allocation failure (`-ENOMEM`, the `-ENFILE` of a socket's inode,
+  `-ENOSPC`, `-EMFILE`, `-ENOBUFS`, and `set_cred_ucounts`'s `-EAGAIN`),
+  the system-wide file limit (`-ENFILE`), a full netlink hash table
+  (`-EOVERFLOW`), a tmpfs instance at its inode or size limit
   (`-ENOSPC`), an I/O error (`-EIO`), and the `-EAGAIN` of an `openat2`
   whose walk took a `..` under `RESOLVE_IN_ROOT` while something was
   renamed or mounted. The `-EIO` is a host file system's, or that of a

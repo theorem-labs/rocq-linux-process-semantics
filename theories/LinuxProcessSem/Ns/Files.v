@@ -23,7 +23,9 @@
       [sb_permission], [generic_permission] and [acl_permission_check]
       (fs/namei.c) and [capable_wrt_inode_uidgid] (kernel/capability.c),
       with no ACL, no idmapped mount and no security module but the
-      capability one;
+      capability one; for a /proc/sys/user file, its own [->permission],
+      [proc_sys_permission], in place of [generic_permission]
+      ([inode_or_sysctl_permission]);
     - a write to user memory goes through [Arm.put_ok]: EFAULT outside
       [access_ok], and a range that is not wholly writable declines;
     - the environment's refusals (an allocation, the host file system's
@@ -514,15 +516,41 @@ Definition is_user_sys_file (st : NsState) (l : Loc) : bool :=
 Definition is_mountinfo_file (l : Loc) : bool :=
   match l with LProcTask _ _ [n] => bytes_eqb n proc_mountinfo_name | _ => false end.
 
-(** [set_permissions] (kernel/ucount.c): CAP_SYS_RESOURCE over the opener's
-    user namespace gives all classes the 0644 owner bits; otherwise each
-    gets only the 0644 other read bit. *)
-Definition sysctl_permissions (m : Model) (ctx : NsCtx) (st : NsState) (l : Loc)
-    (a : ObjAttr) : ObjAttr :=
-  if is_user_sys_file st l
-  then mkObj (oa_kind a) (if own_capable m ctx st CAP_SYS_RESOURCE then 438 else 292)
-             (oa_uid a) (oa_gid a) (oa_ino a) (oa_dev a)
-  else a.
+(** [set_permissions] (kernel/ucount.c:42-56), the [permissions] of the
+    sysctl root whose sets hold /proc/sys/user: the mode of an entry (0644,
+    [UCOUNT_ENTRY]) for credential [c], in the set of user namespace
+    [owner], the caller's user namespace when the entry was looked up
+    ([set_lookup]).  With CAP_SYS_RESOURCE over [owner]
+    ([ns_capable_noaudit]; [cap_capable], security/commoncap.c:68-106)
+    every class gets the entry's owner bits (0666), otherwise only its
+    other read bit (0444). *)
+Definition sysctl_set_mode (U : list UserNs) (c : IdCred) (owner : positive) : Z :=
+  if cap_capable U c owner CAP_SYS_RESOURCE then 438 else 292.
+
+(** [sysctl_perm] (fs/proc/proc_sysctl.c:436-447) with [mask]: [test_perm]
+    (:425-434) picks one class of that mode by the euid and egid, and its
+    classes have the same bits, so the access is granted when the mode's
+    other bits hold [mask]'s MAY_READ, MAY_WRITE and MAY_EXEC.  An open asks
+    it ([inode_or_sysctl_permission]), and so does every write
+    ([FsOps.write_fn], from [proc_sys_call_handler], :570-572). *)
+Definition sysctl_perm_ok (U : list UserNs) (c : IdCred) (owner : positive) (mask : Z) : bool :=
+  Z.eqb (Z.land (Z.land mask 7) (Z.lnot (sysctl_set_mode U c owner))) 0.
+
+(** [inode_permission] (fs/namei.c) as an open or [faccessat] asks it of
+    [l], for a task whose context [ctx] holds the effective set [eff] the
+    check uses.  The inode of a /proc/sys/user file has the [->permission]
+    [proc_sys_permission] (fs/proc/proc_sysctl.c:792-819), which
+    [do_inode_permission] (fs/namei.c:521-534) calls in place of
+    [generic_permission]: after [sb_permission]'s EROFS, EACCES unless
+    [sysctl_perm] grants the access in the set of the caller's user
+    namespace, with no capability override ("sysctl entries that are not
+    writeable, are _NOT_ writeable, capabilities or not"). *)
+Definition inode_or_sysctl_permission (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
+    (eff : Z) (l : Loc) (sb : SuperBlock) (a : ObjAttr) (mask : Z) : option Z :=
+  if is_user_sys_file st l && negb (has mask MAY_WRITE && sb_rdonly sb)
+  then (if sysctl_perm_ok (ns_userns st) (task_cred m ctx) (cx_user ctx) mask then None
+        else Some EACCES)
+  else inode_permission st ctx cr eff l sb a mask.
 
 
 (** [may_create_in_sticky] (fs/namei.c) on an O_CREAT open of an existing
@@ -541,23 +569,23 @@ Definition sticky_undecided (cr : WalkCreds) (dir a : ObjAttr) : bool :=
     itself declines); [may_open] (ELOOP for a link not followed, EISDIR
     for a directory opened for writing, EACCES for a device on a nodev
     mount, a device, FIFO or socket opened otherwise declines, then
-    [inode_permission]); [vfs_open]: EROFS for a write on a read-only mount
-    ([file_get_write_access]), and [proc_setgroups_open]'s EACCES for a
-    writer without CAP_SYS_ADMIN over the task's user namespace. *)
+    [inode_permission], [inode_or_sysctl_permission]); [vfs_open]: EROFS
+    for a write on a read-only mount ([file_get_write_access]), and
+    [proc_setgroups_open]'s EACCES for a writer without CAP_SYS_ADMIN over
+    the task's user namespace. *)
 Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (flags acc : Z) (creat_dir : option ObjAttr) (l : Loc) : OpenRes :=
   match loc_mnt_sb st l, loc_attr m ctx st l with
   | Some (mt, sb), Some a =>
       let ro := mf_ro (mnt_flags mt) || sb_rdonly sb in
-      let opened := sysctl_permissions m ctx st l a in
       let perm_then_open :=
-        match inode_permission st ctx cr (task_eff ctx) l sb opened (Z.lor MAY_OPEN acc) with
+        match inode_or_sysctl_permission m ctx st cr (task_eff ctx) l sb a (Z.lor MAY_OPEN acc) with
         | Some e => ORErr e
         | None =>
-            if fmode_write flags && negb (special opened) && ro then ORErr EROFS
+            if fmode_write flags && negb (special a) && ro then ORErr EROFS
             else if is_setgroups l && fmode_write flags && negb (own_capable m ctx st CAP_SYS_ADMIN)
             then ORErr EACCES
-            else OROk st (if kind_is IDir opened then NfDir l 0
+            else OROk st (if kind_is IDir a then NfDir l 0
                           else if is_mountinfo_file l then NfMountinfo l (cx_mount ctx) (cx_root ctx) 0
                           else if is_userns_file l || is_user_sys_file st l
                                then NfUserNsFile l (cx_user ctx) 0
@@ -1083,9 +1111,10 @@ Definition access_effective (st : NsState) (ctx : NsCtx) (ruid : Z) : Z :=
     mode outside R_OK|W_OK|X_OK; the check runs with the real uid and gid
     and [access_effective]; [getname]; the walk (LOOKUP_FOLLOW); EACCES for
     X_OK on a regular file of a noexec mount or superblock
-    ([path_noexec]); [inode_permission]; then, for W_OK on anything but a
-    device, FIFO or socket, EROFS on a read-only mount or superblock.
-    Kind: exact on objects the tables list. *)
+    ([path_noexec]); [inode_permission] ([inode_or_sysctl_permission]);
+    then, for W_OK on anything but a device, FIFO or socket, EROFS on a
+    read-only mount or superblock.  Kind: exact on objects the tables
+    list. *)
 Definition faccessat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let dfd := in_arg i 0 in
   let pathp := in_arg i 1 in
@@ -1113,7 +1142,7 @@ Definition faccessat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
             | Some (mt, sb), Some a =>
                 if has mode MAY_EXEC && kind_is IReg a && (mf_noexec (mnt_flags mt) || sb_i_noexec sb)
                 then err reads EACCES m ctx st
-                else match inode_permission st ctx' cr eff l sb a mode with
+                else match inode_or_sysctl_permission m ctx' st cr eff l sb a mode with
                      | Some e => err reads e m ctx st
                      | None =>
                          if negb (has mode MAY_WRITE) || special a then ans reads (Z_to_bv 64 0) [] m ctx st
@@ -1599,15 +1628,22 @@ Qed.
       reading a link's text.
     - [openat] (56): the walk's; ENOMEM from [alloc_fd]'s [expand_files]
       (fs/file.c) and from a procfs file's [->open] ([single_open],
-      [seq_open], fs/seq_file.c); ENFILE and ENOMEM from
-      [alloc_empty_file] (fs/file_table.c); a tmpfs create's ENOSPC and
-      ENOMEM.  The create's ENOSPC has two causes in [__shmem_get_inode]
-      (mm/shmem.c), so it is in two families ([Arm.NsInjected]):
-      [new_inode] failing, an allocation (FamAlloc, as for a new tmpfs's
-      root in [MountArms.mount40_injected]), and [shmem_reserve_inode] at
-      the instance's inode limit, its state (FamFs).  The create's ENOMEM
-      is [simple_offset_add]'s (fs/libfs.c).  EIO from a host file's
-      [->open].
+      [seq_open], fs/seq_file.c); from [alloc_empty_file]
+      (fs/file_table.c), ENOMEM for the [struct file] (:258-260) and ENFILE
+      at the system-wide file limit (:248-255, 278); a tmpfs create's
+      ENOSPC and ENOMEM.  The create's ENOSPC has two causes in
+      [__shmem_get_inode] (mm/shmem.c), so it is in two families
+      ([Arm.NsInjected]): [new_inode] failing, an allocation (FamAlloc, as
+      for a new tmpfs's root in [MountArms.mount40_injected]), and
+      [shmem_reserve_inode] at the instance's inode limit, its state
+      (FamFs).  The create's ENOMEM is [simple_offset_add]'s (fs/libfs.c).
+      EIO from a host file's [->open].  The ENFILE is a count limit of the
+      file table, so FamFd, the family the released table gives the
+      file-table limits of [pipe2], [socket], [socketpair] and [accept]
+      ([Run.injected_table]).  The released [openat] row gives all of
+      [openat]'s refusals one family, FamFs, its ENOMEM and EACCES too, so
+      the two worlds cannot agree on this ENFILE while that row has one
+      family; the released table has no [openat2] row.
     - [openat2] (437): [openat]'s, and the EAGAIN of [openat2_arm] after a
       scoped "..", an interruption (FamIntr).
     - [getdents64] (61): none on the task's own fd directory
@@ -1632,7 +1668,7 @@ Definition getcwd_injected : NsInjected :=
   mkNsInjected 17 [(errno_in [ENOMEM], FamAlloc)] [ENAMETOOLONG; ERANGE; EFAULT] [].
 
 Definition open_pairs : list ((Z -> bool) * SpuriousFamily) :=
-  [(errno_in [ENOMEM; ENFILE; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
+  [(errno_in [ENOMEM; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs); (errno_in [ENFILE], FamFd)].
 
 (** [openat]'s answers: [build_open_flags]' EINVAL, the path's EFAULT,
     ENAMETOOLONG and ENOENT, [get_unused_fd_flags]' EMFILE, the walk's,
