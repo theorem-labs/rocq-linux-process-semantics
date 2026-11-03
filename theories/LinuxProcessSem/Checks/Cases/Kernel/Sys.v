@@ -486,13 +486,6 @@ Proof. split; check_eq. Qed.
 
 (* =========================================================================
    Credentials — worked examples over the eight id calls
-
-   A successful id setter steps the model by [Kernel.Sys.commit_id_creds],
-   which applies [State.with_pdeath_signal] whether or not the effective
-   id moves.  That setter also writes the model's reparent bits:
-   [State.procst_reparent_unseen] becomes true when the old signal is 0,
-   as it is on these launch models.  So each expected model in this part
-   that follows a successful set*id names [with_pdeath_signal] too.
    ========================================================================= *)
 
 (** The model a demo run starts in: an ordinary unprivileged launch, its
@@ -546,8 +539,7 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 Example privileged_setuid_moves_all_three_ids :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_dumpable 0 (with_pdeath_signal 0
-              (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model))) [].
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) [].
 Proof. solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** -EAGAIN, in the one place it is admissible, and nowhere else.
@@ -586,12 +578,10 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 Example unprivileged_setuid_moves_only_the_effective_id :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_dumpable 0 (with_pdeath_signal 0
-              (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model))) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1002; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model
-     = CheckOk (with_dumpable 0 (with_pdeath_signal 0
-                 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model))) []
+     = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1003; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
@@ -605,8 +595,7 @@ Example setresgid_parks_a_group_in_the_saved_id :
   check_syscall (mkInput 149 [4294967295; 4294967295; 22; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_pdeath_signal 0
-              (with_creds (mkCreds 0 0 0 0 0 22 demo_groups) demo_model)) [].
+  = CheckOk (with_creds (mkCreds 0 0 0 0 0 22 demo_groups) demo_model) [].
 Proof. solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** [setresuid] (147) past its no-op and -EPERM paths, which nothing
@@ -620,8 +609,7 @@ Example setresuid_reaches_its_allocating_branch :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_dumpable 0 (with_pdeath_signal 0
-              (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model))) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) []
   (* -EAGAIN is admissible: the REAL uid moves, and this is the user
      setter *)
   /\ check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
@@ -646,8 +634,7 @@ Example unprivileged_setresuid_may_rearrange_held_ids :
   check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_dumpable 0 (with_pdeath_signal 0
-              (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model))) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   (* the real uid does not move here, so -ENOMEM is admissible and
      -EAGAIN is not *)
   /\ check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
@@ -1071,10 +1058,7 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 (** THE DUMPABLE MODE FOLLOWS THE BUILD'S [suid_dumpable].  On a build
     whose fs.suid_dumpable is 2, [setresuid(1000, 1000, 1000)] leaves the
     mode at 2, and [PR_GET_DUMPABLE] answers 2 where the default build
-    answers 0; a call that keeps the effective uid keeps the mode 1.  That
-    call still passes through [State.with_pdeath_signal], which sets the
-    model's [State.procst_reparent_unseen] because the signal is 0, so its
-    expected model names that setter. *)
+    answers 0; a call that keeps the effective uid keeps the mode 1. *)
 Definition suid2_kernel : KernelBuild :=
   mkKernelBuild (kb_thp default_kernel) (kb_vdso default_kernel)
                 (kb_aslr default_kernel) (kb_guard default_kernel)
@@ -1097,9 +1081,8 @@ Example dumpable_reset_to_suid_dumpable :
   /\ check_syscall (mkInput 147 [1000; 0; 1000; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) suid2_root_model
-     = CheckOk (with_pdeath_signal 0
-                  (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
-                     suid2_root_model)) [].
+     = CheckOk (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
+                  suid2_root_model) [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** SET, THEN [setgroups(0, NULL)], THEN GET: the list is cleared, no id

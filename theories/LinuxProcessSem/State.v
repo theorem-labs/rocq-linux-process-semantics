@@ -4525,49 +4525,62 @@ Record ProcState := mkProcState {
                                     identical at v6.18.46: include/linux/cred.h,
                                     security/commoncap.c [cap_capset],
                                     kernel/fork.c [copy_process]. *);
-  procst_reparent_unseen : bool  (* WHETHER THE PARENT MAY HAVE DIED UNSEEN:
-                                    the parent-death signal was 0 at some
-                                    moment since the last [getppid] answer.
-                                    READ IT THROUGH [m_reparent_unseen].
-                                    The kernel has no such field.  When a
-                                    parent exits, [forget_original_parent]
-                                    (kernel/exit.c) moves its children to a
-                                    reaper and sends each one its
-                                    [pdeath_signal] only when that is not 0,
-                                    so a parent can die while the signal is 0
-                                    and the child sees it only in a later
-                                    [getppid] answer.  This bit and
+  procst_reparent_unseen : bool  (* WHETHER A PARENT-DEATH SIGNAL OF 0 HAS
+                                    BEEN REPLACED since the last [getppid]
+                                    answer: the signal was 0 at some moment
+                                    since that answer, and a later write
+                                    installed a nonzero one.  READ IT THROUGH
+                                    [m_reparent_unseen].  The parent may have
+                                    died unseen while this bit holds or while
+                                    the current [procst_pdeath_signal] is 0;
+                                    the bit keeps the first case after the 0
+                                    is gone.  The kernel has no such field.
+                                    When a parent exits,
+                                    [forget_original_parent] (kernel/exit.c)
+                                    moves its children to a reaper and sends
+                                    each one its [pdeath_signal] only when
+                                    that is not 0, so a parent can die while
+                                    the signal is 0 and the child sees it only
+                                    in a later [getppid] answer.  This bit and
                                     [procst_reparent_moved] are the model's
                                     record of what [getppid] may still show.
 
                                     FALSE AT LAUNCH ([init_model]) and false
                                     in a new child ([Procs.child_proc]).
                                     [with_ppid_answered] clears it;
-                                    [with_pdeath_signal] sets it when the
-                                    signal it replaces is 0; every other
-                                    setter carries it.  Kernel citations, read
-                                    at v6.18.44 and identical at v6.18.46:
-                                    kernel/exit.c [forget_original_parent],
-                                    kernel/sys.c [getppid] and [prctl],
-                                    kernel/fork.c [copy_process]. *);
+                                    [with_pdeath_signal] sets it when it
+                                    installs a nonzero signal over 0, so a
+                                    write of the value already held (0 over 0,
+                                    or a signal over itself) changes nothing;
+                                    every other setter carries it.  Kernel
+                                    citations, read at v6.18.44 and identical
+                                    at v6.18.46: kernel/exit.c
+                                    [forget_original_parent], kernel/sys.c
+                                    [getppid] and [prctl], kernel/fork.c
+                                    [copy_process]. *);
   procst_reparent_moved : bool   (* WHETHER THE PARENT PID HAS MOVED in the
                                     current reparent window: a [getppid]
                                     answer gave a pid other than the
                                     [procst_ppid] it replaced.  READ IT
                                     THROUGH [m_reparent_moved].  The model's
                                     record, as [procst_reparent_unseen] is;
-                                    the kernel has no such field.
+                                    the kernel has no such field.  The window
+                                    is open while [procst_reparent_unseen]
+                                    holds or the parent-death signal is 0, and
+                                    shut otherwise.
 
                                     FALSE AT LAUNCH ([init_model]) and false
                                     in a new child ([Procs.child_proc]).
                                     [with_ppid_answered] sets it when its
                                     answer differs from the held pid and
                                     otherwise keeps it.  [with_pdeath_signal]
-                                    keeps it only while the window stays
-                                    open, that is while
-                                    [procst_reparent_unseen] holds after that
-                                    setter, and clears it otherwise.  Every
-                                    other setter carries it. *)
+                                    clears it only when it reopens a shut
+                                    window: the old signal is not 0,
+                                    [procst_reparent_unseen] is false, and the
+                                    new signal is 0.  Otherwise it keeps it,
+                                    so a write of the value already held
+                                    changes nothing.  Every other setter
+                                    carries it. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4748,8 +4761,8 @@ Definition m_ppid (m : Model) : word :=
 (** The inheritable capability set; see [procst_cap_inheritable]. *)
 Definition m_cap_inheritable (m : Model) : word :=
   procst_cap_inheritable (m_proc m).
-(** Whether the parent may have died unseen; see
-    [procst_reparent_unseen]. *)
+(** Whether a parent-death signal of 0 has been replaced since the last
+    [getppid] answer; see [procst_reparent_unseen]. *)
 Definition m_reparent_unseen (m : Model) : bool :=
   procst_reparent_unseen (m_proc m).
 (** Whether the parent pid has moved in the current reparent window; see
@@ -5317,16 +5330,18 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
     moves the effective id, as [commit_creds] does.  Nothing else writes
     the field after [init_model].
 
-    IT ALSO WRITES THE TWO REPARENT BITS, from the signal it replaces.
-    The kernel does not: [prctl(PR_SET_PDEATHSIG)] stores
-    [me->pdeath_signal = arg2] and nothing else (kernel/sys.c, read at
-    v6.18.44 and identical at v6.18.46).  The two bits are the model's
+    IT ALSO WRITES THE TWO REPARENT BITS, from the signal it replaces and
+    the signal [s] it installs.  The kernel does not: [prctl(PR_SET_PDEATHSIG)]
+    stores [me->pdeath_signal = arg2] and nothing else (kernel/sys.c, read
+    at v6.18.44 and identical at v6.18.46).  The two bits are the model's
     record of what [getppid] may still show.  [procst_reparent_unseen]
-    becomes true when the old signal is 0, because the parent may have
-    died unseen while it was 0.  [procst_reparent_moved] survives only
-    while [procst_reparent_unseen] holds after this setter, that is while
-    the reparent window stays open, and is cleared otherwise.  The new
-    signal [s] decides neither bit. *)
+    becomes true when a nonzero [s] replaces 0, because the parent may
+    have died unseen while the signal was 0.  [procst_reparent_moved] is
+    cleared only when the write reopens a shut window: the old signal is
+    not 0, [procst_reparent_unseen] is false, and [s] is 0.  A write of
+    the value already held (0 over 0, or a signal over itself) changes
+    neither bit, so [Kernel.Sys.commit_id_creds], which writes the old
+    signal back when the effective id stays, leaves them as they were. *)
 Definition with_pdeath_signal (s : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5340,10 +5355,12 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (orb (m_reparent_unseen m)
-                              (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0))
+                              (andb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
+                                    (negb (Z.eqb (bv_unsigned s) 0))))
                          (andb (m_reparent_moved m)
-                               (orb (m_reparent_unseen m)
-                                    (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0))))
+                               (orb (orb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
+                                         (m_reparent_unseen m))
+                                    (negb (Z.eqb (bv_unsigned s) 0)))))
             (m_lim m) (m_time m).
 
 (** Install the list of unreaped children.  Its writers are the reap
@@ -7881,17 +7898,21 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vmmaps_with_ppid_answered : model.
 
 (** The parent-death signal's setter writes both reparent bits from the
-    signal it replaces; see [with_pdeath_signal]. *)
+    signal it replaces and the one it installs; see [with_pdeath_signal]. *)
 Lemma m_reparent_unseen_with_pdeath_signal : forall (s : word) (m : Model),
   m_reparent_unseen (with_pdeath_signal s m)
-  = orb (m_reparent_unseen m) (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0).
+  = orb (m_reparent_unseen m)
+        (andb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
+              (negb (Z.eqb (bv_unsigned s) 0))).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_reparent_unseen_with_pdeath_signal : model.
 
 Lemma m_reparent_moved_with_pdeath_signal : forall (s : word) (m : Model),
   m_reparent_moved (with_pdeath_signal s m)
   = andb (m_reparent_moved m)
-         (orb (m_reparent_unseen m) (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)).
+         (orb (orb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
+                   (m_reparent_unseen m))
+              (negb (Z.eqb (bv_unsigned s) 0))).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_reparent_moved_with_pdeath_signal : model.
 
