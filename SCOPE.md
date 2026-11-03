@@ -486,7 +486,13 @@ not apply.
   is the empty list: under it no host mount event reaches a namespace of
   the model (`Ns.Propagation.closed_no_outside_event`). A statement that
   wants the case where such events can happen names a non-empty
-  `env_open_groups`.
+  `env_open_groups`. With a non-empty list, a call whose answer reads a
+  mount that can receive such an event has no answer: a path walk that
+  enters such a mount (`Ns.Walk.follow_mounts_fuel`,
+  `Ns.Propagation.open_mount`), and a bind or a new mount (`mount(2)`)
+  in a mount namespace that holds such a mount, or onto a shared mount
+  whose propagation tree holds one or reaches a namespace that holds one
+  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`).
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when

@@ -57,7 +57,7 @@
 
 From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Propagation Userns Walk Arm UserArms Net.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -207,21 +207,23 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                              (bv_unsigned (cr_egid (m_creds m))) (cap_effective (cc_caps cc)) in
         if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM st
         else
-          (* the mount namespace *)
+          (* the mount namespace, and the order data of its copies
+             ([Propagation.copy_ns_links]) *)
           let mnt_part :=
             if has_flag f CLONE_NEWNS then
               match find_mntns st (cx_mount ctx) with
               | Some old =>
                   let nid := Pos.succ (max_mntns_id st) in
-                  let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid
-                                                   (negb (Pos.eqb (cc_user cc) (mntns_owner old))) in
-                  Some (nid, T', [mkMntNs nid (cc_user cc) (where_ (mntns_root old)) false], where_)
+                  let other := negb (Pos.eqb (cc_user cc) (mntns_owner old)) in
+                  let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid other in
+                  Some (nid, T', [mkMntNs nid (cc_user cc) (where_ (mntns_root old)) false], where_,
+                        copy_ns_links st (mntns_root old) other)
               | None => None
               end
-            else Some (cx_mount ctx, ns_mounts st, [], fun i => i) in
+            else Some (cx_mount ctx, ns_mounts st, [], fun i => i, ns_prop st) in
           match mnt_part with
           | None => CnUnmodeled
-          | Some (mntns, T', new_mntns, where_) =>
+          | Some (mntns, T', new_mntns, where_, links) =>
               (* the pid namespace *)
               let active := cx_pidns ctx in
               let pid_part :=
@@ -272,7 +274,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let child := if leaves_flat f ctx st
                                      then with_dumpable_opt (with_nnp_opt child None) None
                                      else child in
-                        let st' := with_mounts st T' in
+                        let st' := with_ns_prop (with_mounts st T') links in
                         let st' := with_userns st' U in
                         let st' := with_mntns st' (ns_mntns st ++ new_mntns) in
                         let st' := with_pidns st' pidns' in

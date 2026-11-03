@@ -9,7 +9,8 @@
     - [SYSCALL_DEFINE5(mount)], [do_mount], [path_mount], [may_mount],
       [do_loopback], [__do_loopback], [do_change_type], and [do_new_mount],
       fs/namespace.c:2002-2005, 2823-2887, 2954-3009, 3681-3732,
-      3963-4052, 4216-4248;
+      3963-4052, 4216-4248; onto a shared mount, [attach_recursive_mnt]
+      and [propagate_mnt], fs/namespace.c:2559-2673, fs/pnode.c:311-366;
     - [SYSCALL_DEFINE2(umount)], [ksys_umount], [path_umount], and
       [can_umount], fs/namespace.c:2016-2071;
     - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4556-4638, and
@@ -215,7 +216,14 @@ Definition directory_walk_flags : WalkFlags := mkWalkFlags true true false false
    ========================================================================= *)
 
 (** [do_loopback] (fs/namespace.c:2976-3007), after both LOOKUP_FOLLOW
-    walks and [path_mount]'s capability check. *)
+    walks and [path_mount]'s capability check.  Onto a mount that is not
+    shared, [Mount.bind_mount]'s answer, and the copies' links in the
+    order data ([Propagation.bind_links]); onto a shared mount, the bind
+    that propagates ([Propagation.bind_mount_shared]: [attach_recursive_mnt],
+    fs/namespace.c:2594-2651).  A caller whose mount namespace holds a mount
+    that can receive an event from an open group gets no answer: the host
+    can change the mounts the bind copies and the count [count_mounts]
+    reads ([Propagation.ns_open]). *)
 Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
     (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (tgt td : positive) (flags : Z) : ext_outcome :=
@@ -230,11 +238,26 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
           match bind_paths st src sd tgt td with
           | None => EUnmodeled
           | Some bp =>
-              match bind_mount (ns_mounts st) (cx_mount ctx) (env_mount_max (ns_env st)) src bp
-                               (has flags MS_REC) tgt td with
-              | Some r => mount_mresult reads r m ctx st
-              | None => EUnmodeled
-              end
+              if ns_open st (cx_mount ctx) then EUnmodeled
+              else
+                match bind_mount (ns_mounts st) (cx_mount ctx) (env_mount_max (ns_env st)) src bp
+                                 (has flags MS_REC) tgt td with
+                | Some (MOk ms) =>
+                    mount_ok reads m ctx
+                      (with_ns_prop (with_mounts st ms) (bind_links st src bp (has flags MS_REC)))
+                | Some (MErr e) => err reads e m ctx st
+                | None =>
+                    match find_mntns st (cx_mount ctx) with
+                    | Some mntns =>
+                        match bind_mount_shared st (cx_mount ctx) (mntns_owner mntns) (dentry_below st)
+                                                src bp (has flags MS_REC) tgt td with
+                        | ADone st' => mount_ok reads m ctx st'
+                        | AErr e => err reads e m ctx st
+                        | AOver => EUnmodeled
+                        end
+                    | None => EUnmodeled
+                    end
+                end
           end
       end
   end.
@@ -282,7 +305,8 @@ Definition new_mount_flags (flags : Z) : MountFlags :=
                (has flags MS_NODEV) (has flags MS_NOEXEC).
 
 (** [do_new_mount], [mount_capable], [mount_too_revealing], [do_add_mount]
-    and [graft_tree], supplied by [Ns.NewMount].  One returned lock gives
+    and [graft_tree], supplied by [Ns.NewMount]; onto a shared target, with
+    its propagation ([NewMount.new_mount_shared]).  One returned lock gives
     this evaluator's representative successful outcome. *)
 Definition mount_new_instance (reads : list (word * nat)) (fstype : option (list byte))
     (data : option (list byte)) (m : Model) (ctx : NsCtx) (st : NsState)
@@ -295,8 +319,8 @@ Definition mount_new_instance (reads : list (word * nat)) (fstype : option (list
            | Some fs, Some mntns =>
                let fsuid := bv_unsigned (cr_euid (m_creds m)) in
                let fsgid := bv_unsigned (cr_egid (m_creds m)) in
-               match new_mount st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
-                               (mntns_owner mntns) target td with
+               match new_mount_shared st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
+                                      (mntns_owner mntns) target td (dentry_below st) with
                | NMErr e => err reads e m ctx st
                | NMOver => EUnmodeled
                | NMOk locks mk =>
@@ -367,9 +391,9 @@ Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
       end
   end.
 
-(** The other [NMOk] choices of [new_mount] (fs/namespace.c:3681-3731):
-    the visibility walk may pass either read-only lock that its table
-    permits. *)
+(** The other [NMOk] choices of [new_mount] and [new_mount_shared]
+    (fs/namespace.c:3681-3731): the visibility walk may pass either
+    read-only lock that its table permits. *)
 Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (o : ext_outcome) : Prop :=
   let devp := in_arg i 0 in
@@ -401,8 +425,8 @@ Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : 
                       | Some fs, Some mntns =>
                           let fsuid := bv_unsigned (cr_euid (m_creds m)) in
                           let fsgid := bv_unsigned (cr_egid (m_creds m)) in
-                          match new_mount st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
-                                          (mntns_owner mntns) target td with
+                          match new_mount_shared st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
+                                                 (mntns_owner mntns) target td (dentry_below st) with
                           | NMOk locks mk => exists lk, In lk locks /\ o = mount_ok reads m ctx (mk lk)
                           | _ => False
                           end
@@ -754,11 +778,21 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       [shmem_fill_super] gives the new instance room for at least one
       inode (mm/shmem.c:5092-5093).  The tables also answer ENOSPC, at the
       mount limit ([Mount.bind_mount], [NewMount.new_mount]:
-      [count_mounts]), so ENOSPC is in [ni_forced].  With MS_SHARED
-      ([do_change_type], fs/namespace.c:2877-2881), ENOMEM and ENOSPC also
-      from the group-id allocator ([mnt_alloc_group_id],
-      fs/namespace.c:239-247; [ida_alloc_min], lib/idr.c:470, 477), an
-      allocation, so FamAlloc.
+      [count_mounts]), and at the limit of a namespace of the tables that
+      gets secondaries ([Propagation.attach_check]: [count_mounts] from
+      [propagate_mnt], fs/pnode.c:351), so ENOSPC is in [ni_forced].  With
+      MS_SHARED ([do_change_type], fs/namespace.c:2877-2881), and for a
+      bind or new mount onto a shared mount ([invent_group_ids] from
+      [attach_recursive_mnt], fs/namespace.c:2594-2597; [clone_mnt] with
+      CL_MAKE_SHARED for a secondary, fs/namespace.c:1264-1268), ENOMEM and
+      ENOSPC also from the group-id allocator ([mnt_alloc_group_id],
+      fs/namespace.c:239-247; [ida_alloc_min], lib/idr.c:391, 470, 477), an
+      allocation, so FamAlloc; ENOMEM from [clone_mnt]'s [alloc_vfsmnt]
+      for each secondary (fs/namespace.c:1252-1254).  ENOSPC also from
+      [count_mounts] of a namespace outside the tables that gets a
+      secondary (fs/pnode.c:351; fs/namespace.c:2472-2483): a limit on the
+      number of mounts, not an allocation, and FamAlloc as the row's other
+      ENOSPC.
     Each row also lists the errnos its arm answers from the tables
     ([Arm.ni_answers]): the path copies, the walks and the call's own
     checks. *)

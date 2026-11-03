@@ -33,7 +33,7 @@
 
 From Stdlib Require Import List PArith ZArith Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Userns.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Propagation Userns.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -377,17 +377,21 @@ Definition may_exec_dir (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (l : Loc) 
 
 (** [traverse_mounts] (fs/namei.c): while a mount covers the dentry, go to
     that mount's root.  The fuel bounds the chain by the table; a cycle in a
-    malformed table answers [WOver]. *)
+    malformed table answers [WOver].  So does a mount that can receive a
+    mount or unmount event from a peer group with a member outside the
+    tables ([Propagation.open_mount]): the host can mount on any of its
+    dentries, or unmount what covers one, without a call of the model. *)
 Fixpoint follow_mounts_fuel (fuel : nat) (st : NsState) (l : Loc) : WalkResult :=
   match fuel with
   | O => WOver
   | S f =>
       match l with
       | LDentry m d =>
-          match mount_on st m d with
-          | Some child => follow_mounts_fuel f st (LDentry (mnt_id child) (mnt_root child))
-          | None => WOk l
-          end
+          if open_mount st m then WOver
+          else match mount_on st m d with
+               | Some child => follow_mounts_fuel f st (LDentry (mnt_id child) (mnt_root child))
+               | None => WOk l
+               end
       | LProcTask _ _ _ | LProcSelf _ _ => WOk l
       end
   end.
