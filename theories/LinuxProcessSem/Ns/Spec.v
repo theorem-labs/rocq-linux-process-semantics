@@ -150,18 +150,18 @@ Definition released_fd_call (i : SyscallInput) (m : Model) (st : NsState) : bool
     end
   else false.
 
-(** The forced-only filter of [ns_ext]: the released filter for a task in
-    the released world, for a pass-through call in every world (its
-    answer is the released answer, [Pass.pass_arms_released]), and for a
-    call on a descriptor of the released model ([released_fd_call]), so
-    the released question "did the state force this refusal?" is the same
-    question, under the released table's family; elsewhere, a refusal of
-    switched-off families where the model also admits an answer that
-    shows the state did not force it ([ns_witness]): one that is no
-    refusal at all, or the tables' own answer where that is an errno the
-    environment can also inject (a count limit's ENOSPC against an
-    allocation's ENOMEM). *)
-Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
+(** The forced-only filter of [ns_ext] on a call's effect: the released
+    filter for a task in the released world, for a pass-through call in
+    every world (its answer is the released answer,
+    [Pass.pass_arms_released]), and for a call on a descriptor of the
+    released model ([released_fd_call]), so the released question "did
+    the state force this refusal?" is the same question, under the
+    released table's family; elsewhere, a refusal of switched-off families
+    where the model also admits an answer that shows the state did not
+    force it ([ns_witness]): one that is no refusal at all, or the tables'
+    own answer where that is an errno the environment can also inject (a
+    count limit's ENOSPC against an allocation's ENOMEM). *)
+Definition ns_refusal_eff (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (eff : SyscallEffect) : Prop :=
   if flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st
   then spurious_refusal_cfg cfg i m eff
@@ -170,17 +170,46 @@ Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : 
             ns_spec i m ctx st (EOk eff' m' ctx' st' evs')
             /\ ns_witness i (eff_ret eff) (eff_ret eff') = true.
 
-Lemma ns_refusal_coherent : forall cfg i m ctx st eff,
-  flat_view ctx st = true -> ns_claims i = true ->
-  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
-Proof. intros cfg i m ctx st eff H _. unfold ns_refusal. rewrite H. reflexivity. Qed.
+(** The forced-only filter of [ns_ext] ([Ext.ext_refusal]): an [EOk]
+    outcome is filtered as its effect is ([ns_refusal_eff]); the model,
+    context and state it leaves are not read.  [EUnmodeled] is never
+    filtered. *)
+Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
+    (st : NsState) (o : ext_outcome) : Prop :=
+  match o with
+  | EOk eff _ _ _ _ => ns_refusal_eff cfg i m ctx st eff
+  | EUnmodeled => False
+  end.
+
+(** The filter of an outcome is the filter of its effect, in every world:
+    the filter keeps every answer it kept when it read the effect alone,
+    and removes no other. *)
+Lemma ns_refusal_outcome_eff : forall cfg i m ctx st o eff,
+  outcome_eff o = Some eff ->
+  (ns_refusal cfg i m ctx st o <-> ns_refusal_eff cfg i m ctx st eff).
+Proof.
+  intros cfg i m ctx st o eff Ho.
+  destruct o as [eff0 m' ctx' st' evs|]; cbn in Ho; [|discriminate Ho].
+  injection Ho as Ho. subst eff0. split; intros H; exact H.
+Qed.
+
+Lemma ns_refusal_coherent : forall cfg i m ctx st o eff,
+  flat_view ctx st = true -> ns_claims i = true -> outcome_eff o = Some eff ->
+  (ns_refusal cfg i m ctx st o <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros cfg i m ctx st o eff H _ Ho. split.
+  - intros Hr. apply (proj1 (ns_refusal_outcome_eff cfg i m ctx st o eff Ho)) in Hr.
+    unfold ns_refusal_eff in Hr. rewrite H in Hr. exact Hr.
+  - intros Hs. apply (proj2 (ns_refusal_outcome_eff cfg i m ctx st o eff Ho)).
+    unfold ns_refusal_eff. rewrite H. exact Hs.
+Qed.
 
 (** A pass-through call gets the released filter in every world. *)
-Lemma ns_refusal_pass : forall cfg i m ctx st eff,
+Lemma ns_refusal_eff_pass : forall cfg i m ctx st eff,
   In (ns_sysno i) pass_numbers ->
-  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
+  (ns_refusal_eff cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
 Proof.
-  intros cfg i m ctx st eff H. unfold ns_refusal.
+  intros cfg i m ctx st eff H. unfold ns_refusal_eff.
   assert (Hp : existsb (Z.eqb (ns_sysno i)) pass_numbers = true).
   { apply existsb_exists. exists (ns_sysno i). split; [exact H | apply Z.eqb_refl]. }
   rewrite Hp, orb_true_r. reflexivity.
@@ -188,23 +217,23 @@ Qed.
 
 (** A call on a descriptor of the released model gets the released filter
     in every world, under the released table's family. *)
-Lemma ns_refusal_released_fd : forall cfg i m ctx st eff,
+Lemma ns_refusal_eff_released_fd : forall cfg i m ctx st eff,
   released_fd_call i m st = true ->
-  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
+  (ns_refusal_eff cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
 Proof.
-  intros cfg i m ctx st eff H. unfold ns_refusal. rewrite H, orb_true_r. reflexivity.
+  intros cfg i m ctx st eff H. unfold ns_refusal_eff. rewrite H, orb_true_r. reflexivity.
 Qed.
 
 (** Elsewhere outside the released world the filter is the namespace
     one. *)
-Lemma ns_refusal_ns : forall cfg i m ctx st eff,
+Lemma ns_refusal_eff_ns : forall cfg i m ctx st eff,
   (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st) = false ->
-  (ns_refusal cfg i m ctx st eff
+  (ns_refusal_eff cfg i m ctx st eff
    <-> ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
             ns_spec i m ctx st (EOk eff' m' ctx' st' evs')
             /\ ns_witness i (eff_ret eff) (eff_ret eff') = true).
-Proof. intros cfg i m ctx st eff H. unfold ns_refusal. rewrite H. reflexivity. Qed.
+Proof. intros cfg i m ctx st eff H. unfold ns_refusal_eff. rewrite H. reflexivity. Qed.
 
 (** More families allowed to fail filter fewer answers. *)
 Lemma ns_refusal_off_b_mono : forall cfg1 cfg2 i ret,
@@ -219,10 +248,10 @@ Proof.
   rewrite (Hle _ E1) in Hq2. discriminate Hq2.
 Qed.
 
-Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st eff,
-  cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st eff -> ns_refusal cfg1 i m ctx st eff.
+Lemma ns_refusal_eff_mono : forall cfg1 cfg2 i m ctx st eff,
+  cfg_le cfg1 cfg2 -> ns_refusal_eff cfg2 i m ctx st eff -> ns_refusal_eff cfg1 i m ctx st eff.
 Proof.
-  intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal.
+  intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal_eff.
   destruct (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers || released_fd_call i m st).
   - unfold spurious_refusal_cfg, injected_family_off.
     destruct (injected_arm (bv_unsigned (in_sysno i))) as [a|]; [|intros [Hc _]; discriminate Hc].
@@ -232,6 +261,14 @@ Proof.
     rewrite (Hle _ E1) in Hoff. discriminate Hoff.
   - intros [Hoff Hrest]. split; [exact (ns_refusal_off_b_mono cfg1 cfg2 i (eff_ret eff) Hle Hoff)
                                 | exact Hrest].
+Qed.
+
+Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st o,
+  cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st o -> ns_refusal cfg1 i m ctx st o.
+Proof.
+  intros cfg1 cfg2 i m ctx st [eff m' ctx' st' evs|] Hle.
+  - exact (ns_refusal_eff_mono cfg1 cfg2 i m ctx st eff Hle).
+  - intros H. exact (False_ind _ H).
 Qed.
 
 (** With one pair for a number, the filter is the released single-family

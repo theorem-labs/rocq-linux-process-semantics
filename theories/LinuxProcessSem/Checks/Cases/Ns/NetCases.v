@@ -404,10 +404,12 @@ Proof.
 Qed.
 
 Example getlink_handler_failure_kept :
-  ~ ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff.
+  ~ ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_out.
 Proof.
   intros H.
-  apply (proj1 (ns_refusal_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+  apply (proj1 (ns_refusal_outcome_eff forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_out
+                  fail_eff eq_refl)) in H.
+  apply (proj1 (ns_refusal_eff_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
                   ltac:(vm_compute; reflexivity))) in H.
   destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
 Qed.
@@ -422,8 +424,8 @@ Qed.
     answers: lo up with 127.0.0.1/8, and, when [inetdev_event]'s
     [inet_alloc_ifa] fails, lo up with no address.  Both return the
     request's length with the same effect ([up_eff]) and queue the same
-    acknowledgement of 0, so the forced-only filter, which sees the
-    effect, keeps both (SCOPE.md). *)
+    acknowledgement of 0, so the forced-only filter, which reads the
+    effect alone ([Spec.ns_refusal_outcome_eff]), keeps both (SCOPE.md). *)
 Definition admin : IdCred := mkIdCred 2 65534 65534 (2 ^ CAP_NET_ADMIN).
 Definition up_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 admin.
 Definition up_state : NsState :=
@@ -468,11 +470,13 @@ Proof.
     split; [vm_compute; reflexivity | vm_compute; reflexivity].
 Qed.
 
-Example lo_up_without_address_kept :
-  ~ ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state up_eff.
+Example lo_up_without_address_kept : forall ifs,
+  ~ ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state (up_out ifs).
 Proof.
-  intros H.
-  apply (proj1 (ns_refusal_ns forced_only_cfg up_in rcv_model up_ctx up_state up_eff
+  intros ifs H.
+  apply (proj1 (ns_refusal_outcome_eff forced_only_cfg up_in rcv_model up_ctx up_state (up_out ifs)
+                  up_eff eq_refl)) in H.
+  apply (proj1 (ns_refusal_eff_ns forced_only_cfg up_in rcv_model up_ctx up_state up_eff
                   ltac:(vm_compute; reflexivity))) in H.
   destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
 Qed.

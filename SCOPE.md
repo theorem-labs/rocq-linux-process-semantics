@@ -532,9 +532,10 @@ not apply.
   `netlink_recvmsg` runs the dump again from its first part, so the
   dump's datagrams follow the acknowledgement. The namespace model admits
   that outcome (`Ns.Net.nl_handler_errnos`). Under forced-only, this one
-  injected refusal is not removed: the refusal filter
-  (`Ns.Ext.ext_refusal`) sees the state before the call and the call's
-  effect, not the state after it, where the acknowledgement lives.
+  injected refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`)
+  is given the call's whole outcome, but the namespace model's filter
+  (`Ns.Spec.ns_refusal`) reads only the state before the call and the
+  call's effect, not the state after it, where the acknowledgement lives.
 - A loopback device can come up without its address. When `lo` comes
   up, `inetdev_event` adds 127.0.0.1/8 only if `inet_alloc_ifa` can
   allocate it (`net/ipv4/devinet.c`, v6.18.44); otherwise the device is
