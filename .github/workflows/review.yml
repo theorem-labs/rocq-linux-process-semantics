@@ -725,8 +725,8 @@ jobs:
       # created up to 3 hours ago are read, which covers a job's 75 minutes and its time in the queue. A review job that
       # waits for its run's trust job is not listed yet, and one the trust job skipped has no Review step, so neither
       # counts. Only jobs of this run's kind count, by the job's name: a writer's review against HOURLY_CAP, a screened
-      # one against SCREENED_HOURLY_CAP. A read that fails stops the run here, not at the next step, so that the hold
-      # job, which reads that step's failure as the cap, never says the cap was reached when it was not.
+      # one against SCREENED_HOURLY_CAP. A read that fails stops the run here, not at "Hold at the hourly cap", so that
+      # the hold job, which reads a failure of that step as the cap, never says the cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
         env:
@@ -767,7 +767,7 @@ jobs:
             [[ $n =~ ^[0-9]+$ ]] || stop "the jobs of run $id could not be read."
             count=$((count + n))
           done <<< "$runs"
-          # A failed write would leave the count empty, which the next step would read as 0: it stops the run instead.
+          # A failed write would leave the count empty: it stops the run here (the next step refuses an empty count too).
           echo "count=$count" >> "$GITHUB_OUTPUT" || stop "the count could not be written."
           echo "$count reviews ($POOL) called the model, or may, in the last hour."
 
