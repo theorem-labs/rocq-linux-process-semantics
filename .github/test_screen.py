@@ -330,21 +330,24 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual((v, reason["checks"]["model_armor"]["word"]), ("held", "error"))
 
     def test_each_rule_combines_the_words(self):
-        """any: one suspicious holds; two_of_three: two do; detectors: Model Armor or Prompt Shields does, and the
-        model's word does not count. An error holds under every rule."""
+        """any: one suspicious holds; two_of_three: two do; detectors: Model Armor or Prompt Shields does; claude: the
+        model does; claude_or_both_detectors: the model does, or both detectors do. An error holds under every rule."""
         c, s_, e = "clean", "suspicious", "error"
-        cases = [((c, c, c), ("clean", "clean", "clean")), ((s_, c, c), ("held", "clean", "held")),
-                 ((c, s_, c), ("held", "clean", "held")), ((c, c, s_), ("held", "clean", "clean")),
-                 ((s_, s_, c), ("held", "held", "held")), ((s_, c, s_), ("held", "held", "held")),
-                 ((c, s_, s_), ("held", "held", "held")), ((s_, s_, s_), ("held", "held", "held")),
-                 ((c, c, e), ("held", "held", "held")), ((e, c, c), ("held", "held", "held"))]
+        rules = ("any", "two_of_three", "detectors", "claude", "claude_or_both_detectors")
+        self.assertEqual(tuple(screen.RULES), rules)
+        H, C = "held", "clean"
+        cases = [((c, c, c), (C, C, C, C, C)), ((s_, c, c), (H, C, H, C, C)), ((c, s_, c), (H, C, H, C, C)),
+                 ((c, c, s_), (H, C, C, H, H)), ((s_, s_, c), (H, H, H, C, H)), ((s_, c, s_), (H, H, H, H, H)),
+                 ((c, s_, s_), (H, H, H, H, H)), ((s_, s_, s_), (H, H, H, H, H)),
+                 ((c, c, e), (H, H, H, H, H)), ((e, c, c), (H, H, H, H, H)), ((c, e, c), (H, H, H, H, H))]
         for (ma, ps, cl), want in cases:
             words = {"model_armor": ma, "prompt_shields": ps, "claude": cl}
             with self.subTest(words=words):
-                self.assertEqual(tuple(screen.combine(words, r) for r in ("any", "two_of_three", "detectors")), want)
+                self.assertEqual(tuple(screen.combine(words, r) for r in rules), want)
 
     def test_the_rule_decides_the_verdict(self):
-        for rule, want in (("any", "held"), ("two_of_three", "clean"), ("detectors", "clean")):
+        for rule, want in (("any", "held"), ("two_of_three", "clean"), ("detectors", "clean"), ("claude", "held"),
+                           ("claude_or_both_detectors", "held")):
             with self.subTest(rule=rule):
                 self.fresh()
                 self.item()
@@ -355,7 +358,9 @@ class ScreenTest(unittest.TestCase):
 
     def test_a_rule_that_is_not_one_or_lacks_its_checks_holds_it(self):
         for rule, listed in (("", "model_armor,prompt_shields,claude"), ("majority", "model_armor,prompt_shields,claude"),
-                             ("two_of_three", "model_armor,prompt_shields"), ("detectors", "model_armor,claude")):
+                             ("two_of_three", "model_armor,prompt_shields"), ("detectors", "model_armor,claude"),
+                             ("claude", "model_armor,prompt_shields"),
+                             ("claude_or_both_detectors", "model_armor,claude")):
             with self.subTest(rule=rule, listed=listed):
                 self.fresh()
                 self.item()
@@ -392,6 +397,8 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("| any | 2 of 4 | 0 of 4 | 0 |", r.stdout)
         self.assertIn("| two_of_three | 0 of 4 | 0 of 4 | 0 |", r.stdout)
         self.assertIn("| detectors | 0 of 4 | 0 of 4 | 0 |", r.stdout)
+        self.assertIn("| claude | 2 of 4 | 0 of 4 | 0 |", r.stdout)
+        self.assertIn("| claude_or_both_detectors | 2 of 4 | 0 of 4 | 0 |", r.stdout)
         record = self.services.objects["measure/runs/acme/model/1-1.json"]
         self.assertEqual(len(record["results"]), 8)
         self.assertEqual(record["caught by one check alone"], [])

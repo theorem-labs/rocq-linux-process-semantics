@@ -25,9 +25,10 @@
 # run that way. Every review reads the comments and reviews of the author and of accounts with write access, and no
 # others.
 #
-# - A maintainer can measure the screen: -f measure=true, with no number, runs every listed check three times on each
-#   text of a labelled set kept in the private bucket (measure/set-v1.json), and puts the false holds and missed
-#   injections of each rule of SCREEN_RULE's choices in the run's summary. The texts, and each check's words for
+# - A maintainer can measure the screen: -f measure=true, with no number, runs every listed check three times
+#   (-f measure_repeats=<1-5>) on each text of a labelled set kept in the private bucket (-f measure_set=
+#   measure/set-v<n>.json, by default measure/set-v1.json), and puts the false holds and missed injections of each
+#   rule of SCREEN_RULE's choices in the run's summary. The texts, and each check's words for
 #   them, stay in the bucket.
 #
 #   trust   decides the route: review, screen, or held at the limit. It checks nothing out, and its token can only read
@@ -93,6 +94,14 @@ on:
         description: Measure the screen's rules on its private labelled set, and review nothing
         type: boolean
         default: false
+      measure_set:
+        description: The labelled set to measure on, an object of the private bucket (measure/set-v<n>.json)
+        type: string
+        default: measure/set-v1.json
+      measure_repeats:
+        description: How many times each check answers each text of the set
+        type: number
+        default: 3
 
 permissions: {}
 
@@ -456,8 +465,10 @@ jobs:
       # The checks that run, all three. A listed check whose settings are missing, or that cannot answer (a 429 of
       # Prompt Shields' free tier among the causes), holds the item; a check leaves only by leaving this list.
       SCREEN_CHECKS: model_armor,prompt_shields,claude
-      # How the checks' words make the verdict (.github/screen.py, RULES): any, two_of_three or detectors.
-      SCREEN_RULE: any
+      # How the checks' words make the verdict (.github/screen.py, RULES, with the measurement behind the choice):
+      # held when the model answers suspicious, or Model Armor and Prompt Shields both do; and, under every rule, when
+      # a check cannot answer.
+      SCREEN_RULE: claude_or_both_detectors
     steps:
       # main's .github/, for screen.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -507,10 +518,14 @@ jobs:
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          MEASURE_SET: measure/set-v1.json
+          MEASURE_SET: ${{ inputs.measure_set }}
           MEASURE_OBJECT: measure/runs/${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
-          MEASURE_REPEATS: "3"
-        run: python3 .github/screen.py --measure
+          MEASURE_REPEATS: ${{ inputs.measure_repeats }}
+        run: |
+          set -euo pipefail
+          [[ $MEASURE_SET =~ ^measure/set-v[0-9]+\.json$ ]] || { echo "::error::not a labelled set: $MEASURE_SET"; exit 1; }
+          [[ $MEASURE_REPEATS =~ ^[1-5]$ ]] || { echo "::error::MEASURE_REPEATS must be 1 to 5"; exit 1; }
+          python3 .github/screen.py --measure
 
   review:
     # The hourly caps tell the two kinds of review apart by this name.

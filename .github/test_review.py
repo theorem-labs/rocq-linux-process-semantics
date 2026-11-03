@@ -722,8 +722,9 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(steps["Take the gathered pull request or issue"], "needs.trust.outputs.route != 'measure'")
         self.assertEqual(steps["actions/download-artifact"], "needs.trust.outputs.route != 'measure'")
         m = step("screen", "Measure")
-        self.assertEqual(m["run"], "python3 .github/screen.py --measure")
-        self.assertEqual(m["env"]["MEASURE_SET"], "measure/set-v1.json")
+        self.assertTrue(m["run"].endswith("python3 .github/screen.py --measure\n"), m["run"])
+        self.assertEqual(m["env"]["MEASURE_SET"], "${{ inputs.measure_set }}")
+        self.assertIn("^measure/set-v[0-9]+\\.json$", m["run"])
         self.assertTrue(m["env"]["MEASURE_OBJECT"].startswith("measure/runs/"))
 
     def test_no_route_runs_nothing(self):
@@ -896,6 +897,8 @@ class HoldingsTest(unittest.TestCase):
         # all three checks run: the Claude check under the screen's own service account and rule
         # (rocq-linux-process-semantics-screen), Prompt Shields under the managed identity review-screen
         self.assertEqual(listed, ["model_armor", "prompt_shields", "claude"])
+        # the rule chosen by measurement (.github/screen.py, RULES)
+        self.assertEqual(e["SCREEN_RULE"], "claude_or_both_detectors")
         self.assertEqual((e["ANTHROPIC_SERVICE_ACCOUNT_ID"], e["ANTHROPIC_FEDERATION_RULE_ID"]),
                          ("svac_01JFhEhPizCyTiK2i22mRJ8a", "fdrl_01SQMHj4Tw85dV4DNYWQDKeA"))
         self.assertEqual(e["AZURE_CLIENT_ID"], "878cb696-144f-4c60-b04c-3974fad24e96")
