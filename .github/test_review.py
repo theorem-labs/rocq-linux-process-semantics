@@ -1671,20 +1671,25 @@ class RescreenJobTest(Held):
 
     def test_an_item_rescreened_since_its_hold_with_no_new_hold_is_left_to_a_person(self):
         """A rescreen that ended with neither a new hold nor a posted review (its review or post failed on the writers'
-        route, say) is not started again, so no item is screened and reviewed without end. A rescreen before the hold
-        (the one the hold came from) does not stop the next."""
+        route, say) is not started again, however long ago, so no item is screened and reviewed without end. A rescreen
+        before the hold (the one the hold came from) does not stop the next, nor another item's."""
         now = datetime.datetime.now(datetime.timezone.utc)
         hour_ago = (now - datetime.timedelta(minutes=70)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        self.items((7, "open"), (8, "open"))
+        self.items((7, "open"), (8, "open"), (9, "open"))
         self.held(7, limit_hold(50, at=hour_ago, kind="transient", tries=1))
         self.held(8, limit_hold(51, at=hour_ago, kind="transient", tries=1))
+        self.held(9, limit_hold(52, kind="cap", tries=0))   # held in 2000
         self.origin(50, "mallory")
         self.origin(51, "eve")
+        self.origin(52, "bob")
         self.runs((10, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 30),
-                  (11, BOT, "workflow_dispatch", "rescreen #8 of eve", "completed", 90))
+                  (11, BOT, "workflow_dispatch", "rescreen #8 of eve", "completed", 90),
+                  (12, BOT, "workflow_dispatch", "rescreen #9 of bob", "completed", 3 * 24 * 60),
+                  (13, BOT, "workflow_dispatch", "rescreen #80 of eve", "completed", 30))
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("8", "true", "eve")]), out)
         self.assertIn("#7: rescreened at", out)
+        self.assertIn("#9: rescreened at", out)
 
     def test_a_draft_is_left_alone(self):
         """The trust job takes no draft, and a run it stops would still count toward the account's limit, held
