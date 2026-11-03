@@ -56,7 +56,8 @@ Local Abbreviation check_oeventfd_setfl fd w arg eff m :=
    else CheckUnmodeled).
 
 (** fcntl: a closed fd is -EBADF whatever the command; on an open one
-    F_SETFD answers 0 for any arg, F_GETFD answers 0 or FD_CLOEXEC,
+    F_SETFD answers 0 for any arg, F_GETFD answers 0 or FD_CLOEXEC (and
+    declines on a shared eventfd, [Fcntl.getfd_declines]),
     F_SETFL on a stream-pair end, an eventfd or a shared eventfd records
     O_NONBLOCK ([check_stream_setfl], [check_eventfd_setfl],
     [check_oeventfd_setfl]) and on every other
@@ -70,6 +71,8 @@ Definition check_fcntl (fd cmd arg : word) (eff : SyscallEffect) (m : Model)
   | Some e =>
       if bv_eqb cmd F_SETFD then check_ret_only eff (Z_to_bv 64 0) m []
       else if bv_eqb cmd F_GETFD then
+        if getfd_declines e then CheckUnmodeled
+        else
         match eff with
         | mkEffectU r [] [] [] [] [] =>
             if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
@@ -239,8 +242,9 @@ Proof.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd.
+      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H; [discriminate H|].
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+        srw Hfd. srw Hgx.
         destruct eff as [r ws zs us cs ci];
           destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
         destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
@@ -287,7 +291,10 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + now apply check_ret_only_no_unmodeled in H.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * destruct eff as [r ws zs us cs ci];
+      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H.
+        { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+          srw Hfd. srw Hgx. apply unmodeled_intro. }
+        destruct eff as [r ws zs us cs ci];
           destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
         destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
           discriminate.
@@ -331,6 +338,10 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (match goal with
+                   | |- context [getfd_declines ?e'] =>
+                       destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
+                   end);
               try (destruct (bv_eqb cmd F_SETFL) eqn:Hs; hall Hs; inv_ok;
                    [ (* F_SETFL: one arm per fd kind *)
                      destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
@@ -362,6 +373,10 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (match goal with
+                   | |- context [getfd_declines ?e'] =>
+                       destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
+                   end);
               try (destruct (bv_eqb cmd F_SETFL) eqn:Hs; hall Hs; inv_ok;
                    [ (* F_SETFL: one arm per fd kind *)
                      destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];

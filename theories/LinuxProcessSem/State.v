@@ -2789,7 +2789,9 @@ Definition PipeBuf : Type := list byte * Z.
       [FdEventfd] context it replaced.  After the clone the description
       is shared by two tasks, so the counter is not modeled: read, write
       and readiness decline on it, and fcntl's F_GETFL and F_SETFL answer
-      from [w] ([Fs.Fcntl.oeventfd_f_flags]).
+      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  F_GETFD declines on it
+      ([Fs.Fcntl.getfd_declines]): its close-on-exec bit came from the
+      [eventfd2] word's EFD_CLOEXEC, which [w] does not carry.
     - [ONsFile h]: a descriptor on an open file that the namespace and
       mount model holds under handle
       [h].  No arm of [spec_table] mints it: only that model's child

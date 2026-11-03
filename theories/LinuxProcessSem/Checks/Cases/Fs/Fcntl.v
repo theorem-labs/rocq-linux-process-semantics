@@ -16,7 +16,8 @@
     F_SETFL mask, which needs two neighbouring flag words compared
     against each other; and (e) F_GETFD, which admits both of Linux's
     answers on an open fd and nothing else, and is -EBADF on a closed
-    one.
+    one.  (A shared eventfd is the one kind on which F_GETFD declines;
+    [Checks.Cases.Fs.EventFd.eventfd_getfd_declines_after_a_clone].)
 
     The directory fd and the socket fd are here because
     [Fcntl.setfl_noop_on] ENUMERATES its fd kinds, so each kind's answer
