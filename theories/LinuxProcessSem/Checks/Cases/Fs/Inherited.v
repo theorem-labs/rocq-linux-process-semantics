@@ -27,8 +27,8 @@
     - THE PIN: [Run.valid_input] holds of the plain launch and NOT of the
       keyed one; [Run.valid_input_inherited] holds of the keyed one.
     - THE KIND: [write], [lseek] and [fstat] decline on a key; [close]
-      answers 0 and frees the slot; [fcntl]'s [F_GETFD] answers the
-      table's close-on-exec bit as on every kind.
+      answers 0 and frees the slot; [fcntl]'s [F_GETFD] admits 0 and
+      FD_CLOEXEC, as on every kind, and rejects 2.
     - THE CLONE GATE: a [clone] by a caller that holds a key with its
       offset declines, with either word; the same clone without the key
       answers a pid. *)
@@ -257,15 +257,19 @@ Example inherited_key_close_frees_the_slot :
   end.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE CONTROL: [F_GETFD] (1) reads the table's close-on-exec bit, which
-    the launch leaves clear, as it does for every kind. *)
+(** THE CONTROL: [F_GETFD] (1) admits both of [do_fcntl]'s answers, 0
+    and FD_CLOEXEC, as [Fs.Fcntl.fcntl_spec] does on every kind (the
+    model does not record the close-on-exec bit), and rejects 2. *)
 Example inherited_key_getfd_answers :
   check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) (inh_model inh_key_launch)
   = CheckOk (inh_model inh_key_launch) []
   /\ check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 1 [] []) (inh_model inh_key_launch) = CheckReject.
-Proof. split; check_eq. Qed.
+       (mkEffect 1 [] []) (inh_model inh_key_launch)
+     = CheckOk (inh_model inh_key_launch) []
+  /\ check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2 [] []) (inh_model inh_key_launch) = CheckReject.
+Proof. split; [check_eq|split; [check_eq|vm_compute; reflexivity]]. Qed.
 
 (* -------------------------------------------------------------------------
    The clone gate
