@@ -716,7 +716,7 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_access_ok_zero in H.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
           || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
