@@ -735,7 +735,9 @@ jobs:
           from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || stop "the time could not be read."
           export SINCE
           runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-            -f created=">=$from" -F per_page=100 --jq '.workflow_runs[] | "\(.id) \(.created_at)"') \
+            -f created=">=$from" -F per_page=100 --jq '.workflow_runs[]
+              | select(.event == "pull_request_target" or .event == "issues" or .event == "workflow_dispatch")
+              | "\(.id) \(.created_at)"') \
             || stop "the runs could not be read."
           count=0
           while read -r id created; do
@@ -1169,6 +1171,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
+          [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Without a posted review the label never comes off, so the same item would be screened and reviewed again
           # every hour.
           if [ "$POST_REVIEW" != true ]; then
@@ -1259,9 +1262,10 @@ jobs:
               echo "#$number: held at $at, less than an hour ago."
               continue
             fi
-            # An item rescreened after its hold, whose rescreen left neither a new hold nor a posted review (its
-            # review or post failed on the writers' route, say), is not started again: a person decides, so that no
-            # item is screened and reviewed without end. The runs since the hold are read, however long ago it was.
+            # An item rescreened after its hold whose rescreens left neither a new hold nor a posted review is started
+            # again up to REVIEW_TRIES times in all: one such run may have failed on a GitHub read, or its hold job may
+            # have failed to write. After that a person decides, so that no item is screened and reviewed without end,
+            # and this job fails, so that someone sees it. The runs since the hold are read, however long ago it was.
             [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
               || { echo "::error::#$number: its hold has no time."; failed=1; continue; }
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1270,10 +1274,14 @@ jobs:
               -F per_page=100 --jq '.workflow_runs[] | select(.event == "workflow_dispatch"
                 and (.created_at // "") >= $ENV.AT and ((.display_title // "") | startswith($ENV.PREFIX))) | .created_at') \
               || { echo "::error::the runs since the hold of #$number could not be read."; failed=1; continue; }
-            if [ -n "$since_hold" ]; then
-              echo "#$number: rescreened at $(head -n 1 <<< "$since_hold"), after its hold, with no new hold: a person decides."
+            unsettled=$(grep -c . <<< "$since_hold" || true)
+            if (( unsettled >= REVIEW_TRIES )); then
+              echo "::error::#$number: screened again $unsettled times since its hold at $at, with no new hold and no" \
+                "review posted: a maintainer must look at it."
+              failed=1
               continue
             fi
+            (( unsettled == 0 )) || echo "#$number: $unsettled rescreens since its hold settled nothing; trying again."
             account=$(held_account "$origin") || { echo "::error::run $origin could not be read."; failed=1; continue; }
             if [ -z "$account" ]; then
               echo "#$number: its hold names no run of this workflow's events: left alone."
