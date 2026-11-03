@@ -440,7 +440,7 @@ Proof.
   assert (Hv : forall o', uts_view (find_utsns st (cx_uts ctx)) o' = o').
   { intros [eff m' ctx' st' evs|]; [|reflexivity]. cbn [uts_view].
     destruct (find_utsns st (cx_uts ctx)) as [u|] eqn:E; [|reflexivity].
-    rewrite E in Hu. destruct Hu as [Hn Hd].
+    try rewrite E in Hu. destruct Hu as [Hn Hd].
     rewrite (uts_view_eff_unnamed u eff Hn Hd). reflexivity. }
   unfold uname_arm. split.
   - intros (o' & Hr & Ho). rewrite Ho, Hv. exact Hr.
