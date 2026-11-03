@@ -1205,19 +1205,20 @@ jobs:
           }
           # end of held
           from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-          since=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
-          # This workflow's runs of the last 3 hours, by their names: an item with a run not finished (rescreen #<n> of
+          since=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)
+          # This workflow's runs of the last day, by their names: an item with a run not finished (rescreen #<n> of
           # <account>, or review #<n>: its own event's or a maintainer's) is not started again, because its screen and
           # review can outlast this job's 15 minutes, and a second run would cancel them and use the hour's screened
-          # reviews twice; and the rescreens of the last hour count toward each account's limit (a rescreen's name,
-          # which its trust job checks against the hold, names the account). 3 hours cover a run's jobs and their time
-          # in the queue.
+          # reviews twice; the rescreens of the last hour count toward each account's limit (a rescreen's name, which
+          # its trust job checks against the hold, names the account); and an item rescreened after its hold, whose
+          # rescreen left neither a new hold nor a posted review (its review or post failed on the writers' route,
+          # say), is not started again: a person decides, so that no item is screened and reviewed without end.
           runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
             -f created=">=$since" -F per_page=100 \
             --jq '.workflow_runs[]
               | "\(.created_at // "-") \(.status // "-") \(.event // "-") \(.display_title // "" | gsub("[\r\n]"; " "))"') \
             || { echo "::error::the runs of this workflow could not be read."; exit 1; }
-          declare -A used=() running=()
+          declare -A used=() running=() last=()
           rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\[bot\])?)$'
           review_re='^review #([0-9]+)$'
           while read -r created status event title; do
@@ -1228,6 +1229,7 @@ jobs:
               [ "$status" = completed ] || running[${BASH_REMATCH[1]}]=1
             elif [[ $event == workflow_dispatch && ${title:-} =~ $rescreen_re ]]; then
               [ "$status" = completed ] || running[${BASH_REMATCH[1]}]=1
+              if [[ $created > ${last[${BASH_REMATCH[1]}]:-} ]]; then last[${BASH_REMATCH[1]}]=$created; fi
               if [[ ! $created < $from ]]; then
                 used[${BASH_REMATCH[2]}]=$(( ${used[${BASH_REMATCH[2]}]:-0} + 1 ))
               fi
@@ -1255,6 +1257,10 @@ jobs:
             fi
             if [[ ! $at < $from ]]; then
               echo "#$number: held at $at, less than an hour ago."
+              continue
+            fi
+            if [[ -n ${last[$number]:-} && $at < ${last[$number]} ]]; then
+              echo "#$number: rescreened at ${last[$number]}, after its hold, with no new hold: a person decides."
               continue
             fi
             account=$(held_account "$origin") || { echo "::error::run $origin could not be read."; failed=1; continue; }
