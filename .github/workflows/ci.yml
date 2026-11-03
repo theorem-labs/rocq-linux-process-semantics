@@ -32,7 +32,8 @@ jobs:
   #            workflow and import the screen.
   #
   # It fails safe: no usable base, an empty diff or a change to this file
-  # runs every job.
+  # runs every job. .github/test_ci.py runs this script and the `ci` job's on
+  # every case first, so a route that decides wrongly fails `CI`.
   route:
     name: Route
     runs-on: ubuntu-latest
@@ -44,6 +45,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Here because this job always runs and no route can skip it.
+      - name: The route decides what it is meant to decide
+        run: python3 .github/test_ci.py
       - id: route
         env:
           EVENT: ${{ github.event_name }}
@@ -72,7 +76,7 @@ jobs:
           grep -qx '\.github/workflows/ci\.yml' "$RUNNER_TEMP/changed" \
             && everything "This workflow changed"
           review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md)$'
-          # grep answers 0 when a line matches, 1 when none does, 2 or more on an error.
+          # grep answers 0 when it selects a line, 1 when it selects none, 2 or more on an error.
           answer() {
             rc=0; grep "$@" "$RUNNER_TEMP/changed" || rc=$?
             case "$rc" in
