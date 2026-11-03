@@ -341,15 +341,34 @@ Definition default_mi_env : MiEnv :=
     host lookup of a name the tables do not list is otherwise undecided;
     a pair is a measured fact about the host (stat of that path gave
     ENOENT), and a statement that lists one asks that nothing outside the
-    model creates the name. *)
+    model creates the name.  Last, [env_foreign_pgroups]: whether a
+    process outside the model may make a process group of a modelled
+    task's pid.  Only the task itself or its parent may set the task's
+    process group ([setpgid], kernel/sys.c:1143-1153, Linux v6.18.46: a
+    caller other than the task must be [p->real_parent], in [p]'s
+    session, before [p] execs), and no modelled process can ([setpgid]
+    154 has no arm).  But once a modelled
+    parent exits, its child is reparented to a reaper the environment
+    owns, and that reaper may call [setpgid(child, child)] before the
+    child execs, after which the child's [setsid] answers EPERM
+    (kernel/sys.c:1284-1285).  [false], the default, assumes that no
+    environment reaper calls [setpgid] on the caller before the caller's
+    [setsid]; a statement that wants that case names
+    [env_foreign_pgroups := true] ([Task.setsid_arm]). *)
 Record NsEnv := mkNsEnv {
-  env_mount_max     : Z;
-  env_proc_entries  : list ProcEntry;
-  env_net_fallback  : list NetIf;
-  env_mountinfo     : MiEnv;
-  env_nl_link_max   : Z;
-  env_host_absent   : list (positive * list byte)
+  env_mount_max       : Z;
+  env_proc_entries    : list ProcEntry;
+  env_net_fallback    : list NetIf;
+  env_mountinfo       : MiEnv;
+  env_nl_link_max     : Z;
+  env_host_absent     : list (positive * list byte);
+  env_foreign_pgroups : bool
 }.
+
+(** The same environment with [env_foreign_pgroups] set to [b]. *)
+Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) b.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
     open files a process's descriptor table names by handle
@@ -421,7 +440,7 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
     world from this, never from the constructor, so a new field changes no
     caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z []).
+  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false).
 
 (** The setters of [NsState], one per field: with [empty_nsstate], the only
     places that apply [mkNsState] to every field. *)
