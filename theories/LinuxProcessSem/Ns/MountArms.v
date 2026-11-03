@@ -474,7 +474,12 @@ Definition umount_valid (flags : Z) : bool :=
     (fs/namespace.c:1796): [Propagation.umount_detach_prop].  A parent that
     is neither shared nor a slave does not stop it: a shared mount inside
     the subtree has receivers too.  No answer when a mount the unmount
-    reads can receive an event from an open group. *)
+    reads can receive an event from an open group.  No answer either when
+    the parent of the mount is not in the tables: [propagate_umount]
+    gathers candidates on that parent's peers and slaves, which the
+    tables do not hold, and the arm had no answer there before the
+    unmount propagated ([Mount.umount_propagates] is true for such a
+    parent). *)
 Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let pathp := in_arg i 0 in
   let flags := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
@@ -504,10 +509,14 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
                            else if mnt_locked mount then err reads EINVAL m ctx st
                            else match mnt_parent mount with
                                 | None => err reads EINVAL m ctx st
-                                | Some _ =>
-                                    match umount_detach_prop st top with
-                                    | Some st' => mount_ok reads m ctx st'
+                                | Some p =>
+                                    match find_mount (ns_mounts st) p with
                                     | None => EUnmodeled
+                                    | Some _ =>
+                                        match umount_detach_prop st top with
+                                        | Some st' => mount_ok reads m ctx st'
+                                        | None => EUnmodeled
+                                        end
                                     end
                                 end
                        | Some _, Some false => err reads EINVAL m ctx st

@@ -211,3 +211,27 @@ Example umount_tree_holds_open_group :
   ids_of (umount_out st_t p_mnt) = Some [1; 2; 3; 5; 6]
   /\ umount_out (with_open_groups st_t [9]) p_mnt = EUnmodeled.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** Mount 2 (the tmpfs of [MountArmsCases.state]) sits on mount 9, which
+    the tables do not hold, and is the caller's root.  [propagate_umount]
+    gathers candidates on the peers and slaves of mount 9
+    (fs/pnode.c:505-531), which the tables do not hold either: no answer,
+    as before the unmount propagated, when [Mount.umount_propagates] was
+    true for a parent outside the tables.  With mount 2 on mount 1 the
+    same call removes mounts 2, 3 and 4. *)
+Definition st_v : NsState :=
+  let st := MountArmsCases.state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 2 then mnt_with_place x (Some 9) (mnt_mountpoint x)
+                                else x)
+                      (ns_mounts st)).
+
+Definition umount_root (st : NsState) : ext_outcome :=
+  umount2_fn (MountArmsCases.umount_input MountArmsCases.s_root MNT_DETACH) MountArmsCases.base_model
+             MountArmsCases.c_pivot_same st.
+
+Example parent_outside_tables :
+  umount_root st_v = EUnmodeled
+  /\ umount_propagates (ns_mounts st_v)
+       (mnt_with_place (MountArmsCases.mnt 2 (Some 1) 2 20 2 false false) (Some 9) 2) = true
+  /\ ids_of (umount_root (MountArmsCases.state false false [])) = Some [1].
+Proof. split; [|split]; vm_compute; reflexivity. Qed.
