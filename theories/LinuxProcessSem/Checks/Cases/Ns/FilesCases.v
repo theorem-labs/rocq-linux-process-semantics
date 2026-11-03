@@ -888,3 +888,23 @@ Example unmapped_owner_before_readonly_mount :
   ret_of (openat_fn (open_in s_ro_u 1 0) m3 c0 W_unmapped) = Some (-13)
   /\ ret_of (faccessat_fn (access_in s_ro_u 2) m3 c0 W_unmapped) = Some (-13).
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** The /proc/sys/user branch runs the same test before
+    [proc_sys_permission] ([inode_permission], fs/namei.c:589-590, before
+    [do_inode_permission] at 593).  Linux makes those inodes root's
+    ([proc_sys_make_inode], fs/proc/proc_sysctl.c:490-493; the set's root
+    has no [set_ownership], kernel/ucount.c:58-61), so only tables that
+    hold such a file with an INVALID owner, as here, reach the refusal:
+    the open for writing and faccessat W_OK that [user_sys_permission]
+    grants with CAP_SYS_RESOURCE answer EACCES. *)
+Definition W_user_sys_unmapped : NsState :=
+  with_tree W
+    (ns_dentries W_user_sys)
+    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 4294967295 0]).
+
+Example user_sys_write_unmapped_owner :
+  ret_of (openat_fn (open_in s_max_user_namespaces 1 0) m3 (c_caps sys_resource_caps)
+            W_user_sys_unmapped) = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_max_user_namespaces 2) (with_creds uid0 m3)
+               (c_caps sys_resource_caps) W_user_sys_unmapped) = Some (-13).
+Proof. split; vm_compute; reflexivity. Qed.
