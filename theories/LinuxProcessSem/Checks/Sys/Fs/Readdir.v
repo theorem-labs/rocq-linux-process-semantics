@@ -356,7 +356,8 @@ Definition check_getdents64_opaque (i : SyscallInput) (fd : word) (o : OpaqueFd)
     (dirent count : word) (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OProcFdDir fl pos => check_procfd_getdents i fd fl pos dirent count eff m
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OInherited _ => CheckUnmodeled
   end.
 
 Lemma check_getdents64_opaque_sound_ok : forall i fd o dirent count eff m m' evs,

@@ -74,7 +74,7 @@ let seed : M.rawProcInput = {
   rpi_kernel = kernel_default; rpi_execfn = execfn_default;
   rpi_channel_reader = true; rpi_sigpipe_default = true;
   rpi_sigpipe_terminal = false; rpi_ppid = z "0";
-  rpi_cap_inheritable = z "0" }
+  rpi_cap_inheritable = z "0"; rpi_inherited_fds = [] }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -252,7 +252,7 @@ let () =
               rpi_execfn = [z "47"; z "97"];
               rpi_channel_reader = true; rpi_sigpipe_default = true;
               rpi_sigpipe_terminal = false; rpi_ppid = z "0";
-              rpi_cap_inheritable = z "0" }))
+              rpi_cap_inheritable = z "0"; rpi_inherited_fds = [] }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)
@@ -294,6 +294,28 @@ let () =
      same nesting is converted there *)
   check "the same nesting in the /tmp declaration is converted"
     (not (seed_refused { seed with M.rpi_tmp = image_prefix_key }))
+
+(* ----------------------------------------------------------------- *)
+(* the descriptors above 2 the launch inherits                        *)
+(* ----------------------------------------------------------------- *)
+
+(* Each is a descriptor number and its file's bytes.  A number no word
+   holds, or a byte no byte holds, is no VALUE; descriptor 2 is the
+   launch's own channel, so a list naming it is no launch
+   (Run.inherited_fds_ok, which inherited_shape_b computes). *)
+let () =
+  check "an inherited descriptor number of 2^64 is refused"
+    (seed_refused { seed with M.rpi_inherited_fds = [(z w, [z "104"])] });
+  check "an inherited file byte above 255 is refused"
+    (seed_refused { seed with M.rpi_inherited_fds = [(z "3", [z "256"])] });
+  check "an inherited descriptor 2 is refused"
+    (seed_refused { seed with M.rpi_inherited_fds = [(z "2", [z "104"])] });
+  check "the inherited shape test says descriptor 2 is no launch"
+    (not (M.inherited_shape_b [(z "2", [z "104"])]));
+  check "the inherited shape test takes descriptor 3"
+    (M.inherited_shape_b [(z "3", [z "104"])]);
+  check "an inherited descriptor 3 holding one byte is accepted"
+    (not (seed_refused { seed with M.rpi_inherited_fds = [(z "3", [z "104"])] }))
 
 let () =
   if !failures = 0 then print_endline "checked-input smoke: all checks passed"

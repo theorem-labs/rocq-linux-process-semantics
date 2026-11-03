@@ -707,6 +707,36 @@ Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
                                            (ino_empty_dir ino)
                               else ino) (ns_inodes st)).
 
+(** THE FRAME OF [fchmod]'s write: [set_inode_perm st i p] is [st] with
+    inode [i]'s mode set.  Every field but [ns_inodes] is [st]'s, every
+    other inode is found as before, and inode [i] keeps every attribute
+    but [ino_perm].  The namespace state is one copy for every process of
+    a configuration, so a peer that reads inode [i] afterwards reads [p],
+    as in Linux, and a peer that reads no part of inode [i] reads what it
+    read before. *)
+Lemma set_inode_perm_frame : forall st i p,
+  set_inode_perm st i p = with_inodes st (ns_inodes (set_inode_perm st i p))
+  /\ (forall j, j <> i -> find_inode (set_inode_perm st i p) j = find_inode st j)
+  /\ find_inode (set_inode_perm st i p) i
+     = option_map (fun ino => mkInode (ino_id ino) (ino_kind ino) p (ino_uid ino)
+                                (ino_gid ino) (ino_rdev ino) (ino_bytes ino)
+                                (ino_empty_dir ino))
+                  (find_inode st i).
+Proof.
+  intros st i p. split; [reflexivity|].
+  unfold find_inode, set_inode_perm, with_inodes. cbn [ns_inodes].
+  split.
+  - intros j Hj. induction (ns_inodes st) as [|ino r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (ino_id ino) i) eqn:Hi; cbn [ino_id];
+      destruct (Pos.eqb (ino_id ino) j) eqn:Hk; try reflexivity; try exact IH.
+    apply Pos.eqb_eq in Hi. apply Pos.eqb_eq in Hk. congruence.
+  - induction (ns_inodes st) as [|ino r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (ino_id ino) i) eqn:Hi; cbn [ino_id]; rewrite Hi;
+      [reflexivity | exact IH].
+Qed.
+
 (** [fchmod] (52): [SYSCALL_DEFINE2(fchmod)], [vfs_fchmod], [chmod_common]
     (fs/open.c:631-678); [notify_change], [may_setattr], [setattr_prepare],
     [setattr_copy] (fs/attr.c); [shmem_setattr] (mm/shmem.c:1298);
@@ -781,6 +811,33 @@ Definition set_unlinked (st : NsState) (d : positive) : NsState :=
                               then mkDentryRec (d_id x) (d_sb x) (d_parent x) (d_name x) (d_inode x) true
                               else x) (ns_dentries st))
             (ns_inodes st).
+
+(** THE FRAME OF [unlinkat]'s write: [set_unlinked st d] is [st] with
+    dentry [d] marked unlinked.  Every field but [ns_dentries] is [st]'s,
+    every other dentry is found as before, and dentry [d] keeps every
+    attribute but [d_unlinked].  As for [set_inode_perm_frame], the
+    namespace state is one copy for every process of a configuration. *)
+Lemma set_unlinked_frame : forall st d,
+  set_unlinked st d = with_tree st (ns_dentries (set_unlinked st d)) (ns_inodes st)
+  /\ (forall k, k <> d -> find_dentry (set_unlinked st d) k = find_dentry st k)
+  /\ find_dentry (set_unlinked st d) d
+     = option_map (fun x => mkDentryRec (d_id x) (d_sb x) (d_parent x) (d_name x)
+                              (d_inode x) true)
+                  (find_dentry st d).
+Proof.
+  intros st d. split; [reflexivity|].
+  unfold find_dentry, set_unlinked, with_tree, with_inodes, with_dentries. cbn [ns_dentries].
+  split.
+  - intros k Hk. induction (ns_dentries st) as [|x r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (d_id x) d) eqn:Hd; cbn [d_id];
+      destruct (Pos.eqb (d_id x) k) eqn:Hk'; try reflexivity; try exact IH.
+    apply Pos.eqb_eq in Hd. apply Pos.eqb_eq in Hk'. congruence.
+  - induction (ns_dentries st) as [|x r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (d_id x) d) eqn:Hd; cbn [d_id]; rewrite Hd;
+      [reflexivity | exact IH].
+Qed.
 
 (** [do_unlinkat] (fs/namei.c:4705) after the parent walk, for a normal last
     component [name] in directory [parent]; [slash]: the path ends with a

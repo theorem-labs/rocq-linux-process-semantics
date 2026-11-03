@@ -105,7 +105,7 @@ Qed.
 
 (* ----------------------------------------------------------- clone/clone3 *)
 
-(** clone / clone3: no writes, no model update.  The two arms of
+(** clone / clone3: no writes; only the success arm updates the model.  The two arms of
     [Fork.clone_resolve] are disjoint on the observed return — every
     admissible pid is below [PID_MAX_ENVELOPE] and every member of
     [Fork.clone_errnos] reads as an unsigned value just under 2^64 — so
@@ -117,17 +117,18 @@ Qed.
     and the errno set cannot drift between them.  The two differ only in
     the copy-in ledger they require, which is the whole observable
     difference between [clone] and [clone3]. *)
-(** The success arm returns the model WITH the child recorded, mirroring
-    [Kernel.Fork.clone_resolve]'s [with_child] on the same branch.  The
-    errno arm returns [m] unchanged: it created nothing. *)
+(** The success arm records the child in the model the caller keeps
+    ([Kernel.Fork.forfeit_model]: each live inherited descriptor without
+    its offset), mirroring [Kernel.Fork.clone_resolve]'s success branch.
+    The errno arm returns [m] unchanged: it created nothing. *)
 Definition check_clone_answer (ret : word) (m : Model) : check_result :=
   if errno_ret_in clone_errnos ret then CheckOk m []
-  else if clone_pid_ok_b m ret then CheckOk (with_child ret m) []
+  else if clone_pid_ok_b m ret then CheckOk (with_child ret (forfeit_model m)) []
   else CheckReject.
 
 Definition check_clone_resolve (eff : SyscallEffect) (m : Model)
     : check_result :=
-  if negb (clone_no_shared_file_b (m_fds m)) then CheckUnmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then CheckUnmodeled
   else match eff with
   | mkEffectU ret [] [] [] [] [] => check_clone_answer ret m
   | _ => CheckReject
@@ -142,7 +143,7 @@ Definition check_clone_resolve (eff : SyscallEffect) (m : Model)
     effect carries. *)
 Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  if negb (clone_no_shared_file_b (m_fds m)) then CheckUnmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then CheckUnmodeled
   else match eff with
   | mkEffectU ret [] [] [] [] ((a, n) :: nil) =>
       if bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat
@@ -154,19 +155,21 @@ Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
 (** The namespace word's answer: an error-encoded return other than
     -EINTR ([errno_any_b], the acceptor of [Syscall.errno_any], which
     excludes -EINTR) leaves the model alone, and an admissible pid
-    records the child, mirroring [Kernel.Fork.clone_ns_resolve].  The
+    records the child in the model the caller keeps
+    ([Kernel.Fork.forfeit_model]: each live inherited descriptor without
+    its offset), mirroring [Kernel.Fork.clone_ns_resolve].  The
     two are disjoint on the observed return ([clone_pid_not_error]), so
     this too is a function of the return rather than a choice.  Keyed on
     [addr_is_error_b] instead, the soundness proof below would fail: it
     would accept a -EINTR the spec no longer admits. *)
 Definition check_clone_ns_answer (ret : word) (m : Model) : check_result :=
   if errno_any_b ret then CheckOk m []
-  else if clone_pid_ok_b m ret then CheckOk (with_child ret m) []
+  else if clone_pid_ok_b m ret then CheckOk (with_child ret (forfeit_model m)) []
   else CheckReject.
 
 Definition check_clone_ns_resolve (eff : SyscallEffect) (m : Model)
     : check_result :=
-  if negb (clone_no_shared_file_b (m_fds m)) then CheckUnmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then CheckUnmodeled
   else match eff with
   | mkEffectU ret [] [] [] [] [] => check_clone_ns_answer ret m
   | _ => CheckReject
@@ -254,7 +257,7 @@ Proof.
   intros [ret ws zs us cs copyins] m m' evs i H.
   unfold check_clone_ns_resolve in H. unfold clone_ns_resolve.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota; cbv iota in H; [discriminate|].
   destruct ws as [|? ?];
     [destruct zs as [|? ?];
@@ -281,7 +284,7 @@ Proof.
   intros [ret ws zs us cs copyins] m i H.
   unfold check_clone_ns_resolve in H. unfold clone_ns_resolve.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   exfalso.
   destruct ws as [|? ?];
@@ -301,7 +304,8 @@ Proof.
   intros eff m m' evs i H.
   unfold clone_ns_resolve, errno_any in H. unfold check_clone_ns_resolve.
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok.
   (* one goal per alternative: an errno in 1..4095 but -EINTR, and a pid *)
   all: cbv beta iota; unfold check_clone_ns_answer.
   all: try (rewrite errno_any_b_ret by (intuition lia); reflexivity).
@@ -317,7 +321,8 @@ Proof.
   intros m i eff H.
   unfold clone_ns_resolve, errno_any in H. unfold check_clone_ns_resolve.
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok;
     reflexivity.
 Qed.
 
@@ -327,7 +332,7 @@ Proof.
   intros [ret ws zs us cs copyins] m m' evs i H.
   unfold check_clone_resolve in H. unfold clone_resolve.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota; cbv iota in H; [discriminate|].
   destruct ws as [|? ?];
     [destruct zs as [|? ?];
@@ -352,7 +357,7 @@ Proof.
   intros [ret ws zs us cs copyins] m i H.
   unfold check_clone_resolve in H. unfold clone_resolve.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   exfalso.
   destruct ws as [|? ?];
@@ -371,7 +376,8 @@ Proof.
   intros eff m m' evs i H.
   unfold clone_resolve in H. unfold check_clone_resolve. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok.
   (* one goal per alternative: an errno from [clone_errnos], and a pid *)
   all: cbv beta iota; unfold check_clone_answer.
   all: try (erewrite errno_ret_in_intro by eassumption; reflexivity).
@@ -387,8 +393,8 @@ Proof.
   intros m i eff H.
   unfold clone_resolve in H. unfold check_clone_resolve. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok;
-    reflexivity.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok; reflexivity.
 Qed.
 
 (** The same four, for the resolution that carries a ledger.  Each goes
@@ -400,7 +406,7 @@ Lemma check_clone3_resolve_sound_ok : forall uargs eff m m' evs i,
 Proof.
   intros uargs [ret ws zs us cs cis] m m' evs i H.
   unfold check_clone3_resolve in H.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota in H; [discriminate|].
   destruct ws as [|? ?]; try discriminate.
   destruct zs as [|? ?]; try discriminate.
@@ -423,7 +429,8 @@ Lemma check_clone3_resolve_sound_unmodeled : forall uargs eff m i,
 Proof.
   intros uargs eff m i H.
   unfold check_clone3_resolve in H.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; cbv iota in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    cbv iota in H.
   - unfold clone3_resolve. apply record_copyins_unmodeled.
     apply (check_clone_resolve_sound_unmodeled eff).
     unfold check_clone_resolve. rewrite Hg. cbv iota. reflexivity.
@@ -451,7 +458,7 @@ Proof.
   try rewrite app_nil_r.
   pose proof (check_clone_resolve_complete_ok e0 m _ evs0 i H0) as Hc.
   unfold check_clone_resolve in Hc.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota in Hc; [discriminate|].
   destruct e0 as [ret ws zs us cs cis].
   destruct ws as [|? ?]; try discriminate.
@@ -474,7 +481,7 @@ Proof.
                           unfold pure in Hp; discriminate].
   pose proof (check_clone_resolve_complete_unmodeled m i eff H) as Hc.
   unfold check_clone_resolve in Hc. unfold check_clone3_resolve.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota in Hc; cbv iota; [reflexivity|].
   destruct eff as [ret ws zs us cs cis].
   destruct ws as [|? ?]; [|discriminate].
