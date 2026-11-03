@@ -3935,8 +3935,9 @@ Record ProcState := mkProcState {
        [setdomainname] (162) have no dispatcher arm in the released
        world.  In the namespace world [Ns.Task.sethostname_arm] and
        [Ns.Task.setdomainname_arm] answer them, write the names into a
-       new UTS namespace's [Ns.Tables.UtsNs] and never into this pin,
-       and decline in the host's namespace.  A [choose]
+       new UTS namespace's [Ns.Tables.UtsNs] and never into this pin;
+       in the host's namespace they answer EPERM to a caller without
+       CAP_SYS_ADMIN over its owner and otherwise decline.  A [choose]
        resolved afresh at each call would therefore admit a trace in
        which two [uname] calls disagree about which kernel is running,
        which no Linux machine produces -- the same argument
@@ -4637,8 +4638,9 @@ Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
     [setdomainname] (162) -- have no arm in
     [Sys.SyscallTable.spec_table].  In the namespace world
     [Ns.Task.set_uts_fn] answers both: it writes the names into a new UTS
-    namespace's [Ns.Tables.UtsNs], never here, and declines in the host's
-    namespace, so this pin keeps its one writer.  That is what makes the
+    namespace's [Ns.Tables.UtsNs], never here; in the host's namespace it
+    answers EPERM to a caller without CAP_SYS_ADMIN over its owner and
+    otherwise declines, so this pin keeps its one writer.  That is what makes the
     repeat check in [Checks.Sys.Kernel.Sys]'s [check_uname_copy] an
     equality rather than a relation, and adding either syscall to the
     released table means giving this a second writer in the same commit. *)

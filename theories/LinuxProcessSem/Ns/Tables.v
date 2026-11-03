@@ -405,7 +405,20 @@ Definition default_mi_env : MiEnv :=
     host lookup of a name the tables do not list is otherwise undecided;
     a pair is a measured fact about the host (stat of that path gave
     ENOENT), and a statement that lists one asks that nothing outside the
-    model creates the name.
+    model creates the name.  Then [env_foreign_pgroups]: whether a
+    process outside the model may make a process group of a modelled
+    task's pid.  Only the task itself or its parent may set the task's
+    process group ([setpgid], kernel/sys.c:1143-1153, Linux v6.18.46: a
+    caller other than the task must be [p->real_parent], in [p]'s
+    session, before [p] execs), and no modelled process can ([setpgid]
+    154 has no arm).  But once a modelled
+    parent exits, its child is reparented to a reaper the environment
+    owns, and that reaper may call [setpgid(child, child)] before the
+    child execs, after which the child's [setsid] answers EPERM
+    (kernel/sys.c:1284-1285).  [false], the default, assumes that no
+    environment reaper calls [setpgid] on the caller before the caller's
+    [setsid]; a statement that wants that case names
+    [env_foreign_pgroups := true] ([Task.setsid_arm]).
 
     Last, the OPEN peer groups: the keys of the peer groups the tables
     hold that have a member outside the tables, in a mount namespace the
@@ -424,51 +437,56 @@ Definition default_mi_env : MiEnv :=
     ([Propagation.closed_no_outside_event]); a statement that wants that case
     names a non-empty list. *)
 Record NsEnv := mkNsEnv {
-  env_mount_max     : Z;
-  env_proc_entries  : list ProcEntry;
-  env_net_fallback  : list NetIf;
-  env_mountinfo     : MiEnv;
-  env_nl_link_max   : Z;
-  env_host_absent   : list (positive * list byte);
-  env_open_groups   : list positive
+  env_mount_max       : Z;
+  env_proc_entries    : list ProcEntry;
+  env_net_fallback    : list NetIf;
+  env_mountinfo       : MiEnv;
+  env_nl_link_max     : Z;
+  env_host_absent     : list (positive * list byte);
+  env_foreign_pgroups : bool;
+  env_open_groups     : list positive
 }.
 
 (** The launch values of a system the namespace model knows nothing of:
     Linux's default mount limit (100000), no procfs entry, no fallback
     device, [default_mi_env], a link-message bound of 65536 bytes, no name
-    known absent and no open peer group. *)
+    known absent, no foreign process group and no open peer group. *)
 Definition empty_nsenv : NsEnv :=
-  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] [].
+  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false [].
 
 (** The setters of [NsEnv], one per field: with [empty_nsenv], the only
     places that apply [mkNsEnv] to every field. *)
 Definition env_with_mount_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv v (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
 
 Definition env_with_proc_entries (e : NsEnv) (v : list ProcEntry) : NsEnv :=
   mkNsEnv (env_mount_max e) v (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
 
 Definition env_with_net_fallback (e : NsEnv) (v : list NetIf) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) v (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
 
 Definition env_with_mountinfo (e : NsEnv) (v : MiEnv) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) v (env_nl_link_max e)
-          (env_host_absent e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
 
 Definition env_with_nl_link_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) v
-          (env_host_absent e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
 
 Definition env_with_host_absent (e : NsEnv) (v : list (positive * list byte)) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) v (env_open_groups e).
+          (env_nl_link_max e) v (env_foreign_pgroups e) (env_open_groups e).
+
+Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) b (env_open_groups e).
 
 Definition env_with_open_groups (e : NsEnv) (v : list positive) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) v.
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) v.
 
 (** The order the kernel keeps of mount propagation, beyond each mount's
     peer group and master group ([Ns.Propagation]; Linux v6.18.46):

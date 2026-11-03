@@ -296,7 +296,18 @@ Qed.
     [sethostname] 161 (bubblewrap's child setting a host name) reads the caller's
     context, its own memory and the UTS namespace, and writes that
     namespace's name, which [NsState] keeps once for every process in it,
-    as Linux keeps one [uts_namespace].
+    as Linux keeps one [uts_namespace].  [setsid] 157 (bubblewrap's child
+    making a new session) reads the caller's pid and its process's leader
+    bit, per process in the core, and tests whether a live task's process
+    group is the caller's pid: in a pid namespace the tables made no
+    modelled process makes such a group, a peer's included, because
+    [setpgid] has no arm, and a process outside the model can only after
+    the caller's modelled parent exits, which the launch value
+    [Tables.env_foreign_pgroups] names ([Task.setsid_arm]); in the host's
+    pid namespace, or under that value, the arm admits EPERM beside the
+    success.  Linux also sets the caller's session and group ids; the
+    model records the leader bit only, and no call of a peer the model
+    answers reads those ids.
     Every other claimed call is not admitted while another process lives:
     the core makes it a model error, never a wrong answer.  That covers
     time ([clock_gettime] 113: the core keeps a clock per process), the
@@ -304,8 +315,8 @@ Qed.
     every call this child does not make.  Widening the list is one more
     row of this argument. *)
 Definition ns_mp_any_fd : list Z :=
-  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 161; 166; 167; 172; 198;
-   214; 215; 216; 226; 233; 437; 442]%Z.
+  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 157; 161; 166; 167; 172;
+   198; 214; 215; 216; 226; 233; 437; 442]%Z.
 
 (** [ioctl], [getdents64], [read], [write], [fstat], [bind], [sendto] and
     [recvfrom], admitted on a descriptor of the namespace model only. *)
