@@ -561,8 +561,22 @@ Definition sticky_undecided (cr : WalkCreds) (dir a : ObjAttr) : bool :=
   && negb (vfsuid_eq (oa_uid a) (oa_uid dir)) && negb (Z.eqb (oa_uid a) (wc_fsuid cr))
   && has (oa_perm dir) 18.
 
+(** The answer of an O_CREAT open of an existing object where
+    [sticky_undecided] holds, from [rest], the answer of the steps of
+    [do_open] after [may_create_in_sticky] (fs/namei.c:3958-3979).  Under
+    a sysctl value that refuses, Linux answers EACCES (1327-1343); under
+    one that does not (1313-1317, 1346), the open goes on to those steps.
+    So the answer is EACCES when [rest] is EACCES, under every sysctl
+    value, and there is none otherwise. *)
+Definition sticky_answer (rest : OpenRes) : OpenRes :=
+  match rest with
+  | ORErr e => if Z.eqb e EACCES then ORErr EACCES else OROver
+  | _ => OROver
+  end.
+
 (** [do_open] (fs/namei.c) after the walk found [l]: with O_CREAT,
-    EISDIR for a directory and [may_create_in_sticky]; O_TRUNC on a regular
+    EISDIR for a directory and [may_create_in_sticky] ([sticky_answer]
+    where [sticky_undecided] holds); O_TRUNC on a regular
     file ([mnt_want_write]: EROFS on a read-only mount; the truncation
     itself declines); [may_open] (ELOOP for a link not followed, EISDIR
     for a directory opened for writing, EACCES for a device on a nodev
@@ -592,14 +606,15 @@ Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCred
       match creat_dir with
       | Some d =>
           if kind_is IDir a then ORErr EISDIR
-          else if sticky_undecided cr d a then OROver
-          else if has flags O_TRUNC && kind_is IReg a then (if ro then ORErr EROFS else OROver)
-          else match oa_kind a with
-               | ILnk => ORErr ELOOP
-               | IChr | IBlk => if mf_nodev (mnt_flags mt) || sb_i_nodev sb then ORErr EACCES else OROver
-               | IFifo | ISock => OROver
-               | _ => perm_then_open
-               end
+          else let rest :=
+                 if has flags O_TRUNC && kind_is IReg a then (if ro then ORErr EROFS else OROver)
+                 else match oa_kind a with
+                      | ILnk => ORErr ELOOP
+                      | IChr | IBlk => if mf_nodev (mnt_flags mt) || sb_i_nodev sb then ORErr EACCES else OROver
+                      | IFifo | ISock => OROver
+                      | _ => perm_then_open
+                      end in
+               if sticky_undecided cr d a then sticky_answer rest else rest
       | None =>
           if has flags O_TRUNC && kind_is IReg a then (if ro then ORErr EROFS else OROver)
           else match oa_kind a with
