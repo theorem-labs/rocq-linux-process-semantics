@@ -707,7 +707,7 @@ Definition child_ms (c c' : config) : machine_state :=
   | Some sp => set_reg base 2 sp
   end.
 
-(** The child's process record: the parent's, with the SEVEN fields that
+(** The child's process record: the parent's, with the NINE fields that
     are the CHILD's own cleared, and every other field copied.
 
     - [procst_tid] is [None]: the child's differs on Linux, and clone
@@ -731,6 +731,10 @@ Definition child_ms (c c' : config) : machine_state :=
     - [procst_pdeath_signal] is 0: [copy_process] clears it.
     - [procst_child_pids] is []: [copy_process] starts [p->children]
       empty (kernel/fork.c).
+    - [procst_reparent_unseen] is false: [copy_process] clears the
+      child's [pdeath_signal], and its parent is alive at the clone.
+    - [procst_reparent_moved] is false: the child's parent pid is its
+      parent's key, given below, so it has not moved.
 
     The three launch facts ([procst_channel_reader], [procst_sigpipe_default],
     [procst_sigpipe_terminal]) are copied, and so are the no-new-privs bit
@@ -762,7 +766,8 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               (Z_to_bv 64 0)
               [] (procst_no_new_privs ps) (procst_dumpable ps)
               ppid
-              (procst_cap_inheritable ps).
+              (procst_cap_inheritable ps)
+              false false.
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
