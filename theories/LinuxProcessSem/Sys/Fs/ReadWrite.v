@@ -656,6 +656,48 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
          identical at v6.18.46).  None of these is written. *)
   end.
 
+(** THE READ OF A REGULAR FILE'S BYTES, after [vfs_read]'s [access_ok]:
+    the one body the three descriptor kinds that read a regular file
+    share.  [FdFile] and [FdFileRW] pass the bytes at their path, a live
+    [State.OInherited] the bytes its entry holds; [off] is the
+    description's [f_pos], and [entry] builds the descriptor entry that
+    holds the moved position, which is where the kind lives.  Named once
+    so that a fourth kind cannot arrive as a copy that drifts: an O_RDWR
+    description reads exactly as a read-only one ([vfs_read] tests
+    FMODE_READ and nothing below looks at the access mode again), and an
+    inherited file is a read-only regular file (fs/read_write.c, Linux
+    v6.18.46).
+
+    Deterministic: the bytes come from [data] at [off], truncated at
+    end-of-file and at the kernel's [MAX_RW_COUNT] clamp
+    ([State.rw_count_clamp]; a no-op below 2^31).  [off] has no guard of
+    its own here: a read at or past end-of-file delivers nothing, and
+    [Fs.file_read] answers that without walking [off].  What that leaves
+    out is [rw_verify_area]'s [(loff_t)(pos + count) < 0 -> -EINVAL] on a
+    file whose [fop_flags] lack [FOP_UNSIGNED_OFFSET], reachable through
+    an [lseek] to an offset just under 2^63. *)
+Definition read_file_data (i : SyscallInput) (m : Model) (fd buf count : word)
+    (data : list byte) (off : word) (entry : word -> FdEntry) : Sys SyscallEffect :=
+  let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
+  match read_bytes_map (in_wmem i) buf (len_word bs) with
+  | None =>
+      (* the DELIVERED prefix is not fully writable-mapped, and it is
+         nonempty (a zero-length range always reads) *)
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => err_ret EFAULT               (* not even the first delivered byte can
+                                                land: real -EFAULT, offset unchanged *)
+      | Some _ => unmodeled                  (* partially writable destination: the
+                                                count is the copy loop's rounded progress
+                                                -- fail closed, see [readv_imported] *)
+      end
+  | Some _ =>
+      set_fds (fd_insert (m_fds m) fd (entry (off + len_word bs))) ;;  (* advance offset *)
+      pure (mkEffect (len_word bs) (delivered_writes buf bs) [])  (* no trace events for files *)
+      (* [bs] may be empty (count = 0, or at or past end-of-file): the
+         destination is then never touched, and the range verdict before
+         this body is all Linux checked on it *)
+  end.
+
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -891,96 +933,29 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
       end
   | Some (FdFile p off) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok], exactly as on the channel arm *)
       else
       match fs_lookup (m_fs m) p with
       | None => unmodeled   (* an FdFile always points into the fs; see openat *)
-      | Some data =>
-          (* deterministic: bytes come from the file at [off], truncated
-             at EOF and at the kernel's [MAX_RW_COUNT] clamp
-             ([State.rw_count_clamp]; a no-op below 2^31).  DETERMINISTIC
-             ON THE PREMISE THAT [p] NAMES A REGULAR FILE, which nothing
-             establishes: for a path the kernel resolves to a character
-             device this returns the recorded bytes where Linux returns
-             end-of-file. *)
-          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
-          match read_bytes_map (in_wmem i) buf (len_word bs) with
-          | None =>
-              (* the DELIVERED prefix is not fully writable-mapped, and it is
-                 nonempty (a zero-length range always reads) *)
-              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-              | None => err_ret EFAULT               (* not even the first delivered byte can
-                                                    land: real -EFAULT, offset unchanged *)
-              | Some _ => unmodeled                  (* partially writable destination: the
-                                                    count is the copy loop's rounded progress
-                                                    — fail closed, see [readv_imported] *)
-              end
-          | Some _ =>
-              let deliver :=
-                set_fds (fd_insert (m_fds m) fd (FdFile p (off + len_word bs))) ;;  (* advance offset *)
-                pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in  (* no trace events for files *)
-              deliver
-                (* [bs] may be empty (count = 0, or at or past end-of-file):
-                   the destination is then never touched, and the range
-                   verdict above is all Linux checked on it *)
-          end
+      | Some data => read_file_data i m fd buf count data off (FdFile p)
+          (* DETERMINISTIC ON THE PREMISE THAT [p] NAMES A REGULAR FILE,
+             which nothing establishes: for a path the kernel resolves to a
+             character device this returns the recorded bytes where Linux
+             returns end-of-file. *)
       end
   | Some (FdFileRW p off) =>
-      (* THE [FdFile] ARM ABOVE, WORD FOR WORD, with the entry written
-         back under this kind.  An O_RDWR description reads exactly as a
-         read-only one does: [vfs_read] tests FMODE_READ, which
-         [ACC_MODE(O_RDWR)] supplies, and nothing below that test looks
-         at the access mode again (fs/read_write.c, Linux v6.18.46).
-         What the shared [f_pos] then means for the NEXT write is
-         [write_spec]'s [FdFileRW] arm; here it is only advanced. *)
+      (* THE [FdFile] ARM ABOVE, with the entry written back under this
+         kind ([read_file_data] says why an O_RDWR description reads as a
+         read-only one).  What the shared [f_pos] then means for the NEXT
+         write is [write_spec]'s [FdFileRW] arm; here it is only
+         advanced. *)
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok], exactly as on the channel arm *)
       else
       match fs_lookup (m_fs m) p with
       | None => unmodeled   (* an FdFileRW always points into the fs; see openat *)
-      | Some data =>
-          (* deterministic: bytes come from the file at [off], truncated
-             at EOF and at the kernel's [MAX_RW_COUNT] clamp
-             ([State.rw_count_clamp]; a no-op below 2^31).  DETERMINISTIC
-             ON THE PREMISE THAT [p] NAMES A REGULAR FILE, which nothing
-             establishes: for a path the kernel resolves to a character
-             device this returns the recorded bytes where Linux returns
-             end-of-file. *)
-          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
-          match read_bytes_map (in_wmem i) buf (len_word bs) with
-          | None =>
-              (* the DELIVERED prefix is not fully writable-mapped, and it is
-                 nonempty (a zero-length range always reads) *)
-              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-              | None => err_ret EFAULT               (* not even the first delivered byte can
-                                                    land: real -EFAULT, offset unchanged *)
-              | Some _ => unmodeled                  (* partially writable destination: the
-                                                    count is the copy loop's rounded progress
-                                                    — fail closed, see [readv_imported] *)
-              end
-          | Some _ =>
-              let deliver :=
-                set_fds (fd_insert (m_fds m) fd (FdFileRW p (off + len_word bs))) ;;  (* advance offset *)
-                pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in  (* no trace events for files *)
-              deliver
-                (* [bs] may be empty (count = 0, or at or past end-of-file):
-                   the destination is then never touched, and the range
-                   verdict above is all Linux checked on it *)
-          end
+      | Some data => read_file_data i m fd buf count data off (FdFileRW p)
+          (* on the premise the [FdFile] arm states *)
       end
   | Some (FdPipe id w) =>
       if w then err_ret EBADF                    (* the WRITE end is O_WRONLY: real -EBADF, decided
@@ -1090,34 +1065,19 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
       match o with
       | OInherited (Some (data, off)) =>
           (* A LIVE INHERITED FILE ([State.OInherited]): THE [FdFile] ARM
-             ABOVE, WORD FOR WORD, on the bytes the entry holds instead of
-             the bytes at a path, with the entry written back under this
-             kind.  The object is a read-only regular file that the
-             launch's parent opened, so [vfs_read] tests FMODE_READ and
-             runs the file's [read_iter] as for a file the process opened
-             itself, and [ksys_read] stores the moved position in [f_pos]
-             (fs/read_write.c, Linux v6.18.46), which this entry holds.
-             The bytes are the launch's ([State.ProcInput.in_inherited_fds]),
-             so no [fs_lookup] guards them *)
+             ABOVE, on the bytes the entry holds instead of the bytes at a
+             path, with the entry written back under this kind.  The object
+             is a read-only regular file that the launch's parent opened, so
+             [vfs_read] tests FMODE_READ and runs the file's [read_iter] as
+             for a file the process opened itself, and [ksys_read] stores
+             the moved position in [f_pos] (fs/read_write.c, Linux
+             v6.18.46), which this entry holds.  The bytes are the launch's
+             ([State.ProcInput.in_inherited_fds]), so no [fs_lookup] guards
+             them *)
           if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
             (* [vfs_read]'s [access_ok], exactly as on the file arm *)
-          else
-          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
-          match read_bytes_map (in_wmem i) buf (len_word bs) with
-          | None =>
-              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-              | None => err_ret EFAULT               (* not even the first delivered byte can
-                                                    land: real -EFAULT, offset unchanged *)
-              | Some _ => unmodeled                  (* partially writable destination: fail
-                                                    closed, as on the file arm *)
-              end
-          | Some _ =>
-              let deliver :=
-                set_fds (fd_insert (m_fds m) fd
-                           (FdOpaque (OInherited (Some (data, off + len_word bs))))) ;;
-                pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in
-              deliver
-          end
+          else read_file_data i m fd buf count data off
+                 (fun off' => FdOpaque (OInherited (Some (data, off'))))
       | _ => read_opaque_spec o buf count
           (* one arm per opaque object: see [read_opaque_spec] *)
       end
