@@ -267,9 +267,11 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
       (* FAIL-CLOSED.  On an O_PATH descriptor F_SETFL is not in
          [check_fcntl_cmd]'s allow-list, so [SYSCALL_DEFINE3(fcntl)]
          answers -EBADF before [setfl] runs (fs/fcntl.c, read at
-         v6.18.44; identical at v6.18.46); an eventfd's and a /proc/sys
-         file's [f_flags] word is not on the entry.  Neither answer is
-         written. *)
+         v6.18.44; identical at v6.18.46); an eventfd's, a /proc/sys
+         file's and a signalfd's [f_flags] word is not on the entry, and
+         the /proc/self/fd directory's is, but [F_GETFL] reads it there
+         ([getfl_f_flags]), so a write to it would have to be recorded.
+         None of the answers is written. *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -294,7 +296,11 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
     THE SIX O_RDWR WORDS ARE IN THE DISJUNCTION, on the O_DIRECTORY side
     of that test: O_RDWR, O_CREAT, O_TRUNC and O_EXCL are all outside
     [setfl_acted_on], so [setfl_noop_on] can put [State.FdFileRW] with
-    the four kinds it answers 0 for rather than with [FdFileA]. *)
+    the four kinds it answers 0 for rather than with [FdFileA].
+
+    THE TWO O_NOCTTY WORDS ARE NOT IN IT AND NEED NOT BE
+    ([Open.procfd_noctty_word]): they mint only [State.OProcFdDir], an
+    opaque kind on which [setfl_noop_on] answers [false]. *)
 Remark modeled_open_flags_clear_of_setfl : forall fl,
   (fl = 0%Z \/ fl = wr_create_flags \/ is_excl_create fl = true
    \/ fl = O_DIRECTORY \/ rdwr_open_word fl = true
@@ -442,6 +448,28 @@ Remark socket_f_flags_clear_of_setfl :
   Z.land socket_f_flags setfl_acted_on = 0%Z.
 Proof. vm_compute. reflexivity. Qed.
 
+(** [f_flags] of a /proc/self/fd directory opened with the word [fl]
+    ([State.OProcFdDir]).  [SYSCALL_DEFINE4(openat)] adds O_LARGEFILE
+    ([force_o_largefile] holds on riscv64), [build_open_how] keeps the
+    word ([flags & VALID_OPEN_FLAGS]; no O_PATH), [build_open_flags]
+    strips O_CLOEXEC and sets [op->open_flag], [alloc_empty_file] and
+    [init_file] copy it into [f_flags], and [do_dentry_open] clears
+    O_CREAT, O_EXCL, O_NOCTTY and O_TRUNC.  [F_GETFL] returns the rest
+    ([do_fcntl]'s [err = filp->f_flags]).  No modeled call writes the
+    field afterwards: [setfl_noop_on] declines F_SETFL on the kind.
+
+    THE WORD IS ONE [Open.openat_proc_spec] ADMITTED, and the formula is
+    exact for those words and no others: O_RDONLY with any of
+    O_DIRECTORY, O_NOCTTY, O_NONBLOCK, O_CLOEXEC and O_LARGEFILE, and no
+    other bit, so neither the [VALID_OPEN_FLAGS] mask nor [__O_SYNC]'s
+    O_DSYNC can change it.
+      fs/open.c [SYSCALL_DEFINE4(openat)], [build_open_how],
+        [build_open_flags], [do_dentry_open]: read at v6.18.44; identical at v6.18.46.
+      fs/file_table.c [alloc_empty_file], [init_file]: read at v6.18.44; identical at v6.18.46.
+      fs/fcntl.c [do_fcntl]: read at v6.18.44; identical at v6.18.46. *)
+Definition procfd_dir_f_flags (fl : word) : Z :=
+  Z.ldiff (Z.lor (bv_unsigned fl) O_LARGEFILE) (O_CLOEXEC + O_NOCTTY).
+
 (** What [F_GETFL] answers, per fd kind: [Some w] where the model can
     derive [filp->f_flags] exactly, [None] where it cannot.
 
@@ -576,23 +604,30 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          rest on the entry rather than on the sole shape pipe2 currently
          admits, and this arm and [setfl_noop_on]'s should move
          together when it does. *)
+  | FdOpaque (OProcFdDir fl _) => Some (Z_to_bv 64 (procfd_dir_f_flags fl))
+      (* ANSWERED: the /proc/self/fd directory records the open word, and
+         [procfd_dir_f_flags] derives [f_flags] from it.  musl's
+         [fdopendir] (src/dirent/fdopendir.c, musl 1.2.6) reads it with
+         [fcntl(fd, F_GETFL)] to refuse an O_PATH descriptor before it
+         lists the directory, so bubblewrap's [fdwalk] needs it *)
   | FdOpaque _ => None
       (* DECLINED.  F_GETFL is in [check_fcntl_cmd]'s allow-list, so an
          O_PATH descriptor answers its [f_flags] (O_PATH and the bits
          [build_open_how] kept); an eventfd's word is [O_RDWR] plus the
-         EFD_ bits [do_eventfd] passes on; a /proc/sys file's is the
-         open word; an [ONsFile]'s depends on its unknown object.  The
-         entry records none of the four words exactly (fs/fcntl.c,
-         fs/open.c, fs/eventfd.c, read at v6.18.44; identical at
-         v6.18.46). *)
+         EFD_ bits [do_eventfd] passes on; a signalfd's is [O_RDWR] plus
+         the SFD_NONBLOCK bit [do_signalfd4] passes on; a /proc/sys
+         file's is the open word; an [ONsFile]'s depends on its unknown
+         object.  The entry records none of the five words exactly
+         (fs/fcntl.c, fs/open.c, fs/eventfd.c, fs/signalfd.c, read at
+         v6.18.44; identical at v6.18.46). *)
   end.
 
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on
     every other one.  Three of the four are answered on every fd kind —
     [F_GETFD] with BOTH of the answers Linux can give, because the model
     does not record the bit it reports; the fourth, [F_GETFL], is
-    answered on the one kind whose flag word is a function of the
-    constructor, and [getfl_f_flags] above holds that argument.
+    answered on the kinds whose flag word is a function of the entry,
+    and [getfl_f_flags] above holds that argument.
 
     Dropbear is the reason this exists.  It is the only fcntl caller in
     reach: this repository's own reference binaries are static,
@@ -716,7 +751,8 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     EVERY OTHER COMMAND DECLINES, as does [F_GETFL] on the kinds it
     cannot answer:
 
-    - [F_GETFL] is answered on [State.FdSocket] and declined on every
+    - [F_GETFL] is answered on [State.FdSocket] and on the /proc/self/fd
+      directory ([State.OProcFdDir]), and declined on every
       other fd kind.  [getfl_f_flags] above carries the whole argument
       — the derivation of a socket's flag word, why a channel's is the
       environment's, and why the [openat] kinds lose the answer to

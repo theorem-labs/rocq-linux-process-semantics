@@ -26,13 +26,16 @@
       all named files of the file system still does after the step, with
       the same machine state and model; only the two spliced slots it sees
       changed.  [pstep_x_at_shared_frame]: the frame under [ext_agrees].
-    - [eventfd_declined]: an eventfd made before a clone is a per-process
-      copy of a counter Linux has once.  At every class-(B) number that
-      takes a descriptor (46, 62-68), with an eventfd at that descriptor,
-      every [Ok] answer leaves the model alone, emits nothing, writes no
-      user memory and returns an errno: no arm answers from the copy.  An
-      arm that one day does breaks this lemma, which is the point: the
-      counter must move into [shared] first. *)
+    - [eventfd_declined] and [eventfd_rw_keeps_model]: Linux has ONE
+      counter per eventfd, however many processes hold it.  At ftruncate,
+      lseek, readv, writev, pread64 and pwrite64 (46, 62, 65-68), with an
+      eventfd at the descriptor, every [Ok] answer leaves the model alone,
+      emits nothing, writes no user memory and returns an errno.  [read]
+      and [write] (63, 64) answer a non-blocking eventfd with no counter
+      in the model at all (the counter is the environment's), and every
+      [Ok] answer leaves the model alone and emits nothing.  A counter in
+      the model must move into [shared] first; an arm that keeps one per
+      process breaks these lemmas, which is the point. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -149,25 +152,203 @@ Proof.
   fs_frame H.
 Qed.
 
+(** OPENAT, ONE SUB-CHECKER AT A TIME.  Unfolding the whole of
+    [check_openat] at once multiplies every guard of every arm into
+    one case split; each lemma below unfolds one level and closes
+    the calls below it by their lemmas. *)
+Lemma openat_read_fs : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_read in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_create_fs : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_create, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_append_fs : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros excl p eff m m' evs H.
+  unfold Open.check_openat_append, check_open_append in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_rdwr_fs : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros creat trunc p eff m m' evs H.
+  unfold Open.check_openat_rdwr, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_rdwr_excl_fs : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_rdwr_excl, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_excl_fs : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_excl, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_dir_fs : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_dir in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_localtime_fs : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_localtime in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_devnull_fs : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_devnull, Open.check_open_devnull in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_urandom_fs : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_urandom, Open.check_open_urandom in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Lemma openat_proc_result_fs : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros o eff m m' evs H.
+  unfold Open.check_proc_open_result in H. cbv zeta in H.
+  repeat (vm_step H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_tmp H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_fs in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_fs in H; exact H
+  end.
+
+Lemma openat_tmp_fs : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros n p flags eff m m' evs H.
+  unfold Open.check_openat_tmp in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_tmp H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_sep H :=
+  lazymatch type of H with
+  | Open.check_openat_localtime _ _ _ = CheckOk _ _ => apply openat_localtime_fs in H; exact H
+  | Open.check_openat_devnull _ _ _ = CheckOk _ _ => apply openat_devnull_fs in H; exact H
+  | Open.check_openat_urandom _ _ _ = CheckOk _ _ => apply openat_urandom_fs in H; exact H
+  | Open.check_openat_tmp _ _ _ _ _ = CheckOk _ _ => apply openat_tmp_fs in H; exact H
+  end.
+
+Lemma openat_sep_fs : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_sep in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_sep H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_resolved H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_fs in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_fs in H; exact H
+  | Open.check_openat_excl _ _ _ = CheckOk _ _ => apply openat_excl_fs in H; exact H
+  | Open.check_openat_dir _ _ _ = CheckOk _ _ => apply openat_dir_fs in H; exact H
+  | Open.check_openat_append _ _ _ _ = CheckOk _ _ => apply openat_append_fs in H; exact H
+  | Open.check_openat_rdwr _ _ _ _ _ = CheckOk _ _ => apply openat_rdwr_fs in H; exact H
+  | Open.check_openat_rdwr_excl _ _ _ = CheckOk _ _ => apply openat_rdwr_excl_fs in H; exact H
+  | Open.check_openat_sep _ _ _ _ = CheckOk _ _ => apply openat_sep_fs in H; exact H
+  end.
+
+Lemma openat_resolved_fs : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_resolved in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_resolved H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_proc H :=
+  lazymatch type of H with
+  | Open.check_proc_open_result _ _ _ = CheckOk _ _ => apply openat_proc_result_fs in H; exact H
+  end.
+
+Lemma openat_proc_fs : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros c flags eff m m' evs H.
+  unfold Open.check_openat_proc in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_proc H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_body H :=
+  lazymatch type of H with
+  | Open.check_openat_proc _ _ _ _ = CheckOk _ _ => apply openat_proc_fs in H; exact H
+  | Open.check_openat_resolved _ _ _ _ = CheckOk _ _ => apply openat_resolved_fs in H; exact H
+  end.
+
+Lemma openat_body_fs : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold Open.check_openat_body in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_body H || fs_done H); try fs_leaf.
+Qed.
+
+Local Ltac openat_sub_fs_top H :=
+  lazymatch type of H with
+  | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_fs in H; exact H
+  end.
+
 Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   fs_grows (m_fs m) (m_fs m').
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  (* openat's body and its copy-in wrapper are [Local] to
-     [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
-     space, and naming them here is what lets [fs_frame] see that. *)
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
-    Open.check_openat_sep, Open.check_openat_localtime,
-    Open.check_openat_devnull, Open.check_open_devnull,
-    Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_tmp,
-    Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
-    Open.check_openat_dir, Open.check_openat_append,
-    Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    Open.check_openat_proc, Open.check_proc_open_result,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
-  fs_frame H.
+  unfold check_openat in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_top H || fs_done H); try fs_leaf.
 Qed.
 
 Lemma check_lseek_fs : forall fd off whence eff m m' evs,
@@ -181,8 +362,9 @@ Lemma check_read_fs : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero, check_read_proc, check_read_proc_bare in H.
-  cbv zeta in H. fs_frame H.
+    check_access_ok_zero in H.
+  cbv zeta in H.
+  repeat (vm_step H || fs_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try fs_leaf.
 Qed.
 
 Lemma check_write_fs : forall i fd buf count eff m m' evs,
@@ -190,7 +372,7 @@ Lemma check_write_fs : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  fs_frame H.
+  repeat (vm_step H || fs_done H || (apply check_write_opaque_keeps in H; destruct H as [-> ->])); try fs_leaf.
 Qed.
 
 Lemma check_readv_imported_fs : forall i fd r iovs0 eff m m' evs,
@@ -511,8 +693,10 @@ Qed.
    ========================================================================= *)
 
 (** The class-(B) numbers whose argument 0 is a descriptor they read or
-    write: ftruncate, lseek, read, write, readv, writev, pread64, pwrite64. *)
-Definition eventfd_io_sysnos : list Z := [46; 62; 63; 64; 65; 66; 67; 68]%Z.
+    write and which DECLINE an eventfd: ftruncate, lseek, readv, writev,
+    pread64, pwrite64.  [read] (63) and [write] (64) answer a non-blocking
+    eventfd ([eventfd_rw_keeps_model] below). *)
+Definition eventfd_io_sysnos : list Z := [46; 62; 65; 66; 67; 68]%Z.
 
 (** An answer that is an argument errno and nothing else. *)
 Definition errno_only (m : Model) (eff : SyscallEffect) (m' : Model) (evs : list event)
@@ -541,8 +725,7 @@ Local Ltac efd_leaf H :=
 (** THE PIN.  With an eventfd at the descriptor, every [Ok] answer of these
     arms is an errno that changes nothing: the arms decline the descriptor
     ([unmodeled]) and answer only argument checks taken before its kind is
-    read.  So an eventfd made before a clone, one counter per process here
-    where Linux has one, is never answered from. *)
+    read. *)
 Theorem eventfd_declined : forall i m eff m' evs f,
   List.In (bv_unsigned (in_sysno i)) eventfd_io_sysnos ->
   fd_lookup (m_fds m) (fd32 (in_arg i 0)) = Some (FdOpaque (OEventFd f)) ->
@@ -551,7 +734,7 @@ Theorem eventfd_declined : forall i m eff m' evs f,
 Proof.
   intros i m eff m' evs f Hin Hfd H. apply check_syscall_ok_iff in H.
   cbn [eventfd_io_sysnos List.In] in Hin.
-  destruct Hin as [E|[E|[E|[E|[E|[E|[E|[E|[]]]]]]]]]; symmetry in E.
+  destruct Hin as [E|[E|[E|[E|[E|[E|[]]]]]]]; symmetry in E.
   - assert (Hc : check_syscall i eff m = ca_check arm_ftruncate i eff m)
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
@@ -560,14 +743,6 @@ Proof.
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
     unfold check_lseek in H. efd_walk H Hfd. all: efd_leaf H.
-  - assert (Hc : check_syscall i eff m = ca_check arm_read i eff m)
-      by (unfold check_syscall; rewrite E; reflexivity).
-    rewrite Hc in H. autorewrite with arm_unfold in H.
-    unfold check_read in H. efd_walk H Hfd. all: efd_leaf H.
-  - assert (Hc : check_syscall i eff m = ca_check arm_write i eff m)
-      by (unfold check_syscall; rewrite E; reflexivity).
-    rewrite Hc in H. autorewrite with arm_unfold in H.
-    unfold check_write in H. efd_walk H Hfd. all: efd_leaf H.
   - assert (Hc : check_syscall i eff m = ca_check arm_readv i eff m)
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
@@ -584,4 +759,54 @@ Proof.
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
     unfold check_pwrite64 in H. efd_walk H Hfd. all: efd_leaf H.
+Qed.
+
+Local Ltac efd_keep H :=
+  repeat (cbv beta iota zeta in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
+          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ => fail
+          | _ => match type of H with
+                 | context [match ?x with _ => _ end] => destruct x
+                 | context [if ?b then _ else _] => destruct b
+                 end
+          end);
+  first
+  [ discriminate H
+  | injection H as <- <-; split; reflexivity
+  | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+    split; reflexivity
+  | apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
+    split; reflexivity ].
+
+(** READ AND WRITE ON AN EVENTFD keep the model.  [read] (63) and [write]
+    (64) answer a non-blocking eventfd ([Fs.ReadWrite.read_eventfd_spec],
+    [Fs.ReadWrite.write_eventfd_spec]) without a counter: the counter is
+    the ENVIRONMENT's, so a read returns any value the kernel could hold
+    and a write any answer it could give, and a peer's write is one more
+    environment write.  Every [Ok] answer leaves the model as it was and
+    emits nothing, so nothing per process can drift from the counter
+    Linux has once.  A counter in the model must go into the shared state
+    ([Procs.shared]) first; such a change breaks this lemma. *)
+Theorem eventfd_rw_keeps_model : forall i m eff m' evs f,
+  (bv_unsigned (in_sysno i) = 63%Z \/ bv_unsigned (in_sysno i) = 64%Z) ->
+  fd_lookup (m_fds m) (fd32 (in_arg i 0)) = Some (FdOpaque (OEventFd f)) ->
+  syscall_spec i m (Ok eff m' evs) ->
+  m' = m /\ evs = [].
+Proof.
+  intros i m eff m' evs f [E|E] Hfd H; apply check_syscall_ok_iff in H.
+  - assert (Hc : check_syscall i eff m = ca_check arm_read i eff m)
+      by (unfold check_syscall; rewrite E; reflexivity).
+    rewrite Hc in H. autorewrite with arm_unfold in H.
+    unfold check_read, check_read_urandom, check_socket_pending_error,
+      check_access_ok_zero in H.
+    efd_walk H Hfd.
+    all: first [ exact (check_read_opaque_keeps _ _ _ _ _ _ _ _ H) | efd_keep H ].
+  - assert (Hc : check_syscall i eff m = ca_check arm_write i eff m)
+      by (unfold check_syscall; rewrite E; reflexivity).
+    rewrite Hc in H. autorewrite with arm_unfold in H.
+    unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+    efd_walk H Hfd.
+    all: first [ exact (check_write_opaque_keeps _ _ _ _ _ _ _ _ H) | efd_keep H ].
 Qed.

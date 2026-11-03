@@ -135,6 +135,14 @@ Proof.
   unfold check_eventfd2, check_new_fd_result in H. sh_frame2 H.
 Qed.
 
+Lemma check_signalfd4_sh : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H. sh_frame2 H.
+Qed.
+
 Lemma check_epoll_create1_sh : forall flags32 eff m m' evs,
   check_epoll_create1 flags32 eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
@@ -195,10 +203,12 @@ Proof.
   unfold check_pipe2, pipe2_model in H. sh_frame2 H.
 Qed.
 
-Lemma check_getdents64_sh : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Lemma check_getdents64_sh : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
-  intros fd count eff m m' evs H. unfold check_getdents64 in H. sh_frame2 H.
+  intros i fd dirent count eff m m' evs H.
+  unfold check_getdents64 in H.
+  repeat (vm_step H || sh_done H || (apply check_getdents64_opaque_fds in H; destruct H as ((fds & ->) & ->))); try reflexivity.
 Qed.
 
 Lemma check_pselect6_sh : forall i n32 inp outp exp tsp sig eff m m' evs,
@@ -694,6 +704,7 @@ Proof.
       [
         eapply check_getcwd_sh; eassumption
       | eapply check_eventfd2_sh; eassumption
+      | eapply check_signalfd4_sh; eassumption
       | eapply check_epoll_create1_sh; eassumption
       | eapply check_epoll_ctl_sh; eassumption
       | eapply check_epoll_pwait_sh; eassumption

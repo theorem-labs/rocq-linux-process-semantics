@@ -1782,21 +1782,369 @@ Ltac vm_done H :=
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
 
+(** The opaque arms keep the model: every answer is the model they were
+    given and no event.  Proved apart, once each, so that the frame lemmas
+    here, in [Checks.KillFree] and in the other per-arm frame files do not
+    open the opaque arms inside every branch of the arm around them, which
+    costs the build more memory than a CI runner has. *)
+Ltac opaque_keeps H :=
+  repeat (cbv beta iota zeta in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
+          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ => fail
+          | _ => first
+                 [ discriminate H
+                 | match type of H with
+                   | context [match ?x with _ => _ end] => destruct x
+                   | context [if ?b then _ else _] => destruct b
+                   end ]
+          end);
+  first
+    [ discriminate H
+    | (injection H as <- <-; split; reflexivity)
+    | (apply check_ret_only_ok_iff in H;
+       let H1 := fresh in let H2 := fresh in
+       destruct H as (_ & H1 & H2); subst; split; reflexivity)
+    | (apply check_ret_only_copyins_ok_iff in H;
+       let H1 := fresh in let H2 := fresh in
+       destruct H as (_ & H1 & H2); subst; split; reflexivity) ].
+
+(** A read of an opaque object (a /proc/sys file, an eventfd). *)
+Lemma check_read_opaque_keeps : forall i o buf count eff m m' evs,
+  check_read_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o buf count eff m m' evs H.
+  unfold check_read_opaque, check_read_proc, check_read_proc_bare, check_read_eventfd,
+    check_eventfd_deliver in H.
+  opaque_keeps H.
+Qed.
+
+(** A write to an opaque object (an eventfd). *)
+Lemma check_write_opaque_keeps : forall i o buf count eff m m' evs,
+  check_write_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o buf count eff m m' evs H.
+  unfold check_write_opaque, check_write_eventfd in H.
+  opaque_keeps H.
+Qed.
+
+(** [fstat] of an opaque object (the /proc/self/fd directory). *)
+Lemma check_fstat_opaque_keeps : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o statbuf eff m m' evs H.
+  unfold check_fstat_opaque, check_fstat_procfd_dir in H.
+  opaque_keeps H.
+Qed.
+
+(** The /proc/self/fd listing answers a new position for its descriptor
+    and no event; proved apart, with the listing's plan kept abstract, so
+    that [check_getdents64_kf] does not split the listing's arithmetic. *)
+Lemma check_getdents64_opaque_fds : forall i fd o dirent count eff m m' evs,
+  check_getdents64_opaque i fd o dirent count eff m = CheckOk m' evs ->
+  (exists fds, m' = with_fds fds m) /\ evs = [].
+Proof.
+  intros i fd o dirent count eff m m' evs H.
+  destruct o as [q|q|fl0|h|fl pos|mk fl1]; cbn [check_getdents64_opaque] in H;
+    try discriminate H.
+  unfold check_procfd_getdents in H.
+  destruct pos as [pw|]; [|discriminate H].
+  destruct (negb (procfd_in_range (m_fds m) (bv_unsigned pw))); [discriminate H|].
+  cbv zeta in H.
+  generalize dependent H.
+  generalize (procfd_plan (m_fds m) (bv_unsigned pw)) as es.
+  intros es.
+  generalize (procfd_fit es (getdents64_ctx_count count)) as n.
+  intros n H.
+  repeat (cbv beta iota in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
+          | _ => first
+                 [ discriminate H
+                 | match type of H with
+                   | context [match ?x with _ => _ end] => destruct x
+                   | context [if ?b then _ else _] => destruct b
+                   end ]
+          end).
+  all: first
+    [ discriminate H
+    | (apply check_ret_only_ok_iff in H as (_ & -> & ->);
+       split; [eexists; reflexivity | reflexivity])
+    | (injection H as <- <-; split; [eexists; reflexivity | reflexivity]) ].
+Qed.
+
+(** OPENAT AND READ'S HELPERS, ONE LEMMA PER SUB-CHECKER.  Each proves
+    its own step and closes the sub-checkers it calls with their lemmas,
+    so no proof unfolds the whole openat tree: unfolding every
+    sub-checker at once and splitting it costs the build more memory
+    than a CI runner has. *)
+
+Lemma vm_open_wronly : forall p eff m m' evs,
+  check_create_wronly p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold check_create_wronly in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_append : forall p eff m m' evs,
+  check_open_append p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold check_open_append in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_rdwr : forall p fs' eff m m' evs,
+  check_open_rdwr p fs' eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p fs' eff m m' evs H. unfold check_open_rdwr in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_read : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_read in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_create : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_create in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_wronly in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_excl : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_excl in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_wronly in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_append : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros excl p eff m m' evs H. unfold Open.check_openat_append in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_append in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_rdwr : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros creat trunc p eff m m' evs H. unfold Open.check_openat_rdwr in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_rdwr in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_rdwr_excl : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_rdwr_excl in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_rdwr in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_dir : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_dir in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_localtime : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_localtime in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_devnull : forall rd wr eff m m' evs,
+  Open.check_open_devnull rd wr eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros rd wr eff m m' evs H. unfold Open.check_open_devnull in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_devnull : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_devnull in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_devnull in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_open_urandom : forall eff m m' evs,
+  Open.check_open_urandom eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros eff m m' evs H. unfold Open.check_open_urandom in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_urandom : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_urandom in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_urandom in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_tmp : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros n p flags eff m m' evs H. unfold Open.check_openat_tmp in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_read in H; exact H)
+          || (eapply vm_openat_create in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_sep : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p flags eff m m' evs H. unfold Open.check_openat_sep in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_localtime in H; exact H)
+          || (eapply vm_openat_devnull in H; exact H)
+          || (eapply vm_openat_urandom in H; exact H)
+          || (eapply vm_openat_tmp in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_resolved : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p flags eff m m' evs H. unfold Open.check_openat_resolved in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_sep in H; exact H)
+          || (eapply vm_openat_read in H; exact H)
+          || (eapply vm_openat_create in H; exact H)
+          || (eapply vm_openat_excl in H; exact H)
+          || (eapply vm_openat_dir in H; exact H)
+          || (eapply vm_openat_append in H; exact H)
+          || (eapply vm_openat_rdwr in H; exact H)
+          || (eapply vm_openat_rdwr_excl in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_proc_open_result : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros o eff m m' evs H. unfold Open.check_proc_open_result in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_proc : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros c flags eff m m' evs H. unfold Open.check_openat_proc in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_proc_open_result in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_body : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold Open.check_openat_body in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_proc in H; exact H)
+          || (eapply vm_openat_resolved in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_read_urandom : forall i buf count eff m m' evs,
+  check_read_urandom i buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i buf count eff m m' evs H. unfold check_read_urandom, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
+  check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros e fd peer ch buf count i eff m m' evs H. unfold check_socket_pending_error, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_write_fault_extend : forall reads m p off eff m' evs,
+  check_write_fault_extend reads m p off eff = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros reads m p off eff m' evs H. unfold check_write_fault_extend, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+
 Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero, check_read_proc, check_read_proc_bare in H.
-  cbv zeta in H. vm_frame2 H.
+  unfold check_read, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply vm_read_urandom in H; exact H)
+          || (eapply vm_socket_pending_error in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_write_frame : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  vm_frame2 H.
+  unfold check_write, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply vm_write_fault_extend in H; exact H));
+  try reflexivity.
 Qed.
 
 (** A positional transfer touches no mapping.  [check_pread64] returns
@@ -1824,20 +2172,12 @@ Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  (* openat's body and its copy-in wrapper are [Local] to
-     [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
-     space, and naming them here is what lets [vm_frame2] see that. *)
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
-    Open.check_openat_sep, Open.check_openat_localtime,
-    Open.check_openat_devnull, Open.check_open_devnull,
-    Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_tmp,
-    Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
-    Open.check_openat_dir, Open.check_openat_append,
-    Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    Open.check_openat_proc, Open.check_proc_open_result,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
-  vm_frame2 H.
+  (* openat's body and its sub-checkers are [Local] to
+     [Checks/Sys/Fs/Open.v]; [vm_openat_body] and the lemmas above it
+     cover them one at a time. *)
+  unfold check_openat in H. cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H || (eapply vm_openat_body in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_close_frame : forall fd eff m m' evs,
@@ -1964,10 +2304,15 @@ Lemma check_fsync_frame : forall fd eff m m' evs,
   check_fsync fd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fd eff m m' evs H. unfold check_fsync in H. vm_frame2 H. Qed.
 
-Lemma check_getdents64_frame : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_getdents64_frame : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd count eff m m' evs H. unfold check_getdents64 in H. vm_frame2 H.
+  intros i fd dirent count eff m m' evs H.
+  unfold check_getdents64 in H.
+  repeat (vm_step H || vm_done H
+          || (apply check_getdents64_opaque_fds in H;
+              destruct H as ((fds & ->) & ->)));
+  try reflexivity.
 Qed.
 
 (** [flock] records nothing: every answered arm is a bare return, and
@@ -2006,6 +2351,14 @@ Lemma check_eventfd2_frame : forall flags eff m m' evs,
 Proof.
   intros flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
+Qed.
+
+Lemma check_signalfd4_frame : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
 (** uname writes only the UTS-name pin, which lives in [ProcState]:
@@ -2318,6 +2671,16 @@ Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
 
+(** The /proc/self/fd directory's [fstat] hands back the model it was
+    given; the other opaque objects decline. *)
+Lemma check_fstat_opaque_frame : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i o statbuf eff m m' evs H.
+  apply check_fstat_opaque_keeps in H as (-> & _). reflexivity.
+Qed.
+
 Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -2326,7 +2689,8 @@ Proof.
   destruct e; try discriminate;
     first [eapply check_fstat_file_frame; exact H
           |eapply check_fstat_devnull_frame; exact H
-          |eapply check_fstat_urandom_frame; exact H].
+          |eapply check_fstat_urandom_frame; exact H
+          |eapply check_fstat_opaque_frame; exact H].
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,
@@ -2775,6 +3139,7 @@ Proof.
     | erewrite check_connect_frame by eassumption; exact Hwf
     | erewrite check_timerfd_create_frame by eassumption; exact Hwf
     | erewrite check_eventfd2_frame by eassumption; exact Hwf
+    | erewrite check_signalfd4_frame by eassumption; exact Hwf
     | erewrite check_pipe2_frame by eassumption; exact Hwf
     | erewrite check_getcwd_frame by eassumption; exact Hwf
     | erewrite check_epoll_create1_frame by eassumption; exact Hwf

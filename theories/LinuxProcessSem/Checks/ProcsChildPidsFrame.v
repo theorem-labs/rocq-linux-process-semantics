@@ -86,8 +86,9 @@ Lemma check_read_cp : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero, check_read_proc, check_read_proc_bare in H.
-  cbv zeta in H. cp_frame2 H.
+    check_access_ok_zero in H.
+  cbv zeta in H.
+  repeat (vm_step H || cp_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
 Qed.
 
 Lemma check_write_cp : forall i fd buf count eff m m' evs,
@@ -95,7 +96,7 @@ Lemma check_write_cp : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  cp_frame2 H.
+  repeat (vm_step H || cp_done H || (apply check_write_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
 Qed.
 
 Lemma check_pread64_cp : forall i fd buf count pos eff m m' evs,
@@ -114,25 +115,203 @@ Proof.
   unfold check_pwrite64, check_write_fault_extend in H. cp_frame2 H.
 Qed.
 
+(** OPENAT, ONE SUB-CHECKER AT A TIME.  Unfolding the whole of
+    [check_openat] at once multiplies every guard of every arm into
+    one case split; each lemma below unfolds one level and closes
+    the calls below it by their lemmas. *)
+Lemma openat_read_cp : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_read in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_create_cp : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_create, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_append_cp : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros excl p eff m m' evs H.
+  unfold Open.check_openat_append, check_open_append in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_rdwr_cp : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros creat trunc p eff m m' evs H.
+  unfold Open.check_openat_rdwr, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_rdwr_excl_cp : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_rdwr_excl, check_open_rdwr in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_excl_cp : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_excl, check_create_wronly in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_dir_cp : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p eff m m' evs H.
+  unfold Open.check_openat_dir in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_localtime_cp : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_localtime in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_devnull_cp : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_devnull, Open.check_open_devnull in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_urandom_cp : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros flags eff m m' evs H.
+  unfold Open.check_openat_urandom, Open.check_open_urandom in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Lemma openat_proc_result_cp : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros o eff m m' evs H.
+  unfold Open.check_proc_open_result in H. cbv zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_tmp H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_cp in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_cp in H; exact H
+  end.
+
+Lemma openat_tmp_cp : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros n p flags eff m m' evs H.
+  unfold Open.check_openat_tmp in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_tmp H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_sep H :=
+  lazymatch type of H with
+  | Open.check_openat_localtime _ _ _ = CheckOk _ _ => apply openat_localtime_cp in H; exact H
+  | Open.check_openat_devnull _ _ _ = CheckOk _ _ => apply openat_devnull_cp in H; exact H
+  | Open.check_openat_urandom _ _ _ = CheckOk _ _ => apply openat_urandom_cp in H; exact H
+  | Open.check_openat_tmp _ _ _ _ _ = CheckOk _ _ => apply openat_tmp_cp in H; exact H
+  end.
+
+Lemma openat_sep_cp : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_sep in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_sep H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_resolved H :=
+  lazymatch type of H with
+  | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_cp in H; exact H
+  | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_cp in H; exact H
+  | Open.check_openat_excl _ _ _ = CheckOk _ _ => apply openat_excl_cp in H; exact H
+  | Open.check_openat_dir _ _ _ = CheckOk _ _ => apply openat_dir_cp in H; exact H
+  | Open.check_openat_append _ _ _ _ = CheckOk _ _ => apply openat_append_cp in H; exact H
+  | Open.check_openat_rdwr _ _ _ _ _ = CheckOk _ _ => apply openat_rdwr_cp in H; exact H
+  | Open.check_openat_rdwr_excl _ _ _ = CheckOk _ _ => apply openat_rdwr_excl_cp in H; exact H
+  | Open.check_openat_sep _ _ _ _ = CheckOk _ _ => apply openat_sep_cp in H; exact H
+  end.
+
+Lemma openat_resolved_cp : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros p flags eff m m' evs H.
+  unfold Open.check_openat_resolved in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_resolved H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_proc H :=
+  lazymatch type of H with
+  | Open.check_proc_open_result _ _ _ = CheckOk _ _ => apply openat_proc_result_cp in H; exact H
+  end.
+
+Lemma openat_proc_cp : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros c flags eff m m' evs H.
+  unfold Open.check_openat_proc in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_proc H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_body H :=
+  lazymatch type of H with
+  | Open.check_openat_proc _ _ _ _ = CheckOk _ _ => apply openat_proc_cp in H; exact H
+  | Open.check_openat_resolved _ _ _ _ = CheckOk _ _ => apply openat_resolved_cp in H; exact H
+  end.
+
+Lemma openat_body_cp : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold Open.check_openat_body in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_body H || cp_done H); try reflexivity.
+Qed.
+
+Local Ltac openat_sub_cp_top H :=
+  lazymatch type of H with
+  | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_cp in H; exact H
+  end.
+
 Lemma check_openat_cp : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   cp_of m' = cp_of m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  (* openat's body and its copy-in wrapper are [Local] to
-     [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
-     space, and naming them here is what lets [cp_frame2] see that. *)
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
-    Open.check_openat_sep, Open.check_openat_localtime,
-    Open.check_openat_devnull, Open.check_open_devnull,
-    Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_tmp,
-    Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
-    Open.check_openat_dir, Open.check_openat_append,
-    Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    Open.check_openat_proc, Open.check_proc_open_result,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
-  cp_frame2 H.
+  unfold check_openat in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_top H || cp_done H); try reflexivity.
 Qed.
 
 Lemma check_close_cp : forall fd eff m m' evs,
@@ -252,10 +431,12 @@ Lemma check_fsync_cp : forall fd eff m m' evs,
   check_fsync fd eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof. intros fd eff m m' evs H. unfold check_fsync in H. cp_frame2 H. Qed.
 
-Lemma check_getdents64_cp : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> cp_of m' = cp_of m.
+Lemma check_getdents64_cp : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
-  intros fd count eff m m' evs H. unfold check_getdents64 in H. cp_frame2 H.
+  intros i fd dirent count eff m m' evs H.
+  unfold check_getdents64 in H.
+  repeat (vm_step H || cp_done H || (apply check_getdents64_opaque_fds in H; destruct H as ((fds & ->) & ->))); try reflexivity.
 Qed.
 
 Lemma check_flock_cp : forall fd cmd eff m m' evs,
@@ -278,6 +459,14 @@ Lemma check_eventfd2_cp : forall flags eff m m' evs,
 Proof.
   intros flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. cp_frame2 H.
+Qed.
+
+Lemma check_signalfd4_cp : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H. cp_frame2 H.
 Qed.
 
 Lemma check_uname_cp : forall i name eff m m' evs,
@@ -499,6 +688,15 @@ Lemma check_fstat_urandom_cp : forall i statbuf eff m m' evs,
   cp_of m' = cp_of m.
 Proof. intros. eapply check_fstat_chrdev_cp. exact H. Qed.
 
+(** The /proc/self/fd directory's [fstat] hands back the model it was
+    given; the other opaque objects decline. *)
+Lemma check_fstat_opaque_cp : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> cp_of m' = cp_of m.
+Proof.
+  intros i o statbuf eff m m' evs H.
+  apply check_fstat_opaque_keeps in H as (-> & _). reflexivity.
+Qed.
+
 Lemma check_fstat_cp : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
@@ -507,7 +705,8 @@ Proof.
   destruct e; try discriminate;
     first [eapply check_fstat_file_cp; exact H
           |eapply check_fstat_devnull_cp; exact H
-          |eapply check_fstat_urandom_cp; exact H].
+          |eapply check_fstat_urandom_cp; exact H
+          |eapply check_fstat_opaque_cp; exact H].
 Qed.
 
 Lemma check_getid_cp : forall sel eff m m' evs,
@@ -1032,6 +1231,7 @@ Proof.
         | eapply check_flock_cp; eassumption
         | eapply check_timerfd_create_cp; eassumption
         | eapply check_eventfd2_cp; eassumption
+        | eapply check_signalfd4_cp; eassumption
         | eapply check_uname_cp; eassumption
         | eapply check_prlimit64_cp; eassumption
         | eapply check_capget_cp; eassumption
