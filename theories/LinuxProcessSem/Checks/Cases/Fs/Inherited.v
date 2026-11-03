@@ -29,9 +29,13 @@
     - THE KIND: [write], [lseek] and [fstat] decline on a key; [close]
       answers 0 and frees the slot; [fcntl]'s [F_GETFD] admits 0 and
       FD_CLOEXEC, as on every kind, and rejects 2.
-    - THE CLONE GATE: a [clone] by a caller that holds a key with its
-      offset declines, with either word; the same clone without the key
-      answers a pid. *)
+    - THE CLONE: a successful [clone] of either word, or [clone3] with
+      the fork image, by a caller that holds a key with its offset
+      answers the pid, and the caller keeps the key without its offset,
+      so its later [read] declines and its [close] answers.  The control
+      is the answer that keeps the caller's key live, which is not the
+      checker's.  A failed clone leaves the key live, and the same
+      clones without the key answer the pid with the table as it was. *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -272,7 +276,7 @@ Example inherited_key_getfd_answers :
 Proof. split; [check_eq|split; [check_eq|vm_compute; reflexivity]]. Qed.
 
 (* -------------------------------------------------------------------------
-   The clone gate
+   The clone: the caller gives the offset to the child
    ------------------------------------------------------------------------- *)
 
 (** The namespace flag word: SIGCHLD | CLONE_NEWNS | CLONE_NEWUSER |
@@ -288,15 +292,89 @@ Definition inh_clone_key : Model :=
   with_fds (fd_insert (m_fds inh_clone_plain) 3
               (FdOpaque (OInherited (Some (inh_key, 0))))) inh_clone_plain.
 
-(** A caller that holds a key with its offset: the child would share the
-    description's offset ([dup_fd], fs/file.c, v6.18.46), which the
-    model holds in the caller's entry alone, so both words decline. *)
-Example inherited_key_clone_declines :
+(** A caller that holds a key with its offset.  The child shares the
+    description's offset ([dup_fd], fs/file.c, v6.18.46), which the model
+    holds in one entry, so with either word the clone answers the pid and
+    the caller keeps the key as [OInherited None]
+    ([Kernel.Fork.forfeit_model]): the child, built from the table before
+    the call, holds the offset.  THE CONTROL is the answer a fork word
+    that forgot to forfeit would give, with the caller's key still live:
+    it is not the checker's. *)
+Example inherited_key_clone_forfeits_either_word :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_key
-  = CheckUnmodeled
+  = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) []
   /\ check_syscall (clone_in inh_ns_clone_flags) (mkEffect 4242 [] []) inh_clone_key
-     = CheckUnmodeled.
-Proof. split; vm_compute; reflexivity. Qed.
+     = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) []
+  /\ fd_lookup (m_fds (forfeit_model inh_clone_key)) 3
+     = Some (FdOpaque (OInherited None))
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_key
+     <> CheckOk (with_child (Z_to_bv 64 4242) inh_clone_key) [].
+Proof.
+  split; [check_eq|]. split; [check_eq|]. split; [vm_compute; reflexivity|].
+  intro H.
+  apply (f_equal (fun r => match r with
+                           | CheckOk m _ => fd_lookup (m_fds m) 3
+                           | _ => None
+                           end)) in H.
+  vm_compute in H. discriminate H.
+Qed.
+
+(** [clone3] with the fork image answers as the fork word does: the pid,
+    and the caller's key without its offset. *)
+Example inherited_key_clone3_forfeits :
+  check_syscall clone3_top_call
+    (mkEffectU (Z_to_bv 64 4242) [] [] [] []
+               [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
+    inh_clone_key
+  = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) [].
+Proof. check_eq. Qed.
+
+(** A FAILED fork created no child and forfeits nothing: after -EAGAIN
+    the key is live, and [read] answers its four bytes. *)
+Example inherited_failed_fork_keeps_the_key :
+  match check_syscall (clone_in (Z_to_bv 64 SIGCHLD))
+          (mkEffect (errno_ret EAGAIN) [] []) inh_clone_key with
+  | CheckOk m1 [] =>
+      fd_lookup (m_fds m1) 3 = Some (FdOpaque (OInherited (Some (inh_key, 0))))
+      /\ match check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) m1 with
+         | CheckOk m2 [] =>
+             fd_lookup (m_fds m2) 3 = Some (FdOpaque (OInherited (Some (inh_key, 4))))
+         | _ => False
+         end
+  | _ => False
+  end.
+Proof. vm_compute. split; check_eq. Qed.
+
+(** THE CALLER AFTER THE CLONE, the same model for both words: its
+    [read] of the key declines, and its [close] answers 0 and frees the
+    slot.  THE CONTROL is the same read before the clone, which answers
+    the four bytes. *)
+Definition inh_after_clone : Model :=
+  with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key).
+
+Example inherited_caller_after_clone :
+  check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) inh_after_clone
+  = CheckUnmodeled
+  /\ match check_syscall (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+             (mkEffect 0 [] []) inh_after_clone with
+     | CheckOk m [] => fd_lookup (m_fds m) 3 = None
+     | _ => False
+     end
+  /\ match check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) inh_clone_key with
+     | CheckOk m [] =>
+         fd_lookup (m_fds m) 3 = Some (FdOpaque (OInherited (Some (inh_key, 4))))
+     | _ => False
+     end.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** A second fork by that caller: its key holds no offset, so its table
+    is its own [forfeit_model] and the child is recorded over it. *)
+Example inherited_forfeited_key_passes_the_fork_word :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] [])
+    (forfeit_model inh_clone_key)
+  = CheckOk (with_child (Z_to_bv 64 4243) (forfeit_model inh_clone_key)) [].
+Proof. check_eq. Qed.
 
 (** THE CONTROL: the same clones without the key answer the pid. *)
 Example inherited_no_key_clone_answers :

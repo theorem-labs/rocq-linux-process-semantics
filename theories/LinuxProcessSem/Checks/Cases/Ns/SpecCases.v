@@ -7,6 +7,7 @@
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require SpuriousCfg.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Mm Require Mmap.
@@ -88,13 +89,16 @@ Proof. intros m ctx o. apply ns_spec_flat. apply flat_view_empty. Qed.
     only the shared namespace state, the task's own context and table, or
     nothing a peer can change: [getpid], [mount], [capget], an anonymous
     [mmap] (the address space is per process after a clone without
-    CLONE_VM), a [read] of a namespace file or of an eventfd, a [writev] of
-    a standard channel, a [close] of an opaque descriptor, [fcntl] F_SETFD
-    on any descriptor.  Not admitted: a file [mmap], a [read] or [writev]
-    of a regular file the released model opened, a [close] of a released
-    pipe, [fcntl] F_SETFL on a released file (each reads or moves state the
-    core keeps per process), and a call the child does not make
-    ([clock_gettime]). *)
+    CLONE_VM), a [read] of a namespace file, of an eventfd or of an
+    inherited file that holds its offset, a [writev] of a standard
+    channel, a [close] of an opaque descriptor, [fcntl] F_SETFD on any
+    descriptor, an [fchmod] of a namespace file.  Not admitted: a file
+    [mmap], a [read] or [writev] of a regular file the released model
+    opened, a [read] of an inherited file whose offset the caller gave up
+    at a clone, a [close] of a released pipe, [fcntl] F_SETFL on a
+    released file (each reads or moves state the core keeps per process),
+    and [clock_gettime] and [unlinkat], which the core admits itself
+    ([multiproc_core_admits_unlinkat_and_clock]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
   ext_multiproc ns_ext i m ctx empty_nsstate = false.
 Proof. intros i m ctx. exact (ns_multiproc_coherent i m ctx empty_nsstate (flat_view_empty ctx)). Qed.
@@ -158,6 +162,61 @@ Proof.
   repeat split; intros H; change (ext_multiproc ns_ext) with ns_multiproc;
     unfold ns_multiproc, ns_multiproc_call, fd_entry_handle, eventfd_flags_of, fd_entry_opaque;
     unfold fd3 in H; cbv zeta; rewrite H; reflexivity.
+Qed.
+
+(** AN INHERITED FILE THAT HOLDS ITS OFFSET ([State.OInherited] with
+    [Some]) is held live by one process only: a clone of either word
+    leaves the offset with the child ([Kernel.Fork.forfeit_inherited]).
+    So the child's [read] of it is admitted while the parent lives, and
+    its [close] is the opaque case.  THE CONTROLS: the parent's copy after
+    the clone, [OInherited None], whose [read] is not admitted, and a
+    [write] of the live one, which reads the offset as well and is not
+    admitted either.  [fchmod] (52) of a namespace file writes the inode
+    in the shared namespace state and is admitted; of a file the released
+    model opened it is not. *)
+Example multiproc_inherited_and_fchmod_rules : forall m,
+  (fd3 (call1 63 3) m = Some (FdOpaque (OInherited (Some ([], Z_to_bv 64 0)))) ->
+   ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 63 3) m = Some (FdOpaque (OInherited None)) ->
+      ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = false)
+  /\ (fd3 (call1 57 3) m = Some (FdOpaque (OInherited (Some ([], Z_to_bv 64 0)))) ->
+      ext_multiproc ns_ext (call1 57 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 64 3) m = Some (FdOpaque (OInherited (Some ([], Z_to_bv 64 0)))) ->
+      ext_multiproc ns_ext (call1 64 3) m (task 2 18) one_mount = false)
+  /\ (fd3 (call2 52 3 384) m = Some (FdOpaque (ONsFile 1)) ->
+      ext_multiproc ns_ext (call2 52 3 384) m (task 2 18) one_mount = true)
+  /\ (fd3 (call2 52 3 384) m = Some (FdFile [] (Z_to_bv 64 0)) ->
+      ext_multiproc ns_ext (call2 52 3 384) m (task 2 18) one_mount = false).
+Proof.
+  intros m.
+  repeat split; intros H; change (ext_multiproc ns_ext) with ns_multiproc;
+    unfold ns_multiproc, ns_multiproc_call, fd_entry_handle, eventfd_flags_of, fd_entry_opaque;
+    unfold fd3 in H; cbv zeta; rewrite H; reflexivity.
+Qed.
+
+(** [unlinkat] (35) and [clock_gettime] (113) are not this guard's: the
+    core admits them itself, through its gated and synced lists
+    ([Procs.multiproc_gated_sysnos], [Procs.multiproc_synced_sysnos]), in
+    [Procs.multiproc_base], which [Procs.multiproc_ok] asks before the
+    extension.  THE CONTROL is [read] (63), a class number, which the
+    base guard does not admit while another process lives. *)
+Lemma multiproc_core_admits_unlinkat_and_clock : forall P c x8,
+  RiscvSemantics.ms_svc_pending (cfg_ms c) = Some x8 ->
+  (bv_unsigned x8 = 35%Z \/ bv_unsigned x8 = 113%Z) ->
+  Procs.multiproc_base P c = true.
+Proof.
+  intros P c x8 Hs Hx. unfold Procs.multiproc_base. rewrite Hs. cbv beta iota.
+  destruct Hx as [Hx|Hx]; rewrite Hx; destruct (Nat.leb _ _); reflexivity.
+Qed.
+
+Example multiproc_core_lists : forall m,
+  ext_multiproc ns_ext (call 35) m (task 2 18) one_mount = false
+  /\ existsb (Z.eqb 35) Procs.multiproc_gated_sysnos = true
+  /\ existsb (Z.eqb 113) Procs.multiproc_synced_sysnos = true
+  /\ existsb (Z.eqb 63) Procs.multiproc_core_sysnos = false
+  /\ existsb (Z.eqb 63) Procs.multiproc_owned_sysnos = false.
+Proof.
+  intros m. repeat match goal with |- _ /\ _ => split end; reflexivity.
 Qed.
 
 (** A descriptor the released model opened resolves in the host's mount
