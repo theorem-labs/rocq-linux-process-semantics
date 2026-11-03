@@ -525,7 +525,7 @@ not apply.
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when
   `__netlink_dump_start` cannot allocate the dump's first part
-  (`netlink_dump`, `net/netlink/af_netlink.c`, v6.18.44). Linux still
+  (`netlink_dump`, `net/netlink/af_netlink.c`, v6.18.46). Linux still
   answers `sendto` with the request's length and reports the error inside
   the acknowledgement (`netlink_ack`). A change leaves the namespace
   unchanged. A dump keeps running: once the acknowledgement is read,

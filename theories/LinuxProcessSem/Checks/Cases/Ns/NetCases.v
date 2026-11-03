@@ -556,3 +556,87 @@ Proof.
     destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
   - vm_compute in Hb. discriminate Hb.
 Qed.
+
+(* =========================================================================
+   An address request whose handler fails for lack of memory
+   ========================================================================= *)
+
+(** The socket of [up_state], whose [lo] is down, sends [newaddr_req]
+    (127.0.0.1/8 on lo, with NLM_F_ACK) from [up_ctx].  [ns_spec] admits
+    two answers: the address added with an acknowledgement of 0, and, when
+    the allocation in [inet_rtm_to_ifa] fails, the acknowledgement of
+    -ENOBUFS with the namespace unchanged ([handler_fail_ack]).  Both
+    return the request's length with the same effect ([addr_eff]); only the
+    queued acknowledgement tells them apart ([Net.nl_alloc_after]).  Under
+    forced-only the filter removes the failure and keeps the answer with the
+    address ([Spec.ns_alloc_refusal]); under may-fail it keeps both
+    (SCOPE.md). *)
+Definition addr_len : Z := Z.of_nat (length newaddr_req).
+Definition addr_mem : word -> option byte :=
+  fun a => let k := bv_unsigned a - 65536 in
+           if (0 <=? k) && (k <? addr_len) then Some (nth (Z.to_nat k) newaddr_req (Z_to_bv 8 0))
+           else None.
+Definition addr_in : SyscallInput :=
+  mkInput (Z_to_bv 64 206) (map (Z_to_bv 64) [3; 65536; addr_len; 0; 0; 0]) addr_mem addr_mem.
+
+Definition addr_eff : SyscallEffect :=
+  mkEffectU (Z_to_bv 64 addr_len) [] [] [] [] [(Z_to_bv 64 65536, Z.to_nat addr_len)].
+Definition addr_ok_out : ext_outcome :=
+  EOk addr_eff rcv_model up_ctx
+      (set_file (set_netns_ifs up_state 2 [lo IFF_LOOPBACK [lo_addr]]) 7
+                (netlink_file up_file 2 2 [nl_ack 2 newaddr_req 0]))
+      [].
+Definition addr_fail_out : ext_outcome :=
+  EOk addr_eff rcv_model up_ctx
+      (set_file up_state 7 (netlink_file up_file 2 2 [handler_fail_ack 2 newaddr_req ENOBUFS]))
+      [].
+
+Example newaddr_handler_failure_admitted :
+  ns_spec addr_in rcv_model up_ctx up_state addr_ok_out
+  /\ ns_spec addr_in rcv_model up_ctx up_state addr_fail_out.
+Proof.
+  (* Head reductions only, as for [getlink_handler_failure_admitted]. *)
+  split.
+  - hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+    hnf. right. hnf. left. exists lo_env, [nl_ack 2 newaddr_req 0].
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    left. vm_compute. reflexivity.
+  - hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+    hnf. right. hnf. right. split; [vm_compute; reflexivity|].
+    exists ENOBUFS. split; [split; vm_compute; reflexivity | vm_compute; reflexivity].
+Qed.
+
+Example newaddr_handler_failure_forced_only :
+  ns_refusal forced_only_cfg addr_in rcv_model up_ctx up_state addr_fail_out
+  /\ ~ ns_refusal forced_only_cfg addr_in rcv_model up_ctx up_state addr_ok_out.
+Proof.
+  destruct newaddr_handler_failure_admitted as (Hok & _).
+  split.
+  - hnf. right. split; [vm_compute; reflexivity|].
+    exists rcv_model, up_ctx,
+      (set_file (set_netns_ifs up_state 2 [lo IFF_LOOPBACK [lo_addr]]) 7
+                (netlink_file up_file 2 2 [nl_ack 2 newaddr_req 0])),
+      [].
+    split; [exact Hok | vm_compute; reflexivity].
+  - intros H. hnf in H. destruct H as [H | [Hb _]].
+    + apply (proj1 (ns_refusal_eff_ns forced_only_cfg addr_in rcv_model up_ctx up_state addr_eff
+                      ltac:(vm_compute; reflexivity))) in H.
+      destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+    + vm_compute in Hb. discriminate Hb.
+Qed.
+
+Example newaddr_handler_failure_may_fail :
+  ~ ns_refusal may_fail_cfg addr_in rcv_model up_ctx up_state addr_fail_out
+  /\ ~ ns_refusal may_fail_cfg addr_in rcv_model up_ctx up_state addr_ok_out.
+Proof.
+  split; intros H; hnf in H; destruct H as [H | [Hb _]].
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg addr_in rcv_model up_ctx up_state addr_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg addr_in rcv_model up_ctx up_state addr_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
+Qed.
