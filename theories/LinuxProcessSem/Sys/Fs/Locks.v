@@ -92,14 +92,24 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
        open file ([State.ONsFile]), the one being locked included, and a
        lock it holds would conflict, so [flock_sole_opener] fails and
        [flock_spec] declines while one is open *)
+  | (_, FdOpaque (OAlias _)) :: r => S (path_openers r p)
+    (* COUNTED FOR EVERY PATH too: a flock lock belongs to the open file
+       description, and an alias ([State.OAlias]) can keep one alive
+       after its partner closed, holding a lock the model no longer sees
+       on any entry.  So [flock_sole_opener] fails and [flock_spec]
+       declines while any alias exists (fs/locks.c [flock_lock_inode],
+       and [locks_remove_file], which [__fput] runs only at the last
+       reference, fs/file_table.c; read at v6.18.44, identical at
+       v6.18.46) *)
   | (_, FdOpaque _) :: r => path_openers r p
-    (* nor does any of the other three opaque objects hold a flock lock
-       that conflicts with one on [p]: an O_PATH file cannot take one
+    (* nor does any of the other opaque objects hold a flock lock that
+       conflicts with one on [p]: an O_PATH file cannot take one
        ([SYSCALL_DEFINE2(flock)]'s [CLASS(fd, f)] refuses it, fs/locks.c,
        read at v6.18.44; identical at v6.18.46), even when the procfs
        name it was opened on is a link to [p] ("/proc/self/fd/4"), and
-       every flock on an eventfd or a /proc/sys file declines in this
-       model, so none of them can hold a lock the model let it take *)
+       every flock on an eventfd, a /proc/sys file, the /proc/self/fd
+       directory or a signalfd declines in this model, so none of them
+       can hold a lock the model let it take *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -264,7 +274,7 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       FMODE_PATH file (fs/locks.c and fs/file.c, read at v6.18.44;
       identical at v6.18.46); that is -EBADF for LOCK_UN too.  The
       model's O_PATH kind ([State.OProcPath]) is declined, with the
-      other three opaque objects, ahead of the unlock arm and after the
+      other opaque objects, ahead of the unlock arm and after the
       LOCK_MAND and command tests, which is the kernel's order.
     - blocking.  A LOCK_SH or LOCK_EX without LOCK_NB that conflicts
       sleeps in [wait_event_interruptible] (fs/locks.c,
@@ -285,9 +295,10 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
     | Some e =>
         if fd_is_opaque e then unmodeled
           (* FAIL-CLOSED, ahead of the kind-blind unlock below: an O_PATH
-             file is -EBADF on every command (see above), and an eventfd
+             file is -EBADF on every command (see above), an eventfd
              or a /proc/sys file is a [struct file] on an inode whose
-             other openers this model does not count *)
+             other openers this model does not count, and an alias's
+             description is used through its partner only *)
         else if flock_unlock_b cmd then ret_only (Z_to_bv 64 0)
           (* an unlock reads no other file's locks: unconditionally 0 *)
         else

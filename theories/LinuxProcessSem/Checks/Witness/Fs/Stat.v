@@ -413,12 +413,13 @@ Proof.
 Qed.
 
 (** [Stat.fstat_opaque_spec]: the directory's witness, [Unmodeled] on
-    the other five objects. *)
+    the other six objects. *)
 Definition fstat_opaque_witness (o : OpaqueFd) (statbuf : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match o with
   | OProcFdDir _ _ => fstat_procfd_dir_witness statbuf i m
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OAlias _ => Unmodeled
   end.
 
 Lemma fstat_opaque_witness_ok : forall o statbuf i m,
@@ -428,7 +429,7 @@ Proof.
   destruct o; cbv iota;
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro | apply fstat_procfd_dir_witness_ok
-    | apply unmodeled_intro].
+    | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a

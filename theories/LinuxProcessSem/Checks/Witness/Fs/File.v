@@ -53,20 +53,22 @@ Definition dup3_witness (oldfd newfd flags : word) (m : Model)
     match fd_lookup (m_fds m) oldfd with
     | None => ret_outcome (errno_ret EBADF) m
     | Some e =>
-        if negb (dup_modeled_entry e) then Unmodeled
-        else
+        match dup3_fds oldfd newfd e (m_fds m) with
+        | None => Unmodeled
+        | Some fds' =>
           match fd_lookup (m_fds m) newfd with
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then ret_outcome newfd
                      (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                        (with_fds (fd_insert (m_fds m) newfd e) m))
+                        (with_fds fds' m))
               else Unmodeled
           | Some _ =>
               ret_outcome newfd
                 (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                   (with_fds (fd_insert (m_fds m) newfd e) m))
+                   (with_fds fds' m))
           end
+        end
     end.
 
 Lemma dup3_witness_ok : forall oldfd newfd flags i m,
@@ -83,9 +85,7 @@ Proof.
   { eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hl. apply pure_ok. }
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd.
-  - destruct (negb (dup_modeled_entry e)) eqn:Hk.
-    + eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hl; srw Hfd; srw Hk. apply unmodeled_intro.
+  - destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk.
     + destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf.
       * eapply bind_step; [apply get_model_ok|].
         cbv beta iota zeta; srw Hl; srw Hfd; srw Hk; srw Hnf.
@@ -97,6 +97,8 @@ Proof.
         eapply bind_step; [apply get_model_ok|].
         cbv beta iota zeta; srw Hl; srw Hfd; srw Hk; srw Hnf.
         apply unmodeled_intro.
+    + eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hl; srw Hfd; srw Hk. apply unmodeled_intro.
   - eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hl; srw Hfd. apply pure_ok.
 Qed.

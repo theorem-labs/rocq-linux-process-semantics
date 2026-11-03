@@ -124,7 +124,7 @@ Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInp
   match o with
   | OProcFile _ => read_proc_witness buf count i m
   | OEventFd fl => read_eventfd_witness fl buf count i m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ | OAlias _ => Unmodeled
   end.
 
 Lemma read_opaque_witness_ok : forall o buf count i m,
@@ -133,7 +133,8 @@ Proof.
   intros. unfold read_opaque_spec, read_opaque_witness.
   destruct o; cbv beta iota;
     [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 (** [ReadWrite.write_eventfd_spec]: the -EFAULT, the -EINVAL, the failed
@@ -172,12 +173,13 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec]: the eventfd's witness, [Unmodeled] on
-    the other five objects. *)
+    the other six objects. *)
 Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_witness fl buf count i m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
+  | OAlias _ => Unmodeled
   end.
 
 Lemma write_opaque_witness_ok : forall o buf count i m,
@@ -186,7 +188,8 @@ Proof.
   intros. unfold write_opaque_spec, write_opaque_witness.
   destruct o; cbv beta iota;
     [ apply unmodeled_intro | apply unmodeled_intro | apply write_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)

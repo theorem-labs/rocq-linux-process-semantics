@@ -1846,7 +1846,7 @@ Lemma check_getdents64_opaque_fds : forall i fd o dirent count eff m m' evs,
   (exists fds, m' = with_fds fds m) /\ evs = [].
 Proof.
   intros i fd o dirent count eff m m' evs H.
-  destruct o as [q|q|fl0|h|fl pos|mk fl1]; cbn [check_getdents64_opaque] in H;
+  destruct o as [q|q|fl0|h|fl pos|mk fl1|pt]; cbn [check_getdents64_opaque] in H;
     try discriminate H.
   unfold check_procfd_getdents in H.
   destruct pos as [pw|]; [|discriminate H].

@@ -850,6 +850,7 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+
 Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
   check_getdents64 i fd dirent count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.

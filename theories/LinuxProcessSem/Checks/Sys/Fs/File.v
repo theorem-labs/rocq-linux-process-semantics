@@ -48,13 +48,14 @@ Definition check_dup_result (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
-(** [dup]/[dup3]: the [FdFile]/[FdFileW] arms decline, because the
-    model cannot represent two fds sharing one file offset, and dup3
-    declines a free [newfd] at or above [Uapi.NR_OPEN_DEFAULT], where
-    the answer turns on the descriptor table's size.  The new descriptor's
-    close-on-exec bit is recorded: clear for [dup], [flags & O_CLOEXEC]
-    for [dup3].  Kernel citations live on [File.dup_spec] and
-    [File.dup3_spec]. *)
+(** [dup]/[dup3]: [dup] declines the [FdFile]/[FdFileW] kinds, because
+    the model cannot represent two fds sharing one file offset; [dup3]
+    MOVES a regular file and leaves an alias at [oldfd]
+    ([File.dup3_fds]), and declines a free [newfd] at or above
+    [Uapi.NR_OPEN_DEFAULT], where the answer turns on the descriptor
+    table's size.  The new descriptor's close-on-exec bit is recorded:
+    clear for [dup], [flags & O_CLOEXEC] for [dup3].  Kernel citations
+    live on [File.dup_spec] and [File.dup3_spec]. *)
 Definition check_dup (oldfd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match fd_lookup (m_fds m) oldfd with
@@ -76,20 +77,22 @@ Definition check_dup3 (oldfd newfd flags : word) (eff : SyscallEffect)
     match fd_lookup (m_fds m) oldfd with
     | None => check_ret_only eff (errno_ret EBADF) m []
     | Some e =>
-        if negb (dup_modeled_entry e) then CheckUnmodeled
-        else
+        match dup3_fds oldfd newfd e (m_fds m) with
+        | None => CheckUnmodeled
+        | Some fds' =>
           match fd_lookup (m_fds m) newfd with
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then check_ret_only eff newfd
                      (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                        (with_fds (fd_insert (m_fds m) newfd e) m)) []
+                        (with_fds fds' m)) []
               else CheckUnmodeled
           | Some _ =>
               check_ret_only eff newfd
                 (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                   (with_fds (fd_insert (m_fds m) newfd e) m)) []
+                   (with_fds fds' m)) []
           end
+        end
     end.
 
 Lemma check_dup_sound_ok : forall oldfd eff m m' evs i,
@@ -192,7 +195,7 @@ Proof.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hl.
     apply pure_ok. }
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd.
-  - destruct (negb (dup_modeled_entry e)) eqn:Hk; [discriminate|].
+  - destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk; [|discriminate].
     destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf.
     + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
@@ -223,15 +226,15 @@ Proof.
     [now apply check_ret_only_no_unmodeled in H|].
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd;
     [|now apply check_ret_only_no_unmodeled in H].
-  destruct (negb (dup_modeled_entry e)) eqn:Hk.
-  - eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-    srw Hl. srw Hfd. srw Hk. apply unmodeled_intro.
+  destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk.
   - destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf;
       [now apply check_ret_only_no_unmodeled in H|].
     destruct (Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT) eqn:Hb;
       [now apply check_ret_only_no_unmodeled in H|].
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hl. srw Hfd. srw Hk. srw Hnf. apply unmodeled_intro.
+  - eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hl. srw Hfd. srw Hk. apply unmodeled_intro.
 Qed.
 
 Lemma check_dup3_complete_ok : forall oldfd newfd flags eff m m' evs i,
@@ -248,7 +251,7 @@ Proof.
     [cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity|].
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity].
-  destruct (negb (dup_modeled_entry e)) eqn:Hk; hall Hk; inv_ok.
+  destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk; hall Hk; inv_ok.
   destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf; hall Hnf; inv_ok;
     [cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity|].
   destruct (Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT) eqn:Hb; hall Hb; inv_ok.
@@ -265,8 +268,8 @@ Proof.
   destruct (bv_eqb oldfd newfd) eqn:Hne; hall Hne; inv_ok.
   destruct (negb (dup3_newfd_under_limit newfd m)) eqn:Hl; hall Hl; inv_ok.
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd; hall Hfd; inv_ok.
-  destruct (negb (dup_modeled_entry e)) eqn:Hk; hall Hk; inv_ok;
-    [reflexivity|].
+  destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk; hall Hk; inv_ok;
+    [|reflexivity].
   destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf; hall Hnf; inv_ok.
   destruct (Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT) eqn:Hb; hall Hb; inv_ok.
   reflexivity.

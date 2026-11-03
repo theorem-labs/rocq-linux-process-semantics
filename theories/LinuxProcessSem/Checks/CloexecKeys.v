@@ -131,6 +131,36 @@ Proof.
     apply fd_lookup_insert_keep. exact (Hk _ _ Hin).
 Qed.
 
+(** [dup3]'s MOVE: two descriptors installed, the alias at [k2] and the
+    file at [k], and [k]'s key written. *)
+Lemma ck_dup3_move : forall m k k2 b e e2,
+  cloexec_keys_open m ->
+  cloexec_keys_open (with_cloexec (cloexec_set (m_cloexec m) k b)
+                       (with_fds (fd_insert (fd_insert (m_fds m) k e) k2 e2) m)).
+Proof.
+  intros m k k2 b e e2 Hk n b' Hin.
+  rewrite m_cloexec_with_cloexec in Hin. rewrite m_fds_with_cloexec, m_fds_with_fds.
+  unfold cloexec_set in Hin. destruct Hin as [Heq|Hin].
+  - inversion Heq; subst. apply fd_lookup_insert_keep.
+    rewrite fd_lookup_insert_same. discriminate.
+  - unfold cloexec_forget in Hin. apply filter_In in Hin as [Hin _].
+    apply fd_lookup_insert_keep. apply fd_lookup_insert_keep. exact (Hk _ _ Hin).
+Qed.
+
+(** Every table [File.dup3_fds] answers: a copy or a move. *)
+Lemma ck_dup3_fds : forall oldfd newfd e m fds' b,
+  dup3_fds oldfd newfd e (m_fds m) = Some fds' ->
+  cloexec_keys_open m ->
+  cloexec_keys_open (with_cloexec (cloexec_set (m_cloexec m) newfd b)
+                       (with_fds fds' m)).
+Proof.
+  intros oldfd newfd e m fds' b H Hk. unfold dup3_fds in H.
+  destruct (dup_modeled_entry e).
+  - injection H as <-. apply ck_insert_set. exact Hk.
+  - destruct (dup3_moves_entry e); [|discriminate H].
+    injection H as <-. apply ck_dup3_move. exact Hk.
+Qed.
+
 (** The namespace layer's install: a descriptor installed and its key in
     the released map forgotten. *)
 Lemma ck_insert_forget : forall m k e,
@@ -1309,7 +1339,7 @@ Lemma check_dup3_ck : forall oldfd newfd flags eff m m' evs,
 Proof.
   intros oldfd newfd flags eff m m' evs H Hk. unfold check_dup3 in H.
   repeat vm_step H.
-  all: first [exact Hk | apply ck_insert_set; exact Hk].
+  all: first [exact Hk | eapply ck_dup3_fds; eassumption].
 Qed.
 
 Lemma check_close_ck : forall fd eff m m' evs,

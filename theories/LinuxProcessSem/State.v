@@ -2760,11 +2760,12 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
-(** The six kernel objects behind [FdOpaque].  The model holds NO
+(** The seven kernel objects behind [FdOpaque].  The model holds NO
     CONTENTS for any of them: what a read returns, what a stat reports
     and what an eventfd counts are the environment's or are declined.
-    Two of them carry one piece of kernel state each, and nothing more:
-    the /proc/self/fd directory its position, the signalfd its mask.
+    Three of them carry one piece of kernel state each, and nothing more:
+    the /proc/self/fd directory its position, the signalfd its mask, the
+    alias the number of the descriptor that carries its description.
 
     - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
       name [p] (an absolute path at or under "/proc";
@@ -2821,14 +2822,38 @@ Definition PipeBuf : Type := list byte * Z.
       [signotset]) and the [SFD_] flag word it was created with.  Only
       [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
       poll and every other arm decline it.
-        fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
+        fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46.
+    - [OAlias partner]: a SECOND descriptor of the open file description
+      that descriptor [partner] holds, left where [dup3] MOVED a regular
+      file ([Fs.File.dup3_spec]).  [do_dup2] takes a reference with
+      [get_file] and stores the [struct file] of [oldfd] in [newfd]'s
+      slot, and [oldfd] keeps its own reference, so both descriptors
+      name ONE description.  Its state, [f_pos] above all (a field of
+      [struct file], which fs/read_write.c reads and moves through
+      [file_ppos]), is carried by [partner]'s entry ALONE, and the model
+      answers through that one descriptor: [close], [close_range],
+      [F_SETFD] and [F_GETFD] answer on the alias, and so does the
+      -ENOTSOCK of the socket calls ([Net.Socket.sock_fd]), which reads
+      the kind and not the description; every other arm declines it.
+      Closing [partner], or a [dup3] onto it, is answered as for any
+      descriptor, and the alias then DANGLES: Linux keeps the
+      description alive through it alone.  That is exact for what the
+      alias answers, none of which reads the description; the arms that
+      could show the live description decline instead ([flock] while any
+      alias exists, [Fs.Locks.path_openers]; an open through
+      "/proc/self/fd/<alias>", [Fs.Open.openat_proc_spec]).  Closing the
+      alias drops one reference, which nothing a program can observe on
+      a regular file depends on.
+        fs/file.c [do_dup2], [close_fd], [__range_close], [file_close_fd_locked]: read at v6.18.44; identical at v6.18.46.
+        fs/read_write.c [file_ppos]; include/linux/fs.h [struct file] ([f_pos]): read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)
   | OEventFd (flags : word)
   | ONsFile (h : N)
   | OProcFdDir (flags : word) (pos : option word)
-  | OSignalFd (mask flags : word).
+  | OSignalFd (mask flags : word)
+  | OAlias (partner : word).
 
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
@@ -2979,16 +3004,17 @@ Inductive OpaqueFd :=
       environment's /dev/urandom is the random device -- is stated once, at
       the openat arm, and pointed to from everywhere else.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
-      CONTENTS for; [OpaqueFd] above says which six objects.  The
+      CONTENTS for; [OpaqueFd] above says which seven objects.  The
       descriptor is in the table so that its NUMBER is tracked (the
       lowest-free-fd rule, [close], and a statement that reads "this fd
       is held at the clone" all need it), and nothing else about the
-      object is: no bytes and no counter, and a position and a mask only
-      for the two objects [OpaqueFd] names.  Every arm that
-      reads one either derives its answer from the Linux source for
+      object is: no bytes and no counter, and a position, a mask and a
+      partner only for the three objects [OpaqueFd] names.  Every arm
+      that reads one either derives its answer from the Linux source for
       that kind of object or declines; none of them answers from what
-      an existing kind would answer, because none of the six is a
-      file, a device, a socket or a pipe end the existing arms know. *)
+      an existing kind would answer: six of the seven are no file, device,
+      socket or pipe end the existing arms know, and the seventh, an
+      alias, leaves its description's state to its partner's entry. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -3002,7 +3028,7 @@ Inductive FdEntry :=
   | FdUrandom
   | FdOpaque (o : OpaqueFd).
 
-(** Is [e] one of the six opaque objects?  The one classifier over
+(** Is [e] one of the seven opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
     the kind it is about, and any constructor added later is, by
     definition, not that kind.  The arms that decline [FdOpaque] ahead

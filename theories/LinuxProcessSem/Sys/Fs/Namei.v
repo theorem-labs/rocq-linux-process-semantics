@@ -242,14 +242,26 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        be any open file ([State.ONsFile]), so [unlinkat_spec] declines
        while one is open *)
   | (_, FdOpaque _) :: r => fd_names_path r p
-    (* exact for the other three, and the reason is about the model, not
-       the name: Linux's unlink does not depend on which files are open,
-       and [unlinkat_spec] declines on a naming descriptor only because a
-       file kind reads its bytes through the path key the unlink would
-       remove.  An opaque descriptor reads nothing through a key, even
-       when its procfs name is a link to a modeled file
+    (* exact for the other opaque objects, and the reason is about the
+       model, not the name: Linux's unlink does not depend on which files
+       are open, and [unlinkat_spec] declines on a naming descriptor only
+       because a file kind reads its bytes through the path key the unlink
+       would remove.  An opaque descriptor reads nothing through a key,
+       even when its procfs name is a link to a modeled file
        ("/proc/self/cwd/f"), so removing the key changes no answer it
-       gives *)
+       gives.  An alias ([State.OAlias]) reads nothing either.  While its
+       partner lives, the partner's file entry names the path above.
+       When the alias DANGLES and is the last holder of a /tmp file, an
+       unlink is answered and the model drops the key, where Linux keeps
+       the inode alive, unnamed, until the alias closes ([vfs_unlink]
+       drops the name and [iput] keeps the inode while the open file
+       holds it, fs/namei.c and fs/inode.c, read at v6.18.44; identical
+       at v6.18.46).  Nothing the alias answers can tell the two apart:
+       [close], [close_range] and [F_GETFD]/[F_SETFD] read neither the
+       name nor the bytes; a new file at the same name is a new inode on
+       Linux as in the model; and the two arms that could show the inode
+       through the alias, [fstat] and an open of "/proc/self/fd/<alias>",
+       decline it *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

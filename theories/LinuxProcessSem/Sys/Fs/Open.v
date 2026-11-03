@@ -14,6 +14,7 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Fs.File Fs.ReadWrite Fs.Namei.
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Readdir.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -1415,6 +1416,27 @@ Fixpoint path_components_aux (cur : path) (p : path) : list path :=
 Definition path_has_dotdot (p : path) : bool :=
   existsb (fun c => path_eqb c dotdot_path) (path_components_aux [] p).
 
+(** "fd", the directory of a task's descriptor links. *)
+Definition fd_dir_name : path := [Z_to_bv 8 102; Z_to_bv 8 100].
+
+(** [p]'s last two components are "fd" and the decimal name of an
+    alias's number ([State.OAlias]) in [fds] ([Readdir.procfd_name], the
+    name the /proc/self/fd listing gives it): "/proc/self/fd/N" and its
+    other spellings ("/proc/<pid>/fd/N", "/proc/thread-self/fd/N").  A
+    name of another task's table is matched too, which can only decline
+    more. *)
+Definition proc_fd_alias_b (fds : list (word * FdEntry)) (p : path) : bool :=
+  match rev (path_components_aux [] p) with
+  | n :: d :: _ =>
+      path_eqb d fd_dir_name
+      && existsb (fun kv => match snd kv with
+                            | FdOpaque (OAlias _) =>
+                                path_eqb n (procfd_name (bv_unsigned (fst kv)))
+                            | _ => false
+                            end) fds
+  | _ => false
+  end.
+
 (** [p] names procfs: it is "/proc" or starts with "/proc/", and no
     component is "..".
 
@@ -1595,11 +1617,20 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     the assumption above rules the links out.
 
     A PIPE CANNOT GAIN A READER OR A WRITER HERE, although
-    "/proc/self/fd/N" can name one: see [State.pipe_end_live]. *)
+    "/proc/self/fd/N" can name one: see [State.pipe_end_live].
+
+    NOR CAN AN ALIAS'S DESCRIPTION BE REOPENED: a name whose last two
+    components are "fd" and the number of an alias ([State.OAlias],
+    [proc_fd_alias_b]) is declined for every flag word.  Linux follows
+    that magic link to the description the alias holds
+    ([proc_fd_link], fs/proc/fd.c, read at v6.18.44; identical at
+    v6.18.46), which the alias's own entry does not carry and which, once
+    the alias dangles, no other entry carries either. *)
 Definition openat_proc_spec (c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
-  if open_path_word fl then proc_open_result m (OProcPath c)
+  if proc_fd_alias_b (m_fds m) c then unmodeled
+  else if open_path_word fl then proc_open_result m (OProcPath c)
   else if Z.eqb fl 0 && proc_sys_file_b c then proc_open_result m (OProcFile c)
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
   then proc_open_result m (OProcFdDir flags (Some (Z_to_bv 64 0)))

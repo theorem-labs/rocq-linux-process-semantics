@@ -1128,6 +1128,11 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                        (* a signalfd: [signalfd_fops] (fs/signalfd.c,
                                           v6.18.44; identical at v6.18.46) is not
                                           [socket_file_ops] *)
+  | Some (FdOpaque (OAlias _)) => inr ENOTSOCK
+                                       (* an alias ([State.OAlias]): its description
+                                          is a regular file's, whose [f_op] is not
+                                          [socket_file_ops], and the answer reads the
+                                          kind and nothing of the description *)
   | Some (FdSocket sk)  => inl sk
   end.
 
@@ -2318,7 +2323,7 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdOpaque _) => None
       (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd,
-         /proc/sys, /proc/self/fd and signalfd objects
+         /proc/sys, /proc/self/fd, signalfd and alias objects
          [sock_from_file]'s -ENOTSOCK, and an [ONsFile] may be a socket
          (net/socket.c, read at v6.18.44; identical at v6.18.46); the
          split is not written *)

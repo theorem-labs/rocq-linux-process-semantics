@@ -630,6 +630,11 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
       (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46) answers from the pending
          signals and their [siginfo], which this arm does not model *)
+  | OAlias _ => unmodeled
+      (* FAIL-CLOSED: a read through the alias reads and moves the
+         description's [f_pos], which its partner's entry carries
+         ([State.OAlias]); the description is used through the partner
+         only *)
   end.
 
 (** [write] on an opaque descriptor ([State.OpaqueFd]): only the eventfd
@@ -638,14 +643,17 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
   match o with
   | OEventFd fl => write_eventfd_spec fl buf count
       (* an eventfd: see [write_eventfd_spec] *)
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => unmodeled
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
+  | OAlias _ => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
          -EBADF; a /proc/sys file opened O_RDONLY and the /proc/self/fd
          directory (O_RDONLY) are [vfs_write]'s FMODE_WRITE -EBADF; a
          signalfd has no [.write], so [vfs_write]'s FMODE_CAN_WRITE test
-         answers -EINVAL; and an [ONsFile]'s object is of unknown type
-         (fs/read_write.c, fs/file.c, fs/signalfd.c, read at v6.18.44;
-         identical at v6.18.46).  None of these is written. *)
+         answers -EINVAL; an [ONsFile]'s object is of unknown type; and an
+         alias's description is used through its partner only
+         ([State.OAlias]) (fs/read_write.c, fs/file.c, fs/signalfd.c,
+         read at v6.18.44; identical at v6.18.46).  None of these is
+         written. *)
   end.
 
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
@@ -2008,7 +2016,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            ledger exactly as the channel and file arms record theirs *)
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* the eventfd answers, the other five decline: see
+      (* the eventfd answers, the other six decline: see
          [write_opaque_spec] *)
   end.
 
@@ -2218,9 +2226,10 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       (* FAIL-CLOSED: an O_PATH file is [ksys_pread64]'s [CLASS(fd, f)]
          -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46); a
          positional read of an eventfd, a /proc/sys file, the
-         /proc/self/fd directory or a signalfd is not written, and an
-         [ONsFile]'s object is of unknown type.  None of the six answers
-         is. *)
+         /proc/self/fd directory or a signalfd is not written, an
+         [ONsFile]'s object is of unknown type, and an alias's
+         description is used through its partner only ([State.OAlias]).
+         None of the seven answers is. *)
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -2418,7 +2427,7 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
   | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the six answers
+      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the seven answers
          is written *)
   end.
 
@@ -2912,7 +2921,8 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        [vfs_readv]'s -EBADF and that is the kernel's answer only for the
        O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
        v6.18.44; identical at v6.18.46); a /proc/sys file, an eventfd,
-       the /proc/self/fd directory and a signalfd are open for reading *)
+       the /proc/self/fd directory and a signalfd are open for reading,
+       and an alias's mode is its partner's description's *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -3494,7 +3504,8 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              would move the position the listing reads, and a signalfd's
              [signalfd_fops] [noop_llseek] (fs/proc/fd.c, fs/signalfd.c,
              read at v6.18.44; identical at v6.18.46); an [ONsFile]'s
-             object is of unknown type.  None of the six answers is
-             written. *)
+             object is of unknown type; and an lseek through an alias
+             would move the [f_pos] its partner's entry carries
+             ([State.OAlias]).  None of the seven answers is written. *)
       end
   end.

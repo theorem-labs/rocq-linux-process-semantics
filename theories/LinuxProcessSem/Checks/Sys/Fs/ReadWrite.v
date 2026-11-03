@@ -880,7 +880,7 @@ Definition check_read_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word
   match o with
   | OProcFile _ => check_read_proc i buf count eff m
   | OEventFd fl => check_read_eventfd i fl buf count eff m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_read_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -904,7 +904,8 @@ Proof.
     [ apply unmodeled_intro
     | eapply check_read_proc_sound_unmodeled; exact H
     | eapply check_read_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 Lemma check_read_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -917,6 +918,7 @@ Proof.
     [ unfold unmodeled in H; discriminate H
     | now apply check_read_proc_complete_ok
     | now apply check_read_eventfd_complete_ok
+    | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
@@ -932,7 +934,7 @@ Proof.
     [ reflexivity
     | now apply check_read_proc_complete_unmodeled
     | now apply check_read_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity ].
+    | reflexivity | reflexivity | reflexivity | reflexivity ].
 Qed.
 
 (** What an opaque descriptor's read delivers is under the clamp: a
@@ -950,12 +952,13 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, and
-    the decline on the other five objects. *)
+    the decline on the other six objects. *)
 Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OEventFd fl => check_write_eventfd i fl buf count eff m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
+  | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_write_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -977,7 +980,8 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [ apply unmodeled_intro | apply unmodeled_intro
     | eapply check_write_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro ].
 Qed.
 
 Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -992,6 +996,7 @@ Proof.
     | now apply check_write_eventfd_complete_ok
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
+    | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
 Qed.
 
@@ -1004,7 +1009,7 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [ reflexivity | reflexivity
     | now apply check_write_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity ].
+    | reflexivity | reflexivity | reflexivity | reflexivity ].
 Qed.
 
 Definition check_read (i : SyscallInput) (fd buf count : word)

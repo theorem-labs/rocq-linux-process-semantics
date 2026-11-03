@@ -443,13 +443,15 @@ Local Definition check_proc_open_result (o : OpaqueFd) (eff : SyscallEffect)
   | _ => CheckReject
   end.
 
-(** Mirrors [Open.openat_proc_spec], including its two regular sysctl
-    leaves and the /proc/self/fd directory; that definition carries the
-    kernel path, assumptions and precision cost. *)
+(** Mirrors [Open.openat_proc_spec], including its decline through an
+    alias's descriptor link, its two regular sysctl leaves and the
+    /proc/self/fd directory; that definition carries the kernel path,
+    assumptions and precision cost. *)
 Local Definition check_openat_proc (c : path) (flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
-  if open_path_word fl then check_proc_open_result (OProcPath c) eff m
+  if proc_fd_alias_b (m_fds m) c then CheckUnmodeled
+  else if open_path_word fl then check_proc_open_result (OProcPath c) eff m
   else if Z.eqb fl 0 && proc_sys_file_b c
   then check_proc_open_result (OProcFile c) eff m
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
@@ -858,6 +860,7 @@ Local Lemma check_openat_proc_sound_ok : forall i c flags eff m m' evs,
 Proof.
   intros i c flags eff m m' evs H.
   unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
+  destruct (proc_fd_alias_b (m_fds m) c); [discriminate|].
   destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [now apply check_proc_open_result_sound_ok|].
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
@@ -874,6 +877,7 @@ Local Lemma check_openat_proc_sound_unmodeled : forall i c flags eff m,
 Proof.
   intros i c flags eff m H.
   unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
+  destruct (proc_fd_alias_b (m_fds m) c); [apply unmodeled_intro|].
   destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
@@ -1709,6 +1713,8 @@ Local Lemma check_openat_proc_complete_ok : forall i c flags eff m m' evs,
 Proof.
   intros i c flags eff m m' evs.
   unfold openat_proc_spec, check_openat_proc. cbv zeta.
+  destruct (proc_fd_alias_b (m_fds m) c);
+    [unfold unmodeled; intro Hu; discriminate Hu|].
   destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [apply check_proc_open_result_complete_ok|].
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
@@ -2163,6 +2169,7 @@ Local Lemma check_openat_proc_complete_unmodeled : forall i c flags eff m,
 Proof.
   intros i c flags eff m.
   unfold openat_proc_spec, check_openat_proc. cbv zeta.
+  destruct (proc_fd_alias_b (m_fds m) c); [unfold unmodeled; intros _; reflexivity|].
   destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
     [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0

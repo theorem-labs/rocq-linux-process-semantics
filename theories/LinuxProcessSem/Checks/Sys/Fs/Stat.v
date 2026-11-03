@@ -1145,12 +1145,13 @@ Proof.
 Qed.
 
 (** [Stat.fstat_opaque_spec] as an acceptor: the /proc/self/fd
-    directory's arm above, and the decline on the other five objects. *)
+    directory's arm above, and the decline on the other six objects. *)
 Definition check_fstat_opaque (i : SyscallInput) (o : OpaqueFd) (statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OProcFdDir _ _ => check_fstat_procfd_dir i statbuf eff m
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => CheckUnmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_fstat_opaque_sound_ok : forall i o statbuf eff m m' evs,
@@ -1173,7 +1174,7 @@ Proof.
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro
     | eapply check_fstat_procfd_dir_sound_unmodeled; exact H
-    | apply unmodeled_intro].
+    | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 Lemma check_fstat_opaque_complete_ok : forall i o statbuf eff m m' evs,
@@ -1196,7 +1197,7 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [reflexivity | reflexivity | reflexivity | reflexivity
     | now apply check_fstat_procfd_dir_complete_unmodeled
-    | reflexivity].
+    | reflexivity | reflexivity].
 Qed.
 
 (** fstat: total over [FdEntry], answering on the closed descriptor's

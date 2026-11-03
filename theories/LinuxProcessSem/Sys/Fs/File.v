@@ -66,10 +66,14 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       give the two fds INDEPENDENT offsets, so
       [fd2 = dup(fd1); read(fd1, b, 4); read(fd2, b, 4)] would deliver
       bytes 0..3 twice where Linux delivers 0..3 and then 4..7 — a
-      confident wrong answer rather than a gap.  Duplicating a FILE fd
-      is [unmodeled].  The fix is an open file description layer in
-      [State.v], where an [FdEntry] names a description by id instead
-      of carrying its mutable state.
+      confident wrong answer rather than a gap.  COPYING a FILE fd is
+      therefore [unmodeled]: [dup] declines it.  [dup3] MOVES it instead
+      ([dup3_moves_entry]): [newfd] takes the entry and [oldfd] becomes an
+      alias that declines every arm reading the description, so the
+      offset lives in one entry and is used through one descriptor.  The
+      general fix is an open file description layer in [State.v], where
+      an [FdEntry] names a description by id instead of carrying its
+      mutable state.
     - [FdSocket] carries the connection's remaining receive script, and
       a read rewrites it in place — [ReadWrite.read_delivery_clamped]
       consumes the byte, and the -ECONNRESET and -ETIMEDOUT arms move
@@ -165,9 +169,75 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      exact too: the two descriptors share one mask, and [signalfd4] on
      an existing descriptor is declined, so the mask never changes.
      An [ONsFile] is declined so that no arm of this model mints one.
-     None of the exact cases is needed, so none is written. *)
+     An alias ([OAlias]) is declined because a copy would be a third
+     descriptor of a description the model already keeps in one entry
+     only.  None of the exact cases is needed, so none is written. *)
   | FdOpaque _ => false
   end.
+
+(** The kinds [dup3] MOVES rather than copies: the four regular-file
+    kinds, whose entry carries [f_pos] ([dup_modeled_entry] says why a
+    copy of one is wrong).
+
+    [do_dup2] takes a reference to [oldfd]'s [struct file] with
+    [get_file] and stores it in [newfd]'s slot; [oldfd] keeps its own
+    reference (fs/file.c [do_dup2], read at v6.18.44; identical at
+    v6.18.46).  After the call both descriptors name ONE description,
+    and its [f_pos] is a field of that [struct file] (include/linux/fs.h
+    [struct file]; fs/read_write.c [file_ppos], read at v6.18.44;
+    identical at v6.18.46).  The model gives [newfd] the entry, offset
+    and all, and leaves [State.OAlias newfd] at [oldfd]: a descriptor of
+    the same description on which every arm that reads or moves the
+    description declines, so the offset lives in ONE entry and is used
+    through ONE descriptor, which is all the sharing a program can then
+    observe.  The launcher's [dup3(stdin_fd, 0, 0)] on a read-only file,
+    and a key fd set up by [openat] and then [dup3] onto the key's
+    number, are this shape.
+
+    A PIPE END AND A SOCKET DO NOT MOVE.  What an alias answers from its
+    kind alone is derived for a regular file's description: the socket
+    calls' -ENOTSOCK ([Net.Socket.sock_fd]).  That does not hold for a
+    socket, and nothing in scope moves a pipe end, so both keep
+    [dup_modeled_entry]'s decline.
+
+    THE ALIAS MAY DANGLE.  [close] and [close_range] of [newfd], and a
+    later [dup3] onto it, are answered as for any descriptor, so an
+    alias can outlive its partner or name a number a later call reused.
+    Linux then keeps the description alive through the alias alone
+    ([close_fd] and [do_dup2] drop one reference each, fs/file.c, read
+    at v6.18.44; identical at v6.18.46).  That is exact for what the
+    alias answers: [close], [close_range] and [F_GETFD]/[F_SETFD] read
+    nothing of the description, and the alias's number stays in the
+    table, so the /proc/self/fd listing shows it
+    ([Readdir.procfd_plan]).  Where a live description could still
+    show, the model declines: [flock] while any alias exists
+    ([Locks.path_openers]), an open through "/proc/self/fd/<alias>"
+    ([Open.openat_proc_spec]) and [readlinkat] of any procfs name
+    ([Stat.readlinkat_spec]); and an unlink that leaves the file held
+    only by an alias changes nothing an alias answers
+    ([Namei.fd_names_path]). *)
+Definition dup3_moves_entry (e : FdEntry) : bool :=
+  match e with
+  | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _ => true
+  | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdOpaque _ => false
+  end.
+
+(** The table [dup3 oldfd newfd] leaves when [oldfd] holds [e], or
+    [None] where it declines:
+
+    - [dup_modeled_entry e]: [newfd] gets a copy of [e].
+    - [dup3_moves_entry e]: [newfd] gets [e] and [oldfd] becomes
+      [OAlias newfd].  A partner moves too: the alias it had then names
+      a descriptor that is itself an alias, and it still answers only
+      what reads nothing of the description.
+    - anything else, an alias at [oldfd] included: declined. *)
+Definition dup3_fds (oldfd newfd : word) (e : FdEntry)
+    (fds : list (word * FdEntry)) : option (list (word * FdEntry)) :=
+  if dup_modeled_entry e then Some (fd_insert fds newfd e)
+  else if dup3_moves_entry e
+  then Some (fd_insert (fd_insert fds newfd e) oldfd (FdOpaque (OAlias newfd)))
+  else None.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
     (EMFILE, which also keeps the spec receptive when no free fd
@@ -288,6 +358,9 @@ Definition dup3_flags_ok (flags : word) : bool :=
     stays high — so the model can neither answer success nor pick an
     errno, and declines.  Closing it needs [sysctl_nr_open] as a second
     run input and the table's [max_fds] as state; nothing else.
+    Past the [oldfd] lookup, every shape [dup3_fds] declines: a copy of
+    a kind [dup_modeled_entry] refuses that [dup3_moves_entry] does not
+    move, an alias at [oldfd] included.
 
     ONE THING THIS FILE DOES NOT FIX.  The model's own fd allocator
     ([lowest_fd], and every spec that calls it) hands out numbers
@@ -317,7 +390,16 @@ Definition dup3_flags_ok (flags : word) : bool :=
     has O_CLOEXEC and clears it otherwise, so [newfd]'s key becomes
     [dup3_cloexec_b flags] whether [newfd] was free or open.  The
     displaced entry is dropped exactly as [Open.close_spec] drops one,
-    and its old key is replaced, not kept. *)
+    and its old key is replaced, not kept.  A MOVED [oldfd] keeps its
+    key: the alias left there is the same descriptor, and [do_dup2]
+    writes only [newfd]'s bit.
+
+    THE MOVE ([dup3_moves_entry], [dup3_fds]).  A regular file at
+    [oldfd] goes to [newfd] with its offset, and [oldfd] holds
+    [State.OAlias newfd].  Every arm but [close], [close_range] and
+    [F_SETFD]/[F_GETFD] declines the alias, so the description is read
+    and moved through [newfd] alone; the alias may then dangle, as
+    [dup3_moves_entry] says. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 
@@ -335,23 +417,25 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
     match fd_lookup (m_fds m) oldfd with
     | None => err_ret EBADF
     | Some e =>
-        if negb (dup_modeled_entry e) then unmodeled
-        else
+        match dup3_fds oldfd newfd e (m_fds m) with
+        | None => unmodeled
+        | Some fds' =>
           match fd_lookup (m_fds m) newfd with
           | None =>
               (* free: answered only below the embedded table's floor *)
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then modify (fun m' => with_cloexec
                              (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                             (with_fds (fd_insert (m_fds m) newfd e) m')) ;;
+                             (with_fds fds' m')) ;;
                    ret_only newfd
               else unmodeled
           | Some _ =>
               modify (fun m' => with_cloexec
                         (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
-                        (with_fds (fd_insert (m_fds m) newfd e) m')) ;;
+                        (with_fds fds' m')) ;;
               ret_only newfd
           end
+        end
     end.
 
 (** The two returns above are [newfd] ZERO-extended, where [do_dup2]
@@ -445,6 +529,13 @@ Definition close_range_cloexec (lo hi : word) (cl : list (word * bool))
     model's table is never shared (no [CLONE_FILES] clone is admitted),
     so it would act as flags 0 here, but nothing in scope issues it and
     the decline keeps the arm to the one shape argued above.
+
+    CLOSING AN ALIAS ([State.OAlias]) is answered like any close: its
+    entry and its key go, and its partner is untouched.  The launcher's
+    [close_range(3, ~0U, 0)] after [dup3(stdin_fd, 0, 0)] closes the
+    alias at [stdin_fd] and keeps its partner, fd 0.  Closing a partner
+    whose alias survives is answered too: the alias then dangles, which
+    [dup3_moves_entry] shows is exact for what it answers.
 
     The answer is 0 in a full register and the -EINVALs are [errno_ret];
     nothing is read from memory and nothing is written there. *)
