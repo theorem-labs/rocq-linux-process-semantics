@@ -1273,8 +1273,65 @@ Proof.
   - exfalso. now apply check_ret_only_no_unmodeled in Hresult.
 Qed.
 
+(** The descriptor [fd_insert] just installed is found. *)
+Lemma fd_lookup_fd_insert_same : forall fds k e, fd_lookup (fd_insert fds k e) k = Some e.
+Proof. intros. unfold fd_insert. cbn [fd_lookup]. rewrite bv_eqb_refl. reflexivity. Qed.
+
+(** [check_openat] is [check_openat_table] followed by the returned
+    descriptor's close-on-exec bit ([Open.open_cloexec_model]).  On an
+    errno answer that step changes nothing, so a table result that is a
+    bare errno is the checker's result. *)
+Lemma check_openat_ret_only : forall i dirfd pathp flags eff m reads e,
+  (1 <= e)%Z -> (e <= 4095)%Z ->
+  check_openat_table i dirfd pathp flags eff m
+  = check_ret_only_copyins reads eff (errno_ret e) m [] ->
+  check_openat i dirfd pathp flags eff m
+  = check_ret_only_copyins reads eff (errno_ret e) m [].
+Proof.
+  intros i dirfd pathp flags eff m reads e He1 He2 Ht.
+  unfold check_openat. rewrite Ht.
+  destruct (check_ret_only_copyins reads eff (errno_ret e) m []) as [m' evs| |] eqn:E;
+    try reflexivity.
+  apply check_ret_only_copyins_ok_iff in E. destruct E as (-> & -> & ->).
+  unfold open_cloexec_model. cbn [eff_ret with_copyins].
+  rewrite (errno_ret_error_b e He1 He2). reflexivity.
+Qed.
+
+(** ...and a table result that is a fresh descriptor built by [mk] is
+    the checker's result with [mk'], the same model with the new
+    descriptor's bit recorded. *)
+Lemma check_openat_open_result : forall i dirfd pathp flags eff m reads mk mk',
+  (forall fd, addr_is_error_b fd = false ->
+     mk' fd = open_cloexec_model flags fd (mk fd)) ->
+  check_openat_table i dirfd pathp flags eff m
+  = check_open_result_copyins reads eff m mk ->
+  check_openat i dirfd pathp flags eff m = check_open_result_copyins reads eff m mk'.
+Proof.
+  intros i dirfd pathp flags [ret ws zs us cs copyins] m reads mk mk' Hmk Ht.
+  unfold check_openat. rewrite Ht.
+  unfold check_open_result_copyins, check_copyins, check_open_result,
+    check_new_fd_result, clear_copyins, with_copyins.
+  cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+  destruct (access_ranges_eqb copyins reads); [|reflexivity].
+  destruct ws as [|? ?]; [|reflexivity].
+  destruct zs as [|? ?]; [|reflexivity].
+  destruct us as [|? ?]; [|reflexivity].
+  destruct cs as [|? ?]; [|reflexivity].
+  cbv beta iota.
+  destruct (errno_ret_in openat_errnos ret) eqn:He.
+  - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    destruct (openat_errno_range e HIn) as [He1 He2].
+    unfold open_cloexec_model. rewrite (errno_ret_error_b e He1 He2). reflexivity.
+  - destruct (fd_lookup (m_fds m) ret); [reflexivity|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Hb; [|reflexivity].
+    apply bv_eqb_eq in Hb. subst ret.
+    rewrite (Hmk _ (alloc_fd_not_error_b _)). reflexivity.
+Qed.
+
 (** The two modeled open shapes reduce the checker to
-    [check_open_result] with the respective success-model builder. *)
+    [check_open_result] with the respective success-model builder: the
+    new descriptor installed, and its close-on-exec bit recorded as the
+    open word's O_CLOEXEC ([Open.open_cloexec_b]). *)
 Lemma openat_rd_check : forall segs ms x8 model p d,
   bv_unsigned x8 = 56%Z ->
   ms_gpr ms 0 = AT_FDCWD ->
@@ -1286,13 +1343,21 @@ Lemma openat_rd_check : forall segs ms x8 model p d,
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
     = check_open_result_copyins (open_copyins ms) eff model
-        (fun fd => with_fds (fd_insert (m_fds model) fd
-                               (FdFile p (Z_to_bv 64 0))) model).
+        (fun fd => with_cloexec
+                     (cloexec_set (m_cloexec model) fd (open_cloexec_b (ms_gpr ms 2)))
+                     (with_fds (fd_insert (m_fds model) fd
+                                  (FdFile p (Z_to_bv 64 0))) model)).
 Proof.
   intros segs ms x8 model p d Hno Hdirfd Hpath Hpe Hfl Hdot Hfs eff.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
-  rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
+  rewrite (check_syscall_56 segs ms x8 eff model Hno).
+  apply (check_openat_open_result _ _ _ _ _ _ _
+           (fun fd => with_fds (fd_insert (m_fds model) fd
+                                  (FdFile p (Z_to_bv 64 0))) model));
+    [intros fd Hfd; cbv beta; unfold open_cloexec_model;
+     rewrite Hfd, m_fds_with_fds, fd_lookup_fd_insert_same; reflexivity|].
+  unfold check_openat_table.
   rewrite (modeled_open_flags_rd _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
@@ -1331,14 +1396,23 @@ Lemma openat_wr_check : forall segs ms x8 model p,
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
     = check_open_result_copyins (open_copyins ms) eff model
-        (fun fd => with_fds (fd_insert (m_fds model) fd
-                               (FdFileW p (Z_to_bv 64 0)))
-                     (with_fs (fs_set (m_fs model) p []) model)).
+        (fun fd => with_cloexec
+                     (cloexec_set (m_cloexec model) fd (open_cloexec_b (ms_gpr ms 2)))
+                     (with_fds (fd_insert (m_fds model) fd
+                                  (FdFileW p (Z_to_bv 64 0)))
+                        (with_fs (fs_set (m_fs model) p []) model))).
 Proof.
   intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun eff.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
-  rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
+  rewrite (check_syscall_56 segs ms x8 eff model Hno).
+  apply (check_openat_open_result _ _ _ _ _ _ _
+           (fun fd => with_fds (fd_insert (m_fds model) fd
+                                  (FdFileW p (Z_to_bv 64 0)))
+                        (with_fs (fs_set (m_fs model) p []) model)));
+    [intros fd Hfd; cbv beta; unfold open_cloexec_model;
+     rewrite Hfd, m_fds_with_fds, fd_lookup_fd_insert_same; reflexivity|].
+  unfold check_openat_table.
   rewrite (modeled_open_flags_wr _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
@@ -1386,7 +1460,9 @@ Proof.
   intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun eff.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
-  rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
+  rewrite (check_syscall_56 segs ms x8 eff model Hno).
+  apply check_openat_ret_only; [unfold EISDIR; lia | unfold EISDIR; lia |].
+  unfold check_openat_table.
   rewrite (modeled_open_flags_wr _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
@@ -1420,7 +1496,9 @@ Lemma openat_toolong_check : forall segs ms x8 model,
         (errno_ret ENAMETOOLONG) model [].
 Proof.
   intros segs ms x8 model Hno Hfl Hpath eff.
-  rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
+  rewrite (check_syscall_56 segs ms x8 eff model Hno).
+  apply check_openat_ret_only; [unfold ENAMETOOLONG; lia | unfold ENAMETOOLONG; lia |].
+  unfold check_openat_table.
   rewrite Hfl. cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
   rewrite in_mem_si, Hpath.
@@ -1612,7 +1690,8 @@ Proof.
                  = check_ret_only_copyins (open_copyins ms) eff
                      (errno_ret ENOENT) model []).
   { intro eff. rewrite (check_syscall_56 segs ms x8 eff model Hno).
-    unfold check_openat.
+    apply check_openat_ret_only; [unfold ENOENT; lia | unfold ENOENT; lia |].
+    unfold check_openat_table.
     rewrite (modeled_open_flags_rd _ Hfl). cbn [negb]. cbv beta iota.
     unfold Prelude.check_copyins_after, Open.check_openat_body.
     rewrite in_mem_si, Hpath. cbv beta iota zeta.
@@ -1904,7 +1983,7 @@ Proof.
     exact (check_ret_only_no_unmodeled _ _ _ _ Hs).
 Qed.
 
-(* ----- close (57) ----- *)
+(* ----- close (57): the descriptor goes, and so does its close-on-exec key ----- *)
 
 Lemma tfo_close : forall ms model x8 e U,
   ms_svc_pending ms = Some x8 ->
@@ -1915,7 +1994,8 @@ Lemma tfo_close : forall ms model x8 e U,
   m_vm_lazy model = [] ->
   to_fout segs
     (advance_past_svc (apply_effect ms (mkEffect (Z_to_bv 64 0) [] [])))
-    (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model)
+    (with_cloexec (cloexec_forget (m_cloexec model) (ms_gpr ms 0))
+       (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model))
     U ->
   to_fout segs ms model U.
 Proof.
@@ -1923,12 +2003,14 @@ Proof.
   assert (Hchk : forall eff,
     check_syscall (sys_input segs ms x8) eff model
     = check_ret_only eff (Z_to_bv 64 0)
-        (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model) []).
+        (with_cloexec (cloexec_forget (m_cloexec model) (ms_gpr ms 0))
+           (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model)) []).
   { intro eff.
     rewrite (check_syscall_57 segs ms x8 eff model Hno). unfold check_close.
     rewrite Hfd32, Hfd. reflexivity. }
   apply (tfo_sys_det segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
-           (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model));
+           (with_cloexec (cloexec_forget (m_cloexec model) (ms_gpr ms 0))
+              (with_fds (fd_remove (m_fds model) (ms_gpr ms 0)) model)));
     [exact Hsvc | | | | exact Hh | exact Hlazy | exact Hcont].
   - apply check_syscall_ok_iff. rewrite Hchk.
     apply check_ret_only_ok_iff. auto.
@@ -2115,7 +2197,7 @@ Proof.
       rewrite adv_eff_ret_copyins. exact Hcont.
 Qed.
 
-(** close: deterministic, removes the fd. *)
+(** close: deterministic, removes the fd and its close-on-exec key. *)
 Lemma tfo_close_rec : forall regs pc mem rom model fdv e U,
   bv_unsigned (getr regs 17) = 57%Z ->
   reg_get regs 10 = fdv ->
@@ -2124,7 +2206,8 @@ Lemma tfo_close_rec : forall regs pc mem rom model fdv e U,
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 (Z_to_bv 64 0)) (v_addi pc 4) mem rom)
-    (with_fds (fd_remove (m_fds model) fdv) model) U ->
+    (with_cloexec (cloexec_forget (m_cloexec model) fdv)
+       (with_fds (fd_remove (m_fds model) fdv) model)) U ->
   to_fout segs {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                   ms_svc_pending := Some (getr regs 17);
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |} model U.
@@ -2182,7 +2265,7 @@ Proof.
 Qed.
 
 (** O_RDONLY openat of a present file: errno branch or the lowest free
-    fd. *)
+    fd, its close-on-exec bit recorded clear (the word has no O_CLOEXEC). *)
 Lemma tfo_open_rd_rec : forall regs pc mem model p d
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   bv_unsigned (getr regs 17) = 56%Z ->
@@ -2199,8 +2282,9 @@ Lemma tfo_open_rd_rec : forall regs pc mem model p d
              model (Te e)) ->
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout segs (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
-             (with_fds (fd_insert (m_fds model) fd
-                          (FdFile p (Z_to_bv 64 0))) model) (Ts fd)) ->
+             (with_cloexec (cloexec_set (m_cloexec model) fd false)
+                (with_fds (fd_insert (m_fds model) fd
+                             (FdFile p (Z_to_bv 64 0))) model)) (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
@@ -2216,13 +2300,18 @@ Proof.
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
   apply (tfo_open_core ms model
-           (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFile p (Z_to_bv 64 0))) model)
+           (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
+                        (with_fds (fd_insert (m_fds model) fd
+                                     (FdFile p (Z_to_bv 64 0))) model))
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_rd_check segs ms (getr regs 17) model p d).
+  - intro eff.
+    assert (Hb : open_cloexec_b (ms_gpr ms 2) = false)
+      by (unfold ms; rewrite record_gpr, arg_reg_2, H12; vm_compute; reflexivity).
+    rewrite (openat_rd_check segs ms (getr regs 17) model p d).
+    + rewrite Hb. reflexivity.
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
@@ -2232,7 +2321,7 @@ Proof.
       vm_compute. reflexivity.
     + exact Hdot.
     + exact Hfs.
-  - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
+  - intro fd. split; [exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
   - intros fd Hlk Hlt.
@@ -2262,8 +2351,9 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p
              model (Te e)) ->
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout segs (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
-             (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
-                (with_fs (fs_set (m_fs model) p []) model)) (Ts fd)) ->
+             (with_cloexec (cloexec_set (m_cloexec model) fd false)
+                (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
+                   (with_fs (fs_set (m_fs model) p []) model))) (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
@@ -2279,14 +2369,19 @@ Proof.
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
   apply (tfo_open_core ms model
-           (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFileW p (Z_to_bv 64 0)))
-                        (with_fs (fs_set (m_fs model) p []) model))
+           (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
+                        (with_fds (fd_insert (m_fds model) fd
+                                     (FdFileW p (Z_to_bv 64 0)))
+                           (with_fs (fs_set (m_fs model) p []) model)))
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_wr_check segs ms (getr regs 17) model p).
+  - intro eff.
+    assert (Hb : open_cloexec_b (ms_gpr ms 2) = false)
+      by (unfold ms; rewrite record_gpr, arg_reg_2, H12; vm_compute; reflexivity).
+    rewrite (openat_wr_check segs ms (getr regs 17) model p).
+    + rewrite Hb. reflexivity.
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
@@ -2297,7 +2392,7 @@ Proof.
     + exact Hdot.
     + exact Hun.
   - intro fd. split.
-    + rewrite with_fds_halted, with_fs_halted. exact Hh.
+    + exact Hh.
     + exact Hlazy.
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.

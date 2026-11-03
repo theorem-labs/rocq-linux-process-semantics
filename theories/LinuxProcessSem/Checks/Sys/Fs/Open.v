@@ -488,13 +488,22 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     belongs to the function).  The open body performs no
     later copy-in, so clear the prefix while checking the result and
     require the complete claimed list to equal that one range. *)
-Definition check_openat (i : SyscallInput) (dirfd pathp flags : word)
+Definition check_openat_table (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (modeled_open_flags flags) then CheckUnmodeled
   else
     let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
     check_copyins_after reads eff
       (check_openat_body i dirfd pathp flags (clear_copyins eff) m).
+
+(** [Open.openat_spec]: [check_openat_table], then the returned
+    descriptor's close-on-exec bit ([Open.open_cloexec_model]). *)
+Definition check_openat (i : SyscallInput) (dirfd pathp flags : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match check_openat_table i dirfd pathp flags eff m with
+  | CheckOk m' evs => CheckOk (open_cloexec_model flags (eff_ret eff) m') evs
+  | r => r
+  end.
 
 Local Definition openat_nul_mem (a : word) : option byte :=
   if bv_eqb a 0x2000 then Some 102
@@ -510,7 +519,8 @@ Definition check_close (fd : word) (eff : SyscallEffect) (m : Model)
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some _ => check_ret_only eff (Z_to_bv 64 0)
-                (with_fds (fd_remove (m_fds m) fd) m) []
+                (with_cloexec (cloexec_forget (m_cloexec m) fd)
+                   (with_fds (fd_remove (m_fds m) fd) m)) []
   end.
 
 Local Lemma check_ret_only_sound_ok : forall i eff r m m' evs,
@@ -910,20 +920,35 @@ Proof.
 Qed.
 
 
-Lemma check_openat_sound_ok : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
-  openat_spec dirfd pathp flags i m (Ok eff m' evs).
+Lemma check_openat_table_sound_ok : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
+  openat_table_spec dirfd pathp flags i m (Ok eff m' evs).
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  unfold check_openat in H.
+  unfold check_openat_table in H.
   destruct (negb (modeled_open_flags flags)) eqn:Hfl; [discriminate|].
   cbv iota in H.
   apply check_copyins_after_ok_iff in H.
   destruct H as (Hreads & Hchecked).
   pose proof (check_openat_body_sound_ok i dirfd pathp flags eff
     m m' evs Hfl Hchecked) as Hcore.
-  unfold openat_spec. eapply bind_ok0; [apply input_ok|]. cbv beta.
+  unfold openat_table_spec. eapply bind_ok0; [apply input_ok|]. cbv beta.
   now apply record_copyins_clear_ok.
+Qed.
+
+Lemma check_openat_sound_ok : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  openat_spec dirfd pathp flags i m (Ok eff m' evs).
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:Ht;
+    try discriminate H.
+  injection H as <- <-.
+  apply check_openat_table_sound_ok in Ht.
+  unfold openat_spec. eapply bind_ok_eq; [exact Ht| |].
+  - eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+  - rewrite app_nil_r. reflexivity.
 Qed.
 
 Local Lemma check_open_result_no_unmodeled : forall eff m mk,
@@ -1208,23 +1233,35 @@ Proof.
     i dirfd pathp flags eff m H).
 Qed.
 
+Lemma check_openat_table_sound_unmodeled : forall i dirfd pathp flags eff m,
+  check_openat_table i dirfd pathp flags eff m = CheckUnmodeled ->
+  openat_table_spec dirfd pathp flags i m Unmodeled.
+Proof.
+  intros i dirfd pathp flags eff m H.
+  unfold check_openat_table in H.
+  destruct (negb (modeled_open_flags flags)) eqn:Hfl.
+  - unfold openat_table_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    apply record_copyins_unmodeled. unfold openat_core_spec.
+    eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    rewrite Hfl. apply unmodeled_intro.
+  - cbv iota in H. apply check_copyins_after_unmodeled in H.
+    unfold openat_table_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    apply record_copyins_unmodeled.
+    exact (check_openat_body_sound_unmodeled i dirfd pathp flags
+      (clear_copyins eff) m Hfl H).
+Qed.
+
 Lemma check_openat_sound_unmodeled : forall i dirfd pathp flags eff m,
   check_openat i dirfd pathp flags eff m = CheckUnmodeled ->
   openat_spec dirfd pathp flags i m Unmodeled.
 Proof.
   intros i dirfd pathp flags eff m H.
   unfold check_openat in H.
-  destruct (negb (modeled_open_flags flags)) eqn:Hfl.
-  - unfold openat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    apply record_copyins_unmodeled. unfold openat_core_spec.
-    eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-    rewrite Hfl. apply unmodeled_intro.
-  - cbv iota in H. apply check_copyins_after_unmodeled in H.
-    unfold openat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    apply record_copyins_unmodeled.
-    exact (check_openat_body_sound_unmodeled i dirfd pathp flags
-      (clear_copyins eff) m Hfl H).
+  destruct (check_openat_table i dirfd pathp flags eff m) eqn:Ht;
+    try discriminate H.
+  apply check_openat_table_sound_unmodeled in Ht.
+  unfold openat_spec. apply bind_unmodeled1. exact Ht.
 Qed.
 
 Local Definition completes_ok (i : SyscallInput) (m : Model)
@@ -1803,12 +1840,12 @@ Proof.
   - split; [reflexivity|exact Hbody].
 Qed.
 
-Lemma check_openat_complete_ok : forall i dirfd pathp flags eff m m' evs,
-  openat_spec dirfd pathp flags i m (Ok eff m' evs) ->
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs.
+Lemma check_openat_table_complete_ok : forall i dirfd pathp flags eff m m' evs,
+  openat_table_spec dirfd pathp flags i m (Ok eff m' evs) ->
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  unfold openat_spec in H.
+  unfold openat_table_spec in H.
   apply input_bind_ok_inv in H. cbv beta in H.
   apply record_copyins_ok_inv in H.
   destruct H as (core & Hcore & ->).
@@ -1816,12 +1853,26 @@ Proof.
   destruct Hcore as (Hflags & Hbody).
   apply check_openat_body_complete_ok in Hbody.
   destruct Hbody as (Hchecked & Hcopyins).
-  unfold check_openat. rewrite Hflags. cbv iota.
+  unfold check_openat_table. rewrite Hflags. cbv iota.
   apply (proj2 (check_copyins_after_ok_iff _ _ _ _ _)). split.
   - cbn [with_copyins eff_copyins]. rewrite Hcopyins, app_nil_r. reflexivity.
   - destruct core as [ret ws zs us cs copyins].
     cbn in Hcopyins. subst copyins.
     exact Hchecked.
+Qed.
+
+Lemma check_openat_complete_ok : forall i dirfd pathp flags eff m m' evs,
+  openat_spec dirfd pathp flags i m (Ok eff m' evs) ->
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold openat_spec, bind, modify, pure in H. cbv beta iota in H.
+  destruct H as (x & m1 & evs1 & evs2 & Ht & Hk & Hevs).
+  destruct Hk as (u & m2 & evs3 & evs4 & Hm & Hp & Hevs2).
+  injection Hm as -> -> ->. injection Hp as -> -> ->.
+  subst evs evs2.
+  apply check_openat_table_complete_ok in Ht.
+  unfold check_openat. rewrite Ht. cbn [app]. rewrite app_nil_r. reflexivity.
 Qed.
 
 Local Definition completes_unmodeled (i : SyscallInput) (m : Model)
@@ -2249,19 +2300,32 @@ Proof.
     + right. split; [reflexivity|exact Hbody].
 Qed.
 
+Lemma check_openat_table_complete_unmodeled : forall i dirfd pathp flags m eff,
+  openat_table_spec dirfd pathp flags i m Unmodeled ->
+  check_openat_table i dirfd pathp flags eff m = CheckUnmodeled.
+Proof.
+  intros i dirfd pathp flags m eff H.
+  unfold openat_table_spec in H. apply input_bind_unmodeled_inv in H. cbv beta in H.
+  apply record_copyins_unmodeled_inv in H.
+  apply openat_core_unmodeled_inv in H.
+  destruct H as [Hflags | (Hflags & Hbody)].
+  - unfold check_openat_table. rewrite Hflags. reflexivity.
+  - apply check_openat_body_spec_complete_unmodeled
+      with (eff := clear_copyins eff) in Hbody.
+    unfold check_openat_table. rewrite Hflags. cbv iota. rewrite Hbody. reflexivity.
+Qed.
+
 Lemma check_openat_complete_unmodeled : forall i dirfd pathp flags m eff,
   openat_spec dirfd pathp flags i m Unmodeled ->
   check_openat i dirfd pathp flags eff m = CheckUnmodeled.
 Proof.
   intros i dirfd pathp flags m eff H.
-  unfold openat_spec in H. apply input_bind_unmodeled_inv in H. cbv beta in H.
-  apply record_copyins_unmodeled_inv in H.
-  apply openat_core_unmodeled_inv in H.
-  destruct H as [Hflags | (Hflags & Hbody)].
-  - unfold check_openat. rewrite Hflags. reflexivity.
-  - apply check_openat_body_spec_complete_unmodeled
-      with (eff := clear_copyins eff) in Hbody.
-    unfold check_openat. rewrite Hflags. cbv iota. rewrite Hbody. reflexivity.
+  unfold openat_spec, bind, modify, pure in H. cbv beta iota in H.
+  destruct H as [Ht | (x & m1 & evs1 & Ht & [Hm | (u & m2 & evs2 & Hm & Hp)])].
+  - apply check_openat_table_complete_unmodeled with (eff := eff) in Ht.
+    unfold check_openat. rewrite Ht. reflexivity.
+  - discriminate Hm.
+  - discriminate Hp.
 Qed.
 
 (* ----------------------------------------------------------------- close *)

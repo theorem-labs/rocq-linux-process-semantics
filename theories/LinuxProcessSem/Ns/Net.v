@@ -887,7 +887,8 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
         let h := fresh_handle st in
         (if bv_unsigned fd <? bv_unsigned (m_nofile m)
          then o = EOk (mkEffect fd [] [])
-                      (with_fds (fd_insert (m_fds m) fd (ns_fd_entry h)) m)
+                      (State.with_cloexec (cloexec_forget (m_cloexec m) fd)
+                         (with_fds (fd_insert (m_fds m) fd (ns_fd_entry h)) m))
                       (set_cloexec ctx (bv_unsigned fd) (negb (Z.land fl SOCK_CLOEXEC =? 0)))
                       (with_files st (ns_files st ++ [(h, mkNsFile k O_RDWR (caller_cred m ctx))]))
                       []

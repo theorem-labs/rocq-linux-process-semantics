@@ -2167,17 +2167,30 @@ Proof.
   unfold check_pwrite64, check_write_fault_extend in H. vm_frame2 H.
 Qed.
 
-Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+Lemma check_openat_table_frame : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   (* openat's body and its sub-checkers are [Local] to
      [Checks/Sys/Fs/Open.v]; [vm_openat_body] and the lemmas above it
      cover them one at a time. *)
-  unfold check_openat in H. cbv beta iota zeta in H.
+  unfold check_openat_table in H. cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H || (eapply vm_openat_body in H; exact H));
   try reflexivity.
+Qed.
+
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
+Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_frame in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_frame : forall fd eff m m' evs,
@@ -2185,8 +2198,9 @@ Lemma check_close_frame : forall fd eff m m' evs,
 Proof. intros fd eff m m' evs H. unfold check_close in H. vm_frame2 H. Qed.
 
 (** [close_range] removes descriptors and nothing else: its one
-    model-changing arm is [with_fds] over [File.close_range_fds], which
-    carries the VM subsystem across untouched. *)
+    model-changing arm is [with_fds] over [File.close_range_fds] under
+    [with_cloexec] over [File.close_range_cloexec], which carry the VM
+    subsystem across untouched. *)
 Lemma check_close_range_frame : forall fd max_fd flags eff m m' evs,
   check_close_range fd max_fd flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.

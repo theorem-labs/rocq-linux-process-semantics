@@ -16,17 +16,24 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude Fs.ReadWrite.
 
-(** fcntl witness: -EBADF on a closed fd, 0 for F_SETFD, for F_GETFD
-    (the first of its two admitted answers) and for an F_SETFL that
-    provably changes nothing, the derived flag word for an F_GETFL on an
-    fd kind [Fcntl.getfl_f_flags] answers for, and [Unmodeled] on every
+(** fcntl witness: -EBADF on a closed fd; 0 for F_SETFD, with the bit
+    recorded; for F_GETFD the recorded bit, or 0 (the first of its two
+    admitted answers) where none is recorded; 0 for an F_SETFL that
+    provably changes nothing; the derived flag word for an F_GETFL on an
+    fd kind [Fcntl.getfl_f_flags] answers for; and [Unmodeled] on every
     other command. *)
 Definition fcntl_witness (fd cmd arg : word) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
-      if bv_eqb cmd F_SETFD then ret_outcome (Z_to_bv 64 0) m
-      else if bv_eqb cmd F_GETFD then ret_outcome (Z_to_bv 64 0) m
+      if bv_eqb cmd F_SETFD
+      then ret_outcome (Z_to_bv 64 0)
+             (with_cloexec (cloexec_set (m_cloexec m) fd (setfd_cloexec_b arg)) m)
+      else if bv_eqb cmd F_GETFD then
+        match cloexec_lookup (m_cloexec m) fd with
+        | Some b => ret_outcome (getfd_word b) m
+        | None => ret_outcome (Z_to_bv 64 0) m
+        end
       else if bv_eqb cmd F_SETFL && setfl_noop_on e arg
       then ret_outcome (Z_to_bv 64 0) m
       else if bv_eqb cmd F_GETFL then
@@ -44,10 +51,12 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + eapply bind_step; [apply get_model_ok|].
-      cbv beta iota; srw Hfd. apply pure_ok.
+      cbv beta iota; srw Hfd. eapply bind_step; [apply modify_ok|]. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
       * eapply bind_step; [apply get_model_ok|].
-        cbv beta iota; srw Hfd. apply alt_l. apply pure_ok.
+        cbv beta iota; srw Hfd.
+        destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota; [apply pure_ok | apply alt_l; apply pure_ok].
       * destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl.
         -- eapply bind_step; [apply get_model_ok|].
            cbv beta iota; srw Hfd; srw Hl. apply pure_ok.

@@ -146,13 +146,15 @@ Definition rdwr_excl_create_flags : Z := (O_RDWR + O_CREAT + O_EXCL)%Z.
 Definition is_rdwr_excl_create (fl : Z) : bool :=
   Z.eqb fl rdwr_excl_create_flags || Z.eqb fl (rdwr_excl_create_flags + O_TRUNC).
 
-(** The flag bits every modeled shape accepts and ignores.  Each is
+(** The flag bits every modeled SHAPE accepts and ignores.  Each is
     ignorable for its own reason, recorded at its own definition in
     [Uapi]; the mask exists so that every mirror of the flag test —
     [openat_resolved_spec], [Checks.Sys.Fs.Open.check_openat] and
     [Checks.Witness.Fs.Open.openat_witness] — strips exactly the same
     bits, and so that widening the set is one edit rather than a
-    search. *)
+    search.  O_CLOEXEC picks no shape, but it is not lost: [openat_spec]
+    records it as the new descriptor's close-on-exec bit
+    ([open_cloexec_b]). *)
 Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 
 (** The O_PATH words, read past [open_ignored_flags]: O_PATH alone or
@@ -1244,8 +1246,9 @@ Definition openat_urandom_spec (flags : word) (m : Model)
     three before the test, exactly as every other arm in this file does.
     So O_RDONLY|O_NONBLOCK and O_RDONLY|O_LARGEFILE reach the read arm
     and the create word reaches the create arm with any of the three
-    set.  All three are inert on a regular file — O_CLOEXEC is a
-    descriptor-table flag the model does not record, O_LARGEFILE is
+    set.  All three are inert on the shape — O_CLOEXEC is a
+    descriptor-table flag that [openat_spec] records after every shape
+    ([open_cloexec_model]), O_LARGEFILE is
     unconditional on a 64-bit ABI, and O_NONBLOCK on a regular file
     changes no answer any modeled operation gives — which is the
     argument the mask's own definition carries and the reason this arm
@@ -1777,10 +1780,45 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     (* then [getname()]: all three of its answers are real errnos. *)
     openat_body_spec i m dirfd pathp flags.
 
-Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+(** [openat]'s answer before the close-on-exec bit: the table, the file
+    system and the copy-in, every shape above. *)
+Definition openat_table_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
   record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_spec dirfd pathp flags).
+
+(** O_CLOEXEC in the open word.  [build_open_flags] strips it from
+    [f_flags] but [do_sys_openat2] hands [how->flags] to
+    [get_unused_fd_flags] (fs/open.c), whose [alloc_fd] ends with
+    [__set_open_fd(fd, fdt, flags & O_CLOEXEC)] (fs/file.c): the new
+    descriptor's bit is set exactly when the word has it, and cleared
+    otherwise, whatever the slot held before.  Read at v6.18.44;
+    identical at v6.18.46. *)
+Definition open_cloexec_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) O_CLOEXEC) 0).
+
+(** The model after an answered [openat] returned [r]: a descriptor
+    ([r] not an error) gets the bit [open_cloexec_b flags]; an errno
+    answer installed nothing and changes nothing.  The [fd_lookup] test
+    never fails on an answered success, since every success shape above
+    installs the descriptor it returns; it makes "every key names an
+    open descriptor" ([Checks.CloexecKeys.cloexec_keys_open]) hold by
+    construction rather than by a walk over the shapes. *)
+Definition open_cloexec_model (flags r : word) (m : Model) : Model :=
+  if addr_is_error_b r then m
+  else match fd_lookup (m_fds m) r with
+       | Some _ => with_cloexec (cloexec_set (m_cloexec m) r (open_cloexec_b flags)) m
+       | None => m
+       end.
+
+(** [openat]: [openat_table_spec], then the new descriptor's
+    close-on-exec bit recorded.  Every success shape above returns the
+    fresh descriptor it installed ([File.lowest_fd]), so the returned
+    word names the slot whose bit [get_unused_fd_flags] wrote. *)
+Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+  eff <- openat_table_spec dirfd pathp flags ;;
+  modify (open_cloexec_model flags (eff_ret eff)) ;;
+  pure eff.
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
@@ -1802,12 +1840,21 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
-    sees them, as it does on Linux. *)
+    sees them, as it does on Linux.
+
+    The descriptor's close-on-exec key is forgotten
+    ([State.cloexec_forget]): the slot is free, and whatever installs a
+    descriptor there next writes its own bit ([alloc_fd] and [do_dup2]
+    both end in [__set_open_fd], fs/file.c, read at v6.18.44; identical
+    at v6.18.46). *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
-  | Some _ => set_fds (fd_remove (m_fds m) fd) ;; ret_only (Z_to_bv 64 0)
+  | Some _ =>
+      modify (fun m' => with_cloexec (cloexec_forget (m_cloexec m) fd)
+                          (with_fds (fd_remove (m_fds m) fd) m')) ;;
+      ret_only (Z_to_bv 64 0)
   end.
 
 (** The region a GROWING [ftruncate] must zero-fill is one the model can

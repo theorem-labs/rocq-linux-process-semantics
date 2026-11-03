@@ -342,13 +342,26 @@ Local Ltac openat_sub_fs_top H :=
   | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_fs in H; exact H
   end.
 
+Lemma check_openat_table_fs : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold check_openat_table in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_fs_top H || fs_done H); try fs_leaf.
+Qed.
+
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
 Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   fs_grows (m_fs m) (m_fs m').
 Proof.
-  intros i dirfd pathp flags eff m m' evs H.
-  unfold check_openat in H. cbv zeta in H.
-  repeat (vm_step H || openat_sub_fs_top H || fs_done H); try fs_leaf.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_fs in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_lseek_fs : forall fd off whence eff m m' evs,
