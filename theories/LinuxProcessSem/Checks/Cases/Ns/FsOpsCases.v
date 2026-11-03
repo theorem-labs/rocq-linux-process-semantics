@@ -384,3 +384,17 @@ Example fsops_rows :
   /\ ni_errno unlinkat_injected ENOENT = false /\ ni_errno unlinkat_injected EACCES = false
   /\ ni_errno write_injected ENOMEM = true.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** A write's environment refusals ([write_env]): a writable tmpfs file
+    ENOSPC, ENOMEM and EIO; a uid_map ENOMEM and no ENOSPC; a setgroups
+    file none (its buffer is on the stack); a file opened read-only none
+    (EBADF comes first).  The write row ([write_injected]) lists them for
+    the forced-only filter, and EBADF, the tables' answer, is no refusal. *)
+Example write_env_refusals :
+  write_env file_state chmod_file ENOSPC = true /\ write_env file_state chmod_file EIO = true
+  /\ write_env file_state chmod_file ENOMEM = true
+  /\ write_env (map_state []) uid_file ENOMEM = true /\ write_env (map_state []) uid_file ENOSPC = false
+  /\ write_env (map_state []) groups_file ENOMEM = false
+  /\ write_env file_state offset_file ENOSPC = false
+  /\ ni_errno write_injected ENOSPC = true /\ ni_errno write_injected EBADF = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.

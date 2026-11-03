@@ -454,6 +454,16 @@ not apply.
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
+- An rtnetlink handler can fail for lack of memory. When one does
+  (`rtnl_newlink`, `inet_rtm_newaddr` or a dump's start meeting
+  `-ENOMEM` or `-ENOBUFS`), Linux still answers `sendto` with the
+  request's length, reports the error inside the acknowledgement
+  (`netlink_ack`, `net/netlink/af_netlink.c`, v6.18.44), and leaves the
+  namespace unchanged. The namespace model admits that outcome
+  (`Ns.Net.nl_handler_errnos`). Under forced-only, this one injected
+  refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`) sees
+  the state before the call and the call's effect, not the state after
+  it, where the acknowledgement lives.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

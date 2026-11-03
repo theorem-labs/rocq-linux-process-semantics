@@ -461,8 +461,8 @@ Definition set_user_limit (st : NsState) (bound : positive) (value : Z) : option
     [proc_gid_map_write], [proc_setgroups_write]; kernel/sysctl.c
     [proc_doulongvec_minmax], [__do_proc_doulongvec_minmax], [proc_get_long];
     and fs/proc/proc_sysctl.c [proc_sys_call_handler].  Kind: exact on
-    tmpfs and the named procfs files; host regular files and other kinds
-    decline. *)
+    tmpfs and the named procfs files, with [write_env]'s refusals; host
+    regular files and other kinds decline. *)
 Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) : ext_outcome :=
   if negb (file_can_write f) then ns_errno EBADF m ctx st
@@ -521,9 +521,47 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
            end
        end.
 
+(** The environment's refusals of a write to an open file of the model that
+    allows writing, Linux 6.18.44:
+    - a tmpfs regular file: [shmem_write_begin]'s [shmem_get_folio]
+      (mm/shmem.c), ENOSPC past the size limit
+      ([shmem_inode_acct_blocks]), ENOMEM for the folio, and EIO for a
+      hardware-poisoned page or a swapped-out one that cannot be read
+      back;
+    - a uid_map or gid_map: [map_write] (kernel/user_namespace.c), ENOMEM
+      from [memdup_user_nul], [insert_extent] and [sort_idmaps];
+    - /proc/sys/user/max_user_namespaces: [proc_sys_call_handler]
+      (fs/proc/proc_sysctl.c), ENOMEM from [kvzalloc].
+    A setgroups write ([proc_setgroups_write]) copies into a buffer on the
+    stack and allocates nothing. *)
+Definition write_env (st : NsState) (f : NsFile) (e : Z) : bool :=
+  file_can_write f
+  && match nf_kind f with
+     | NfFile l _ => match regular_tmpfs st l with
+                     | Some _ => errno_in [ENOMEM; ENOSPC; EIO] e
+                     | None => false
+                     end
+     | NfUserNsFile l _ _ =>
+         match map_kind_at l with
+         | Some _ => errno_in [ENOMEM] e
+         | None => if setgroups_at l then false
+                   else match user_sys_name st l with
+                        | Some _ => errno_in [ENOMEM] e
+                        | None => false
+                        end
+         end
+     | _ => false
+     end.
+
+(** [write_env]'s refusals as pairs, for the forced-only filter. *)
+Definition write_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM], FamAlloc); (errno_in [ENOSPC; EIO], FamFs)].
+
 Definition write_arm : NsArm := fun i m ctx st o =>
   match ns_file_of m st (fd_word (in_arg i 0)) with
-  | Some (h, f) => o = write_fn i m ctx st h f
+  | Some (h, f) =>
+      o = write_fn i m ctx st h f
+      \/ injected_after (write_env st f) (write_fn i m ctx st h f) m ctx st o
   | None => released i m ctx st o
   end.
 
@@ -756,8 +794,9 @@ Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx s
       long one, [shmem_get_folio]'s ENOSPC or ENOMEM.
     - [unlinkat] (35): the parent walk's and [lookup_one_qstr_excl]'s
       ([Arm.walk_pairs]); [shmem_unlink] does not fail.
-    - [write] (64): on a descriptor of the released model the arm answers
-      as the released arm does, so the released arm's refusals
+    - [write] (64): on a file of the model, [write_env]'s ([write_pairs]);
+      on a descriptor of the released model the arm answers as the
+      released arm does, so the released arm's refusals
       ([Arm.released_pairs]), which the arm admits already.
     - none for [fchmod] (52) (see [fchmod_fn]); its released arm injects
       nothing. *)
@@ -767,7 +806,7 @@ Definition create_pairs : list ((Z -> bool) * SpuriousFamily) :=
 Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs [].
 Definition unlinkat_injected : NsInjected := mkNsInjected 35 walk_pairs [].
 Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs [].
-Definition write_injected : NsInjected := mkNsInjected 64 (released_pairs 64) [].
+Definition write_injected : NsInjected := mkNsInjected 64 (released_pairs 64 ++ write_pairs) [].
 
 Definition fsops_arms : list (Z * NsArm) :=
   [(34, with_injected (ni_errno mkdirat_injected) mkdirat_arm);

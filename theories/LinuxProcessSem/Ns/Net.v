@@ -94,7 +94,8 @@
     (SCOPE.md).  A netlink socket's pending error is not modelled, so an
     allocation failure reported asynchronously, by an acknowledgement or a
     dump that could not be queued, is admitted as [recvfrom]'s refusal
-    rather than a stored [sk_err].
+    rather than a stored [sk_err]; a handler's own allocation failure is
+    the error of the acknowledgement [sendto] queues ([nl_handler_errnos]).
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -985,6 +986,36 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
 (** [netlink_alloc_large_skb]'s failure, -ENOBUFS. *)
 Definition nl_alloc_errnos : list Z := [ENOBUFS].
 
+(** An rtnetlink handler's allocation failure, Linux 6.18.44: a change
+    ([rtnl_newlink] and [do_setlink], net/core/rtnetlink.c;
+    [inet_rtm_newaddr]'s [inet_alloc_ifa], net/ipv4/devinet.c) or a dump's
+    first part ([__netlink_dump_start]'s [netlink_dump],
+    net/netlink/af_netlink.c) returns ENOMEM or ENOBUFS, and
+    [netlink_rcv_skb] acknowledges the request with that error
+    ([netlink_ack]); the namespace does not change and [sendto] still
+    returns the length.  The environment's refusal, carried in the
+    acknowledgement: the forced-only filter, which sees the call's effect
+    and not the queue after it, does not remove it (SCOPE.md). *)
+Definition nl_handler_errnos : list Z := [ENOMEM; ENOBUFS].
+
+(** The request [dg] reaches an rtnetlink handler: RTM_NEWLINK,
+    RTM_NEWADDR, RTM_GETLINK or RTM_GETADDR, which [rt_handle] answers.
+    Over: a request [rtnetlink_rcv_msg] refuses before its handler (EPERM)
+    is not told apart. *)
+Definition handler_reached (dg : list byte) (s : NlStep) : bool :=
+  match s with
+  | SDecline => false
+  | SDone _ _ =>
+      let ty := nl_u16 dg 4 in
+      (16 <=? nl_len dg) && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
+      && ((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR))
+  end.
+
+(** The acknowledgement of request [dg] from port [port] with its handler's
+    error [e] ([netlink_ack] of the request's first message). *)
+Definition handler_fail_ack (port : Z) (dg : list byte) (e : Z) : list byte :=
+  nl_ack port (firstn (Z.to_nat (nl_u32 dg 0)) dg) e.
+
 (** Does the request [rt_handle] judges decline under the queue rules (see
     the header), whatever port answers it? *)
 Definition rt_declines (st : NsState) (x : NetNs) (U : list UserNs) (opener caller : IdCred)
@@ -1054,7 +1085,7 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                              match rt_handle x (ns_userns st) (nf_cred f) caller dst p dg with
                              | SDecline => False
                              | SDone ifs r =>
-                                 exists env dgs,
+                                 (exists env dgs,
                                    nl_env_ok (env_nl_link_max (ns_env st)) env r = true /\
                                    reply_dgrams env r = Some dgs /\
                                    let st2 := match ifs with
@@ -1062,7 +1093,12 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                                               | None => st
                                               end in
                                    o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                              (set_file st2 h (netlink_file f n p (q ++ dgs)))
+                                              (set_file st2 h (netlink_file f n p (q ++ dgs))))
+                                 \/ (handler_reached dg (SDone ifs r) = true
+                                     /\ exists e, errno_in nl_handler_errnos e = true
+                                        /\ o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
+                                                 (set_file st h (netlink_file f n p
+                                                                   (q ++ [handler_fail_ack p dg e]))))
                              end
                          end)
           end
@@ -1072,8 +1108,11 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     [import_ubuf] (the length capped at MAX_RW_COUNT; -EFAULT for a buffer
     [access_ok] refuses) before the descriptor, then [netlink_sendto].
     Kind: exact on the namespace's new state and on acknowledgements, over
-    on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an autobind) and
-    [nl_alloc_errnos] beside the answer.  Declines: the AF_UNIX socket; a
+    on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an
+    autobind) and [nl_alloc_errnos] beside the answer, and beside a request
+    that reaches an rtnetlink handler, the acknowledgement of its
+    allocation failure ([nl_handler_errnos]) with the namespace unchanged.
+    Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its
     namespace; what [rt_handle] declines; a request that would queue while
