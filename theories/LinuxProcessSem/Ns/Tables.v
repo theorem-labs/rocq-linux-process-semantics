@@ -369,7 +369,9 @@ Record ProcEntry := mkProcEntry {
     while it lives, so one value per object for the whole run.  The
     kernel's mount ids and peer-group ids, each superblock's device
     number, the type name of a host superblock, each mount's source name,
-    the text a superblock's [show_options] prints, and [propagate_from]. *)
+    the text a superblock's [show_options] prints, and [propagate_from]
+    where a slave's master chain reaches a peer group with no member in
+    the tables (inside the tables [Propagation.dominating_id] computes it). *)
 Record MiEnv := mkMiEnv {
   mi_id      : positive -> Z;              (** [mnt_id] of a mount *)
   mi_group   : positive -> Z;              (** [mnt_group_id] of a peer group *)
@@ -377,7 +379,8 @@ Record MiEnv := mkMiEnv {
   mi_type    : positive -> list byte;      (** the type name of a host superblock *)
   mi_source  : positive -> list byte;      (** a mount's [mnt_devname] *)
   mi_sbopts  : positive -> list byte;      (** a superblock's [show_options] text *)
-  mi_dom     : positive -> option Z        (** [get_dominating_id] when it differs from the master *)
+  mi_dom     : positive -> option Z        (** [get_dominating_id] when it differs from the master,
+                                               used where the master chain leaves the tables *)
 }.
 
 (** One choice of those values: ids as the tables number the objects,

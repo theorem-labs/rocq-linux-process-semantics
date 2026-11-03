@@ -9,8 +9,9 @@
     member outside the tables ([open_reach]), how a propagation type changes
     a mount ([change_type]), what a copy of a mount links ([clone_links]),
     how a tree attached on a shared mount propagates ([propagate_copies],
-    [attach_tree]), and what an MNT_DETACH unmount removes and changes
-    ([umount_detach_prop]).
+    [attach_tree]), what an MNT_DETACH unmount removes and changes
+    ([umount_detach_prop]), and which group a slave's mountinfo line names
+    as [propagate_from] ([dominating_id]).
 
     Linux v6.18.46 sources: [struct mount] (fs/mount.h:68-71, 95, 103-115);
     [next_peer], [first_slave], [next_slave] (fs/pnode.c:17-30);
@@ -23,7 +24,8 @@
     (fs/namespace.c:2157-2230, 2412-2437, 2449-2487, 2559-2673);
     [umount_tree] (fs/namespace.c:1771-1838), [bulk_make_private]
     (fs/pnode.c:126-175), [propagate_mount_unlock] and [propagate_umount]
-    (fs/pnode.c:466-687; Documentation/filesystems/propagate_umount.txt).
+    (fs/pnode.c:466-687; Documentation/filesystems/propagate_umount.txt);
+    [get_peer_under_root] and [get_dominating_id] (fs/pnode.c:33-67).
 
     The rules of the data ([prop_ok]):
     1. a ring entry [(g, l)] lists, without repeating one, exactly the mounts
@@ -1716,3 +1718,47 @@ Proof.
   destruct (find_mount (ns_mounts st) i) as [x|]; [|reflexivity].
   destruct (existsb (open_mount st) (umount_reads (ns_mounts st) i)); reflexivity.
 Qed.
+
+(* =========================================================================
+   mountinfo: get_dominating_id
+   ========================================================================= *)
+
+(** What [get_dominating_id] (fs/pnode.c:56-67) gives for a slave: the
+    group of the first master up the chain that has a member in the
+    slave's mount namespace whose root the reader's root reaches
+    ([get_peer_under_root], fs/pnode.c:33-48); 0 when the chain ends
+    without one; or [DomOut]: the chain leaves the tables at a group with
+    no member in them, whose master and members outside the tables the
+    model does not know. *)
+Inductive DomId := DomGroup (g : positive) | DomZero | DomOut.
+
+(** The chain from group [g] up, for a slave in mount namespace [ns].
+    [reach d] is [is_path_reachable] of mount [d]'s root from the
+    reader's root (fs/namespace.c:4514-4522), [None] when the tables do
+    not decide it.  Every member of a group gives the group's number, so
+    which member [get_peer_under_root] meets first does not matter.
+    [None]: a test the tables do not decide.  A chain longer than the
+    table loops, which no Linux mount tree does; it gives [DomOut]. *)
+Fixpoint dom_chain (fuel : nat) (T : list Mount) (reach : Mount -> option bool) (ns g : positive)
+    : option DomId :=
+  match fuel with
+  | O => Some DomOut
+  | Datatypes.S f =>
+      let cands := List.filter (fun d => in_peer_group g d && Pos.eqb (mnt_ns d) ns) T in
+      if existsb (fun d => match reach d with Some true => true | _ => false end) cands
+      then Some (DomGroup g)
+      else if existsb (fun d => match reach d with None => true | _ => false end) cands then None
+      else match group_master T g with
+           | Some (Some h) => dom_chain f T reach ns h
+           | Some None => Some DomZero
+           | None => Some DomOut
+           end
+  end.
+
+(** [get_dominating_id] of mount [m] (fs/pnode.c:56-67): [DomZero] for a
+    mount that is not a slave. *)
+Definition dominating_id (T : list Mount) (reach : Mount -> option bool) (m : Mount) : option DomId :=
+  match mnt_master m with
+  | Some g => dom_chain (Datatypes.S (length T)) T reach (mnt_ns m) g
+  | None => Some DomZero
+  end.

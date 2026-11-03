@@ -386,7 +386,11 @@ Definition eventfd_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
     and file-system display fields are the environment's, one value per
     kernel object for the whole run ([Tables.env_mountinfo]), so two reads
     of the same open file see one text when no mount changed between
-    them.  Kind: exact given those values. *)
+    them; [propagate_from] is computed from the state and the captured
+    root while a slave's master chain stays in the tables
+    ([Propagation.dominating_id]).  No answer for a namespace that holds a
+    mount which can receive a mount event from an open group
+    ([Mountinfo.mountinfo_text]).  Kind: exact given those values. *)
 Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) (l : Loc) (ns : positive) (root : positive * positive) (off : Z)
     (o : ext_outcome) : Prop :=

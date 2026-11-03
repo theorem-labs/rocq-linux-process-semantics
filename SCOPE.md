@@ -493,12 +493,14 @@ not apply.
   `Ns.Propagation.open_mount`), a bind or a new mount (`mount(2)`)
   in a mount namespace that holds such a mount, or onto a shared mount
   whose propagation tree holds one or reaches a namespace that holds one
-  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), and an
+  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), an
   `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
   and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
   `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,
   `fs/namespace.c:1949`, `1793-1794`, and `propagate_umount` gathers its
-  candidates on those peers and slaves, `fs/pnode.c:505-531`).
+  candidates on those peers and slaves, `fs/pnode.c:505-531`), and a read
+  of `/proc/<pid>/mountinfo` of a mount namespace that holds one
+  (`Ns.Mountinfo.mountinfo_text`).
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when
