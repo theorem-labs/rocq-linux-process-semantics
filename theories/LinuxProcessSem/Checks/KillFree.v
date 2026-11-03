@@ -452,7 +452,7 @@ Lemma check_mmap_kf : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H Hoff Hk.
-  unfold check_mmap in H.
+  unfold check_mmap, check_mmap_fixed_overflow in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.

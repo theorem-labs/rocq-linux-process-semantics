@@ -73,6 +73,20 @@ Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
+(** The MAP_FIXED arms' overflow branch, [Mmap.mmap_fixed_overflow]:
+    -ENOMEM, or for an error-valued address with a length the kernel
+    lets through, the address itself or the environment errno. *)
+Definition check_mmap_fixed_overflow (addr : word) (nZ : Z)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if mmap_fixed_err_addr_b addr nZ then
+    match eff with
+    | mkEffectU r [] [] [] [] [] =>
+        if errno_ret_in mmap_errnos r || bv_eqb r addr
+        then CheckOk m [] else CheckReject
+    | _ => CheckReject
+    end
+  else check_ret_only eff (errno_ret ENOMEM) m [].
+
 Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (mmap_off_aligned_b off) then
@@ -136,7 +150,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
   else if mmap_fixed_noaccess_b prot flags off then
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z
-    then check_ret_only eff (errno_ret ENOMEM) m []
+    then check_mmap_fixed_overflow addr nZ eff m
     else if negb (bv_unsigned addr + nZ <=? alloc_top (m_vmmaps m))%Z then CheckUnmodeled
     else if negb (Z.eqb (bv_unsigned addr mod page_size) 0)
     then check_ret_only eff (errno_ret EINVAL) m []
@@ -221,7 +235,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
   else if mmap_fixed_rw_b prot flags off then
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z
-    then check_ret_only eff (errno_ret ENOMEM) m []
+    then check_mmap_fixed_overflow addr nZ eff m
     else if negb (bv_unsigned addr + nZ <=? alloc_top (m_vmmaps m))%Z then CheckUnmodeled
     else if negb (Z.eqb (bv_unsigned addr mod page_size) 0)
     then check_ret_only eff (errno_ret EINVAL) m []
@@ -322,7 +336,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
        beside the environment errno (see [Mmap.mmap_spec]). *)
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z
-    then check_ret_only eff (errno_ret ENOMEM) m []
+    then check_mmap_fixed_overflow addr nZ eff m
     else if negb (bv_unsigned addr + nZ <=? alloc_top (m_vmmaps m))%Z then CheckUnmodeled
     else if negb (Z.eqb (bv_unsigned addr mod page_size) 0)
     then check_ret_only eff (errno_ret EINVAL) m []
@@ -361,7 +375,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
        free-range grant and its budget conjunct. *)
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z
-    then check_ret_only eff (errno_ret ENOMEM) m []
+    then check_mmap_fixed_overflow addr nZ eff m
     else if negb (bv_unsigned addr + nZ <=? alloc_top (m_vmmaps m))%Z then CheckUnmodeled
     else if negb (Z.eqb (bv_unsigned addr mod page_size) 0)
     then check_ret_only eff (errno_ret EINVAL) m []
@@ -490,6 +504,88 @@ Proof.
   intros a b H. unfold page_round_up_Z, page_size.
   apply Z.mul_le_mono_nonneg_r; [lia|].
   apply Z.div_le_mono; lia.
+Qed.
+
+(** The overflow branch shared by the four MAP_FIXED arms, proved once:
+    [check_mmap_fixed_overflow] accepts exactly what
+    [Mmap.mmap_fixed_overflow] admits, and neither side declines. *)
+Lemma check_mmap_fixed_overflow_sound_ok : forall addr nZ eff m m' evs i,
+  check_mmap_fixed_overflow addr nZ eff m = CheckOk m' evs ->
+  mmap_fixed_overflow addr nZ i m (Ok eff m' evs).
+Proof.
+  intros addr nZ eff m m' evs i H.
+  unfold check_mmap_fixed_overflow in H. unfold mmap_fixed_overflow.
+  destruct (mmap_fixed_err_addr_b addr nZ).
+  - destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
+      [destruct zs as [|? ?]|]; try discriminate.
+    destruct us as [|? ?];
+      [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|];
+      try discriminate.
+    destruct (errno_ret_in mmap_errnos r || bv_eqb r addr)
+      eqn:He; [|discriminate].
+    inversion H; clear H; subst.
+    apply orb_true_iff in He as [He | He].
+    + apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+      apply alt_l.
+      eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+    + apply bv_eqb_eq in He; subst r.
+      apply alt_r. apply pure_ok.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok.
+Qed.
+
+Lemma check_mmap_fixed_overflow_no_unmodeled : forall addr nZ eff m,
+  check_mmap_fixed_overflow addr nZ eff m <> CheckUnmodeled.
+Proof.
+  intros addr nZ [r ws zs us cs copyins] m. unfold check_mmap_fixed_overflow.
+  destruct (mmap_fixed_err_addr_b addr nZ);
+    [|apply check_ret_only_no_unmodeled].
+  destruct ws;
+    [destruct zs; [destruct us; [destruct cs; [destruct copyins;
+      [destruct (errno_ret_in mmap_errnos r || bv_eqb r addr)|]|]|]|]|];
+    discriminate.
+Qed.
+
+Lemma check_mmap_fixed_overflow_complete_ok : forall addr nZ eff m m' evs i,
+  mmap_fixed_overflow addr nZ i m (Ok eff m' evs) ->
+  check_mmap_fixed_overflow addr nZ eff m = CheckOk m' evs.
+Proof.
+  intros addr nZ eff m m' evs i H.
+  unfold mmap_fixed_overflow in H. unfold check_mmap_fixed_overflow.
+  destruct (mmap_fixed_err_addr_b addr nZ).
+  - sys_unfold. cbv iota in H. inv_ok.
+    + (* the environment errno *)
+      cbv zeta.
+      match goal with
+      | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+          rewrite (errno_ret_in_intro es e) by assumption
+      end.
+      reflexivity.
+    + (* the error-valued address itself *)
+      cbv zeta. rewrite bv_eqb_refl, Bool.orb_true_r. reflexivity.
+  - sys_unfold. inv_ok.
+    cbn; try rewrite bv_eqb_refl; reflexivity.
+Qed.
+
+Lemma mmap_fixed_overflow_not_unmodeled : forall addr nZ i m,
+  ~ mmap_fixed_overflow addr nZ i m Unmodeled.
+Proof.
+  intros addr nZ i m H. unfold mmap_fixed_overflow in H.
+  destruct (mmap_fixed_err_addr_b addr nZ);
+    sys_unfold; cbv iota in H; inv_ok; discriminate.
+Qed.
+
+(** Every answer of the overflow branch leaves the model as it was. *)
+Lemma check_mmap_fixed_overflow_model : forall addr nZ eff m m' evs,
+  check_mmap_fixed_overflow addr nZ eff m = CheckOk m' evs -> m' = m.
+Proof.
+  intros addr nZ [ret ws zs us cs ci] m m' evs H.
+  unfold check_mmap_fixed_overflow in H.
+  destruct (mmap_fixed_err_addr_b addr nZ).
+  - destruct ws, zs, us, cs, ci; try discriminate.
+    destruct (errno_ret_in mmap_errnos ret || bv_eqb ret addr); [|discriminate].
+    injection H as <- <-. reflexivity.
+  - apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). reflexivity.
 Qed.
 
 (** Turn a boolean goal condition into [true] using equalities and
@@ -629,8 +725,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { now apply check_mmap_fixed_overflow_sound_ok. }
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
@@ -745,8 +840,7 @@ Proof.
       destruct ((two_pow_64
                  <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
         eqn:Hovf.
-      { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-        apply pure_ok. }
+      { now apply check_mmap_fixed_overflow_sound_ok. }
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
       destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                         <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
@@ -798,8 +892,7 @@ Proof.
     destruct ((two_pow_64
                <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
       eqn:Hovf.
-    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-      apply pure_ok. }
+    { now apply check_mmap_fixed_overflow_sound_ok. }
     eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
     destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                       <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
@@ -854,8 +947,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { now apply check_mmap_fixed_overflow_sound_ok. }
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
@@ -1030,7 +1122,7 @@ Proof.
       destruct ((two_pow_64
                  <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
         eqn:Hovf.
-      { now apply check_ret_only_no_unmodeled in H. }
+      { now apply check_mmap_fixed_overflow_no_unmodeled in H. }
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                         <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1063,7 +1155,7 @@ Proof.
     destruct ((two_pow_64
                <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
       eqn:Hovf.
-    { now apply check_ret_only_no_unmodeled in H. }
+    { now apply check_mmap_fixed_overflow_no_unmodeled in H. }
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
     destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                       <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1096,7 +1188,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_mmap_fixed_overflow_no_unmodeled in H. }
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1168,7 +1260,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_mmap_fixed_overflow_no_unmodeled in H. }
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1287,8 +1379,7 @@ Proof.
       destruct ((two_pow_64
                  <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
         eqn:Hovf.
-      { sys_unfold. inv_ok.
-        cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+      { now apply (check_mmap_fixed_overflow_complete_ok _ _ _ _ _ _ i). }
       apply get_model_bind_ok_inv in H. cbv beta in H.
       destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                         <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1337,8 +1428,7 @@ Proof.
     destruct ((two_pow_64
                <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
       eqn:Hovf.
-    { sys_unfold. inv_ok.
-      cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+    { now apply (check_mmap_fixed_overflow_complete_ok _ _ _ _ _ _ i). }
     apply get_model_bind_ok_inv in H. cbv beta in H.
     destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                       <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1389,8 +1479,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { sys_unfold. inv_ok.
-    cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+  { now apply (check_mmap_fixed_overflow_complete_ok _ _ _ _ _ _ i). }
   apply get_model_bind_ok_inv in H. cbv beta in H.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1505,8 +1594,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { sys_unfold. inv_ok.
-    cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+  { now apply (check_mmap_fixed_overflow_complete_ok _ _ _ _ _ _ i). }
   apply get_model_bind_ok_inv in H. cbv beta in H.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1641,7 +1729,7 @@ Proof.
       destruct ((two_pow_64
                  <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
         eqn:Hovf.
-      { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+      { exfalso. exact (mmap_fixed_overflow_not_unmodeled _ _ _ _ H). }
       apply bind_model_inv in H. cbv beta in H.
       destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                         <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1659,7 +1747,7 @@ Proof.
     destruct ((two_pow_64
                <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
       eqn:Hovf.
-    { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+    { exfalso. exact (mmap_fixed_overflow_not_unmodeled _ _ _ _ H). }
     apply bind_model_inv in H. cbv beta in H.
     destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                       <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1675,7 +1763,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+  { exfalso. exact (mmap_fixed_overflow_not_unmodeled _ _ _ _ H). }
   apply bind_model_inv in H. cbv beta in H.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.
@@ -1702,7 +1790,7 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+  { exfalso. exact (mmap_fixed_overflow_not_unmodeled _ _ _ _ H). }
   apply bind_model_inv in H. cbv beta in H.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil.

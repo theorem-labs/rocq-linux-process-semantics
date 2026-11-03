@@ -1620,6 +1620,127 @@ Example mmap_fixed_overflowing_len_rejects_einval :
   = CheckReject.
 Proof. check_eq. Qed.
 
+(** AN ERROR-VALUED MAP_FIXED ADDRESS COMES BACK AS ITSELF.  For a
+    MAP_FIXED [addr] in [[2^64-4095, 2^64-1]] the generic search returns
+    [addr] unchanged and [__get_unmapped_area]'s
+    [if (IS_ERR_VALUE(addr)) return addr;] (mm/mmap.c:854-855) fires
+    before its [addr > TASK_SIZE - len] -ENOMEM (mm/mmap.c:857), so the
+    call returns [addr], which a C library reads as the errno
+    [2^64 - addr].  The environment -ENOMEM (the map-count test,
+    mm/mmap.c:377) stays admitted beside it, as on every arm.  Both
+    MAP_FIXED prot words and the NOREPLACE spelling answer alike: the
+    value leaves [do_mmap] (mm/mmap.c:406-408) before the -EEXIST test. *)
+
+Example mmap_fixed_rw_err_addr_returns_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (Z_to_bv 64 (two_pow_64 - 4095)) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+(** That value is the encoding of errno 4095. *)
+Example mmap_fixed_err_addr_lowest_is_errno_4095 :
+  Z_to_bv 64 (two_pow_64 - 4095) = errno_ret 4095.
+Proof. vm_compute. first [reflexivity | apply bv_eq; reflexivity]. Qed.
+
+Example mmap_fixed_noaccess_err_addr_returns_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 0; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 4095) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+Example mmap_fixed_err_addr_top_returns_errno_1 :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 1); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 1) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+Example mmap_noreplace_err_addr_returns_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 1); 4096; 3; Z_to_bv 64 0x100022;
+                  mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 1) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+(** The environment -ENOMEM beside it, and a wrong errno refused. *)
+Example mmap_fixed_err_addr_admits_enomem :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+Example mmap_fixed_err_addr_rejects_einval :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) noaccess_base
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** The control: [2^64 - 4096] is page aligned and NOT error-valued
+    ([IS_ERR_VALUE] starts at [-MAX_ERRNO] = [2^64 - 4095],
+    include/linux/err.h:18,28), so it reaches the
+    [addr > TASK_SIZE - len] test and is -ENOMEM, and only -ENOMEM. *)
+Example mmap_fixed_aligned_top_page_is_enomem :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4096); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+Example mmap_fixed_aligned_top_page_rejects_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4096); 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (Z_to_bv 64 (two_pow_64 - 4096)) [] []) noaccess_base
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** The length still answers first.  [len > mmap_end - mmap_min_addr]
+    in the generic search (mm/mmap.c:697), with [mmap_end] the Sv48
+    [TASK_SIZE] and [mmap_min_addr] 4096, is -ENOMEM before the address
+    is returned: at [TASK_SIZE - 4096 + 1] (rounded up to [TASK_SIZE])
+    only -ENOMEM; at [TASK_SIZE - 4096] the address itself. *)
+Example mmap_fixed_err_addr_long_len_is_enomem_only :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 1); Z_to_bv 64 (TASK_SIZE - 4095);
+                  3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 1) [] []) noaccess_base
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example mmap_fixed_err_addr_longest_len_returns_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 1); Z_to_bv 64 (TASK_SIZE - 4096);
+                  3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 1) [] []) noaccess_base
+  = CheckOk noaccess_base [].
+Proof. check_eq. Qed.
+
+(** Without MAP_FIXED the same address is a hint, and nothing changes:
+    [generic_get_unmapped_area] page-aligns it ([PAGE_ALIGN(addr)] wraps
+    to 0, mm/mmap.c:704), the hint fails its tests, and the search
+    places the mapping.  The address itself is never the answer. *)
+Example mmap_hint_err_addr_never_returns_addr :
+  check_syscall
+    (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 3; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret 4095) [] []) noaccess_base
+  = CheckReject.
+Proof. check_eq. Qed.
+
 (** Below the model's ceiling an unaligned MAP_FIXED addr IS -EINVAL. *)
 
 Example mmap_fixed_unaligned_below_ceiling_is_einval :
@@ -3980,8 +4101,10 @@ Qed.
 (** Reason 1.  OVER AN OCCUPIED RANGE NOTHING BUT AN ERRNO IS ACCEPTED,
     for every ledger, every address and every length: whatever the
     checker accepts leaves the model unchanged, carries no zero-fill
-    and no unmap, and returns one of the argument gate's two errnos or
-    -EEXIST.  Stated over the checker, with
+    and no unmap, and returns one of the argument gate's two errnos,
+    -EEXIST, or an error-valued [addr] itself, which [__get_unmapped_area]
+    hands back as is (mm/mmap.c:854-855; [Mmap.mmap_fixed_overflow]) and
+    a C library reads as an errno.  Stated over the checker, with
     [Checks.Sys.Mm.Mmap.check_mmap_sound_ok] and [check_mmap_complete_ok]
     carrying it to [Mmap.mmap_spec] in both directions.  The flags word
     is the runtime's. *)
@@ -3992,7 +4115,8 @@ Lemma mmap_noreplace_occupied_answers_only_errnos :
     check_mmap addr len 3 noreplace_noreserve_flags fd 0
       (mkEffectU r [] zs us [] []) m = CheckOk m' evs ->
     m' = m /\ evs = [] /\ zs = [] /\ us = []
-    /\ (r = errno_ret ENOMEM \/ r = errno_ret EINVAL \/ r = errno_ret EEXIST).
+    /\ (r = errno_ret ENOMEM \/ r = errno_ret EINVAL \/ r = errno_ret EEXIST
+        \/ (r = addr /\ addr_is_error_b addr = true)).
 Proof.
   intros addr len fd r zs us m m' evs Hocc H.
   unfold check_mmap in H.
@@ -4022,9 +4146,26 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { apply check_ret_only_ok_iff in H. destruct H as (Heff & -> & ->).
-    injection Heff as -> -> ->.
-    repeat split; try reflexivity. left; reflexivity. }
+  { unfold check_mmap_fixed_overflow in H.
+    destruct (mmap_fixed_err_addr_b addr (page_round_up_Z (bv_unsigned len)))
+      eqn:Eerr.
+    - destruct zs; [|discriminate]. destruct us; [|discriminate].
+      cbv beta iota in H.
+      destruct (errno_ret_in mmap_errnos r || bv_eqb r addr) eqn:He;
+        [|discriminate].
+      injection H as <- <-.
+      apply orb_true_iff in He as [He | He].
+      + apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+        destruct HIn as [<- | []].
+        repeat split; try reflexivity. left; reflexivity.
+      + apply bv_eqb_eq in He. subst r.
+        unfold mmap_fixed_err_addr_b in Eerr.
+        apply andb_true_iff in Eerr as [Eerr _].
+        repeat split; try reflexivity.
+        right; right; right. split; [reflexivity | exact Eerr].
+    - apply check_ret_only_ok_iff in H. destruct H as (Heff & -> & ->).
+      injection Heff as -> -> ->.
+      repeat split; try reflexivity. left; reflexivity. }
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
   destruct (negb (Z.eqb (bv_unsigned addr mod page_size) 0)) eqn:Halign.
@@ -4042,23 +4183,27 @@ Proof.
     destruct HIn as [<- | []].
     repeat split; try reflexivity. left; reflexivity.
   - apply bv_eqb_eq in He. subst r.
-    repeat split; try reflexivity. right; right; reflexivity.
+    repeat split; try reflexivity. right; right; left; reflexivity.
 Qed.
 
 (** Reason 1, the other half.  OVER A FREE RANGE -EEXIST IS NEVER
-    ACCEPTED, for every ledger, every address and every length.  Nothing
-    the ledger records meets the request, so no kernel reading only its
-    VMA tree could refuse it; the one kernel that would — one holding a
-    VMA the ledger does not carry — is the model's known residual
-    gap. *)
+    ACCEPTED, for every ledger, every length and every address but one.
+    Nothing the ledger records meets the request, so no kernel reading
+    only its VMA tree could refuse it; the one kernel that would — one
+    holding a VMA the ledger does not carry — is the model's known
+    residual gap.  The excluded address is [2^64 - 17], the encoding of
+    -EEXIST itself: [__get_unmapped_area] returns an error-valued
+    MAP_FIXED address as is (mm/mmap.c:854-855), before the NOREPLACE
+    test, so there Linux answers that very value. *)
 Lemma mmap_noreplace_free_range_never_eexist :
   forall addr len fd zs us m m' evs,
+    addr <> errno_ret EEXIST ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     check_mmap addr len 3 noreplace_noreserve_flags fd 0
       (mkEffectU (errno_ret EEXIST) [] zs us [] []) m <> CheckOk m' evs.
 Proof.
-  intros addr len fd zs us m m' evs Hfree H.
+  intros addr len fd zs us m m' evs Hne Hfree H.
   unfold check_mmap in H.
   assert (E1 : mmap_off_aligned_b 0 = true) by (vm_compute; reflexivity).
   assert (E2 : mmap_anon_b noreplace_noreserve_flags = true)
@@ -4086,9 +4231,18 @@ Proof.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
     eqn:Hovf.
-  { apply check_ret_only_ok_iff in H. destruct H as (Heff & _ & _).
-    apply (f_equal (fun e => bv_unsigned (eff_ret e))) in Heff.
-    vm_compute in Heff. discriminate. }
+  { unfold check_mmap_fixed_overflow in H.
+    destruct (mmap_fixed_err_addr_b addr (page_round_up_Z (bv_unsigned len))).
+    - destruct zs; [|discriminate]. destruct us; [|discriminate].
+      cbv beta iota in H.
+      assert (Enot : errno_ret_in mmap_errnos (errno_ret EEXIST) = false)
+        by (vm_compute; reflexivity).
+      rewrite Enot in H. cbn [orb] in H.
+      destruct (bv_eqb (errno_ret EEXIST) addr) eqn:Ea; [|discriminate].
+      apply bv_eqb_eq in Ea. exact (Hne (eq_sym Ea)).
+    - apply check_ret_only_ok_iff in H. destruct H as (Heff & _ & _).
+      apply (f_equal (fun e => bv_unsigned (eff_ret e))) in Heff.
+      vm_compute in Heff. discriminate. }
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [discriminate|].
   destruct (negb (Z.eqb (bv_unsigned addr mod page_size) 0)) eqn:Halign.
