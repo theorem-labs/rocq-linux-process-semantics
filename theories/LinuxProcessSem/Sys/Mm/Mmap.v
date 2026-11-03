@@ -2224,7 +2224,11 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       [map_count] test of an interior split (mm/vma.c:1389-1393), a
       [__split_vma] allocation, or a maple-tree store (:1428, :1573).
       Each failure path re-attaches what it detached ([reattach_vmas]),
-      so the range keeps its pages.
+      so the range keeps its pages.  The model tracks none of these, so
+      no state forces that -ENOMEM: [Run.injected_table] lists it in the
+      allocation family, the family of the same split failure in
+      [Mprotect.mprotect_errnos] and [Mremap.mremap_errnos], and a
+      configuration that reads that family as forced-only removes it.
     - anything else — a range touching the binary image ([vm_reserved]
       can never be unreserved), or a range reaching into the STACK BAND
       [[alloc_top h, TASK_SIZE)] — is unmodeled and yields [unmodeled]
@@ -2291,3 +2295,13 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
                    (mmap_fixed_destroyed_next h addr n)) ;;
          pure (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] []))
     else unmodeled.
+
+(** [munmap]'s budget mark, for [Run.alloc_budget_refused_b]: [false]
+    on every request.  No arm of [munmap_spec] reads the budget, and the
+    partial arm only gives charge back ([with_mmap_destroyed] forgets the
+    pages in the range), so no munmap is a grant the budget refuses.  Its
+    one injected refusal, the partial arm's -ENOMEM ([munmap_errnos]), is
+    the split's [map_count] test or a kernel allocation, not the budget.
+    The mark exists because every allocation-family arm of
+    [Run.injected_table] names one. *)
+Definition munmap_budget_refused_b (addr len : word) (m : Model) : bool := false.

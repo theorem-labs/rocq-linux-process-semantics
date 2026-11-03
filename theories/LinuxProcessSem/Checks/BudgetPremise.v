@@ -12,11 +12,12 @@
 
     ** What is pinned
 
-    - PART 1, the grant clause, arm by arm.  Each mark fires on the
-      arm's own beyond-budget fixture and does not fire within budget,
-      on a request an argument gate answers, on a request that consumes
-      no backing, or on a query — so a budget refusal is distinguishable
-      from every other refusal the arm admits.  Beside the fixtures, the
+    - PART 1, the grant clause, arm by arm.  Each mark of an arm that
+      reads the budget fires on the arm's own beyond-budget fixture and
+      does not fire within budget, on a request an argument gate
+      answers, on a request that consumes no backing, or on a query — so
+      a budget refusal is distinguishable from every other refusal the
+      arm admits.  Beside the fixtures, the
       SOUNDNESS lemmas at abstract arguments: where the mark fires,
       every outcome the arm admits is a refusal ([Run.refusal_b]) — for
       [brk], [mmap] and [mprotect] over the whole arm; for [mremap] the
@@ -35,6 +36,9 @@
       is budget-refused through the effect clause.
     - PART 3, the dispatcher: every [FamAlloc] arm and nothing else
       ([Run.alloc_family_dispatched] makes the enumeration a theorem).
+      [munmap]'s mark is the constant [false]
+      ([Run.alloc_budget_refused_munmap]), so PART 1 has no munmap
+      fixture: no munmap request is budget-refused.
     - PART 4, run level.  The exit-0 image never reaches the mark at ANY
       budget, entry or input, through the same reflective evaluator that
       discharges [MustExit] ([Checks.Examples.exits_c]); a six-instruction
@@ -1253,6 +1257,12 @@ Proof. vm_compute. reflexivity. Qed.
     registers. *)
 Example brk_is_dispatched : In 214%Z alloc_mark_sysnos.
 Proof. apply (alloc_family_dispatched 214 (mkInjectedArm 214 FamAlloc [])); reflexivity. Qed.
+
+Example munmap_is_dispatched : In 215%Z alloc_mark_sysnos.
+Proof.
+  apply (alloc_family_dispatched 215 (mkInjectedArm 215 FamAlloc munmap_errnos));
+    reflexivity.
+Qed.
 
 Example mremap_is_dispatched : In 216%Z alloc_mark_sysnos.
 Proof.
