@@ -367,8 +367,7 @@ Definition snd_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 capable.
 Definition snd_state : NsState :=
   mkNsState [] users [] [] [net2 [lo_up]] [] [] [] [(7%N, snd_file)] (ns_env empty_nsstate).
 Definition snd_ctx : NsCtx :=
-  mkNsCtx 1 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 (mkCaps 0 0 0 0 0) 0 []
-          (Some false) (Some 1).
+  mkNsCtx 1 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 (mkCaps 0 0 0 0 0) 0 [].
 Definition snd_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in
            if (0 <=? k) && (k <? snd_len) then Some (nth (Z.to_nat k) getlink_req (Z_to_bv 8 0))
@@ -431,7 +430,7 @@ Definition up_state : NsState :=
   mkNsState [] users [] [] [net2 [lo IFF_LOOPBACK []]] [] [] [] [(7%N, up_file)] (ns_env empty_nsstate).
 Definition up_ctx : NsCtx :=
   mkNsCtx 2 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0) 0 [] (Some false) (Some 1).
+          (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0) 0 [].
 Definition up_len : Z := Z.of_nat (length newlink_req).
 Definition up_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in
