@@ -107,34 +107,73 @@ Example rt_sigaction_sigchld_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** SIGABRT (6), AND THIS ONE IS LOAD-BEARING FOR ANOTHER ARM.
+(** SIGABRT (6), AND THESE THREE ARE LOAD-BEARING FOR ANOTHER ARM.
     [Kernel.Signal.tkill_self] delivers SIGABRT with the DEFAULT
     disposition and never asks whether a handler is installed, and what
-    makes that sound is this decline rather than a test: an install for
-    signal 6 with a non-NULL [act] is [unmodeled], so no run this model
-    covers can reach the abort path with a handler in place.  The
-    argument is at [Kernel.Signal.tkill_self]; this is the check that
-    fails if [Signal.sigaction_accepted] ever grows a 6.
+    makes that sound is the two declines below rather than a test: an
+    install for signal 6 whose handler word is an address or SIG_IGN is
+    [unmodeled], so no run this model covers can reach the abort path
+    with a handler, or with SIGABRT ignored.  The argument is at
+    [Kernel.Signal.tkill_self]; these are the checks that fail if
+    [Signal.sigaction_accepted] ever grows a 6, or if
+    [Signal.sigabrt_dfl_install] ever admits a handler word other than
+    SIG_DFL.
 
-    IT IS THE SAME STRUCT AND THE SAME SHAPE as
-    [rt_sigaction_sigint_accepted] below, differing in the signal number
-    alone, which is what makes the pair say that the NUMBER is the
-    reason.  Two OTHER gates sit in front of that one — a non-NULL
-    [oact], and a flag word outside [Signal.sa_flags_accepted] — and both
-    would decline a handler install for reasons that have nothing to do
-    with SIGABRT: musl's [signal(3)] trips both, since it returns the old
-    handler and passes SA_RESTART.  That is why this example passes a
-    NULL [oact] and a zero flag word: written the other way it would
-    keep passing if this decline were removed. *)
-Example rt_sigaction_sigabrt_unmodeled :
-  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_zero
+    The one install for signal 6 that IS answered is SIG_DFL, musl's own
+    on abort's second path: it sets the disposition [tkill_self] already
+    assumes ([Signal.sigabrt_dfl_install] says why that is sound).  The
+    SIG_DFL case for SIGSEGV, SIGPIPE and SIGCHLD above is still
+    declined: [mem_sigaction_zero] is a SIG_DFL install, so those three
+    say that the acceptance is for SIGABRT and not for SIG_DFL as such.
+
+    THE THREE DIFFER FROM EACH OTHER IN THE HANDLER WORD ONLY, which is
+    what makes them say that the HANDLER is the reason.  And
+    [rt_sigaction_sigabrt_dfl_accepted] differs from
+    [rt_sigaction_sigint_accepted] below in the signal number only.  Two
+    OTHER gates sit in front of the handler test — a non-NULL [oact],
+    and a flag word outside
+    [Signal.sa_flags_accepted] — and both would decline a handler install
+    for reasons that have nothing to do with SIGABRT: musl's [signal(3)]
+    trips both, since it returns the old handler and passes SA_RESTART.
+    That is why these examples pass a NULL [oact] and a zero flag word:
+    written the other way they would keep passing if the declines were
+    removed. *)
+Definition mem_sigaction_handler : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4097 then 16 else 0)
+           else None.
+
+Definition mem_sigaction_ign : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4096 then 1 else 0)
+           else None.
+
+(** A handler at 0x1000: declined. *)
+Example rt_sigaction_sigabrt_handler_unmodeled :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_handler
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** ...and the acceptance the four above are a decline AGAINST, so that
-    a spec that declined everything would not pass this file either. *)
+(** SIG_IGN (1): declined. *)
+Example rt_sigaction_sigabrt_ign_unmodeled :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_ign
+                   (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** SIG_DFL (0): answered 0, and the model is left as it was. *)
+Example rt_sigaction_sigabrt_dfl_accepted :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+Proof. vm_compute. reflexivity. Qed.
+
+(** ...and the acceptance the declines above are AGAINST, so that a spec
+    that declined everything would not pass this file either. *)
 Example rt_sigaction_sigint_accepted :
   check_syscall (mkInput 134 [2; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))

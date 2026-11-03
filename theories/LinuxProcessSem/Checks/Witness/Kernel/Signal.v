@@ -81,6 +81,7 @@ Definition rt_sigaction_witness (sig act oact ss : word) (i : SyscallInput)
         else if sig_kernel_only sig then ret_outcome (errno_ret EINVAL) m
         else if negb (sa_flags_ok fl) then Unmodeled
         else if sigaction_accepted sig then ret_outcome (Z_to_bv 64 0) m
+        else if sigabrt_dfl_install sig (in_mem i) act then ret_outcome (Z_to_bv 64 0) m
         else Unmodeled
     end.
 
@@ -106,6 +107,8 @@ Proof.
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
+  { unfold ret_only, ret_outcome. apply pure_ok. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
   - unfold ret_only, ret_outcome. apply pure_ok.
   - apply unmodeled_intro.
 Qed.

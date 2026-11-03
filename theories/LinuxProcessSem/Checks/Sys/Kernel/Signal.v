@@ -171,6 +171,8 @@ Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
         else if sig_kernel_only sig then check_ret_only eff (errno_ret EINVAL) m []
         else if negb (sa_flags_ok fl) then CheckUnmodeled
         else if sigaction_accepted sig then check_ret_only eff (Z_to_bv 64 0) m []
+        else if sigabrt_dfl_install sig (in_mem i) act
+        then check_ret_only eff (Z_to_bv 64 0) m []
         else CheckUnmodeled
     end.
 
@@ -199,7 +201,9 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota; [discriminate|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota; [|discriminate].
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota; [|discriminate].
   apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
 Qed.
 
@@ -226,6 +230,8 @@ Proof.
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
   - now apply check_ret_only_no_unmodeled in H.
   - apply unmodeled_intro.
 Qed.
@@ -251,7 +257,9 @@ Proof.
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *.
   { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *; [inv_ok|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; inv_ok.
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *.
+  { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *; inv_ok.
   cbn. rewrite bv_eqb_refl. reflexivity.
 Qed.
 
@@ -273,7 +281,8 @@ Proof.
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *; [inv_ok|].
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *;
     [reflexivity|].
-  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *;
+  destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; [inv_ok|].
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *;
     [inv_ok|reflexivity].
 Qed.
 

@@ -770,9 +770,12 @@ Definition reaches_error (c0 : config) : Prop :=
     [Kernel.Signal.tkill_self] is a modeled operation that
     DELIVERS a signal rather than merely admitting an install, so
     "the model holds no disposition" is not harmless.  The disposition a modeled operation could install is
-    covered — [Signal.sigaction_accepted] declines every install for
-    signal 6, which
-    [Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_unmodeled] pins —
+    covered — [Signal.rt_sigaction_spec] answers an install for signal 6
+    only with the handler SIG_DFL, the disposition it already assumes
+    ([Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_dfl_accepted]), and
+    declines SIG_IGN and a handler address
+    ([Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_ign_unmodeled],
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_handler_unmodeled]) —
     but the disposition the process INHERITS is not: [begin_new_exec]
     calls [flush_signal_handlers(me, 0)], and that function resets a
     slot only [if (force_default || ka->sa.sa_handler != SIG_IGN)], so
