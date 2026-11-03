@@ -1337,8 +1337,8 @@ BOT = "github-actions[bot]"
 
 
 def limit_hold(run, at=OLD, user=BOT, kind="limit", tries=None):
-    """A hold comment that the rescreen job tries again, as the hold job writes it, naming the run whose event was held
-    first; kind limit, cap or transient, and the tries so far (none: a marker without them, read as 0)."""
+    """A hold comment that the rescreen job tries again, as the hold job writes it, naming the run of the event the hold
+    comes from; kind limit, cap or transient, and the tries so far (none: a marker without them, read as 0)."""
     count = "" if tries is None else f" {tries}"
     return {"id": run, "user": {"login": user}, "updated_at": at,
             "body": f"<!-- review-held -->\n**Automated review held.**\n\nHeld.\n\n<!-- review-held-{kind} {run}{count} -->"}
@@ -1422,8 +1422,8 @@ class RescreenTrustTest(Held):
                                   got.get("number")), ("screen", "mallory", "true", "50", "7"))
 
     def test_a_writers_item_still_skips_the_screen(self):
-        """The author and the account the limit held, read again from the API: both writers, no screen. A writer's
-        item that an outsider's push put at the limit is screened, as that push's own run would screen it."""
+        """The author and the account whose event the hold names, read again from the API: both writers, no screen. A
+        writer's item whose hold names an outsider's push is screened, as that push's own run would screen it."""
         self.item(author="alice")
         self.origin(50, "bob")
         self.assertEqual(self.route(account="bob").get("route"), "review")

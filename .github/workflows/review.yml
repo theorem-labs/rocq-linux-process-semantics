@@ -264,12 +264,12 @@ jobs:
           }
           # end of held
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
-          # job did not skip and either <login> started by an event, or screened again an item that the limit held for
-          # <login> (a rescreen, whose name, which its trust job checks, ends with the account). A run whose trust job
-          # is not listed yet counts. A rescreen that its trust job refused (the item closed, or lost its label, in
-          # between), so that every other job of it was skipped, screened nothing and does not count. The rescreen job,
-          # which every dispatched run skips, is not one of those jobs: a rescreen whose trust job has just accepted it
-          # and whose next jobs are not listed yet counts. The run stops when GitHub could not say.
+          # job did not skip and either <login> started by an event, or screened again an item whose hold names an
+          # event of <login> (a rescreen, whose name, which its trust job checks, ends with the account). A run whose
+          # trust job is not listed yet counts. A rescreen that its trust job refused (the item closed, or lost its
+          # label, in between), so that every other job of it was skipped, screened nothing and does not count. The
+          # rescreen job, which every dispatched run skips, is not one of those jobs: a rescreen whose trust job has
+          # just accepted it and whose next jobs are not listed yet counts. The run stops when GitHub could not say.
           earlier() {
             local from runs id kind verdict
             count=0
@@ -377,7 +377,8 @@ jobs:
                 author=0 actor=0
                 known "$AUTHOR" || author=$?
                 known "$account" || actor=$?
-                # A writer's item, which the limit held for a writer's account: reviewed without the screen.
+                # A writer's item whose hold names a writer's event (at the cap, or a review that did not finish):
+                # reviewed without the screen.
                 (( author != 0 || actor != 0 )) || route review ""
                 outsider=$AUTHOR
                 (( actor == 0 )) || outsider=$account
@@ -1213,7 +1214,8 @@ jobs:
           # in the queue.
           runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
             -f created=">=$since" -F per_page=100 \
-            --jq '.workflow_runs[] | "\(.created_at // "-") \(.status // "-") \(.event // "-") \(.display_title // "")"') \
+            --jq '.workflow_runs[]
+              | "\(.created_at // "-") \(.status // "-") \(.event // "-") \(.display_title // "" | gsub("[\r\n]"; " "))"') \
             || { echo "::error::the runs of this workflow could not be read."; exit 1; }
           declare -A used=() running=()
           rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\[bot\])?)$'
