@@ -766,7 +766,8 @@ jobs:
             [[ $n =~ ^[0-9]+$ ]] || stop "the jobs of run $id could not be read."
             count=$((count + n))
           done <<< "$runs"
-          echo "count=$count" >> "$GITHUB_OUTPUT"
+          # A failed write would leave the count empty, which the next step would read as 0: it stops the run instead.
+          echo "count=$count" >> "$GITHUB_OUTPUT" || stop "the count could not be written."
           echo "$count reviews ($POOL) called the model, or may, in the last hour."
 
       # Fails only when the count is at the cap: the hold job reads this step's failure as the cap reached.
@@ -777,6 +778,9 @@ jobs:
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
         run: |
           set -uo pipefail
+          # No count, or not a number, is no count under the cap: no model runs.
+          [[ $COUNT =~ ^[0-9]+$ && $CAP =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::no count of the hour's reviews ($COUNT) or no cap ($CAP). No model ran."; exit 1; }
           if (( COUNT >= CAP )); then
             echo "::error::HELD: $COUNT reviews ($POOL) called the model, or may, in the last hour: the cap is $CAP." \
               "No model ran. A maintainer can re-run this run once the hour has passed."
@@ -1287,15 +1291,22 @@ jobs:
             unsettled=$(grep -c . <<< "$since_hold" || true)
             if (( unsettled >= REVIEW_TRIES )); then
               # The hold comment is replaced with words that promise nothing, and with no marker, so no later run picks
-              # the item again, and this run alone fails for it. A comment that could not be replaced keeps its
-              # marker, and the next run tries again.
+              # the item again, and this run alone fails for it. Only while the newest hold comment is still the one
+              # read above, at $at: a newer hold (a new event's, or a rescreen's that finished meanwhile) is not
+              # overwritten, and the next run decides from it. A comment that could not be replaced keeps its marker,
+              # and the next run tries again.
+              newest_hold=$(gh api --paginate "repos/$REPO/issues/$number/comments" --jq '.[]
+                | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+                | "\(.updated_at) \(.id)"' | sort | tail -n 1) \
+                || { echo "::error::the comments of #$number could not be read."; failed=1; continue; }
+              read -r now_at id <<< "$newest_hold"
+              if [ "${now_at:-}" != "$at" ]; then
+                echo "#$number: its hold changed (${now_at:-none}, read at $at) since this run read it: left for the next run."
+                continue
+              fi
               echo "::error::#$number: screened again $unsettled times since its hold at $at, with no new hold and no" \
                 "review posted: a maintainer must look at it."
               failed=1
-              id=$(gh api --paginate "repos/$REPO/issues/$number/comments" --jq '.[]
-                | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
-                | "\(.updated_at) \(.id)"' | sort | tail -n 1 | cut -d' ' -f2) \
-                || { echo "::error::the comments of #$number could not be read."; continue; }
               [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::#$number has no hold comment to replace."; continue; }
               body=$(printf '%s\n%s\n\n%s\n' '<!-- review-held -->' "**Automated review held.**" \
                 "It was screened again automatically $unsettled times since it was held, and none of those runs ended in a new hold or a posted review. It is not screened again automatically. A maintainer will look at it, and can start the screen and the review with \`gh workflow run review.yml -R $REPO -f number=$number -f screen=true\`.")

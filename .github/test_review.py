@@ -32,7 +32,8 @@ RUN = "https://github.com/acme/model/actions/runs/1"
 
 # gh api <endpoint> [--paginate] [--jq <filter>] [--method M] [-f|-F k=v], answered from $FAKE_GH/<endpoint>.json
 # (the endpoint's slashes as underscores, its query dropped) through jq, as gh applies --jq; an endpoint with no file
-# answers as GitHub's 404 does. <endpoint>.2.json and on are the pages that only --paginate reads.
+# answers as GitHub's 404 does. <endpoint>.2.json and on are the pages that only --paginate reads. <endpoint>.then.json,
+# when there is one, takes the place of <endpoint>.json after the first read: an answer that changes in between.
 FAKE_GH = r"""#!/usr/bin/env bash
 [ "$1" = api ] || { echo "gh: only api is served here: $*" >&2; exit 9; }
 shift
@@ -56,6 +57,7 @@ n=2
 while [ -n "$paginate" ] && [ -f "${file%.json}.$n.json" ]; do
   jq -r "$filter" "${file%.json}.$n.json"; n=$((n + 1))
 done
+[ ! -f "${file%.json}.then.json" ] || mv "${file%.json}.then.json" "$file"
 """
 
 
@@ -1296,6 +1298,21 @@ class CapTest(Runner):
         self.assertEqual(rc, 1, out)
         self.assertIn("the cap is not a number", out)
 
+    def test_a_count_that_cannot_be_written_or_is_empty_lets_no_review_run(self):
+        """An empty count would read as 0 and let the review run with no cap. The count step stops when its output
+        cannot be written, and the cap's step refuses a count that is not a number."""
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     GITHUB_OUTPUT=self.dir, **self.step_env(self.COUNT, "screen"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the count could not be written", out)
+        for count in ("", "x", "-1"):
+            with self.subTest(count=count):
+                rc, out, _ = self.run_script(step("review", self.CAP)["run"], COUNT=count,
+                                             **self.step_env(self.CAP, "screen"))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("No model ran", out)
+
     def test_screened_reviews_do_not_use_up_the_writers_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
         writers = int(WF["env"]["HOURLY_CAP"])
@@ -1798,6 +1815,36 @@ class RescreenJobTest(Held):
         self.assertEqual((rc, runs), (0, []), out)
         self.assertIn("#7: no hold that is tried again", out)
         self.assertFalse(any(c[:2] == ["--method", "PATCH"] for c in gh_calls(self.api)))
+
+    def test_at_the_bound_a_hold_that_changed_meanwhile_is_not_overwritten(self):
+        """The comment is replaced only while the newest hold is still the one the run read. A newer hold written in
+        between (a new event's, or a rescreen's that finished) is left as it is, for the next run, and the job does
+        not fail for it; the same hold read twice is replaced."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        for changed in (True, False):
+            with self.subTest(changed=changed):
+                self.tearDown()
+                self.setUp()
+                self.items((7, "open"))
+                self.held(7, limit_hold(50, kind="cap", tries=0))
+                if changed:
+                    self.serve(f"repos/{REPO}/issues/7/comments.then",
+                               [limit_hold(50, kind="cap", tries=0),
+                                dict(limit_hold(60, at="2999-01-01T00:00:00Z"), id=60)])
+                self.origin(50, "mallory")
+                self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c"})
+                self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                            for i in range(tries)])
+                rc, out, runs = self.started()
+                patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
+                self.assertEqual(runs, [], out)
+                if changed:
+                    self.assertEqual((rc, patches), (0, []), out)
+                    self.assertIn("#7: its hold changed (2999-01-01T00:00:00Z, read at 2000-01-01T00:00:00Z)", out)
+                    self.assertNotIn("::error::", out)
+                else:
+                    self.assertEqual(rc, 1, out)
+                    self.assertEqual([p[2] for p in patches], [f"repos/{REPO}/issues/comments/50"])
 
     def test_a_hold_comment_that_cannot_be_replaced_is_tried_again_next_run(self):
         """The PATCH fails (no stand-in answer): the job fails, and the comment keeps its marker for the next run."""
