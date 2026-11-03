@@ -23,10 +23,11 @@
 #   starts this workflow for each with -f rescreen=true and the account the hold names (-f account=<login>). Such a run
 #   takes an outsider's path: the trust job reads the author, the hold and the account again from the API, never from
 #   the inputs alone, and the item is screened, then reviewed and the review posted, as for an event; only when the
-#   author and that account both have write access is it reviewed without the screen, as a writer's item is. Its
-#   screen counts toward the account's OUTSIDE_HOURLY_LIMIT with the account's own events, so an account still at the
-#   limit stays held, and its hold comment says from when it is tried again. An item that the screen held is never
-#   screened again this way: a person decides.
+#   author and that account both have write access is it reviewed without the screen, as a writer's item is. When
+#   that account has no write access, its screen counts toward the account's OUTSIDE_HOURLY_LIMIT with the account's
+#   own events, so an account still at the limit stays held, and its hold comment says from when it is tried again. A
+#   writer's account has no such limit: its rescreens are bounded by the rescreen job's count alone (below). An item
+#   that the screen held is never screened again this way: a person decides.
 # - A maintainer can ask for the review of any pull request or issue, without the screen or, with -f screen=true, after
 #   it:
 #
@@ -157,7 +158,9 @@ env:
   # account in an hour, is this number, 3, less what its own events used. One count and one limit, because a rescreen
   # is the screen that the held event did not get: it gives an account no more screens an hour than its events alone
   # could, which keeps it under SCREENED_HOURLY_CAP, so one account cannot fill that pool. A smaller N for rescreens
-  # would only leave a burst held for longer; an account that keeps opening, pushing or reopening stays held.
+  # would only leave a burst held for longer; an account that keeps opening, pushing or reopening stays held. An
+  # account with write access has no such limit (a writer's push to an outsider's item, whose cap or transient hold
+  # names the writer's run): the rescreen job still starts at most this number of its rescreens an hour.
   OUTSIDE_HOURLY_LIMIT: "3"
   # The label a held pull request or issue gets, and the marker of the comment that says so.
   HELD_LABEL: review-held
@@ -231,7 +234,8 @@ jobs:
           # limit_hold <number>: "<time> <run> <tries> <kind>" of the newest hold comment of <number> when it is one
           # that the rescreen job tries again (its marker <!-- review-held-<kind> <run> <tries> -->): <kind> is limit
           # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
-          # time), <run> the run whose event was held first, and <tries> the screened reviews of it that failed so far.
+          # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
+          # reviews of it that failed so far.
           # "<time> -" when the screen held it, or a person decides. Nothing when it has no hold comment. Only
           # github-actions[bot]'s comments count.
           limit_hold() {
@@ -1013,8 +1017,9 @@ jobs:
   # that the rescreen job tries again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which that job
   # finds it and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
   # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
-  # times. <run> is the run whose event was held first, and <tries> the screened reviews of it that failed so far. A
-  # cancelled screen holds nothing, nor a screened review that a newer run of the same item cancelled: that run decides.
+  # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
+  # of it that failed so far. A cancelled screen holds nothing, nor a screened review that a newer run of the same item
+  # cancelled: that run decides.
   hold:
     needs: [trust, gather, screen, review]
     if: >-
@@ -1137,8 +1142,8 @@ jobs:
   # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
   # item for the next run and fails this job.
   # It is the only job of this file with actions: write, which starting a run needs; it checks nothing out, holds no
-  # model, and writes nothing but those runs. Its cost: one job of a few seconds every 15 minutes, 96 billed minutes a
-  # day on a standard runner, which GitHub does not bill in a public repository.
+  # model, and writes nothing but those runs. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a
+  # standard runner, whose minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.repository == 'theorem-labs/rocq-linux-process-semantics'
@@ -1166,7 +1171,8 @@ jobs:
           # limit_hold <number>: "<time> <run> <tries> <kind>" of the newest hold comment of <number> when it is one
           # that the rescreen job tries again (its marker <!-- review-held-<kind> <run> <tries> -->): <kind> is limit
           # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
-          # time), <run> the run whose event was held first, and <tries> the screened reviews of it that failed so far.
+          # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
+          # reviews of it that failed so far.
           # "<time> -" when the screen held it, or a person decides. Nothing when it has no hold comment. Only
           # github-actions[bot]'s comments count.
           limit_hold() {
