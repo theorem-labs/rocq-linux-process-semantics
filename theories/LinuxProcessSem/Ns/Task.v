@@ -97,10 +97,14 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     own [setsid], which sets the leader bit and so answers EPERM at the
     first test.  [setpgid] (154) has no arm, in [Spec.ns_table] or in the
     released table, so no modelled process makes such a group.  A process
-    outside the model can only after the caller's modelled parent exits:
-    the caller is then reparented to a reaper the environment owns, and
-    that reaper, in the caller's session, may call [setpgid(caller,
-    caller)] before the caller execs (kernel/sys.c:1143-1149).  The
+    outside the model can only when the caller is pid 1 of the namespace
+    and its modelled parent exits: the caller is then reparented to a
+    reaper the environment owns, and that reaper, in the caller's session,
+    may call [setpgid(caller, caller)] before the caller execs
+    (kernel/sys.c:1144-1150).  Another task of the namespace whose parent
+    exits goes to the namespace's pid 1 or to a child subreaper at its
+    level ([find_new_reaper], kernel/exit.c:642-675), a modelled process,
+    and [setpgid] has no arm.  The
     launch value [Tables.env_foreign_pgroups] names that event: under its
     default [false] the test is false and the arm is exact; under [true]
     EPERM is admitted beside the success.  If [setpgid] is ever modelled,

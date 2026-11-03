@@ -408,14 +408,17 @@ Definition default_mi_env : MiEnv :=
     model creates the name.  Then [env_foreign_pgroups]: whether a
     process outside the model may make a process group of a modelled
     task's pid.  Only the task itself or its parent may set the task's
-    process group ([setpgid], kernel/sys.c:1143-1153, Linux v6.18.46: a
+    process group ([setpgid], kernel/sys.c:1144-1155, Linux v6.18.46: a
     caller other than the task must be [p->real_parent], in [p]'s
     session, before [p] execs), and no modelled process can ([setpgid]
-    154 has no arm).  But once a modelled
-    parent exits, its child is reparented to a reaper the environment
-    owns, and that reaper may call [setpgid(child, child)] before the
-    child execs, after which the child's [setsid] answers EPERM
-    (kernel/sys.c:1284-1285).  [false], the default, assumes that no
+    154 has no arm).  But once the modelled parent of pid 1 of a pid
+    namespace the model made exits, that pid 1 is reparented to a reaper
+    the environment owns, and that reaper may call [setpgid(child, child)]
+    before the child execs, after which the child's [setsid] answers EPERM
+    (kernel/sys.c:1284-1285).  Another task of such a namespace whose
+    parent exits goes to the namespace's pid 1 or to a child subreaper at
+    its level ([find_new_reaper], kernel/exit.c:642-675), a modelled
+    process.  [false], the default, assumes that no
     environment reaper calls [setpgid] on the caller before the caller's
     [setsid]; a statement that wants that case names
     [env_foreign_pgroups := true] ([Task.setsid_arm]).
