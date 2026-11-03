@@ -354,14 +354,34 @@ Example handler_reached_cases :
   /\ nl_handler_errnos 17 = [].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** The forced-only filter reads an acknowledgement's errno and the type
+    of the request it echoes ([nl_fail_ack_alloc]): it marks only the
+    allocation errno of that type ([nl_handler_errnos]): -ENOBUFS for a
+    link dump or RTM_NEWADDR, -ENOMEM for RTM_NEWLINK.  Another errno
+    (-EPERM, -EEXIST, -ENOBUFS on RTM_NEWLINK) and a success are not
+    marked, so they are never removed. *)
+Example fail_ack_alloc_by_type :
+  nl_fail_ack_alloc (handler_fail_ack 2 getlink_req ENOBUFS) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req ENOMEM) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newaddr_req ENOBUFS) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req EPERM) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req ENOBUFS) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newaddr_req EEXIST) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req 0) = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** A bound socket (port 2) of the sealed namespace 2 sends the link dump
     request [getlink_req] to the kernel, from a task of that namespace
     ([snd_ctx]).  The dump's first part can fail for lack of memory:
     [sendto] still returns the request's length, the queue holds the
     acknowledgement with -ENOBUFS ([handler_fail_ack]) and behind it the
     dump ([lo_dump]), which keeps running, and the namespace does not
-    change.  [ns_spec] admits that answer, and the forced-only filter does
-    not remove it: a length matches no pair (SCOPE.md). *)
+    change.  [ns_spec] admits that answer beside the dump without the
+    failure ([dump_out]), with the same effect: a length, which matches no
+    pair.  Only the state after the call shows the failure
+    ([Net.nl_alloc_after]): under forced-only the filter removes the
+    answer with the acknowledgement and keeps the dump
+    ([Spec.ns_alloc_refusal]); under may-fail it keeps both (SCOPE.md). *)
 Definition snd_len : Z := Z.of_nat (length getlink_req).
 Definition snd_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 capable.
 Definition snd_state : NsState :=
@@ -387,6 +407,9 @@ Definition fail_out : ext_outcome :=
       (set_file snd_state 7 (netlink_file snd_file 2 2 (handler_fail_ack 2 getlink_req ENOBUFS :: lo_dump)))
       [].
 
+Definition dump_out : ext_outcome :=
+  EOk fail_eff rcv_model snd_ctx (set_file snd_state 7 (netlink_file snd_file 2 2 lo_dump)) [].
+
 Example getlink_handler_failure_admitted :
   nl_u32 (handler_fail_ack 2 getlink_req ENOBUFS) 16 = 4294967191
   /\ ns_spec snd_in rcv_model snd_ctx snd_state fail_out.
@@ -403,13 +426,44 @@ Proof.
   exists ENOBUFS. split; [split; vm_compute; reflexivity | vm_compute; reflexivity].
 Qed.
 
-Example getlink_handler_failure_kept :
-  ~ ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff.
+Example getlink_dump_admitted : ns_spec snd_in rcv_model snd_ctx snd_state dump_out.
 Proof.
-  intros H.
-  apply (proj1 (ns_refusal_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
-                  ltac:(vm_compute; reflexivity))) in H.
-  destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  (* Head reductions only, as for [getlink_handler_failure_admitted]. *)
+  hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+  hnf. right. hnf. left. exists lo_env, lo_dump.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  left. vm_compute. reflexivity.
+Qed.
+
+Example getlink_handler_failure_forced_only :
+  ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_out
+  /\ ~ ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state dump_out.
+Proof.
+  split.
+  - hnf. right. split; [vm_compute; reflexivity|].
+    exists rcv_model, snd_ctx, (set_file snd_state 7 (netlink_file snd_file 2 2 lo_dump)), [].
+    split; [exact getlink_dump_admitted | vm_compute; reflexivity].
+  - intros H. hnf in H. destruct H as [H | [Hb _]].
+    + apply (proj1 (ns_refusal_eff_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+                      ltac:(vm_compute; reflexivity))) in H.
+      destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+    + vm_compute in Hb. discriminate Hb.
+Qed.
+
+Example getlink_handler_failure_may_fail :
+  ~ ns_refusal may_fail_cfg snd_in rcv_model snd_ctx snd_state fail_out
+  /\ ~ ns_refusal may_fail_cfg snd_in rcv_model snd_ctx snd_state dump_out.
+Proof.
+  split; intros H; hnf in H; destruct H as [H | [Hb _]].
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
 Qed.
 
 (* =========================================================================
@@ -422,8 +476,10 @@ Qed.
     answers: lo up with 127.0.0.1/8, and, when [inetdev_event]'s
     [inet_alloc_ifa] fails, lo up with no address.  Both return the
     request's length with the same effect ([up_eff]) and queue the same
-    acknowledgement of 0, so the forced-only filter, which sees the
-    effect, keeps both (SCOPE.md). *)
+    acknowledgement of 0; only the state after the call tells them apart
+    ([Net.nl_alloc_after]).  Under forced-only the filter removes the
+    answer without the address and keeps the one with it
+    ([Spec.ns_alloc_refusal]); under may-fail it keeps both (SCOPE.md). *)
 Definition admin : IdCred := mkIdCred 2 65534 65534 (2 ^ CAP_NET_ADMIN).
 Definition up_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 admin.
 Definition up_state : NsState :=
@@ -468,11 +524,35 @@ Proof.
     split; [vm_compute; reflexivity | vm_compute; reflexivity].
 Qed.
 
-Example lo_up_without_address_kept :
-  ~ ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state up_eff.
+Example lo_up_without_address_forced_only :
+  ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state (up_out [lo (IFF_UP + IFF_LOOPBACK) []])
+  /\ ~ ns_refusal forced_only_cfg up_in rcv_model up_ctx up_state (up_out [lo_up]).
 Proof.
-  intros H.
-  apply (proj1 (ns_refusal_ns forced_only_cfg up_in rcv_model up_ctx up_state up_eff
-                  ltac:(vm_compute; reflexivity))) in H.
-  destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  destruct lo_up_without_address as (_ & Hok & _).
+  split.
+  - hnf. right. split; [vm_compute; reflexivity|].
+    exists rcv_model, up_ctx,
+      (set_file (set_netns_ifs up_state 2 [lo_up]) 7 (netlink_file up_file 2 2 [nl_ack 2 newlink_req 0])),
+      [].
+    split; [exact Hok | vm_compute; reflexivity].
+  - intros H. hnf in H. destruct H as [H | [Hb _]].
+    + apply (proj1 (ns_refusal_eff_ns forced_only_cfg up_in rcv_model up_ctx up_state up_eff
+                      ltac:(vm_compute; reflexivity))) in H.
+      destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+    + vm_compute in Hb. discriminate Hb.
+Qed.
+
+Example lo_up_both_kept_may_fail :
+  ~ ns_refusal may_fail_cfg up_in rcv_model up_ctx up_state (up_out [lo (IFF_UP + IFF_LOOPBACK) []])
+  /\ ~ ns_refusal may_fail_cfg up_in rcv_model up_ctx up_state (up_out [lo_up]).
+Proof.
+  split; intros H; hnf in H; destruct H as [H | [Hb _]].
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg up_in rcv_model up_ctx up_state up_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
+  - apply (proj1 (ns_refusal_eff_ns may_fail_cfg up_in rcv_model up_ctx up_state up_eff
+                    ltac:(vm_compute; reflexivity))) in H.
+    destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
+  - vm_compute in Hb. discriminate Hb.
 Qed.

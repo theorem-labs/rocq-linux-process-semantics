@@ -424,6 +424,20 @@ Definition lo_comes_up (ifs ifs' : list NetIf) : bool :=
                      | None => false
                      end) ifs'.
 
+(** A loopback device of [ifs] that is up in [ifs'], down in [ifs], with as
+    many addresses as it had, where [lo_up_addrs] would have added
+    127.0.0.1/8: the device came up without its address ([lo_up_noaddr]).
+    A request that brings a loopback device up with no allocation failing
+    never leaves that, as [set_link_flags] adds the address. *)
+Definition lo_up_without_addr (ifs ifs' : list NetIf) : bool :=
+  existsb (fun d' => match if_by_index ifs (if_index d') with
+                     | Some d => negb (is_up d) && is_up d' && is_loopback d'
+                                 && Nat.eqb (length (if_addrs d')) (length (if_addrs d))
+                                 && negb (Nat.eqb (length (lo_up_addrs (if_addrs d)))
+                                                  (length (if_addrs d)))
+                     | None => false
+                     end) ifs'.
+
 (* =========================================================================
    Messages
    ========================================================================= *)
@@ -1056,8 +1070,8 @@ Definition handler_reached (x : NetNs) (U : list UserNs) (opener caller : IdCred
     [netlink_dump], and [netlink_recvmsg] runs the dump again from its
     first part once the acknowledgement is read, so its datagrams follow
     the acknowledgement.  The environment's refusal, carried in the
-    acknowledgement: the forced-only filter, which sees the call's effect
-    and not the queue after it, does not remove it (SCOPE.md). *)
+    acknowledgement: the forced-only filter reads it in the state after
+    the call ([nl_alloc_after]) and removes it (SCOPE.md). *)
 Definition nl_handler_errnos (ty : Z) : list Z :=
   if ty =? RTM_NEWLINK then [ENOMEM]
   else if (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR) then [ENOBUFS]
@@ -1175,10 +1189,10 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     a request that brings a loopback device up, the same answer with the
     device up and no address added, when [inetdev_event]'s
     [inet_alloc_ifa] fails ([lo_up_noaddr]).  Those last two are the
-    environment's allocation failures, but the call's effect is the
-    answer's own (the length), so the forced-only filter, which sees the
-    effect and not the namespace or the queue after it, does not remove
-    them (SCOPE.md).
+    environment's allocation failures whose effect is the answer's own
+    (the length): only the state after the call shows them
+    ([nl_alloc_after]), and there the forced-only filter removes them
+    (SCOPE.md).
     Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its
@@ -1203,6 +1217,80 @@ Definition sendto_arm : NsArm := fun i m ctx st o =>
         | _ => o = EUnmodeled
         end
     end.
+
+(** [a] is the acknowledgement of a handler's allocation failure
+    ([handler_fail_ack]): an NLMSG_ERROR message whose error, at byte 16,
+    is an errno [nl_handler_errnos] lists for the type of the request.
+    [nl_ack] puts the request's header from byte 20: its length at bytes
+    20-23, its type at bytes 24-25. *)
+Definition nl_fail_ack_alloc (a : list byte) : bool :=
+  (36 <=? nl_len a) && (nl_u16 a 4 =? NLMSG_ERROR)
+  && errno_in (nl_handler_errnos (nl_u16 a 24)) (4294967296 - nl_u32 a 16).
+
+(** THE ALLOCATION FAILURES [sendto] SHOWS ONLY IN THE STATE AFTER IT.  Two
+    answers of [netlink_sendto] are reached only when an allocation of the
+    kernel fails, and their effect is the answer's own (the request's
+    length).  Linux v6.18.46:
+    - a loopback device brought up without 127.0.0.1/8 ([lo_up_noaddr]):
+      [inetdev_event]'s NETDEV_UP arm adds the address only when
+      [inet_alloc_ifa] returns one (net/ipv4/devinet.c:1613-1629), which it
+      does unless its [kzalloc] fails (devinet.c:208-214).  The arm's other
+      way to leave the address out, an MTU below 68 (devinet.c:1611-1612),
+      never holds of the model's loopback device, whose MTU is
+      [gen_lo_setup]'s (drivers/net/loopback.c:168) and which no arm
+      changes; and where [inet_insert_ifa] refuses the address
+      (devinet.c:515-525) the answer with the address adds nothing either
+      ([lo_up_addrs]), so [lo_up_without_addr] does not hold.
+    - the acknowledgement of a handler's allocation failure
+      ([nl_handler_errnos]): RTM_NEWLINK's -ENOMEM is [rtnl_newlink]'s
+      [kmalloc] (net/core/rtnetlink.c:4010-4012); no other step of a
+      request the model answers returns it ([rtnetlink_rcv_msg],
+      rtnetlink.c:6897-7010; [__rtnl_newlink], [rtnl_changelink] and
+      [do_setlink], 3060-3185 and 3738-3997; [__dev_open],
+      net/core/dev.c:1660-1709, whose NETDEV_PRE_UP notifiers refuse a
+      loopback device nothing).  RTM_NEWADDR's -ENOBUFS is
+      [inet_rtm_to_ifa]'s (devinet.c:900-910): a device without an
+      [in_dev], which a registered loopback device always has
+      (devinet.c:1588-1596: a failed [inetdev_init] fails the
+      registration), or [inet_alloc_ifa]'s failed [kzalloc];
+      [__inet_insert_ifa] returns -EEXIST, -EINVAL or an ipvlan
+      validator's errno (devinet.c:490-569).  A dump's -ENOBUFS is
+      [netlink_dump]'s failed [alloc_skb]
+      (net/netlink/af_netlink.c:2269, 2288-2300); its two other
+      -ENOBUFS are not reached here: the receive-buffer test
+      (af_netlink.c:2302-2307) needs a receive queue that is not empty,
+      where the model declines the request ([rt_declines]), and
+      [netlink_dump_done]'s (af_netlink.c:2239-2242) has the tailroom
+      that af_netlink.c:2346-2347 checks.
+    [nl_alloc_after i m st st'] says that [st'], a state [sendto] [i]
+    leaves from [st], shows one of them: a loopback device of some
+    namespace came up without its address ([lo_up_without_addr]), or the
+    first datagram the call queued on its socket is such an
+    acknowledgement ([nl_fail_ack_alloc]).  No answer reached without an
+    allocation failing leaves either: [set_link_flags] adds the address,
+    and the acknowledgements [rt_handle] gives carry 0, -EOPNOTSUPP,
+    -EPERM, -EINVAL, -EEXIST or -ENODEV. *)
+Definition nl_alloc_after (i : SyscallInput) (m : Model) (st st' : NsState) : bool :=
+  existsb (fun x' => match find_netns st (netns_id x') with
+                     | Some x => lo_up_without_addr (netns_ifs x) (netns_ifs x')
+                     | None => false
+                     end) (ns_netns st')
+  || match sock_of m st (fd32 (in_arg i 0)) with
+     | SkFile h f =>
+         match nf_kind f, lookup_file (ns_files st') h with
+         | NfNetlink _ _ q, Some f' =>
+             match nf_kind f' with
+             | NfNetlink _ _ q' =>
+                 match skipn (length q) q' with
+                 | a :: _ => nl_fail_ack_alloc a
+                 | [] => false
+                 end
+             | _ => false
+             end
+         | _, _ => false
+         end
+     | _ => false
+     end.
 
 (* =========================================================================
    recvfrom (207)

@@ -195,7 +195,7 @@ Example top_root_not_chrooted :
   = Some false := eq_refl.
 
 (** A pass-through call outside the released world gets the released
-    forced-only filter ([Spec.ns_refusal_pass]): an anonymous [mmap] of a
+    forced-only filter ([Spec.ns_refusal_eff_pass]): an anonymous [mmap] of a
     task in [one_mount] within the budget has its injected ENOMEM removed,
     as in the released world, because the grant is also an answer
     ([Checks.SpuriousCfg.mmap_enomem_spurious_within_budget]); beyond the
@@ -209,19 +209,71 @@ Proof. intros i ->. vm_compute. repeat (first [left; reflexivity | right]). Qed.
 
 Example mmap_enomem_filter_outside_released :
   flat_view (task 2 18) one_mount = false
-  /\ ns_refusal forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) one_mount
+  /\ ns_refusal_eff forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) one_mount
                 (Checks.SpuriousCfg.errno_eff ENOMEM)
-  /\ ~ ns_refusal forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18) one_mount
+  /\ ~ ns_refusal_eff forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18) one_mount
                   (Checks.SpuriousCfg.errno_eff ENOMEM).
 Proof.
   split; [reflexivity|].
   split.
-  - apply (proj2 (ns_refusal_pass forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18)
+  - apply (proj2 (ns_refusal_eff_pass forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18)
                     one_mount (Checks.SpuriousCfg.errno_eff ENOMEM) (mmap_passes mmap_small eq_refl))).
     exact Checks.SpuriousCfg.mmap_enomem_spurious_within_budget.
   - intros H.
-    apply (proj1 (ns_refusal_pass forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18)
+    apply (proj1 (ns_refusal_eff_pass forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18)
                     one_mount (Checks.SpuriousCfg.errno_eff ENOMEM) (mmap_passes mmap_large eq_refl))) in H.
+    exact (Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget H).
+Qed.
+
+(** THE FILTER READS THE WHOLE OUTCOME AND KEEPS ITS ANSWERS.  The core
+    filters a claimed call's [EOk] outcome ([Ext.ext_refusal]), and for
+    every call but [sendto] [Spec.ns_refusal] filters it as
+    [Spec.ns_refusal_eff] filters its effect ([Spec.ns_refusal_outcome_eff]),
+    whatever model, context, state and events it leaves: the [mmap]
+    answers above are the same on outcomes. *)
+Example mmap_enomem_outcome_filter : forall m' ctx' st' evs,
+  ns_refusal forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) one_mount
+    (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
+  /\ ~ ns_refusal forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18) one_mount
+         (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs).
+Proof.
+  intros m' ctx' st' evs.
+  destruct mmap_enomem_filter_outside_released as (_ & Hs & Hl).
+  split.
+  - apply (proj2 (ns_refusal_outcome_eff forced_only_cfg mmap_small Cases.Prelude.tight_model
+                    (task 2 18) one_mount (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
+                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl eq_refl)).
+    exact Hs.
+  - intros H. apply Hl.
+    apply (proj1 (ns_refusal_outcome_eff forced_only_cfg mmap_large Cases.Prelude.tight_model
+                    (task 2 18) one_mount (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
+                    (Checks.SpuriousCfg.errno_eff ENOMEM) eq_refl eq_refl)).
+    exact H.
+Qed.
+
+(** THE RELEASED WORLD KEEPS ITS FILTER ([Ext.ext_refusal_released]).  For
+    a task of the host's namespaces ([host_task_flat]) the filter of a
+    claimed call's outcome is the released filter of its effect, the one
+    it was when the filter read the effect alone: whatever the outcome
+    leaves, an anonymous [mmap]'s injected ENOMEM is removed within the
+    budget and kept beyond it, the released answers
+    ([Checks.SpuriousCfg.mmap_enomem_spurious_within_budget],
+    [Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget]). *)
+Example released_world_filter_unchanged : forall m' ctx' st' evs,
+  ext_refusal ns_ext forced_only_cfg mmap_small Cases.Prelude.tight_model (task 2 18) (world true)
+    (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs)
+  /\ ~ ext_refusal ns_ext forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18) (world true)
+         (EOk (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs).
+Proof.
+  intros m' ctx' st' evs. split.
+  - apply (proj2 (ext_refusal_released ns_ext forced_only_cfg mmap_small Cases.Prelude.tight_model
+                    (task 2 18) (world true) (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs
+                    host_task_flat eq_refl)).
+    exact Checks.SpuriousCfg.mmap_enomem_spurious_within_budget.
+  - intros H.
+    apply (proj1 (ext_refusal_released ns_ext forced_only_cfg mmap_large Cases.Prelude.tight_model
+                    (task 2 18) (world true) (Checks.SpuriousCfg.errno_eff ENOMEM) m' ctx' st' evs
+                    host_task_flat eq_refl)) in H.
     exact (Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget H).
 Qed.
 
@@ -289,7 +341,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** THE SAME FILTER IN BOTH WORLDS.  A write on a descriptor of the
     released model outside the released world ([mounted_not_flat]) gets
-    the released filter itself ([Spec.ns_refusal_released_fd]): a write
+    the released filter itself ([Spec.ns_refusal_eff_released_fd]): a write
     into an empty pipe answered ENOMEM
     ([Checks.SpuriousCfg.write_pipe_enomem_i]), whose family the released
     table makes fs, is removed when the fs family alone is off and kept when
@@ -304,17 +356,17 @@ Example write_pipe_released_fd :
 Proof. vm_compute. reflexivity. Qed.
 
 Example write_pipe_enomem_same_filter :
-  ns_refusal fs_off_cfg Checks.SpuriousCfg.write_pipe_enomem_i Cases.Fs.ReadWrite.pipe_empty_model
+  ns_refusal_eff fs_off_cfg Checks.SpuriousCfg.write_pipe_enomem_i Cases.Fs.ReadWrite.pipe_empty_model
              (task 2 18) one_mount (Checks.SpuriousCfg.errno_eff ENOMEM)
-  /\ ~ ns_refusal (alloc_only_cfg false) Checks.SpuriousCfg.write_pipe_enomem_i
+  /\ ~ ns_refusal_eff (alloc_only_cfg false) Checks.SpuriousCfg.write_pipe_enomem_i
          Cases.Fs.ReadWrite.pipe_empty_model (task 2 18) one_mount (Checks.SpuriousCfg.errno_eff ENOMEM).
 Proof.
   split.
-  - apply (proj2 (ns_refusal_released_fd fs_off_cfg _ _ (task 2 18) one_mount _ write_pipe_released_fd)).
+  - apply (proj2 (ns_refusal_eff_released_fd fs_off_cfg _ _ (task 2 18) one_mount _ write_pipe_released_fd)).
     destruct Checks.SpuriousCfg.write_pipe_enomem_spurious_under_forced_only as (_ & Hr & Hex).
     split; [vm_compute; reflexivity | split; [exact Hr | exact Hex]].
   - intros H.
-    apply (proj1 (ns_refusal_released_fd (alloc_only_cfg false) _ _ (task 2 18) one_mount _
+    apply (proj1 (ns_refusal_eff_released_fd (alloc_only_cfg false) _ _ (task 2 18) one_mount _
                     write_pipe_released_fd)) in H.
     exact (Checks.SpuriousCfg.write_pipe_enomem_kept_under_alloc_only H).
 Qed.

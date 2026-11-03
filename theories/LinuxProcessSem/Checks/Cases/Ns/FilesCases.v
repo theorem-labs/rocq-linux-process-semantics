@@ -719,7 +719,9 @@ Definition injected_eff (o : ext_outcome) (e : Z) : SyscallEffect :=
   with_copyins (eff_copyins (eff_of o)) (mkEffect (errno_ret e) [] []).
 
 (** The task is outside the released world in both worlds below, so the
-    namespace arms answer and [Spec.ns_refusal] is the namespace filter. *)
+    namespace arms answer and [Spec.ns_refusal_eff] is the namespace filter
+    of an answer's effect, which [Spec.ns_refusal] applies to the outcome
+    ([Spec.ns_refusal_outcome_eff]). *)
 Example c0_outside_released : flat_view c0 W = false /\ flat_view c0 W_dir3 = false.
 Proof. split; vm_compute; reflexivity. Qed.
 
@@ -741,18 +743,18 @@ Proof.
 Qed.
 
 Lemma open_nope_filter : forall eff,
-  ns_refusal forced_only_cfg open_nope m3 c0 W eff
+  ns_refusal_eff forced_only_cfg open_nope m3 c0 W eff
   <-> ns_refusal_off_b forced_only_cfg open_nope (eff_ret eff) = true
       /\ exists eff' m' ctx' st' evs',
            ns_spec open_nope m3 c0 W (EOk eff' m' ctx' st' evs')
            /\ ns_witness open_nope (eff_ret eff) (eff_ret eff') = true.
-Proof. intros eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+Proof. intros eff. apply ns_refusal_eff_ns. vm_compute. reflexivity. Qed.
 
 Example openat_enoent_forced_only :
   ret_of nope_answer = Some (-2)
   /\ ns_spec open_nope m3 c0 W (EOk (injected_eff nope_answer ENOMEM) m3 c0 W [])
-  /\ ns_refusal forced_only_cfg open_nope m3 c0 W (injected_eff nope_answer ENOMEM)
-  /\ ~ ns_refusal forced_only_cfg open_nope m3 c0 W (eff_of nope_answer).
+  /\ ns_refusal_eff forced_only_cfg open_nope m3 c0 W (injected_eff nope_answer ENOMEM)
+  /\ ~ ns_refusal_eff forced_only_cfg open_nope m3 c0 W (eff_of nope_answer).
 Proof.
   split; [vm_compute; reflexivity|].
   split.
@@ -788,18 +790,18 @@ Proof.
 Qed.
 
 Lemma open2_nope_filter : forall eff,
-  ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 eff
+  ns_refusal_eff forced_only_cfg open2_nope m_dir3 c0 W_dir3 eff
   <-> ns_refusal_off_b forced_only_cfg open2_nope (eff_ret eff) = true
       /\ exists eff' m' ctx' st' evs',
            ns_spec open2_nope m_dir3 c0 W_dir3 (EOk eff' m' ctx' st' evs')
            /\ ns_witness open2_nope (eff_ret eff) (eff_ret eff') = true.
-Proof. intros eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+Proof. intros eff. apply ns_refusal_eff_ns. vm_compute. reflexivity. Qed.
 
 Example openat2_dotdot_eagain_forced_only :
   ret_of (fst (fst nope2)) = Some (-2) /\ snd nope2 = true
   /\ ns_spec open2_nope m_dir3 c0 W_dir3 nope2_eagain
-  /\ ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of nope2_eagain)
-  /\ ~ ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of (fst (fst nope2))).
+  /\ ns_refusal_eff forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of nope2_eagain)
+  /\ ~ ns_refusal_eff forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of (fst (fst nope2))).
 Proof.
   split; [vm_compute; reflexivity|].
   split; [vm_compute; reflexivity|].
