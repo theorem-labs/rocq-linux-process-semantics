@@ -540,7 +540,13 @@ not apply.
   `Ns.Propagation.open_mount`), a bind or a new mount (`mount(2)`)
   in a mount namespace that holds such a mount, or onto a shared mount
   whose propagation tree holds one or reaches a namespace that holds one
-  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), an
+  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), a
+  propagation change (`mount(2)` with `MS_SHARED`, `MS_SLAVE`,
+  `MS_PRIVATE` or `MS_UNBINDABLE`) or a `mount_setattr` whose target, or
+  with `MS_REC` or `AT_RECURSIVE` whose subtree, holds one
+  (`Ns.Propagation.targets_open`: `change_mnt_propagation` takes the next
+  peer among the group's members outside the tables too,
+  `fs/pnode.c:101-116`), an
   `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
   and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
   `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,

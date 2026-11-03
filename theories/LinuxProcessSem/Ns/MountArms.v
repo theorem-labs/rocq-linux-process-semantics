@@ -11,6 +11,8 @@
       fs/namespace.c:2002-2005, 2823-2887, 2954-3009, 3681-3732,
       3963-4052, 4216-4248; onto a shared mount, [attach_recursive_mnt]
       and [propagate_mnt], fs/namespace.c:2559-2673, fs/pnode.c:311-366;
+      the change of one mount's propagation, [change_mnt_propagation] and
+      [transfer_propagation], fs/pnode.c:74-124;
     - [SYSCALL_DEFINE2(umount)], [ksys_umount], [path_umount], and
       [can_umount], fs/namespace.c:2016-2071; [do_umount] and [umount_tree]
       with UMOUNT_PROPAGATE, fs/namespace.c:1771-1838, 1937-1950, and
@@ -271,7 +273,10 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
     mount's namespace (EPERM, [may_change_propagation], 2823-2834); then
     the change of every mount it reaches ([Propagation.change_type]).
     MS_SHARED's new groups take numbers the allocator may refuse (ENOMEM,
-    ENOSPC): environment refusals of [mount40_injected]. *)
+    ENOSPC): environment refusals of [mount40_injected].  No answer when
+    a mount the change reaches can receive an event from an open group
+    ([Propagation.targets_open]): the start of the path walk ("/", ".")
+    and the subtree MS_REC reaches are tested here, not by the walk. *)
 Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m : Model)
     (ctx : NsCtx) (st : NsState) (target td : positive) (flags : Z) : ext_outcome :=
   match find_mount (ns_mounts st) target with
@@ -286,8 +291,9 @@ Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m :
                | None => EUnmodeled
                | Some false => err reads EPERM m ctx st
                | Some true =>
-                   mount_ok reads m ctx
-                     (change_type (propagation_type flags) st target (has flags MS_REC))
+                   if targets_open st target (has flags MS_REC) then EUnmodeled
+                   else mount_ok reads m ctx
+                          (change_type (propagation_type flags) st target (has flags MS_REC))
                end
       end
   end.
@@ -698,13 +704,18 @@ Definition setattr_writer_busy (st : NsState) (targets : list positive) : bool :
     MS_SHARED's new groups ([invent_group_ids], 4804-4810) take numbers the
     allocator may refuse: ENOMEM and ENOSPC, environment refusals of
     [mount442_injected].  A refused call leaves the groups as they were
-    ([cleanup_group_ids], 4831-4833). *)
+    ([cleanup_group_ids], 4831-4833).  No answer, after the namespace
+    check, when a mount of the selected tree can receive an event from an
+    open group ([Propagation.targets_open]): the host can add mounts to
+    the tree, whose flags and writers the checks would also read, and a
+    propagation change reads the group's members outside the tables. *)
 Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
     (prop : option PropType) (recursive : bool)
     (m : Model) (ctx : NsCtx) (st : NsState) (mt d : positive) : ext_outcome :=
   match find_mount (ns_mounts st) mt, path_mounted st mt d with
   | Some mount, Some true =>
       if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
+      else if targets_open st mt recursive then EUnmodeled
       else if mf_ro (at_set change) && setattr_writer_busy st (setattr_targets (ns_mounts st) mt recursive)
       then err reads EBUSY m ctx st
       else match mount_setattr (ns_mounts st) mt recursive change with

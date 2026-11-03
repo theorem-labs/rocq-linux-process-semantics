@@ -814,6 +814,31 @@ Definition ns_open (st : NsState) (n : positive) : bool :=
   | _ => existsb (fun m => Pos.eqb (mnt_ns m) n && open_reach st m) (ns_mounts st)
   end.
 
+(** A mount that a propagation change or a [mount_setattr] of mount [r]
+    selects ([r], and with [recursive] its subtree) can receive an event
+    from an open group.  [change_mnt_propagation] then takes the next peer
+    among all members of the group, those outside the tables included,
+    leaves the slaves with the group and makes an MS_SLAVE target a slave
+    of that peer (fs/pnode.c:101-116), and the host can mount or unmount
+    on the target at any time; the tables decide neither, so the arm has
+    no answer.  One test before the change is enough: changing a target
+    that receives from no open group moves its slaves to its next peer or
+    its master and itself under them, and gives a new group a key above
+    every open group ([new_group_key]), so no mount comes to receive from
+    an open group. *)
+Definition targets_open (st : NsState) (r : positive) (recursive : bool) : bool :=
+  existsb (open_mount st) (setattr_targets (ns_mounts st) r recursive).
+
+(** With no open group, the default launch, no target is open: the arms
+    answer as they do without the test. *)
+Theorem targets_open_closed : forall st r recursive,
+  env_open_groups (ns_env st) = [] -> targets_open st r recursive = false.
+Proof.
+  intros st r recursive H. unfold targets_open, open_mount. rewrite H.
+  generalize (setattr_targets (ns_mounts st) r recursive) as l.
+  induction l as [|i l IH]; [reflexivity | exact IH].
+Qed.
+
 (* =========================================================================
    The walk of a propagation tree: next_group
    ========================================================================= *)

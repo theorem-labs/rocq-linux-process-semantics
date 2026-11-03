@@ -325,6 +325,73 @@ Example setattr_shared_locked :
      = Some [None; None; None; None].
 Proof. split; vm_compute; reflexivity. Qed.
 
+(** Open groups ([Propagation.targets_open]).  Mount 1, the root, is the
+    only member of peer group 9 that the tables hold, with no master, and
+    group 9 is open: it has a member outside the tables.  MS_SLAVE|MS_REC
+    on "/" makes the root a slave of that member and leaves group 9's
+    slaves with the group ([change_mnt_propagation], fs/pnode.c:101-116),
+    which the tables cannot name: no answer.  The walk of "/" crosses no
+    mount, so the test is the arm's.  With no open group the root is the
+    last member of group 9 and becomes private ([Mount.change_one]). *)
+Definition st_root9 : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 1 then mnt_with_peer x (Some 9%positive) else x)
+                      (ns_mounts st)).
+
+Example change_type_open_root :
+  ret_of (mount_fn (mount_input s_root s_root (MS_SLAVE + MS_REC)) base_model c_admin
+                   (with_open_groups st_root9 [9%positive])) = None
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_fn (mount_input s_root s_root (MS_SLAVE + MS_REC)) base_model c_admin st_root9))
+     = Some [(None, None); (None, None); (None, None); (None, None)].
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Mount 3, below /tmp/src, is in the open group 9; /tmp (mount 2) is in
+    no group.  A recursive change of /tmp, by [mount] with MS_REC or by
+    [mount_setattr] with AT_RECURSIVE, reaches mount 3: no answer.  The
+    same change without MS_REC or AT_RECURSIVE changes mount 2 alone and
+    answers 0. *)
+Definition st_sub9 : NsState :=
+  let st := state false false [] in
+  with_open_groups
+    (with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_peer x (Some 9%positive) else x)
+                         (ns_mounts st)))
+    [9%positive].
+
+Example change_type_open_descendant :
+  ret_of (mount_fn (mount_input s_tmp s_tmp (MS_PRIVATE + MS_REC)) base_model c_admin st_sub9) = None
+  /\ ret_of (mount_fn (mount_input s_tmp s_tmp MS_PRIVATE) base_model c_admin st_sub9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example setattr_open_descendant :
+  ret_of (mount_setattr_fn (setattr_prop_input (-100) s_tmp AT_RECURSIVE 0 MS_PRIVATE) base_model c_admin
+                           st_sub9) = None
+  /\ ret_of (mount_setattr_fn (setattr_prop_input (-100) s_tmp 0 0 MS_PRIVATE) base_model c_admin
+                              st_sub9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** AT_EMPTY_PATH starts at the descriptor's mount and crosses no mount:
+    with /tmp (mount 2) in the open group 9, a change of its flags has no
+    answer; with no open group it answers 0. *)
+Definition st_tmp9 : NsState :=
+  let st := state false false [(7%N, path_file)] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 2 then mnt_with_peer x (Some 9%positive) else x)
+                      (ns_mounts st)).
+
+Example setattr_empty_path_open :
+  ret_of (mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+                           (with_open_groups st_tmp9 [9%positive])) = None
+  /\ ret_of (mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+                              st_tmp9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** With no open group no target is open, so both arms answer as they did
+    before the test ([Propagation.targets_open_closed]). *)
+Example targets_open_default :
+  env_open_groups (ns_env (state false false [])) = []
+  /\ targets_open (state false false []) 1 true = false.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** Row 442 admits the group-id allocator's ENOSPC, and still satisfies
     the rule of a row ([Arm.ni_forced_ok]). *)
 Example mount442_row :
