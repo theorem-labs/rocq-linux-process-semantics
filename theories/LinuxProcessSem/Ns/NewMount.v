@@ -1,7 +1,7 @@
 (** * LinuxProcessSem.Ns.NewMount — a new mount of tmpfs, procfs or devpts
 
     What [mount(2)] does after [path_mount] chose [do_new_mount] (Linux
-    6.18.44 fs/namespace.c), for the three file systems a user namespace
+    6.18.46 fs/namespace.c), for the three file systems a user namespace
     may mount (FS_USERNS_MOUNT): the type and options, the new superblock
     and its root, the capability [mount_capable] asks for, the visibility
     check [mount_too_revealing] makes for procfs, and the attach

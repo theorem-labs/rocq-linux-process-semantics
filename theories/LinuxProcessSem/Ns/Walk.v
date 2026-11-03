@@ -1,14 +1,14 @@
 (** * LinuxProcessSem.Ns.Walk — path resolution in a namespace and mount tree
 
     A pure path walk over the data of [Ns.Tables], in the order of the
-    Linux 6.18.44 lookup code.  It resolves listed dentries, crosses mounts
+    Linux 6.18.46 lookup code.  It resolves listed dentries, crosses mounts
     in both directions, follows symbolic links, synthesizes the procfs
     entries of the calling task, and checks search permission before each
     component.  Where the answer depends on state the tables do not hold
     (another task's procfs directory, an nsfs object, a sysctl), the walk
     answers [WOver] and never an errno.
 
-    Linux 6.18.44 sources:
+    Linux 6.18.46 sources:
     - the empty path and the PATH_MAX limit: [getname_flags], fs/namei.c;
     - the start and the root of a walk: [path_init], fs/namei.c;
     - one component after another: [link_path_walk], [walk_component],
@@ -145,8 +145,8 @@ Definition mount_on (st : NsState) (parent point : positive) : option Mount :=
           | None => false
           end) (ns_mounts st).
 
-(** [topmost_overmount] (fs/namespace.c): from mount [m], the mount on its
-    root dentry, and so on up. *)
+(** [topmost_overmount] (fs/mount.h:243-248): from mount [m], the mount on
+    its root dentry, and so on up. *)
 Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
   match fuel with
   | O => m

@@ -2,7 +2,7 @@
 
     [clone_ns] is what [clone(2)] does to the namespace model, for a core
     that takes the call itself: the child's namespace context and the new
-    shared namespace state, or the errno, following Linux 6.18.44
+    shared namespace state, or the errno, following Linux 6.18.46
     kernel/fork.c ([copy_process]: the flag checks, [copy_creds],
     [copy_namespaces], [alloc_pid]), kernel/cred.c
     ([copy_creds]: CLONE_NEWUSER makes a user namespace with

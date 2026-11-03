@@ -18,7 +18,8 @@
       as the released arm does says so in its header and calls [released]
       for them.
 
-    Every arm's header names the Linux 6.18.44 functions it follows and
+    Every arm's header names the Linux functions it follows, with the
+    version they were read at (6.18.44 or 6.18.46), and
     its kind: exact (every Linux outcome for the accepted shape, and no
     other), over (every Linux outcome, plus outcomes the model does not
     decide), or declines. *)
