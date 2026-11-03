@@ -40,8 +40,9 @@ PATTERN = re.compile(r"(?<![\[A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?!
 
 
 def counts():
-    files = subprocess.run(["git", "ls-files", "*.v", "*.py", "*.ml"], capture_output=True, text=True,
-                           check=True).stdout.split()
+    # a path in a conflicted index is listed once per stage; count each file once
+    files = sorted(set(subprocess.run(["git", "ls-files", "*.v", "*.py", "*.ml"], capture_output=True, text=True,
+                                      check=True).stdout.split()))
     out = {}
     for f in files:
         if f == "tools/check_record_builders.py":

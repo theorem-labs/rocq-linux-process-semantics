@@ -97,9 +97,6 @@ Definition mount_mresult (reads : list (word * nat)) (r : MResult) (m : Model)
   | MErr e => err reads e m ctx st
   end.
 
-Definition mount_env_errno (e : Z) : bool :=
-  (e =? ENOMEM) || ((1 <=? e) && (e <=? 4095)).
-
 (** [path_mounted] (fs/namespace.c): a dentry is the root of its mount. *)
 Definition path_mounted (st : NsState) (mt d : positive) : option bool :=
   match find_mount (ns_mounts st) mt with
@@ -412,8 +409,7 @@ Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : 
 
 Definition mount_arm : NsArm := fun i m ctx st o =>
   o = mount_fn i m ctx st
-  \/ mount_new_success i m ctx st o
-  \/ injected_after mount_env_errno (mount_fn i m ctx st) m ctx st o.
+  \/ mount_new_success i m ctx st o.
 
 (** [mount_arm] keeps every successful [NMOk] lock choice, while [mount_fn]
     supplies the deterministic legacy outcomes and one new-mount witness. *)
@@ -464,9 +460,7 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
            end
        end.
 
-Definition umount2_arm : NsArm := fun i m ctx st o =>
-  o = umount2_fn i m ctx st
-  \/ injected_after mount_env_errno (umount2_fn i m ctx st) m ctx st o.
+Definition umount2_arm : NsArm := fun i m ctx st o => o = umount2_fn i m ctx st.
 
 (* =========================================================================
    pivot_root(2)
@@ -539,9 +533,7 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
       end
   end.
 
-Definition pivot_root_arm : NsArm := fun i m ctx st o =>
-  o = pivot_root_fn i m ctx st
-  \/ injected_after mount_env_errno (pivot_root_fn i m ctx st) m ctx st o.
+Definition pivot_root_arm : NsArm := fun i m ctx st o => o = pivot_root_fn i m ctx st.
 
 (* =========================================================================
    mount_setattr(2)
@@ -701,20 +693,36 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
            end
        end.
 
-Definition mount_setattr_arm : NsArm := fun i m ctx st o =>
-  o = mount_setattr_fn i m ctx st
-  \/ injected_after mount_env_errno (mount_setattr_fn i m ctx st) m ctx st o.
+Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn i m ctx st.
 
-(** The environment refusals of mount namespace operations. *)
+(** The environment's refusals of the mount namespace calls, Linux
+    6.18.44; each arm admits its row's errnos after any answer
+    ([Arm.with_injected]).  No security module but the capability one runs
+    (SCOPE.md), so [security_sb_mount], [security_sb_umount] and
+    [security_sb_pivotroot] refuse nothing.
+    - [umount2] (39), [pivot_root] (41), [mount_setattr] (442): the walks'
+      ([Arm.walk_pairs]); [pivot_root]'s ENOMEM also from [lock_mount]'s
+      [get_mountpoint] (fs/namespace.c).
+    - [mount] (40): the walks'; ENOMEM also from [copy_mount_string] and
+      [copy_mount_options], from [lock_mount]'s [get_mountpoint] and
+      [clone_mnt]'s [alloc_vfsmnt] (fs/namespace.c), and from a new
+      instance's [fs_context_for_mount] (fs/fs_context.c), [sget_fc]
+      (fs/super.c) and fill_super; a new tmpfs's root inode, ENOSPC when
+      [new_inode] fails ([__shmem_get_inode], mm/shmem.c); a new instance's
+      anonymous device number, EMFILE when [get_anon_bdev] (fs/super.c) has
+      none left.  The tables also answer ENOSPC, at the mount limit
+      ([Mount.bind_mount], [NewMount.new_mount]: [count_mounts]), so ENOSPC
+      is in [ni_forced]. *)
+Definition mount40_injected : NsInjected :=
+  mkNsInjected 40 [(errno_in [ENOMEM; ENOSPC; EMFILE], FamAlloc); (errno_in [EIO], FamFs)]
+               [ENOSPC].
+
 Definition mount_injected : list NsInjected :=
-  map (fun n => mkNsInjected n
-    [(fun e => e =? ENOMEM, FamAlloc);
-     (fun e => (1 <=? e) && (e <=? 4095), FamCred)])
-    [39; 40; 41; 442].
+  mount40_injected :: map (fun n => mkNsInjected n walk_pairs []) [39; 41; 442].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=
-  [(39, with_injected mount_env_errno umount2_arm);
-   (40, with_injected mount_env_errno mount_arm);
-   (41, with_injected mount_env_errno pivot_root_arm);
-   (442, with_injected mount_env_errno mount_setattr_arm)].
+  [(39, with_injected (pairs_errno walk_pairs) umount2_arm);
+   (40, with_injected (ni_errno mount40_injected) mount_arm);
+   (41, with_injected (pairs_errno walk_pairs) pivot_root_arm);
+   (442, with_injected (pairs_errno walk_pairs) mount_setattr_arm)].

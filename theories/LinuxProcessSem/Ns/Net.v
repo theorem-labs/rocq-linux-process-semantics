@@ -88,11 +88,14 @@
     [recvfrom_arm] exact; [ioctl_arm] exact.  Each header lists what it
     declines.
 
-    INJECTED FAILURES.  The allocation and security-module failures the
-    arms offer beside their answer are listed in [net_injected].  A netlink
-    socket's pending error is not modelled, so allocation failures reported
-    asynchronously by an acknowledgement or dump are admitted as the
-    environment's refusal rather than a stored [sk_err].
+    INJECTED FAILURES.  The environment's refusals the arms offer beside
+    their answer are listed in [net_injected], with the kernel functions
+    that return them; no security module but the capability one runs
+    (SCOPE.md).  A netlink socket's pending error is not modelled, so an
+    allocation failure reported asynchronously, by an acknowledgement or a
+    dump that could not be queued, is admitted as [recvfrom]'s refusal
+    rather than a stored [sk_err]; a handler's own allocation failure is
+    the error of the acknowledgement [sendto] queues ([nl_handler_errnos]).
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -124,9 +127,6 @@ Definition MSG_DONTWAIT : Z := 64.
 Definition SIOCGIFINDEX : Z := 35123.        (* 0x8933 *)
 Definition IFREQ_SIZE : Z := 40.             (* sizeof(struct ifreq), LP64 *)
 Definition SOCKADDR_NL_SIZE : Z := 12.       (* sizeof(struct sockaddr_nl) *)
-
-(** Allocation and LSM errors returned by a socket operation. *)
-Definition net_env_errno (e : Z) : bool := (1 <=? e) && (e <=? 4095).
 
 Definition IFF_UP : Z := 1.
 Definition IFF_BROADCAST : Z := 2.
@@ -892,7 +892,7 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
                       (with_files st (ns_files st ++ [(h, mkNsFile k O_RDWR (caller_cred m ctx))]))
                       []
          else o = ns_errno EMFILE m ctx st)
-        \/ (exists e, net_env_errno e = true /\ o = ns_errno e m ctx st)
+        \/ (exists e, errno_in socket_create_errnos e = true /\ o = ns_errno e m ctx st)
     end.
 
 (* =========================================================================
@@ -963,13 +963,15 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
                           then o = ns_fail EADDRINUSE rd m ctx st
                           else o = bound pid
                                \/ (netns_sealed x = false /\ o = ns_fail EADDRINUSE rd m ctx st)
-                               \/ (exists e, net_env_errno e = true /\ o = ns_fail e rd m ctx st)
+                               \/ (exists e, errno_in nl_insert_errnos e = true
+                                             /\ o = ns_fail e rd m ctx st)
                         else
                           match task_pid ctx with
                           | None => o = EUnmodeled
                           | Some _ =>
                               (exists p, bound_port st x ctx 0 p /\ o = bound p)
-                              \/ (exists e, net_env_errno e = true /\ o = ns_fail e rd m ctx st)
+                              \/ (exists e, errno_in nl_insert_errnos e = true
+                                            /\ o = ns_fail e rd m ctx st)
                           end
                     end
             end
@@ -983,6 +985,36 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
 
 (** [netlink_alloc_large_skb]'s failure, -ENOBUFS. *)
 Definition nl_alloc_errnos : list Z := [ENOBUFS].
+
+(** An rtnetlink handler's allocation failure, Linux 6.18.44: a change
+    ([rtnl_newlink] and [do_setlink], net/core/rtnetlink.c;
+    [inet_rtm_newaddr]'s [inet_alloc_ifa], net/ipv4/devinet.c) or a dump's
+    first part ([__netlink_dump_start]'s [netlink_dump],
+    net/netlink/af_netlink.c) returns ENOMEM or ENOBUFS, and
+    [netlink_rcv_skb] acknowledges the request with that error
+    ([netlink_ack]); the namespace does not change and [sendto] still
+    returns the length.  The environment's refusal, carried in the
+    acknowledgement: the forced-only filter, which sees the call's effect
+    and not the queue after it, does not remove it (SCOPE.md). *)
+Definition nl_handler_errnos : list Z := [ENOMEM; ENOBUFS].
+
+(** The request [dg] reaches an rtnetlink handler: RTM_NEWLINK,
+    RTM_NEWADDR, RTM_GETLINK or RTM_GETADDR, which [rt_handle] answers.
+    Over: a request [rtnetlink_rcv_msg] refuses before its handler (EPERM)
+    is not told apart. *)
+Definition handler_reached (dg : list byte) (s : NlStep) : bool :=
+  match s with
+  | SDecline => false
+  | SDone _ _ =>
+      let ty := nl_u16 dg 4 in
+      (16 <=? nl_len dg) && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
+      && ((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR))
+  end.
+
+(** The acknowledgement of request [dg] from port [port] with its handler's
+    error [e] ([netlink_ack] of the request's first message). *)
+Definition handler_fail_ack (port : Z) (dg : list byte) (e : Z) : list byte :=
+  nl_ack port (firstn (Z.to_nat (nl_u32 dg 0)) dg) e.
 
 (** Does the request [rt_handle] judges decline under the queue rules (see
     the header), whatever port answers it? *)
@@ -1042,17 +1074,18 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                    end
                 then o = EUnmodeled
                 else
-                  ((port =? 0) = true /\ exists e, net_env_errno e = true /\ o = ns_fail e rd0 m ctx st)
+                  ((port =? 0) = true
+                   /\ exists e, errno_in nl_insert_errnos e = true /\ o = ns_fail e rd0 m ctx st)
                   \/ exists p, bound_port st x ctx port p /\
                      let st1 := set_file st h (netlink_file f n p q) in
-                     ((exists e, net_env_errno e = true /\ o = ns_fail e rd0 m ctx st1)
+                     ((exists e, errno_in nl_alloc_errnos e = true /\ o = ns_fail e rd0 m ctx st1)
                       \/ match dgo with
                          | None => o = ns_fail EFAULT rd0 m ctx st1
                          | Some dg =>
                              match rt_handle x (ns_userns st) (nf_cred f) caller dst p dg with
                              | SDecline => False
                              | SDone ifs r =>
-                                 exists env dgs,
+                                 (exists env dgs,
                                    nl_env_ok (env_nl_link_max (ns_env st)) env r = true /\
                                    reply_dgrams env r = Some dgs /\
                                    let st2 := match ifs with
@@ -1060,7 +1093,12 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                                               | None => st
                                               end in
                                    o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                              (set_file st2 h (netlink_file f n p (q ++ dgs)))
+                                              (set_file st2 h (netlink_file f n p (q ++ dgs))))
+                                 \/ (handler_reached dg (SDone ifs r) = true
+                                     /\ exists e, errno_in nl_handler_errnos e = true
+                                        /\ o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
+                                                 (set_file st h (netlink_file f n p
+                                                                   (q ++ [handler_fail_ack p dg e]))))
                              end
                          end)
           end
@@ -1070,8 +1108,11 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     [import_ubuf] (the length capped at MAX_RW_COUNT; -EFAULT for a buffer
     [access_ok] refuses) before the descriptor, then [netlink_sendto].
     Kind: exact on the namespace's new state and on acknowledgements, over
-    on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an autobind) and
-    [nl_alloc_errnos] beside the answer.  Declines: the AF_UNIX socket; a
+    on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an
+    autobind) and [nl_alloc_errnos] beside the answer, and beside a request
+    that reaches an rtnetlink handler, the acknowledgement of its
+    allocation failure ([nl_handler_errnos]) with the namespace unchanged.
+    Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its
     namespace; what [rt_handle] declines; a request that would queue while
@@ -1268,26 +1309,40 @@ Definition ioctl_arm : NsArm := fun i m ctx st o =>
       end
   end.
 
-(** The five arms by call number, for [Spec.ns_table].  Each number in
-    [net_injected] lifts a successful deterministic witness into the
-    post-check environment refusal, including [recvfrom]. *)
-Definition net_arms : list (Z * NsArm) :=
-  [(29, ioctl_arm); (198, with_injected net_env_errno socket_arm);
-   (200, with_injected net_env_errno bind_arm); (206, with_injected net_env_errno sendto_arm);
-   (207, with_injected net_env_errno recvfrom_arm)].
+(** A pending error of the socket that [recvfrom] reports first
+    ([__skb_try_recv_datagram]'s [sock_error], net/core/datagram.c):
+    ENOBUFS, which [netlink_ack] stores when it cannot allocate the
+    acknowledgement, [netlink_overrun] when the kernel's answer does not fit
+    the receive buffer, and [netlink_recvmsg] when the next part of a dump
+    cannot be allocated or queued ([netlink_dump]) (net/netlink/af_netlink.c). *)
+Definition nl_pending_errnos : list Z := [ENOBUFS].
 
-(** The environment refusals the net arms offer.  Socket construction,
-    netlink insertion, and rtnetlink allocation can fail with ENOMEM or
-    ENFILE/ENOBUFS; each socket operation also reaches its security hook,
-    which may return any errno. *)
+(** The environment's refusals of the net arms, Linux 6.18.44; an arm with
+    a row admits the row's errnos after any answer ([Arm.with_injected]),
+    and where the kernel's order matters the arm places them itself.
+    [socket]: [socket_create_errnos].  [bind]: [netlink_insert]'s
+    [nl_insert_errnos].  [sendto]: [netlink_autobind]'s
+    [nl_insert_errnos] and [netlink_sendmsg]'s [nl_alloc_errnos].
+    [recvfrom]: [nl_pending_errnos].  [ioctl] SIOCGIFINDEX allocates
+    nothing ([dev_ioctl], net/core/dev_ioctl.c). *)
+Definition socket_injected : NsInjected :=
+  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc)] [].
+Definition bind_injected : NsInjected := mkNsInjected 200 [(errno_in nl_insert_errnos, FamNet)] [].
+Definition sendto_injected : NsInjected :=
+  mkNsInjected 206 [(errno_in nl_insert_errnos, FamNet); (errno_in nl_alloc_errnos, FamAlloc)] [].
+Definition recvfrom_injected : NsInjected :=
+  mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)] [].
+
+(** The five arms by call number, for [Spec.ns_table], each with its row's
+    refusals. *)
+Definition net_arms : list (Z * NsArm) :=
+  [(29, ioctl_arm); (198, with_injected (ni_errno socket_injected) socket_arm);
+   (200, with_injected (ni_errno bind_injected) bind_arm);
+   (206, with_injected (ni_errno sendto_injected) sendto_arm);
+   (207, with_injected (ni_errno recvfrom_injected) recvfrom_arm)].
+
 Definition net_injected : list NsInjected :=
-  [mkNsInjected 198 [(fun e => (e =? ENOMEM) || (e =? ENFILE), FamAlloc);
-                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
-   mkNsInjected 200 [(fun e => (e =? ENOMEM) || (e =? EOVERFLOW), FamNet);
-                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
-   mkNsInjected 206 [(fun e => (e =? ENOMEM) || (e =? ENOBUFS), FamAlloc);
-                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
-   mkNsInjected 207 [(fun e => (1 <=? e) && (e <=? 4095), FamCred)]].
+  [socket_injected; bind_injected; sendto_injected; recvfrom_injected].
 
 (* =========================================================================
    Deterministic functional cores for checks

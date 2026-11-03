@@ -372,20 +372,29 @@ Example fchmod_refusals :
                (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
-(** A security module's refusal comes only after its hook: for fchmod
-    after EROFS (a writable tmpfs file: yes; a read-only mount or an O_PATH
-    file: no); for unlinkat after the lookup (an existing name: yes; a bad
-    flag, a missing name or a trailing slash after a file: no). *)
-Example fchmod_hook_places :
-  fchmod_hook_reached base_model base_ctx file_state chmod_file = true
-  /\ fchmod_hook_reached base_model base_ctx existing_ro_state chmod_file = false
-  /\ fchmod_hook_reached base_model base_ctx file_state
-       (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0)) = false.
+(** The environment's refusals ([fsops_injected]): a tmpfs create's space
+    and allocation failures and its walk's; unlinkat's walk's, and no
+    security module's (ENOENT and EACCES, the tables' answers, are not
+    refusals); write's, the released arm's ENOMEM, for a descriptor of the
+    released model; none for fchmod. *)
+Example fsops_rows :
+  map ni_no fsops_injected = [34; 35; 36; 64]
+  /\ ni_errno mkdirat_injected ENOSPC = true /\ ni_errno symlinkat_injected ENOMEM = true
+  /\ ni_errno unlinkat_injected ENOMEM = true /\ ni_errno unlinkat_injected EIO = true
+  /\ ni_errno unlinkat_injected ENOENT = false /\ ni_errno unlinkat_injected EACCES = false
+  /\ ni_errno write_injected ENOMEM = true.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
-Example unlinkat_hook_places :
-  unlinkat_hook_reached (unlink_call s_f 0) base_model base_ctx file_state = true
-  /\ unlinkat_hook_reached (unlink_call s_f 1) base_model base_ctx file_state = false
-  /\ unlinkat_hook_reached (unlink_call s_new 0) base_model base_ctx file_state = false
-  /\ unlinkat_hook_reached (unlink_call s_f_slash 0) base_model base_ctx file_state = false.
+(** A write's environment refusals ([write_env]): a writable tmpfs file
+    ENOSPC, ENOMEM and EIO; a uid_map ENOMEM and no ENOSPC; a setgroups
+    file none (its buffer is on the stack); a file opened read-only none
+    (EBADF comes first).  The write row ([write_injected]) lists them for
+    the forced-only filter, and EBADF, the tables' answer, is no refusal. *)
+Example write_env_refusals :
+  write_env file_state chmod_file ENOSPC = true /\ write_env file_state chmod_file EIO = true
+  /\ write_env file_state chmod_file ENOMEM = true
+  /\ write_env (map_state []) uid_file ENOMEM = true /\ write_env (map_state []) uid_file ENOSPC = false
+  /\ write_env (map_state []) groups_file ENOMEM = false
+  /\ write_env file_state offset_file ENOSPC = false
+  /\ ni_errno write_injected ENOSPC = true /\ ni_errno write_injected EBADF = false.
 Proof. vm_compute. repeat split; reflexivity. Qed.

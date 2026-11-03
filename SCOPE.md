@@ -469,7 +469,38 @@ not apply.
   `prctl` and `setgroups` answer for that kernel (the credentials
   section of `Sys/Kernel/Sys.v`): a second LSM (SELinux, AppArmor, a BPF
   program on `task_prctl`, `task_getsid` or `task_fix_setgroups`) can
-  refuse where the model answers.
+  refuse where the model answers. The namespace model rests on the same
+  assumption. Beside the tables' answer, an arm of `Ns.Spec.ns_table`
+  admits only the environment refusals its file lists, each with the
+  Linux v6.18.44 function that returns it (`Ns.Spec.ns_injected_table`):
+  an allocation failure (`-ENOMEM`, `-ENFILE`, `-ENOSPC`, `-EMFILE`,
+  `-ENOBUFS`, and `set_cred_ucounts`'s `-EAGAIN`), a full netlink hash
+  table (`-EOVERFLOW`), a host file system's I/O error (`-EIO`), and the
+  `-EAGAIN` of an `openat2` whose walk took a `..` under
+  `RESOLVE_IN_ROOT` while something was renamed or mounted. It admits no
+  refusal of a security module, so a second LSM's hook
+  (`security_path_unlink`, `security_sb_mount`,
+  `security_create_user_ns`, a socket hook) can refuse where it answers.
+  Under `Run.forced_only_cfg` its filter (`Ns.Spec.ns_refusal`) removes
+  each listed refusal wherever the model also admits the tables' own
+  answer. A namespace `clone` is the core's call, and its failures are
+  not listed ("Errors of a namespace `clone`" below).
+- The host file systems the namespace model walks (`Ns.Tables.SbHost`)
+  are local disk file systems: a lookup, an open or the read of a link's
+  text there fails, beside the tables' answer, only for lack of memory
+  or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
+  list. A network or FUSE file system can answer other errnos, which the
+  namespace model does not give.
+- An rtnetlink handler can fail for lack of memory. When one does
+  (`rtnl_newlink`, `inet_rtm_newaddr` or a dump's start meeting
+  `-ENOMEM` or `-ENOBUFS`), Linux still answers `sendto` with the
+  request's length, reports the error inside the acknowledgement
+  (`netlink_ack`, `net/netlink/af_netlink.c`, v6.18.44), and leaves the
+  namespace unchanged. The namespace model admits that outcome
+  (`Ns.Net.nl_handler_errnos`). Under forced-only, this one injected
+  refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`) sees
+  the state before the call and the call's effect, not the state after
+  it, where the acknowledgement lives.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

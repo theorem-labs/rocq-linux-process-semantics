@@ -12,9 +12,9 @@
     root, cwd at home, umask 022, descriptors 0, 1, 2. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files Spec.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -377,7 +377,7 @@ Example openat2_in_root_eagain :
   openat2_arm (open2 3 up_exists 0 RESOLVE_IN_ROOT 24) m_dir3 c0 W_dir3
               (err (snd (fst (openat2_fn (open2 3 up_exists 0 RESOLVE_IN_ROOT 24) m_dir3 c0 W_dir3)))
                    EAGAIN m_dir3 c0 W_dir3).
-Proof. right. left. split; [vm_compute; reflexivity | reflexivity]. Qed.
+Proof. right. split; [vm_compute; reflexivity | reflexivity]. Qed.
 
 (* ---- close, fcntl ------------------------------------------------------ *)
 
@@ -673,8 +673,118 @@ Example getdents64_fault_advances_position :
   end = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Every Files arm records its allocation, filesystem-I/O and security
-    environment refusals in the exported table. *)
+(** The rows of the exported table: getcwd, openat, getdents64 (the
+    released arm's refusal, for a descriptor of the released model),
+    openat2, and the five calls that read a name and walk it; fcntl,
+    fstatfs, fchdir, close and fstat have no environment refusal. *)
 Example file_injected_numbers :
-  map ni_no file_injected = [17; 25; 43; 44; 48; 49; 50; 56; 57; 61; 78; 79; 80; 437].
+  map ni_no file_injected = [17; 56; 61; 437; 43; 48; 49; 78; 79].
 Proof. vm_compute. reflexivity. Qed.
+
+(* ---- the forced-only filter on openat and openat2 ---------------------- *)
+
+(** An answer's effect. *)
+Definition eff_of (o : ext_outcome) : SyscallEffect :=
+  match o with EOk eff _ _ _ _ => eff | EUnmodeled => mkEffect (Z_to_bv 64 0) [] [] end.
+
+(** The refusal [e] the environment injects after the answer [o]: [o]'s
+    copy-ins, the errno, nothing written ([Arm.injected_after]). *)
+Definition injected_eff (o : ext_outcome) (e : Z) : SyscallEffect :=
+  with_copyins (eff_copyins (eff_of o)) (mkEffect (errno_ret e) [] []).
+
+(** The task is outside the released world in both worlds below, so the
+    namespace arms answer and [Spec.ns_refusal] is the namespace filter. *)
+Example c0_outside_released : flat_view c0 W = false /\ flat_view c0 W_dir3 = false.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** openat("/tmp/nope", O_RDONLY): tmpfs has no "nope", so the walk answers
+    ENOENT.  Under forced-only the injected ENOMEM is filtered (ENOENT is an
+    answer that matches no pair of [openat_injected]) and ENOENT is not. *)
+Definition s_tmp_nope : list Z := s_tmp ++ [47; 110; 111; 112; 101].
+Definition open_nope : SyscallInput := open_in s_tmp_nope 0 0.
+Definition nope_answer : ext_outcome := openat_fn open_nope m3 c0 W.
+
+Lemma nope_answer_eq : nope_answer = EOk (eff_of nope_answer) m3 c0 W [].
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma ns_spec_open_nope : forall o,
+  ns_spec open_nope m3 c0 W o <-> with_injected (ni_errno openat_injected) openat_arm open_nope m3 c0 W o.
+Proof.
+  intros o. unfold ns_spec. replace (flat_view c0 W) with false by (vm_compute; reflexivity).
+  reflexivity.
+Qed.
+
+Lemma open_nope_filter : forall eff,
+  ns_refusal forced_only_cfg open_nope m3 c0 W eff
+  <-> ns_refusal_off_b forced_only_cfg open_nope (eff_ret eff) = true
+      /\ exists eff' m' ctx' st' evs',
+           ns_spec open_nope m3 c0 W (EOk eff' m' ctx' st' evs')
+           /\ ns_witness open_nope (eff_ret eff) (eff_ret eff') = true.
+Proof. intros eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+
+Example openat_enoent_forced_only :
+  ret_of nope_answer = Some (-2)
+  /\ ns_spec open_nope m3 c0 W (EOk (injected_eff nope_answer ENOMEM) m3 c0 W [])
+  /\ ns_refusal forced_only_cfg open_nope m3 c0 W (injected_eff nope_answer ENOMEM)
+  /\ ~ ns_refusal forced_only_cfg open_nope m3 c0 W (eff_of nope_answer).
+Proof.
+  split; [vm_compute; reflexivity|].
+  split.
+  { apply (proj2 (ns_spec_open_nope _)). right. exists nope_answer. split; [exact eq_refl|].
+    rewrite nope_answer_eq. unfold injected_after. exists ENOMEM. split; reflexivity. }
+  split.
+  - apply (proj2 (open_nope_filter _)). split; [vm_compute; reflexivity|].
+    exists (eff_of nope_answer), m3, c0, W, []. split.
+    + rewrite <- nope_answer_eq. apply (proj2 (ns_spec_open_nope _)). left. exact eq_refl.
+    + vm_compute. reflexivity.
+  - intros H. apply (proj1 (open_nope_filter _)) in H. destruct H as [Hoff _].
+    vm_compute in Hoff. discriminate Hoff.
+Qed.
+
+(** openat2("../nope", RESOLVE_IN_ROOT) from tmpfs's root: the walk takes a
+    scoped ".." and answers ENOENT, so EAGAIN is also an answer.  Under
+    forced-only EAGAIN, an interruption of [openat2_injected], is filtered
+    and ENOENT is not. *)
+Definition up_nope : list Z := [46; 46; 47; 110; 111; 112; 101].
+Definition open2_nope : SyscallInput := open2 3 up_nope 0 RESOLVE_IN_ROOT 24.
+Definition nope2 : (ext_outcome * list (word * nat)) * bool := openat2_fn open2_nope m_dir3 c0 W_dir3.
+Definition nope2_eagain : ext_outcome := err (snd (fst nope2)) EAGAIN m_dir3 c0 W_dir3.
+
+Lemma nope2_eq : fst (fst nope2) = EOk (eff_of (fst (fst nope2))) m_dir3 c0 W_dir3 [].
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma ns_spec_open2_nope : forall o,
+  ns_spec open2_nope m_dir3 c0 W_dir3 o
+  <-> with_injected (pairs_errno open_pairs) openat2_arm open2_nope m_dir3 c0 W_dir3 o.
+Proof.
+  intros o. unfold ns_spec. replace (flat_view c0 W_dir3) with false by (vm_compute; reflexivity).
+  reflexivity.
+Qed.
+
+Lemma open2_nope_filter : forall eff,
+  ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 eff
+  <-> ns_refusal_off_b forced_only_cfg open2_nope (eff_ret eff) = true
+      /\ exists eff' m' ctx' st' evs',
+           ns_spec open2_nope m_dir3 c0 W_dir3 (EOk eff' m' ctx' st' evs')
+           /\ ns_witness open2_nope (eff_ret eff) (eff_ret eff') = true.
+Proof. intros eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+
+Example openat2_dotdot_eagain_forced_only :
+  ret_of (fst (fst nope2)) = Some (-2) /\ snd nope2 = true
+  /\ ns_spec open2_nope m_dir3 c0 W_dir3 nope2_eagain
+  /\ ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of nope2_eagain)
+  /\ ~ ns_refusal forced_only_cfg open2_nope m_dir3 c0 W_dir3 (eff_of (fst (fst nope2))).
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  split.
+  { apply (proj2 (ns_spec_open2_nope _)). left. right.
+    split; [vm_compute; reflexivity | exact eq_refl]. }
+  split.
+  - apply (proj2 (open2_nope_filter _)). split; [vm_compute; reflexivity|].
+    exists (eff_of (fst (fst nope2))), m_dir3, c0, W_dir3, []. split.
+    + rewrite <- nope2_eq. apply (proj2 (ns_spec_open2_nope _)). left. left. exact eq_refl.
+    + vm_compute. reflexivity.
+  - intros H. apply (proj1 (open2_nope_filter _)) in H. destruct H as [Hoff _].
+    vm_compute in Hoff. discriminate Hoff.
+Qed.

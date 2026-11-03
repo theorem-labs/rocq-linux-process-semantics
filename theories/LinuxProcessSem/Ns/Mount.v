@@ -662,8 +662,9 @@ Definition pivot_effect (T : list Mount) (rt nr old d rp rmp : positive) (rlocke
     or the put_old mount being the root mount (EBUSY); the root not the
     root of its mount, or with no parent; the new root likewise; put_old
     not under the new root; the new root not under the root (each EINVAL).
-    The arm adds what comes before (CAP_SYS_ADMIN, the two lookups, the LSM
-    hook) and after: [chroot_fs_refs] moves every task's root and working
+    The arm adds what comes before (CAP_SYS_ADMIN and the two lookups;
+    [security_sb_pivotroot] refuses nothing under the capability module
+    alone) and after: [chroot_fs_refs] moves every task's root and working
     directory that are the old root to the new root. *)
 Definition pivot_root (T : list Mount) (ns rt nr old d : positive) (pp : PivotPaths)
     : MResult :=

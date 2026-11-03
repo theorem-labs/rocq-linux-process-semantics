@@ -5,8 +5,8 @@
     arm answers. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Spec.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -76,8 +76,8 @@ Example unshare_chrooted : forall m o,
               (world [init_uns 100 true]) o
   -> o = ns_errno EPERM (with_creds (creds 1000) m) (task 1 (1%positive, 5%positive) nocaps)
                   (world [init_uns 100 true])
-     \/ exists e, (1 <= e <= 4095) /\ o = ns_errno e (with_creds (creds 1000) m)
-                    (task 1 (1%positive, 5%positive) nocaps) (world [init_uns 100 true]).
+     \/ env_refusal o (with_creds (creds 1000) m) (task 1 (1%positive, 5%positive) nocaps)
+                    (world [init_uns 100 true]).
 Proof.
   intros m o H.
   rewrite (unshare_arm_newuser _ _ _ _ _ (init_uns 100 true) true) in H;
@@ -94,18 +94,18 @@ Example unshare_unmapped_owner : forall m o,
               (world [ns2; init_uns 100 true]) o
   -> o = ns_errno EPERM (with_creds (creds 1000) m) (task 2 (1%positive, 1%positive) nocaps)
                   (world [ns2; init_uns 100 true])
-     \/ exists e, (1 <= e <= 4095) /\ o = ns_errno e (with_creds (creds 1000) m)
-                    (task 2 (1%positive, 1%positive) nocaps) (world [ns2; init_uns 100 true]).
+     \/ env_refusal o (with_creds (creds 1000) m) (task 2 (1%positive, 1%positive) nocaps)
+                    (world [ns2; init_uns 100 true]).
 Proof.
   intros m o H.
   rewrite (unshare_arm_newuser _ _ _ _ _ ns2 false) in H; [| reflexivity | reflexivity | reflexivity].
   destruct H as [H|H]; [left; vm_compute in H; exact H | right; exact H].
 Qed.
 
-(** Every refusal the environment can add is an errno; [only_or_env] is
-    "this answer, or one of the environment's". *)
+(** [only_or_env] is "this answer, or one of the environment's refusals
+    ([env_refusal]: ENOMEM, ENOSPC, EAGAIN)". *)
 Definition only_or_env (o expect : ext_outcome) (m : Model) (ctx : NsCtx) (st : NsState) : Prop :=
-  o = expect \/ exists e, (1 <= e <= 4095) /\ o = ns_errno e m ctx st.
+  o = expect \/ env_refusal o m ctx st.
 
 (** The limit of a sealed namespace reached by a namespace the caller is
     in: namespace 2 (limit 1) has one child, namespace 3, owned by kuid
@@ -181,5 +181,57 @@ Proof.
 Qed.
 
 (** The environment's refusals are listed for the forced-only filter:
-    ENOMEM as an allocation failure, any errno as a security module's. *)
-Example injected_lists_97 : map ni_no user_injected = [97] := eq_refl.
+    ENOMEM, ENOSPC and EAGAIN, the allocations' ([env_refusal]); ENOSPC is
+    also the tables' answer ([ni_forced]). *)
+Example injected_lists_97 :
+  map ni_no user_injected = [97] /\ map ni_forced user_injected = [[ENOSPC]] := conj eq_refl eq_refl.
+
+(** Under forced-only, at a parent above level 32: ENOSPC is the tables'
+    answer, so the injected ENOMEM is filtered beside it, and ENOSPC, the
+    one errno [ni_forced] lists, is kept, although the environment can
+    inject it too: every other answer is an environment refusal. *)
+Definition t_deep : NsCtx := task 1 (1%positive, 1%positive) nocaps.
+
+Lemma ns_spec_deep : forall m o,
+  ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep]) o
+  <-> unshare_exact deep false (with_creds (creds 1000) m) t_deep (world [deep]) o
+      \/ env_refusal o (with_creds (creds 1000) m) t_deep (world [deep]).
+Proof.
+  intros m o. unfold ns_spec.
+  replace (flat_view t_deep (world [deep])) with false by (vm_compute; reflexivity).
+  change (lookup_ns_arm ns_table (ns_sysno (call CLONE_NEWUSER))) with (Some unshare_arm).
+  cbv beta iota.
+  apply unshare_arm_newuser; reflexivity.
+Qed.
+
+Lemma deep_filter : forall m eff,
+  ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep]) eff
+  <-> ns_refusal_off_b forced_only_cfg (call CLONE_NEWUSER) (eff_ret eff) = true
+      /\ exists eff' m' ctx' st' evs',
+           ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
+                   (EOk eff' m' ctx' st' evs')
+           /\ ns_witness (call CLONE_NEWUSER) (eff_ret eff) (eff_ret eff') = true.
+Proof. intros m eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+
+Example unshare_too_deep_forced_only : forall m,
+  ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
+             (mkEffect (errno_ret ENOMEM) [] [])
+  /\ ~ ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
+               (mkEffect (errno_ret ENOSPC) [] []).
+Proof.
+  intros m. split.
+  - apply (proj2 (deep_filter m _)). split; [vm_compute; reflexivity|].
+    exists (mkEffect (errno_ret ENOSPC) [] []), (with_creds (creds 1000) m), t_deep, (world [deep]), [].
+    split; [|vm_compute; reflexivity].
+    apply (proj2 (ns_spec_deep m _)). left. vm_compute. reflexivity.
+  - intros H. apply (proj1 (deep_filter m _)) in H.
+    destruct H as (_ & eff' & m' & ctx' & st' & evs' & Hspec & Hw).
+    apply (proj1 (ns_spec_deep m _)) in Hspec.
+    destruct Hspec as [Hspec | (e & He & Hspec)].
+    + vm_compute in Hspec. injection Hspec; intros; subst. vm_compute in Hw. discriminate Hw.
+    + unfold ns_errno, ns_ret in Hspec. injection Hspec; intros; subst.
+      unfold errno_in, user_env_errnos in He. cbn [existsb] in He.
+      repeat (apply orb_true_iff in He; destruct He as [He | He];
+              [apply Z.eqb_eq in He; subst e; vm_compute in Hw; discriminate Hw |]).
+      discriminate He.
+Qed.

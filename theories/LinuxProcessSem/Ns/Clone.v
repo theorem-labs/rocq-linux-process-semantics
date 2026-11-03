@@ -32,8 +32,9 @@
 
     The environment's refusals (ENOMEM from the allocations, ENOSPC from
     the namespace counts of the host's user namespace, EAGAIN from
-    RLIMIT_NPROC or a cgroup controller, EINTR, any errno of a security
-    module) are admitted for every clone the model answers; one that
+    RLIMIT_NPROC or a cgroup controller, EINTR, and the failures of every
+    namespace's init function, which cannot be listed with confidence: any
+    errno) are admitted for every clone the model answers; one that
     comes after [alloc_pid] leaves the pid cursors advanced
     ([pid_advanced]).  A core takes a failed clone's shared state from
     [CnErr] too.  A statement that names [clone_tables_failures] admits
@@ -257,8 +258,8 @@ Definition pid_advanced (st : NsState) (active : positive) : NsState :=
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
-    a security module), which leaves the shared state as it was or, when
-    it came after [alloc_pid], with the pid cursors advanced. *)
+    a namespace's init function), which leaves the shared state as it was
+    or, when it came after [alloc_pid], with the pid cursors advanced. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st hq
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
@@ -348,12 +349,12 @@ Definition clone_count_undecided (f : Z) (m : Model) (ctx : NsCtx) (st : NsState
     ENOSPC from the model's own namespaces), or ENOSPC where the tables do
     not decide the namespace count ([clone_count_undecided]).  A run in
     which the host refuses on an allocation, a namespace count of its own,
-    a cgroup controller, RLIMIT_NPROC, a pending fatal signal or a security
-    module, or in which a pid namespace's init has exited (ENOMEM from
-    [alloc_pid]: which processes live is the core's table, not the
-    namespace state), is outside such a statement.  The released clone (a
-    task in the released world, a word with no namespace bit) keeps every
-    failure the core admits. *)
+    a cgroup controller, RLIMIT_NPROC, a pending fatal signal or a
+    namespace's init function, or in which a pid namespace's init has
+    exited (ENOMEM from [alloc_pid]: which processes live is the core's
+    table, not the namespace state), is outside such a statement.  The
+    released clone (a task in the released world, a word with no
+    namespace bit) keeps every failure the core admits. *)
 Definition clone_tables_failures : CloneEnv := fun f m ctx st hq e st' =>
   (flat_view ctx st && negb (has_ns_bits f)) = true
   \/ CnErr e st' = clone_ns_exact f m ctx st hq

@@ -270,9 +270,17 @@ Proof. vm_compute. reflexivity. Qed.
 (** The five syscall arms are exported by their Linux RISC-V numbers. *)
 Example net_arm_numbers : map fst net_arms = [29; 198; 200; 206; 207] := eq_refl.
 
-(** Net arms publish every allocation and security-hook refusal family. *)
-Example net_injected_numbers : map ni_no net_injected = [198; 200; 206; 207].
-Proof. vm_compute. reflexivity. Qed.
+(** Net arms export their environment refusals: socket's allocation
+    failures, netlink_insert's (bind, and sendto's autobind), sendto's skb
+    allocation, recvfrom's pending ENOBUFS.  recvfrom's EAGAIN on an empty
+    queue and bind's EADDRINUSE, the tables' answers, are no refusal. *)
+Example net_injected_rows :
+  map ni_no net_injected = [198; 200; 206; 207]
+  /\ ni_errno socket_injected ENFILE = true /\ ni_errno bind_injected EOVERFLOW = true
+  /\ ni_errno sendto_injected ENOBUFS = true /\ ni_errno sendto_injected EOVERFLOW = true
+  /\ ni_errno recvfrom_injected ENOBUFS = true /\ ni_errno recvfrom_injected EAGAIN = false
+  /\ ni_errno bind_injected EADDRINUSE = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* =========================================================================
    The full recvfrom arm
@@ -321,3 +329,42 @@ Example recvfrom_address_ok : forall o,
   recvfrom_arm (rcv_call 65620) rcv_model init_nsctx rcv_state o ->
   option_map fst (out_of o) = Some 36.
 Proof. intros o H. unfold recvfrom_arm in H. vm_compute in H. subst o. vm_compute. reflexivity. Qed.
+
+(* =========================================================================
+   An rtnetlink handler's allocation failure
+   ========================================================================= *)
+
+(** A bound socket (port 2) of the sealed namespace 2 sends the link dump
+    request [getlink_req] to the kernel.  Beside the dump, the model admits
+    the handler's allocation failure: [sendto] still returns the request's
+    length, the queue holds the acknowledgement with -ENOMEM
+    ([handler_fail_ack]), and the namespace does not change.  The
+    forced-only filter does not remove this answer (SCOPE.md). *)
+Definition snd_len : Z := Z.of_nat (length getlink_req).
+Definition snd_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 capable.
+Definition snd_state : NsState :=
+  mkNsState [] users [] [] [net2 [lo_up]] [] [] [] [(7%N, snd_file)] (ns_env empty_nsstate).
+Definition snd_mem : word -> option byte :=
+  fun a => let k := bv_unsigned a - 65536 in
+           if (0 <=? k) && (k <? snd_len) then Some (nth (Z.to_nat k) getlink_req (Z_to_bv 8 0))
+           else None.
+Definition snd_in : SyscallInput :=
+  mkInput (Z_to_bv 64 206) (map (Z_to_bv 64) [3; 65536; snd_len; 0; 0; 0]) snd_mem snd_mem.
+
+Example getlink_handler_failure_admitted :
+  handler_reached getlink_req (sendto_fn (net2 [lo_up]) users capable capable false 2 getlink_req) = true
+  /\ nl_u32 (handler_fail_ack 2 getlink_req ENOMEM) 16 = 4294967284
+  /\ netlink_sendto snd_in rcv_model init_nsctx snd_state 7 snd_file 2 2 [] (Z_to_bv 64 65536) snd_len 0
+       (Z_to_bv 64 0) 0
+       (ns_out (Z_to_bv 64 snd_len) [] [(Z_to_bv 64 65536, Z.to_nat snd_len)] rcv_model init_nsctx
+               (set_file snd_state 7 (netlink_file snd_file 2 2 [handler_fail_ack 2 getlink_req ENOMEM]))).
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  (* Head reductions only: a full normalization of the relation, whose
+     dump branch quantifies over the environment's NlEnv, does not fit in
+     memory. *)
+  unfold netlink_sendto. hnf. right. exists 2. split; [exact eq_refl|].
+  hnf. right. hnf. right. split; [vm_compute; reflexivity|].
+  exists ENOMEM. split; [reflexivity | vm_compute; reflexivity].
+Qed.
