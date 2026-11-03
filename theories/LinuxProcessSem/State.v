@@ -4573,9 +4573,11 @@ Record ProcState := mkProcState {
                                     [cred->cap_inheritable]
                                     (include/linux/cred.h).  Every word is a
                                     launch value; [init_model] copies
-                                    [ProcInput]'s declaration.  No modeled call
-                                    writes it on this branch; [with_cap_inheritable]
-                                    is the one setter, and [Procs.child_proc]
+                                    [ProcInput]'s declaration.
+                                    [Kernel.Capability.capget_spec] reads it
+                                    and [Kernel.Capability.capset_spec]
+                                    writes it through [with_cap_inheritable],
+                                    the one setter; [Procs.child_proc]
                                     copies it when fork copies credentials.
                                     Kernel citations, read at v6.18.44 and
                                     identical at v6.18.46: include/linux/cred.h,
@@ -5547,8 +5549,9 @@ Definition with_ppid_answered (p : word) (m : Model) : Model :=
                          (orb (m_reparent_moved m) (negb (bv_eqb p (m_ppid m)))))
             (m_lim m) (m_time m).
 
-(** Install the inheritable capability set.  No modeled call uses this
-    setter on this branch; see [procst_cap_inheritable]. *)
+(** Install the inheritable capability set.  [Kernel.Capability.capset_spec]
+    is the one modeled call that uses this setter; see
+    [procst_cap_inheritable]. *)
 Definition with_cap_inheritable (c : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)

@@ -1595,9 +1595,10 @@ Definition capbset_assumed (cap : Z) : bool :=
     covers ([PR_CAPBSET_DROP] (24) is declined, and nothing else
     modeled writes the set), so a real process reads the same bit each
     time, which the model does not promise.  No modeled arm decides its
-    answer by one of those bits: [Kernel.Capability.capget_spec]
-    declines the one caller whose sets [cap_bset] reaches, a caller
-    with a uid 0.
+    answer by one of those bits: [Kernel.Capability.capget_spec] and
+    [Kernel.Capability.capset_spec] decline the one caller whose sets
+    [cap_bset] reaches, a caller with a uid 0, and for every other caller
+    [capset_spec]'s bounding-set test follows from its first test.
 
     -EINVAL IS A VERSION CLAIM, and the only one here.  [CAP_LAST_CAP]
     is 40 at the cited commit and has been since v5.9; a kernel that

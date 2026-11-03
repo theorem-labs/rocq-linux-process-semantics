@@ -2395,9 +2395,9 @@ Proof.
   unfold check_prlimit64, check_rlim64_read in H. vm_frame2 H.
 Qed.
 
-(** capget and capset return the model they were given on every
-    [CheckOk]: neither carries a capability set in the model, and the
-    one answered [capset] shape changes nothing the model holds. *)
+(** capget returns the model it was given on every [CheckOk]; capset
+    returns it, or writes the inheritable set alone
+    ([State.with_cap_inheritable]), which is not the address space. *)
 Lemma check_capget_frame : forall i header dataptr eff m m' evs,
   check_capget i header dataptr eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
