@@ -47,7 +47,8 @@ Definition dup_model : Model :=
 Example dup_installs_a_copy_at_the_lowest_free_fd :
   check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 6 [] []) dup_model
      = CheckReject.
@@ -58,7 +59,8 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 Example dup_of_a_directory_fd_duplicates :
   check_syscall (mkInput 23 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 FdDir) dup_model) [].
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 FdDir) dup_model)) [].
 Proof. check_eq. Qed.
 
 (** The offset-sharing gap, stated as the model's answer rather than as
@@ -80,21 +82,23 @@ Proof. intro eff. vm_compute. reflexivity. Qed.
 Example dup3_replaces_the_target_and_returns_it :
   check_syscall (mkInput 24 [0; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 1 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(1, false)]
+               (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 5 [] []) dup_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
-(** O_CLOEXEC is accepted and leaves the same state as flags 0 — nothing
-    in [Specs.modeled_sysnos] can observe a close-on-exec bit's value
-    (F_GETFD admits both answers; see [File.dup3_spec]).  Any OTHER bit
-    is [ksys_dup3]'s -EINVAL, so claiming the successful return there is
+(** O_CLOEXEC is accepted, and leaves the same table as flags 0 with the
+    new descriptor's close-on-exec bit SET where flags 0 clears it
+    ([File.dup3_spec]: [do_dup2]'s [__set_open_fd]).  Any OTHER bit is
+    [ksys_dup3]'s -EINVAL, so claiming the successful return there is
     rejected. *)
 Example dup3_ignores_o_cloexec_but_not_another_bit :
   check_syscall (mkInput 24 [0; 1; 524288; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 1 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(1, true)]
+               (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 1; 4; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 1 [] []) dup_model
      = CheckReject.
@@ -123,7 +127,8 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 Example dup3_takes_a_free_newfd_below_the_embedded_table :
   check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 7 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(7, false)]
+               (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 5 [] []) dup_model
      = CheckReject.
@@ -159,7 +164,8 @@ Definition dup_model_nofile4 : Model := with_nofile (Z_to_bv 64 4) dup_model.
 Example dup3_free_newfd_is_decided_by_the_run_s_limit :
   check_syscall (mkInput 24 [0; 5; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 5; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) dup_model_nofile4
      = CheckOk dup_model_nofile4 []
@@ -178,8 +184,9 @@ Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
 Example dup3_limit_beats_an_fd_the_process_holds :
   check_syscall (mkInput 24 [0; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 3 [] []) dup_model_nofile4
-  = CheckOk (with_fds (fd_insert (m_fds dup_model_nofile4) 3 (FdChannel 0))
-               dup_model_nofile4) []
+  = CheckOk (with_cloexec [(3, false)]
+               (with_fds (fd_insert (m_fds dup_model_nofile4) 3 (FdChannel 0))
+                  dup_model_nofile4)) []
   /\ check_syscall (mkInput 24 [0; 4; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) dup_model_nofile4
      = CheckOk dup_model_nofile4 []
@@ -196,7 +203,8 @@ Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
 Example dup3_free_newfd_just_below_the_embedded_table :
   check_syscall (mkInput 24 [0; 63; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 63 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 63 (FdChannel 0)) dup_model) [].
+  = CheckOk (with_cloexec [(63, false)]
+               (with_fds (fd_insert (m_fds dup_model) 63 (FdChannel 0)) dup_model)) [].
 Proof. check_eq. Qed.
 
 Lemma dup3_declines_a_free_newfd_at_the_embedded_table : forall eff,
@@ -251,7 +259,8 @@ Example dup3_declines_procfd_dir_and_signalfd :
   (* the control *)
   /\ check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 7 [] []) dup_model
-     = CheckOk (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model) [].
+     = CheckOk (with_cloexec [(7, false)]
+                  (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model)) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
 (* -------------------------------------------------------------------------
@@ -353,14 +362,15 @@ Example ns_file_declines_every_kind_dependent_call :
      = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
 
-(** ANSWERED on fd 3: fcntl(F_SETFD) is 0, fcntl(F_GETFD) is 0 or
-    FD_CLOEXEC, and close is 0 and removes the entry.  THE CONTROLS,
-    which the model before this kind answered the same way: the same
-    calls on fd 4, a closed fd's -EBADF for the declined ones, and dup of
-    the directory at fd 5. *)
+(** ANSWERED on fd 3: fcntl(F_SETFD) is 0 and records the bit,
+    fcntl(F_GETFD) is 0 or FD_CLOEXEC (no bit is known in [ns_model]),
+    and close is 0 and removes the entry.  THE CONTROLS, which the model
+    before this kind answered the same way: the same calls on fd 4, a
+    closed fd's -EBADF for the declined ones, and dup of the directory at
+    fd 5. *)
 Example ns_file_answers_the_kind_blind_calls :
   check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
-  = CheckOk ns_model []
+  = CheckOk (with_cloexec [(3, true)] ns_model) []
   /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect 0 [] []) ns_model
      = CheckOk ns_model []
   /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) ns_model
@@ -369,7 +379,7 @@ Example ns_file_answers_the_kind_blind_calls :
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
   (* the controls *)
   /\ check_syscall (fd_call 25 4 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
-     = CheckOk ns_model []
+     = CheckOk (with_cloexec [(4, true)] ns_model) []
   /\ check_syscall (fd_call 57 4 0 0) (mkEffect 0 [] []) ns_model
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 4) ns_model) []
   /\ check_syscall (fd_call 63 9 0x10000 16) (mkEffect (errno_ret EBADF) [] []) ns_model
@@ -377,7 +387,8 @@ Example ns_file_answers_the_kind_blind_calls :
   /\ check_syscall (fd_call 80 9 0x10000 0) (mkEffect (errno_ret EBADF) [] []) ns_model
      = CheckOk ns_model []
   /\ check_syscall (fd_call 23 5 0 0) (mkEffect 6 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 6 FdDir) ns_model) [].
+     = CheckOk (with_cloexec [(6, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 6 FdDir) ns_model)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** A LOCK IT MAY HOLD.  The file behind handle 7 may be "f" itself, so
@@ -402,12 +413,14 @@ Example ns_file_close_range_and_dup3_onto_it :
   check_syscall (close_range_in 3 3 0) (mkEffect 0 [] []) ns_model
   = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
   /\ check_syscall (fd_call 24 0 3 0) (mkEffect 3 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 3 (FdChannel 0)) ns_model) []
+     = CheckOk (with_cloexec [(3, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 3 (FdChannel 0)) ns_model)) []
   (* the controls *)
   /\ check_syscall (close_range_in 5 5 0) (mkEffect 0 [] []) ns_model
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 5) ns_model) []
   /\ check_syscall (fd_call 24 0 5 0) (mkEffect 5 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 5 (FdChannel 0)) ns_model) [].
+     = CheckOk (with_cloexec [(5, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 5 (FdChannel 0)) ns_model)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** AN UNLINK IT MAY WATCH.  The file behind handle 7 may be the one

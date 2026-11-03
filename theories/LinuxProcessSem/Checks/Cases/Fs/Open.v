@@ -2326,8 +2326,9 @@ Definition proc_open_in (dirfd : word) (bs : list byte) (fl : Z) : SyscallInput 
 
 (** [m] with the opaque object [o] at [fd], which is what an answered
     open leaves. *)
-Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) : Model :=
-  with_fds (fd_insert (m_fds m) fd (FdOpaque o)) m.
+Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) (cl : bool) : Model :=
+  with_cloexec (cloexec_set (m_cloexec m) fd cl)
+    (with_fds (fd_insert (m_fds m) fd (FdOpaque o)) m).
 
 (** [openat(-100, "/proc", O_PATH|O_LARGEFILE)]: the lowest free
     descriptor holding [OProcPath "/proc"], or any errno, and the six
@@ -2340,7 +2341,7 @@ Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) : Model :=
 Example openat_proc_root_o_path :
   check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
     (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
-  = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+  = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc) false) []
   /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
        (with_copyins [(8192, 6%nat)] (mkEffect (errno_ret ENOENT) [] []))
        proc_open_model
@@ -2357,7 +2358,7 @@ Example openat_proc_root_o_path :
   /\ check_syscall
        (proc_open_in AT_FDCWD s_proc (O_PATH + O_DIRECTORY + O_NOFOLLOW + O_CLOEXEC))
        (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc) true) []
   (* the controls *)
   /\ check_syscall (proc_open_in AT_FDCWD s_etc_x 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect 3 [] [])) proc_open_model
@@ -2379,10 +2380,10 @@ Proof. repeat split; check_eq. Qed.
 Example openat_proc_sys_read_only :
   check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
     (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
-  = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowuid)) []
+  = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowuid) true) []
   /\ check_syscall (proc_open_in AT_FDCWD s_overflowgid 0x88000)
        (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowgid)) []
+     = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowgid) true) []
   /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
        (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EACCES) [] []))
        proc_open_model
@@ -2406,7 +2407,7 @@ Example openat_proc_sys_directories_decline_read_only :
      = CheckUnmodeled
   /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x208000)
        (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel)) [].
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel) false) [].
 Proof. repeat split; check_eq. Qed.
 
 (** [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] relative to the O_PATH
@@ -2417,12 +2418,12 @@ Proof. repeat split; check_eq. Qed.
     name from a descriptor that is not an O_PATH one on procfs (fd 1, a
     channel). *)
 Definition proc_fd_model : Model :=
-  proc_opened proc_open_model 3 (OProcPath s_proc).
+  proc_opened proc_open_model 3 (OProcPath s_proc) false.
 
 Example openat_relative_to_proc_fd :
   check_syscall (proc_open_in 3 s_pid_ns 0x208000)
     (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
-  = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) []
+  = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns) false) []
   /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect (errno_ret ESRCH) [] []))
        proc_fd_model
@@ -2476,7 +2477,7 @@ Example openat_relative_dotdot_from_proc_fd_declines :
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
-     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
+     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns) false) [].
 Proof. repeat split; check_eq. Qed.
 
 (** THE /proc/self/fd DIRECTORY.  bubblewrap's monitor process lists
@@ -2500,7 +2501,7 @@ Example openat_proc_self_fd_directory :
   check_syscall (proc_open_in 3 s_self_fd 0x98900)
     (with_copyins [(8192, 8%nat)] (mkEffect 4 [] [])) proc_fd_model
   = CheckOk (proc_opened proc_fd_model 4
-               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0))) true) []
   /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
        (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EMFILE) [] [])) proc_fd_model
      = CheckOk proc_fd_model []
@@ -2510,7 +2511,7 @@ Example openat_proc_self_fd_directory :
   /\ check_syscall (proc_open_in AT_FDCWD s_proc_self_fd 0x98900)
        (with_copyins [(8192, 14%nat)] (mkEffect 3 [] [])) proc_open_model
      = CheckOk (proc_opened proc_open_model 3
-                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0))) true) []
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_self_fdinfo 0x98900)
        (with_copyins [(8192, 12%nat)] (mkEffect 4 [] [])) proc_fd_model
@@ -2534,7 +2535,7 @@ Definition s_proc_self_ns : list byte :=
   [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 110; 115].                       (* "/proc/self/ns" *)
 
 Definition proc_self_dirfd_model : Model :=
-  proc_opened proc_open_model 3 (OProcPath s_proc_self).
+  proc_opened proc_open_model 3 (OProcPath s_proc_self) false.
 
 Example openat_fd_relative_to_proc_self_declines :
   check_syscall (proc_open_in 3 s_fd 0x98900)
@@ -2546,5 +2547,5 @@ Example openat_fd_relative_to_proc_self_declines :
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_ns 0x208000)
        (with_copyins [(8192, 3%nat)] (mkEffect 4 [] [])) proc_self_dirfd_model
-     = CheckOk (proc_opened proc_self_dirfd_model 4 (OProcPath s_proc_self_ns)) [].
+     = CheckOk (proc_opened proc_self_dirfd_model 4 (OProcPath s_proc_self_ns) false) [].
 Proof. repeat split; check_eq. Qed.
