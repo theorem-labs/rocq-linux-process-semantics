@@ -511,8 +511,7 @@ Qed.
     before the unshare sets the limit. *)
 Definition sysw : NsState :=
   let w := FilesCases.W_user_sys in
-  mkNsState (ns_mounts w) [map_root] (ns_mntns w) (ns_pidns w) (ns_netns w) (ns_sbs w)
-            (ns_dentries w) (ns_inodes w) [] (ns_env w).
+  with_files (with_userns w [map_root]) [].
 Definition sysw_ctx : NsCtx :=
   FilesCases.ctx_at 1 resource_caps (1%positive, 1%positive) (1%positive, 2%positive).
 Definition sysw_opened : ext_outcome :=
