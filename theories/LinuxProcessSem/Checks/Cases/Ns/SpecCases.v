@@ -10,6 +10,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Spe
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require SpuriousCfg.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Mm Require Mmap.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs Require ReadWrite.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Files Pass Spec.
 Import ListNotations.
 Open Scope bv_scope.
@@ -222,4 +223,98 @@ Proof.
     apply (proj1 (ns_refusal_pass forced_only_cfg mmap_large Cases.Prelude.tight_model (task 2 18)
                     one_mount (Checks.SpuriousCfg.errno_eff ENOMEM) (mmap_passes mmap_large eq_refl))) in H.
     exact (Checks.SpuriousCfg.mmap_enomem_forced_beyond_budget H).
+Qed.
+
+(** THE RULE OF A ROW IS CHECKED ([Spec.ns_injected_forced]).  A
+    deliberately bad row: [openat]'s, as if its tables also answered ENOMEM,
+    an errno a pair matches, without ENOMEM in its [ni_forced].  Written in
+    Ns/Files.v as
+
+      Definition openat_injected : NsInjected :=
+        mkNsInjected 56 open_pairs (ENOMEM :: open_answers) [].
+
+    it makes [ns_injected_forced] false, so Ns/Spec.v does not compile.  The
+    check refuses that row; it accepts the same row with ENOMEM in
+    [ni_forced]; it also refuses a row whose [ni_forced] lists an errno its
+    tables do not answer; and it accepts the real row. *)
+Example bad_row_fails :
+  ni_forced_ok (mkNsInjected 56%Z open_pairs (ENOMEM :: open_answers) []) = false
+  /\ ni_forced_ok (mkNsInjected 56%Z open_pairs (ENOMEM :: open_answers) [ENOMEM]) = true
+  /\ ni_forced_ok (mkNsInjected 56%Z open_pairs open_answers [ENOMEM]) = false
+  /\ ni_forced_ok openat_injected = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** ONE FAMILY PER FAILURE.  [new_inode]'s ENOSPC is FamAlloc in every row
+    where it can happen, a tmpfs create's ([openat], [mkdirat],
+    [symlinkat]) and a new tmpfs's root ([mount]); only a create's ENOSPC is
+    also FamFs, the instance's inode limit.  A write's ENOMEM on a file of
+    the model is FamAlloc alone. *)
+Example one_family_per_failure :
+  map snd (ns_matching (call 56) (errno_ret ENOSPC)) = [FamAlloc; FamFs]
+  /\ map snd (ns_matching (call 34) (errno_ret ENOSPC)) = [FamAlloc; FamFs]
+  /\ map snd (ns_matching (call 36) (errno_ret ENOSPC)) = [FamAlloc; FamFs]
+  /\ map snd (ns_matching (call 40) (errno_ret ENOSPC)) = [FamAlloc]
+  /\ map snd (ns_matching (call 64) (errno_ret ENOMEM)) = [FamAlloc].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** FAMILIES BY KERNEL CAUSE.  [netlink_insert]'s ENOMEM, a failed
+    [bucket_table_alloc] (lib/rhashtable.c:466-470), is FamAlloc in [bind]
+    and [sendto], and its EOVERFLOW, the table's -EBUSY
+    (net/netlink/af_netlink.c:573-574), FamNet.  [alloc_empty_file]'s
+    ENFILE, the system-wide file limit (fs/file_table.c:278), is FamFd in
+    [openat] and [openat2]; [socket]'s ENFILE is also [sock_alloc]'s
+    failed allocation, so FamAlloc and FamFd.  So the filter's family test
+    ([ns_refusal_off_b]) holds of [bind]'s ENOMEM with the allocation
+    family off and not with the net family off, of [openat]'s ENFILE with
+    the fd family off, and of [socket]'s ENFILE only with both off. *)
+Definition fd_off_cfg : SpuriousCfg := mkSpuriousCfg true true false true true true.
+Definition net_off_cfg : SpuriousCfg := mkSpuriousCfg true true true false true true.
+
+Example families_by_cause :
+  map snd (ns_matching (call 200) (errno_ret ENOMEM)) = [FamAlloc]
+  /\ map snd (ns_matching (call 200) (errno_ret EOVERFLOW)) = [FamNet]
+  /\ map snd (ns_matching (call 206) (errno_ret ENOMEM)) = [FamAlloc]
+  /\ map snd (ns_matching (call 206) (errno_ret EOVERFLOW)) = [FamNet]
+  /\ map snd (ns_matching (call 56) (errno_ret ENFILE)) = [FamFd]
+  /\ map snd (ns_matching (call 437) (errno_ret ENFILE)) = [FamFd]
+  /\ map snd (ns_matching (call 198) (errno_ret ENFILE)) = [FamAlloc; FamFd]
+  /\ ns_refusal_off_b (alloc_only_cfg false) (call 200) (errno_ret ENOMEM) = true
+  /\ ns_refusal_off_b net_off_cfg (call 200) (errno_ret ENOMEM) = false
+  /\ ns_refusal_off_b fd_off_cfg (call 56) (errno_ret ENFILE) = true
+  /\ ns_refusal_off_b (alloc_only_cfg false) (call 56) (errno_ret ENFILE) = false
+  /\ ns_refusal_off_b fd_off_cfg (call 198) (errno_ret ENFILE) = false
+  /\ ns_refusal_off_b (alloc_only_cfg false) (call 198) (errno_ret ENFILE) = false
+  /\ ns_refusal_off_b forced_only_cfg (call 198) (errno_ret ENFILE) = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** THE SAME FILTER IN BOTH WORLDS.  A write on a descriptor of the
+    released model outside the released world ([mounted_not_flat]) gets
+    the released filter itself ([Spec.ns_refusal_released_fd]): a write
+    into an empty pipe answered ENOMEM
+    ([Checks.SpuriousCfg.write_pipe_enomem_i]), whose family the released
+    table makes fs, is removed when the fs family alone is off and kept when
+    the allocation family alone is off, as in the released world
+    ([Checks.SpuriousCfg.write_pipe_enomem_spurious_under_forced_only],
+    [Checks.SpuriousCfg.write_pipe_enomem_kept_under_alloc_only]). *)
+Definition fs_off_cfg : SpuriousCfg := mkSpuriousCfg true false true true true true.
+
+Example write_pipe_released_fd :
+  released_fd_call Checks.SpuriousCfg.write_pipe_enomem_i Cases.Fs.ReadWrite.pipe_empty_model
+    one_mount = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Example write_pipe_enomem_same_filter :
+  ns_refusal fs_off_cfg Checks.SpuriousCfg.write_pipe_enomem_i Cases.Fs.ReadWrite.pipe_empty_model
+             (task 2 18) one_mount (Checks.SpuriousCfg.errno_eff ENOMEM)
+  /\ ~ ns_refusal (alloc_only_cfg false) Checks.SpuriousCfg.write_pipe_enomem_i
+         Cases.Fs.ReadWrite.pipe_empty_model (task 2 18) one_mount (Checks.SpuriousCfg.errno_eff ENOMEM).
+Proof.
+  split.
+  - apply (proj2 (ns_refusal_released_fd fs_off_cfg _ _ (task 2 18) one_mount _ write_pipe_released_fd)).
+    destruct Checks.SpuriousCfg.write_pipe_enomem_spurious_under_forced_only as (_ & Hr & Hex).
+    split; [vm_compute; reflexivity | split; [exact Hr | exact Hex]].
+  - intros H.
+    apply (proj1 (ns_refusal_released_fd (alloc_only_cfg false) _ _ (task 2 18) one_mount _
+                    write_pipe_released_fd)) in H.
+    exact (Checks.SpuriousCfg.write_pipe_enomem_kept_under_alloc_only H).
 Qed.

@@ -490,6 +490,31 @@ Proof. vm_compute. reflexivity. Qed.
 Example faccessat_denied : ret_of (faccessat_fn (access_in s_secret 4) m3 c0 W) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.
 
+(** A /proc/sys/user file's [->permission] is [proc_sys_permission]
+    (fs/proc/proc_sysctl.c:792-819), not [generic_permission]: only the
+    mode [set_permissions] gives counts ([sysctl_perm_ok]).  So
+    CAP_DAC_OVERRIDE alone does not open it for writing and
+    CAP_SYS_RESOURCE does; [faccessat]'s W_OK refuses uid 0 without
+    CAP_SYS_RESOURCE, although the file is 0644 and owned by uid 0, and
+    grants it to uid 0 with CAP_SYS_RESOURCE in its permitted set
+    ([access_effective]). *)
+Definition dac_override_caps : CapSets := mkCaps 2 2 0 0 0.
+Definition sys_resource_caps : CapSets := mkCaps (2 ^ 24) (2 ^ 24) 0 0 0.
+Definition c_caps (caps : CapSets) : NsCtx := ctx_at 1 caps (1%positive, 1%positive) (1%positive, 2%positive).
+Definition uid0 : Creds :=
+  mkCreds (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) [].
+
+Example user_sys_permission :
+  ret_of (openat_fn (open_in s_max_user_namespaces 1 0) m3 (c_caps dac_override_caps) W_user_sys)
+    = Some (-13)
+  /\ ret_of (openat_fn (open_in s_max_user_namespaces 1 0) m3 (c_caps sys_resource_caps) W_user_sys)
+    = Some 3
+  /\ ret_of (faccessat_fn (access_in s_max_user_namespaces 2) (with_creds uid0 m3) c0 W_user_sys)
+    = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_max_user_namespaces 2) (with_creds uid0 m3)
+               (c_caps sys_resource_caps) W_user_sys) = Some 0.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (* ---- statfs, fstatfs --------------------------------------------------- *)
 
 (** The read-only, nosuid, nodev mount: f_flags ST_VALID|ST_RDONLY|
@@ -673,12 +698,13 @@ Example getdents64_fault_advances_position :
   end = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The rows of the exported table: getcwd, openat, getdents64 (the
-    released arm's refusal, for a descriptor of the released model),
-    openat2, and the five calls that read a name and walk it; fcntl,
-    fstatfs, fchdir, close and fstat have no environment refusal. *)
+(** The rows of the exported table: getcwd, openat, openat2, and the five
+    calls that read a name and walk it; fcntl, fstatfs, fchdir, close and
+    fstat have no environment refusal, and getdents64 none on the task's
+    own fd directory (on a descriptor of the released model the released
+    filter applies, [Spec.released_fd_call]). *)
 Example file_injected_numbers :
-  map ni_no file_injected = [17; 56; 61; 437; 43; 48; 49; 78; 79].
+  map ni_no file_injected = [17; 56; 437; 43; 48; 49; 78; 79].
 Proof. vm_compute. reflexivity. Qed.
 
 (* ---- the forced-only filter on openat and openat2 ---------------------- *)

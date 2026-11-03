@@ -483,34 +483,71 @@ not apply.
   assumption. Beside the tables' answer, an arm of `Ns.Spec.ns_table`
   admits only the environment refusals its file lists, each with the
   Linux v6.18.44 function that returns it (`Ns.Spec.ns_injected_table`):
-  an allocation failure (`-ENOMEM`, `-ENFILE`, `-ENOSPC`, `-EMFILE`,
-  `-ENOBUFS`, and `set_cred_ucounts`'s `-EAGAIN`), a full netlink hash
-  table (`-EOVERFLOW`), a host file system's I/O error (`-EIO`), and the
-  `-EAGAIN` of an `openat2` whose walk took a `..` under
-  `RESOLVE_IN_ROOT` while something was renamed or mounted. It admits no
-  refusal of a security module, so a second LSM's hook
-  (`security_path_unlink`, `security_sb_mount`,
-  `security_create_user_ns`, a socket hook) can refuse where it answers.
-  Under `Run.forced_only_cfg` its filter (`Ns.Spec.ns_refusal`) removes
-  each listed refusal wherever the model also admits the tables' own
-  answer. A namespace `clone` is the core's call, and its failures are
-  not listed ("Errors of a namespace `clone`" below).
+  an allocation failure (`-ENOMEM`, the `-ENFILE` of a socket's inode,
+  `-ENOSPC`, `-EMFILE`, `-ENOBUFS`, and `set_cred_ucounts`'s `-EAGAIN`),
+  the system-wide file limit (`-ENFILE`), a full netlink hash table
+  (`-EOVERFLOW`), a tmpfs instance at its inode or size limit
+  (`-ENOSPC`), an I/O error (`-EIO`), and the `-EAGAIN` of an `openat2`
+  whose walk took a `..` under `RESOLVE_IN_ROOT` while something was
+  renamed or mounted. The `-EIO` is a host file system's, or that of a
+  tmpfs page a write cannot read back: a hardware-poisoned page
+  (`shmem_write_begin`, `mm/shmem.c`) or a swapped-out page whose swap-in
+  fails (`shmem_swapin_folio`). It admits no refusal of a security
+  module, so a second LSM's hook (`security_path_unlink`,
+  `security_sb_mount`, `security_create_user_ns`, a socket hook) can
+  refuse where it answers. Two other refusers are outside the model too,
+  and the model assumes neither is there: a fanotify permission
+  listener, which can refuse an open (`fsnotify_open_perm_and_set_mode`,
+  called by `do_dentry_open`, `fs/open.c`), a read or a write
+  (`fsnotify_file_area_perm`, called by `rw_verify_area`,
+  `fs/read_write.c`) and a directory read (`iterate_dir`,
+  `fs/readdir.c`); and a cgroup-BPF sysctl program, which can refuse a
+  sysctl write such as one to `/proc/sys/user/max_user_namespaces`
+  (`BPF_CGROUP_RUN_PROG_SYSCTL` in `proc_sys_call_handler`,
+  `fs/proc/proc_sysctl.c`). Under `Run.forced_only_cfg` its filter
+  (`Ns.Spec.ns_refusal`) removes each listed refusal wherever the model
+  also admits the tables' own answer. A tables' answer that the
+  environment can also return (a count limit's `-ENOSPC`, the `-ENOMEM`
+  of a sysctl write of 4 MiB or more) is kept (`Ns.Arm.ni_forced`,
+  checked of every row by `Ns.Spec.ns_injected_forced`). On a descriptor
+  of the released model (`write`, `getdents64`) the filter is the
+  released one, with the released table's family
+  (`Ns.Spec.released_fd_call`). A namespace `clone` is the core's call,
+  and its failures are not listed ("Errors of a namespace `clone`"
+  below).
 - The host file systems the namespace model walks (`Ns.Tables.SbHost`)
   are local disk file systems: a lookup, an open or the read of a link's
   text there fails, beside the tables' answer, only for lack of memory
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
-- An rtnetlink handler can fail for lack of memory. When one does
-  (`rtnl_newlink`, `inet_rtm_newaddr` or a dump's start meeting
-  `-ENOMEM` or `-ENOBUFS`), Linux still answers `sendto` with the
-  request's length, reports the error inside the acknowledgement
-  (`netlink_ack`, `net/netlink/af_netlink.c`, v6.18.44), and leaves the
-  namespace unchanged. The namespace model admits that outcome
-  (`Ns.Net.nl_handler_errnos`). Under forced-only, this one injected
-  refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`) sees
-  the state before the call and the call's effect, not the state after
-  it, where the acknowledgement lives.
+- An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
+  `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
+  (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when
+  `__netlink_dump_start` cannot allocate the dump's first part
+  (`netlink_dump`, `net/netlink/af_netlink.c`, v6.18.44). Linux still
+  answers `sendto` with the request's length and reports the error inside
+  the acknowledgement (`netlink_ack`). A change leaves the namespace
+  unchanged. A dump keeps running: once the acknowledgement is read,
+  `netlink_recvmsg` runs the dump again from its first part, so the
+  dump's datagrams follow the acknowledgement. The namespace model admits
+  that outcome (`Ns.Net.nl_handler_errnos`). Under forced-only, this one
+  injected refusal is not removed: the refusal filter
+  (`Ns.Ext.ext_refusal`) sees the state before the call and the call's
+  effect, not the state after it, where the acknowledgement lives.
+- A loopback device can come up without its address. When `lo` comes
+  up, `inetdev_event` adds 127.0.0.1/8 only if `inet_alloc_ifa` can
+  allocate it (`net/ipv4/devinet.c`, v6.18.44); otherwise the device is
+  up with no address, and the request is still acknowledged with 0. The
+  namespace model admits that outcome beside the one with the address
+  (`Ns.Net.lo_up_noaddr`). It is an allocation failure, but its effect is
+  the success's own, so for the reason above forced-only does not remove
+  it either.
+- A write to a tmpfs file can stop short. When a later page of the write
+  cannot be allocated or read, `generic_perform_write` (`mm/filemap.c`,
+  v6.18.44) returns the bytes it has already written, a count that ends
+  on a page boundary (`Ns.FsOps.write_short`). A count is no refusal, so
+  forced-only keeps it too.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

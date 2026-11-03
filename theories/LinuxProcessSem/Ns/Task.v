@@ -271,7 +271,10 @@ Definition task_arms : list (Z * NsArm) :=
    (172, getpid_arm); (178, getpid_arm)].
 
 (** The environment's refusals of these arms, for the forced-only filter:
-    [prepare_creds]'s ENOMEM. *)
+    [prepare_creds]'s ENOMEM.  The tables' answers ([NsInjected]):
+    [capset_fn]'s EFAULT, EINVAL and EPERM; [prctl_fn]'s EINVAL and EPERM,
+    and the released answer's EINVAL and EFAULT for PR_SET_PDEATHSIG and
+    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]). *)
 Definition task_injected : list NsInjected :=
-  [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [];
-   mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] []].
+  [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [EFAULT; EINVAL; EPERM] [];
+   mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] [EINVAL; EPERM; EFAULT] []].

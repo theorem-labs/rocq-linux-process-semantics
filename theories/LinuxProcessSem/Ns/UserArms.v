@@ -88,14 +88,15 @@ Definition in_new_userns (ctx : NsCtx) (n : positive) : NsCtx :=
     cannot allocate (kernel/cred.c, called by [ksys_unshare],
     kernel/fork.c).  [user_injected] lists them for the forced-only
     filter.  The tables also answer ENOSPC ([unshare_exact]: a parent above
-    level 32, a count at its limit), so ENOSPC is in its [ni_forced]. *)
+    level 32, a count at its limit), so ENOSPC is in its [ni_forced]; their
+    other answers are [unshare_arm]'s EINVAL and [unshare_exact]'s EPERM. *)
 Definition user_env_errnos : list Z := [ENOMEM; ENOSPC; EAGAIN].
 
 Definition env_refusal (o : ext_outcome) (m : Model) (ctx : NsCtx) (st : NsState) : Prop :=
   exists e, errno_in user_env_errnos e = true /\ o = ns_errno e m ctx st.
 
 Definition user_injected : list NsInjected :=
-  [mkNsInjected 97 [(errno_in user_env_errnos, FamAlloc)] [ENOSPC]].
+  [mkNsInjected 97 [(errno_in user_env_errnos, FamAlloc)] [EINVAL; ENOSPC; EPERM] [ENOSPC]].
 
 (** What [create_user_ns] answers from the tables, in its order, once the
     environment refuses nothing. *)

@@ -710,15 +710,28 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       (fs/super.c) and fill_super; a new tmpfs's root inode, ENOSPC when
       [new_inode] fails ([__shmem_get_inode], mm/shmem.c); a new instance's
       anonymous device number, EMFILE when [get_anon_bdev] (fs/super.c) has
-      none left.  The tables also answer ENOSPC, at the mount limit
-      ([Mount.bind_mount], [NewMount.new_mount]: [count_mounts]), so ENOSPC
-      is in [ni_forced]. *)
+      none left.  The root inode's ENOSPC is an allocation, so FamAlloc as
+      in a tmpfs create's rows ([Files.open_pairs], [FsOps.create_pairs]);
+      [shmem_reserve_inode]'s inode limit, FamFs there, cannot refuse it:
+      [shmem_fill_super] gives the new instance room for at least one
+      inode (mm/shmem.c:5092-5093).  The tables also answer ENOSPC, at the
+      mount limit ([Mount.bind_mount], [NewMount.new_mount]:
+      [count_mounts]), so ENOSPC is in [ni_forced].
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]): the path copies, the walks and the call's own
+    checks. *)
 Definition mount40_injected : NsInjected :=
   mkNsInjected 40 [(errno_in [ENOMEM; ENOSPC; EMFILE], FamAlloc); (errno_in [EIO], FamFs)]
+               [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EPERM; ENOSPC]
                [ENOSPC].
 
 Definition mount_injected : list NsInjected :=
-  mount40_injected :: map (fun n => mkNsInjected n walk_pairs []) [39; 41; 442].
+  [mount40_injected;
+   mkNsInjected 39 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EPERM] [];
+   mkNsInjected 41 walk_pairs
+     [EPERM; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EBUSY] [];
+   mkNsInjected 442 walk_pairs
+     [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] []].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=

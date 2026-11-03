@@ -24,7 +24,8 @@
       [netif_set_allmulti] (net/core/dev.c); bringing a loopback device up
       runs [inetdev_event]'s NETDEV_UP arm (net/ipv4/devinet.c), which adds
       127.0.0.1/8 through [inet_insert_ifa]: a refused duplicate when that
-      address is already there;
+      address is already there, and no address when [inet_alloc_ifa]
+      fails ([lo_up_noaddr]);
     - an IPv4 address: [inet_rtm_newaddr], [inet_validate_rtm],
       [inet_rtm_to_ifa], [find_matching_ifa], [__inet_insert_ifa],
       [set_ifa_lifetime], [inet_fill_ifaddr], [inet_dump_addr],
@@ -95,7 +96,10 @@
     allocation failure reported asynchronously, by an acknowledgement or a
     dump that could not be queued, is admitted as [recvfrom]'s refusal
     rather than a stored [sk_err]; a handler's own allocation failure is
-    the error of the acknowledgement [sendto] queues ([nl_handler_errnos]).
+    the error of the acknowledgement [sendto] queues, and a dump that fails
+    so keeps running, its datagrams behind that acknowledgement
+    ([nl_handler_errnos]); a loopback device brought up while its address
+    cannot be allocated is up with no address ([lo_up_noaddr]).
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -398,6 +402,27 @@ Definition set_link_flags (d : NetIf) (ifl ich : Z) : NetIf :=
   let addrs := if negb (Z.testbit f 0) && Z.testbit f' 0 && is_loopback d
                then lo_up_addrs (if_addrs d) else if_addrs d in
   mkNetIf (if_index d) (if_name d) f' addrs.
+
+(** The interfaces a request leaves when, as a loopback device comes up,
+    [inetdev_event]'s [inet_alloc_ifa] fails (net/ipv4/devinet.c:1613-1629):
+    the device is up, and 127.0.0.1/8 is not added; the request is still
+    acknowledged with 0, as [inetdev_event] returns NOTIFY_DONE whatever
+    happened (devinet.c:1668).  [ifs] are the interfaces before the
+    request, [ifs'] the ones [rt_handle] gives. *)
+Definition lo_up_noaddr (ifs ifs' : list NetIf) : list NetIf :=
+  map (fun d' => match if_by_index ifs (if_index d') with
+                 | Some d => if negb (is_up d) && is_up d' && is_loopback d'
+                             then mkNetIf (if_index d') (if_name d') (if_flags d') (if_addrs d)
+                             else d'
+                 | None => d'
+                 end) ifs'.
+
+(** The request brings a loopback device of [ifs] up. *)
+Definition lo_comes_up (ifs ifs' : list NetIf) : bool :=
+  existsb (fun d' => match if_by_index ifs (if_index d') with
+                     | Some d => negb (is_up d) && is_up d' && is_loopback d'
+                     | None => false
+                     end) ifs'.
 
 (* =========================================================================
    Messages
@@ -845,9 +870,14 @@ Definition sock_of (m : Model) (st : NsState) (fd : word) : SockRes :=
    socket (198)
    ========================================================================= *)
 
-(** The allocation failures of a socket's creation: [sock_alloc] and
-    [unix_create1]'s -ENFILE, [sk_alloc]'s -ENOMEM, and [sock_map_fd]'s
-    file allocation ([alloc_file_pseudo]) and table growth. *)
+(** The failures of a socket's creation beside its answer: [sock_alloc]'s
+    -ENFILE when [new_inode_pseudo] cannot allocate the socket's inode
+    (net/socket.c:632-639, 1570-1575), [sk_alloc]'s -ENOMEM,
+    [unix_create1]'s -ENFILE when the AF_UNIX sockets pass twice the
+    system-wide file limit (net/unix/af_unix.c:1101-1105), and
+    [sock_map_fd]'s table growth (-ENOMEM) and file allocation
+    ([alloc_file_pseudo]: -ENOMEM, and [alloc_empty_file]'s -ENFILE at the
+    system-wide file limit, fs/file_table.c:248-255, 278). *)
 Definition socket_create_errnos : list Z := [ENOMEM; ENFILE].
 
 Definition new_socket_kind (ctx : NsCtx) (fam base pro : Z) : option NsFileKind :=
@@ -900,8 +930,10 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
    ========================================================================= *)
 
 (** [netlink_insert]'s failures other than a held port: the hash table's
-    allocation (-ENOMEM) and its -EBUSY, which [netlink_insert] reports as
-    -EOVERFLOW. *)
+    allocation (-ENOMEM, [bucket_table_alloc] in [rhashtable_insert_rehash],
+    lib/rhashtable.c:466-470) and its -EBUSY (:458), which
+    [netlink_insert] reports as -EOVERFLOW
+    (net/netlink/af_netlink.c:573-574). *)
 Definition nl_insert_errnos : list Z := [ENOMEM; EOVERFLOW].
 
 (** The port a socket of namespace [x] has once bound: [port] when it has
@@ -986,30 +1018,54 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
 (** [netlink_alloc_large_skb]'s failure, -ENOBUFS. *)
 Definition nl_alloc_errnos : list Z := [ENOBUFS].
 
-(** An rtnetlink handler's allocation failure, Linux 6.18.44: a change
-    ([rtnl_newlink] and [do_setlink], net/core/rtnetlink.c;
-    [inet_rtm_newaddr]'s [inet_alloc_ifa], net/ipv4/devinet.c) or a dump's
-    first part ([__netlink_dump_start]'s [netlink_dump],
-    net/netlink/af_netlink.c) returns ENOMEM or ENOBUFS, and
+(** The request [dg] reaches an rtnetlink handler: the tests [rt_handle]
+    makes before one runs hold, and its type is RTM_NEWLINK, RTM_NEWADDR,
+    RTM_GETLINK or RTM_GETADDR.  The tests: a header of at least 16 bytes
+    that fits the datagram ([netlink_rcv_skb] drops it otherwise,
+    net/netlink/af_netlink.c); NLM_F_REQUEST; a payload of at least one
+    byte ([rtnetlink_rcv_msg] answers 0 before any handler otherwise,
+    net/core/rtnetlink.c); and for RTM_NEWLINK and RTM_NEWADDR,
+    CAP_NET_ADMIN ([rtnetlink_rcv_msg]'s -EPERM otherwise).  [sendto]
+    asks it only of a request [rt_handle] answers, which then reaches its
+    type's handler or dump. *)
+Definition handler_reached (x : NetNs) (U : list UserNs) (opener caller : IdCred) (dst : bool)
+    (dg : list byte) : bool :=
+  let nl := nl_u32 dg 0 in
+  let ty := nl_u16 dg 4 in
+  (16 <=? nl) && (nl <=? nl_len dg) && (1 <=? nl - 16)
+  && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
+  && ((ty =? RTM_GETLINK) || (ty =? RTM_GETADDR)
+      || (((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR))
+          && net_admin U (netns_owner x) opener caller dst)).
+
+(** The errno a reached handler of request type [ty] returns when an
+    allocation fails, Linux 6.18.44:
+    - RTM_NEWLINK: ENOMEM, from [rtnl_newlink]'s first step, the
+      [kmalloc] of its attribute table (net/core/rtnetlink.c);
+    - RTM_NEWADDR: ENOBUFS, which [inet_rtm_to_ifa] sets before its
+      [inet_alloc_ifa] (net/ipv4/devinet.c).  Over: a request that
+      [inet_validate_rtm] refuses, whose address is 0 or whose device is
+      absent does not get there;
+    - RTM_GETLINK and RTM_GETADDR dumps: ENOBUFS, the one allocation error
+      of [netlink_dump], which [__netlink_dump_start] runs for the dump's
+      first part (net/netlink/af_netlink.c).
     [netlink_rcv_skb] acknowledges the request with that error
-    ([netlink_ack]); the namespace does not change and [sendto] still
-    returns the length.  The environment's refusal, carried in the
+    ([netlink_ack]) and [sendto] still returns the length.  A change
+    leaves the namespace as it was.  A dump keeps running:
+    [__netlink_dump_start] set [cb_running] before the failed
+    [netlink_dump], and [netlink_recvmsg] runs the dump again from its
+    first part once the acknowledgement is read, so its datagrams follow
+    the acknowledgement.  The environment's refusal, carried in the
     acknowledgement: the forced-only filter, which sees the call's effect
     and not the queue after it, does not remove it (SCOPE.md). *)
-Definition nl_handler_errnos : list Z := [ENOMEM; ENOBUFS].
+Definition nl_handler_errnos (ty : Z) : list Z :=
+  if ty =? RTM_NEWLINK then [ENOMEM]
+  else if (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR) then [ENOBUFS]
+  else [].
 
-(** The request [dg] reaches an rtnetlink handler: RTM_NEWLINK,
-    RTM_NEWADDR, RTM_GETLINK or RTM_GETADDR, which [rt_handle] answers.
-    Over: a request [rtnetlink_rcv_msg] refuses before its handler (EPERM)
-    is not told apart. *)
-Definition handler_reached (dg : list byte) (s : NlStep) : bool :=
-  match s with
-  | SDecline => false
-  | SDone _ _ =>
-      let ty := nl_u16 dg 4 in
-      (16 <=? nl_len dg) && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
-      && ((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR))
-  end.
+(** A reply that is a dump. *)
+Definition reply_dumps (r : NlReply) : bool :=
+  match r with RLinkDump _ _ _ | RAddrDump _ _ _ => true | RNone | RAck _ => false end.
 
 (** The acknowledgement of request [dg] from port [port] with its handler's
     error [e] ([netlink_ack] of the request's first message). *)
@@ -1082,23 +1138,26 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                       \/ match dgo with
                          | None => o = ns_fail EFAULT rd0 m ctx st1
                          | Some dg =>
+                             let sent st' qs := ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
+                                                       (set_file st' h (netlink_file f n p (q ++ qs))) in
+                             let fails e := handler_reached x (ns_userns st) (nf_cred f) caller dst dg = true
+                                            /\ errno_in (nl_handler_errnos (nl_u16 dg 4)) e = true in
                              match rt_handle x (ns_userns st) (nf_cred f) caller dst p dg with
                              | SDecline => False
                              | SDone ifs r =>
                                  (exists env dgs,
                                    nl_env_ok (env_nl_link_max (ns_env st)) env r = true /\
                                    reply_dgrams env r = Some dgs /\
-                                   let st2 := match ifs with
+                                   (o = sent (match ifs with
                                               | Some l => set_netns_ifs st n l
                                               | None => st
-                                              end in
-                                   o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                              (set_file st2 h (netlink_file f n p (q ++ dgs))))
-                                 \/ (handler_reached dg (SDone ifs r) = true
-                                     /\ exists e, errno_in nl_handler_errnos e = true
-                                        /\ o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                                 (set_file st h (netlink_file f n p
-                                                                   (q ++ [handler_fail_ack p dg e]))))
+                                              end) dgs
+                                    \/ (reply_dumps r = true
+                                        /\ exists e, fails e /\ o = sent st (handler_fail_ack p dg e :: dgs))
+                                    \/ (exists l, ifs = Some l /\ lo_comes_up (netns_ifs x) l = true
+                                        /\ o = sent (set_netns_ifs st n (lo_up_noaddr (netns_ifs x) l)) dgs)))
+                                 \/ (reply_dumps r = false
+                                     /\ exists e, fails e /\ o = sent st [handler_fail_ack p dg e])
                              end
                          end)
           end
@@ -1109,9 +1168,17 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     [access_ok] refuses) before the descriptor, then [netlink_sendto].
     Kind: exact on the namespace's new state and on acknowledgements, over
     on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an
-    autobind) and [nl_alloc_errnos] beside the answer, and beside a request
-    that reaches an rtnetlink handler, the acknowledgement of its
-    allocation failure ([nl_handler_errnos]) with the namespace unchanged.
+    autobind) and [nl_alloc_errnos] beside the answer; beside a request
+    that reaches an rtnetlink handler ([handler_reached]), the
+    acknowledgement of its allocation failure ([nl_handler_errnos]) with
+    the namespace unchanged and, for a dump, the dump behind it; and beside
+    a request that brings a loopback device up, the same answer with the
+    device up and no address added, when [inetdev_event]'s
+    [inet_alloc_ifa] fails ([lo_up_noaddr]).  Those last two are the
+    environment's allocation failures, but the call's effect is the
+    answer's own (the length), so the forced-only filter, which sees the
+    effect and not the namespace or the queue after it, does not remove
+    them (SCOPE.md).
     Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its
@@ -1320,18 +1387,44 @@ Definition nl_pending_errnos : list Z := [ENOBUFS].
 (** The environment's refusals of the net arms, Linux 6.18.44; an arm with
     a row admits the row's errnos after any answer ([Arm.with_injected]),
     and where the kernel's order matters the arm places them itself.
-    [socket]: [socket_create_errnos].  [bind]: [netlink_insert]'s
-    [nl_insert_errnos].  [sendto]: [netlink_autobind]'s
-    [nl_insert_errnos] and [netlink_sendmsg]'s [nl_alloc_errnos].
-    [recvfrom]: [nl_pending_errnos].  [ioctl] SIOCGIFINDEX allocates
-    nothing ([dev_ioctl], net/core/dev_ioctl.c). *)
+    - [socket]: [socket_create_errnos].  Their ENFILE has two causes, so it
+      is in two families ([Arm.NsInjected]): [sock_alloc]'s inode, an
+      allocation (FamAlloc), and the file limits of [alloc_empty_file] and
+      [unix_create1], counts of the file table (FamFd, as in
+      [Files.open_pairs]).  The released [socket] row (AF_INET sockets,
+      [Run.injected_table]) gives its ENOMEM, EMFILE and ENFILE the one
+      family FamFd: the two worlds agree on ENFILE's FamFd, and that row
+      cannot also give [sock_alloc]'s ENFILE and the ENOMEMs FamAlloc while
+      it has one family (a released FamAlloc row needs the budget
+      dispatcher, [Run.alloc_family_dispatched]).
+    - [bind]: [netlink_insert]'s [nl_insert_errnos], by cause
+      ([nl_insert_pairs]).  [sendto]: [netlink_autobind]'s
+      [nl_insert_errnos], and [netlink_sendmsg]'s [nl_alloc_errnos].
+    - [recvfrom]: [nl_pending_errnos].
+    - none for [ioctl]: SIOCGIFINDEX allocates nothing ([dev_ioctl],
+      net/core/dev_ioctl.c).
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]); [sock_of]'s EBADF and ENOTSOCK among them. *)
 Definition socket_injected : NsInjected :=
-  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc)] [].
-Definition bind_injected : NsInjected := mkNsInjected 200 [(errno_in nl_insert_errnos, FamNet)] [].
+  mkNsInjected 198 [(errno_in socket_create_errnos, FamAlloc); (errno_in [ENFILE], FamFd)]
+               [EINVAL; EMFILE] [].
+
+(** [nl_insert_errnos] by kernel cause: the ENOMEM of
+    [bucket_table_alloc] is an allocation (FamAlloc); the EOVERFLOW of the
+    table's -EBUSY is the table's state (FamNet).  No released row answers
+    them: the released model makes no netlink socket, and its [bind] row
+    (FamNet) is [inet_csk_get_port]'s EADDRINUSE. *)
+Definition nl_insert_pairs : list ((Z -> bool) * SpuriousFamily) :=
+  [(errno_in [ENOMEM], FamAlloc); (errno_in [EOVERFLOW], FamNet)].
+
+Definition bind_injected : NsInjected :=
+  mkNsInjected 200 nl_insert_pairs [EBADF; ENOTSOCK; EINVAL; EFAULT; EADDRINUSE] [].
 Definition sendto_injected : NsInjected :=
-  mkNsInjected 206 [(errno_in nl_insert_errnos, FamNet); (errno_in nl_alloc_errnos, FamAlloc)] [].
+  mkNsInjected 206 (nl_insert_pairs ++ [(errno_in nl_alloc_errnos, FamAlloc)])
+               [EFAULT; EBADF; ENOTSOCK; EINVAL; EOPNOTSUPP; ENODATA; EPERM] [].
 Definition recvfrom_injected : NsInjected :=
-  mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)] [].
+  mkNsInjected 207 [(errno_in nl_pending_errnos, FamAlloc)]
+               [EFAULT; EBADF; ENOTSOCK; EOPNOTSUPP; EAGAIN; EINVAL] [].
 
 (** The five arms by call number, for [Spec.ns_table], each with its row's
     refusals. *)
