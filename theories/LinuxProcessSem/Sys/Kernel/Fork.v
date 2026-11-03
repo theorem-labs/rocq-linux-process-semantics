@@ -771,8 +771,9 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
     O_NONBLOCK (= EFD_NONBLOCK) when [ef_nonblock].  [Fcntl.fcntl_spec]
     answers F_GETFL and F_SETFL on the shared kind exactly from [w].
     EFD_CLOEXEC is not in [w]: it is a bit of the descriptor table, not
-    of the file, and this model keeps no close-on-exec bit (F_GETFD
-    answers both values), so after the clone it is unknown, as before. *)
+    of the file, and this model keeps no close-on-exec bit, so after the
+    clone it is unknown, and [Fcntl.fcntl_spec]'s F_GETFD declines on
+    the shared kind ([Fcntl.getfd_declines]). *)
 Definition eventfd_shared_flags (c : EventfdCtx) : word :=
   Z_to_bv 64 (Z.lor (if ef_semaphore c then EFD_SEMAPHORE else 0%Z)
                     (if ef_nonblock c then O_NONBLOCK else 0%Z)).

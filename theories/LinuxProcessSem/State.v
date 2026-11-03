@@ -2789,7 +2789,9 @@ Definition PipeBuf : Type := list byte * Z.
       [FdEventfd] context it replaced.  After the clone the description
       is shared by two tasks, so the counter is not modeled: read, write
       and readiness decline on it, and fcntl's F_GETFL and F_SETFL answer
-      from [w] ([Fs.Fcntl.oeventfd_f_flags]).
+      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  F_GETFD declines on it
+      ([Fs.Fcntl.getfd_declines]): its close-on-exec bit came from the
+      [eventfd2] word's EFD_CLOEXEC, which [w] does not carry.
     - [ONsFile h]: a descriptor on an open file that the namespace and
       mount model holds under handle
       [h].  No arm of [spec_table] mints it: only that model's child
@@ -2802,7 +2804,16 @@ Definition PipeBuf : Type := list byte * Z.
       never mints one on an end of a pipe this table's [FdPipe] entries
       track, which is the condition [pipe_end_live] relies on, nor on an
       end of a stream pair this table's [FdStream] entries track, which
-      is the same condition for [stream_end].  It also
+      is the same condition for [stream_end].  BOTH SENTENCES ARE PROVED
+      for this model: no arm of the spec table adds an [ONsFile] handle
+      to the table ([Checks.NsFileFree.ns_frame_holds], arm by arm over
+      [Checks.Sys.Dispatch.checked_table]), and a launch holds none, so
+      no model a run reaches holds one ([Checks.NsFileFree.run_ns_free])
+      and no [FdOpaque] entry those two functions skip is one
+      ([Checks.NsFileFree.run_opaque_entries_not_ns]).  The namespace
+      and mount model is not part of this tree; when it lands, each of
+      its arms that mints one, and its child start relation, owes the
+      condition for what it mints.  That model also
       mints one only on an object whose [f_op->flush] is absent or cannot
       fail, which is the condition [Fs.Open.close_spec]'s 0 relies on:
       [SYSCALL_DEFINE1(close)] returns [filp_flush]'s result, and FUSE,
@@ -6136,7 +6147,8 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
        inode is not one of the pipe's readers or writers; an [ONsFile] is
        skipped on the condition its own doc states, that the namespace and mount model
        never mints one on an end of a pipe this table's [FdPipe] entries
-       track *)
+       track, which [Checks.NsFileFree.run_opaque_entries_not_ns] proves
+       for every run *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -6325,7 +6337,8 @@ Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
     (* a regular file's inode; its [id] numbers files, not pairs *)
   | (_, FdOpaque _) :: r => stream_end r id side
     (* not an end of a pair [socketpair] made: an [ONsFile] is skipped on
-       the condition its own doc states, as in [pipe_end_live] *)
+       the condition its own doc states, as in [pipe_end_live], which
+       [Checks.NsFileFree.run_opaque_entries_not_ns] proves for every run *)
   end.
 
 (** The PEER of end [(id, side)]: [unix_peer] of that socket, while the

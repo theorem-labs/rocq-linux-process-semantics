@@ -80,7 +80,8 @@ Proof.
 Qed.
 
 (** fcntl witness: -EBADF on a closed fd, 0 for F_SETFD and for F_GETFD
-    (the first of its two admitted answers), [stream_setfl_witness],
+    (the first of its two admitted answers; [Unmodeled] on a shared
+    eventfd, [Fcntl.getfd_declines]), [stream_setfl_witness],
     [eventfd_setfl_witness] or [oeventfd_setfl_witness] for an F_SETFL on
     a stream-pair end, an eventfd or a shared eventfd, 0 for an F_SETFL
     on any other kind that provably changes nothing, the derived flag
@@ -92,7 +93,8 @@ Definition fcntl_witness (fd cmd arg : word) (m : Model) : outcome SyscallEffect
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
       if bv_eqb cmd F_SETFD then ret_outcome (Z_to_bv 64 0) m
-      else if bv_eqb cmd F_GETFD then ret_outcome (Z_to_bv 64 0) m
+      else if bv_eqb cmd F_GETFD then
+        (if getfd_declines e then Unmodeled else ret_outcome (Z_to_bv 64 0) m)
       else if bv_eqb cmd F_SETFL then
         match e with
         | FdStream id side st => stream_setfl_witness fd id side st arg m
@@ -119,7 +121,9 @@ Proof.
       cbv beta iota; srw Hfd. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
       * eapply bind_step; [apply get_model_ok|].
-        cbv beta iota; srw Hfd. apply alt_l. apply pure_ok.
+        cbv beta iota; srw Hfd.
+        destruct (getfd_declines e); cbv beta iota;
+          [apply unmodeled_intro | apply alt_l; apply pure_ok].
       * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
         -- (* one arm per fd kind: the stream-pair end's [stream_setfl],
               the eventfd's [eventfd_setfl], the shared eventfd's

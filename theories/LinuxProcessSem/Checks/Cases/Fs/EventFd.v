@@ -339,6 +339,33 @@ Example eventfd_read_answers_before_a_clone_and_declines_after :
      = CheckOk (with_fds (fd_remove (m_fds shared) 3) shared) [].
 Proof. cbv zeta. repeat split; check_eq. Qed.
 
+(** F_GETFD ON A SHARED EVENTFD DECLINES.  ADMISSION REASON:
+    model-internal -- the decline is the model's; Linux answers one of
+    the two values.
+
+    The descriptor's close-on-exec bit came from the EFD_CLOEXEC bit of
+    the [eventfd2] word ([do_eventfd], fs/eventfd.c), and a clone keeps
+    the table's bit as it was ([dup_fd], fs/file.c), but the word the
+    shared kind keeps does not carry it ([Fcntl.getfd_declines]).  So
+    after the clone F_GETFD ([do_fcntl], fs/fcntl.c) declines, for
+    either claimed answer.  THE CONTROLS: before the clone the same call
+    on the same descriptor admits both answers, and after it F_SETFD
+    still answers 0.  fs/eventfd.c, fs/file.c, fs/fcntl.c: read at
+    v6.18.44; identical at v6.18.46. *)
+Example eventfd_getfd_declines_after_a_clone :
+  let shared := clone_child_made efd_live_model in
+  check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect 0 [] []) shared = CheckUnmodeled
+  /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect FD_CLOEXEC [] []) shared
+     = CheckUnmodeled
+  (* the controls *)
+  /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect 0 [] []) efd_live_model
+     = CheckOk efd_live_model []
+  /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect FD_CLOEXEC [] []) efd_live_model
+     = CheckOk efd_live_model []
+  /\ check_syscall (efd_fcntl_in F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) shared
+     = CheckOk shared [].
+Proof. cbv zeta. repeat split; check_eq. Qed.
+
 (** BIT 31 ALONE, WHICH IS THE SIGN BIT OF THE [int] LINUX COMPARES.
     ADMISSION REASON: the REFUSAL of a descriptor for it is the
     environment-cannot-produce-it reason, since no kernel hands one out

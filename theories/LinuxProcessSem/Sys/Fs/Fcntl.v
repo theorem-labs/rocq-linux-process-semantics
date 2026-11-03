@@ -755,10 +755,30 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          v6.18.44; identical at v6.18.46). *)
   end.
 
+(** The one kind on which [F_GETFD] DECLINES: a shared eventfd
+    ([State.OEventFd], made by a successful clone,
+    [Kernel.Fork.share_eventfds]).  Its descriptor's close-on-exec bit
+    is the EFD_CLOEXEC bit of the [eventfd2] flag word: [do_eventfd]
+    installs the descriptor with [get_unused_fd_flags(flags &
+    EFD_SHARED_FCNTL_FLAGS)] (fs/eventfd.c), and a clone without
+    CLONE_FILES copies the table's close-on-exec bitmap unchanged
+    ([dup_fd], [copy_fd_bitmaps], fs/file.c).  The word the clone keeps
+    ([Kernel.Fork.eventfd_shared_flags]) does not carry that bit, so
+    after the clone the bit is not known, and the call is declined
+    rather than answered with both values.  fs/fcntl.c [do_fcntl]
+    ([F_GETFD]), fs/eventfd.c [do_eventfd], fs/file.c [dup_fd]: read at
+    v6.18.44; identical at v6.18.46. *)
+Definition getfd_declines (e : FdEntry) : bool :=
+  match e with
+  | FdOpaque (OEventFd _) => true
+  | _ => false
+  end.
+
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on
     every other one.  Three of the four are answered on every fd kind —
     [F_GETFD] with BOTH of the answers Linux can give, because the model
-    does not record the bit it reports; the fourth, [F_GETFL], is
+    does not record the bit it reports, and declined on a shared eventfd
+    ([getfd_declines]); the fourth, [F_GETFL], is
     answered on the one kind whose flag word is a function of the
     constructor, and [getfl_f_flags] above holds that argument.
 
@@ -851,7 +871,8 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     later, so a conforming fcntl here must not be read as coverage of the
     close-on-exec story.
 
-    [F_GETFD] answers 0 or FD_CLOEXEC, EITHER ONE, on every fd kind.
+    [F_GETFD] answers 0 or FD_CLOEXEC, EITHER ONE, on every fd kind but
+    a shared eventfd, where it declines ([getfd_declines] says why).
     The kernel's arm is [err = get_close_on_exec(fd) ? FD_CLOEXEC : 0]
     (Linux v6.18.46, fs/fcntl.c [do_fcntl]) — a bit of the fd TABLE, not
     of the open file description, and one this model does not hold:
@@ -973,8 +994,10 @@ Definition fcntl_spec (fd cmd arg : word) : Sys SyscallEffect :=
   | Some e =>
       if bv_eqb cmd F_SETFD then ret_only (Z_to_bv 64 0)
         (* always 0; the bit it sets is not recorded *)
-      else if bv_eqb cmd F_GETFD
-      then alt (ret_only (Z_to_bv 64 0)) (ret_only FD_CLOEXEC)
+      else if bv_eqb cmd F_GETFD then
+        if getfd_declines e then unmodeled
+          (* a shared eventfd: the bit is not known after the clone *)
+        else alt (ret_only (Z_to_bv 64 0)) (ret_only FD_CLOEXEC)
         (* the unrecorded bit: either of [do_fcntl]'s two answers *)
       else if bv_eqb cmd F_SETFL then
         match e with
