@@ -356,6 +356,40 @@ Definition uidgid_mapped (st : NsState) (ctx : NsCtx) (uid gid : Z) : bool :=
       end
   end.
 
+(** [vfsuid_has_mapping] (include/linux/mnt_idmapping.h) of an inode's uid
+    in the caller's user namespace, alone: the test of
+    [inode_owner_or_capable] (fs/inode.c:2633-2635, Linux v6.18.46), which
+    does not look at the gid.  [None] when the tables do not hold the
+    caller's user namespace: every task has one, so the tables do not say
+    whether it maps the uid. *)
+Definition uid_mapped (st : NsState) (ctx : NsCtx) (uid : Z) : option bool :=
+  match find_userns (ns_userns st) (cx_user ctx) with
+  | None => None
+  | Some u =>
+      Some (match uns_parent u with
+            | None => true
+            | Some _ =>
+                match uns_uid_map u with
+                | Some um => kid_mapped um uid
+                | None => false
+                end
+            end)
+  end.
+
+(** [uid_mapped] is the uid half of [uidgid_mapped]: whenever both ids
+    map, the uid maps. *)
+Lemma uidgid_mapped_uid : forall st ctx uid gid,
+  uidgid_mapped st ctx uid gid = true -> uid_mapped st ctx uid = Some true.
+Proof.
+  intros st ctx uid gid. unfold uidgid_mapped, uid_mapped.
+  destruct (find_userns (ns_userns st) (cx_user ctx)) as [u|];
+    [|cbv beta iota; intros H; discriminate H].
+  destruct (uns_parent u) as [p|]; [|cbv beta iota; intros _; reflexivity].
+  destruct (uns_uid_map u) as [um|], (uns_gid_map u) as [gm|];
+    cbv beta iota; intros H; try discriminate H.
+  apply andb_prop in H. destruct H as [H _]. rewrite H. reflexivity.
+Qed.
+
 (** [capable_wrt_inode_uidgid] with the effective set [eff]. *)
 Definition capable_over (st : NsState) (ctx : NsCtx) (eff : Z) (a : ObjAttr) (cap : Z) : bool :=
   Z.testbit eff cap && uidgid_mapped st ctx (oa_uid a) (oa_gid a).
