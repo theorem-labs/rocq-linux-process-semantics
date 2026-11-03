@@ -547,6 +547,46 @@ Proof.
   all: kf_close m Hoff Hk.
 Qed.
 
+(** A read and a write of an eventfd a clone shared ([State.OEventFd]),
+    and the opaque dispatchers that reach them and the /proc/sys read. *)
+Lemma kf_read_eventfd : forall i fl buf count eff m m' evs,
+  check_read_eventfd i fl buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fl buf count eff m m' evs H Hoff Hk.
+  unfold check_read_eventfd, check_eventfd_deliver in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_write_eventfd : forall i fl buf count eff m m' evs,
+  check_write_eventfd i fl buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fl buf count eff m m' evs H Hoff Hk. unfold check_write_eventfd in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_read_opaque : forall i o buf count eff m m' evs,
+  check_read_opaque i o buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i o buf count eff m m' evs H Hoff Hk. unfold check_read_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | exact (kf_read_proc _ _ _ _ _ _ _ H Hoff Hk)
+          | exact (kf_read_eventfd _ _ _ _ _ _ _ _ H Hoff Hk) ].
+Qed.
+
+Lemma kf_write_opaque : forall i o buf count eff m m' evs,
+  check_write_opaque i o buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i o buf count eff m m' evs H Hoff Hk. unfold check_write_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | exact (kf_write_eventfd _ _ _ _ _ _ _ _ H Hoff Hk) ].
+Qed.
+
 Lemma kf_write_fault_extend : forall reads m p off eff m' evs,
   check_write_fault_extend reads m p off eff = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -584,7 +624,7 @@ Proof.
   repeat (kf_step H || kf_done H Hoff Hk
           || (eapply kf_read_urandom in H; exact (H Hoff Hk))
           || (eapply kf_socket_pending_error in H; exact (H Hoff Hk))
-          || (eapply kf_read_proc in H; exact (H Hoff Hk))
+          || (eapply kf_read_opaque in H; exact (H Hoff Hk))
           || (eapply kf_eventfd_read in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
 Qed.
@@ -599,6 +639,7 @@ Proof.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
           || (eapply kf_write_fault_extend in H; exact (H Hoff Hk))
+          || (eapply kf_write_opaque in H; exact (H Hoff Hk))
           || (eapply kf_eventfd_write in H; exact (H Hoff Hk))
           || (eapply kf_anon_write_fault in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
@@ -957,12 +998,37 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_getdents64_kf : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> kill_post m m' evs.
+(** The /proc/self/fd listing and the opaque dispatcher that reaches
+    it, one lemma each. *)
+Lemma kf_procfd_getdents : forall i fd fl pos dirent count eff m m' evs,
+  check_procfd_getdents i fd fl pos dirent count eff m = CheckOk m' evs ->
+  kill_post m m' evs.
 Proof.
-  intros fd count eff m m' evs H Hoff Hk.
-  unfold check_getdents64 in H.
+  intros i fd fl pos dirent count eff m m' evs H Hoff Hk.
+  unfold check_procfd_getdents in H.
   kf_frame H m Hoff Hk.
+Qed.
+
+Lemma kf_getdents64_opaque : forall i fd o dirent count eff m m' evs,
+  check_getdents64_opaque i fd o dirent count eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros i fd o dirent count eff m m' evs H Hoff Hk.
+  unfold check_getdents64_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | exact (kf_procfd_getdents _ _ _ _ _ _ _ _ _ _ H Hoff Hk) ].
+Qed.
+
+Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd dirent count eff m m' evs H Hoff Hk.
+  unfold check_getdents64 in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_getdents64_opaque in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
 Qed.
 
 Lemma check_flock_kf : forall fd cmd eff m m' evs,
@@ -1292,6 +1358,24 @@ Proof.
   all: kf_close m Hoff Hk.
 Qed.
 
+(** The /proc/self/fd directory's [fstat], and the opaque dispatcher
+    that reaches it. *)
+Lemma kf_fstat_procfd_dir : forall i statbuf eff m m' evs,
+  check_fstat_procfd_dir i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_procfd_dir in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_opaque : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i o statbuf eff m m' evs H Hoff Hk. unfold check_fstat_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | exact (kf_fstat_procfd_dir _ _ _ _ _ _ H Hoff Hk) ].
+Qed.
+
 Lemma check_fstat_kf : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1302,7 +1386,8 @@ Proof.
           || (eapply kf_fstat_file in H; exact (H Hoff Hk))
           || (eapply kf_fstat_devnull in H; exact (H Hoff Hk))
           || (eapply kf_fstat_urandom in H; exact (H Hoff Hk))
-          || (eapply kf_fstat_anon in H; exact (H Hoff Hk))).
+          || (eapply kf_fstat_anon in H; exact (H Hoff Hk))
+          || (eapply kf_fstat_opaque in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
 Qed.
 
@@ -1566,6 +1651,14 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+Lemma check_signalfd4_kf : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H Hoff Hk.
+  unfold check_signalfd4, check_new_fd_result in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
 Lemma check_eventfd2_kf : forall i flags eff m m' evs,
   check_eventfd2 i flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1714,6 +1807,7 @@ Proof.
     | eapply check_connect_kf; eassumption
     | eapply check_timerfd_create_kf; eassumption
     | eapply check_eventfd2_kf; eassumption
+    | eapply check_signalfd4_kf; eassumption
     | eapply check_pipe2_kf; eassumption
     | eapply check_getcwd_kf; eassumption
     | eapply check_epoll_create1_kf; eassumption

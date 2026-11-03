@@ -263,8 +263,9 @@ Proof.
              | now apply check_stream_setfl_sound_ok
              | now apply check_eventfd_setfl_sound_ok
              | idtac | idtac
-             | destruct o as [q|q|w|h]; cbv beta iota in H |- *;
-               [ idtac | idtac | now apply check_oeventfd_setfl_sound_ok | idtac ] ];
+             | destruct o as [q|q|w|h|fl pos|mask fl]; cbv beta iota in H |- *;
+               [ idtac | idtac | now apply check_oeventfd_setfl_sound_ok
+               | idtac | idtac | idtac ] ];
              match type of H with
              | context [setfl_noop_on ?e arg] =>
                  destruct (setfl_noop_on e arg) eqn:Hl; [|discriminate]
@@ -307,11 +308,11 @@ Proof.
              | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                srw Hfd; eapply check_eventfd_setfl_sound_unmodeled; exact H
              | idtac | idtac
-             | destruct o as [q|q|w|h]; cbv beta iota in H;
+             | destruct o as [q|q|w|h|fl pos|mask fl]; cbv beta iota in H;
                [ idtac | idtac
                | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                  srw Hfd; eapply check_oeventfd_setfl_sound_unmodeled; exact H
-               | idtac ] ];
+               | idtac | idtac | idtac ] ];
              match type of H with
              | context [setfl_noop_on ?e arg] =>
                  destruct (setfl_noop_on e arg) eqn:Hl;
@@ -350,10 +351,10 @@ Proof.
                      | now apply check_stream_setfl_complete_ok with (i := i)
                      | now apply check_eventfd_setfl_complete_ok with (i := i)
                      | idtac | idtac
-                     | destruct o as [q|q|w|h]; cbv beta iota zeta in *;
+                     | destruct o as [q|q|w|h|fl pos|mask fl]; cbv beta iota zeta in *;
                        [ idtac | idtac
                        | now apply check_oeventfd_setfl_complete_ok with (i := i)
-                       | idtac ] ];
+                       | idtac | idtac | idtac ] ];
                      match goal with
                      | |- context [setfl_noop_on ?e arg] =>
                          destruct (setfl_noop_on e arg) eqn:Hl; hall Hl; inv_ok
@@ -385,10 +386,10 @@ Proof.
                      | now apply check_stream_setfl_complete_unmodeled with (i := i)
                      | now apply check_eventfd_setfl_complete_unmodeled with (i := i)
                      | idtac | idtac
-                     | destruct o as [q|q|w|h]; cbv beta iota zeta in *;
+                     | destruct o as [q|q|w|h|fl pos|mask fl]; cbv beta iota zeta in *;
                        [ idtac | idtac
                        | now apply check_oeventfd_setfl_complete_unmodeled with (i := i)
-                       | idtac ] ];
+                       | idtac | idtac | idtac ] ];
                      match goal with
                      | |- context [setfl_noop_on ?e arg] =>
                          destruct (setfl_noop_on e arg) eqn:Hl; hall Hl; inv_ok

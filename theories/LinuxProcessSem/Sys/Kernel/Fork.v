@@ -586,7 +586,7 @@ Definition clone_fork_flags_b (flags : word) : bool :=
     model has no position for it — that would be the same defect one
     line up, read backwards.  It is that no modeled syscall can OBSERVE
     a directory position: [ReadWrite.lseek_spec] declines [FdDir], and
-    [Readdir.getdents64_spec] declines every listing while its one
+    [Readdir.getdents64_spec] declines every [FdDir] listing while its one
     directory answer — [filldir64]'s -EINVAL for a buffer with no room
     for an entry — is the arm on which the kernel leaves [f_pos]
     untouched.  So there is no answer for the sharing to make wrong.
@@ -669,12 +669,13 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
-                    (* THE FOUR OPAQUE OBJECTS PASS, each for its own
+                    (* FOUR OPAQUE OBJECTS PASS, each for its own
                        reason, and the reason is in every case that no
-                       modeled arm reads the state the child's second
-                       reference shares ([copy_files] -> [dup_fd]'s
-                       [get_file], kernel/fork.c and fs/file.c, read at
-                       v6.18.44; identical at v6.18.46):
+                       answer the model gives depends on the state the
+                       child's second reference shares ([copy_files] ->
+                       [dup_fd]'s [get_file], kernel/fork.c and
+                       fs/file.c, read at v6.18.44; identical at
+                       v6.18.46):
                        - an O_PATH descriptor ([OProcPath]) has
                          [empty_fops] ([do_dentry_open], fs/open.c) and
                          does no I/O at all; the model reads only its
@@ -691,14 +692,33 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          model gives depends on it.
                        - an eventfd an earlier clone shared ([OEventFd],
                          made by [share_eventfds] below) shares one
-                         counter, and every arm that would read or move
-                         it (read, write, select, poll, epoll) declines
-                         on this kind.
+                         counter, and the model already holds that
+                         counter as the environment's: a read answers any
+                         nonzero value or -EAGAIN, and a write 8 or
+                         -EAGAIN, whatever another writer has done
+                         ([ReadWrite.read_eventfd_spec],
+                         [ReadWrite.write_eventfd_spec]); select, poll
+                         and epoll decline on it.  The child is one more
+                         such writer.  It also shares [f_flags], whose
+                         O_NONBLOCK those two arms read
+                         ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
+                         no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
-                         F_SETFD/F_GETFD declines on this kind. *)
-                    | FdOpaque _ => true
+                         F_SETFD/F_GETFD declines on this kind.
+                       TWO DECLINE, fail-closed:
+                       - the /proc/self/fd directory ([OProcFdDir])
+                         shares the [f_pos] that [getdents64] reads and
+                         moves, and the model holds that position in the
+                         parent's entry ([Readdir.procfd_getdents_spec]),
+                         so a child's listing would leave it wrong.
+                       - a signalfd ([OSignalFd]) shares its mask, which
+                         [signalfd4] on the same descriptor may change in
+                         either process (fs/signalfd.c [do_signalfd4],
+                         read at v6.18.44; identical at v6.18.46). *)
+                    | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _) => true
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _) => false
                     (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
                        the pipe's reason: the child's copy names the same
                        socket, so a child that reads drains the parent's
@@ -714,12 +734,15 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        keeps in this one entry.  The success branch
                        therefore replaces the entry with
                        [FdOpaque (OEventFd w)] ([share_eventfds] below),
-                       on which every arm that reads or changes the
-                       counter declines: after a clone the description is
-                       shared by two tasks, so counter calls decline, and
-                       a decline is never a wrong answer.  Before the
-                       clone, and after a clone that failed, the entry
-                       stays [FdEventfd] and the counter stays modeled. *)
+                       on which no arm reads a counter the model stores:
+                       after a clone the description is shared by two
+                       tasks, so read and write answer from the
+                       environment's counter
+                       ([ReadWrite.read_eventfd_spec],
+                       [ReadWrite.write_eventfd_spec]) and select, poll
+                       and epoll decline.  Before the clone, and after a
+                       clone that failed, the entry stays [FdEventfd] and
+                       the counter stays modeled. *)
                     | FdEventfd _ => true
                     (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
                        [Fs.File.dup_modeled_entry]'s reason: one rule for
@@ -761,8 +784,11 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
     [eventfd_ctx] that two tasks can read and write.  The model holds
     one of the two tasks.  So the success branch of each clone
     resolution turns every [State.FdEventfd] in the table into
-    [State.FdOpaque (State.OEventFd w)], and the arms that read or change
-    the counter (read, write, select, poll, epoll) decline on that kind.
+    [State.FdOpaque (State.OEventFd w)], on which no arm reads a counter
+    the model stores: read and write answer from the environment's
+    counter ([ReadWrite.read_eventfd_spec],
+    [ReadWrite.write_eventfd_spec], which read [w]'s two bits), and
+    select, poll and epoll decline.
     The table this model holds is the parent's; the child is not run
     (SCOPE.md, "Threads"), so there is no second table to convert here.
 

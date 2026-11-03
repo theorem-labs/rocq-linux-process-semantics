@@ -233,8 +233,9 @@ Example clone_namespace_word_keeps_the_descriptor_gate :
     (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE GATE PASSES EVERY OPAQUE KIND AND THE EVENTFDS, for both words,
-    end to end.  [clone_opaque_model] is the table bubblewrap's parent
+(** THE GATE PASSES FOUR OF THE SIX OPAQUE KINDS AND THE EVENTFDS, for
+    both words, end to end: [OProcPath], [OProcFile], [OEventFd] and
+    [ONsFile].  [clone_opaque_model] is the table bubblewrap's parent
     holds at its clone (channels 0-2, the O_PATH descriptor on "/proc" at
     fd 3, its two eventfds at 4 and 5, made with 0x80800 and 0x80000),
     and [clone_all_opaque_model] adds the modeled [overflowuid] sysctl
@@ -245,10 +246,12 @@ Proof. vm_compute. reflexivity. Qed.
     A SUCCESSFUL CLONE SHARES THE TWO EVENTFDS ([Fork.clone_child_made]):
     each [State.FdEventfd] becomes [State.FdOpaque (State.OEventFd w)],
     with w the O_NONBLOCK bit for the 0x80800 one and 0 for the other
-    (EFD_CLOEXEC is not part of w).  An errno leaves the table as it
-    was, counters included.  THE CONTROL is
+    (EFD_CLOEXEC is not part of w), and a second clone passes the two
+    [OEventFd]s.  An errno leaves the table as it was, counters
+    included.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
-    file still declines both words. *)
+    file still declines both words.  The other two kinds decline
+    ([clone_declines_procfd_dir_and_signalfd] below). *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
@@ -276,9 +279,42 @@ Example clone_passes_the_opaque_kinds :
         (4, FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)));
         (5, FdOpaque (OEventFd (Z_to_bv 64 0)))]
   /\ m_has_children (clone_child_made clone_opaque_model) = true
+  (* a second clone passes the two shared eventfds ([OEventFd]) *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] [])
+       (clone_child_made clone_opaque_model)
+     = CheckOk (clone_child_made (clone_child_made clone_opaque_model)) []
   (* the namespace word's errno: any but -EINTR, and the table unchanged *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
        clone_opaque_model = CheckOk clone_opaque_model []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
        clone_opaque_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE OTHER TWO OPAQUE KINDS DECLINE, for both words: the
+    /proc/self/fd directory ([State.OProcFdDir]), whose [f_pos] the
+    child would share while the model holds it in the parent's entry,
+    and a signalfd ([State.OSignalFd]), whose mask either process may
+    change ([Sys.Kernel.Fork] gives each reason).  Each is added to
+    [clone_opaque_model].  THE CONTROL is [clone_passes_the_opaque_kinds]
+    above, which the text before the gate's two declining arms answers
+    the same way. *)
+Definition clone_procfd_model : Model :=
+  with_fds (fd_insert (m_fds clone_opaque_model) 6
+              (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+    clone_opaque_model.
+
+Definition clone_signalfd_model : Model :=
+  with_fds (fd_insert (m_fds clone_opaque_model) 6
+              (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+    clone_opaque_model.
+
+Example clone_declines_procfd_dir_and_signalfd :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+    clone_procfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       clone_procfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+       clone_signalfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       clone_signalfd_model = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.

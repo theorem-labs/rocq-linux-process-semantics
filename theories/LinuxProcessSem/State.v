@@ -615,10 +615,15 @@ Definition EROFS  : Z := 30%Z.
    a stream-pair end ([FdStream]): [Fs.ReadWrite.stream_read_empty] and
    [Fs.ReadWrite.stream_send] return it exactly where
    [unix_stream_read_generic] and [sock_alloc_send_pskb] can, from the
-   end's O_NONBLOCK and its queues; and by the non-blocking transfers on
+   end's O_NONBLOCK and its queues; by the non-blocking transfers on
    an eventfd ([FdEventfd]): [Fs.ReadWrite.eventfd_read] and
    [Fs.ReadWrite.eventfd_write] return it exactly where [eventfd_read]
-   and [eventfd_write] do, from the file's O_NONBLOCK and the counter. *)
+   and [eventfd_write] do, from the file's O_NONBLOCK and the counter;
+   and by a read or write of a NON-BLOCKING eventfd that a clone shared
+   ([OEventFd]: [Fs.ReadWrite.read_eventfd_spec],
+   [Fs.ReadWrite.write_eventfd_spec]), where [eventfd_read] and
+   [eventfd_write] (fs/eventfd.c, read at v6.18.44; identical at
+   v6.18.46) return it from a counter that is the environment's. *)
 Definition EAGAIN : Z := 11%Z.
 
 (** Socket errno values.  All from the asm-generic table
@@ -2766,9 +2771,11 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
-(** The four kernel objects behind [FdOpaque].  The model holds NO
+(** The six kernel objects behind [FdOpaque].  The model holds NO
     CONTENTS for any of them: what a read returns, what a stat reports
     and what an eventfd counts are the environment's or are declined.
+    Two of them carry one piece of kernel state each, and nothing more:
+    the /proc/self/fd directory its position, the signalfd its mask.
 
     - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
       name [p] (an absolute path at or under "/proc";
@@ -2787,11 +2794,20 @@ Definition PipeBuf : Type := list byte * Z.
       ([Kernel.Fork.share_eventfds]), carrying the part of its flag word
       the model keeps: [EFD_SEMAPHORE] and O_NONBLOCK, rebuilt from the
       [FdEventfd] context it replaced.  After the clone the description
-      is shared by two tasks, so the counter is not modeled: read, write
-      and readiness decline on it, and fcntl's F_GETFL and F_SETFL answer
-      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  F_GETFD declines on it
-      ([Fs.Fcntl.getfd_declines]): its close-on-exec bit came from the
-      [eventfd2] word's EFD_CLOEXEC, which [w] does not carry.
+      is shared by two tasks, so the counter is not modeled: it is the
+      environment's.  A read of a non-blocking eventfd answers from any
+      counter value, a blocking read declines, and a write answers under
+      the counter exclusion SCOPE.md states
+      ([Fs.ReadWrite.read_eventfd_spec], [Fs.ReadWrite.write_eventfd_spec]);
+      readiness declines on it, and fcntl's F_GETFL and F_SETFL answer
+      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  No arm on it reads a
+      counter the model stores, and a non-blocking read is a free choice
+      over every answer Linux can give (-EAGAIN, or any nonzero count,
+      exactly 1 under [EFD_SEMAPHORE]), never one modeled value (the LPS
+      owner's rulings of 2026-11-03, 08:33Z option 1 and 14:25Z).
+      F_GETFD declines on it ([Fs.Fcntl.getfd_declines]): its
+      close-on-exec bit came from the [eventfd2] word's EFD_CLOEXEC,
+      which [w] does not carry.
     - [ONsFile h]: a descriptor on an open file that the namespace and
       mount model holds under handle
       [h].  No arm of [spec_table] mints it: only that model's child
@@ -2819,12 +2835,33 @@ Definition PipeBuf : Type := list byte * Z.
       [SYSCALL_DEFINE1(close)] returns [filp_flush]'s result, and FUSE,
       NFS, CIFS, orangefs, ecryptfs and overlayfs have a [.flush] that
       can fail.
-        fs/open.c [SYSCALL_DEFINE1(close)], [filp_flush]: read at v6.18.44; identical at v6.18.46. *)
+        fs/open.c [SYSCALL_DEFINE1(close)], [filp_flush]: read at v6.18.44; identical at v6.18.46.
+    - [OProcFdDir flags pos]: an open directory on "/proc/self/fd"
+      ([Fs.Open.openat_proc_spec]), carrying the open word [flags] the
+      [openat] passed and the directory position [pos].  The position is
+      [f_pos], which [proc_readfd_common] (fs/proc/fd.c) reads and moves:
+      0 and 1 are "." and "..", and [n + 2] is descriptor [n].  [pos] is
+      [None] after a [getdents64] that reached the end of the listing
+      and wrote no record, because the kernel then leaves [f_pos] at
+      [max_fds + 2], and the model does not know [max_fds]; a later
+      [getdents64] on it declines ([Fs.Readdir.procfd_getdents_spec]).
+      [fstat], [fcntl]'s [F_GETFL], [close], [close_range] and [F_SETFD]
+      and [F_GETFD] answer on it; every other arm declines it.
+        fs/proc/fd.c [proc_readfd_common], [proc_fd_operations]: read at v6.18.44; identical at v6.18.46.
+    - [OSignalFd mask flags]: a signalfd ([Fs.Signalfd.signalfd4_spec]),
+      carrying the signal mask it reads ([mask], the caller's mask with
+      SIGKILL and SIGSTOP removed, as [do_signalfd4] stores it before
+      [signotset]) and the [SFD_] flag word it was created with.  Only
+      [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
+      poll and every other arm decline it.
+        fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)
   | OEventFd (flags : word)
-  | ONsFile (h : N).
+  | ONsFile (h : N)
+  | OProcFdDir (flags : word) (pos : option word)
+  | OSignalFd (mask flags : word).
 
 (** WHAT A STREAM-PAIR END HAS SHOWN OF THE ERROR ITS PEER'S CLOSE MAY
     HAVE LEFT ([StreamEnd.se_reset]).  Linux v6.18.46 (commit
@@ -3317,14 +3354,15 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       ([Kernel.Fork.clone_no_shared_file_b]), so the file is this
       process's alone, an assumption SCOPE.md states.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
-      CONTENTS for; [OpaqueFd] above says which four objects.  The
+      CONTENTS for; [OpaqueFd] above says which six objects.  The
       descriptor is in the table so that its NUMBER is tracked (the
       lowest-free-fd rule, [close], and a statement that reads "this fd
       is held at the clone" all need it), and nothing else about the
-      object is: no position, no bytes, no counter.  Every arm that
+      object is: no bytes and no counter, and a position and a mask only
+      for the two objects [OpaqueFd] names.  Every arm that
       reads one either derives its answer from the Linux source for
       that kind of object or declines; none of them answers from what
-      an existing kind would answer, because none of the four is a
+      an existing kind would answer, because none of the six is a
       file, a device, a socket or a pipe end the existing arms know. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
@@ -3343,7 +3381,7 @@ Inductive FdEntry :=
   | FdAnon (id : word) (af : AnonFile)
   | FdOpaque (o : OpaqueFd).
 
-(** Is [e] one of the four opaque objects?  The one classifier over
+(** Is [e] one of the six opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
     the kind it is about, and any constructor added later is, by
     definition, not that kind.  The arms that decline [FdOpaque] ahead
@@ -4777,13 +4815,14 @@ Record ProcState := mkProcState {
                                     the model cannot see, is a pipe the model
                                     does not have a term for; this field says
                                     which of the two ends the run was launched
-                                    with.  [Run.valid_input] DOES NOT CONSTRAIN
-                                    IT: both values name a real launch, so every
-                                    statement covers both, and the reader-present
-                                    reading -- which every statement in this tree
-                                    was silently written under, as an assumption
-                                    inside the write arm -- is no longer
-                                    assumed anywhere. *)
+                                    with.  [Run.valid_input] PINS IT TO [true],
+                                    the reader-present launch, which every
+                                    statement in this tree was written under.
+                                    The reader-gone launch has its own name,
+                                    [Run.valid_input_channel_closed], and
+                                    [Run.valid_input_channel_either] admits
+                                    both, so a statement that means both says
+                                    so. *)
 ;
   procst_sigpipe_action : SigpipeAction
                                  (* SIGPIPE's ACTION: its handler (SIG_DFL or
@@ -5051,8 +5090,10 @@ Definition m_sigpipe_pending (m : Model) : bool :=
   procst_sigpipe_pending (m_proc m).
 (** Whether the far end of descriptors 1 and 2 still has a reader --
     the launch fact [Sys.Fs.ReadWrite.write_spec]'s channel arm reads
-    before it admits a transfer.  [Run.valid_input] constrains neither
-    value; see [procst_channel_reader]. *)
+    before it admits a transfer.  [Run.valid_input] pins it to [true];
+    the reader-gone launch is [Run.valid_input_channel_closed], and
+    [Run.valid_input_channel_either] admits both.  See
+    [procst_channel_reader]. *)
 Definition m_channel_reader (m : Model) : bool :=
   procst_channel_reader (m_proc m).
 (** SIGPIPE's current action: handler, flags and mask, as the last
@@ -6148,7 +6189,9 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
        skipped on the condition its own doc states, that the namespace and mount model
        never mints one on an end of a pipe this table's [FdPipe] entries
        track, which [Checks.NsFileFree.run_opaque_entries_not_ns] proves
-       for every run *)
+       for every run; and the eventfd, the /proc/self/fd directory and the
+       signalfd are anonymous or procfs files with no [pipe_inode_info]
+       ([eventfd_fops], [proc_fd_operations], [signalfd_fops]) *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's

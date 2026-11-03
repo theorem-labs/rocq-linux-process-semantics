@@ -1892,6 +1892,51 @@ Proof.
   try reflexivity.
 Qed.
 
+(** A read and a write of an eventfd a clone shared ([State.OEventFd],
+    [Fs.ReadWrite.check_read_eventfd], [check_write_eventfd]), and the
+    opaque dispatchers that reach them. *)
+Lemma vm_read_eventfd : forall i fl buf count eff m m' evs,
+  check_read_eventfd i fl buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fl buf count eff m m' evs H.
+  unfold check_read_eventfd, check_eventfd_deliver in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_write_eventfd : forall i fl buf count eff m m' evs,
+  check_write_eventfd i fl buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fl buf count eff m m' evs H. unfold check_write_eventfd in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_read_opaque : forall i o buf count eff m m' evs,
+  check_read_opaque i o buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i o buf count eff m m' evs H. unfold check_read_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | eapply vm_read_proc; exact H
+          | eapply vm_read_eventfd; exact H ].
+Qed.
+
+Lemma vm_write_opaque : forall i o buf count eff m m' evs,
+  check_write_opaque i o buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i o buf count eff m m' evs H. unfold check_write_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | eapply vm_write_eventfd; exact H ].
+Qed.
+
 Lemma vm_write_fault_extend : forall reads m p off eff m' evs,
   check_write_fault_extend reads m p off eff = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -1930,7 +1975,7 @@ Proof.
   repeat (vm_step H || vm_done H || vm_stream H
           || (eapply vm_read_urandom in H; exact H)
           || (eapply vm_socket_pending_error in H; exact H)
-          || (eapply vm_read_proc in H; exact H)
+          || (eapply vm_read_opaque in H; exact H)
           || (eapply vm_eventfd_read in H; exact H));
   try reflexivity.
 Qed.
@@ -1945,6 +1990,7 @@ Proof.
   cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H || vm_stream H
           || (eapply vm_write_fault_extend in H; exact H)
+          || (eapply vm_write_opaque in H; exact H)
           || (eapply vm_eventfd_write in H; exact H)
           || (eapply vm_anon_write_fault in H; exact H));
   try reflexivity.
@@ -2369,10 +2415,36 @@ Lemma check_fsync_frame : forall fd eff m m' evs,
   check_fsync fd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fd eff m m' evs H. unfold check_fsync in H. vm_frame2 H. Qed.
 
-Lemma check_getdents64_frame : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** The /proc/self/fd listing ([Fs.Readdir.check_procfd_getdents]) and
+    the opaque dispatcher that reaches it, one lemma each. *)
+Lemma vm_procfd_getdents : forall i fd fl pos dirent count eff m m' evs,
+  check_procfd_getdents i fd fl pos dirent count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd count eff m m' evs H. unfold check_getdents64 in H. vm_frame2 H.
+  intros i fd fl pos dirent count eff m m' evs H.
+  unfold check_procfd_getdents in H.
+  cbv zeta in H. vm_frame2 H.
+Qed.
+
+Lemma vm_getdents64_opaque : forall i fd o dirent count eff m m' evs,
+  check_getdents64_opaque i fd o dirent count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd o dirent count eff m m' evs H. unfold check_getdents64_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H
+          | eapply vm_procfd_getdents; exact H ].
+Qed.
+
+Lemma check_getdents64_frame : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd dirent count eff m m' evs H.
+  unfold check_getdents64 in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_getdents64_opaque in H; exact H));
+  try reflexivity.
 Qed.
 
 (** [flock] records nothing: every answered arm is a bare return, and
@@ -2413,6 +2485,14 @@ Lemma check_eventfd2_frame : forall i flags eff m m' evs,
 Proof.
   intros i flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
+Qed.
+
+Lemma check_signalfd4_frame : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
 (** uname writes only the UTS-name pin, which lives in [ProcState]:
@@ -2732,6 +2812,16 @@ Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
 
+(** The /proc/self/fd directory's [fstat] hands back the model it was
+    given; the other opaque objects decline. *)
+Lemma check_fstat_opaque_frame : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i o statbuf eff m m' evs H.
+  unfold check_fstat_opaque, check_fstat_procfd_dir in H. vm_frame2 H.
+Qed.
+
 (** The unnamed file's [fstat] records its pin in EVERY descriptor of the
     file ([State.anon_update] under [State.with_fds]); that setter
     rebuilds the fd table and carries [m_vmmaps] across untouched. *)
@@ -2755,7 +2845,6 @@ Proof.
     as (bs & _ & _ & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
     reflexivity.
 Qed.
-
 Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -2769,7 +2858,8 @@ Proof.
   all: first [eapply check_fstat_file_frame; exact H
              |eapply check_fstat_devnull_frame; exact H
              |eapply check_fstat_urandom_frame; exact H
-             |eapply check_fstat_anon_frame; exact H].
+             |eapply check_fstat_anon_frame; exact H
+             |eapply check_fstat_opaque_frame; exact H].
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,
@@ -3241,6 +3331,7 @@ Proof.
     | erewrite check_connect_frame by eassumption; exact Hwf
     | erewrite check_timerfd_create_frame by eassumption; exact Hwf
     | erewrite check_eventfd2_frame by eassumption; exact Hwf
+    | erewrite check_signalfd4_frame by eassumption; exact Hwf
     | erewrite check_pipe2_frame by eassumption; exact Hwf
     | erewrite check_getcwd_frame by eassumption; exact Hwf
     | erewrite check_epoll_create1_frame by eassumption; exact Hwf
