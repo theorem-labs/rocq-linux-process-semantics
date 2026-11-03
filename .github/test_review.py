@@ -1700,7 +1700,7 @@ class RescreenJobTest(Held):
         tries = int(WF["env"]["REVIEW_TRIES"])
         self.assertGreater(tries, 1)
         now = datetime.datetime.now(datetime.timezone.utc)
-        hour_ago = (now - datetime.timedelta(minutes=70)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hour_ago = (now - datetime.timedelta(minutes=180)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.items((7, "open"), (8, "open"), (9, "open"))
         self.held(7, limit_hold(50, at=hour_ago, kind="transient", tries=1))
         self.held(8, limit_hold(51, at=hour_ago, kind="transient", tries=1))
@@ -1708,8 +1708,8 @@ class RescreenJobTest(Held):
         self.origin(50, "mallory")
         self.origin(51, "eve")
         self.origin(52, "bob")
-        self.runs((10, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 30),
-                  (11, BOT, "workflow_dispatch", "rescreen #8 of eve", "completed", 90),
+        self.runs((10, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 70),
+                  (11, BOT, "workflow_dispatch", "rescreen #8 of eve", "completed", 200),
                   *[(12 + i, BOT, "workflow_dispatch", "rescreen #9 of bob", "completed", (3 + i) * 24 * 60)
                     for i in range(tries)],
                   (20, BOT, "workflow_dispatch", "rescreen #80 of eve", "completed", 30))
@@ -1721,6 +1721,26 @@ class RescreenJobTest(Held):
         self.assertIn("#7: 1 rescreens since its hold settled nothing; trying again.", out)
         self.assertEqual(rc, 1, out)
         self.assertIn(f"::error::#9: screened again {tries} times since its hold", out)
+
+    def test_the_next_try_waits_an_hour_after_the_last_rescreen(self):
+        """Retries of a hold that rescreens did not settle are spaced as the hold's own hour is: not again while the
+        newest rescreen since the hold is under an hour old, so a short outage of GitHub does not use up the tries."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        held_at = (now - datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for ages, want in (((30,), []), ((150, 20), []), ((61,), [("7", "true", "mallory")]),
+                           ((150, 90), [("7", "true", "mallory")])):
+            with self.subTest(ages=ages):
+                self.tearDown()
+                self.setUp()
+                self.items((7, "open"))
+                self.held(7, limit_hold(50, at=held_at, kind="transient", tries=1))
+                self.origin(50, "mallory")
+                self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", age)
+                            for i, age in enumerate(ages)])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if not want:
+                    self.assertIn("less than an hour ago, with no new hold: tried again later", out)
 
     def test_a_failed_rescreen_is_tried_again_until_the_last_try(self):
         now = datetime.datetime.now(datetime.timezone.utc)

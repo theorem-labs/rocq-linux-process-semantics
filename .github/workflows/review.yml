@@ -70,8 +70,10 @@
 #           run of the item?
 #   rescreen
 #           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
-#           again. It is the only job with actions: write, which it needs to start a run; it reads the held items and
-#           this workflow's runs, checks nothing out and holds no model.
+#           again. It is the only job with actions: write, which it needs to start a run. Its issues and pull-requests:
+#           write let it replace the hold comment of an item whose rescreens reached REVIEW_TRIES without settling, with
+#           one that says a maintainer will look at it. It reads the held items and this workflow's runs, checks
+#           nothing out and holds no model.
 #
 # No job runs code of a pull request. pull_request_target runs this file as main has it, so a pull request, from a fork
 # or not, cannot change what runs here. The gather job checks out main, never the pull request; it reads the pull
@@ -1156,7 +1158,8 @@ jobs:
   # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
   # item for the next run and fails this job. An item whose rescreens since its hold reach REVIEW_TRIES with no new
   # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job replaces its
-  # hold comment with one that says a maintainer will look at it, with no marker, and fails for that run.
+  # hold comment with one that says a maintainer will look at it, with no marker, and fails for that run. Before that,
+  # each try waits until the newest rescreen since the hold is over an hour old, as the first waits on the hold.
   # It is the only job of this file with actions: write, which starting a run needs; issues and pull-requests: write
   # let it replace that hold comment. It checks nothing out, holds no model, and writes nothing but those runs and
   # those comments. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose
@@ -1300,7 +1303,16 @@ jobs:
                 || echo "::error::the hold comment of #$number could not be replaced; the next run tries again."
               continue
             fi
-            (( unsettled == 0 )) || echo "#$number: $unsettled rescreens since its hold settled nothing; trying again."
+            if (( unsettled > 0 )); then
+              # Spaced as the hold's own hour is: the next try waits until the newest rescreen since the hold is over
+              # an hour old, so a short outage of GitHub does not use up the tries.
+              newest=$(sort <<< "$since_hold" | tail -n 1)
+              if [[ ! $newest < $from ]]; then
+                echo "#$number: rescreened at $newest, less than an hour ago, with no new hold: tried again later."
+                continue
+              fi
+              echo "#$number: $unsettled rescreens since its hold settled nothing; trying again."
+            fi
             account=$(held_account "$origin") || { echo "::error::run $origin could not be read."; failed=1; continue; }
             if [ -z "$account" ]; then
               echo "#$number: its hold names no run of this workflow's events: left alone."
