@@ -86,7 +86,7 @@ Qed.
 Lemma uts_repeat_ok_refl : forall b0, uts_repeat_ok b0 b0.
 Proof.
   intros b0. unfold uts_repeat_ok. destruct (utsname_wf b0) eqn:H; [|reflexivity].
-  split; [exact H|]. unfold uts_kernel_agree. rewrite !uts_eqb_refl. reflexivity.
+  split; [reflexivity|]. unfold uts_kernel_agree. rewrite !uts_eqb_refl. reflexivity.
 Qed.
 
 Definition uname_witness (name : word) (i : SyscallInput) (m : Model)
