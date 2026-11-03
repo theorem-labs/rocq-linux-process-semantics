@@ -694,10 +694,14 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
     id no namespace maps, which [vfsuid_valid] refuses. *)
 Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
 
-(** [inode_owner_or_capable] (fs/inode.c): the fsuid owns the inode, or the
-    task has CAP_FOWNER over it ([capable_wrt_inode_uidgid]). *)
+(** [inode_owner_or_capable] (fs/inode.c:2623-2637, Linux v6.18.46): the
+    fsuid owns the inode, or the inode's uid maps into the caller's user
+    namespace and the task has CAP_FOWNER there (2633-2635).  Only the uid
+    is tested: [capable_wrt_inode_uidgid], which also needs the gid to map
+    (kernel/capability.c:455-480), is not called here. *)
 Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
-  Z.eqb (wc_fsuid cr) (oa_uid a) || capable_over st ctx (task_eff ctx) a CAP_FOWNER.
+  Z.eqb (wc_fsuid cr) (oa_uid a)
+  || (uid_mapped st ctx (oa_uid a) && Z.testbit (task_eff ctx) CAP_FOWNER).
 
 (** [in_group_or_capable] (fs/inode.c): the fsgid or a supplementary group
     is the inode's group, or the task has CAP_FSETID over it. *)

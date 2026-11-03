@@ -385,6 +385,30 @@ Example fchmod_refusals :
                (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** [inode_owner_or_capable]'s CAP_FOWNER test needs only the inode's uid
+    to map into the caller's user namespace (fs/inode.c:2633-2635, Linux
+    v6.18.46).  The file is owned by kernel uid 5000 and gid 7000; the
+    caller, not the owner, has CAP_FOWNER in user namespace 2, which maps
+    uid 0 to 5000 and gid 0 to 6000 (so not gid 7000).  fchmod goes on: it
+    returns 0 and sets the mode (0644 = 420; S_ISGID is not asked).  Before
+    this correction the model asked for the gid too and answered EPERM.
+    When namespace 2 does not map the uid either, EPERM stays. *)
+Definition fown_ns (uid_lower : Z) : UserNs :=
+  mkUserNs 2 (Some 1%positive) 1 0 (Some [mkExtent 0 uid_lower 1]) (Some [mkExtent 0 6000 1])
+    true false INT_MAX true.
+Definition fown_ctx : NsCtx := with_user_ns (with_caps base_ctx (mkCaps 8 8 0 0 0)) 2.
+Definition fown_state (uid_lower : Z) : NsState :=
+  with_userns (unlink_state 511 5000 7000 []) [root_user; fown_ns uid_lower].
+
+Example fchmod_fowner_needs_uid_only :
+  let o := fchmod_fn (fchmod_call 420) base_model fown_ctx (fown_state 5000) chmod_file in
+  ret_of o = Some 0 /\ perm_of o 2 = Some 420.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example fchmod_fowner_uid_unmapped :
+  ret_of (fchmod_fn (fchmod_call 420) base_model fown_ctx (fown_state 6000) chmod_file) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not

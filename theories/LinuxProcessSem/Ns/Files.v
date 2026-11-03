@@ -352,6 +352,24 @@ Definition uidgid_mapped (st : NsState) (ctx : NsCtx) (uid gid : Z) : bool :=
       end
   end.
 
+(** [vfsuid_has_mapping] (include/linux/mnt_idmapping.h) of an inode's uid
+    in the caller's user namespace, alone: the test of
+    [inode_owner_or_capable] (fs/inode.c:2633-2635, Linux v6.18.46), which
+    does not look at the gid. *)
+Definition uid_mapped (st : NsState) (ctx : NsCtx) (uid : Z) : bool :=
+  match find_userns (ns_userns st) (cx_user ctx) with
+  | None => false
+  | Some u =>
+      match uns_parent u with
+      | None => true
+      | Some _ =>
+          match uns_uid_map u with
+          | Some um => kid_mapped um uid
+          | None => false
+          end
+      end
+  end.
+
 (** [capable_wrt_inode_uidgid] with the effective set [eff]. *)
 Definition capable_over (st : NsState) (ctx : NsCtx) (eff : Z) (a : ObjAttr) (cap : Z) : bool :=
   Z.testbit eff cap && uidgid_mapped st ctx (oa_uid a) (oa_gid a).
