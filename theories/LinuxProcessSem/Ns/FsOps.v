@@ -726,10 +726,18 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
     id no namespace maps, which [vfsuid_valid] refuses. *)
 Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
 
-(** [inode_owner_or_capable] (fs/inode.c): the fsuid owns the inode, or the
-    task has CAP_FOWNER over it ([capable_wrt_inode_uidgid]). *)
-Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
-  Z.eqb (wc_fsuid cr) (oa_uid a) || capable_over st ctx (task_eff ctx) a CAP_FOWNER.
+(** [inode_owner_or_capable] (fs/inode.c:2623-2637, Linux v6.18.46): the
+    fsuid owns the inode, or the inode's uid maps into the caller's user
+    namespace and the task has CAP_FOWNER there (2633-2635).  Only the uid
+    is tested: [capable_wrt_inode_uidgid], which also needs the gid to map
+    (kernel/capability.c:455-480), is not called here.  [None] when the
+    answer needs the mapping and the tables do not hold the caller's user
+    namespace ([uid_mapped] is [None]): every task has one, so the tables
+    do not say what Linux answers. *)
+Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : option bool :=
+  if Z.eqb (wc_fsuid cr) (oa_uid a) then Some true
+  else if negb (Z.testbit (task_eff ctx) CAP_FOWNER) then Some false
+  else uid_mapped st ctx (oa_uid a).
 
 (** [in_group_or_capable] (fs/inode.c): the fsgid or a supplementary group
     is the inode's group, or the task has CAP_FSETID over it. *)
@@ -780,8 +788,11 @@ Qed.
     kernel order: an O_PATH file, EBADF ([fdget] skips FMODE_PATH); a
     read-only mount or superblock, EROFS ([mnt_want_write]); an inode with
     an invalid owner or group, EOVERFLOW ([notify_change]); a fsuid that
-    does not own the inode, with no CAP_FOWNER over it, EPERM
-    ([setattr_prepare]); else the new mode [mode & 07777], less S_ISGID
+    does not own the inode, when either the inode's uid does not map into
+    the caller's user namespace or the task lacks CAP_FOWNER, EPERM
+    ([setattr_prepare]); no answer when that test needs the mapping and
+    the tables do not hold the caller's user namespace; else the new mode
+    [mode & 07777], less S_ISGID
     when the inode's group is not the fsgid or a supplementary group and
     the task has no CAP_FSETID over it.  For a tmpfs file or directory
     only: the tables hold no immutable or append-only inode, no seal, no
@@ -802,10 +813,14 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
               let cr := walk_creds m in
               if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
               else if kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino) then ns_errno EOVERFLOW m ctx st
-              else if negb (owner_or_capable st ctx cr a) then ns_errno EPERM m ctx st
-              else
-                let mode' := if group_or_capable st ctx cr a then mode else Z.land mode (Z.lnot S_ISGID) in
-                ns_ret (Z_to_bv 64 0) m ctx (set_inode_perm st (ino_id ino) mode')
+              else match owner_or_capable st ctx cr a with
+                   | None => EUnmodeled
+                   | Some false => ns_errno EPERM m ctx st
+                   | Some true =>
+                       let mode' := if group_or_capable st ctx cr a then mode
+                                    else Z.land mode (Z.lnot S_ISGID) in
+                       ns_ret (Z_to_bv 64 0) m ctx (set_inode_perm st (ino_id ino) mode')
+                   end
           | _, _, _ => EUnmodeled
           end
       | _, _ => EUnmodeled

@@ -457,6 +457,56 @@ Example fchmod_refusals :
                (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** [inode_owner_or_capable]'s CAP_FOWNER test needs only the inode's uid
+    to map into the caller's user namespace (fs/inode.c:2633-2635, Linux
+    v6.18.46).  The file is owned by kernel uid 5000 and gid 7000; the
+    caller, not the owner, has CAP_FOWNER in user namespace 2, which maps
+    uid 0 to 5000 and gid 0 to 6000 (so not gid 7000).  fchmod goes on: it
+    returns 0 and sets the mode (0644 = 420; S_ISGID is not asked).  Before
+    this correction the model asked for the gid too and answered EPERM.
+    When namespace 2 does not map the uid either, EPERM stays. *)
+Definition fown_ns (uid_lower : Z) : UserNs :=
+  mkUserNs 2 (Some 1%positive) 1 0 (Some [mkExtent 0 uid_lower 1]) (Some [mkExtent 0 6000 1])
+    true false INT_MAX true.
+Definition fown_ctx : NsCtx := with_user_ns (with_caps base_ctx (mkCaps 8 8 0 0 0)) 2.
+Definition fown_state (uid_lower : Z) : NsState :=
+  with_userns (unlink_state 511 5000 7000 []) [root_user; fown_ns uid_lower].
+
+Example fchmod_fowner_needs_uid_only :
+  let o := fchmod_fn (fchmod_call 420) base_model fown_ctx (fown_state 5000) chmod_file in
+  ret_of o = Some 0 /\ perm_of o 2 = Some 420.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example fchmod_fowner_uid_unmapped :
+  ret_of (fchmod_fn (fchmod_call 420) base_model fown_ctx (fown_state 6000) chmod_file) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+(** The S_ISGID test after it reads the gid's mapping: [setattr_prepare]
+    drops S_ISGID unless [in_group_or_capable] holds (fs/attr.c:203-205),
+    whose CAP_FSETID test is [capable_wrt_inode_uidgid] (fs/inode.c:
+    2910-2918; kernel/capability.c:455-480).  The same caller and file,
+    the caller now with CAP_FOWNER and CAP_FSETID and not in group 7000,
+    asks for 02644 (= 1444).  Gid 7000 does not map into namespace 2, so
+    CAP_FSETID does not count: 0, and the mode is 0644 (= 420). *)
+Definition fown_fsetid_ctx : NsCtx := with_user_ns (with_caps base_ctx (mkCaps 24 24 0 0 0)) 2.
+
+Example fchmod_fowner_gid_unmapped_drops_sgid :
+  let o := fchmod_fn (fchmod_call 1444) base_model fown_fsetid_ctx (fown_state 5000) chmod_file in
+  ret_of o = Some 0 /\ perm_of o 2 = Some 420.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** A caller whose user namespace (3) the tables do not hold: with
+    CAP_FOWNER the answer needs that namespace's uid map, which the tables
+    do not give, so fchmod has no answer (before this correction: EPERM);
+    without CAP_FOWNER, EPERM whatever the map holds (fs/inode.c:2634). *)
+Definition fown_absent_ctx (caps : Z) : NsCtx := with_user_ns (with_caps base_ctx (mkCaps caps caps 0 0 0)) 3.
+
+Example fchmod_fowner_userns_absent :
+  fchmod_fn (fchmod_call 420) base_model (fown_absent_ctx 8) (fown_state 5000) chmod_file = EUnmodeled
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model (fown_absent_ctx 0) (fown_state 5000) chmod_file)
+     = Some (-1).
+Proof. vm_compute. split; reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not
