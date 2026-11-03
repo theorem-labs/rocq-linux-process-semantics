@@ -814,29 +814,90 @@ Definition ns_open (st : NsState) (n : positive) : bool :=
   | _ => existsb (fun m => Pos.eqb (mnt_ns m) n && open_reach st m) (ns_mounts st)
   end.
 
-(** A mount that a propagation change or a [mount_setattr] of mount [r]
-    selects ([r], and with [recursive] its subtree) can receive an event
-    from an open group.  [change_mnt_propagation] then takes the next peer
-    among all members of the group, those outside the tables included,
-    leaves the slaves with the group and makes an MS_SLAVE target a slave
-    of that peer (fs/pnode.c:101-116), and the host can mount or unmount
-    on the target at any time; the tables decide neither, so the arm has
-    no answer.  One test before the change is enough: changing a target
-    that receives from no open group moves its slaves to its next peer or
-    its master and itself under them, and gives a new group a key above
-    every open group ([new_group_key]), so no mount comes to receive from
-    an open group. *)
-Definition targets_open (st : NsState) (r : positive) (recursive : bool) : bool :=
-  existsb (open_mount st) (setattr_targets (ns_mounts st) r recursive).
+(** The mounts besides [m] that [change_mnt_propagation (m, k)]
+    (fs/pnode.c:93-124) reads and changes, in the state [st] before the
+    change.  MS_SHARED: none ([set_mnt_shared] changes [m] alone).  Else:
+    - when [m] is shared, the slaves it hands over
+      ([transfer_propagation], fs/pnode.c:74-88, sets the master of each):
+      its slave list while its group keeps another member and the list is
+      known, else every slave of its group in the tables;
+    - the mount [change_dest] names, whose slave list takes those slaves
+      and an MS_SLAVE [m] (every candidate, when the model does not know
+      which);
+    - the master whose slave list [m] leaves (fs/pnode.c:112; every member
+      of [m]'s master group, when the model does not know which). *)
+Definition change_reads (k : PropType) (st : NsState) (m : Mount) : list positive :=
+  match k with
+  | PShared => []
+  | _ =>
+      let T := ns_mounts st in
+      let i := mnt_id m in
+      let moved :=
+        match mnt_peer m with
+        | Some g =>
+            match List.filter (fun x => negb (Pos.eqb x i)) (members T g), slave_list st i with
+            | _ :: _, Some l => l
+            | _, _ => group_slaves T g
+            end
+        | None => []
+        end in
+      let dest := match change_dest st m with DTo t => [t] | DOut => [] | DSome cs => cs end in
+      let old := match master_mount st m with
+                 | Some t => [t]
+                 | None => match mnt_master m with Some h => members T h | None => [] end
+                 end in
+      moved ++ dest ++ old
+  end.
 
-(** With no open group, the default launch, no target is open: the arms
+(** The mounts a propagation change of the mounts [l] reads, one mount
+    after another as [change_type]'s fold changes them: each mount of [l],
+    and what its change reads ([change_reads]) in the state the earlier
+    changes left. *)
+Fixpoint change_type_reads (k : PropType) (st : NsState) (l : list positive) : list positive :=
+  match l with
+  | [] => []
+  | i :: r =>
+      let here := match find_mount (ns_mounts st) i with
+                  | Some m => change_reads k st m
+                  | None => []
+                  end in
+      i :: here ++ change_type_reads k (change_type_one k st i) r
+  end.
+
+(** A propagation change to type [k] ([Some k]) or a [mount_setattr]
+    ([None] when it changes no propagation) of mount [r] reads a mount
+    that can receive an event from an open group: a mount it selects ([r],
+    and with [recursive] its subtree) or, for a change, a mount
+    [change_type_reads] lists.  The arm then has no answer: the host can
+    mount or unmount at such a mount at any time, and
+    [change_mnt_propagation] of a mount in an open group takes the next
+    peer among all members of the group, those outside the tables
+    included, and makes an MS_SLAVE mount a slave of that peer
+    (fs/pnode.c:101-116), which the tables cannot name.  The test reads
+    the state [st] at the start of the call: no host event comes during a
+    propagation change, which holds [namespace_sem] for writing
+    ([do_change_type], fs/namespace.c:2871; [do_mount_setattr] when it
+    changes propagation, 4798-4835; [namespace_lock], 1727-1730), and a change
+    moves a slave only to a member of its master group or of the group
+    above, makes an MS_SLAVE mount a slave of the group it leaves or of
+    its master group, and gives a new group a key above every open group
+    ([new_group_key]), so no mount comes to receive from an open group.
+    Computed only when the launch names an open group, as [open_mount]. *)
+Definition targets_open (st : NsState) (k : option PropType) (r : positive) (recursive : bool)
+    : bool :=
+  match env_open_groups (ns_env st) with
+  | [] => false
+  | _ =>
+      let ts := setattr_targets (ns_mounts st) r recursive in
+      existsb (open_mount st) (match k with Some k => change_type_reads k st ts | None => ts end)
+  end.
+
+(** With no open group, the default launch, no mount is open: the arms
     answer as they do without the test. *)
-Theorem targets_open_closed : forall st r recursive,
-  env_open_groups (ns_env st) = [] -> targets_open st r recursive = false.
+Theorem targets_open_closed : forall st k r recursive,
+  env_open_groups (ns_env st) = [] -> targets_open st k r recursive = false.
 Proof.
-  intros st r recursive H. unfold targets_open, open_mount. rewrite H.
-  generalize (setattr_targets (ns_mounts st) r recursive) as l.
-  induction l as [|i l IH]; [reflexivity | exact IH].
+  intros st k r recursive H. unfold targets_open. rewrite H. reflexivity.
 Qed.
 
 (* =========================================================================

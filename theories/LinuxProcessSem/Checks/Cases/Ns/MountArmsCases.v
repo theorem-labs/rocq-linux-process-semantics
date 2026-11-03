@@ -385,12 +385,56 @@ Example setattr_empty_path_open :
                               st_tmp9) = Some 0.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** With no open group no target is open, so both arms answer as they did
+(** A slave outside the selected tree.  Mount 3 (/tmp/src/under) is the
+    only member of peer group 9, which is not open, with no master; mount
+    4 (/tmp/other), beside it, is a slave of group 9 and the only member
+    of peer group 11.  MS_PRIVATE on /tmp/src/under ends group 9 and hands
+    mount 4 to mount 3's master, none ([transfer_propagation],
+    fs/pnode.c:74-88): the change reads and sets mount 4's master, with or
+    without MS_REC.  With group 11 open, mount 4 can receive an event from
+    outside the tables, so neither [mount] nor [mount_setattr] has an
+    answer ([Propagation.change_reads]); a change of the flags alone does
+    not read mount 4 and answers 0.  With no open group both calls answer
+    0, and mount 4 keeps group 11 with no master. *)
+Definition s_under : list Z := [47; 116; 109; 112; 47; 115; 114; 99; 47; 117; 110; 100; 101; 114].
+
+Definition st_slave9 : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_peer x (Some 9%positive)
+                                else if Pos.eqb (mnt_id x) 4
+                                then mnt_with_master (mnt_with_peer x (Some 11%positive)) (Some 9%positive)
+                                else x)
+                      (ns_mounts st)).
+
+Example change_type_open_slave :
+  prop_okb (with_open_groups st_slave9 [11%positive]) = true
+  /\ ret_of (mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin
+                      (with_open_groups st_slave9 [11%positive])) = None
+  /\ ret_of (mount_fn (mount_input s_under s_under (MS_PRIVATE + MS_REC)) base_model c_admin
+                      (with_open_groups st_slave9 [11%positive])) = None
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin st_slave9))
+     = Some [(None, None); (None, None); (None, None); (Some 11%positive, None)].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example setattr_open_slave :
+  ret_of (mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE) base_model c_admin
+                           (with_open_groups st_slave9 [11%positive])) = None
+  /\ ret_of (mount_setattr_fn (setattr_input (-100) s_under 0 attr_set) base_model c_admin
+                              (with_open_groups st_slave9 [11%positive])) = Some 0
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE) base_model
+                                    c_admin st_slave9))
+     = Some [(None, None); (None, None); (None, None); (Some 11%positive, None)].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** With no open group no mount is open, so both arms answer as they did
     before the test ([Propagation.targets_open_closed]). *)
 Example targets_open_default :
   env_open_groups (ns_env (state false false [])) = []
-  /\ targets_open (state false false []) 1 true = false.
-Proof. split; vm_compute; reflexivity. Qed.
+  /\ targets_open (state false false []) (Some PPrivate) 1 true = false
+  /\ targets_open (state false false []) None 1 true = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** Row 442 admits the group-id allocator's ENOSPC, and still satisfies
     the rule of a row ([Arm.ni_forced_ok]). *)
