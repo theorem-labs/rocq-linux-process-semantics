@@ -323,4 +323,4 @@ precision. Read it before you use a proof as evidence about a real program.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE) for the terms.
