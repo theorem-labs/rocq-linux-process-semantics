@@ -33,7 +33,7 @@ jobs:
   #
   # It fails safe: no usable base, an empty diff or a change to this file
   # runs every job. .github/test_ci.py runs this script and the `ci` job's on
-  # every case first, so a route that decides wrongly fails `CI`.
+  # each case it lists first, so a wrong answer on a listed case fails `CI`.
   route:
     name: Route
     runs-on: ubuntu-latest
@@ -45,6 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       # Here because this job always runs and no route can skip it.
       - name: The route decides what it is meant to decide
         run: python3 .github/test_ci.py
