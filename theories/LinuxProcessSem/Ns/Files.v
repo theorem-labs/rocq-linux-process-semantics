@@ -120,17 +120,11 @@ Definition ST_UNHELD : Z := 16 + 64 + 1024 + 2048 + 4096 + 8192.
 Definition has (x b : Z) : bool := negb (Z.eqb (Z.land x b) 0).
 
 (* =========================================================================
-   Setters
+   Setters (the per-field ones are [Ns.Tables]')
    ========================================================================= *)
 
-Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
-
 Definition with_tree (st : NsState) (ds : list Dentry) (ins : list Inode) : NsState :=
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            ds ins (ns_files st) (ns_env st).
+  with_inodes (with_dentries st ds) ins.
 
 Definition drop_fd (l : list Z) (fd : Z) : list Z := List.filter (fun x => negb (Z.eqb x fd)) l.
 

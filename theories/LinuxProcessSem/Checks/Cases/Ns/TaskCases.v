@@ -36,8 +36,7 @@ Definition call (n : Z) (args : list Z) (mm : word -> option byte) : SyscallInpu
     no_new_privs bit and dumpable mode ([None]: not known); [t0] has the
     launch values. *)
 Definition task (c : CapSets) (nnp : option bool) (dump : option Z) : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 2)] (1%positive, 1%positive) (1%positive, 1%positive) 18 c 0 []
-          nnp dump.
+  with_dumpable_opt (with_nnp_opt (with_caps (with_pids init_nsctx [(1%positive, 2)]) c) nnp) dump.
 Definition t0 (c : CapSets) : NsCtx := task c (Some false) (Some 1).
 
 Definition U : NsState :=

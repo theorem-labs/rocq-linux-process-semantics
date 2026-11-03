@@ -22,10 +22,6 @@ Definition AT_REMOVEDIR : Z := 512.
    Shared updates and names
    ========================================================================= *)
 
-Definition with_inodes (st : NsState) (ins : list Inode) : NsState :=
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) ins (ns_files st) (ns_env st).
-
 Definition set_inode_bytes (st : NsState) (i : positive) (bs : list byte) : NsState :=
   with_inodes st (map (fun ino => if Pos.eqb (ino_id ino) i
                               then mkInode (ino_id ino) (ino_kind ino) (ino_perm ino)
