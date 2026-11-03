@@ -456,3 +456,48 @@ Example proc_open_route_reopen_on_proc_self_fd :
   | _ => False
   end.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** THE REOPEN IS NOT ANSWERED THROUGH A DESCRIPTOR ON "/proc/self".
+    After the tmpfile sequence, openat(AT_FDCWD, "/proc/self",
+    O_PATH|O_NOFOLLOW|O_LARGEFILE) gives fd 4, an O_PATH descriptor that
+    holds the "self" symlink itself ([proc_setup_self] makes its inode
+    S_IFLNK, fs/proc/self.c), and every name relative to it is -ENOTDIR
+    in [path_init] ([d_can_lookup], fs/namei.c).  The model does not
+    record O_NOFOLLOW, so [Fs.Open.proc_open_target] declines a name
+    whose first component is "fd" relative to "/proc/self", for every
+    word: openat(4, "fd/3", O_RDONLY|O_LARGEFILE), which would otherwise
+    be the reopen of descriptor 3, and the same name under
+    O_PATH|O_LARGEFILE.  THE CONTROLS: the absolute-path reopen
+    ([proc_open_route_reopen_on_proc_self_fd] above) is answered, and
+    "ns" relative to the same descriptor is still an O_PATH descriptor on
+    "/proc/self/ns".  fs/namei.c [path_init], fs/proc/self.c
+    [proc_setup_self]: read at v6.18.44; identical at v6.18.46. *)
+Definition proc_self_name : list Z := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102]%Z.   (* "/proc/self" *)
+
+(** openat(AT_FDCWD, "/proc/self", O_PATH|O_NOFOLLOW|O_LARGEFILE):
+    0x200000 + 0x20000 + 0x8000. *)
+Definition proc_self_open : SyscallInput * option SyscallEffect :=
+  (mk 56 [at_fdcwd; proc_a; 2260992; 0]%Z [(proc_a, cstr proc_self_name)],
+   Some (with_copyins [(w proc_a, 11%nat)] (ok_eff 4))).
+
+(** openat(4, name, flags), the name at [proc_a]. *)
+Definition rel_open_in (n : list Z) (flags : Z) : SyscallInput :=
+  mk 56 [4; proc_a; flags; 0]%Z [(proc_a, cstr n)].
+
+Example proc_open_reopen_through_proc_self_declines :
+  after (tmpfile_and_write ++ [proc_self_open])
+        (rel_open_in [102; 100; 47; 51]%Z 32768)
+        (with_copyins [(w proc_a, 5%nat)] (ok_eff 5))
+  = Some CheckUnmodeled
+  /\ after (tmpfile_and_write ++ [proc_self_open])
+           (rel_open_in [102; 100; 47; 51]%Z 2129920)
+           (with_copyins [(w proc_a, 5%nat)] (ok_eff 5))
+     = Some CheckUnmodeled
+  (* the controls *)
+  /\ fd_at (after (tmpfile_and_write ++ [proc_self_open])
+                  (rel_open_in [110; 115]%Z 2129920)
+                  (with_copyins [(w proc_a, 3%nat)] (ok_eff 5))) 5
+     = Some (FdOpaque (OProcPath (bytes_of (proc_self_name ++ [47; 110; 115]%Z))))
+  /\ is_ok (after tmpfile_and_write (proc_open_in [51]%Z 32768 0)
+                  (at_proc [51]%Z (ok_eff 4))) = true.
+Proof. repeat split; check_eq. Qed.
