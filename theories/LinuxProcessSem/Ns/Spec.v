@@ -481,10 +481,11 @@ Qed.
 (** THE RULE [ns_witness] NEEDS, CHECKED OF EVERY ROW: each row's
     [ni_forced] is exactly the errnos of its [ni_answers] that a pair
     matches ([Arm.ni_forced_ok]); today ENOSPC for [unshare] and [mount],
-    ENOMEM for [write].  A row whose tables answer an errno a pair matches
-    without listing it in [ni_forced] fails this computation, and the file
-    does not compile ([Checks.Cases.Ns.SpecCases.bad_row_fails] shows the
-    check refusing such a row). *)
+    ENOMEM for [write], EPERM for [setsid].  A row whose tables answer an
+    errno a pair matches without listing it in [ni_forced] fails this
+    computation, and the file does not compile
+    ([Checks.Cases.Ns.SpecCases.bad_row_fails] shows the check refusing
+    such a row). *)
 Lemma ns_injected_forced : forallb ni_forced_ok ns_injected_table = true.
 Proof. vm_compute. reflexivity. Qed.
 

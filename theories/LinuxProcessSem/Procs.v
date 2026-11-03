@@ -398,8 +398,10 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     the child the live entry ([Fork.forfeit_inherited]), and no modeled
     call copies an opaque descriptor within one table
     ([File.dup_modeled_entry]).  So no peer's call moves the offset a
-    call here reads.  Two class-(A) calls are admitted with a gate as
-    well.
+    call here reads.  setns (268) reads only the kind of the caller's
+    descriptor (an O_PATH file, a namespace model descriptor, or any
+    other), which no process changes, and answers an errno that changes
+    nothing.  Two class-(A) calls are admitted with a gate as well.
     flock (32) grants a lock when no descriptor of the CALLER names the
     file, and no lock state exists, so it is refused while another entry
     has a descriptor on the same path ([peer_refused_b]).  prctl (167)
@@ -520,7 +522,7 @@ Definition multiproc_private_sysnos : list Z :=
     73;  74;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 130; 131;
    132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
    175; 176; 177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209;
-   210; 211; 212; 214; 215; 216; 222; 226; 233; 278; 436]%Z.
+   210; 211; 212; 214; 215; 216; 222; 226; 233; 268; 278; 436]%Z.
 
 Definition multiproc_shared_sysnos : list Z :=
   [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.

@@ -3046,6 +3046,15 @@ Proof.
   unfold check_set_robust_list in H. vm_frame2 H.
 Qed.
 
+(** setns answers errnos only and hands back the model it was given. *)
+Lemma check_setns_frame : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd eff m m' evs H.
+  unfold check_setns in H. vm_frame2 H.
+Qed.
+
 Lemma checked_table_preserves_vm : Forall arm_preserves_vm checked_table.
 Proof.
   unfold checked_table.
@@ -3123,6 +3132,7 @@ Proof.
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hwf
     | erewrite check_futex_frame by eassumption; exact Hwf
     | erewrite check_set_robust_list_frame by eassumption; exact Hwf
+    | erewrite check_setns_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
     | erewrite check_close_range_frame by eassumption; exact Hwf

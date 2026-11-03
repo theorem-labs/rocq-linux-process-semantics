@@ -47,12 +47,12 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly EntryLaunch EntryWitness
   Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
-  Fs.EventPoll Fs.Signalfd
+  Fs.EventPoll Fs.Signalfd Fs.OpaqueAnswers
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls
   Kernel.Groups
-  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
+  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
   Net.Socket Drivers.Char.Random.
 

@@ -874,13 +874,20 @@ Proof.
   - unfold ret_only, pure in H. discriminate H.
 Qed.
 
-(** [ReadWrite.read_opaque_spec] as an acceptor, one arm per object. *)
+(** [ReadWrite.read_opaque_spec] as an acceptor, one arm per object.
+    The O_PATH -EBADF and the /proc/self/fd directory's -EFAULT and
+    -EISDIR are errnos that change nothing. *)
 Definition check_read_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OProcFile _ => check_read_proc i buf count eff m
   | OEventFd fl => check_read_eventfd i fl buf count eff m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ | OInherited _ => CheckUnmodeled
+  | OProcPath _ => check_ret_only eff (errno_ret EBADF) m []
+  | OProcFdDir _ _ =>
+      if negb (access_okb buf (bv_unsigned count))
+      then check_ret_only eff (errno_ret EFAULT) m []
+      else check_ret_only eff (errno_ret EISDIR) m []
+  | ONsFile _ | OSignalFd _ _ | OInherited _ => CheckUnmodeled
   end.
 
 Lemma check_read_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -890,8 +897,13 @@ Proof.
   intros i o buf count eff m m' evs H.
   unfold check_read_opaque in H. unfold read_opaque_spec.
   destruct o; cbv beta iota in H |- *; try discriminate H.
+  - apply check_ret_only_ok_iff in H as (-> & -> & ->).
+    unfold err_ret, ret_only. apply pure_ok.
   - now apply check_read_proc_sound_ok.
   - now apply check_read_eventfd_sound_ok.
+  - destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H |- *;
+      apply check_ret_only_ok_iff in H as (-> & -> & ->);
+      unfold err_ret, ret_only; apply pure_ok.
 Qed.
 
 Lemma check_read_opaque_sound_unmodeled : forall i o buf count eff m,
@@ -901,10 +913,13 @@ Proof.
   intros i o buf count eff m H.
   unfold check_read_opaque in H. unfold read_opaque_spec.
   destruct o; cbv beta iota in H |- *;
-    [ apply unmodeled_intro
+    [ now apply check_ret_only_no_unmodeled in H
     | eapply check_read_proc_sound_unmodeled; exact H
     | eapply check_read_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro
+    | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+        now apply check_ret_only_no_unmodeled in H
+    | apply unmodeled_intro
     | apply unmodeled_intro ].
 Qed.
 
@@ -915,11 +930,14 @@ Proof.
   intros i o buf count eff m m' evs H.
   unfold read_opaque_spec in H. unfold check_read_opaque.
   destruct o; cbv beta iota in H |- *;
-    [ unfold unmodeled in H; discriminate H
+    [ unfold err_ret, ret_only, pure in H; inversion H; subst;
+        now apply check_ret_only_ok_iff
     | now apply check_read_proc_complete_ok
     | now apply check_read_eventfd_complete_ok
     | unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H
+    | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H |- *;
+        unfold err_ret, ret_only, pure in H; inversion H; subst;
+        now apply check_ret_only_ok_iff
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
 Qed.
@@ -931,14 +949,18 @@ Proof.
   intros i o buf count m eff H.
   unfold read_opaque_spec in H. unfold check_read_opaque.
   destruct o; cbv beta iota in H |- *;
-    [ reflexivity
+    [ unfold err_ret, ret_only, pure in H; discriminate H
     | now apply check_read_proc_complete_unmodeled
     | now apply check_read_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity | reflexivity ].
+    | reflexivity
+    | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+        unfold err_ret, ret_only, pure in H; discriminate H
+    | reflexivity | reflexivity ].
 Qed.
 
 (** What an opaque descriptor's read delivers is under the clamp: a
-    /proc/sys file's at most [count], an eventfd's 8 bytes. *)
+    /proc/sys file's at most [count], an eventfd's 8 bytes; the errno
+    answers deliver nothing. *)
 Lemma check_read_opaque_delivery_clamped : forall i o buf count eff m m' evs a bs,
   check_read_opaque i o buf count eff m = CheckOk m' evs ->
   eff_writes eff = [(a, bs)] ->
@@ -947,18 +969,26 @@ Proof.
   intros i o buf count eff m m' evs a bs H Hws.
   unfold check_read_opaque in H.
   destruct o; cbv beta iota in H; try discriminate H.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _).
+    discriminate Hws.
   - exact (check_read_proc_delivery_clamped _ _ _ _ _ _ _ _ _ H Hws).
   - exact (check_read_eventfd_delivery_clamped _ _ _ _ _ _ _ _ _ _ H Hws).
+  - destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+      apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _);
+      discriminate Hws.
 Qed.
 
-(** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, and
-    the decline on the other six objects. *)
+(** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, the
+    -EBADF of the O_PATH descriptor and of the two read-only objects, the
+    signalfd's -EINVAL, and the decline on [State.ONsFile] and the
+    inherited file. *)
 Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OEventFd fl => check_write_eventfd i fl buf count eff m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
-  | OInherited _ => CheckUnmodeled
+  | OProcPath _ | OProcFile _ | OProcFdDir _ _ => check_ret_only eff (errno_ret EBADF) m []
+  | OSignalFd _ _ => check_ret_only eff (errno_ret EINVAL) m []
+  | ONsFile _ | OInherited _ => CheckUnmodeled
   end.
 
 Lemma check_write_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -968,7 +998,9 @@ Proof.
   intros i o buf count eff m m' evs H.
   unfold check_write_opaque in H. unfold write_opaque_spec.
   destruct o; cbv beta iota in H |- *; try discriminate H.
-  now apply check_write_eventfd_sound_ok.
+  3: now apply check_write_eventfd_sound_ok.
+  all: apply check_ret_only_ok_iff in H as (-> & -> & ->);
+       unfold err_ret, ret_only; apply pure_ok.
 Qed.
 
 Lemma check_write_opaque_sound_unmodeled : forall i o buf count eff m,
@@ -978,9 +1010,12 @@ Proof.
   intros i o buf count eff m H.
   unfold check_write_opaque in H. unfold write_opaque_spec.
   destruct o; cbv beta iota in H |- *;
-    [ apply unmodeled_intro | apply unmodeled_intro
+    [ now apply check_ret_only_no_unmodeled in H
+    | now apply check_ret_only_no_unmodeled in H
     | eapply check_write_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro
+    | now apply check_ret_only_no_unmodeled in H
+    | now apply check_ret_only_no_unmodeled in H
     | apply unmodeled_intro ].
 Qed.
 
@@ -990,14 +1025,12 @@ Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
 Proof.
   intros i o buf count eff m m' evs H.
   unfold write_opaque_spec in H. unfold check_write_opaque.
-  destruct o; cbv beta iota in H |- *;
-    [ unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H
-    | now apply check_write_eventfd_complete_ok
-    | unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H ].
+  destruct o; cbv beta iota in H |- *.
+  3: now apply check_write_eventfd_complete_ok.
+  3: unfold unmodeled in H; discriminate H.
+  5: unfold unmodeled in H; discriminate H.
+  all: unfold err_ret, ret_only, pure in H; inversion H; subst;
+       now apply check_ret_only_ok_iff.
 Qed.
 
 Lemma check_write_opaque_complete_unmodeled : forall i o buf count m eff,
@@ -1007,9 +1040,13 @@ Proof.
   intros i o buf count m eff H.
   unfold write_opaque_spec in H. unfold check_write_opaque.
   destruct o; cbv beta iota in H |- *;
-    [ reflexivity | reflexivity
+    [ unfold err_ret, ret_only, pure in H; discriminate H
+    | unfold err_ret, ret_only, pure in H; discriminate H
     | now apply check_write_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity | reflexivity ].
+    | reflexivity
+    | unfold err_ret, ret_only, pure in H; discriminate H
+    | unfold err_ret, ret_only, pure in H; discriminate H
+    | reflexivity ].
 Qed.
 
 (** [ReadWrite.read_file_data] as an acceptor: the read of a regular

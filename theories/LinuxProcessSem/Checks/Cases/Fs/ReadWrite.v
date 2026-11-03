@@ -3330,9 +3330,10 @@ Proof. split; check_eq. Qed.
     environment's choice, or any errno, and changes nothing else.
 
     Rejected: a return that is not the delivery's length, and a delivery
-    anywhere but [buf].  Declined: the O_PATH kind, which [fdget] refuses
-    with an -EBADF the model does not write.  THE CONTROL is answered
-    alike by the old text and the new: a closed descriptor is -EBADF. *)
+    anywhere but [buf].  The O_PATH kind answers the -EBADF [fdget]
+    gives it ([Checks.Cases.Fs.OpaqueAnswers] has its cases).  THE
+    CONTROL is answered alike by the old text and the new: a closed
+    descriptor is -EBADF. *)
 Definition sysctl_read_model : Model :=
   let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
   with_fds (fd_insert (fd_insert (m_fds m) 3
@@ -3369,10 +3370,10 @@ Example read_proc_sys_file :
   /\ check_syscall (sysctl_read_in 3 4)
        (mkEffect 6 [(0x10000, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
      = CheckReject
-  (* declined: the O_PATH descriptor *)
+  (* the O_PATH descriptor: [fdget] refuses it *)
   /\ check_syscall (sysctl_read_in 4 4079) (mkEffect (errno_ret EBADF) [] [])
        sysctl_read_model
-     = CheckUnmodeled
+     = CheckOk sysctl_read_model []
   (* the control *)
   /\ check_syscall (sysctl_read_in 9 4079) (mkEffect (errno_ret EBADF) [] [])
        sysctl_read_model
@@ -3452,8 +3453,8 @@ Definition efd_max : list byte := [255; 255; 255; 255; 255; 255; 255; 255].
     it beside the 8.  The value 2^64 - 1 is -EINVAL whatever the flags,
     and a count other than 8 is -EINVAL before the copy.
 
-    THE CONTROL, answered alike by the old text and the new: a write on
-    the O_PATH descriptor is declined. *)
+    THE CONTROL, answered alike by the old text and the new: a write on a
+    closed descriptor is -EBADF. *)
 Example write_eventfd_bwrap_child_wait :
   check_syscall (efd_write_in 5 8 efd_one)
     (with_copyins [(0x10000, 8%nat)] (mkEffect 8 [] [])) efd_rw_model
@@ -3480,9 +3481,9 @@ Example write_eventfd_bwrap_child_wait :
   /\ check_syscall (efd_write_in 5 8 efd_one) (mkEffect 8 [] []) efd_rw_model
      = CheckReject
   (* the control *)
-  /\ check_syscall (efd_write_in 3 8 efd_one) (mkEffect (errno_ret EBADF) [] [])
+  /\ check_syscall (efd_write_in 9 8 efd_one) (mkEffect (errno_ret EBADF) [] [])
        efd_rw_model
-     = CheckUnmodeled.
+     = CheckOk efd_rw_model [].
 Proof. repeat split; check_eq. Qed.
 
 (** bubblewrap's [read(event_fd, &val, 8)] on the NON-BLOCKING eventfd:
