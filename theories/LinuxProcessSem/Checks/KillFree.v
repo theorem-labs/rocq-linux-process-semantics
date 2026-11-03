@@ -385,62 +385,6 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-(** The opaque arms keep the model: every answer is the model they were
-    given and no event.  Proved apart, once each, so that [check_read_kf],
-    [check_write_kf] and [check_fstat_kf] do not open the opaque arms
-    inside every branch of the arm around them, which costs the build
-    more memory than a CI runner has. *)
-Ltac opaque_keeps H :=
-  repeat (cbv beta iota zeta in H;
-          lazymatch type of H with
-          | CheckOk _ _ = CheckOk _ _ => fail
-          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
-          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ => fail
-          | _ => first
-                 [ discriminate H
-                 | match type of H with
-                   | context [match ?x with _ => _ end] => destruct x
-                   | context [if ?b then _ else _] => destruct b
-                   end ]
-          end);
-  first
-    [ discriminate H
-    | (injection H as <- <-; split; reflexivity)
-    | (apply check_ret_only_ok_iff in H;
-       let H1 := fresh in let H2 := fresh in
-       destruct H as (_ & H1 & H2); subst; split; reflexivity)
-    | (apply check_ret_only_copyins_ok_iff in H;
-       let H1 := fresh in let H2 := fresh in
-       destruct H as (_ & H1 & H2); subst; split; reflexivity) ].
-
-(** A read of an opaque object (a /proc/sys file, an eventfd). *)
-Lemma check_read_opaque_keeps : forall i o buf count eff m m' evs,
-  check_read_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
-Proof.
-  intros i o buf count eff m m' evs H.
-  unfold check_read_opaque, check_read_proc, check_read_proc_bare, check_read_eventfd,
-    check_eventfd_deliver in H.
-  opaque_keeps H.
-Qed.
-
-(** A write to an opaque object (an eventfd). *)
-Lemma check_write_opaque_keeps : forall i o buf count eff m m' evs,
-  check_write_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
-Proof.
-  intros i o buf count eff m m' evs H.
-  unfold check_write_opaque, check_write_eventfd in H.
-  opaque_keeps H.
-Qed.
-
-(** [fstat] of an opaque object (the /proc/self/fd directory). *)
-Lemma check_fstat_opaque_keeps : forall i o statbuf eff m m' evs,
-  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> m' = m /\ evs = [].
-Proof.
-  intros i o statbuf eff m m' evs H.
-  unfold check_fstat_opaque, check_fstat_procfd_dir in H.
-  opaque_keeps H.
-Qed.
-
 Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -559,43 +503,6 @@ Proof.
   intros fd eff m m' evs H Hoff Hk.
   unfold check_fsync in H.
   kf_frame H m Hoff Hk.
-Qed.
-
-(** The /proc/self/fd listing answers a new position for its descriptor
-    and no event; proved apart, with the listing's plan kept abstract, so
-    that [check_getdents64_kf] does not split the listing's arithmetic. *)
-Lemma check_getdents64_opaque_fds : forall i fd o dirent count eff m m' evs,
-  check_getdents64_opaque i fd o dirent count eff m = CheckOk m' evs ->
-  (exists fds, m' = with_fds fds m) /\ evs = [].
-Proof.
-  intros i fd o dirent count eff m m' evs H.
-  destruct o as [q|q|fl0|h|fl pos|mk fl1]; cbn [check_getdents64_opaque] in H;
-    try discriminate H.
-  unfold check_procfd_getdents in H.
-  destruct pos as [pw|]; [|discriminate H].
-  destruct (negb (procfd_in_range (m_fds m) (bv_unsigned pw))); [discriminate H|].
-  cbv zeta in H.
-  generalize dependent H.
-  generalize (procfd_plan (m_fds m) (bv_unsigned pw)) as es.
-  intros es.
-  generalize (procfd_fit es (getdents64_ctx_count count)) as n.
-  intros n H.
-  repeat (cbv beta iota in H;
-          lazymatch type of H with
-          | CheckOk _ _ = CheckOk _ _ => fail
-          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
-          | _ => first
-                 [ discriminate H
-                 | match type of H with
-                   | context [match ?x with _ => _ end] => destruct x
-                   | context [if ?b then _ else _] => destruct b
-                   end ]
-          end).
-  all: first
-    [ discriminate H
-    | (apply check_ret_only_ok_iff in H as (_ & -> & ->);
-       split; [eexists; reflexivity | reflexivity])
-    | (injection H as <- <-; split; [eexists; reflexivity | reflexivity]) ].
 Qed.
 
 Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
