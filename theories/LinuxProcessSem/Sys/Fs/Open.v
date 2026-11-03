@@ -1777,10 +1777,38 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     (* then [getname()]: all three of its answers are real errnos. *)
     openat_body_spec i m dirfd pathp flags.
 
-Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+(** [openat]'s answer before the close-on-exec bit: the table, the file
+    system and the copy-in, every shape above. *)
+Definition openat_table_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
   record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_spec dirfd pathp flags).
+
+(** O_CLOEXEC in the open word.  [build_open_flags] strips it from
+    [f_flags] but [do_sys_openat2] hands [how->flags] to
+    [get_unused_fd_flags] (fs/open.c), whose [alloc_fd] ends with
+    [__set_open_fd(fd, fdt, flags & O_CLOEXEC)] (fs/file.c): the new
+    descriptor's bit is set exactly when the word has it, and cleared
+    otherwise, whatever the slot held before.  Read at v6.18.44;
+    identical at v6.18.46. *)
+Definition open_cloexec_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) O_CLOEXEC) 0).
+
+(** The model after an answered [openat] returned [r]: a descriptor
+    ([r] not an error) gets the bit [open_cloexec_b flags]; an errno
+    answer installed nothing and changes nothing. *)
+Definition open_cloexec_model (flags r : word) (m : Model) : Model :=
+  if addr_is_error_b r then m
+  else with_cloexec (cloexec_set (m_cloexec m) r (open_cloexec_b flags)) m.
+
+(** [openat]: [openat_table_spec], then the new descriptor's
+    close-on-exec bit recorded.  Every success shape above returns the
+    fresh descriptor it installed ([File.lowest_fd]), so the returned
+    word names the slot whose bit [get_unused_fd_flags] wrote. *)
+Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+  eff <- openat_table_spec dirfd pathp flags ;;
+  modify (open_cloexec_model flags (eff_ret eff)) ;;
+  pure eff.
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
@@ -1802,12 +1830,21 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
-    sees them, as it does on Linux. *)
+    sees them, as it does on Linux.
+
+    The descriptor's close-on-exec key is forgotten
+    ([State.cloexec_forget]): the slot is free, and whatever installs a
+    descriptor there next writes its own bit ([alloc_fd] and [do_dup2]
+    both end in [__set_open_fd], fs/file.c, read at v6.18.44; identical
+    at v6.18.46). *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
-  | Some _ => set_fds (fd_remove (m_fds m) fd) ;; ret_only (Z_to_bv 64 0)
+  | Some _ =>
+      modify (fun m' => with_cloexec (cloexec_forget (m_cloexec m) fd)
+                          (with_fds (fd_remove (m_fds m) fd) m')) ;;
+      ret_only (Z_to_bv 64 0)
   end.
 
 (** The region a GROWING [ftruncate] must zero-fill is one the model can

@@ -58,10 +58,14 @@ Definition dup3_witness (oldfd newfd flags : word) (m : Model)
           match fd_lookup (m_fds m) newfd with
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
-              then ret_outcome newfd (with_fds (fd_insert (m_fds m) newfd e) m)
+              then ret_outcome newfd
+                     (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                        (with_fds (fd_insert (m_fds m) newfd e) m))
               else Unmodeled
           | Some _ =>
-              ret_outcome newfd (with_fds (fd_insert (m_fds m) newfd e) m)
+              ret_outcome newfd
+                (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                   (with_fds (fd_insert (m_fds m) newfd e) m))
           end
     end.
 
@@ -98,7 +102,8 @@ Proof.
 Qed.
 
 (** close_range: the spec's own answer on every arm -- the two -EINVALs,
-    the decline for a known flag, and 0 with the range removed. *)
+    the decline for a known flag, and 0 with the range removed and its
+    close-on-exec keys forgotten. *)
 Definition close_range_witness (fd max_fd flags : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
@@ -108,7 +113,8 @@ Definition close_range_witness (fd max_fd flags : word) (m : Model)
   then ret_outcome (errno_ret EINVAL) m
   else if negb (Z.eqb (bv_unsigned flags) 0) then Unmodeled
   else ret_outcome (Z_to_bv 64 0)
-         (with_fds (close_range_fds fd max_fd (m_fds m)) m).
+         (with_cloexec (close_range_cloexec fd max_fd (m_cloexec m))
+            (with_fds (close_range_fds fd max_fd (m_fds m)) m)).
 
 Lemma close_range_witness_ok : forall fd max_fd flags i m,
   close_range_spec fd max_fd flags i m (close_range_witness fd max_fd flags m).

@@ -497,12 +497,24 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+Lemma check_openat_table_kf : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H Hoff Hk.
+  unfold check_openat_table, Open.check_openat_body, Open.check_openat_resolved, Open.check_openat_sep, Open.check_openat_localtime, Open.check_openat_devnull, Open.check_open_devnull, Open.check_openat_urandom, Open.check_open_urandom, Open.check_openat_tmp, Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl, Open.check_openat_dir, Open.check_openat_append, Open.check_openat_rdwr, Open.check_openat_rdwr_excl, Open.check_openat_proc, Open.check_proc_open_result, check_create_wronly, check_open_append, check_open_rdwr in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+(** The close-on-exec step after the table writes [State.m_cloexec]
+    alone, so the gates come across by conversion. *)
 Lemma check_openat_kf : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved, Open.check_openat_sep, Open.check_openat_localtime, Open.check_openat_devnull, Open.check_open_devnull, Open.check_openat_urandom, Open.check_open_urandom, Open.check_openat_tmp, Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl, Open.check_openat_dir, Open.check_openat_append, Open.check_openat_rdwr, Open.check_openat_rdwr_excl, Open.check_openat_proc, Open.check_proc_open_result, check_create_wronly, check_open_append, check_open_rdwr in H.
-  kf_frame H m Hoff Hk.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_kf in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_kf : forall fd eff m m' evs,

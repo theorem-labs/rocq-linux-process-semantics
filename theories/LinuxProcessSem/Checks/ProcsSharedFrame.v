@@ -152,15 +152,15 @@ Proof.
   fs_frame H.
 Qed.
 
-Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+Lemma check_openat_table_fs : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
   fs_grows (m_fs m) (m_fs m').
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   (* openat's body and its copy-in wrapper are [Local] to
      [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
      space, and naming them here is what lets [fs_frame] see that. *)
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
+  unfold check_openat_table, Open.check_openat_body, Open.check_openat_resolved,
     Open.check_openat_sep, Open.check_openat_localtime,
     Open.check_openat_devnull, Open.check_open_devnull,
     Open.check_openat_urandom, Open.check_open_urandom,
@@ -171,6 +171,18 @@ Proof.
     Open.check_openat_proc, Open.check_proc_open_result,
     check_create_wronly, check_open_append, check_open_rdwr in H.
   fs_frame H.
+Qed.
+
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
+Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_grows (m_fs m) (m_fs m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_fs in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_lseek_fs : forall fd off whence eff m m' evs,

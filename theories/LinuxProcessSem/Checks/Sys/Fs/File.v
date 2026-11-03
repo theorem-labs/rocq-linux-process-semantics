@@ -51,8 +51,10 @@ Definition check_dup_result (eff : SyscallEffect) (m : Model)
 (** [dup]/[dup3]: the [FdFile]/[FdFileW] arms decline, because the
     model cannot represent two fds sharing one file offset, and dup3
     declines a free [newfd] at or above [Uapi.NR_OPEN_DEFAULT], where
-    the answer turns on the descriptor table's size.  Kernel citations
-    live on [File.dup_spec] and [File.dup3_spec]. *)
+    the answer turns on the descriptor table's size.  The new descriptor's
+    close-on-exec bit is recorded: clear for [dup], [flags & O_CLOEXEC]
+    for [dup3].  Kernel citations live on [File.dup_spec] and
+    [File.dup3_spec]. *)
 Definition check_dup (oldfd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match fd_lookup (m_fds m) oldfd with
@@ -60,7 +62,8 @@ Definition check_dup (oldfd : word) (eff : SyscallEffect) (m : Model)
   | Some e =>
       if negb (dup_modeled_entry e) then CheckUnmodeled
       else check_dup_result eff m
-             (fun fd => with_fds (fd_insert (m_fds m) fd e) m)
+             (fun fd => with_cloexec (cloexec_set (m_cloexec m) fd false)
+                          (with_fds (fd_insert (m_fds m) fd e) m))
   end.
 
 Definition check_dup3 (oldfd newfd flags : word) (eff : SyscallEffect)
@@ -79,11 +82,13 @@ Definition check_dup3 (oldfd newfd flags : word) (eff : SyscallEffect)
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then check_ret_only eff newfd
-                     (with_fds (fd_insert (m_fds m) newfd e) m) []
+                     (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                        (with_fds (fd_insert (m_fds m) newfd e) m)) []
               else CheckUnmodeled
           | Some _ =>
               check_ret_only eff newfd
-                (with_fds (fd_insert (m_fds m) newfd e) m) []
+                (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                   (with_fds (fd_insert (m_fds m) newfd e) m)) []
           end
     end.
 
@@ -272,9 +277,10 @@ Qed.
 (** [close_range] (436): the unknown-flag -EINVAL, then the [fd > max_fd]
     -EINVAL, in the kernel's order; then a decline for either known
     flag; then 0 with every descriptor of the range removed
-    ([File.close_range_fds]).  Deterministic on every branch it answers,
-    so each is a bare return compared against its one answer.  Kernel
-    citations live on [File.close_range_spec]. *)
+    ([File.close_range_fds]) and its close-on-exec key forgotten
+    ([File.close_range_cloexec]).  Deterministic on every branch it
+    answers, so each is a bare return compared against its one answer.
+    Kernel citations live on [File.close_range_spec]. *)
 Definition check_close_range (fd max_fd flags : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
@@ -284,7 +290,8 @@ Definition check_close_range (fd max_fd flags : word) (eff : SyscallEffect)
   then check_ret_only eff (errno_ret EINVAL) m []
   else if negb (Z.eqb (bv_unsigned flags) 0) then CheckUnmodeled
   else check_ret_only eff (Z_to_bv 64 0)
-         (with_fds (close_range_fds fd max_fd (m_fds m)) m) [].
+         (with_cloexec (close_range_cloexec fd max_fd (m_cloexec m))
+            (with_fds (close_range_fds fd max_fd (m_fds m)) m)) [].
 
 Lemma check_close_range_sound_ok : forall fd max_fd flags eff m m' evs i,
   check_close_range fd max_fd flags eff m = CheckOk m' evs ->

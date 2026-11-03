@@ -3338,10 +3338,28 @@ Definition vm_live_bytes (h : VmMaps) : Z := live_bytes (vm_maps h).
     are read together: which ends are still open is derived from the table
     ([pipe_end_live]) rather than counted.  Not observable: pipe bytes never
     reach the trace, so two runs that differ only in what a pipe holds are
-    still equivalent — see [Pipe.pipe2_spec]. *)
+    still equivalent — see [Pipe.pipe2_spec].
+
+    [fdst_cloexec] is the CLOSE-ON-EXEC BITS THE MODEL KNOWS, keyed by
+    descriptor: [(n, b)] says descriptor [n]'s bit is [b].  Linux keeps
+    the bit in the descriptor table, not in the open file
+    ([fdt->close_on_exec]; fs/file.c [__set_close_on_exec],
+    [get_close_on_exec]), and [F_GETFD] reports it (fs/fcntl.c
+    [do_fcntl]); all read at v6.18.44, identical at v6.18.46.  A
+    descriptor with no key has an UNKNOWN bit, and [Fcntl.fcntl_spec]
+    then admits both of [F_GETFD]'s answers.  The invariant that keeps
+    this sound is that every key is an open descriptor of [fdst_table]
+    ([Checks.CloexecKeys.cloexec_keys_open]): an arm that removes or
+    replaces a table entry forgets or rewrites its key, so a descriptor
+    a creating arm installs at a FREE number has no key, and an arm that
+    does not record a bit is still sound.  [with_fds] and [with_pipes]
+    carry the map across; [with_cloexec] is its setter, and
+    [cloexec_set], [cloexec_forget] and [cloexec_lookup] below are its
+    helpers. *)
 Record FdState := mkFdState {
   fdst_table : list (word * FdEntry);
   fdst_pipes : list (word * PipeBuf);
+  fdst_cloexec : list (word * bool);
 }.
 
 (** ONE CACHE LEAF as the kernel publishes it, for one of the four
@@ -4668,6 +4686,8 @@ Record Model := mkModelOf {
     nesting. *)
 Definition m_fds (m : Model) : list (word * FdEntry) := fdst_table (m_fd m).
 Definition m_pipes (m : Model) : list (word * PipeBuf) := fdst_pipes (m_fd m).
+(** The close-on-exec bits the model knows; see [fdst_cloexec]. *)
+Definition m_cloexec (m : Model) : list (word * bool) := fdst_cloexec (m_fd m).
 Definition m_vmmaps (m : Model) : VmMaps := vmst_maps (m_vm m).
 Definition m_vm_lazy (m : Model) : list (word * word) := vmst_lazy (m_vm m).
 Definition m_vm_materialized (m : Model) : list word :=
@@ -4783,11 +4803,14 @@ Definition default_nofile : word := Z_to_bv 64 1024.
     builds a model is unchanged.  The random device's stream starts
     EMPTY here ([IEof]) for the reason the accept queue starts silent:
     it is an input of the run, and the one place that installs one is
-    [init_model], through [with_urandom]. *)
+    [init_model], through [with_urandom].  It KNOWS NO close-on-exec
+    bit: its descriptors are a fixture's, not a launch's, so [F_GETFD]
+    admits both answers on each until an arm records one.  [init_model]
+    is where a launch's descriptors are known clear. *)
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds [])
+  mkModelOf (mkFdState fds [] [])
             (mkVmState vm [] [] default_kernel (vdso_run_init vdso_draw_keep))
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
@@ -4803,11 +4826,17 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     carries the other five across, so a new field inside a subsystem touches
     that subsystem's setters and no others. *)
 Definition with_fds (fds : list (word * FdEntry)) (m : Model) : Model :=
-  mkModelOf (mkFdState fds (m_pipes m)) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
-    (m_lim m) (m_time m).
+  mkModelOf (mkFdState fds (m_pipes m) (m_cloexec m)) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
 Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
-  mkModelOf (mkFdState (m_fds m) ps) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
-    (m_lim m) (m_time m).
+  mkModelOf (mkFdState (m_fds m) ps (m_cloexec m)) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
+(** Install a new map of known close-on-exec bits.  The arms that write
+    it apply it to the post-model their table change built, so the
+    table and the map change in one step. *)
+Definition with_cloexec (cl : list (word * bool)) (m : Model) : Model :=
+  mkModelOf (mkFdState (m_fds m) (m_pipes m) cl) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
     (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) (m_vdso m))
@@ -5497,7 +5526,7 @@ Definition with_clock (t : word) (m : Model) : Model :=
     three, because the three moves are one event — [accept] is the only
     thing that changes any of them, and it always changes all three. *)
 Definition with_accepted (fds : list (word * FdEntry)) (m : Model) : Model :=
-  mkModelOf (mkFdState fds (m_pipes m)) (m_vm m)
+  mkModelOf (mkFdState fds (m_pipes m) (m_cloexec m)) (m_vm m)
     (mkIoState (m_stdin m) (m_urandom m) (nq_rest (m_net m))
                (m_conn_ix m + Z_to_bv 64 1))
     (m_fsys m) (m_proc m) (m_lim m) (m_time m).
@@ -5542,6 +5571,27 @@ Definition fd_insert (fds : list (word * FdEntry)) (fd : word) (e : FdEntry)
 Definition fd_remove (fds : list (word * FdEntry)) (fd : word)
     : list (word * FdEntry) :=
   List.filter (fun p => negb (bv_eqb (fst p) fd)) fds.
+
+(** The close-on-exec map's helpers, the same shape as the three above:
+    first match wins, and [cloexec_set] keeps at most one key per
+    descriptor.  [cloexec_lookup cl n] is [Some b] where the model knows
+    descriptor [n]'s bit is [b], [None] where it does not. *)
+Fixpoint cloexec_lookup (cl : list (word * bool)) (n : word) : option bool :=
+  match cl with
+  | [] => None
+  | (k, b) :: r => if bv_eqb k n then Some b else cloexec_lookup r n
+  end.
+
+(** Drop descriptor [n]'s key: its bit becomes unknown.  Every arm that
+    removes [n] from the table calls it. *)
+Definition cloexec_forget (cl : list (word * bool)) (n : word)
+    : list (word * bool) :=
+  List.filter (fun p => negb (bv_eqb (fst p) n)) cl.
+
+(** Record descriptor [n]'s bit as [b], replacing any key it had. *)
+Definition cloexec_set (cl : list (word * bool)) (n : word) (b : bool)
+    : list (word * bool) :=
+  (n, b) :: cloexec_forget cl n.
 
 (** Lowest unused fd — the descriptor the kernel hands out at open, as
     Linux does (see [File.lowest_fd]/[Open.openat_spec]).  The scan is
@@ -7344,6 +7394,17 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
+(** THE LAUNCH'S CLOSE-ON-EXEC BITS: descriptors 0, 1 and 2, each known
+    CLEAR.  This is a fact of [execve], not an assumption about the
+    launcher: [begin_new_exec] calls [do_close_on_exec] (fs/exec.c),
+    which zeroes every word of [fdt->close_on_exec] and closes each
+    descriptor whose bit was set (fs/file.c), so every descriptor a new
+    image starts with has its bit clear.  Read at v6.18.44; identical at
+    v6.18.46.  A launch with more descriptors than these three is not one
+    [ProcInput] can state. *)
+Definition launch_cloexec : list (word * bool) :=
+  [ (Z_to_bv 64 0, false); (Z_to_bv 64 1, false); (Z_to_bv 64 2, false) ].
+
 (** BUILT WITH ONE CONSTRUCTOR, not with a chain of [with_*] setters,
     and that is a performance fact worth stating where it is easy to
     undo.
@@ -7406,7 +7467,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
   mkModelOf
     (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
                  (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-                 (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
+                 (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [] launch_cloexec)
     (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
@@ -7443,7 +7504,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (mkModel
+    (with_cloexec launch_cloexec (mkModel
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
@@ -7453,7 +7514,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))))).
+       None))))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
@@ -9751,6 +9812,240 @@ Lemma m_statpins_mkModel : forall fds vm stdin fs halted tid rlim,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_mkModel : model.
 
+(** The close-on-exec map against every setter and accessor.  Every one
+    is [reflexivity]: [with_cloexec] rebuilds [FdState] alone and carries
+    the other six subsystems across, and every other setter either passes
+    [m_fd m] through or rebuilds [FdState] from [m_cloexec m]. *)
+Lemma m_cloexec_with_cloexec : forall v m, m_cloexec (with_cloexec v m) = v.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_mkModel : forall fds vm stdin fs halted tid rlim,
+  m_cloexec (mkModel fds vm stdin fs halted tid rlim) = [].
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_fds : forall v m, m_cloexec (with_fds v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_pipes : forall v m, m_cloexec (with_pipes v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_accepted : forall v m,
+  m_cloexec (with_accepted v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vmmaps : forall v m, m_cloexec (with_vmmaps v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vm_backing : forall a b m,
+  m_cloexec (with_vm_backing a b m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_kernel : forall v m, m_cloexec (with_kernel v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vdso : forall v m, m_cloexec (with_vdso v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vdso_bump : forall m,
+  m_cloexec (with_vdso_bump m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_stdin : forall v m, m_cloexec (with_stdin v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_urandom : forall v m,
+  m_cloexec (with_urandom v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_net : forall v m, m_cloexec (with_net v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_fs : forall v m, m_cloexec (with_fs v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_halted : forall v m, m_cloexec (with_halted v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_tid : forall v m, m_cloexec (with_tid v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_rlimit_core : forall v m,
+  m_cloexec (with_rlimit_core v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_utsname : forall v m,
+  m_cloexec (with_utsname v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_statpin : forall p bs m,
+  m_cloexec (with_statpin p bs m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_abort_terminal : forall v m,
+  m_cloexec (with_abort_terminal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_nofile : forall v m, m_cloexec (with_nofile v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_creds : forall v m, m_cloexec (with_creds v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_setsid_succeeded : forall m,
+  m_cloexec (with_setsid_succeeded m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_children : forall m,
+  m_cloexec (with_children m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigmask : forall v m,
+  m_cloexec (with_sigmask v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigaltstack_installed : forall m,
+  m_cloexec (with_sigaltstack_installed m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigabrt_pending : forall m,
+  m_cloexec (with_sigabrt_pending m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_pending : forall m,
+  m_cloexec (with_sigpipe_pending m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_channel_reader : forall v m,
+  m_cloexec (with_channel_reader v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_default : forall v m,
+  m_cloexec (with_sigpipe_default v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_terminal : forall v m,
+  m_cloexec (with_sigpipe_terminal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_pdeath_signal : forall v m,
+  m_cloexec (with_pdeath_signal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_child_pids : forall v m,
+  m_cloexec (with_child_pids v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_child : forall v m,
+  m_cloexec (with_child v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_no_new_privs : forall v m,
+  m_cloexec (with_no_new_privs v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_dumpable : forall v m,
+  m_cloexec (with_dumpable v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_ppid : forall v m, m_cloexec (with_ppid v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_cap_inheritable : forall v m,
+  m_cloexec (with_cap_inheritable v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_killed : forall v m, m_cloexec (with_killed v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_clock : forall v m, m_cloexec (with_clock v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cloexec_with_cloexec m_cloexec_mkModel m_cloexec_with_fds
+  m_cloexec_with_pipes m_cloexec_with_accepted m_cloexec_with_vmmaps
+  m_cloexec_with_vm_backing m_cloexec_with_kernel m_cloexec_with_vdso
+  m_cloexec_with_vdso_bump m_cloexec_with_stdin m_cloexec_with_urandom
+  m_cloexec_with_net m_cloexec_with_fs m_cloexec_with_halted m_cloexec_with_tid
+  m_cloexec_with_rlimit_core m_cloexec_with_utsname m_cloexec_with_statpin
+  m_cloexec_with_abort_terminal m_cloexec_with_nofile m_cloexec_with_creds
+  m_cloexec_with_setsid_succeeded m_cloexec_with_children m_cloexec_with_sigmask
+  m_cloexec_with_sigaltstack_installed m_cloexec_with_sigabrt_pending
+  m_cloexec_with_sigpipe_pending m_cloexec_with_channel_reader
+  m_cloexec_with_sigpipe_default m_cloexec_with_sigpipe_terminal
+  m_cloexec_with_pdeath_signal m_cloexec_with_child_pids m_cloexec_with_child
+  m_cloexec_with_no_new_privs m_cloexec_with_dumpable m_cloexec_with_ppid
+  m_cloexec_with_cap_inheritable m_cloexec_with_killed m_cloexec_with_clock : model.
+
+(** Every other accessor against [with_cloexec]. *)
+Lemma m_fds_with_cloexec : forall v m, m_fds (with_cloexec v m) = m_fds m.
+Proof. reflexivity. Qed.
+Lemma m_pipes_with_cloexec : forall v m, m_pipes (with_cloexec v m) = m_pipes m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_cloexec : forall v m, m_vmmaps (with_cloexec v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_vm_lazy_with_cloexec : forall v m,
+  m_vm_lazy (with_cloexec v m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+Lemma m_vm_materialized_with_cloexec : forall v m,
+  m_vm_materialized (with_cloexec v m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_cloexec : forall v m, m_kernel (with_cloexec v m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_vdso_with_cloexec : forall v m, m_vdso (with_cloexec v m) = m_vdso m.
+Proof. reflexivity. Qed.
+Lemma m_stdin_with_cloexec : forall v m, m_stdin (with_cloexec v m) = m_stdin m.
+Proof. reflexivity. Qed.
+Lemma m_urandom_with_cloexec : forall v m,
+  m_urandom (with_cloexec v m) = m_urandom m.
+Proof. reflexivity. Qed.
+Lemma m_net_with_cloexec : forall v m, m_net (with_cloexec v m) = m_net m.
+Proof. reflexivity. Qed.
+Lemma m_conn_ix_with_cloexec : forall v m,
+  m_conn_ix (with_cloexec v m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+Lemma m_fs_with_cloexec : forall v m, m_fs (with_cloexec v m) = m_fs m.
+Proof. reflexivity. Qed.
+Lemma m_halted_with_cloexec : forall v m, m_halted (with_cloexec v m) = m_halted m.
+Proof. reflexivity. Qed.
+Lemma m_tid_with_cloexec : forall v m, m_tid (with_cloexec v m) = m_tid m.
+Proof. reflexivity. Qed.
+Lemma m_setsid_succeeded_with_cloexec : forall v m,
+  m_setsid_succeeded (with_cloexec v m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+Lemma m_has_children_with_cloexec : forall v m,
+  m_has_children (with_cloexec v m) = m_has_children m.
+Proof. reflexivity. Qed.
+Lemma m_sigaltstack_installed_with_cloexec : forall v m,
+  m_sigaltstack_installed (with_cloexec v m) = m_sigaltstack_installed m.
+Proof. reflexivity. Qed.
+Lemma m_sigmask_with_cloexec : forall v m,
+  m_sigmask (with_cloexec v m) = m_sigmask m.
+Proof. reflexivity. Qed.
+Lemma m_killed_with_cloexec : forall v m, m_killed (with_cloexec v m) = m_killed m.
+Proof. reflexivity. Qed.
+Lemma m_sigabrt_pending_with_cloexec : forall v m,
+  m_sigabrt_pending (with_cloexec v m) = m_sigabrt_pending m.
+Proof. reflexivity. Qed.
+Lemma m_abort_terminal_with_cloexec : forall v m,
+  m_abort_terminal (with_cloexec v m) = m_abort_terminal m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_pending_with_cloexec : forall v m,
+  m_sigpipe_pending (with_cloexec v m) = m_sigpipe_pending m.
+Proof. reflexivity. Qed.
+Lemma m_channel_reader_with_cloexec : forall v m,
+  m_channel_reader (with_cloexec v m) = m_channel_reader m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_default_with_cloexec : forall v m,
+  m_sigpipe_default (with_cloexec v m) = m_sigpipe_default m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_terminal_with_cloexec : forall v m,
+  m_sigpipe_terminal (with_cloexec v m) = m_sigpipe_terminal m.
+Proof. reflexivity. Qed.
+Lemma m_pdeath_signal_with_cloexec : forall v m,
+  m_pdeath_signal (with_cloexec v m) = m_pdeath_signal m.
+Proof. reflexivity. Qed.
+Lemma m_child_pids_with_cloexec : forall v m,
+  m_child_pids (with_cloexec v m) = m_child_pids m.
+Proof. reflexivity. Qed.
+Lemma m_no_new_privs_with_cloexec : forall v m,
+  m_no_new_privs (with_cloexec v m) = m_no_new_privs m.
+Proof. reflexivity. Qed.
+Lemma m_dumpable_with_cloexec : forall v m,
+  m_dumpable (with_cloexec v m) = m_dumpable m.
+Proof. reflexivity. Qed.
+Lemma m_ppid_with_cloexec : forall v m, m_ppid (with_cloexec v m) = m_ppid m.
+Proof. reflexivity. Qed.
+Lemma m_cap_inheritable_with_cloexec : forall v m,
+  m_cap_inheritable (with_cloexec v m) = m_cap_inheritable m.
+Proof. reflexivity. Qed.
+Lemma m_utsname_with_cloexec : forall v m,
+  m_utsname (with_cloexec v m) = m_utsname m.
+Proof. reflexivity. Qed.
+Lemma m_statpins_with_cloexec : forall v m,
+  m_statpins (with_cloexec v m) = m_statpins m.
+Proof. reflexivity. Qed.
+Lemma m_rlimit_core_with_cloexec : forall v m,
+  m_rlimit_core (with_cloexec v m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+Lemma m_nofile_with_cloexec : forall v m, m_nofile (with_cloexec v m) = m_nofile m.
+Proof. reflexivity. Qed.
+Lemma m_clock_with_cloexec : forall v m, m_clock (with_cloexec v m) = m_clock m.
+Proof. reflexivity. Qed.
+Lemma m_creds_with_cloexec : forall v m, m_creds (with_cloexec v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_cloexec m_pipes_with_cloexec m_vmmaps_with_cloexec
+  m_vm_lazy_with_cloexec m_vm_materialized_with_cloexec m_kernel_with_cloexec
+  m_vdso_with_cloexec m_stdin_with_cloexec m_urandom_with_cloexec m_net_with_cloexec
+  m_conn_ix_with_cloexec m_fs_with_cloexec m_halted_with_cloexec m_tid_with_cloexec
+  m_setsid_succeeded_with_cloexec m_has_children_with_cloexec
+  m_sigaltstack_installed_with_cloexec m_sigmask_with_cloexec m_killed_with_cloexec
+  m_sigabrt_pending_with_cloexec m_abort_terminal_with_cloexec
+  m_sigpipe_pending_with_cloexec m_channel_reader_with_cloexec
+  m_sigpipe_default_with_cloexec m_sigpipe_terminal_with_cloexec
+  m_pdeath_signal_with_cloexec m_child_pids_with_cloexec m_no_new_privs_with_cloexec
+  m_dumpable_with_cloexec m_ppid_with_cloexec m_cap_inheritable_with_cloexec
+  m_utsname_with_cloexec m_statpins_with_cloexec m_rlimit_core_with_cloexec
+  m_nofile_with_cloexec m_clock_with_cloexec m_creds_with_cloexec : model.
+
 (** Opaque to reduction, on purpose.  [cbn]/[simpl] must not walk into the
     nesting: a proof that wants past an accessor uses the rewrites above,
     which keeps [m_fs model] looking like [m_fs model] wherever it is not
@@ -9758,6 +10053,8 @@ Proof. reflexivity. Qed.
 
 Arguments m_fds : simpl never.
 Arguments with_fds : simpl never.
+Arguments m_cloexec : simpl never.
+Arguments with_cloexec : simpl never.
 
 Arguments m_vmmaps : simpl never.
 Arguments with_vmmaps : simpl never.
@@ -10684,6 +10981,13 @@ Lemma m_cap_inheritable_init_model : forall reserved brk0 mbase sp lim inp,
   m_cap_inheritable (init_model reserved brk0 mbase sp lim inp)
   = in_cap_inheritable inp.
 Proof. reflexivity. Qed.
+
+(** Every launch descriptor is known close-on-exec CLEAR; see
+    [launch_cloexec]. *)
+Lemma m_cloexec_init_model : forall reserved brk0 mbase sp lim inp,
+  m_cloexec (init_model reserved brk0 mbase sp lim inp) = launch_cloexec.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cloexec_init_model : model.
 
 Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,
   m_killed (init_model reserved brk0 mbase sp lim inp) = None.

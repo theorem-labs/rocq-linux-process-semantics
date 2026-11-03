@@ -15,8 +15,9 @@
     and are not the model's to assert; (c) the exact boundary of the
     F_SETFL mask, which needs two neighbouring flag words compared
     against each other; and (e) F_GETFD, which admits both of Linux's
-    answers on an open fd and nothing else, and is -EBADF on a closed
-    one.
+    answers on an open fd whose bit the model does not know and nothing
+    else, and is -EBADF on a closed one.  The recorded bit's own pairs
+    are in [Checks.Cases.Fs.Cloexec].
 
     The directory fd and the socket fd are here because
     [Fcntl.setfl_noop_on] ENUMERATES its fd kinds, so each kind's answer
@@ -69,8 +70,8 @@ Definition fcntl_append_model : Model :=
     at [f_pos] instead of at end-of-file.
 
     F_SETFD is the boundary next door: it is kind-blind, so it still
-    answers 0 on the append fd, which is what keeps the two declines
-    above confined to the flag word. *)
+    answers 0 on the append fd and records the bit there, which is what
+    keeps the two declines above confined to the flag word. *)
 Example fcntl_flag_commands_decline_on_an_append_fd :
   (* F_SETFL, arg 0 -- a no-op everywhere else *)
   check_syscall (mkInput 25 [10; 4; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
@@ -85,9 +86,11 @@ Example fcntl_flag_commands_decline_on_an_append_fd :
   (* F_GETFL declines on both, and for the same reason it always has *)
   /\ check_syscall (mkInput 25 [10; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_append_model = CheckUnmodeled
-  (* ...while the kind-blind F_SETFD still answers 0 on the append fd *)
+  (* ...while the kind-blind F_SETFD still answers 0 on the append fd,
+     and records its bit *)
   /\ check_syscall (mkInput 25 [10; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) fcntl_append_model = CheckOk fcntl_append_model [].
+       (mkEffect 0 [] []) fcntl_append_model
+     = CheckOk (with_cloexec [(10, true)] fcntl_append_model) [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** A cmd the kernel does not recognise, on an fd that is NOT open, is
@@ -104,24 +107,24 @@ Example fcntl_unknown_cmd_on_closed_fd_is_ebadf :
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
 (** F_SETFD is 0 on a CHANNEL as well as on a file: its return does not
-    depend on the file's status flags, only on the fd resolving. *)
+    depend on the file's status flags, only on the fd resolving.  The
+    bit it writes is recorded ([State.m_cloexec]). *)
 Example fcntl_setfd_on_channel_is_zero :
   check_syscall (mkInput 25 [1; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) fcntl_model
-  = CheckOk fcntl_model [].
+  = CheckOk (with_cloexec [(1, true)] fcntl_model) [].
 Proof. check_eq. Qed.
 
-(** ...and the arg is not consulted beyond FD_CLOEXEC, so a garbage one
-    is the same 0.  [F_SETFD, 2] is the trap: it CLEARS close-on-exec
-    rather than being an unknown-flag error, and the model's answer is
-    the same either way because it records no bit at all. *)
+(** ...and the arg is not consulted beyond FD_CLOEXEC, so a garbage odd
+    one SETS the bit and answers the same 0.  [F_SETFD, 2] is the trap:
+    it CLEARS close-on-exec rather than being an unknown-flag error. *)
 Example fcntl_setfd_ignores_its_arg :
   check_syscall (mkInput 25 [3; 2; 3735928559; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) fcntl_model
-  = CheckOk fcntl_model []
+  = CheckOk (with_cloexec [(3, true)] fcntl_model) []
   /\ check_syscall (mkInput 25 [3; 2; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_model
-     = CheckOk fcntl_model [].
+     = CheckOk (with_cloexec [(3, false)] fcntl_model) [].
 Proof. split; check_eq. Qed.
 
 (** The same empty F_SETFL that answers 0 on the file DECLINES on fd 1.
@@ -248,7 +251,7 @@ Proof. repeat split; check_eq. Qed.
 Example fcntl_fd32_on_a_live_fd :
   check_syscall (mkInput 25 [4294967299; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) fcntl_model
-  = CheckOk fcntl_model []
+  = CheckOk (with_cloexec [(3, true)] fcntl_model) []
   /\ check_syscall (mkInput 25 [4294967299; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) fcntl_model
      = CheckReject
@@ -269,7 +272,7 @@ Example fcntl_on_a_write_fd_and_a_directory_fd :
   /\ check_syscall (mkInput 25 [5; 4; 32768; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model []
   /\ check_syscall (mkInput 25 [5; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model []
+       (mkEffect 0 [] []) fcntl_model = CheckOk (with_cloexec [(5, true)] fcntl_model) []
   /\ check_syscall (mkInput 25 [5; 4; 2048; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_model = CheckUnmodeled.
 Proof. split; [check_eq|split; [check_eq|split; [check_eq|vm_compute; reflexivity]]]. Qed.
@@ -284,7 +287,7 @@ Proof. split; [check_eq|split; [check_eq|split; [check_eq|vm_compute; reflexivit
     the standing guarantee that no modeled [F_SETFL] can put a socket on
     a fasync list, and a socket is the descriptor that guarantee is
     about.  F_SETFD is 0 here as on every other kind, since it never
-    consults the entry.
+    consults the entry; it records the bit.
 
     THERE IS NO NEGATIVE TEST FOR THE ENUMERATION ITSELF, and there
     cannot be one.  What the enumeration buys is that a NEW [FdEntry]
@@ -299,7 +302,7 @@ Example fcntl_setfl_on_a_socket_fd :
   /\ check_syscall (mkInput 25 [6; 4; 8192; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_model = CheckUnmodeled
   /\ check_syscall (mkInput 25 [6; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model [].
+       (mkEffect 0 [] []) fcntl_model = CheckOk (with_cloexec [(6, true)] fcntl_model) [].
 Proof. split; [check_eq|split; [vm_compute; reflexivity|check_eq]]. Qed.
 
 (** F_GETFL ON A SOCKET is O_RDWR exactly: net/socket.c [sock_alloc_file]
@@ -369,12 +372,11 @@ Qed.
 (** F_GETFD on the SAME socket fd that F_GETFL answers exactly: 0 and
     FD_CLOEXEC are both accepted, and 2 is rejected.  The contrast with
     F_GETFL is the point: a socket's [f_flags] is a function of the
-    constructor, its close-on-exec bit is not ([Net.Socket.socket_spec]
-    and [Net.Socket.accept4_spec] ignore SOCK_CLOEXEC), so
-    [Fcntl.fcntl_spec] admits the two answers [do_fcntl] can give
-    rather than one (fs/fcntl.c, v6.18.46).  The 2 is the reject twin:
-    an arm that accepted ANY word "because the bit is unknown" fails
-    here. *)
+    constructor, its close-on-exec bit is not, and [fcntl_model] is a
+    fixture ([State.mkModel]) that knows no bit, so [Fcntl.fcntl_spec]
+    admits the two answers [do_fcntl] can give rather than one
+    (fs/fcntl.c, v6.18.46).  The 2 is the reject twin: an arm that
+    accepted ANY word "because the bit is unknown" fails here. *)
 Example fcntl_getfd_on_a_socket_fd_admits_either_answer :
   check_syscall (mkInput 25 [6; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model []

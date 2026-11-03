@@ -192,7 +192,11 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
     [dup_modeled_entry] declines the model's one O_PATH kind
     ([State.OProcPath]), so nothing turns on it.  The new
-    descriptor's close-on-exec bit is cleared, [flags] being 0.
+    descriptor's close-on-exec bit is known CLEAR, [flags] being 0
+    ([get_unused_fd_flags(0)] reaches [alloc_fd], whose
+    [__set_open_fd(fd, fdt, flags & O_CLOEXEC)] clears it; fs/file.c,
+    read at v6.18.44, identical at v6.18.46), so the new key is
+    [State.cloexec_set ... fd false].
 
     [oldfd] arrives already truncated to 32 bits (see
     [Syscall.fd32]), so [dup(2^32)] duplicates stdin and [dup(-1)] is
@@ -206,7 +210,8 @@ Definition dup_spec (oldfd : word) : Sys SyscallEffect :=
       else
         alt (er <- errno_from dup_errnos ;; err_ret er)  (* untracked env failure or no free fd *)
             (fd <- lowest_fd (m_fds m) ;;
-             set_fds (fd_insert (m_fds m) fd e) ;;
+             modify (fun m' => with_cloexec (cloexec_set (m_cloexec m) fd false)
+                                 (with_fds (fd_insert (m_fds m) fd e) m')) ;;
              ret_only fd)
   end.
 
@@ -306,19 +311,20 @@ Definition dup3_flags_ok (flags : word) : bool :=
     below the table's [max_fds], so [expand_files] returns 0 for it
     too.
 
-    O_CLOEXEC is accepted and IGNORED, as [Open.openat_spec] accepts and
-    ignores it: close-on-exec is observable only through execve (221)
-    and fcntl (25).  execve is outside [Specs.modeled_sysnos].  fcntl is
-    IN it, and its [F_GETFD] reads the bit — but [Fcntl.fcntl_spec]
-    answers that read with BOTH values, 0 and FD_CLOEXEC, and the one
-    fcntl command that writes the bit, [F_SETFD], reports nothing.  So
-    the bit's VALUE stays unobservable — whatever it is, the model admits
-    the same two answers — and the decision to
-    ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
-    decision to admit both answers to [F_GETFD].  The displaced entry is
-    dropped exactly as [Open.close_spec] drops one. *)
+    O_CLOEXEC IS RECORDED on [newfd]: [do_dup2] ends with
+    [__set_open_fd(fd, fdt, flags & O_CLOEXEC)] (fs/file.c, read at
+    v6.18.44; identical at v6.18.46), which sets the bit when [flags]
+    has O_CLOEXEC and clears it otherwise, so [newfd]'s key becomes
+    [dup3_cloexec_b flags] whether [newfd] was free or open.  The
+    displaced entry is dropped exactly as [Open.close_spec] drops one,
+    and its old key is replaced, not kept. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
+
+(** [flags & O_CLOEXEC] on the truncated word: the bit [do_dup2] gives
+    [newfd]. *)
+Definition dup3_cloexec_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned (flag32 flags)) O_CLOEXEC) 0).
 
 Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
   m <- get_model ;;
@@ -335,9 +341,16 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
           | None =>
               (* free: answered only below the embedded table's floor *)
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
-              then set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+              then modify (fun m' => with_cloexec
+                             (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                             (with_fds (fd_insert (m_fds m) newfd e) m')) ;;
+                   ret_only newfd
               else unmodeled
-          | Some _ => set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+          | Some _ =>
+              modify (fun m' => with_cloexec
+                        (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                        (with_fds (fd_insert (m_fds m) newfd e) m')) ;;
+              ret_only newfd
           end
     end.
 
@@ -367,6 +380,17 @@ Definition close_range_fds (lo hi : word) (fds : list (word * FdEntry))
   List.filter (fun p => negb ((bv_unsigned lo <=? bv_unsigned (fst p))
                               && (bv_unsigned (fst p) <=? bv_unsigned hi))%Z)
               fds.
+
+(** The close-on-exec map with the key of every fd in [[lo, hi]]
+    forgotten and every other key kept with its bit: the same test as
+    [close_range_fds], on the map's keys.  Every key is an open
+    descriptor ([Checks.CloexecKeys.cloexec_keys_open]), so the keys it
+    drops are exactly those of the descriptors [close_range_fds] closes. *)
+Definition close_range_cloexec (lo hi : word) (cl : list (word * bool))
+    : list (word * bool) :=
+  List.filter (fun p => negb ((bv_unsigned lo <=? bv_unsigned (fst p))
+                              && (bv_unsigned (fst p) <=? bv_unsigned hi))%Z)
+              cl.
 
 (** [close_range fd max_fd flags]: with [flags] 0, close every open
     descriptor from [fd] to [max_fd] inclusive and answer 0.
@@ -400,7 +424,9 @@ Definition close_range_fds (lo hi : word) (fds : list (word * FdEntry))
     every range that passes the two tests, open descriptors or not; the
     clamp removes nothing the model holds, since every open fd is below
     [max_fds].  What changes is the table: every fd in [[fd, max_fd]]
-    is gone ([close_range_fds]).  That is [Open.close_spec] applied to
+    is gone ([close_range_fds]), and so is its close-on-exec key
+    ([close_range_cloexec]); every kept descriptor keeps its key and
+    bit.  That is [Open.close_spec] applied to
     each open fd of the range in ascending order with its 0 discarded,
     and it is KIND-BLIND for the same reason that spec is: what a
     program can observe of a close is the descriptor leaving the table.
@@ -412,10 +438,10 @@ Definition close_range_fds (lo hi : word) (fds : list (word * FdEntry))
 
     DECLINED: [CLOSE_RANGE_UNSHARE] or [CLOSE_RANGE_CLOEXEC] set, once
     the two -EINVAL tests have passed.  CLOEXEC sets the close-on-exec
-    bit of each descriptor in the range instead of closing it, and the
-    model records no close-on-exec bit (see [dup3_spec]'s O_CLOEXEC
-    note), so it could neither store the effect nor answer a later
-    [fcntl(F_GETFD)] from it.  UNSHARE copies a SHARED table first; the
+    bit of each descriptor in the range instead of closing it
+    ([__range_cloexec]); [State.m_cloexec] could hold that effect, but
+    nothing in scope issues the flag, so the arm is not widened to it.
+    UNSHARE copies a SHARED table first; the
     model's table is never shared (no [CLONE_FILES] clone is admitted),
     so it would act as flags 0 here, but nothing in scope issues it and
     the decline keeps the arm to the one shape argued above.
@@ -430,5 +456,6 @@ Definition close_range_spec (fd max_fd flags : word) : Sys SyscallEffect :=
   else if negb (Z.eqb (bv_unsigned flags) 0) then unmodeled
   else
     m <- get_model ;;
-    set_fds (close_range_fds fd max_fd (m_fds m)) ;;
+    modify (fun m' => with_cloexec (close_range_cloexec fd max_fd (m_cloexec m))
+                        (with_fds (close_range_fds fd max_fd (m_fds m)) m')) ;;
     ret_only (Z_to_bv 64 0).
