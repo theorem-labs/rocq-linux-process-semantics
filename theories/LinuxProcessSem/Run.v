@@ -5817,6 +5817,18 @@ Proof.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
+(** A plain launch given a list [inherited_fds_ok] accepts
+    ([State.with_inherited_fds] changes that field alone) is a keyed
+    launch [valid_input_inherited] admits. *)
+Lemma valid_input_inherited_with_inherited_fds : forall l inp,
+  valid_input inp -> inherited_fds_ok l = true ->
+  valid_input_inherited (with_inherited_fds l inp).
+Proof.
+  intros l inp H Hl. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
 (* =========================================================================
    The image premise, consumed: the device arms' guards are unreachable
 

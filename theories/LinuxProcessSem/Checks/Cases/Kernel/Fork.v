@@ -252,7 +252,7 @@ Example clone_namespace_word_keeps_the_descriptor_gate :
     (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE GATE PASSES FOUR OF THE SIX OPAQUE KINDS, for both words, end
+(** THE GATE PASSES FOUR OF THE SEVEN OPAQUE KINDS, for both words, end
     to end: [OProcPath], [OProcFile], [OEventFd] and [ONsFile].
     [clone_opaque_model] is the table bubblewrap's parent holds at its
     clone (channels 0-2, the O_PATH descriptor on "/proc" at fd 3, its
@@ -261,8 +261,9 @@ Proof. vm_compute. reflexivity. Qed.
     descriptor.  Before [State.FdOpaque] the model held none of these,
     so it could not reach this clone at all.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
-    file still declines both words.  The other two kinds decline
-    ([clone_declines_procfd_dir_and_signalfd] below). *)
+    file still declines both words.  Two other kinds decline
+    ([clone_declines_procfd_dir_and_signalfd] below), and so does a live
+    inherited file ([Checks.Cases.Fs.Inherited]). *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
@@ -290,7 +291,7 @@ Example clone_passes_the_opaque_kinds :
        clone_opaque_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
-(** THE OTHER TWO OPAQUE KINDS DECLINE, for both words: the
+(** TWO OTHER OPAQUE KINDS DECLINE, for both words: the
     /proc/self/fd directory ([State.OProcFdDir]), whose [f_pos] the
     child would share while the model holds it in the parent's entry,
     and a signalfd ([State.OSignalFd]), whose mask either process may

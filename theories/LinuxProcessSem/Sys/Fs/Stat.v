@@ -911,6 +911,6 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdOpaque o) => fstat_opaque_spec o statbuf
                                      (* the /proc/self/fd directory answers, S_IFDIR with
                                         0500 and the rest the environment's; the other
-                                        five objects decline (see [fstat_opaque_spec]) *)
+                                        six objects decline (see [fstat_opaque_spec]) *)
   end.
 

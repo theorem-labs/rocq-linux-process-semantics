@@ -3908,12 +3908,18 @@ Proof.
   (* through the accessors, not by position: [valid_input] grows *)
   pose proof (valid_input_va_size inp Hvi) as Hva.
   pose proof (valid_input_launch inp Hvi) as Hvl.
+  (* the launch inherits no descriptor, so the clone gate reads the
+     three channels alone *)
+  pose proof (valid_input_no_inherited inp Hvi) as Hnoi.
   unfold valid_entry, valid_entry_va in Hve. rewrite Hva in Hve.
   destruct Hve as (Hsp & _ & _ & _ & Hlau).
   unfold pinit_config. left.
   apply fw_shape_one_proc;
     [split; [reflexivity|]; split; [reflexivity|];
-     split; [reflexivity | reflexivity]|].
+     split; [ cbn [cfg_model init_config with_vdso m_fds m_fd init_model
+                   fdst_table];
+              rewrite Hnoi; reflexivity
+            | reflexivity ]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
   assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd

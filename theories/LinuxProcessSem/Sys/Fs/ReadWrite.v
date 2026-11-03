@@ -2009,7 +2009,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            ledger exactly as the channel and file arms record theirs *)
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* the eventfd answers, the other five decline: see
+      (* the eventfd answers, the other six decline: see
          [write_opaque_spec] *)
   end.
 
