@@ -444,7 +444,8 @@ Proof. vm_compute. reflexivity. Qed.
     descriptor gate with them.  Before the clone the eventfds hold their
     counters ([State.FdEventfd]: 0x80800 is non-blocking, 0x80000 is
     not); after it they are the shared kind ([State.OEventFd]), with w
-    the O_NONBLOCK bit and 0, so every counter call on them declines. *)
+    the O_NONBLOCK bit and 0: read and write on them answer from the
+    environment's counter, and readiness and F_GETFD decline. *)
 Example parent_trace_clone_descriptors :
   fd_lookup (m_fds parent_trace_s34) 3 = Some (FdOpaque (OProcPath s_proc))
   /\ fd_lookup (m_fds parent_trace_s34) 4

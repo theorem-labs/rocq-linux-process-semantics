@@ -105,8 +105,10 @@ Open Scope sys_scope.
 
     A [clone] HOLDING ONE IS ANSWERED, and its success turns the entry
     into [State.FdOpaque (State.OEventFd w)] ([Kernel.Fork.share_eventfds]):
-    after the clone the description is shared by two tasks, so the calls
-    that read or change the counter decline on it; a decline is never a
+    after the clone the description is shared by two tasks, so no call
+    answers from a stored counter value: read and write answer from the
+    environment's counter (Sys/Fs/ReadWrite.v), and readiness (select,
+    poll, epoll) and F_GETFD decline; a decline is never a
     wrong answer.  bubblewrap's parent holds two eventfds at its
     namespace [clone] ([Checks.Cases.ParentTrace]).
 
