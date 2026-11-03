@@ -167,15 +167,18 @@ jobs:
           # link across two mounts fails (EXDEV), and then dune stores nothing
           # (src/dune_cache/shared.ml, which logs it at info level only).
           install: |
-            startGroup "Install dependencies"
+            startGroup "Check the dune cache against the image's toolchain"
               export DUNE_CACHE=enabled DUNE_CACHE_STORAGE_MODE=copy
               export DUNE_CACHE_ROOT="$PWD/.dune-cache"
+              bash .github/dune-cache-toolchain.sh "$DUNE_CACHE_ROOT" before
+            endGroup
+            startGroup "Install dependencies"
               opam update -y
               opam pin add -k version -y dune "${{ matrix.dune }}"
               opam install -y -j 2 --deps-only .
             endGroup
             startGroup "Check the dune cache against the toolchain"
-              bash .github/dune-cache-toolchain.sh "$DUNE_CACHE_ROOT"
+              bash .github/dune-cache-toolchain.sh "$DUNE_CACHE_ROOT" after
             endGroup
           script: |
             startGroup "Tool versions"
@@ -279,13 +282,16 @@ jobs:
             default: https://github.com/ocaml/opam-repository.git
             rocq-released: https://rocq-prover.org/opam/released
 
-      # The dependencies first, so that the toolchain check below sees every
-      # plugin the packages' build loads.
+      # The switch as setup-ocaml left it, then the dependencies, so that the
+      # toolchain check after them sees every plugin the packages' build loads.
+      - name: Check the dune cache against the compiler
+        run: bash .github/dune-cache-toolchain.sh ~/.cache/dune before
+
       - name: Install the dependencies
         run: opam install --yes --deps-only .
 
       - name: Check the dune cache against the toolchain
-        run: bash .github/dune-cache-toolchain.sh ~/.cache/dune
+        run: bash .github/dune-cache-toolchain.sh ~/.cache/dune after
 
       - name: Pin and install all packages
         run: opam pin add --yes .
