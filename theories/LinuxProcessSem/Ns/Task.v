@@ -1,7 +1,7 @@
 (** * LinuxProcessSem.Ns.Task — arms on a task's own state
 
     The calls that read or change only what a task holds: its umask, its
-    pid, its capability sets, its no_new_privs bit, its parent-death signal
+    pid, its session, its capability sets, its no_new_privs bit, its parent-death signal
     and its dumpable mode; and the calls on the names of its UTS namespace:
     [uname], [sethostname] and [setdomainname].  Each header names the
     Linux functions it follows (6.18.44; the UTS arms cite v6.18.46) and
@@ -62,6 +62,65 @@ Definition getpid_arm : NsArm := fun i m ctx st o =>
   | Some p => o = ns_ret (Z_to_bv 64 p) m ctx st
   | None => o = EUnmodeled
   end.
+
+(** The task's active pid namespace is one the tables made: it has a
+    parent.  A pid namespace with no parent, or one the tables do not
+    hold, is the host's ([Tables.PidNs]). *)
+Definition pidns_made (st : NsState) (p : positive) : bool :=
+  match find (fun x => Pos.eqb (pidns_id x) p) (ns_pidns st) with
+  | Some x => match pidns_parent x with Some _ => true | None => false end
+  | None => false
+  end.
+
+(** [setsid] (157): [ksys_setsid], kernel/sys.c:1268-1301 (Linux
+    v6.18.46), in kernel order:
+    - the answer is [pid_vnr(task_pid(group_leader))], the caller's pid in
+      its own active pid namespace (:1271-1273), as [getpid_arm] answers;
+    - EPERM when the caller already leads a session ([signal->leader],
+      :1278-1279).  That bit is [State.m_setsid_succeeded]: only
+      [ksys_setsid] sets it and nothing clears it
+      ([Kernel.Sys.setsid_spec]'s note);
+    - EPERM when a live task's process group is the caller's pid
+      ([pid_task(sid, PIDTYPE_PGID)], :1284-1285);
+    - else the caller leads a new session and process group
+      ([set_special_pids], :1257-1266, 1287-1288) and the answer is its
+      pid (:1292).  Nothing before the answer allocates, and the steps
+      after the unlock (:1295-1299) cannot change it: no environment
+      refusal.
+
+    THE PROCESS-GROUP TEST.  In a pid namespace the tables made
+    ([pidns_made]) the caller's pid came from a modelled clone.  A
+    process group is that pid only after a [setpgid] that names it
+    ([SYSCALL_DEFINE2(setpgid)], kernel/sys.c:1114-1185: the target is
+    the caller or its child, and a group other than the target's own pid
+    must already exist in the caller's session), or after the caller's
+    own [setsid], which sets the leader bit and so answers EPERM at the
+    first test.  [setpgid] (154) has no arm, in [Spec.ns_table] or in the
+    released table, so no modelled run makes such a group: the test is
+    false, and the arm is exact.  If [setpgid] is ever modelled, this
+    test must read the multi-process core's group table instead.
+    In the host's pid namespace (a task that unshared only its user
+    namespace, say) group membership is the environment's, as for the
+    released arm: EPERM is admitted beside the success.
+
+    WHAT IS WRITTEN: the leader bit only ([with_setsid_succeeded]).  The
+    session and group ids become the caller's pid; no call of the
+    namespace model reads them ([getsid] 156 and [getpgid] 155 have no
+    arm here).  [m_tid] is not written: it holds the host's numbering,
+    and a pid of another namespace must not go there (the multi-process
+    core's owner, 2026-11-03).
+    Kind: exact in a pid namespace the tables made; over in the host's;
+    a task with no pid in its own namespace declines. *)
+Definition setsid_arm : NsArm := fun i m ctx st o =>
+  if m_setsid_succeeded m then o = ns_errno EPERM m ctx st
+  else match task_pid ctx with
+       | None => o = EUnmodeled
+       | Some p =>
+           if pidns_made st (cx_pidns ctx)
+           then o = ns_ret (Z_to_bv 64 p) (with_setsid_succeeded m) ctx st
+           else o = ns_errno EPERM m ctx st
+                \/ o = ns_ret (Z_to_bv 64 p) (with_setsid_succeeded m) ctx st
+       end.
 
 (* =========================================================================
    Capabilities
@@ -448,9 +507,9 @@ Proof.
 Qed.
 
 Definition task_arms : list (Z * NsArm) :=
-  [(90, capget_arm); (91, capset_arm); (160, uname_arm); (161, sethostname_arm);
-   (162, setdomainname_arm); (166, umask_arm); (167, prctl_arm); (172, getpid_arm);
-   (178, getpid_arm)].
+  [(90, capget_arm); (91, capset_arm); (157, setsid_arm); (160, uname_arm);
+   (161, sethostname_arm); (162, setdomainname_arm); (166, umask_arm); (167, prctl_arm);
+   (172, getpid_arm); (178, getpid_arm)].
 
 (** The environment's refusals of these arms, for the forced-only filter:
     [prepare_creds]'s ENOMEM.  The tables' answers ([NsInjected]):
@@ -459,7 +518,12 @@ Definition task_arms : list (Z * NsArm) :=
     PR_GET_PDEATHSIG ([Sys.Kernel.Sys]).  [sethostname] and [setdomainname]
     have no row: no environment refusal reaches them ([set_uts_fn]).
     Neither has [uname]: its answers are the released ones, whose table
-    ([Run.injected_table]) has no row for 160 either. *)
+    ([Run.injected_table]) has no row for 160 either.  [setsid]'s row is
+    the released one ([Run.injected_table], 157, FamCred): in the host's
+    pid namespace its EPERM is the environment's group membership, the
+    released arm's untracked condition; after a success its EPERM is the
+    tables' answer, so EPERM is also in [ni_forced]. *)
 Definition task_injected : list NsInjected :=
   [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [EFAULT; EINVAL; EPERM] [];
+   mkNsInjected 157 [(fun e => e =? EPERM, FamCred)] [EPERM] [EPERM];
    mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] [EINVAL; EPERM; EFAULT] []].
