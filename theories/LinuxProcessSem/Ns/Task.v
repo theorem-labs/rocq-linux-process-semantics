@@ -456,7 +456,10 @@ Definition task_arms : list (Z * NsArm) :=
     [prepare_creds]'s ENOMEM.  The tables' answers ([NsInjected]):
     [capset_fn]'s EFAULT, EINVAL and EPERM; [prctl_fn]'s EINVAL and EPERM,
     and the released answer's EINVAL and EFAULT for PR_SET_PDEATHSIG and
-    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]). *)
+    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]).  [sethostname] and [setdomainname]
+    have no row: no environment refusal reaches them ([set_uts_fn]).
+    Neither has [uname]: its answers are the released ones, whose table
+    ([Run.injected_table]) has no row for 160 either. *)
 Definition task_injected : list NsInjected :=
   [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [EFAULT; EINVAL; EPERM] [];
    mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] [EINVAL; EPERM; EFAULT] []].
