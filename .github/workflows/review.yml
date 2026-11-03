@@ -261,8 +261,9 @@ jobs:
           # job did not skip and either <login> started by an event, or screened again an item that the limit held for
           # <login> (a rescreen, whose name, which its trust job checks, ends with the account). A run whose trust job
           # is not listed yet counts. A rescreen that its trust job refused (the item closed, or lost its label, in
-          # between), so that every other job of it was skipped, screened nothing and does not count. The run stops
-          # when GitHub could not say.
+          # between), so that every other job of it was skipped, screened nothing and does not count. The rescreen job,
+          # which every dispatched run skips, is not one of those jobs: a rescreen whose trust job has just accepted it
+          # and whose next jobs are not listed yet counts. The run stops when GitHub could not say.
           earlier() {
             local from runs id kind verdict
             count=0
@@ -282,7 +283,8 @@ jobs:
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               verdict=$(KIND=$kind gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
-                --jq '([.jobs[] | select(.name == "trust")] | first) as $t | [.jobs[] | select(.name != "trust")] as $rest
+                --jq '([.jobs[] | select(.name == "trust")] | first) as $t
+                  | [.jobs[] | select(.name != "trust" and .name != "rescreen")] as $rest
                   | if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                     elif $ENV.KIND == "rescreen" and $t.status == "completed" and ($rest | length) > 0
                          and ($rest | all(.conclusion == "skipped")) then "skip"
@@ -699,14 +701,16 @@ jobs:
         with: {persist-credentials: false}
 
       # Counts the review jobs of this workflow's other runs that started in the last hour, or have not started, and
-      # have called the model or may still call it: one whose Review step ran or runs; one that passed this step and
-      # has not finished; and one that has not finished this step yet and belongs to an earlier run, which goes first.
-      # So in a burst the earliest runs go ahead and the later ones stop here. Runs created up to 3 hours ago are read,
-      # which covers a job's 75 minutes and its time in the queue. A review job that waits for its run's trust job is
-      # not listed yet, and one the trust job skipped has no Review step, so neither counts. Only jobs of this run's
-      # kind count, by the job's name: a writer's review against HOURLY_CAP, a screened one against
-      # SCREENED_HOURLY_CAP.
-      - name: Hold at the hourly cap
+      # have called the model or may still call it: one whose Review step ran or runs; one that passed the step "Hold
+      # at the hourly cap" and has not finished; and one that has not finished that step yet and belongs to an earlier
+      # run, which goes first. So in a burst the earliest runs go ahead and the later ones stop at that step. Runs
+      # created up to 3 hours ago are read, which covers a job's 75 minutes and its time in the queue. A review job that
+      # waits for its run's trust job is not listed yet, and one the trust job skipped has no Review step, so neither
+      # counts. Only jobs of this run's kind count, by the job's name: a writer's review against HOURLY_CAP, a screened
+      # one against SCREENED_HOURLY_CAP. A read that fails stops the run here, not at the next step, so that the hold
+      # job, which reads that step's failure as the cap, never says the cap was reached when it was not.
+      - name: Count the reviews of the last hour
+        id: count
         env:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -714,18 +718,18 @@ jobs:
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
         run: |
           set -uo pipefail
-          held() { echo "::error::HELD: $1 No model ran. A maintainer can re-run this run once the hour has passed."; exit 1; }
-          [[ $CAP =~ ^[1-9][0-9]*$ ]] || held "the cap is not a number."
-          SINCE=$(date -u -d '-1 hour' +%s) || held "the time could not be read."
-          from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || held "the time could not be read."
+          stop() { echo "::error::$1 No model ran. A maintainer can re-run this run."; exit 1; }
+          [[ $CAP =~ ^[1-9][0-9]*$ ]] || stop "the cap is not a number."
+          SINCE=$(date -u -d '-1 hour' +%s) || stop "the time could not be read."
+          from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || stop "the time could not be read."
           export SINCE
           runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
             -f created=">=$from" -F per_page=100 --jq '.workflow_runs[] | "\(.id) \(.created_at)"') \
-            || held "the runs could not be read."
+            || stop "the runs could not be read."
           count=0
           while read -r id created; do
             [ -n "$id" ] || continue
-            [[ $id =~ ^[0-9]+$ ]] || held "a run id is not a number."
+            [[ $id =~ ^[0-9]+$ ]] || stop "a run id is not a number."
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             n=$(RUN_CREATED=$created gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
               -f filter=all -F per_page=100 --jq '
@@ -739,12 +743,27 @@ jobs:
                           or (.status != "completed" and $cap != null and $cap.conclusion == "success")
                           or (.status != "completed" and ($cap == null or $cap.status != "completed")
                               and .run_id < ($ENV.RUN_ID | tonumber)))]
-                | length') || held "the jobs of run $id could not be read."
-            [[ $n =~ ^[0-9]+$ ]] || held "the jobs of run $id could not be read."
+                | length') || stop "the jobs of run $id could not be read."
+            [[ $n =~ ^[0-9]+$ ]] || stop "the jobs of run $id could not be read."
             count=$((count + n))
           done <<< "$runs"
-          (( count < CAP )) || held "$count reviews ($POOL) called the model, or may, in the last hour: the cap is $CAP."
-          echo "$count reviews ($POOL) in the last hour, under the cap of $CAP."
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "$count reviews ($POOL) called the model, or may, in the last hour."
+
+      # Fails only when the count is at the cap: the hold job reads this step's failure as the cap reached.
+      - name: Hold at the hourly cap
+        env:
+          COUNT: ${{ steps.count.outputs.count }}
+          POOL: ${{ needs.trust.outputs.route == 'screen' && 'review (screened)' || 'review' }}
+          CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
+        run: |
+          set -uo pipefail
+          if (( COUNT >= CAP )); then
+            echo "::error::HELD: $COUNT reviews ($POOL) called the model, or may, in the last hour: the cap is $CAP." \
+              "No model ran. A maintainer can re-run this run once the hour has passed."
+            exit 1
+          fi
+          echo "$COUNT reviews ($POOL) in the last hour, under the cap of $CAP."
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
         if: needs.trust.outputs.route != 'measure'
@@ -1044,16 +1063,24 @@ jobs:
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             if [ "$REVIEW" = cancelled ]; then
               # A newer run of the item (its next push, or its rescreen) cancels this run's review: that run decides.
+              # Not a newer run that its trust job skipped (an edit of a pull request that left its base as it was):
+              # it decides nothing, so this run holds the item.
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
                 -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
                   | select(.id > ($ENV.RUN_ID | tonumber) and ((.display_title // "") == "review #" + $ENV.NUMBER
                            or ((.display_title // "") | startswith("rescreen #" + $ENV.NUMBER + " of ")))) | .id') \
                 || { echo "::error::the runs of this workflow could not be read"; exit 1; }
-              if [ -n "$newer" ]; then
-                echo "A newer run of #$NUMBER cancelled this run's review: that run decides."
-                exit 0
-              fi
+              for id in $newer; do
+                [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
+                trust=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
+                  --jq '.jobs[] | select(.name == "trust") | .conclusion // "running"') \
+                  || { echo "::error::the jobs of run $id could not be read"; exit 1; }
+                if [ "$trust" != skipped ]; then
+                  echo "A newer run of #$NUMBER cancelled this run's review: that run decides."
+                  exit 0
+                fi
+              done
             fi
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run.
             capped=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[]

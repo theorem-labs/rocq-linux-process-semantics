@@ -1033,8 +1033,10 @@ class HoldTest(Runner):
     TRIES = int(WF["env"]["REVIEW_TRIES"])
 
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
-                 runs=()):
-        """Run the hold step; capped: this run's review stopped at the cap; runs: this workflow's runs, (id, name)."""
+                 uncounted=False, runs=()):
+        """Run the hold step; capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews
+        failed, so it stopped before the cap's step; runs: this workflow's runs, (id, name[, its trust job's
+        conclusion, success when absent, None for not listed yet])."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
         self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
@@ -1042,10 +1044,16 @@ class HoldTest(Runner):
         self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": [
             {"name": "trust", "steps": [{"name": "Whether ...", "conclusion": "success"}]},
             {"name": "review (screened)", "steps": [
-                {"name": "Hold at the hourly cap", "conclusion": "failure" if capped else "success"},
-                {"name": "Review", "conclusion": "skipped" if capped else "failure"}]}]})
+                {"name": "Count the reviews of the last hour", "conclusion": "failure" if uncounted else "success"},
+                {"name": "Hold at the hourly cap",
+                 "conclusion": "skipped" if uncounted else "failure" if capped else "success"},
+                {"name": "Review", "conclusion": "skipped" if capped or uncounted else "failure"}]}]})
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs",
-                   {"workflow_runs": [{"id": i, "display_title": t} for i, t in runs]})
+                   {"workflow_runs": [{"id": r[0], "display_title": r[1]} for r in runs]})
+        for r in runs:
+            trust = r[2] if len(r) > 2 else "success"
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
+                       {"jobs": [] if trust is None else [{"name": "trust", "conclusion": trust}]})
         rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER="7", ROUTE=route, OUTSIDER=outsider,
                                      REVIEW=review, ORIGIN=origin, TRIES=tries, RUN_ID="100", RUN_ATTEMPT="1",
                                      HELD_LABEL=WF["env"]["HELD_LABEL"], REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
@@ -1101,6 +1109,13 @@ class HoldTest(Runner):
         self.assertRegex(body, self.AGAIN)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
 
+    def test_a_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
+        """The count of the hour's reviews could not be read: the cap was not reached, so the hold says so and counts a
+        try, and REVIEW_TRIES still ends the tries."""
+        _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", uncounted=True)
+        self.assertNotIn("had reached their limit", body)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
+
     def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
         self.assertGreater(self.TRIES, 1)
         for review in ("failure", "cancelled"):
@@ -1120,19 +1135,21 @@ class HoldTest(Runner):
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
 
     def test_a_review_that_a_newer_run_of_the_item_cancelled_holds_nothing(self):
-        for name in ("review #7", "rescreen #7 of mallory"):
-            with self.subTest(name=name):
+        for name, trust in (("review #7", "success"), ("rescreen #7 of mallory", "success"), ("review #7", None)):
+            with self.subTest(name=name, trust=trust):
                 self.tearDown()
                 self.setUp()
                 rc, out, posts, _ = self.run_hold("screen", review="cancelled", origin="50",
-                                                  runs=[(90, "review #7"), (101, name), (102, "review #8")])
+                                                  runs=[(90, "review #7"), (101, name, trust), (102, "review #8")])
                 self.assertEqual((rc, posts), (0, []), out)
                 self.assertIn("A newer run of #7 cancelled this run's review", out)
-        # An older run, or another item's newer one, is no such run: it is held as a review that did not finish.
+        # An older run, another item's newer one, or a newer run of the item that its trust job skipped (an edit that
+        # left the base as it was) is no such run: it is held as a review that did not finish, and the try counts.
         self.tearDown()
         self.setUp()
         _calls, _post, body = self.hold("screen", review="cancelled", origin="50",
-                                        runs=[(90, "review #7"), (102, "review #70"), (103, "rescreen #70 of eve")])
+                                        runs=[(90, "review #7"), (102, "review #70"), (103, "rescreen #70 of eve"),
+                                              (104, "review #7", "skipped")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
     def test_a_later_hold_replaces_the_comment(self):
@@ -1220,8 +1237,17 @@ class PostLabelTest(Runner):
 class CapTest(Runner):
     """HOURLY_CAP and SCREENED_HOURLY_CAP count apart: accounts without write access cannot use up writers' reviews."""
 
+    COUNT = "Count the reviews of the last hour"
+    CAP = "Hold at the hourly cap"
+
+    def step_env(self, name, route):
+        ctx = {"needs.trust.outputs.route": route, "env.HOURLY_CAP": WF["env"]["HOURLY_CAP"],
+               "env.SCREENED_HOURLY_CAP": WF["env"]["SCREENED_HOURLY_CAP"]}
+        return {k: str(evaluate(v, ctx)) for k, v in step("review", name)["env"].items() if k in ("POOL", "CAP")}
+
     def cap(self, route, jobs):
-        """jobs: names of review jobs of earlier runs whose Review step ran in the last hour."""
+        """jobs: names of review jobs of earlier runs whose Review step ran in the last hour. Runs the count, then the
+        cap's step with the count, as the job does; the cap's step does not run when the count fails."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
             {"id": 10 + i, "created_at": "2099-01-01T00:00:00Z"} for i in range(len(jobs))]})
         for i, name in enumerate(jobs):
@@ -1229,12 +1255,28 @@ class CapTest(Runner):
                 {"name": name, "run_id": 10 + i, "run_attempt": 1, "status": "completed",
                  "started_at": "2099-01-01T00:00:00Z",
                  "steps": [{"name": "Review", "status": "completed", "conclusion": "success"}]}]})
-        s = step("review", "Hold at the hourly cap")
-        ctx = {"needs.trust.outputs.route": route, "env.HOURLY_CAP": WF["env"]["HOURLY_CAP"],
-               "env.SCREENED_HOURLY_CAP": WF["env"]["SCREENED_HOURLY_CAP"]}
-        env = {k: str(evaluate(v, ctx)) for k, v in s["env"].items() if k in ("POOL", "CAP")}
-        rc, out, _ = self.run_script(s["run"], RUN_ID="100", RUN_ATTEMPT="1", **env)
+        rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                       **self.step_env(self.COUNT, route))
+        if rc != 0:
+            return rc, out
+        rc, out, _ = self.run_script(step("review", self.CAP)["run"], COUNT=got["count"], **self.step_env(self.CAP, route))
         return rc, out
+
+    def test_a_count_that_fails_stops_before_the_caps_step(self):
+        """The hold job reads a failure of the cap's step as the cap reached: a failed read must not be one."""
+        names = [s.get("name") for s in JOBS["review"]["steps"]]
+        self.assertEqual(names.index(self.CAP), names.index(self.COUNT) + 1)
+        self.assertLess(names.index(self.CAP), names.index("Review"))
+        self.assertEqual(step("review", self.CAP)["env"]["COUNT"], "${{ steps.count.outputs.count }}")
+        self.assertEqual(step("review", self.COUNT)["id"], "count")
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     **self.step_env(self.COUNT, "screen"))   # no runs served: GitHub's 404
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the runs could not be read", out)
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     POOL="review", CAP="x")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the cap is not a number", out)
 
     def test_screened_reviews_do_not_use_up_the_writers_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
@@ -1277,8 +1319,6 @@ class BunTest(Runner):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("ahead of the pinned Bun", out)
                 os.remove(path)
-
-
 
 
 RESCREEN_JOB = "Start the screen again of each item held at the limit over an hour ago"
@@ -1395,20 +1435,25 @@ class RescreenTrustTest(Held):
 
     def test_a_rescreen_its_trust_job_refused_does_not_count(self):
         """The item closed or lost its label in between: every other job of that run was skipped, and it screened
-        nothing. A rescreen held again at the limit, or still running, counts."""
+        nothing. A rescreen held again at the limit, or still running, counts; so does one whose trust job has just
+        accepted it, with only the rescreen job (which every dispatched run skips) listed beside it."""
         rescreens = self.rescreened("mallory", self.LIMIT)
         self.runs(*rescreens)
+        skipped_rescreen = {"name": "rescreen", "status": "completed", "conclusion": "skipped"}
         refused = [{"name": "trust", "status": "completed", "conclusion": "success"},
                    {"name": "gather", "status": "completed", "conclusion": "skipped"},
-                   {"name": "hold", "status": "completed", "conclusion": "skipped"}]
+                   {"name": "hold", "status": "completed", "conclusion": "skipped"}, skipped_rescreen]
         self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": refused})
         self.assertEqual(self.route().get("route"), "screen")
         held_again = [dict(j, conclusion="success") if j["name"] == "hold" else j for j in refused]
         self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": held_again})
         self.assertEqual(self.route().get("route"), "limit")
         running = [{"name": "trust", "status": "in_progress", "conclusion": None},
-                   {"name": "gather", "status": "queued", "conclusion": None}]
+                   {"name": "gather", "status": "queued", "conclusion": None}, skipped_rescreen]
         self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": running})
+        self.assertEqual(self.route().get("route"), "limit")
+        accepted = [{"name": "trust", "status": "completed", "conclusion": "success"}, skipped_rescreen]
+        self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": accepted})
         self.assertEqual(self.route().get("route"), "limit")
 
     def test_an_events_run_with_every_other_job_skipped_still_counts(self):
@@ -1686,5 +1731,7 @@ class RescreenJobTest(Held):
         self.assertIn("rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\\[bot\\])?)$'",
                       step("rescreen", RESCREEN_JOB)["run"])
         self.assertIn('test("^rescreen #[0-9]+ of [A-Za-z0-9-]+(\\\\[bot\\\\])?$")', step("trust", TRUST)["run"])
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
