@@ -96,9 +96,15 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     must already exist in the caller's session), or after the caller's
     own [setsid], which sets the leader bit and so answers EPERM at the
     first test.  [setpgid] (154) has no arm, in [Spec.ns_table] or in the
-    released table, so no modelled run makes such a group: the test is
-    false, and the arm is exact.  If [setpgid] is ever modelled, this
-    test must read the multi-process core's group table instead.
+    released table, so no modelled process makes such a group.  A process
+    outside the model can only after the caller's modelled parent exits:
+    the caller is then reparented to a reaper the environment owns, and
+    that reaper, in the caller's session, may call [setpgid(caller,
+    caller)] before the caller execs (kernel/sys.c:1143-1149).  The
+    launch value [Tables.env_foreign_pgroups] names that event: under its
+    default [false] the test is false and the arm is exact; under [true]
+    EPERM is admitted beside the success.  If [setpgid] is ever modelled,
+    this test must read the multi-process core's group table instead.
     In the host's pid namespace (a task that unshared only its user
     namespace, say) group membership is the environment's, as for the
     released arm: EPERM is admitted beside the success.
@@ -109,14 +115,15 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     arm here).  [m_tid] is not written: it holds the host's numbering,
     and a pid of another namespace must not go there (the multi-process
     core's owner, 2026-11-03).
-    Kind: exact in a pid namespace the tables made; over in the host's;
-    a task with no pid in its own namespace declines. *)
+    Kind: exact in a pid namespace the tables made while
+    [env_foreign_pgroups] is [false]; over in the host's pid namespace or
+    under [true]; a task with no pid in its own namespace declines. *)
 Definition setsid_arm : NsArm := fun i m ctx st o =>
   if m_setsid_succeeded m then o = ns_errno EPERM m ctx st
   else match task_pid ctx with
        | None => o = EUnmodeled
        | Some p =>
-           if pidns_made st (cx_pidns ctx)
+           if pidns_made st (cx_pidns ctx) && negb (env_foreign_pgroups (ns_env st))
            then o = ns_ret (Z_to_bv 64 p) (with_setsid_succeeded m) ctx st
            else o = ns_errno EPERM m ctx st
                 \/ o = ns_ret (Z_to_bv 64 p) (with_setsid_succeeded m) ctx st

@@ -360,7 +360,7 @@ Proof. vm_compute. reflexivity. Qed.
     and a listed dentry still wins over a stale record of its name. *)
 Definition s_probe : list byte := bytes [112; 114; 111; 98; 101].
 Definition absent_world : NsState :=
-  with_env world (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)]).
+  with_env world (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)] false).
 Example walk_host_absent :
   walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
   = (WErr ENOENT, false)

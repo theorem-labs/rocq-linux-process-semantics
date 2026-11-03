@@ -31,7 +31,8 @@ Definition c_st : NsState := UtsCases.c_st.
 
 (** bubblewrap's [setsid()] in [C], pid 1 of the pid namespace the clone
     made: no session led yet, and no process group can be 1 there (no
-    modelled call makes one), so the answer is 1 and only 1, and the
+    modelled call makes one, and the launch value [env_foreign_pgroups]
+    is its default [false]), so the answer is 1 and only 1, and the
     leader bit is set. *)
 Definition c_setsid : ext_outcome :=
   ns_ret (Z_to_bv 64 1) (with_setsid_succeeded m0) c_ctx c_st.
@@ -44,6 +45,7 @@ Proof.
   replace (m_setsid_succeeded m0) with false by (vm_compute; reflexivity).
   replace (task_pid c_ctx) with (Some 1) by (vm_compute; reflexivity).
   replace (pidns_made c_st (cx_pidns c_ctx)) with true by (vm_compute; reflexivity).
+  replace (env_foreign_pgroups (ns_env c_st)) with false by (vm_compute; reflexivity).
   reflexivity.
 Qed.
 
@@ -87,6 +89,27 @@ Proof.
   unfold setsid_arm.
   replace (m_setsid_succeeded m0) with false by (vm_compute; reflexivity).
   replace (task_pid (with_pids c_ctx [])) with (@None Z) by (vm_compute; reflexivity).
+  reflexivity.
+Qed.
+
+(** The same call under the launch value [env_foreign_pgroups = true]: a
+    reaper outside the model may have made a process group of [C]'s pid
+    after [C]'s modelled parent exited ([setpgid], kernel/sys.c:1143-1149),
+    so EPERM (kernel/sys.c:1284-1285) is admitted beside the success. *)
+Definition c_st_foreign : NsState :=
+  with_env c_st (env_with_foreign_pgroups (ns_env c_st) true).
+
+Example foreign_pgroups_setsid_over : forall o,
+  ns_spec setsid_call m0 c_ctx c_st_foreign o
+  <-> o = ns_errno EPERM m0 c_ctx c_st_foreign
+      \/ o = ns_ret (Z_to_bv 64 1) (with_setsid_succeeded m0) c_ctx c_st_foreign.
+Proof.
+  intros o. eapply iff_trans; [apply ns_spec_157; vm_compute; reflexivity|].
+  unfold setsid_arm.
+  replace (m_setsid_succeeded m0) with false by (vm_compute; reflexivity).
+  replace (task_pid c_ctx) with (Some 1) by (vm_compute; reflexivity).
+  replace (pidns_made c_st_foreign (cx_pidns c_ctx)) with true by (vm_compute; reflexivity).
+  replace (env_foreign_pgroups (ns_env c_st_foreign)) with true by (vm_compute; reflexivity).
   reflexivity.
 Qed.
 
