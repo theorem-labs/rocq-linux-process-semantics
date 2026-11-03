@@ -462,8 +462,10 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
 
     PIDS ([multiproc_pid_sysnos]): 96 set_tid_address, 172 getpid, 178
     gettid, 157 setsid, 156 getsid, 173 getppid.  The released specs pin
-    the tid by a free choice and answer getsid and getppid by a fresh one;
-    with a peer the answer is fixed by the table.  A non-root entry's pid
+    the tid by a free choice and answer getsid by a fresh one; getppid
+    answers the held parent pid, or, once per reparent window, another
+    pid ([Kernel.Sys.getppid_spec]); with a peer the answer is fixed by
+    the table.  A non-root entry's pid
     is its key, the value its parent's clone returned; the root's is its
     tid, pinned by its own first call.  So [answer_ok_b] keeps only the
     released answers that agree: a non-root entry pins its key; the root
@@ -471,7 +473,13 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     pid (an orphan, whose parent exited, keeps the released choice: Linux
     reparents it to a reaper the model does not name); getsid answers the
     session the entry inherited at its clone ([pm_sid]) until its own
-    setsid, and the released choice when no ancestor led one.  A child of
+    setsid, and the released choice when no ancestor led one.  The
+    released getppid has the table's answer while the parent runs: the
+    child's parent pid is its parent's, so the answer is the held pid,
+    and a parent whose running child holds a signal cannot exit
+    ([step_refused_b]).  An orphan's window is open (its signal is 0, by
+    that refusal) with its one move unspent, so the released choice
+    includes the reaper's pid.  A child of
     the root asking getppid while the root's tid is unpinned first takes
     a silent step, [pstep_pin_root], that pins it.  What cannot be
     answered is refused ([peer_refused_b]): a pid call in a new pid
@@ -749,8 +757,11 @@ Definition child_ms (c c' : config) : machine_state :=
     [copy_process] sets [p->real_parent = current] (kernel/fork.c), and
     [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
     a child cloned before its parent's first [getpid] would otherwise start
-    at 0.  The inheritable capability set copies with the credentials.
-    Kernel citations, read at v6.18.44, identical at v6.18.46. *)
+    at 0.  The reparent window is open in a new child, with nothing moved:
+    its parent-death signal is 0, and [procst_reparent_unseen] and
+    [procst_reparent_moved] start [false].  The inheritable capability set
+    copies with the credentials.  Kernel citations, read at v6.18.44,
+    identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               false (procst_sigmask ps)

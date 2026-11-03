@@ -579,7 +579,7 @@ Proof. intros eff m m' evs H. unfold check_setsid in H. cp_frame2 H. Qed.
 Lemma check_getsid_cp : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H.
   cp_frame2 H.
 Qed.
 

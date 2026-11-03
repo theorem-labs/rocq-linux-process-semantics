@@ -796,7 +796,7 @@ Proof. intros eff m m' evs H. unfold check_setsid in H. fr_frame2 H. Qed.
 Lemma check_getsid_fr : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H. fr_frame2 H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H. fr_frame2 H.
 Qed.
 
 Lemma check_prctl_fr : forall i option_ arg2 eff m m' evs,

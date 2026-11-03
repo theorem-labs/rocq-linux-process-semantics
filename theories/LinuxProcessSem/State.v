@@ -4556,15 +4556,19 @@ Record ProcState := mkProcState {
   procst_ppid : word             (* THE CURRENT PARENT PID, the value
                                     [task->real_parent] gives [getppid]
                                     (kernel/sys.c).  It is seeded from
-                                    [ProcInput] at launch.  No modeled call
-                                    writes it on this branch; [with_ppid] is the
-                                    one setter.  A child gets its parent's
-                                    pid, the parent's key in the process
-                                    table; [Procs.child_proc] names that
-                                    rule.  Kernel citations, read at v6.18.44
-                                    and identical at v6.18.46: kernel/sys.c
-                                    [getppid], kernel/sched/core.c
-                                    [task_ppid_nr_ns]. *);
+                                    [ProcInput] at launch.  [getppid]
+                                    answers it, and once in a reparent
+                                    window it may answer a reaper's pid
+                                    instead and store it
+                                    ([Kernel.Sys.getppid_spec],
+                                    [with_ppid_answered]).  A child gets its
+                                    parent's pid, the parent's key in the
+                                    process table; [Procs.child_proc] names
+                                    that rule.  Kernel citations, read at
+                                    v6.18.44 and identical at v6.18.46:
+                                    kernel/sys.c [getppid],
+                                    kernel/sched/core.c [task_ppid_nr_ns],
+                                    kernel/exit.c [forget_original_parent]. *);
   procst_cap_inheritable : word  (* THE INHERITABLE CAPABILITY SET,
                                     [cred->cap_inheritable]
                                     (include/linux/cred.h).  Every word is a
@@ -5500,8 +5504,9 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
                          (m_reparent_unseen m) (m_reparent_moved m))
             (m_lim m) (m_time m).
 
-(** Install the current parent pid.  No modeled call uses this setter on
-    this branch; see [procst_ppid]. *)
+(** Install the current parent pid, the window bits unchanged.  Its one
+    caller is [init_model]'s setter chain; [getppid] writes the field
+    through [with_ppid_answered].  See [procst_ppid]. *)
 Definition with_ppid (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5522,7 +5527,7 @@ Definition with_ppid (p : word) (m : Model) : Model :=
     [procst_reparent_unseen] is cleared (the answer has shown the parent
     as it is now), and [procst_reparent_moved] is set when [p] differs
     from the pid it replaces and kept otherwise.  Every other field is
-    carried.  No modeled call uses this setter on this branch; see
+    carried.  Its one caller is [Kernel.Sys.getppid_spec]; see
     [procst_reparent_unseen] and [procst_reparent_moved]. *)
 Definition with_ppid_answered (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)

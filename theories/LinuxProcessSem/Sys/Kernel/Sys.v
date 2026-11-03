@@ -295,6 +295,12 @@ Definition getsid_pid_ok (pid : word) (tid : option word) : bool :=
                 | None => false
                 end)%bool.
 
+(** A fresh pid in [[0, Fork.PID_MAX_ENVELOPE)], the model unchanged:
+    [getsid_spec]'s answer before a setsid. *)
+Definition pid_choice_spec : Sys SyscallEffect :=
+  sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;
+  ret_only sid.
+
 (** [getsid pid] (156): the session id of the caller, or of the task
     [pid] names, as the caller's own pid namespace numbers it.
 
@@ -402,9 +408,7 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
     | Some t => ret_only t
     | None => unmodeled          (* no run sets the bit without the tid *)
     end
-  else
-    sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;
-    ret_only sid.
+  else pid_choice_spec.
 
 (** [getppid] (173): the thread-group id of the caller's PARENT, as the
     caller's own pid namespace numbers it.  No argument and no failure
@@ -434,34 +438,53 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
     caller's own tid: a task always has a number in its own active
     namespace, its parent need not.
 
-    A FRESH CHOICE ON EVERY CALL, AND NO PIN.  The parent is the one
-    process fact this model cannot hold still.  When the parent exits,
-    [forget_original_parent] rewrites the caller's [real_parent] to a
-    subreaper or to the namespace's init, at a moment no input of this
-    model names, so two calls can answer two different values.  A
-    choice recorded once, the way [Fork.set_tid_address_spec] records
-    the tid, would forbid that run; an unconstrained choice per call
-    admits it, and that is the honest model.
+    THE ANSWER IS THE CURRENT PARENT, [State.m_ppid], with ONE MOVE PER
+    REPARENT WINDOW.  When the parent exits, [forget_original_parent]
+    rewrites the caller's [real_parent] to a subreaper or to the
+    namespace's init ([find_new_reaper]), at a moment no input of this
+    model names, and sends the caller its parent-death signal
+    ([group_send_sig_info(t->pdeath_signal, ...)]) when one is set.
+    Under [Run.valid_input] the environment's parent dies only while that
+    signal is 0, so its death kills nothing and is seen only here: the
+    model makes the move at the [getppid] that shows it.
 
-    A PROGRAM CAN TOLERATE IT.  What a fresh choice costs is that the
-    model never says WHICH parent: a statement that needs [getppid] to
-    name a particular process has to take that as a premise about the
-    environment.  What it does not cost is the program that CHECKS:
-    a sandbox launcher may be handed the pid of the process that started
-    it, compare [getppid]'s answer with it, and stop if they differ.  A
-    proof about that program quantifies over the answer, reads it from
-    the call log ([Run.star_calls]: [sc_no = 173], [sc_ret]) and covers
-    both branches, which is exactly what a per-call choice supports.
+    - THE WINDOW ([reparent_open]) is open while the signal is 0, and
+      after a signal installed over 0 until the next answer
+      ([State.m_reparent_unseen]): a death before the signal was set
+      shows at that answer.  While it is shut the answer is
+      [State.m_ppid] and nothing else.
+    - IN AN OPEN WINDOW the answer is [State.m_ppid], or, if the pid has
+      not moved in this window ([State.m_reparent_moved]), one other pid
+      in the range above: the reaper.  The answer is stored
+      ([State.with_ppid_answered]), so the parent never moves back and a
+      second move needs a new window.
 
-    No argument register is read and no model state is read or written:
-    the riscv [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec]
-    covers this number too, as does its residual error-injection
-    infidelity.  The four credential READERS -- [getuid] (174),
-    [geteuid] (175), [getgid] (176), [getegid] (177) -- and five setters
-    are in the credentials section below. *)
+    The parent's death at ANY moment, and the kill its signal then sends,
+    are not offered by this arm: a run in which the parent dies while
+    the signal is set is not a run of [Run.valid_input].
+
+    No argument register is read and no memory is touched: the riscv
+    [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec] covers this
+    number too, as does its residual error-injection infidelity.  The
+    four credential READERS -- [getuid] (174), [geteuid] (175), [getgid]
+    (176), [getegid] (177) -- and five setters are in the credentials
+    section below. *)
+Definition reparent_open (m : Model) : bool :=
+  (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0 || m_reparent_unseen m)%bool.
+
+(** An answer [p] an open window admits: the held pid, or, before the
+    pid has moved in this window, any pid in the range. *)
+Definition getppid_answer_ok (m : Model) (p : word) : bool :=
+  (bv_eqb p (m_ppid m)
+   || (negb (m_reparent_moved m) && Z.ltb (bv_unsigned p) PID_MAX_ENVELOPE))%bool.
+
 Definition getppid_spec : Sys SyscallEffect :=
-  ppid <- choose (fun p : word => (bv_unsigned p < PID_MAX_ENVELOPE)%Z) ;;
-  ret_only ppid.
+  m <- get_model ;;
+  if reparent_open m then
+    ppid <- choose (fun p : word => getppid_answer_ok m p = true) ;;
+    modify (with_ppid_answered ppid) ;;
+    ret_only ppid
+  else ret_only (m_ppid m).
 
 (* ------------------------------------------------------------- prlimit64 *)
 
@@ -952,14 +975,12 @@ Definition commit_id_creds (old_eff new_eff : word) (c : Creds) (m : Model)
     process as root.
 
     [getppid] (173) is NOT one of these readers, although it sits beside
-    them in kernel/sys.c.  The parent's pid is a function of no input and
-    of no model state, and it CHANGES under the kernel -- when the parent
-    exits, [find_new_reaper] reparents the process to a subreaper or to
-    the namespace's init -- at a moment the model cannot predict.  So the
-    treatment [Kernel.Fork.set_tid_address_spec] gives the tid, one
-    choice recorded once, does not transfer.  [getppid_spec] above makes
-    a fresh choice on every call instead, and says why a program can be
-    proved to tolerate that. *)
+    them in kernel/sys.c.  The parent's pid is seeded by the launch, but
+    it CHANGES under the kernel -- when the parent exits,
+    [find_new_reaper] reparents the process to a subreaper or to the
+    namespace's init -- at a moment the model cannot predict.  So
+    [getppid_spec] above answers the held pid, and admits that one move
+    inside the reparent window it describes. *)
 Definition getid_spec (sel : Creds -> word) : Sys SyscallEffect :=
   m <- get_model ;;
   ret_only (sel (m_creds m)).

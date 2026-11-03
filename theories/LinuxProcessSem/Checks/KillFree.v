@@ -1133,7 +1133,7 @@ Lemma check_getsid_kf : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros pid eff m m' evs H Hoff Hk.
-  unfold check_getsid, check_getppid in H.
+  unfold check_getsid, check_pid_choice in H.
   kf_frame H m Hoff Hk.
 Qed.
 

@@ -2435,8 +2435,8 @@ Lemma check_gettid_frame : forall eff m m' evs,
   check_gettid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. exact check_set_tid_address_frame. Qed.
 
-(** [getppid] hands back [m] itself: its answer is a fresh choice and
-    nothing is pinned. *)
+(** [getppid] hands back [m] itself, or [m] with the answer recorded
+    ([State.with_ppid_answered]), which rebuilds only [ProcState]. *)
 Lemma check_getppid_frame : forall eff m m' evs,
   check_getppid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_getppid in H. vm_frame2 H. Qed.
@@ -2451,11 +2451,11 @@ Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
 (** [getsid] hands back [m] itself on every accepting branch: the tid
     after a successful setsid is read, not written, and the fresh choice
-    before one is [check_getppid]'s, which pins nothing. *)
+    before one is [check_pid_choice]'s, which pins nothing. *)
 Lemma check_getsid_frame : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H.
   vm_frame2 H.
 Qed.
 

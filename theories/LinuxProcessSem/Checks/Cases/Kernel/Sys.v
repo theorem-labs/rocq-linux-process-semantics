@@ -809,34 +809,94 @@ Example prctl_capbset_read_assumed_caps_and_bound :
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================
-   getppid (173): a fresh choice on every call
+   getppid (173): the held parent pid, with one move per reparent window
    ========================================================================= *)
 
 Definition getppid_in : SyscallInput :=
   mkInput 173 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
 
-(** Any pid below [Fork.PID_MAX_ENVELOPE] is admitted, 0 (a parent in
-    an ancestor pid namespace) included, and the model comes back
-    UNCHANGED: two different answers are both admissible on the same
-    model, which is the "no pin" half of the spec.  The envelope bound
-    and an errno are refused.  The model before this arm declined every
-    [getppid]. *)
-Example getppid_answers_any_pid_in_the_envelope :
-  check_syscall getppid_in (mkEffect 4242 [] []) demo_model
-    = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect 1 [] []) demo_model
-       = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect 0 [] []) demo_model
-       = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
-       demo_model = CheckReject
-  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) demo_model
+(** The launch's parent is 77, and the window is open: the parent-death
+    signal is 0. *)
+Definition ppid_open_model : Model := with_ppid 77 demo_model.
+
+(** A SHUT window: the launcher installed SIGKILL (over 0, which leaves
+    the window open until the next answer), and that answer showed 77. *)
+Definition ppid_shut_model : Model :=
+  with_ppid_answered 77 (with_pdeath_signal 9 ppid_open_model).
+
+(** SHUT: the held pid and nothing else.  The model before this arm
+    admitted 78 here too (a fresh choice per call); now it is refused,
+    with every other pid.  THE CONTROL, refused before and after: an
+    errno. *)
+Example getppid_shut_answers_the_held_pid :
+  check_syscall getppid_in (mkEffect 77 [] []) ppid_shut_model
+    = CheckOk ppid_shut_model []
+  /\ check_syscall getppid_in (mkEffect 78 [] []) ppid_shut_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect 0 [] []) ppid_shut_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) ppid_shut_model
        = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
+(** OPEN, NOTHING MOVED: the held pid, or ONE other pid in the envelope
+    (the reaper), which is stored.  0 (a reaper in an ancestor pid
+    namespace) is a pid too.  The envelope bound and an errno are
+    refused, before and after this arm. *)
+Example getppid_open_moves_once :
+  check_syscall getppid_in (mkEffect 77 [] []) ppid_open_model
+    = CheckOk (with_ppid_answered 77 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect 1 [] []) ppid_open_model
+       = CheckOk (with_ppid_answered 1 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect 0 [] []) ppid_open_model
+       = CheckOk (with_ppid_answered 0 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       ppid_open_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) ppid_open_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** ...AND NEVER BACK, NOR TWICE: after the move to 1 the window is still
+    open (the signal is 0), but the pid has moved, so 1 is the only
+    answer: neither the old parent 77 nor a second reaper 2. *)
+Example getppid_moves_never_back :
+  let m1 := with_ppid_answered 1 ppid_open_model in
+  check_syscall getppid_in (mkEffect 1 [] []) m1
+    = CheckOk (with_ppid_answered 1 m1) []
+  /\ check_syscall getppid_in (mkEffect 77 [] []) m1 = CheckReject
+  /\ check_syscall getppid_in (mkEffect 2 [] []) m1 = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** A DEATH BEFORE THE SIGNAL SHOWS AFTER IT: SIGKILL installed over 0,
+    and no answer since, keeps the window open, so the reaper is still
+    admitted. *)
+Example getppid_death_before_the_signal :
+  let m1 := with_pdeath_signal 9 ppid_open_model in
+  check_syscall getppid_in (mkEffect 1 [] []) m1
+    = CheckOk (with_ppid_answered 1 m1) [].
+Proof. check_eq. Qed.
+
+(** A NEW WINDOW: the signal set back to 0 after the window shut gives
+    one new move, so a second reaper is admitted there. *)
+Example getppid_new_window_moves_again :
+  let m1 := with_ppid_answered 1 (with_pdeath_signal 9
+              (with_ppid_answered 1 ppid_open_model)) in
+  let m2 := with_pdeath_signal 0 m1 in
+  check_syscall getppid_in (mkEffect 2 [] []) m1 = CheckReject
+  /\ check_syscall getppid_in (mkEffect 2 [] []) m2
+       = CheckOk (with_ppid_answered 2 m2) [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE REPARENT KILLS NOTHING: the answer that moves the pid leaves the
+    process running and unkilled, the gates [Checks.KillFree] reads. *)
+Example getppid_reparent_kills_nothing :
+  match check_syscall getppid_in (mkEffect 1 [] []) ppid_open_model with
+  | CheckOk m' [] => m_halted m' = None /\ m_killed m' = None
+  | _ => False
+  end.
+Proof. vm_compute. split; reflexivity. Qed.
+
 (** THE CONTROL, which the model before this arm passed too: [getpid]
     on the same model is untouched by the new number -- it still pins
-    the tid at its first answer, where [getppid] pins nothing. *)
+    the tid at its first answer. *)
 Example getppid_leaves_getpid_alone :
   check_syscall (mkInput 172 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 4242 [] []) demo_model
