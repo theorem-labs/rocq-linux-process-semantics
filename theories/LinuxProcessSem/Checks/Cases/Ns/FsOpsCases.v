@@ -17,14 +17,19 @@ Definition bytes (zs : list Z) : list byte := map (Z_to_bv 8) zs.
 Definition no_flags : MountFlags := mkMountFlags false false false false.
 Definition root_user : UserNs := mkUserNs 1 None 0 0 None None true false INT_MAX true.
 Definition root_dir : Inode := mkInode 1 IDir 511 1000 1002 0 [] false.
-Definition base_state : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None]
-    [root_user] [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0 0] []
-    [mkSb 1 SbTmpfs 1 1 false 16914836 false false false]
-    [mkDentry 1 1 None [] 1] [root_dir] [] (ns_env empty_nsstate).
-Definition base_ctx : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 42%Z)] (1%positive, 1%positive) (1%positive, 1%positive)
-    18 (mkCaps 0 0 0 0 0) 0 [].
+(** One mount (flags [mf]) of superblock [s] in mount namespace 1, user
+    namespace [root_user], pid namespace 1, and the dentries [ds] and
+    inodes [ins]. *)
+Definition one_sb (mf : MountFlags) (s : SuperBlock) (ds : list Dentry) (ins : list Inode) : NsState :=
+  let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 mf no_flags false false None None] in
+  let st := with_userns st [root_user] in
+  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_sbs st [s] in
+  with_tree st ds ins.
+Definition tmpfs_sb : SuperBlock := mkSb 1 SbTmpfs 1 1 false 16914836 false false false.
+Definition base_state : NsState := one_sb no_flags tmpfs_sb [mkDentry 1 1 None [] 1] [root_dir].
+Definition base_ctx : NsCtx := with_pids init_nsctx [(1%positive, 42%Z)].
 Definition base_model : Model :=
   init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) demo_sp demo_limit (demo_input [] IEof).
 Definition PATH : Z := 8192.
@@ -59,16 +64,12 @@ Proof. split; vm_compute; reflexivity. Qed.
 
 Definition ro_flags : MountFlags := mkMountFlags true false false false.
 Definition existing_ro_state : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 ro_flags no_flags false false None None]
-    [root_user] [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0 0] []
-    [mkSb 1 SbTmpfs 1 1 false 16914836 false false false]
+  one_sb ro_flags tmpfs_sb
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [101; 120; 105; 115; 116; 115]) 2]
-    [root_dir; mkInode 2 IReg 420 1000 1002 0 [] false] [] (ns_env empty_nsstate).
+    [root_dir; mkInode 2 IReg 420 1000 1002 0 [] false].
 Definition proc_state : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None]
-    [root_user] [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0 0] []
-    [mkSb 1 (SbProc 1) 1 1 false 40864 true true true]
-    [mkDentry 1 1 None [] 1] [mkInode 1 IDir 365 0 0 0 [] false] [] (ns_env empty_nsstate).
+  one_sb no_flags (mkSb 1 (SbProc 1) 1 1 false 40864 true true true)
+    [mkDentry 1 1 None [] 1] [mkInode 1 IDir 365 0 0 0 [] false].
 Definition s_exists : list Z := [47; 101; 120; 105; 115; 116; 115].
 Definition s_missing_parent : list Z := [47; 110; 111; 47; 110; 101; 119].
 Definition s_link : list Z := [47; 108; 105; 110; 107].
@@ -123,11 +124,9 @@ Definition map_root : UserNs := mkUserNs 1 None 0 0 (Some identity_map) (Some id
 Definition map_child : UserNs := mkUserNs 2 (Some 1%positive) 1 1000 None None true false INT_MAX true.
 Definition mapped_child : UserNs :=
   mkUserNs 2 (Some 1%positive) 1 1000 (Some [mkExtent 0 65534 1]) None true false INT_MAX true.
-Definition map_state (users : list UserNs) : NsState :=
-  mkNsState [] users [] [] [] [] [] [] [] (ns_env empty_nsstate).
+Definition map_state (users : list UserNs) : NsState := with_userns empty_nsstate users.
 Definition map_caps : CapSets := mkCaps (2 ^ 7 + 2 ^ 21) (2 ^ 7 + 2 ^ 21) 0 0 0.
-Definition map_ctx : NsCtx :=
-  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 map_caps 0 [].
+Definition map_ctx : NsCtx := with_caps init_nsctx map_caps.
 Definition map_cred : IdCred := mkIdCred 1 1000 1002 (2 ^ 7 + 2 ^ 21).
 Definition uid_loc : Loc := LProcTask 1 42 [bytes [117; 105; 100; 95; 109; 97; 112]].
 Definition groups_loc : Loc := LProcTask 1 42 [bytes [115; 101; 116; 103; 114; 111; 117; 112; 115]].
@@ -171,20 +170,22 @@ Example write_setgroups_deny :
 Proof. split; vm_compute; reflexivity. Qed.
 
 Definition sys_state : NsState :=
-  mkNsState [mkMount 2 1 None 1 1 2 no_flags no_flags false false None None]
-    [map_root; map_child] [mkMntNs 1 1 2 false] [] []
-    [mkSb 2 (SbProc 1) 1 1 false 40864 true true true]
+  let st := with_mounts empty_nsstate [mkMount 2 1 None 1 1 2 no_flags no_flags false false None None] in
+  let st := with_userns st [map_root; map_child] in
+  let st := with_mntns st [mkMntNs 1 1 2 false] in
+  let st := with_sbs st [mkSb 2 (SbProc 1) 1 1 false 40864 true true true] in
+  with_tree st
     [mkDentry 1 2 None [] 1;
      mkDentry 2 2 (Some 1%positive) (bytes [115; 121; 115]) 2;
      mkDentry 3 2 (Some 2%positive) (bytes [117; 115; 101; 114]) 3;
      mkDentry 4 2 (Some 3%positive)
        (bytes [109; 97; 120; 95; 117; 115; 101; 114; 95; 110; 97; 109; 101; 115; 112; 97; 99; 101; 115]) 4]
     [mkInode 1 IDir 365 0 0 0 [] false; mkInode 2 IDir 365 0 0 0 [] false;
-     mkInode 3 IDir 365 0 0 0 [] false; mkInode 4 IReg 420 0 0 0 [] false]
-    [] (ns_env empty_nsstate).
+     mkInode 3 IDir 365 0 0 0 [] false; mkInode 4 IReg 420 0 0 0 [] false].
 Definition resource_caps : CapSets := mkCaps (2 ^ 24) (2 ^ 24) 0 0 0.
 Definition resource_ctx : NsCtx :=
-  mkNsCtx 1 2 1 1 [] (2%positive, 1%positive) (2%positive, 1%positive) 18 resource_caps 0 [].
+  with_caps (with_cwd (with_root (with_mount_ns init_nsctx 2) (2%positive, 1%positive)) (2%positive, 1%positive))
+            resource_caps.
 Definition sys_file : NsFile := mkNsFile (NfUserNsFile (LDentry 2 4) 2 0) 1 (mkIdCred 1 1000 1002 (2 ^ 24)).
 Definition limit_of (o : ext_outcome) : option Z :=
   match o with
@@ -234,11 +235,9 @@ Example read_setgroups :
 Proof. vm_compute. reflexivity. Qed.
 
 Definition file_state : NsState :=
-  mkNsState (ns_mounts base_state) (ns_userns base_state) (ns_mntns base_state) (ns_pidns base_state)
-    (ns_netns base_state) (ns_sbs base_state)
+  with_tree base_state
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
-    [root_dir; mkInode 2 IReg 420 1000 1002 0 (bytes [97; 98; 99; 100]) false]
-    [] (ns_env base_state).
+    [root_dir; mkInode 2 IReg 420 1000 1002 0 (bytes [97; 98; 99; 100]) false].
 Definition offset_file : NsFile := mkNsFile (NfFile (LDentry 1 2) 2) 0 (mkIdCred 1 1000 1002 0).
 
 (** A regular tmpfs read starts at the shared open-file offset. *)
@@ -285,12 +284,14 @@ Definition s_f_slash : list Z := [47; 102; 47].
 (** A tmpfs root owned by uid 0, mode [dir_perm], with the file "f" (owner
     [fuid]:[fgid], mode 0644) and the mounts [extra] besides the root. *)
 Definition unlink_state (dir_perm fuid fgid : Z) (extra : list Mount) : NsState :=
-  mkNsState (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra)
-    [root_user] [mkMntNs 1 1 1 false; mkMntNs 2 1 1 false] [mkPidNs 1 None 1 0 0] []
-    [mkSb 1 SbTmpfs 1 1 false 16914836 false false false]
+  let st := with_mounts empty_nsstate (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra) in
+  let st := with_userns st [root_user] in
+  let st := with_mntns st [mkMntNs 1 1 1 false; mkMntNs 2 1 1 false] in
+  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_sbs st [tmpfs_sb] in
+  with_tree st
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
-    [mkInode 1 IDir dir_perm 0 0 0 [] false; mkInode 2 IReg 420 fuid fgid 0 (bytes [107]) false]
-    [] (ns_env empty_nsstate).
+    [mkInode 1 IDir dir_perm 0 0 0 [] false; mkInode 2 IReg 420 fuid fgid 0 (bytes [107]) false].
 
 (** do_unlinkat removes the name: the call returns 0, no lookup finds "f",
     and the dentry stays, unlinked, for what holds it. *)
@@ -510,8 +511,7 @@ Qed.
     before the unshare sets the limit. *)
 Definition sysw : NsState :=
   let w := FilesCases.W_user_sys in
-  mkNsState (ns_mounts w) [map_root] (ns_mntns w) (ns_pidns w) (ns_netns w) (ns_sbs w)
-            (ns_dentries w) (ns_inodes w) [] (ns_env w).
+  with_files (with_userns w [map_root]) [].
 Definition sysw_ctx : NsCtx :=
   FilesCases.ctx_at 1 resource_caps (1%positive, 1%positive) (1%positive, 2%positive).
 Definition sysw_opened : ext_outcome :=

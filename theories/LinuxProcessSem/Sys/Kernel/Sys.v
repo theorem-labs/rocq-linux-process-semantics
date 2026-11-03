@@ -400,7 +400,12 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
   else if m_setsid_succeeded m then
     match m_tid m with
     | Some t => ret_only t
-    | None => unmodeled          (* no run sets the bit without the tid *)
+    | None => unmodeled          (* the released setsid pins the tid with the bit; only
+                                    [Ns.Task.setsid_arm] sets the bit without the tid, for
+                                    a task outside the released world, and such a task
+                                    never answers here again: no modelled call moves a
+                                    task back into the released world, and a child starts
+                                    with the bit clear *)
     end
   else
     sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;

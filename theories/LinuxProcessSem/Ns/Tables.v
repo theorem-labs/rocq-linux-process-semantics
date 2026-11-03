@@ -1,11 +1,17 @@
 (** * LinuxProcessSem.Ns.Tables — namespace and mount state, as data
 
     The records a namespace-and-mount layer keeps beside the per-process
-    model: the mounts of every mount namespace, the user, mount and pid
-    namespaces, the superblocks with their dentries and inodes, and the
-    per-task context that names which of them a task is in.  Nothing here
-    steps; [Ns.Mount], [Ns.Userns] and [Ns.Spec] are the operations, and
-    [Ns.ProcsIface] says how a multi-process core carries these records.
+    model: the mounts of every mount namespace, the user, mount, pid,
+    network and UTS namespaces, the superblocks with their dentries and
+    inodes, and the per-task context that names which of them a task is
+    in.  Nothing here steps; [Ns.Mount], [Ns.Userns] and [Ns.Spec] are the
+    operations, and [Ns.ProcsIface] says how a multi-process core carries
+    these records.
+
+    [NsState] and [NsCtx] are built and changed through [empty_nsstate],
+    [init_nsctx] and the setters below them, never by applying [mkNsState]
+    or [mkNsCtx] to every field elsewhere: a new field then touches the
+    record, its initial value and its setters, and no caller.
 
     The shapes follow Linux 6.18.44: a mount is [struct mount]
     (fs/mount.h), with [mnt_flags] split into the four flags a mount carries
@@ -219,6 +225,38 @@ Record NetNs := mkNetNs {
   netns_sealed : bool
 }.
 
+(** A UTS namespace ([struct uts_namespace], include/linux/uts_namespace.h:11-16,
+    Linux v6.18.46): its owner ([user_ns], the user namespace
+    [copy_utsname] was given) and the two members of its
+    [struct new_utsname] that a call can write: [nodename] ([sethostname])
+    and [domainname] ([setdomainname]).  Each is [None] while it is still
+    the host's -- those bytes of the released model's utsname pin
+    ([State.m_utsname], chosen at the first [uname]) -- and [Some] its 65
+    bytes after a write in this namespace or in the namespace it was copied
+    from ([clone_uts_ns] copies the whole name, kernel/utsname.c:59).  The
+    other four members (sysname, release, version, machine) have no setter
+    in kernel/sys.c, so in every namespace they are the pin's. *)
+Record UtsNs := mkUtsNs {
+  utsns_id         : positive;
+  utsns_owner      : positive;
+  utsns_nodename   : option (list byte);
+  utsns_domainname : option (list byte)
+}.
+
+(** The host's UTS namespace ([init_uts_ns]): id [host_uts], owned by the
+    initial user namespace (1, the [cx_user] of [init_nsctx]), both members
+    the pin's.  No arm writes it ([Task.sethostname_arm] declines there,
+    since a write would change the environment's pin), so both stay
+    [None]. *)
+Definition host_uts : positive := 1%positive.
+Definition host_utsns : UtsNs := mkUtsNs host_uts 1%positive None None.
+
+Definition with_nodename (u : UtsNs) (v : option (list byte)) : UtsNs :=
+  mkUtsNs (utsns_id u) (utsns_owner u) v (utsns_domainname u).
+
+Definition with_domainname (u : UtsNs) (v : option (list byte)) : UtsNs :=
+  mkUtsNs (utsns_id u) (utsns_owner u) (utsns_nodename u) v.
+
 (** What an open file of the namespace model is: a path opened with O_PATH;
     a directory open for reading and its position; a file open for reading
     or writing (a regular file or a task's procfs file) and its offset; a
@@ -303,15 +341,34 @@ Definition default_mi_env : MiEnv :=
     host lookup of a name the tables do not list is otherwise undecided;
     a pair is a measured fact about the host (stat of that path gave
     ENOENT), and a statement that lists one asks that nothing outside the
-    model creates the name. *)
+    model creates the name.  Last, [env_foreign_pgroups]: whether a
+    process outside the model may make a process group of a modelled
+    task's pid.  Only the task itself or its parent may set the task's
+    process group ([setpgid], kernel/sys.c:1143-1153, Linux v6.18.46: a
+    caller other than the task must be [p->real_parent], in [p]'s
+    session, before [p] execs), and no modelled process can ([setpgid]
+    154 has no arm).  But once a modelled
+    parent exits, its child is reparented to a reaper the environment
+    owns, and that reaper may call [setpgid(child, child)] before the
+    child execs, after which the child's [setsid] answers EPERM
+    (kernel/sys.c:1284-1285).  [false], the default, assumes that no
+    environment reaper calls [setpgid] on the caller before the caller's
+    [setsid]; a statement that wants that case names
+    [env_foreign_pgroups := true] ([Task.setsid_arm]). *)
 Record NsEnv := mkNsEnv {
-  env_mount_max     : Z;
-  env_proc_entries  : list ProcEntry;
-  env_net_fallback  : list NetIf;
-  env_mountinfo     : MiEnv;
-  env_nl_link_max   : Z;
-  env_host_absent   : list (positive * list byte)
+  env_mount_max       : Z;
+  env_proc_entries    : list ProcEntry;
+  env_net_fallback    : list NetIf;
+  env_mountinfo       : MiEnv;
+  env_nl_link_max     : Z;
+  env_host_absent     : list (positive * list byte);
+  env_foreign_pgroups : bool
 }.
+
+(** The same environment with [env_foreign_pgroups] set to [b]. *)
+Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) b.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
     open files a process's descriptor table names by handle
@@ -322,6 +379,7 @@ Record NsState := mkNsState {
   ns_mntns    : list MntNs;
   ns_pidns    : list PidNs;
   ns_netns    : list NetNs;
+  ns_utsns    : list UtsNs;
   ns_sbs      : list SuperBlock;
   ns_dentries : list Dentry;
   ns_inodes   : list Inode;
@@ -338,10 +396,10 @@ Record CapSets := mkCaps {
   cap_ambient     : Z
 }.
 
-(** What one task holds: which user, mount, pid and network namespace it is
-    in, its pid in each pid namespace from its own outwards, its root and
-    current directory as (mount, dentry), its umask, its capability sets
-    (in its user namespace) and securebits, and the descriptors marked
+(** What one task holds: which user, mount, pid, network and UTS namespace
+    it is in, its pid in each pid namespace from its own outwards, its root
+    and current directory as (mount, dentry), its umask, its capability
+    sets (in its user namespace) and securebits, and the descriptors marked
     close-on-exec.  The parent-death signal, the no-new-privs bit and the
     dumpable mode are the released model's ([State.m_pdeath_signal],
     [State.m_no_new_privs], [State.m_dumpable]), not this record's: a
@@ -352,6 +410,7 @@ Record NsCtx := mkNsCtx {
   cx_mount        : positive;
   cx_pidns        : positive;
   cx_net          : positive;
+  cx_uts          : positive;
   cx_pids         : list (positive * Z);
   cx_root         : positive * positive;
   cx_cwd          : positive * positive;
@@ -370,29 +429,125 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
   end.
 
 (** The shared state of a system the namespace model knows nothing of: no
-    mount tree and no namespace, Linux's default mount limit (100000) and
-    no procfs entry.  A core builds its released world from this, never
-    from the constructor, so a new field changes no caller. *)
+    mount tree and no namespace but the host's UTS namespace
+    ([host_utsns], whose names are the released pin's), Linux's default
+    mount limit (100000) and no procfs entry.  A core builds its released
+    world from this, never from the constructor, so a new field changes no
+    caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z []).
+  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false).
 
+(** The setters of [NsState], one per field: with [empty_nsstate], the only
+    places that apply [mkNsState] to every field. *)
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
-  mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
+  mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
             (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
 
 Definition with_userns (st : NsState) (us : list UserNs) : NsState :=
-  mkNsState (ns_mounts st) us (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
+  mkNsState (ns_mounts st) us (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
             (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
 
+Definition with_mntns (st : NsState) (ns : list MntNs) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) ns (ns_pidns st) (ns_netns st) (ns_utsns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_pidns (st : NsState) (ps : list PidNs) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) ps (ns_netns st) (ns_utsns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_netns (st : NsState) (ns : list NetNs) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) ns (ns_utsns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_utsns (st : NsState) (us : list UtsNs) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) us (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_sbs (st : NsState) (sbs : list SuperBlock) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st) sbs
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_dentries (st : NsState) (ds : list Dentry) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
+            (ns_sbs st) ds (ns_inodes st) (ns_files st) (ns_env st).
+
+Definition with_inodes (st : NsState) (ins : list Inode) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
+            (ns_sbs st) (ns_dentries st) ins (ns_files st) (ns_env st).
+
 Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) fs (ns_env st).
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
+            (ns_sbs st) (ns_dentries st) (ns_inodes st) fs (ns_env st).
+
+Definition with_env (st : NsState) (e : NsEnv) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_utsns st)
+            (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) e.
+
+(** The UTS namespace [n] of the tables. *)
+Definition find_utsns (st : NsState) (n : positive) : option UtsNs :=
+  find (fun u => Pos.eqb (utsns_id u) n) (ns_utsns st).
+
+(** The UTS namespace with [u]'s id replaced by [u]. *)
+Definition set_utsns (st : NsState) (u : UtsNs) : NsState :=
+  with_utsns st (map (fun x => if Pos.eqb (utsns_id x) (utsns_id u) then u else x) (ns_utsns st)).
 
 (** The context of a task that has entered no namespace: the initial
-    namespaces, root and cwd at the root mount's root dentry, the umask
-    022, no capability, no securebits, no close-on-exec descriptor.  These
-    are assumptions about the launcher, as the released model's launch
-    values are: it set the umask to 022. *)
+    namespaces (the host's UTS namespace [host_uts] among them), root and
+    cwd at the root mount's root dentry, the umask 022, no capability, no
+    securebits, no close-on-exec descriptor.  These are assumptions about
+    the launcher, as the released model's launch values are: it set the
+    umask to 022. *)
 Definition init_nsctx : NsCtx :=
-  mkNsCtx 1%positive 1%positive 1%positive 1%positive [] (1%positive, 1%positive)
+  mkNsCtx 1%positive 1%positive 1%positive 1%positive host_uts [] (1%positive, 1%positive)
           (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [].
+
+(** The setters of [NsCtx], one per field: with [init_nsctx], the only
+    places that apply [mkNsCtx] to every field. *)
+Definition with_user_ns (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx n (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_mount_ns (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) n (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_pid_ns (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) n (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_net_ns (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) n (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_uts_ns (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) n (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_pids (ctx : NsCtx) (ps : list (positive * Z)) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) ps (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_root (ctx : NsCtx) (r : positive * positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) r
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+          (cx_root ctx) c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+          (cx_root ctx) (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_caps (ctx : NsCtx) (c : CapSets) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx).
+
+Definition with_securebits (ctx : NsCtx) (b : Z) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) b (cx_cloexec ctx).
+
+(** The descriptors marked close-on-exec replaced by [l]. *)
+Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l.
