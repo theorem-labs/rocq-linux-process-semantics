@@ -344,6 +344,67 @@ Example openat_mountinfo_binds_namespace_root :
   mountinfo_binding (openat_fn (open_in s_mountinfo 0 0) m3 c0 W) = Some (3, 42, 1, 1, 1, 0).
 Proof. vm_compute. reflexivity. Qed.
 
+(* ---- the owners in a sticky directory ---------------------------------- *)
+
+(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h:50-51). *)
+Definition invalid_id : Z := 4294967295.
+
+(** [W] with the sticky world-writable directory "st" (01777), the regular
+    file "st/f" (0666) and the link "st/l" (to "/file"), all three owned by
+    uid and gid [owner]. *)
+Definition W_sticky (owner : Z) : NsState :=
+  with_tree W
+    (ns_dentries W ++
+     [dent 11 1 (Some 1%positive) (bytes [115; 116]) 11;
+      dent 12 1 (Some 11%positive) (bytes [102]) 12;
+      dent 13 1 (Some 11%positive) (bytes [108]) 13])
+    (ns_inodes W ++
+     [dir 11 1023 owner owner; reg 12 438 owner owner;
+      mkInode 13 ILnk 511 owner owner 0 (bytes [47; 102; 105; 108; 101]) false]).
+
+Definition s_st_f : list Z := [47; 115; 116; 47; 102].                    (* /st/f *)
+Definition s_st_l : list Z := [47; 115; 116; 47; 108].                    (* /st/l *)
+
+(** A caller with fsuid and fsgid 2000, no supplementary group. *)
+Definition uid2000 : Creds :=
+  mkCreds (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000)
+          (Z_to_bv 64 2000) [].
+
+(** [may_create_in_sticky] (fs/namei.c:1304-1347, Linux v6.18.46) compares
+    the file's owner with the directory's by [vfsuid_eq] (1321), which is
+    false when the left one is INVALID (include/linux/mnt_idmapping.h:65-68).
+    An O_CREAT open of the existing 0666 file "st/f", in the sticky
+    world-writable "st", both owned by INVALID, by the caller with fsuid
+    1000, which owns neither: Linux answers EACCES with protected_regular 1
+    (1327-1329) and opens with protected_regular 0 (1313-1314); the tables
+    do not hold the sysctl, so the model has no answer.  Both owned by 1000
+    and a caller with fsuid 2000: the owners match (1321-1322) and the open
+    gives descriptor 3. *)
+Example openat_creat_sticky_invalid_owners :
+  openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky invalid_id) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example openat_creat_sticky_same_owner :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) (with_creds uid2000 m3) c0 (W_sticky 1000)) = Some 3.
+Proof. vm_compute. reflexivity. Qed.
+
+(** [may_follow_link] (fs/namei.c:1168-1196) lets a follower that does not
+    own a last-component link in a sticky world-writable directory follow
+    it only when the directory's owner is valid and owns the link (1187).
+    The link "st/l" and "st" both owned by INVALID, followed by the caller
+    with fsuid 1000: Linux answers EACCES with protected_symlinks 1
+    (1187-1195) and follows with protected_symlinks 0 (1173-1174); the
+    model has no answer.  Both owned by 1000 and a caller with fsuid 2000:
+    the link is followed (1187-1188) and the open gives "/file". *)
+Example openat_follow_sticky_invalid_owners :
+  openat_fn (open_in s_st_l 0 0) m3 c0 (W_sticky invalid_id) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example openat_follow_sticky_same_owner :
+  new_file (openat_fn (open_in s_st_l 0 0) (with_creds uid2000 m3) c0 (W_sticky 1000))
+  = Some (2, (1, 4, []), O_LARGEFILE).
+Proof. vm_compute. reflexivity. Qed.
+
 (* ---- openat2 ----------------------------------------------------------- *)
 
 Definition how_mem (flags mode resolve : Z) : word -> option byte :=

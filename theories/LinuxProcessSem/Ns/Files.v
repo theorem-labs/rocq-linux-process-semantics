@@ -549,14 +549,16 @@ Definition inode_or_sysctl_permission (m : Model) (ctx : NsCtx) (st : NsState) (
   else inode_permission st ctx cr eff l sb a mask.
 
 
-(** [may_create_in_sticky] (fs/namei.c) on an O_CREAT open of an existing
-    regular file or FIFO in a sticky directory that the caller and the
-    directory's owner do not own: its answer is the protected_regular or
-    protected_fifos sysctl's, which the tables do not hold, wherever the
-    directory is group- or world-writable. *)
+(** [may_create_in_sticky] (fs/namei.c:1304-1347) on an O_CREAT open of an
+    existing regular file or FIFO in a sticky directory: the file's owner
+    is neither a valid owner that is also the directory's ([vfsuid_eq],
+    1321-1322) nor the caller (1324-1325).  Its answer is then the
+    protected_regular or protected_fifos sysctl's (1313-1317, 1327-1343),
+    which the tables do not hold, wherever the directory is group- or
+    world-writable. *)
 Definition sticky_undecided (cr : WalkCreds) (dir a : ObjAttr) : bool :=
   has (oa_perm dir) S_ISVTX && (kind_is IReg a || kind_is IFifo a)
-  && negb (Z.eqb (oa_uid a) (oa_uid dir)) && negb (Z.eqb (oa_uid a) (wc_fsuid cr))
+  && negb (vfsuid_eq (oa_uid a) (oa_uid dir)) && negb (Z.eqb (oa_uid a) (wc_fsuid cr))
   && has (oa_perm dir) 18.
 
 (** [do_open] (fs/namei.c) after the walk found [l]: with O_CREAT,

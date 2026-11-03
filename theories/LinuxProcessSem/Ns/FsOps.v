@@ -690,10 +690,6 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
    fchmod and unlinkat
    ========================================================================= *)
 
-(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h): the
-    id no namespace maps, which [vfsuid_valid] refuses. *)
-Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
-
 (** [inode_owner_or_capable] (fs/inode.c): the fsuid owns the inode, or the
     task has CAP_FOWNER over it ([capable_wrt_inode_uidgid]). *)
 Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
