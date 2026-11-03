@@ -4545,6 +4545,48 @@ Definition valid_urandom (inp : ProcInput) : Prop :=
 Ltac valid_urandom_default :=
   try unfold valid_urandom; exact State.default_urandom_infinite.
 
+(** THE LARGEST REGULAR FILE: [MAX_LFS_FILESIZE] on a 64-bit kernel is
+    [(loff_t)LLONG_MAX] (include/linux/fs.h, Linux v6.18.46).  An
+    inherited file is at most this many bytes, so an offset the read arm
+    moves within the file stays an offset Linux can hold. *)
+Definition MAX_LFS_FILESIZE : Z := 9223372036854775807%Z.
+
+(** THE DESCRIPTOR-NUMBER CEILING: [sysctl_nr_open_max], which fs/file.c
+    computes as the smaller of INT_MAX and the largest pointer count a
+    [size_t] holds, masked down to a multiple of BITS_PER_LONG:
+    2,147,483,584 on a 64-bit kernel (Linux v6.18.46).
+    [sysctl_nr_open] is at most this, a table never grows past
+    [sysctl_nr_open], and so no descriptor number reaches it.
+    RLIMIT_NOFILE is NOT a bound on an inherited number: Linux checks it
+    only when a number is ALLOCATED ([get_unused_fd_flags], [replace_fd],
+    [ksys_dup3], [f_dupfd]), so a launch may hold a number at or above its
+    own soft limit. *)
+Definition nr_open_max : Z := 2147483584%Z.
+
+(** The inherited numbers are strictly increasing from [lo] and each is
+    below [nr_open_max]. *)
+Fixpoint inherited_numbers_ok (ks : list word) (lo : Z) : bool :=
+  match ks with
+  | [] => true
+  | k :: r => (lo <=? bv_unsigned k)%Z && (bv_unsigned k <? nr_open_max)%Z
+              && inherited_numbers_ok r (bv_unsigned k + 1)%Z
+  end.
+
+(** THE LAUNCH CONDITION ON [State.in_inherited_fds], the clause
+    [valid_input_inherited] carries.  The numbers are strictly increasing
+    from 3: 0, 1 and 2 are the launch's own channels ([State.init_model]),
+    and one canonical list per launch makes the numbers distinct.  No
+    count bound: Linux has none (the table's size is [sysctl_nr_open]'s
+    business, and every number is below the ceiling).  Each file is at
+    most [MAX_LFS_FILESIZE] bytes.  A boolean, so a concrete list is
+    decided by [reflexivity], as [Fs.fs_image_real] is. *)
+Definition inherited_fds_ok (l : list (word * list byte)) : bool :=
+  inherited_numbers_ok (map fst l) 3%Z
+  && forallb (fun kv => Z.leb (Z.of_nat (length (snd kv))) MAX_LFS_FILESIZE) l.
+
+Lemma inherited_fds_ok_nil : inherited_fds_ok [] = true.
+Proof. reflexivity. Qed.
+
 (** Validity predicate for a [State.ProcInput].  Three fields carry no
     clause, each because every value of its type is one a process could
     really be handed: the standard-input stream's elements are [byte],
@@ -4628,7 +4670,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4687,7 +4730,18 @@ Definition valid_input (inp : ProcInput) : Prop :=
     means it asks for it by name ([valid_input_channel_closed]); a task
     that means both asks for [valid_input_channel_either].  The model
     pins the reader, and names the reader-gone launch so a proof can
-    ask for it, the shape the abort declaration already has. *)
+    ask for it, the shape the abort declaration already has.
+
+    THE INHERITED DESCRIPTORS ARE PINNED HERE TOO, to none, in this
+    predicate and in every sibling below.  [State.in_inherited_fds] lists
+    the descriptors above 2 the launch's parent left open, and under
+    these predicates there are none: the ordinary launch has descriptors
+    0, 1 and 2 and no other.  Every statement written before the field
+    therefore keeps its domain, and a statement about descriptor numbers
+    (a first [openat] answering 3, by [State.alloc_fd]'s lowest-free
+    rule) stays true.  The launch that has inherited descriptors is
+    named, [valid_input_inherited] below, and it alone carries the
+    assumption about their other holders. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4700,7 +4754,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4722,7 +4777,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4797,7 +4853,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = false
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4816,7 +4873,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4910,7 +4968,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
-  /\ in_sigpipe_terminal inp = true.
+  /\ in_sigpipe_terminal inp = true
+  /\ in_inherited_fds inp = [].
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4925,7 +4984,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp).
+  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5018,7 +5078,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -5119,7 +5180,8 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = true.
+  /\ in_sigpipe_terminal inp = true
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5159,7 +5221,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5173,7 +5236,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5186,7 +5250,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5481,7 +5546,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5495,7 +5561,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5590,7 +5657,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5604,7 +5672,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_inherited_fds inp = [].
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -5662,6 +5731,103 @@ Proof.
   intros inp Hv. unfold valid_input_abort_hwcap_rv64gcv in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
+Qed.
+
+(** * THE INHERITED DESCRIPTORS: PINNED EMPTY, AND THE LAUNCH THAT HAS THEM NAMED
+
+    [State.in_inherited_fds] lists the descriptors above 2 that the
+    launch's parent opened and the execve kept, each with the bytes of
+    the regular file it reads.  Every predicate above pins it to [[]]:
+    the plain launch has descriptors 0, 1 and 2 and no other, so it needs
+    no assumption about anyone else who holds a description.
+
+    [valid_input_inherited] is the launch that has them, named the way
+    [valid_input_abort] names the aborting launch: every clause of
+    [valid_input] with the pin replaced by [inherited_fds_ok] (numbers
+    strictly increasing from 3 and below [nr_open_max], each file at most
+    [MAX_LFS_FILESIZE] bytes).  It is NOT the safer predicate: it admits
+    more launches than [valid_input] does
+    ([valid_input_inherited_of_valid_input]), and a statement over it is
+    a claim about every one of them.
+
+    THE ASSUMPTION IT RESTS ON, and only this predicate rests on it:
+    each inherited descriptor is an open file description of its own
+    (no two of them share one); no process outside the model reads it,
+    seeks it or truncates it while the run lives; and no process, the
+    run's own processes included, changes its file while the run lives.
+    Linux keeps one offset per description and moves it at every [read]
+    through any descriptor that names it ([ksys_read], fs/read_write.c;
+    [dup_fd], fs/file.c; v6.18.46), and the model keeps one offset per
+    inherited descriptor.  The model also holds the file's bytes apart
+    from its file system, with no inode identity, so a write to the same
+    file through a path would leave those bytes stale.  SCOPE.md states
+    the assumption with this predicate. *)
+Definition valid_input_inherited (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false
+  /\ inherited_fds_ok (in_inherited_fds inp) = true.
+
+(** THE PIN, as an accessor rather than as a position. *)
+Lemma valid_input_no_inherited : forall inp,
+  valid_input inp -> in_inherited_fds inp = [].
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_inherited_ok : forall inp,
+  valid_input_inherited inp -> inherited_fds_ok (in_inherited_fds inp) = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The plain launch is one of them: the empty list passes
+    [inherited_fds_ok]. *)
+Lemma valid_input_inherited_of_valid_input : forall inp,
+  valid_input inp -> valid_input_inherited inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hn : in_inherited_fds _ = [] |- _ =>
+              rewrite Hn; reflexivity end ].
+Qed.
+
+(** ...and exactly the ones whose list is empty: so a statement over
+    [valid_input_inherited] with the premise [in_inherited_fds inp = []]
+    is a statement over [valid_input]. *)
+Lemma valid_input_of_valid_input_inherited : forall inp,
+  valid_input_inherited inp -> in_inherited_fds inp = [] -> valid_input inp.
+Proof.
+  intros inp H Hn. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+(** A plain launch given a list [inherited_fds_ok] accepts
+    ([State.with_inherited_fds] changes that field alone) is a keyed
+    launch [valid_input_inherited] admits. *)
+Lemma valid_input_inherited_with_inherited_fds : forall l inp,
+  valid_input inp -> inherited_fds_ok l = true ->
+  valid_input_inherited (with_inherited_fds l inp).
+Proof.
+  intros l inp H Hl. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (* =========================================================================

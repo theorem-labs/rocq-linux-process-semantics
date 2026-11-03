@@ -790,19 +790,21 @@ Definition fstat_procfd_dir_spec (statbuf : word) : Sys SyscallEffect :=
 (** [fstat] on an opaque descriptor ([State.OpaqueFd]): only the
     /proc/self/fd directory answers.
 
-    The other five decline.  [vfs_fstat]'s [CLASS(fd_raw, f)] accepts an
+    The other six decline.  [vfs_fstat]'s [CLASS(fd_raw, f)] accepts an
     O_PATH file, so all of them reach [cp_new_stat], with metadata the
     model does not hold: an O_PATH file's is its procfs inode's, an
     eventfd's and a signalfd's are the anonymous inode's
     ([anon_inode_getfile_fmode]: one inode shared by every anonymous
     file, its mode set by [alloc_anon_inode]), a /proc/sys file's is the
-    sysctl inode's, and an [ONsFile]'s object is of unknown type
-    (fs/stat.c, fs/anon_inodes.c, read at v6.18.44; identical at
-    v6.18.46). *)
+    sysctl inode's, an [ONsFile]'s object is of unknown type, and an
+    inherited file's is the inode of a file the model holds the bytes of
+    and nothing else (fs/stat.c, fs/anon_inodes.c, read at v6.18.44;
+    identical at v6.18.46). *)
 Definition fstat_opaque_spec (o : OpaqueFd) (statbuf : word) : Sys SyscallEffect :=
   match o with
   | OProcFdDir _ _ => fstat_procfd_dir_spec statbuf
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => unmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OInherited _ => unmodeled
   end.
 
 (** THE MATCH BELOW IS TOTAL ON [FdEntry] ON PURPOSE, with no wildcard.
@@ -909,6 +911,6 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdOpaque o) => fstat_opaque_spec o statbuf
                                      (* the /proc/self/fd directory answers, S_IFDIR with
                                         0500 and the rest the environment's; the other
-                                        five objects decline (see [fstat_opaque_spec]) *)
+                                        six objects decline (see [fstat_opaque_spec]) *)
   end.
 

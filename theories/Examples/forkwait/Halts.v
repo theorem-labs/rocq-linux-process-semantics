@@ -1384,7 +1384,8 @@ Qed.
     -- so the alternative is taken apart here.
 
     Neither outcome writes memory and neither halts: the clone's effect
-    is a return value and, on the pid side, [State.with_child]. *)
+    is a return value and, on the pid side, [State.with_child] over
+    [Fork.forfeit_model]. *)
 Lemma fw_clone_resolve_inv : forall i m eff m' evs,
   clone_resolve i m (Ok eff m' evs) ->
   evs = []
@@ -1400,7 +1401,7 @@ Proof.
   unfold clone_resolve, bind in H. cbv beta iota in H.
   destruct H as (x & m1 & evs1 & evs2 & Hg & Hk & Hevs).
   unfold get_model in Hg. injection Hg as Hx Hm1 He1. subst x m1 evs1.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg2.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg2.
   - unfold unmodeled in Hk. discriminate.
   - destruct Hk as [Herr | Hpid].
     + (* the declining alternative: an errno from [Fork.clone_errnos] *)
@@ -1437,7 +1438,9 @@ Proof.
       split; [reflexivity|].
       split; [intros (Hh & Hl & Hc & Ht);
               split; [exact Hh|]; split; [exact Hl|];
-              split; [exact Hc | exact Ht]|].
+              split; [ change (clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true);
+                       rewrite (forfeit_inherited_gate _ Hc); exact Hc
+                     | exact Ht]|].
       unfold clone_pid_ok_b in Hok.
       apply andb_true_iff in Hok as [Hok _].
       apply andb_true_iff in Hok as [Hlo Hhi].
@@ -3077,7 +3080,8 @@ Proof.
 Qed.
 
 (** [Fork.clone_resolve] answers [Unmodeled] for ONE reason, its own
-    gate, and the shape carries the gate open. *)
+    gate, and the shape carries the gate open: a table the gate passes
+    is its own [Fork.forfeit_inherited]. *)
 Lemma fw_clone_no_unmodeled : forall i m,
   clone_no_shared_file_b (m_fds m) = true ->
   ~ clone_resolve i m Unmodeled.
@@ -3087,7 +3091,7 @@ Proof.
   destruct H as [Hg | (x & m1 & evs1 & Hg & Hk)].
   - unfold get_model in Hg. discriminate.
   - unfold get_model in Hg. injection Hg as Hx Hm1 He1. subst x m1.
-    rewrite Hgate in Hk. cbn [negb] in Hk.
+    rewrite (forfeit_inherited_gate _ Hgate), Hgate in Hk. cbn [negb] in Hk.
     destruct Hk as [Herr | Hpid].
     + unfold bind in Herr. cbv beta iota in Herr.
       destruct Herr as [He | (e0 & m2 & evsA & He & Her)].
@@ -3908,12 +3912,23 @@ Proof.
   (* through the accessors, not by position: [valid_input] grows *)
   pose proof (valid_input_va_size inp Hvi) as Hva.
   pose proof (valid_input_launch inp Hvi) as Hvl.
+  (* the launch inherits no descriptor, so the clone gate reads the
+     three channels alone: the table is [init_model]'s
+     ([with_vdso] keeps it), which [State.m_fds_init_model_no_inherited]
+     gives as the three channels *)
+  pose proof (valid_input_no_inherited inp Hvi) as Hnoi.
   unfold valid_entry, valid_entry_va in Hve. rewrite Hva in Hve.
   destruct Hve as (Hsp & _ & _ & _ & Hlau).
   unfold pinit_config. left.
   apply fw_shape_one_proc;
     [split; [reflexivity|]; split; [reflexivity|];
-     split; [reflexivity | reflexivity]|].
+     split; [ change (clone_no_shared_file_b
+                        (m_fds (init_model
+                                  (segments_reserved ForkwaitMemImage_loaded_segments)
+                                  brk0 mbase sp lim inp)) = true);
+              rewrite (m_fds_init_model_no_inherited _ _ _ _ _ _ Hnoi);
+              reflexivity
+            | reflexivity ]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
   assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd
@@ -4122,7 +4137,9 @@ Qed.
 
 (** THE OUTCOME THE CLONE ADMITS, built out of the monad rather than
     inverted out of it: [Fork.clone_resolve]'s admitting alternative,
-    at a pid the gate accepts. *)
+    at a pid the gate accepts.  The shape's table holds no live
+    inherited descriptor, so the model the caller keeps is its own
+    ([Fork.forfeit_model_gate]). *)
 Lemma fw_clone_resolve_ok : forall i m (p : word),
   clone_no_shared_file_b (m_fds m) = true ->
   clone_pid_ok_b m p = true ->
@@ -4131,14 +4148,15 @@ Proof.
   intros i m p Hgate Hok.
   unfold clone_resolve, bind. cbv beta iota.
   exists m, m, [], []. split; [reflexivity|]. split; [|reflexivity].
-  rewrite Hgate. cbn [negb]. right.
+  rewrite (forfeit_inherited_gate _ Hgate), Hgate. cbn [negb]. right.
   unfold bind. cbv beta iota.
   exists p, m, [], [].
   split; [exists p; split; [exact Hok | reflexivity]|].
   split; [|reflexivity].
   unfold bind. cbv beta iota.
   exists tt, (with_child p m), [], [].
-  split; [reflexivity|]. split; [reflexivity | reflexivity].
+  split; [unfold modify; cbv beta; rewrite (forfeit_model_gate m Hgate); reflexivity|].
+  split; [reflexivity | reflexivity].
 Qed.
 
 Lemma fw_clone_spec_ok : forall segs ms x8 model (p : word),
