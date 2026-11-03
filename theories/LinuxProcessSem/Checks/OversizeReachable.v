@@ -191,8 +191,7 @@ Proof.
     { unfold mm_s. apply mm_step. exact Hlt. }
     apply mm_never_bor_intro.
     + intro Hb.
-      apply (budget_refused_at_no_lazy_modeled_instr mm_rsegs (mm_s k) mm_model eq_refl Hsvc
-               ltac:(rewrite Hstep; discriminate)).
+      apply (budget_refused_at_no_lazy_instr mm_rsegs (mm_s k) mm_model eq_refl Hsvc).
       apply budget_only_refused_at_implies. exact Hb.
     + intros evs c2 Hss.
       destruct (sstep_instr_only mm_rsegs (mm_s k) mm_model (mm_s (S k)) eq_refl Hsvc

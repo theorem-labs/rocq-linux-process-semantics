@@ -2681,6 +2681,108 @@ Proof.
 Qed.
 
 (* =========================================================================
+   No vDSO call touches the lazy ledger
+   =========================================================================
+
+   The numbers [Vdso.vdso_fn_sysno] hands [Specs.syscall_spec] are
+   gettimeofday (169), clock_gettime (113), clock_getres (114) and three
+   with no arm today (168, 258, 259).  None of the three specifications
+   maps memory: each reads the input and the model and at most records a
+   clock reading ([State.with_clock]).  So every admitted outcome of a
+   vDSO call leaves [State.m_vm_lazy] as it was, which is what lets the
+   budget mark's vDSO clause be discharged on a run with no lazy mapping
+   ([budget_refused_at_no_lazy_instr]). *)
+
+Lemma syscall_spec_unarmed : forall i m eff m' evs,
+  LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.lookup_arm
+    LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable.spec_table
+    (bv_unsigned (in_sysno i)) = None ->
+  ~ syscall_spec i m (Ok eff m' evs).
+Proof.
+  intros i m eff m' evs E H.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch in H.
+  rewrite E in H. cbv beta iota delta [unmodeled] in H. discriminate H.
+Qed.
+
+Lemma syscall_spec_at_113 : forall i m o,
+  in_sysno i = Z_to_bv 64 113 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_114 : forall i m o,
+  in_sysno i = Z_to_bv 64 114 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_169 : forall i m o,
+  in_sysno i = Z_to_bv 64 169 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec
+     (in_arg i 0) (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+(** Unfold a specification's monadic chain in [H] and take every branch;
+    each surviving branch leaves the model as it was or with a new clock
+    reading, and [m_vm_lazy] reads through both. *)
+Local Ltac keeps_lazy_in H :=
+  cbv beta iota delta [bind pure input get_model choose unmodeled alt modify set_clock
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.err_ret
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.ret_only
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_result_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec] in H;
+  repeat match goal with
+  | H0 : _ /\ _ |- _ => destruct H0
+  | H0 : exists _, _ |- _ => destruct H0
+  | H0 : _ \/ _ |- _ => destruct H0
+  | H0 : Ok _ _ _ = Ok _ _ _ |- _ => inversion H0; clear H0; subst
+  | H0 : Ok _ _ _ = Unmodeled |- _ => discriminate H0
+  | H0 : Unmodeled = Ok _ _ _ |- _ => discriminate H0
+  | H0 : context [match ?x with _ => _ end] |- _ =>
+      destruct x eqn:?; cbv beta iota in H0
+  end;
+  reflexivity.
+
+Lemma vdso_spec_keeps_lazy : forall segs ms model fn n eff model' evs,
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  m_vm_lazy model' = m_vm_lazy model.
+Proof.
+  intros segs ms model fn n eff model' evs Hn H.
+  destruct fn; cbn in Hn; try discriminate Hn; injection Hn as <-;
+    first
+    [ exfalso; refine (syscall_spec_unarmed _ _ _ _ _ _ H); reflexivity
+    | pose proof (proj1 (syscall_spec_at_113 (sys_input segs ms (Z_to_bv 64 113)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_114 (sys_input segs ms (Z_to_bv 64 114)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_169 (sys_input segs ms (Z_to_bv 64 169)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1 ].
+Qed.
+
+(* =========================================================================
    The budget mark: where a run is refused for exceeding its budget
    =========================================================================
 
@@ -2852,47 +2954,24 @@ Qed.
     budget-refused: the first-touch clause needs [None] where
     [materialize_model_accesses_no_lazy] answers [Some], the grant and
     effect clauses need a pending syscall, and the vDSO clause needs an
-    outcome of the call that is materialized against a lazy mapping,
-    which the last hypothesis excludes.  That hypothesis is vacuous
-    wherever the instruction is modeled
-    ([budget_refused_at_no_lazy_modeled_instr]). *)
+    outcome of the call materialized against a lazy mapping, which no
+    vDSO call creates ([vdso_spec_keeps_lazy]). *)
 Lemma budget_refused_at_no_lazy_instr : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
-  (mi_account_step segs ms model = MachineUnmodeled ->
-   forall fn n eff model' evs,
-     vdso_entry_fn segs (ms_pc ms) = Some fn ->
-     vdso_fn_sysno fn = Some n ->
-     syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
-     m_vm_lazy model' = []) ->
   ~ budget_refused_at (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc Hv
+  intros ms model Hlazy Hsvc
     (_ & [(_ & report & _ & Hmat)
          | [(x8 & Hx8 & _)
-           | (_ & HU & fn & n & eff & model' & evs & Hfn & Hn & Hspec & _ & _ & Hmat)]]);
+           | (_ & _ & fn & n & eff & model' & evs & _ & Hn & Hspec & _ & _ & Hmat)]]);
     cbn [cfg_ms cfg_model] in *.
   - rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat. discriminate Hmat.
   - congruence.
-  - rewrite (materialize_model_accesses_no_lazy model' _
-               (Hv HU fn n eff model' evs Hfn Hn Hspec)) in Hmat.
+  - assert (Hl : m_vm_lazy model' = []).
+    { rewrite (vdso_spec_keeps_lazy segs ms model fn n eff model' evs Hn Hspec). exact Hlazy. }
+    rewrite (materialize_model_accesses_no_lazy model' _ Hl) in Hmat.
     discriminate Hmat.
-Qed.
-
-(** The hypothesis above, discharged where the interpreter answers: on a
-    model with no lazy mapping, [mi_account_step] is [RiscvSemantics.step]
-    with the model unchanged, which is never [MachineUnmodeled] when the
-    step is [MachineOk] or [MachineFault]. *)
-Lemma budget_refused_at_no_lazy_modeled_instr : forall ms model,
-  m_vm_lazy model = [] ->
-  ms_svc_pending ms = None ->
-  RiscvSemantics.step segs ms <> MachineUnmodeled ->
-  ~ budget_refused_at (mkCfg ms model).
-Proof.
-  intros ms model Hlazy Hsvc Hstep.
-  apply (budget_refused_at_no_lazy_instr ms model Hlazy Hsvc).
-  intros HU. exfalso. rewrite (mi_account_step_no_lazy segs ms model Hlazy) in HU.
-  destruct (RiscvSemantics.step segs ms) eqn:E; try discriminate HU. exact (Hstep eq_refl).
 Qed.
 
 (** ... and a syscall configuration whose every outcome leaves no lazy

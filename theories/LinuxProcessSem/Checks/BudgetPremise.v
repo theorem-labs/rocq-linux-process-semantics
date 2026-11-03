@@ -1439,8 +1439,7 @@ Proof.
     destruct (RiscvSemantics.step segs ms) as [ms'| |] eqn:Hstep;
       [|discriminate|discriminate].
     inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
-    + exact (budget_refused_at_no_lazy_modeled_instr segs ms model Hlazy Hsvc
-               ltac:(rewrite Hstep; discriminate) Hb).
+    + exact (budget_refused_at_no_lazy_instr segs ms model Hlazy Hsvc Hb).
     + destruct (sstep_instr_only segs ms model ms' Hlazy Hsvc Hstep _ _ Hss) as [_ Hc2].
       injection Hc2 as ->.
       apply (IH ms' model Hh Hlazy Hc). exists tr', c. split; assumption.
