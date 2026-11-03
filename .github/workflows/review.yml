@@ -414,11 +414,12 @@ jobs:
       MODEL_ARMOR_TEMPLATE: projects/theorem-agent-infra/locations/us/templates/review-screen
       STORAGE_URL: https://storage.googleapis.com
       REASON_BUCKET: theorem-agent-infra-review-screen-reasons
-      # Azure: Theorem's tenant, the managed identity review-screen and the Content Safety account.
+      # Azure: Theorem's tenant, the managed identity review-screen, whose federated credential admits this
+      # repository's jobs in review-screen, and whose role allows text:shieldPrompt on the Content Safety account and
+      # nothing else.
       AZURE_LOGIN_URL: https://login.microsoftonline.com
       AZURE_TENANT_ID: aaa6ad34-51af-41e7-891f-f16f5c53c396
-      # Empty until the managed identity exists: Prompt Shields then does not run, and the verdict says so.
-      AZURE_CLIENT_ID: ""
+      AZURE_CLIENT_ID: 878cb696-144f-4c60-b04c-3974fad24e96
       CONTENT_SAFETY_URL: https://theorem-review-screen.cognitiveservices.azure.com
       # Anthropic: Theorem's organization, the service account review-screen (not the review's oss-verify-ci), its
       # workspace, and the federation rule rocq-linux-process-semantics-screen, which admits only this file's jobs in
@@ -429,9 +430,9 @@ jobs:
       ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01JFhEhPizCyTiK2i22mRJ8a
       ANTHROPIC_FEDERATION_RULE_ID: fdrl_01SQMHj4Tw85dV4DNYWQDKeA
       SCREEN_MODEL: claude-haiku-5-5
-      # The checks that run: model_armor always, claude, and prompt_shields once its identity above is set.
-      # A listed check whose settings are missing holds every item; a check leaves only by leaving this list.
-      SCREEN_CHECKS: model_armor,claude
+      # The checks that run, all three. A listed check whose settings are missing, or that cannot answer (a 429 of
+      # Prompt Shields' free tier among the causes), holds the item; a check leaves only by leaving this list.
+      SCREEN_CHECKS: model_armor,prompt_shields,claude
     steps:
       # main's .github/, for screen.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
