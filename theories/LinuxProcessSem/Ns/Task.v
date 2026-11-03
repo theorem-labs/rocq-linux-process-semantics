@@ -2,16 +2,21 @@
 
     The calls that read or change only what a task holds: its umask, its
     pid, its capability sets, its no_new_privs bit, its parent-death signal
-    and its dumpable mode.  Each header names the Linux 6.18.44 functions it
-    follows and its kind.
+    and its dumpable mode; and the calls on the names of its UTS namespace:
+    [uname], [sethostname] and [setdomainname].  Each header names the
+    Linux functions it follows (6.18.44; the UTS arms cite v6.18.46) and
+    its kind.
 
     The security modules are the capability module alone, as the released
     model's capability arms assume: [security_capget], [security_capset]
     and [security_task_prctl] are [cap_capget], [cap_capset] and
     [cap_task_prctl].  A read from user memory that [access_ok] admits but
-    that finds an unmapped byte declines, as the released arms do; a write
-    to user memory that is not wholly writable after [access_ok] declines
-    too (a partial copy). *)
+    that finds an unmapped byte declines, as the released capability arms
+    do; [sethostname] and [setdomainname] read their name with the
+    released model's [copy_from_user] reader ([uts_copy_in]) and answer
+    EFAULT there, as the released arms that use it do.  A write to user
+    memory that is not wholly writable after [access_ok] declines too (a
+    partial copy). *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -20,23 +25,12 @@ Import ListNotations.
 Local Open Scope Z_scope.
 
 (* =========================================================================
-   Setters on the task context
+   Setters on the task context (the per-field ones are [Ns.Tables]')
    ========================================================================= *)
 
-Definition with_caps (ctx : NsCtx) (c : CapSets) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+Definition with_dumpable (ctx : NsCtx) (d : Z) : NsCtx := with_dumpable_opt ctx (Some d).
 
-Definition with_dumpable (ctx : NsCtx) (d : Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (Some d).
-
-Definition with_no_new_privs (ctx : NsCtx) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (Some true) (cx_dumpable ctx).
+Definition with_no_new_privs (ctx : NsCtx) : NsCtx := with_nnp_opt ctx (Some true).
 
 (** The task's credential as the capability checks read it: its user
     namespace, euid and egid (the model's kernel ids) and effective set. *)
@@ -290,15 +284,182 @@ Definition prctl_arm : NsArm := fun i m ctx st o =>
   if (opt =? 1) || (opt =? 2) then released i m ctx st o
   else o = prctl_fn i m ctx st \/ prctl_enomem i m ctx st = Some o.
 
+(* =========================================================================
+   The UTS namespace: uname, sethostname, setdomainname
+   ========================================================================= *)
+
+(** The two members of [struct new_utsname] a call can write, and where
+    each starts in the 390 bytes [uname] copies out: [nodename] at 65,
+    [domainname] at 325 (include/uapi/linux/utsname.h:25-32, Linux
+    v6.18.46). *)
+Inductive UtsField := UtsNodename | UtsDomainname.
+
+Definition uts_offset (k : UtsField) : nat :=
+  match k with UtsNodename => 65%nat | UtsDomainname => 325%nat end.
+
+Definition uts_put (k : UtsField) (u : UtsNs) (v : list byte) : UtsNs :=
+  match k with
+  | UtsNodename => with_nodename u (Some v)
+  | UtsDomainname => with_domainname u (Some v)
+  end.
+
+(** [ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN)]
+    (kernel/sys.c:1424, :1478): [own_capable]'s shape aimed at the UTS
+    namespace's owner. *)
+Definition uts_capable (m : Model) (ctx : NsCtx) (st : NsState) (u : UtsNs) : bool :=
+  cap_capable (ns_userns st) (task_cred m ctx) (utsns_owner u) CAP_SYS_ADMIN.
+
+(** [copy_from_user(tmp, name, len)] for [0 <= len <= 64], through the
+    released model's own reader of a user range, [State.copy_bytes_map]:
+    [access_ok] over the whole range, then the bytes ([_inline_copy_from_user],
+    include/linux/uaccess.h:159-185).  [None] is the copy failing, which
+    Linux answers -EFAULT whether [access_ok] refused the range or a byte
+    of it is not mapped -- the released arms answer both that way through
+    this reader ([Net.Socket.bind_spec]) or its two halves
+    ([Kernel.Signal.rt_sigprocmask_spec], [Kernel.Sys.prlimit64_spec]).
+    At length 0 [copy_from_user] copies nothing and returns 0 whatever the
+    pointer, which [copy_bytes_map] does not say for a pointer above
+    [TASK_SIZE], so that case is answered first, as its note asks of a
+    caller with a variable length. *)
+Definition uts_copy_in (i : SyscallInput) (name : word) (len : Z) : option (list byte) :=
+  if len =? 0 then Some [] else copy_bytes_map (in_mem i) name len.
+
+(** [sethostname] (161) and [setdomainname] (162): one template over the
+    member [k], in the kernel's order (Linux v6.18.46, kernel/sys.c:1419-1443
+    [SYSCALL_DEFINE2(sethostname)] and :1473-1497
+    [SYSCALL_DEFINE2(setdomainname)]):
+    - EPERM unless the task holds CAP_SYS_ADMIN over the owner of its UTS
+      namespace ([uts_capable], :1424-1425 and :1478-1479);
+    - in the host's UTS namespace ([host_uts]) the call DECLINES past that
+      check: a write there changes the host's name, which is the
+      environment's pin ([State.m_utsname]);
+    - EINVAL when [len], the sign-extended low 32 bits of a1 (an [int]),
+      is below 0 or above [__NEW_UTS_LEN] (:1427-1428, :1480-1481);
+    - the copy-in of [len] bytes ([uts_copy_in]): EFAULT, exact, when it
+      fails, with no copy-in recorded, the released convention for a
+      failed copy ([Kernel.Signal.rt_sigprocmask_spec]'s note); else the
+      [len] bytes are the call's copy-in (none at length 0);
+    - [add_device_randomness] (:1433, :1487) changes nothing a program
+      can see that the model's [getrandom], a free choice, does not
+      already admit;
+    - the member becomes the [len] bytes and NULs to 65 bytes (:1436-1437,
+      :1490-1491), and the call returns 0.
+    Nothing in it can fail for the environment: it allocates nothing, and
+    [down_write] and [up_write] do not fail; so it injects no refusal
+    ([task_injected] has no row for 161 or 162).  A UTS namespace the
+    tables do not hold declines.  Kind: exact; declines in the host's UTS
+    namespace after the capability check. *)
+Definition set_uts_fn (k : UtsField) (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
+    : ext_outcome :=
+  let name := in_arg i 0 in
+  let len := s32 (in_arg i 1) in
+  match find_utsns st (cx_uts ctx) with
+  | None => EUnmodeled
+  | Some u =>
+      if negb (uts_capable m ctx st u) then ns_errno EPERM m ctx st
+      else if Pos.eqb (utsns_id u) host_uts then EUnmodeled
+      else if (len <? 0) || (NEW_UTS_LEN <? len) then ns_errno EINVAL m ctx st
+      else match uts_copy_in i name len with
+           | None => ns_errno EFAULT m ctx st
+           | Some bs =>
+               EOk (with_copyins (if len =? 0 then [] else [(name, Z.to_nat len)])
+                                 (mkEffect (Z_to_bv 64 0) [] []))
+                   m ctx (set_utsns st (uts_put k u (bs ++ repeat (Z_to_bv 8 0) (65 - Z.to_nat len)%nat)))
+                   []
+           end
+  end.
+
+Definition sethostname_arm : NsArm := fun i m ctx st o => o = set_uts_fn UtsNodename i m ctx st.
+
+Definition setdomainname_arm : NsArm := fun i m ctx st o => o = set_uts_fn UtsDomainname i m ctx st.
+
+(** The 390 bytes [uname] copies out with member [k]'s 65 bytes replaced
+    by [v]. *)
+Definition uts_splice (k : UtsField) (v : list byte) (bs : list byte) : list byte :=
+  firstn (uts_offset k) bs ++ v ++ skipn (uts_offset k + 65)%nat bs.
+
+(** What a task in UTS namespace [u] reads where the released [uname]
+    delivers [bs]: each member [u] holds replaces the pin's. *)
+Definition uts_overlay (u : UtsNs) (bs : list byte) : list byte :=
+  let bs1 := match utsns_nodename u with Some v => uts_splice UtsNodename v bs | None => bs end in
+  match utsns_domainname u with Some v => uts_splice UtsDomainname v bs1 | None => bs1 end.
+
+Definition uts_view_eff (u : option UtsNs) (eff : SyscallEffect) : SyscallEffect :=
+  match u with
+  | Some x => mkEffectU (eff_ret eff) (map (fun p => (fst p, uts_overlay x (snd p))) (eff_writes eff))
+                        (eff_zeros eff) (eff_unmaps eff) (eff_copies eff) (eff_copyins eff)
+  | None => eff
+  end.
+
+Definition uts_view (u : option UtsNs) (o : ext_outcome) : ext_outcome :=
+  match o with
+  | EOk eff m' ctx' st' evs => EOk (uts_view_eff u eff) m' ctx' st' evs
+  | EUnmodeled => EUnmodeled
+  end.
+
+(** [uname] (160): [SYSCALL_DEFINE1(newuname)] (Linux v6.18.46,
+    kernel/sys.c:1351-1366) copies out [utsname()], the caller's UTS
+    namespace's name ([current->nsproxy->uts_ns->name], :1355-1357).  The
+    answer is the released [uname_spec]'s -- its EFAULT, its decline of a
+    partial copy-out, its pin of the host's utsname, [override_release]
+    and [override_architecture] (:1361-1364) as it has them -- with bytes
+    65..129 replaced by the namespace's [nodename] and bytes 325..389 by
+    its [domainname] where the namespace holds them.  It overlays whatever
+    bytes the released answer delivers, so it stays right if the released
+    arm chooses the free members afresh at each call.  In a namespace
+    whose names are the pin's, the host's among them, it is exactly the
+    released answer ([uname_arm_released]).  Kind: exact where the released
+    arm is. *)
+Definition uname_arm : NsArm := fun i m ctx st o =>
+  exists o', released i m ctx st o' /\ o = uts_view (find_utsns st (cx_uts ctx)) o'.
+
+Lemma uts_view_eff_unnamed : forall u eff,
+  utsns_nodename u = None -> utsns_domainname u = None -> uts_view_eff (Some u) eff = eff.
+Proof.
+  intros u eff Hn Hd.
+  assert (Ho : forall bs, uts_overlay u bs = bs).
+  { intros bs. unfold uts_overlay. rewrite Hn, Hd. reflexivity. }
+  destruct eff as [r ws zs us cs ci]. unfold uts_view_eff.
+  cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
+  assert (Hm : map (fun p => (fst p, uts_overlay u (snd p))) ws = ws).
+  { induction ws as [|[a b] ws IH]; cbn [map]; [reflexivity|].
+    cbn [fst snd]. rewrite IH, Ho. reflexivity. }
+  rewrite Hm. reflexivity.
+Qed.
+
+(** In a UTS namespace whose names are both the pin's, or one the tables
+    do not hold, [uname] has exactly the released answers. *)
+Lemma uname_arm_released : forall i m ctx st o,
+  match find_utsns st (cx_uts ctx) with
+  | Some u => utsns_nodename u = None /\ utsns_domainname u = None
+  | None => True
+  end ->
+  (uname_arm i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hu.
+  assert (Hv : forall o', uts_view (find_utsns st (cx_uts ctx)) o' = o').
+  { intros [eff m' ctx' st' evs|]; [|reflexivity]. cbn [uts_view].
+    destruct (find_utsns st (cx_uts ctx)) as [u|] eqn:E; [|reflexivity].
+    try rewrite E in Hu. destruct Hu as [Hn Hd].
+    rewrite (uts_view_eff_unnamed u eff Hn Hd). reflexivity. }
+  unfold uname_arm. split.
+  - intros (o' & Hr & Ho). rewrite Ho, Hv. exact Hr.
+  - intros Hr. exists o. split; [exact Hr | symmetry; apply Hv].
+Qed.
+
 Definition task_arms : list (Z * NsArm) :=
-  [(90, capget_arm); (91, capset_arm); (166, umask_arm); (167, prctl_arm);
-   (172, getpid_arm); (178, getpid_arm)].
+  [(90, capget_arm); (91, capset_arm); (160, uname_arm); (161, sethostname_arm);
+   (162, setdomainname_arm); (166, umask_arm); (167, prctl_arm); (172, getpid_arm);
+   (178, getpid_arm)].
 
 (** The environment's refusals of these arms, for the forced-only filter:
     [prepare_creds]'s ENOMEM.  The tables' answers ([NsInjected]):
     [capset_fn]'s EFAULT, EINVAL and EPERM; [prctl_fn]'s EINVAL and EPERM,
     and the released answer's EINVAL and EFAULT for PR_SET_PDEATHSIG and
-    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]). *)
+    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]).  [sethostname] and [setdomainname]
+    have no row: no environment refusal reaches them ([set_uts_fn]).
+    Neither has [uname]: its answers are the released ones, whose table
+    ([Run.injected_table]) has no row for 160 either. *)
 Definition task_injected : list NsInjected :=
   [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [EFAULT; EINVAL; EPERM] [];
    mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)] [EINVAL; EPERM; EFAULT] []].

@@ -32,8 +32,7 @@ Example empty_is_flat : forall ctx, flat_view ctx empty_nsstate = true := flat_v
 (** A task with pid 2 in pid namespace 1, mount namespace 1, user
     namespace [u] and umask [umask]. *)
 Definition task_in (u : positive) (pid : Z) (umask : Z) : NsCtx :=
-  mkNsCtx u 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
-          (mkCaps 0 0 0 0 0) 0 [] (Some false) (Some 1%Z).
+  with_umask (with_pids (with_user_ns init_nsctx u) [(1%positive, pid)]) umask.
 Definition task (pid : Z) (umask : Z) : NsCtx := task_in 1 pid umask.
 
 Definition nf : MountFlags := mkMountFlags false false false false.
@@ -42,12 +41,13 @@ Definition nf : MountFlags := mkMountFlags false false false false.
     a host superblock whose root directory is dentry 1; user namespace 1
     is the initial one, 2 a child of it. *)
 Definition world (host : bool) : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
-            [mkUserNs 1 None 0 0 None None true true 100 false;
-             mkUserNs 2 (Some 1%positive) 1 0 None None true true 100 true]
-            [mkMntNs 1 1 1 host] [] []
-            [mkSb 1 SbHost 1 1 false 0 false false false] [mkDentry 1 1 None [] 1]
-            [mkInode 1 IDir 493 0 0 0 [] false] [] (ns_env empty_nsstate).
+  let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None] in
+  let w := with_userns w [mkUserNs 1 None 0 0 None None true true 100 false;
+                          mkUserNs 2 (Some 1%positive) 1 0 None None true true 100 true] in
+  let w := with_mntns w [mkMntNs 1 1 1 host] in
+  let w := with_sbs w [mkSb 1 SbHost 1 1 false 0 false false false] in
+  let w := with_dentries w [mkDentry 1 1 None [] 1] in
+  with_inodes w [mkInode 1 IDir 493 0 0 0 [] false].
 Definition one_mount : NsState := world false.
 
 (** A task in a mount namespace the tables model is not in the released
@@ -80,7 +80,7 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 (** In the released world the same calls are the released model's. *)
 Example getpid_flat_is_released : forall m ctx o,
   ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
-Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
+Proof. intros m ctx o. apply ns_spec_flat. apply flat_view_empty. Qed.
 
 (** While other processes are live ([Spec.ns_multiproc]): a task in the
     released world gets the core's guard alone.  Outside it, the calls the
@@ -97,7 +97,7 @@ Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
     ([clock_gettime]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
   ext_multiproc ns_ext i m ctx empty_nsstate = false.
-Proof. intros i m ctx. reflexivity. Qed.
+Proof. intros i m ctx. exact (ns_multiproc_coherent i m ctx empty_nsstate (flat_view_empty ctx)). Qed.
 
 Example multiproc_getpid_inside : forall m,
   ext_multiproc ns_ext (call 172) m (task 2 18) one_mount = true.
@@ -175,15 +175,15 @@ Example host_loc_relative : host_loc (world true) [Z_to_bv 8 112] = None := eq_r
     root of a task that is not chrooted, not from rootfs; and such a task's
     root (2, 2) is not chrooted. *)
 Definition rootfs_world : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None;
-             mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
-            [mkUserNs 1 None 0 0 None None true true 100 false]
-            [mkMntNs 1 1 1 true] [] []
-            [mkSb 1 SbHost 1 1 false 0 false false false; mkSb 2 SbHost 2 1 false 0 false false false]
-            [mkDentry 1 1 None [] 1; mkDentry 2 2 None [] 2;
-             mkDentry 3 2 (Some 2%positive) [Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99] 3]
-            [mkInode 1 IDir 493 0 0 0 [] false; mkInode 2 IDir 493 0 0 0 [] false;
-             mkInode 3 IDir 493 0 0 0 [] false] [] (ns_env empty_nsstate).
+  let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None;
+                                      mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None] in
+  let w := with_userns w [mkUserNs 1 None 0 0 None None true true 100 false] in
+  let w := with_mntns w [mkMntNs 1 1 1 true] in
+  let w := with_sbs w [mkSb 1 SbHost 1 1 false 0 false false false; mkSb 2 SbHost 2 1 false 0 false false false] in
+  let w := with_dentries w [mkDentry 1 1 None [] 1; mkDentry 2 2 None [] 2;
+                            mkDentry 3 2 (Some 2%positive) [Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99] 3] in
+  with_inodes w [mkInode 1 IDir 493 0 0 0 [] false; mkInode 2 IDir 493 0 0 0 [] false;
+                 mkInode 3 IDir 493 0 0 0 [] false].
 
 Example host_loc_from_top : host_loc rootfs_world slash = Some (LDentry 2 2) := eq_refl.
 Example host_loc_below_top :
@@ -191,8 +191,7 @@ Example host_loc_below_top :
   := eq_refl.
 Example top_root_not_chrooted :
   UserArms.current_chrooted rootfs_world
-    (mkNsCtx 1 1 1 1 [] (2%positive, 2%positive) (2%positive, 2%positive) 18 (mkCaps 0 0 0 0 0) 0 []
-             (Some false) (Some 1%Z)) = Some false := eq_refl.
+    (with_cwd (with_root init_nsctx (2%positive, 2%positive)) (2%positive, 2%positive)) = Some false := eq_refl.
 
 (** A pass-through call outside the released world gets the released
     forced-only filter ([Spec.ns_refusal_pass]): an anonymous [mmap] of a

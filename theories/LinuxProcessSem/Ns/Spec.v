@@ -28,11 +28,12 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Spe
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task Clone Files UserArms MountArms Net FsOps Pass.
 Import ListNotations.
 
-(** The arms, by call number: the task's own state ([Ns.Task]), files and
-    paths ([Ns.Files], [Ns.FsOps]), user namespaces ([Ns.UserArms]), mounts
-    ([Ns.MountArms]), NETLINK_ROUTE and SIOCGIFINDEX ([Ns.Net]), and the
-    calls a namespace does not change ([Ns.Pass]).  A number not listed
-    fails closed; no number is listed twice ([ns_table_nodup]). *)
+(** The arms, by call number: the task's own state and its UTS namespace's
+    names ([Ns.Task]), files and paths ([Ns.Files], [Ns.FsOps]), user
+    namespaces ([Ns.UserArms]), mounts ([Ns.MountArms]), NETLINK_ROUTE and
+    SIOCGIFINDEX ([Ns.Net]), and the calls a namespace does not change
+    ([Ns.Pass]).  A number not listed fails closed; no number is listed
+    twice ([ns_table_nodup]). *)
 Definition ns_table : list (Z * NsArm) :=
   task_arms ++ file_arms ++ fsops_arms ++ user_arms ++ mount_arms ++ net_arms ++ pass_arms.
 
@@ -292,6 +293,10 @@ Qed.
     musl's allocator may map or unmap a group), and [mmap] 222 only with
     MAP_ANONYMOUS: a file mapping reads the file, and the released file
     system is kept per process.  [capget] 90 reads the task's own sets.
+    [sethostname] 161 (bubblewrap's child setting a host name) reads the caller's
+    context, its own memory and the UTS namespace, and writes that
+    namespace's name, which [NsState] keeps once for every process in it,
+    as Linux keeps one [uts_namespace].
     Every other claimed call is not admitted while another process lives:
     the core makes it a model error, never a wrong answer.  That covers
     time ([clock_gettime] 113: the core keeps a clock per process), the
@@ -299,7 +304,7 @@ Qed.
     every call this child does not make.  Widening the list is one more
     row of this argument. *)
 Definition ns_mp_any_fd : list Z :=
-  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 166; 167; 172; 198;
+  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 161; 166; 167; 172; 198;
    214; 215; 216; 226; 233; 437; 442]%Z.
 
 (** [ioctl], [getdents64], [read], [write], [fstat], [bind], [sendto] and
