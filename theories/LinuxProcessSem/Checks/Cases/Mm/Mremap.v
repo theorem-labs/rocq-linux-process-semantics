@@ -277,27 +277,71 @@ Example mremap_wrapping_old_size_is_unmodeled :
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
+(** No remnant of cutting [[old, old+old_n)] out of an entry is the
+    entry [(old, old_n)]: a left remnant starts below [old], and a right
+    remnant starts at or past the cut's end, so it can start AT [old]
+    only for an empty cut, and then it is nonempty while [old_n] is 0.
+    A cut end past 2^64 wraps a right remnant's base to [old + old_n -
+    2^64], which is [old] only for [old_n = 2^64], not a word. *)
+Lemma iv_subtract_not_the_cut : forall a sz (old old_n b s : word),
+  In (b, s) (iv_subtract a sz (bv_unsigned old)
+               (bv_unsigned old + bv_unsigned old_n)) ->
+  ~ (b = old /\ s = old_n).
+Proof.
+  intros a sz old old_n b s Hin [-> ->].
+  pose proof (word_unsigned_range a) as Ha.
+  pose proof (word_unsigned_range sz) as Hs.
+  pose proof (word_unsigned_range old) as Ho.
+  pose proof (word_unsigned_range old_n) as Hn.
+  unfold two_pow_64 in *.
+  unfold iv_subtract in Hin. cbv zeta in Hin. apply in_app_or in Hin.
+  destruct Hin as [Hin|Hin].
+  - destruct (bv_unsigned a <? bv_unsigned old)%Z eqn:E; cbn in Hin;
+      [|contradiction].
+    apply Z.ltb_lt in E. destruct Hin as [Heq|[]].
+    injection Heq as Hb _. rewrite Hb in E. lia.
+  - destruct (bv_unsigned old + bv_unsigned old_n
+              <? bv_unsigned a + bv_unsigned sz)%Z eqn:E; cbn in Hin;
+      [|contradiction].
+    apply Z.ltb_lt in E. destruct Hin as [Heq|[]].
+    injection Heq as Hb Hsz.
+    apply (f_equal bv_unsigned) in Hb. apply (f_equal bv_unsigned) in Hsz.
+    rewrite Z_to_bv_unsigned in Hb, Hsz. unfold bv_wrap in Hb, Hsz.
+    change (bv_modulus 64) with (2 ^ 64)%Z in Hb, Hsz.
+    remember (bv_unsigned old + bv_unsigned old_n)%Z as hi eqn:Hhi.
+    destruct (Z_lt_le_dec (Z.max (bv_unsigned a) hi) (2 ^ 64)) as [Hlt|Hge].
+    + rewrite Z.mod_small in Hb by lia. rewrite Z.mod_small in Hsz by lia.
+      lia.
+    + assert (Hmax : Z.max (bv_unsigned a) hi = hi) by lia.
+      rewrite Hmax in Hb.
+      replace hi with ((hi - 2 ^ 64) + 1 * 2 ^ 64)%Z in Hb at 1 by lia.
+      rewrite Z.mod_add in Hb by lia. rewrite Z.mod_small in Hb by lia.
+      lia.
+Qed.
+
 Lemma mremap_move_gap_is_the_retained_source :
-  forall h old dst old_n new_n,
+  forall h old old_n dst new_n,
     bv_eqb dst old = false ->
-    map_has (vm_maps (mremap_maps_next h old dst new_n)) old old_n = false
+    map_has (vm_maps (mremap_maps_next h old old_n dst new_n)) old old_n = false
     /\ forall r n,
          region_free
            ((old, old_n) :: vm_reserved h
-              ++ vm_maps (mremap_maps_next h old dst new_n)) r n = true
+              ++ vm_maps (mremap_maps_next h old old_n dst new_n)) r n = true
          <->
          iv_overlap r n old old_n = false
          /\ region_free
               (vm_reserved h
-                 ++ vm_maps (mremap_maps_next h old dst new_n)) r n = true.
+                 ++ vm_maps (mremap_maps_next h old old_n dst new_n)) r n = true.
 Proof.
-  intros h old dst old_n new_n Hdst. split.
-  - unfold mremap_maps_next, map_has, map_remove. cbn [vm_maps existsb fst].
+  intros h old old_n dst new_n Hdst. split.
+  - unfold mremap_maps_next, map_has. cbn [vm_maps existsb fst].
     rewrite Hdst. cbn [andb orb].
     apply not_true_is_false. rewrite existsb_exists.
-    intros [p [Hin Hp]]. apply filter_In in Hin. destruct Hin as [_ Hne].
-    apply andb_true_iff in Hp. destruct Hp as [Hfst _].
-    rewrite Hfst in Hne. discriminate.
+    intros [[b s] [Hin Hp]]. cbn [fst snd] in Hp.
+    apply andb_true_iff in Hp. destruct Hp as [Hb Hs].
+    apply bv_eqb_eq in Hb. apply bv_eqb_eq in Hs.
+    destruct (maps_subtract_In _ _ _ b s Hin) as [a [sz [_ Hiv]]].
+    exact (iv_subtract_not_the_cut a sz old old_n b s Hiv (conj Hb Hs)).
   - intros r n. cbn [region_free]. split.
     + intros H. apply andb_true_iff in H. destruct H as [H1 H2].
       split; [apply negb_true_iff in H1; exact H1 | exact H2].
@@ -705,3 +749,50 @@ Example mremap_new_len_over_task_size_is_einval :
        (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
      = CheckReject.
 Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   THE BUDGET AFTER AN mremap SHRINK (dispatch OSSV-236), the twin of the
+   brk and munmap traces at the end of [Cases/Mm/Mmap.v], on the same
+   state ([budget_s0]: limit 8192, break base S = 65536, P = 69632).  A
+   MAP_FIXED|MAP_NORESERVE rw mapping replaces the heap's two pages, a
+   same-page brk grow records [(P + 100, 100)] inside it (charged nothing
+   while the lazy reservation covers it), a fresh mapping spends the
+   budget, and the last step resizes the NORESERVE mapping.
+   ========================================================================= *)
+
+Definition mremap_budget_prefix : list (SyscallInput * SyscallEffect) :=
+  [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
+    (mmap_at_in 65536 8192 3 16434, mkEffect 65536 [] [(65536, 8192)]);
+    (brk_in 69832, mkEffect 69832 [] []);
+    (mmap_at_in 0 8192 3 34, mkEffect 131072 [] [(131072, 8192)]) ].
+
+(** SHRINK IN PLACE to one page: [shrink_vma] hands [[S + 4096, S +
+    8192)] to [do_vmi_munmap] (mm/mremap.c:1326-1338, Linux v6.18.46),
+    so the grant's bytes go with the page.  Linux is left with the
+    NORESERVE page [[S, P)] (nothing charged until touched) and the
+    fresh mapping: 8192 bytes.  Before the fix (68ccc393) the grant
+    survived outside the shrunk lazy range and the charge was 8292. *)
+Example mremap_shrink_takes_the_grant_inside_the_tail :
+  option_map budget_ledgers
+    (run_checked (mremap_budget_prefix ++
+                  [(mremap_in 8192 4096,
+                    mkEffectU 65536 [] [] [(69632, 4096)] [] [])])
+       budget_s0)
+  = Some (8192%Z, 8192%Z, [(65536, 4096); (131072, 8192)], [],
+          [(65536, 4096)]).
+Proof. check_eq. Qed.
+
+(** GROW IN PLACE by one page from the same state: the grant inside the
+    source is no VMA of its own (Linux only moved [mm->brk]), so it is no
+    neighbour [vma_expandable] (mm/mremap.c:1415-1427) could meet, and
+    the free page above the source lets the grow stay in place.  The
+    grown entry covers the grant's bytes, so the grant is dropped rather
+    than counted twice; the grown tail is lazy and charges nothing. *)
+Example mremap_grow_in_place_over_a_grant_inside_the_source :
+  option_map budget_ledgers
+    (run_checked (mremap_budget_prefix ++
+                  [(mremap_in 8192 12288, mkEffect 65536 [] [(73728, 4096)])])
+       budget_s0)
+  = Some (8192%Z, 8192%Z, [(65536, 12288); (131072, 8192)], [],
+          [(65536, 12288)]).
+Proof. check_eq. Qed.

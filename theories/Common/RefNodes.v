@@ -218,11 +218,7 @@ Proof. intros. unfold epend. rewrite adv_apply_write, write_to_mem_wbytes. refle
 
 Lemma munmap_model_simple : forall (a n : word) m,
   m_vm_lazy m = [] -> m_vm_materialized m = [] ->
-  munmap_model a n m
-  = with_vmmaps (mkVmMapsFull (vm_reserved (m_vmmaps m)) (map_remove (vm_maps (m_vmmaps m)) a)
-                   (maps_subtract (vm_noaccess (m_vmmaps m)) (bv_unsigned a) (bv_unsigned a + bv_unsigned n))
-                   (vm_start_brk (m_vmmaps m)) (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m))
-                 (vm_mmap_base (m_vmmaps m)) (vm_init_sp (m_vmmaps m))) m.
+  munmap_model a n m = with_vmmaps (mmap_fixed_destroyed_next (m_vmmaps m) a n) m.
 Proof.
   intros a n m Hl Hm. unfold munmap_model, with_mmap_destroyed.
   apply vm_forget_range_id; [rewrite with_vmmaps_lazy'; exact Hl | exact Hm].

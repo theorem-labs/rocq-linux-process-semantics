@@ -12,7 +12,7 @@
     metadata ([BudgetPremise.mremap_budget_refused_refuses_move]), and on
     the states this file takes every fresh destination is such a one:
     [NoaccessOwned.sys_inv] gives the fit of the live mappings
-    ([MapsFit.vm_fit_map_remove]) and [State.noaccess_pages_owned], hence
+    ([MapsFit.vm_fit]) and [State.noaccess_pages_owned], hence
     a fresh destination meets no protected byte
     ([BudgetPremise.fresh_dst_avoids_noaccess]); and with both lazy
     ledgers ([m_vm_lazy], [m_vm_materialized]) empty the two lazy-ledger
@@ -76,7 +76,7 @@ Proof.
                   mod page_size = 0)%Z)
     by (rewrite Hnw; exact Hnmod).
   rewrite (mremap_budget_refused_refuses_move old old_size new_size flags m dst
-             (vm_fit_map_remove _ old Hfit)
+             Hfit
              (fresh_dst_avoids_noaccess _ _ _ Hown Hpos Hmod Hdalign Hdfree)
              ltac:(rewrite Hlz; reflexivity)
              ltac:(rewrite Hmat; reflexivity)

@@ -355,8 +355,8 @@ Proof. split; check_eq. Qed.
     [mremap_one_page_model] with ONE field changed — a reserved page at
     69632, where [mremap_inplace_grow_accepts] has none — so the flipped
     verdict is attributable to that conjunct and nothing else: the
-    [vm_maps] half still passes ([map_remove] takes the source out and
-    leaves the ledger empty), and so does the budget (limit 8192, final
+    [vm_maps] half still passes (cutting the source range out leaves the
+    ledger empty), and so does the budget (limit 8192, final
     live bytes 8192).  Deleting the conjunct would turn this [CheckReject]
     back into the [CheckOk] above.
 
@@ -395,8 +395,8 @@ Proof. split; check_eq. Qed.
     address and nothing else, and every other conjunct is as permissive
     here as it is there: the source still fits under the ceiling
     ([addr + old_len = demo_top] exactly, so [Mremap.mremap_source_b]
-    passes), [region_free] still sees an empty ledger once [map_remove]
-    takes the source out, and the budget is still met (limit 8192, final
+    passes), [region_free] still sees an empty ledger once the source
+    range is cut out, and the budget is still met (limit 8192, final
     live bytes 8192).  So the flip is attributable to
     [addr + new_len <= alloc_top h] alone, and deleting that conjunct
     would turn this [CheckReject] back into the [CheckOk] above.
@@ -3647,3 +3647,92 @@ Proof.
   pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
   alloc_top_bounds. unfold two_pow_64, stack_max_size, EEXIST in *. lia.
 Qed.
+
+(* =========================================================================
+   THE BUDGET AFTER AN UNMAP (dispatch OSSV-236).  An unmap must take out
+   of [vm_maps] every byte Linux unmaps, or the stale remnant stays
+   charged in [vm_backing_used] and a run can sit above [vm_limit] where
+   the kernel has freed the page.  Each trace below is run through the
+   checker step by step from an execve-shaped state with a two-page
+   budget (limit 8192), break base S = 65536 and P = S + 4096 = 69632;
+   every step must be [CheckOk].  The prefix grows the break 100 bytes
+   past P, lays a MAP_FIXED PROT_NONE page over P (the brk VMA is split
+   at P, mm/vma.c), and the last trace step is the unmap.  Before the fix
+   (rocq-linux-process-semantics 68ccc393) the final charge was 12188
+   for the brk shrink and 8292 for the exact munmap, each over the limit;
+   now each run ends at the post-state Linux reaches, with 8192 charged.
+   [Cases/Mm/Mremap.v] carries the mremap twin.
+   ========================================================================= *)
+
+(** Run a trace through the checker: the post-model of its last step, or
+    [None] at the first step whose answer is not [CheckOk]. *)
+Fixpoint run_checked (steps : list (SyscallInput * SyscallEffect)) (m : Model)
+    : option Model :=
+  match steps with
+  | [] => Some m
+  | (i, e) :: rest =>
+      match check_syscall i e m with
+      | CheckOk m' _ => run_checked rest m'
+      | _ => None
+      end
+  end.
+
+(** What a budget trace is read on: the charge, the limit, and the three
+    ledgers that make the charge. *)
+Definition budget_ledgers (m : Model)
+    : Z * Z * list (word * word) * list (word * word) * list (word * word) :=
+  (vm_backing_used m, vm_limit (m_vmmaps m), vm_maps (m_vmmaps m),
+   vm_noaccess (m_vmmaps m), m_vm_lazy m).
+
+Definition budget_s0 : Model :=
+  init_model brk_reserved 65536 0 demo_sp 8192 (demo_input [] IEof).
+
+Definition mmap_at_in (a n prot flags : word) : SyscallInput :=
+  mkInput 222 [a; n; prot; flags; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
+
+Definition munmap_in (a n : word) : SyscallInput :=
+  mkInput 215 [a; n; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** brk(P + 100) from S, then MAP_FIXED|MAP_ANONYMOUS|MAP_PRIVATE
+    PROT_NONE over [[P, P + 4096)]. *)
+Definition budget_prefix : list (SyscallInput * SyscallEffect) :=
+  [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
+    (mmap_at_in 69632 4096 0 50, mkEffectU 69632 [] [] [(69632, 4096)] [] []) ].
+
+(** A fresh page that spends the rest of the budget. *)
+Definition budget_fill : SyscallInput * SyscallEffect :=
+  (mmap_at_in 0 4096 3 34, mkEffect 131072 [] [(131072, 4096)]).
+
+(** BRK SHRINK.  brk(P) from P + 100: [newbrk = P] and [oldbrk = P +
+    4096] differ, so [SYSCALL_DEFINE1(brk)] hands [[P, P + 4096)] to
+    [do_vmi_align_munmap] (mm/mmap.c:153-177, Linux v6.18.46), which
+    takes the PROT_NONE VMA there whole.  Linux is left with the brk VMA
+    [[S, P)] and the fill page: 8192 bytes.  The logical cut [[P, P +
+    100)] alone would leave the PROT_NONE entry's remnant [(P + 100,
+    3996)] in [vm_maps] with its protection gone, charged. *)
+Example brk_shrink_takes_the_mapping_in_its_freed_page :
+  option_map budget_ledgers
+    (run_checked (budget_prefix ++
+                  [budget_fill;
+                   (brk_in 69632, mkEffectU 69632 [] [] [(69632, 4096)] [] [])])
+       budget_s0)
+  = Some (8192%Z, 8192%Z, [(131072, 4096); (65536, 4096)], [], []).
+Proof. check_eq. Qed.
+
+(** EXACT MUNMAP.  A same-page brk grow to P + 200 records the grant
+    [(P + 100, 100)] inside the PROT_NONE page with no address-space test
+    ([Mmap.brk_grow_ok]; Linux only moves [mm->brk], mm/mmap.c:155-158),
+    and charges nothing while the protection covers it.  munmap(P, 4096)
+    names the PROT_NONE mapping exactly; [do_vmi_munmap] unmaps every VMA
+    in [[P, P + 4096)] (mm/vma.c:1604-1626).  Linux is left with [[S, P)]
+    and the fill page: 8192 bytes.  Removing only the entry based at P
+    would leave the grant, its protection cut, charged at 100 more. *)
+Example munmap_exact_takes_the_grant_inside_the_page :
+  option_map budget_ledgers
+    (run_checked (budget_prefix ++
+                  [(brk_in 69832, mkEffect 69832 [] []);
+                   budget_fill;
+                   (munmap_in 69632 4096, mkEffectU 0 [] [] [(69632, 4096)] [] [])])
+       budget_s0)
+  = Some (8192%Z, 8192%Z, [(131072, 4096); (65536, 4096)], [], []).
+Proof. check_eq. Qed.

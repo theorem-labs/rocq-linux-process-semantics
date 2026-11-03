@@ -7,9 +7,10 @@
     It is NOT a consequence of [VmMapsDisjoint.vm_wf]: that invariant
     bounds how many entries own a page-aligned address and that no size
     is zero, and an entry [(2^64 - 4096, 8192)] meets both.  It is the
-    hypothesis [Mremap.mremap_move_charge_at_fresh] and the
-    [BudgetPremise] lemmas built on it take on [map_remove (vm_maps h)
-    old]; [vm_fit_map_remove] discharges it from [vm_fit].
+    hypothesis the [BudgetPremise] move lemmas take on [vm_maps h], from
+    which [Mremap.maps_subtract_fits] gives
+    [Mremap.mremap_move_charge_at_fresh] the fit of what is left once the
+    mremap source range is cut.
 
     What every writer of [vm_maps] does to the list, and why each keeps
     the invariant:
@@ -17,11 +18,12 @@
     - a fresh grant ([mmap], [brk] grow, [mremap] grow in place and
       move) conses one entry whose end the writer has bounded — by
       [alloc_top] for [mmap] and [mremap], by a [word] break for [brk];
-    - a cut ([munmap], [mremap] move's source, [brk] shrink, MAP_FIXED
-      over live mappings) filters the list or subtracts a range from it,
-      and every remnant of [State.iv_subtract] ends no later than the
-      entry it came from;
-    - [mremap] shrink re-records the source at a smaller size.
+    - a cut ([munmap], [mremap]'s source range, [brk] shrink, MAP_FIXED
+      over live mappings) subtracts a range from the list, and every
+      remnant of [State.iv_subtract] ends no later than the entry it came
+      from;
+    - [mremap] shrink re-records the source at a smaller size, below
+      [alloc_top].
 
     As with [vm_wf], the statement is the base case ([init_model_vm_fit])
     and preservation by every modeled syscall
@@ -42,16 +44,6 @@ Definition maps_fit (maps : list (word * word)) : Prop :=
     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z.
 
 Definition vm_fit (h : VmMaps) : Prop := maps_fit (vm_maps h).
-
-(** The form [Mremap.mremap_move_charge_at_fresh] takes. *)
-Lemma vm_fit_map_remove : forall h old,
-  vm_fit h ->
-  forall (a sz : word), In (a, sz) (map_remove (vm_maps h) old) ->
-    (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z.
-Proof.
-  intros h old Hf a sz Hin. unfold map_remove in Hin.
-  apply List.filter_In in Hin as [Hin _]. exact (Hf a sz Hin).
-Qed.
 
 (* -------------------------------------------------------------------------
    Closure of [maps_fit] under the ways a writer builds [vm_maps]
@@ -116,16 +108,6 @@ Proof.
     + apply IH. intros b s Hin. apply Hf. right. exact Hin.
 Qed.
 
-(** [mremap]'s in-place shrink: the source, re-recorded smaller. *)
-Lemma maps_fit_cons_sub : forall maps a n0 n,
-  maps_fit maps -> In (a, n0) maps -> (bv_unsigned n <= bv_unsigned n0)%Z ->
-  maps_fit ((a, n) :: map_remove maps a).
-Proof.
-  intros maps a n0 n Hf Hin Hle. apply maps_fit_cons.
-  - unfold map_remove. apply maps_fit_filter. exact Hf.
-  - pose proof (Hf a n0 Hin). lia.
-Qed.
-
 (** The bound a fresh grant needs, from the writer's own ceiling. *)
 Ltac fit_bound := unfold two_pow_64; rewrite ?u64 by lia; lia.
 
@@ -143,7 +125,10 @@ Proof.
   unfold vm_fit, brk_model_next, brk_maps_next. cbn [vm_maps].
   destruct (Z.ltb 0 (bv_unsigned (vm_brk h))
             && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))).
-  - apply maps_subtract_fit. exact Hf.
+  - unfold brk_unmap_cut. cbv zeta.
+    destruct (page_round_up_Z (bv_unsigned r)
+              <? page_round_up_Z (bv_unsigned (vm_brk h)))%Z;
+      apply maps_subtract_fit; try apply maps_subtract_fit; exact Hf.
   - apply maps_fit_app; [|exact Hf].
     unfold brk_grants. destruct (brk_is_grow req r (vm_brk h)) eqn:Egrow;
       [|exact maps_fit_nil].
@@ -187,7 +172,7 @@ Proof.
   - destruct ws, zs, cs, ci; try discriminate.
     dif H; [|discriminate]. injection H as <- <-.
     unfold vm_fit. rewrite vmm_mmap_destroyed. cbn [vm_maps].
-    now apply maps_fit_filter.
+    apply maps_subtract_fit. exact Hfit.
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hfit|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.
@@ -416,11 +401,7 @@ Proof.
       apply Z.ltb_lt in Eshrink.
       unfold vm_fit. rewrite vmm_mremap_next.
       unfold mremap_maps_next. cbn [vm_maps].
-      apply (maps_fit_cons_sub _ _
-               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))).
-      * exact Hfit.
-      * apply map_has_In. exact Hhas.
-      * rewrite !u64 by lia. lia.
+      apply maps_fit_cons; [apply maps_subtract_fit; exact Hfit | fit_bound].
     + difn H Egrow; [|discriminate].
       difn H Eok; [|discriminate]. injection H as <- <-.
       unfold vm_fit. rewrite vmm_mremap_next.
@@ -429,7 +410,7 @@ Proof.
       apply andb_true_iff in Egrow as [Egrow _].
       apply andb_true_iff in Egrow as [Hgceil Hgfree].
       apply Z.leb_le in Hgceil.
-      apply maps_fit_cons; [now apply maps_fit_filter | fit_bound].
+      apply maps_fit_cons; [apply maps_subtract_fit; exact Hfit | fit_bound].
   - difn H Emove; [|discriminate]. injection H as <- <-.
     unfold vm_fit. rewrite vmm_mremap_next.
     unfold mremap_maps_next. cbn [vm_maps].
@@ -443,7 +424,7 @@ Proof.
     apply andb_true_iff in Hfresh as [Hfresh Hfceil].
     apply andb_true_iff in Hfresh as [_ Hfpos].
     apply Z.leb_le in Hfceil. apply Z.ltb_lt in Hfpos.
-    apply maps_fit_cons; [now apply maps_fit_filter | fit_bound].
+    apply maps_fit_cons; [apply maps_subtract_fit; exact Hfit | fit_bound].
 Qed.
 
 (* -------------------------------------------------------------------------

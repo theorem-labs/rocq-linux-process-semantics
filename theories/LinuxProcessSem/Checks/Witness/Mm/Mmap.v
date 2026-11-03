@@ -239,9 +239,9 @@ Proof.
 Qed.
 
 (** munmap witness: mirrors the spec's five-way split — -EINVAL on a
-    bad argument or a range leaving the user address space, the removal
+    bad argument or a range leaving the user address space, the cut
     (with its unmap effect) on an exact recorded mapping, the no-op 0 on
-    a free range below the stack band, the cut (with its unmap effect)
+    a free range below the stack band, the same cut (with its unmap effect)
     on a partial unmap below the band, and [Unmodeled] (fail closed) on
     a range touching the image or reaching into the band (see
     [Mmap.munmap_spec]). *)
@@ -259,13 +259,8 @@ Definition munmap_witness (addr len : word) (m : Model)
     let n := Z_to_bv 64 nZ in
     if map_has (vm_maps h) addr n
     then Ok (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] [])
-            (with_mmap_destroyed addr n (mkVmMapsFull (vm_reserved h)
-                            (map_remove (vm_maps h) addr)
-                            (maps_subtract (vm_noaccess h)
-                               (bv_unsigned addr)
-                               (bv_unsigned addr + bv_unsigned n))
-                            (vm_start_brk h) (vm_brk h) (vm_limit h)
-      (vm_mmap_base h) (vm_init_sp h)) m) []
+            (with_mmap_destroyed addr n
+               (mmap_fixed_destroyed_next h addr n) m) []
     else if munmap_free_ok h addr nZ
     then ret_outcome (Z_to_bv 64 0) m
     else if munmap_cut_ok h addr nZ

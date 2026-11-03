@@ -53,7 +53,7 @@ Proof.
   exact (mremap_move_budget_admits_fresh_lazyfree m old old_n dst new_n
            Hlz Hmat Hdalign Hnmod Hpos Hdtop Hdfree
            (sys_inv_noaccess_pages_owned _ (conj Hwf (conj Hfit Hna)))
-           (vm_fit_map_remove _ old Hfit) Hmv).
+           Hfit Hmv).
 Qed.
 
 (** [mremap_spec]'s [new_n] is a positive whole number of pages, and its

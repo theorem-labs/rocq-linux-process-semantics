@@ -1200,7 +1200,22 @@ Proof.
   specialize (HK E (regupd R (Z_to_bv 5 (Z.of_nat 10)) (Z_to_bv 64 0)) FULL' model' (conj (env_agree_refl' _ _) (env_agree_refl' _ _))).
   unfold cfg_of in HK. replace (pc cs') with (pc cs + 4) in HK by reflexivity. rewrite bv5_10. apply HK; [|reflexivity]. clear HK.
   (* ---- model projections ---- *)
-  assert (PM : vm_maps (m_vmmaps model') = map_remove (vm_maps (m_vmmaps model)) addr) by reflexivity.
+  assert (PM : vm_maps (m_vmmaps model') = map_remove (vm_maps (m_vmmaps model)) addr).
+  { (* the exact arm cuts the range; on this ledger the cut removes the
+       one entry [amap_den E m] fills and touches no other *)
+    transitivity (maps_subtract (vm_maps (m_vmmaps model)) (bv_unsigned addr)
+                    (bv_unsigned addr + bv_unsigned n)); [reflexivity|].
+    apply maps_subtract_exact.
+    - pose proof (BPOS _ HIN) as Hpn. unfold amap_den in Hpn. cbn [snd] in Hpn. exact Hpn.
+    - intros pb ps Hpin. exact (BPOS (pb, ps) Hpin).
+    - intros pb ps Hpin Hpb. pose proof (UNIQ (pb, ps) Hpin Hpb) as Hpq.
+      unfold amap_den in Hpq. injection Hpq as _ Hps. exact Hps.
+    - intros pb ps Hpin Hpne.
+      assert (Hpne' : (pb, ps) <> amap_den E m).
+      { intros Hpeq. apply Hpne. unfold amap_den in Hpeq. rewrite Haddr in Hpeq.
+        injection Hpeq as Hpb _. exact Hpb. }
+      pose proof (DISJl (pb, ps) Hpin Hpne') as Hpd. cbn [fst snd] in Hpd.
+      unfold hi, lo in Hpd. lia. }
   assert (PN : vm_noaccess (m_vmmaps model') = maps_subtract (vm_noaccess (m_vmmaps model)) lo (lo + bv_unsigned n)) by reflexivity.
   assert (PL : m_vm_lazy model' = maps_subtract (m_vm_lazy model) lo (lo + bv_unsigned n)) by reflexivity.
   assert (PISP : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model)) by reflexivity.
