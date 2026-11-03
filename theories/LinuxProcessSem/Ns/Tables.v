@@ -565,15 +565,12 @@ Record CapSets := mkCaps {
 (** What one task holds: which user, mount, pid, network and UTS namespace
     it is in, its pid in each pid namespace from its own outwards, its root
     and current directory as (mount, dentry), its umask, its capability
-    sets (in its user namespace) and securebits, the descriptors marked
-    close-on-exec, the no_new_privs bit and the dumpable mode.  The
-    parent-death signal is the released model's ([State.m_pdeath_signal]),
-    not this record's.
-
-    [cx_no_new_privs] and [cx_dumpable] are [None] where the model does
-    not know them: the released model stores neither, so a task that
-    leaves the host's namespaces may have set either there; an arm that
-    would report one declines while it is [None]. *)
+    sets (in its user namespace) and securebits, and the descriptors marked
+    close-on-exec.  The parent-death signal, the no-new-privs bit and the
+    dumpable mode are the released model's ([State.m_pdeath_signal],
+    [State.m_no_new_privs], [State.m_dumpable]), not this record's: a
+    clone copies them with the process record ([Procs.child_proc]), so
+    they are known in every world. *)
 Record NsCtx := mkNsCtx {
   cx_user         : positive;
   cx_mount        : positive;
@@ -586,9 +583,7 @@ Record NsCtx := mkNsCtx {
   cx_umask        : Z;
   cx_caps         : CapSets;
   cx_securebits   : Z;
-  cx_cloexec      : list Z;
-  cx_no_new_privs : option bool;
-  cx_dumpable     : option Z
+  cx_cloexec      : list Z
 }.
 
 (** The pid of the task in pid namespace [pidns] ([task_tgid_nr_ns]), from
@@ -675,85 +670,60 @@ Definition set_utsns (st : NsState) (u : UtsNs) : NsState :=
 (** The context of a task that has entered no namespace: the initial
     namespaces (the host's UTS namespace [host_uts] among them), root and
     cwd at the root mount's root dentry, the umask 022, no capability, no
-    securebits, no close-on-exec descriptor, no_new_privs clear, dumpable.
-    These are assumptions about the launcher, as the released model's
-    launch values are: it set the umask to 022, set no_new_privs nowhere
-    and left the task dumpable. *)
+    securebits, no close-on-exec descriptor.  These are assumptions about
+    the launcher, as the released model's launch values are: it set the
+    umask to 022. *)
 Definition init_nsctx : NsCtx :=
   mkNsCtx 1%positive 1%positive 1%positive 1%positive host_uts [] (1%positive, 1%positive)
-          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] (Some false) (Some 1%Z).
+          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [].
 
 (** The setters of [NsCtx], one per field: with [init_nsctx], the only
     places that apply [mkNsCtx] to every field. *)
 Definition with_user_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx n (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_mount_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) n (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_pid_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) n (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_net_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) n (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_uts_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) n (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_pids (ctx : NsCtx) (ps : list (positive * Z)) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) ps (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_root (ctx : NsCtx) (r : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) r
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_root ctx) c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_root ctx) (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_caps (ctx : NsCtx) (c : CapSets) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx).
 
 Definition with_securebits (ctx : NsCtx) (b : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) b (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) b (cx_cloexec ctx).
 
 (** The descriptors marked close-on-exec replaced by [l]. *)
 Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l
-          (cx_no_new_privs ctx) (cx_dumpable ctx).
-
-(** The no_new_privs bit as the model knows it ([None]: not known). *)
-Definition with_nnp_opt (ctx : NsCtx) (b : option bool) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          b (cx_dumpable ctx).
-
-(** The dumpable mode as the model knows it ([None]: not known). *)
-Definition with_dumpable_opt (ctx : NsCtx) (d : option Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) d.
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l.

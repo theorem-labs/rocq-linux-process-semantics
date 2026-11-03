@@ -586,7 +586,7 @@ Definition clone_fork_flags_b (flags : word) : bool :=
     model has no position for it — that would be the same defect one
     line up, read backwards.  It is that no modeled syscall can OBSERVE
     a directory position: [ReadWrite.lseek_spec] declines [FdDir], and
-    [Readdir.getdents64_spec] declines every listing while its one
+    [Readdir.getdents64_spec] declines every [FdDir] listing while its one
     directory answer — [filldir64]'s -EINVAL for a buffer with no room
     for an entry — is the arm on which the kernel leaves [f_pos]
     untouched.  So there is no answer for the sharing to make wrong.
@@ -669,12 +669,13 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
-                    (* THE FOUR OPAQUE OBJECTS PASS, each for its own
+                    (* FOUR OPAQUE OBJECTS PASS, each for its own
                        reason, and the reason is in every case that no
-                       modeled arm reads the state the child's second
-                       reference shares ([copy_files] -> [dup_fd]'s
-                       [get_file], kernel/fork.c and fs/file.c, read at
-                       v6.18.44; identical at v6.18.46):
+                       answer the model gives depends on the state the
+                       child's second reference shares ([copy_files] ->
+                       [dup_fd]'s [get_file], kernel/fork.c and
+                       fs/file.c, read at v6.18.44; identical at
+                       v6.18.46):
                        - an O_PATH descriptor ([OProcPath]) has
                          [empty_fops] ([do_dentry_open], fs/open.c) and
                          does no I/O at all; the model reads only its
@@ -690,14 +691,32 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          ([ReadWrite.read_proc_spec]), so no answer the
                          model gives depends on it.
                        - an eventfd ([OEventFd]) shares one counter, and
-                         every arm that would read or move it (read,
-                         write, select, poll, epoll) declines on this
-                         kind.
+                         the model already holds that counter as the
+                         environment's: a read answers any nonzero value
+                         or -EAGAIN, and a write 8 or -EAGAIN, whatever
+                         another writer has done
+                         ([ReadWrite.read_eventfd_spec],
+                         [ReadWrite.write_eventfd_spec]).  The child is
+                         one more such writer.  It also shares
+                         [f_flags], whose O_NONBLOCK those two arms read
+                         ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
+                         no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
-                         F_SETFD/F_GETFD declines on this kind. *)
-                    | FdOpaque _ => true
+                         F_SETFD/F_GETFD declines on this kind.
+                       TWO DECLINE, fail-closed:
+                       - the /proc/self/fd directory ([OProcFdDir])
+                         shares the [f_pos] that [getdents64] reads and
+                         moves, and the model holds that position in the
+                         parent's entry ([Readdir.procfd_getdents_spec]),
+                         so a child's listing would leave it wrong.
+                       - a signalfd ([OSignalFd]) shares its mask, which
+                         [signalfd4] on the same descriptor may change in
+                         either process (fs/signalfd.c [do_signalfd4],
+                         read at v6.18.44; identical at v6.18.46). *)
+                    | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _) => true
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _) => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -725,9 +744,11 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
     is not a thing this model holds — but the FACT that a child now
     exists is, because [Kernel.Exit.wait4_spec] answers -ECHILD only
     while no child has been created.  So the success branch, and only
-    the success branch, records it with [State.with_children]: the
-    errno alternative created nothing, and the [clone_no_shared_file_b]
-    decline never reaches a resolution at all.
+    the success branch, records it with [State.with_child]: the child
+    bit [State.with_children] sets, and the returned pid appended to
+    [State.procst_child_pids], the list a reap reads and removes from.
+    The errno alternative created nothing, and the
+    [clone_no_shared_file_b] decline never reaches a resolution at all.
 
     Without this call the pair is unsound in a way neither side's proofs
     can see — [wait4] would answer -ECHILD for a caller that has a
@@ -741,7 +762,7 @@ Definition clone_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_from clone_errnos ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify (with_child pid) ;;
          ret_only pid).
 
 (* =========================================================================
@@ -818,8 +839,8 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       its own namespace.  So the admitted pids are exactly
       [clone_resolve]'s: [clone_pid_ok_b], never 0.  And the caller now
       has a child, so the success branch records it with
-      [State.with_children], which [Kernel.Exit.wait4_spec]'s -ECHILD
-      reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
+      [State.with_child] (the child bit and the pid), which
+      [Kernel.Exit.wait4_spec]'s -ECHILD reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
       No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
       [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
       descriptors and [fs_struct] are not touched: [copy_creds],
@@ -860,7 +881,7 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_any ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify (with_child pid) ;;
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to

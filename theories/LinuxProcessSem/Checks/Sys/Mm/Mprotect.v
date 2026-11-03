@@ -29,6 +29,13 @@ Definition check_mprotect (addr len prot : word) (eff : SyscallEffect) (m : Mode
   else
     let nZ := page_round_up_Z (bv_unsigned len) in
     let n := Z_to_bv 64 nZ in
+    (* The vdso/vvar pair: the spec answers [unmodeled] for a request
+       that meets it, because the text carries [VM_MAYWRITE] and the
+       model has no term for a vDSO whose bytes changed. *)
+    if negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+               addr n)
+    then CheckUnmodeled
+    else
     if map_contains (vm_noaccess (m_vmmaps m)) addr n
        && map_contains (vm_maps (m_vmmaps m)) addr n then
       match eff with
@@ -74,6 +81,9 @@ Proof.
   destruct (mprotect_modeled_b prot) eqn:Hprot; cbn [negb] in H;
     [|discriminate].
   cbv zeta in H.
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))) eqn:Hvd;
+    [discriminate|].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
@@ -87,7 +97,7 @@ Proof.
       inversion H; clear H; subst.
       apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-      rewrite Hcover. apply alt_l.
+      rewrite Hvd, Hcover. apply alt_l.
       eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
     - destruct (mprotect_budget_ok m addr
                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
@@ -101,7 +111,7 @@ Proof.
       unfold w_is0 in Hr. apply bv_eqb_eq in Hr; subst r.
       apply listNN_eqb_eq in Hzs; subst zs.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-      rewrite Hcover. apply alt_r.
+      rewrite Hvd, Hcover. apply alt_r.
       eapply bind_ok0; [apply (choose_ok _ tt); exact Hbudget|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
   destruct (map_contains (vm_maps (m_vmmaps m)) addr
@@ -117,7 +127,7 @@ Proof.
   destruct (w_is0 r) eqn:HC; [|discriminate].
   inversion H; clear H; subst.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  rewrite Hcover, Hrw.
+  rewrite Hvd, Hcover, Hrw.
   unfold w_is0 in HC. apply bv_eqb_eq in HC; subst. apply pure_ok.
 Qed.
 
@@ -140,6 +150,10 @@ Proof.
   destruct (mprotect_modeled_b prot) eqn:Hprot; cbn [negb] in H.
   2: apply unmodeled_intro.
   cbv zeta in H.
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))) eqn:Hvd;
+    [eapply bind_unmodeled2; [apply get_model_ok|];
+     cbv beta iota zeta; rewrite Hvd; apply unmodeled_intro|].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
@@ -163,7 +177,7 @@ Proof.
       try discriminate.
     destruct (w_is0 r); discriminate. }
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
-  rewrite Hcover, Hrw. apply unmodeled_intro.
+  rewrite Hvd, Hcover, Hrw. apply unmodeled_intro.
 Qed.
 
 Lemma check_mprotect_complete_ok : forall addr len prot eff m m' evs i,
@@ -184,11 +198,15 @@ Proof.
   { sys_unfold. inv_ok. cbn; try rewrite bv_eqb_refl; reflexivity. }
   destruct (mprotect_modeled_b prot) eqn:Hprot; cbn [negb].
   2: { unfold unmodeled in H. discriminate. }
+  cbv zeta.
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))) eqn:Hvd;
+    [sys_unfold; cbv iota in H; inv_ok; rewrite Hvd in *; inv_ok|].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hcover.
-  { sys_unfold. cbv iota in H. inv_ok. rewrite Hcover in *. inv_ok.
+  { sys_unfold. cbv iota in H. inv_ok. rewrite Hvd, Hcover in *. inv_ok.
     - cbv zeta.
       match goal with
       | |- context [errno_ret_in ?es (errno_ret ?e)] =>
@@ -211,8 +229,9 @@ Proof.
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hrw.
   2: { sys_unfold. cbv iota in H. inv_ok.
-       rewrite Hcover, Hrw in *. inv_ok. }
-  sys_unfold. cbv iota in H. inv_ok. rewrite Hcover, Hrw in *. inv_ok.
+       rewrite Hvd, Hcover, Hrw in *. inv_ok. }
+  sys_unfold. cbv iota in H. inv_ok.
+  rewrite Hvd, Hcover, Hrw in *. inv_ok.
   reflexivity.
 Qed.
 
@@ -234,15 +253,20 @@ Proof.
   { sys_unfold. cbv iota in H. inv_ok; discriminate. }
   destruct (mprotect_modeled_b prot) eqn:Hprot; cbn [negb].
   2: reflexivity.
+  cbv zeta.
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))) eqn:Hvd;
+    [reflexivity|].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hcover.
-  { sys_unfold. cbv iota in H. inv_ok. rewrite Hcover in *. inv_ok. }
+  { sys_unfold. cbv iota in H. inv_ok. rewrite Hvd, Hcover in *. inv_ok. }
   destruct (map_contains (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hrw.
   2: reflexivity.
-  sys_unfold. cbv iota in H. inv_ok. rewrite Hcover, Hrw in *. inv_ok.
+  sys_unfold. cbv iota in H. inv_ok.
+  rewrite Hvd, Hcover, Hrw in *. inv_ok.
 Qed.

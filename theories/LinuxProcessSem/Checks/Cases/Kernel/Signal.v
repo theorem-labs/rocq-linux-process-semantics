@@ -814,7 +814,7 @@ Proof. vm_compute. reflexivity. Qed.
     for the same reason.  The numbers are named and not counted: when
     this group grows, a count is the part that goes stale. *)
 Definition sig_mask_windows : list Z :=
-  ([ 74   (* signalfd4         *) ; 117 (* ptrace            *)
+  ([ 117  (* ptrace            *)
    ; 129  (* kill              *)
    ; 133  (* rt_sigsuspend     *)
    ; 136  (* rt_sigpending     *) ; 137 (* rt_sigtimedwait   *)
@@ -851,6 +851,20 @@ Proof.
   | _ => fail "a syscall that reads ->blocked, installs a mask, or can deliver or send a signal now HAS a dispatch arm -- it is a second reader or writer of the mask rt_sigprocmask tracks, so the value oset hands back may now be stale; model what that syscall does to the mask in the same commit"
   end.
 Qed.
+
+(** signalfd4 (74) HAS an arm: it makes a descriptor and names
+    [->blocked] nowhere.  Its window is the read of that descriptor,
+    which dequeues the pending signals its mask selects, and the model
+    declines that read: a SIGCHLD signalfd made through the arm, then
+    read, is [CheckUnmodeled]. *)
+Example signalfd_read_is_declined :
+  let m := with_fds (fd_insert (m_fds sig_model) 5
+             (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800)))) sig_model in
+  check_syscall (mkInput 63 [5; 0x10000; 128; 0; 0; 0] (fun _ => None)
+                   (fun a => if bv_leu 0x10000 a && bv_ltu a 0x10080 then Some 0 else None))
+    (mkEffect (errno_ret EAGAIN) [] []) m
+  = CheckUnmodeled.
+Proof. cbv zeta. vm_compute. reflexivity. Qed.
 
 (** THE OTHER HALF OF THE ENUMERATION: the one signal-mask window that
     is on the modeled surface, shut by its spec rather than by its
@@ -1494,8 +1508,8 @@ Qed.
    The one-sided frame, refuted
    ========================================================================= *)
 
-(** WHY [Run.decl_off_frame] CARRIES THE PENDING BIT, as a refutation
-    rather than as a sentence.
+(** WHY [Run.kill_off] CLOSES THE PENDING BITS WITH THE DECLARATIONS, as
+    a refutation rather than as a sentence.
 
     The tempting reading of the abort declaration is that it is the
     guard: nothing can be killed while [State.m_abort_terminal] is
@@ -1514,7 +1528,8 @@ Qed.
     "both bits clear" rather than "the declaration is clear".  A
     one-sided [Run.decl_off_frame_one_sided] is false, so every theorem
     stated with it as a hypothesis would be vacuous, and this is what
-    stops that shape coming back.
+    stops that shape coming back.  The frame the model does rest on,
+    [Run.kill_frame], is proved: [Checks.KillFree.kill_frame_holds].
 
     ADMISSION REASON (the third at the top of [Checks/Examples.v]): no
     real run can reach the state this refutation is about, since
@@ -1561,18 +1576,21 @@ Proof.
   vm_compute in Hk. discriminate.
 Qed.
 
-(** ...and the invariant form is not vacuous in the other direction
-    either: its hypotheses are inhabited.  Same call, same shape, from a
-    model with BOTH bits clear — which the frame then obliges to stay
-    that way, and it does. *)
-Example decl_off_frame_hypotheses_inhabited :
-  m_abort_terminal abort_model_undeclared = false
-  /\ m_sigabrt_pending abort_model_undeclared = false
+(** ...and the hypotheses of [Run.kill_frame] are not vacuous in the
+    other direction either: they are inhabited.  Same call, same shape,
+    from a model with the gates closed — which the frame then obliges to
+    stay that way, and it does. *)
+Example kill_frame_hypotheses_inhabited :
+  kill_off abort_model_undeclared
+  /\ m_halted abort_model_undeclared = None
   /\ check_syscall (mkInput 135 [1; 4096; 0; 8; 0; 0] mem_sigset_sigabrt
                      (fun _ => None))
        (with_copyins sig_copyin (mkEffect 0 [] [])) abort_model_undeclared
      = CheckOk (with_sigmask (Z_to_bv 64 0) abort_model_undeclared) [].
-Proof. split; [reflexivity | split; [reflexivity | check_eq]]. Qed.
+Proof.
+  split; [unfold kill_off; repeat split; reflexivity |].
+  split; [reflexivity | check_eq].
+Qed.
 
 (* =========================================================================
    THE THREE USER READS THAT WERE ARGUED OUT OF A RANGE TEST

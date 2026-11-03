@@ -1,0 +1,49 @@
+{
+ "mkKernelBuild": {
+  "tests/CheckedInputWitness.v": 5,
+  "theories/Common/AsanPlanCore.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryWitness.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Kernel/Sys.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Mm/PlacementHoles.v": 1,
+  "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
+  "theories/LinuxProcessSem/State.v": 2,
+  "tools/placement_conformance/log_to_rocq.py": 1,
+  "tools/placement_conformance/start_state_to_rocq.py": 1
+ },
+ "mkNsCtx": {
+  "theories/LinuxProcessSem/Ns/Tables.v": 14
+ },
+ "mkNsEnv": {
+  "theories/LinuxProcessSem/Ns/Tables.v": 10
+ },
+ "mkNsState": {
+  "theories/LinuxProcessSem/Ns/Tables.v": 14
+ },
+ "mkProcInput_full": {
+  "theories/Common/AsanPlanCore.v": 1,
+  "theories/Common/CatSimSigpipe.v": 1,
+  "theories/EquivalenceDefinition/FinInput.v": 6,
+  "theories/LinuxProcessSem/Checks/Cases/EntryLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/EntryWitness.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/Open.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v": 2,
+  "theories/LinuxProcessSem/Checks/Cases/Fs/SigpipeLaunch.v": 1,
+  "theories/LinuxProcessSem/Checks/Cases/Prelude.v": 1,
+  "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
+  "theories/LinuxProcessSem/Checks/Examples.v": 1,
+  "theories/LinuxProcessSem/State.v": 2,
+  "tools/placement_conformance/log_to_rocq.py": 1,
+  "tools/placement_conformance/start_state_to_rocq.py": 1
+ },
+ "mkProcState": {
+  "theories/LinuxProcessSem/Procs.v": 1,
+  "theories/LinuxProcessSem/State.v": 27
+ },
+ "mkShared": {
+  "theories/LinuxProcessSem/Procs.v": 6
+ },
+ "mkVmState": {
+  "theories/LinuxProcessSem/State.v": 7
+ }
+}

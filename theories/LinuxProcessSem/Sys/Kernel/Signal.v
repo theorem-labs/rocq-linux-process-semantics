@@ -113,7 +113,9 @@ Open Scope sys_scope.
       - SIGPIPE (13) — a modeled [write], and the model RAISES it: the
         channel, pipe and socket arms of [ReadWrite.write_spec] send it
         through [ReadWrite.raise_sigpipe] when the far end has no
-        reader.  That is exactly why it must stay off this list.  The
+        reader and the launch declares the death
+        ([State.m_sigpipe_terminal]); otherwise that write declines.
+        That is exactly why it must stay off this list.  The
         model has one disposition for signal 13, SIG_DFL, and the
         launch premise above [Run.unmodeled_at] is what supplies it;
         an accepted [rt_sigaction] here would let a program install
@@ -758,25 +760,25 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         [pselect6] (72), [ppoll] (73) and [epoll_pwait] (22) belong to
         that family and are handled in the bullet below instead, because
         they have arms.
-        Then [signalfd4] (74), which does NOT:
-        [do_signalfd4] (fs/signalfd.c) stores the set in the fd's own
-        [ctx->sigmask], and fs/signalfd.c does not name [blocked]
-        anywhere.  It is on this list as a DELIVERY window instead,
-        because [signalfd_dequeue] calls [dequeue_signal] against that
-        [ctx->sigmask], so a read of the fd hands back exactly the
-        signals a blocked mask left pending.  Sampled at v6.1, v6.6,
-        v6.12 and v6.17, not diffed across the whole window:
-        [do_signalfd4] is NOT identical over those four — the fd lookup
-        and the anon-inode call both changed — but the two statements
-        this rests on are, with only [dequeue_signal]'s leading
-        [current] argument dropped at v6.12.  Then [kill] (129),
+        Then [kill] (129),
         [tgkill] (131), [rt_sigqueueinfo] (138), [rt_tgsigqueueinfo] (240) and
         [pidfd_send_signal] (424), so a process cannot even signal
         itself.  Checked against [Sys.SyscallTable.spec_table]: none of
         them has an arm.
       - [rt_sigaction] (134), [pselect6] (72), [ppoll] (73),
-        [epoll_pwait] (22) and [sigaltstack] (132) ARE on the modeled
-        surface, and their windows are shut one level down instead.
+        [epoll_pwait] (22), [sigaltstack] (132) and [signalfd4] (74) ARE
+        on the modeled surface, and their windows are shut one level
+        down instead.
+        74 makes a descriptor and names [blocked] nowhere:
+        [do_signalfd4] (fs/signalfd.c, read at v6.18.44; identical at
+        v6.18.46) stores the set in the fd's own [ctx->sigmask].  Its
+        window is DELIVERY through the descriptor:
+        [signalfd_dequeue] calls [dequeue_signal] against that
+        [ctx->sigmask], so a read of the fd hands back exactly the
+        signals a blocked mask left pending.
+        [ReadWrite.read_opaque_spec] declines a read of a signalfd
+        ([State.OSignalFd]), and ppoll, pselect6 and epoll decline the
+        descriptor, so nothing modeled reads through it.
         132 is the easy one, and is called out separately so the others
         are not read as the pattern: it has NO window to shut.
         [do_sigaltstack] (kernel/signal.c) reads and writes
@@ -1766,10 +1768,11 @@ Definition tgkill_spec (tgid pid sig : word) : Sys SyscallEffect :=
 (** WITH THE DECLARATION OFF, BOTH ARMS ARE UNMODELED.  Both specs test it
     first, so with it clear the only outcome either admits is
     [Unmodeled] — which is what [Sys.Dispatch.dispatch] produces for a
-    number with no arm.  This is the half of the compatibility
-    claim that lives at the spec; the other half is
-    [set_sigmask_deliver_no_pending], and the step-level half is
-    [Run.sstep_off_no_kill]. *)
+    number with no arm.  This is the half of the claim that no kill is
+    reachable with the declarations off which lives at this spec; the
+    other half is [set_sigmask_deliver_no_pending], and the whole claim,
+    over every arm and every run, is [Checks.KillFree.kill_frame_holds]
+    and [Checks.KillFree.valid_input_no_kill]. *)
 Lemma tkill_spec_off_unmodeled : forall pid sig i m o,
   m_abort_terminal m = false -> tkill_spec pid sig i m o -> o = Unmodeled.
 Proof.

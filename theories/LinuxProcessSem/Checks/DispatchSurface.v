@@ -301,6 +301,9 @@ Definition probe_mem : word -> option byte :=
     getresuid (148) and getresgid (150) need none either: [a0] is the
     first destination POINTER, [access_ok] refuses AT_FDCWD's range for
     its 4-byte store, and both arms answer -EFAULT with nothing stored.
+    signalfd4 (74) needs none: its default [sizemask] in [a2] is 0, not
+    8, so [Fs.Signalfd.signalfd4_spec] answers -EINVAL before it reads
+    anything.
 
     Add an entry when a newly listed syscall needs something else;
     leaving it out makes [modeled_sysnos_probes_answer] below fail to
@@ -381,7 +384,7 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 167 then
     (* prctl dispatches on an OPTION, not an fd: [AT_FDCWD] narrowed to 32
        bits is 0xffffff9c, which is no prctl option, so the arm declines
-       before it reaches an answer.  [PR_CAPBSET_READ] is one of the five
+       before it reaches an answer.  [PR_CAPBSET_READ] is one of the seven
        options [Kernel.Sys.prctl_modeled_options] carries, and a1 is the
        capability number -- 0 is a capability at or below [CAP_LAST_CAP]
        and outside [Kernel.Sys.capbset_assumed], so the arm answers 0 or

@@ -36,7 +36,8 @@ Definition w1x_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 32;
   seg_perms := "r-x"%string;
-  seg_bytes := ["93080004130510009305001013061000730000009308d0051305000073000000"%pstring]
+  seg_bytes := ["93080004130510009305001013061000730000009308d0051305000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition w1x_segments : list Segment := [w1x_segment].
 Definition w1x_image : Image := mkImage w1x_segments 0x100 demo_phdrs.
@@ -46,12 +47,16 @@ Definition w1x_byte : byte := Z_to_bv 8 0x93.
 
 (** The two launches: [Checks.Examples.demo_input_valid]'s input, with the
     far end of stdout read ([reader = true], which is that input exactly)
-    or not ([reader = false]).  Every other field is the same, and in
-    particular SIGPIPE's disposition is the default, the last field. *)
+    or not ([reader = false]).  SIGPIPE's disposition is the default in
+    both.  The SIGPIPE-death declaration, the last field, follows the
+    reader: the reader-gone launch is [Run.valid_input_channel_closed],
+    which declares the death, and the reader launch is [Run.valid_input],
+    which does not. *)
 Definition w1x_input (reader : bool) : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
-    default_kernel default_execfn reader true.
+    default_kernel default_execfn reader true (negb reader)
+    (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 (** THE TWO LAUNCHES, EACH UNDER ITS OWN PREDICATE.  [Run.valid_input]
     pins the reader PRESENT, so it is the reader launch that it admits
@@ -120,8 +125,17 @@ Qed.
 (* The derivation: five silent steps, the write, three silent steps, exit.   *)
 (* ========================================================================= *)
 
+(** The segment list both runs read ([Run.run_segments]): the program's
+    own segment, then the vDSO pair.  The two launches differ only in
+    the reader, and the pair reads only the kernel build, so it is one
+    list for both.  The pair is never consulted: every fetch and the
+    write's one-byte read land in the program's segment, which
+    [find_segment] tests first. *)
+Definition w1x_rsegs : list Segment :=
+  run_segments w1x_segments (w1x_input true) w1x_sp w1x_mbase.
+
 Definition w1x_ms0 : machine_state :=
-  init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
+  init_machine_state w1x_rsegs 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
     (w1x_input true).
 
 (** [n] instruction steps, refusing at a pending syscall: a [Some] answer
@@ -133,7 +147,7 @@ Fixpoint w1x_srun (n : nat) (ms : machine_state) : option machine_state :=
       match ms_svc_pending ms with
       | Some _ => None
       | None =>
-          match RiscvSemantics.step w1x_segments ms with
+          match RiscvSemantics.step w1x_rsegs ms with
           | MachineOk ms' => w1x_srun n' ms'
           | MachineFault | MachineUnmodeled => None
           end
@@ -141,12 +155,12 @@ Fixpoint w1x_srun (n : nat) (ms : machine_state) : option machine_state :=
   end.
 
 Lemma w1x_srun_msteps : forall n ms ms',
-  w1x_srun n ms = Some ms' -> msteps w1x_segments ms ms'.
+  w1x_srun n ms = Some ms' -> msteps w1x_rsegs ms ms'.
 Proof.
   induction n as [| n IH]; intros ms ms' H; cbn [w1x_srun] in H.
   - injection H as <-. apply mst_refl.
   - destruct (ms_svc_pending ms) eqn:Hs; [discriminate |].
-    destruct (RiscvSemantics.step w1x_segments ms) eqn:Hst; try discriminate.
+    destruct (RiscvSemantics.step w1x_rsegs ms) eqn:Hst; try discriminate.
     eapply mst_step; [exact Hs | exact Hst | apply IH; exact H].
 Qed.
 
@@ -200,55 +214,57 @@ Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 Lemma w1x_code : bv_and (ms_gpr w1x_s8 0) (Z_to_bv 64 255) = Z_to_bv 64 0.
 Proof. apply bv_eq. vm_compute. reflexivity. Qed.
 
-Lemma w1x_te0 : to_wexit w1x_segments w1x_ms0 [[w1x_byte]] (Z_to_bv 64 0).
+Lemma w1x_te0 : to_wexit w1x_rsegs w1x_ms0 [[w1x_byte]] (Z_to_bv 64 0).
 Proof.
-  apply (msteps_to_wexit w1x_segments _ w1x_s5);
+  apply (msteps_to_wexit w1x_rsegs _ w1x_s5);
     [apply (w1x_srun_msteps 5); exact w1x_srun5 |].
-  apply (tw_write w1x_segments w1x_s5 (Z_to_bv 64 64) [w1x_byte] [] (Z_to_bv 64 0));
+  apply (tw_write w1x_rsegs w1x_s5 (Z_to_bv 64 64) [w1x_byte] [] (Z_to_bv 64 0));
     [exact w1x_svc5 | vm_compute; reflexivity | exact w1x_a0 | exact w1x_read
     | exact w1x_access | cbn [length]; lia |].
   intros n Hn1 Hn2. cbn [length] in Hn2.
   assert (n = 1%nat) by lia. subst n.
-  change (to_wexit w1x_segments w1x_s5' [] (Z_to_bv 64 0)).
-  apply (msteps_to_wexit w1x_segments _ w1x_s8);
+  change (to_wexit w1x_rsegs w1x_s5' [] (Z_to_bv 64 0)).
+  apply (msteps_to_wexit w1x_rsegs _ w1x_s8);
     [apply (w1x_srun_msteps 3); exact w1x_srun8 |].
   rewrite <- w1x_code.
-  apply (tw_exit w1x_segments w1x_s8 (Z_to_bv 64 93));
+  apply (tw_exit w1x_rsegs w1x_s8 (Z_to_bv 64 93));
     [exact w1x_svc8 | left; vm_compute; reflexivity].
 Qed.
 
-(** The same derivation from either launch's initial state.  The machine
-    state is built from the whole input, but it reads only the fields the
-    two launches share -- the arguments, the environment, the launching
-    user, AT_HWCAP, the kernel build and the exec file name -- and
-    [w1x_input] is a constructor application, so both spellings reduce to
-    the same term whatever [r] is. *)
+(** The same derivation from either launch's initial state, at either
+    launch's run segments.  The machine state is built from the whole
+    input, but it reads only the fields the two launches share -- the
+    arguments, the environment, the launching user, AT_HWCAP, the kernel
+    build and the exec file name -- and so does the vDSO pair, which
+    reads the kernel build; [w1x_input] is a constructor application, so
+    both spellings reduce to the same term whatever [r] is. *)
 Lemma w1x_te : forall r,
-  to_wexit w1x_segments
-    (init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
-       (w1x_input r))
+  to_wexit (run_segments w1x_segments (w1x_input r) w1x_sp w1x_mbase)
+    (init_machine_state (run_segments w1x_segments (w1x_input r) w1x_sp w1x_mbase)
+       0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw (w1x_input r))
     [[w1x_byte]] (Z_to_bv 64 0).
 Proof. intros r. exact w1x_te0. Qed.
 
 (** The write is the first syscall, and its range passes [access_ok]. *)
 Lemma w1x_wfirst : forall r,
-  wfirst_ok w1x_segments
-    (init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
-       (w1x_input r)).
+  wfirst_ok (run_segments w1x_segments (w1x_input r) w1x_sp w1x_mbase)
+    (init_machine_state (run_segments w1x_segments (w1x_input r) w1x_sp w1x_mbase)
+       0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw (w1x_input r)).
 Proof.
-  intros r. change (wfirst_ok w1x_segments w1x_ms0).
-  apply (msteps_wfirst_ok w1x_segments _ w1x_s5);
+  intros r. change (wfirst_ok w1x_rsegs w1x_ms0).
+  apply (msteps_wfirst_ok w1x_rsegs _ w1x_s5);
     [apply (w1x_srun_msteps 5); exact w1x_srun5 |].
-  exact (wfo_write w1x_segments w1x_s5 (Z_to_bv 64 64) w1x_svc5 w1x_access).
+  exact (wfo_write w1x_rsegs w1x_s5 (Z_to_bv 64 64) w1x_svc5 w1x_access).
 Qed.
 
 Lemma w1x_modeled : bufs_modeled [[w1x_byte]].
 Proof. apply bufs_modeled_single. unfold buf_modeled. vm_compute. discriminate. Qed.
 
 (** SIGPIPE is fatal at the reader-gone launch: the disposition is the
-    default and the empty mask leaves signal 13 open. *)
+    default, the launch declares the death, and the empty mask leaves
+    signal 13 open. *)
 Lemma w1x_fatal : sigpipe_fatal (w1x_input false).
-Proof. split; [reflexivity | vm_compute; reflexivity]. Qed.
+Proof. split; [reflexivity | split; [reflexivity | vm_compute; reflexivity]]. Qed.
 
 Lemma is_prefix_In : forall {A} (l1 l2 : list A) x,
   is_prefix l1 l2 -> In x l1 -> In x l2.

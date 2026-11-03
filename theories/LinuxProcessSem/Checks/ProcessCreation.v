@@ -458,8 +458,8 @@ Qed.
     no single model can carry: that every resolution of 220 and 435
     which returns a PID leaves that field set.  [clone_checker_admits_a_pid]
     below pins one model and one pid; this is the [forall], and it is the
-    statement [Kernel.Fork.clone_resolve]'s [modify with_children] exists
-    to make true.
+    statement [Kernel.Fork.clone_resolve]'s [modify (with_child pid)]
+    exists to make true.
 
     THE TWO ARMS ARE SEPARATED, NOT MERELY COVERED.  The statement is a
     pair of implications keyed on the observed return rather than a
@@ -633,6 +633,93 @@ Proof.
   now apply check_syscall_sound_ok.
 Qed.
 
+(** THE PID IS RECORDED.  On the success branch of 220 and 435 the
+    post-model is exactly [State.with_child] of the returned pid: the
+    child bit set, the pid appended at the tail of
+    [State.procst_child_pids] (oldest first, as [copy_process]'s
+    [list_add_tail] keeps [task->children], kernel/fork.c, read at
+    v6.18.44; identical at v6.18.46), and nothing else moved.  A reap
+    removes the pid again; the multi-process core's invariant that the
+    list names exactly the caller's children starts from this lemma. *)
+Local Lemma clone_resolve_records_pid : forall i m eff m' evs,
+  clone_resolve i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) m.
+Proof.
+  intros i m eff m' evs H He.
+  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  - match goal with
+    | Hin : In ?e clone_errnos |- _ =>
+        destruct (errnos_ok_range clone_errnos e eq_refl Hin) as [H1 H2];
+        assert (Hyes := errno_ret_error_b e H1 H2)
+    end.
+    cbn [eff_ret] in He. congruence.
+  - reflexivity.
+Qed.
+
+Local Lemma clone_ns_resolve_records_pid : forall i m eff m' evs,
+  clone_ns_resolve i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) m.
+Proof.
+  intros i m eff m' evs H He.
+  unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  - match goal with
+    | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
+        assert (Hyes := errno_ret_error_b e H1 H2)
+    end.
+    cbn [eff_ret] in He. congruence.
+  - reflexivity.
+Qed.
+
+Lemma clone_success_records_pid : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  m' = with_child (eff_ret eff) m.
+Proof.
+  intros i m eff m' evs [Hno|Hno] H He.
+  - apply (clone_is_clone_spec i m _ Hno) in H.
+    unfold clone_spec in H.
+    destruct (clone_fork_flags_b (in_arg i 0)); cbv iota in H.
+    { exact (clone_resolve_records_pid _ _ _ _ _ H He). }
+    destruct (clone_ns_flags_b (in_arg i 0)); cbv iota in H;
+      [|unfold unmodeled in H; discriminate].
+    exact (clone_ns_resolve_records_pid _ _ _ _ _ H He).
+  - apply (clone3_is_clone3_spec i m _ Hno) in H.
+    unfold clone3_spec in H.
+    destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
+      cbv iota in H; [unfold unmodeled in H; discriminate|].
+    sys_unfold. cbv iota in H. inv_ok.
+    destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE)
+      as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+    2: { destruct (negb (access_okb (in_arg i 0) CLONE_ARGS_SIZE)) eqn:Hs;
+           hall Hs; inv_ok.
+         cbn [eff_ret] in He.
+         rewrite (errno_ret_error_b EFAULT ltac:(unfold EFAULT; lia)
+                    ltac:(unfold EFAULT; lia)) in He.
+         discriminate He. }
+    destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
+    match goal with
+    | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
+        apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret in He |- *
+    end.
+    exact (clone_resolve_records_pid _ _ _ _ _ H0 He).
+Qed.
+
+(** And for the executable checker. *)
+Corollary check_clone_success_records_pid : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
+  check_syscall i eff m = CheckOk m' evs ->
+  addr_is_error_b (eff_ret eff) = false ->
+  m' = with_child (eff_ret eff) m.
+Proof.
+  intros i m eff m' evs Hno H He.
+  apply clone_success_records_pid with (i := i) (evs := evs); [exact Hno| |exact He].
+  now apply check_syscall_sound_ok.
+Qed.
+
 (** [execve] (221).  A successful exec replaces the address space, which
     this development cannot express at all: the loaded segments are a
     SECTION PARAMETER of [Run.WithMemImage], fixed for the whole run, so
@@ -714,7 +801,7 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     is that their success branches RECORD it, which is
     [clone_resolve_declines_or_sets_children] (the fork word, and 435)
     and [clone_ns_resolve_declines_or_sets_children] (the namespace
-    word) above.  A creating arm that skipped [State.with_children] is
+    word) above.  A creating arm that skipped [State.with_child] is
     the change that would make [Exit.wait4_spec] WRONG rather than
     merely incomplete; for 220 and 435 those lemmas are what break
     first, and a new child-creating number owes an instance of its own.
@@ -883,7 +970,7 @@ Qed.
     [match] — [Kernel.Sys.prctl_spec]'s first test is membership in it —
     and [prctl_modeled_options_are] pins it EXACTLY — not that
     55 is absent from it, which a widening could preserve, but that the
-    list is these five options and nothing else.  So the tripwire keeps
+    list is these seven options and nothing else.  So the tripwire keeps
     its shape: an edit that teaches [prctl] another
     option fails a named proof in this file, and whoever makes that edit
     has to come back here and say what it does to the tagging argument.
@@ -897,12 +984,13 @@ Qed.
 
     WHAT THE CURRENT LIST DOES TO IT: nothing.  Besides [PR_CAPBSET_READ]
     the list holds [PR_SET_PDEATHSIG] (1), [PR_GET_PDEATHSIG] (2),
-    [PR_SET_DUMPABLE] (4) and [PR_SET_NO_NEW_PRIVS] (38), which write or
-    read the parent-death signal, write the mm's dumpable flag and write
-    the no-new-privs bit, and nothing else; [PR_GET_PDEATHSIG]'s one store
-    is a [put_user] of an [int] through riscv's ordinary [access_ok]
-    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44, identical
-    at v6.18.46).  None of
+    [PR_SET_DUMPABLE] (4), [PR_SET_NO_NEW_PRIVS] (38), [PR_GET_DUMPABLE]
+    (3) and [PR_GET_NO_NEW_PRIVS] (39), which write or read the
+    parent-death signal, the mm's dumpable mode and the no-new-privs bit,
+    and nothing else; [PR_GET_PDEATHSIG]'s one store is a [put_user] of an
+    [int] through riscv's ordinary [access_ok], and the other two readers
+    store nothing (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at
+    v6.18.44, identical at v6.18.46).  None of
     them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
     regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
@@ -910,7 +998,7 @@ Qed.
 Example prctl_modeled_options_are :
   prctl_modeled_options =
     [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_GET_PDEATHSIG; PR_SET_DUMPABLE;
-     PR_SET_NO_NEW_PRIVS].
+     PR_SET_NO_NEW_PRIVS; PR_GET_DUMPABLE; PR_GET_NO_NEW_PRIVS].
 Proof. reflexivity. Qed.
 
 (** Every option outside that list falls through [prctl_spec]'s first
@@ -1017,7 +1105,7 @@ Lemma unmodeled_at_syscall : forall ms model x8,
   unmodeled_at segs (mkCfg ms model).
 Proof.
   intros ms model x8 Hh Hsvc Hspec.
-  split; [exact Hh|]. right. exists x8. split; assumption.
+  split; [exact Hh|]. right; right. exists x8. split; assumption.
 Qed.
 
 (** …and what that costs a source binary: reaching such a configuration
@@ -1107,12 +1195,12 @@ Definition pc_clone_input : SyscallInput :=
     (fun _ => None) (fun _ => None).
 
 (** The success arm records the child: [Kernel.Fork.clone_resolve] calls
-    [State.with_children] on this branch, so the post-model is not
+    [State.with_child] on this branch, so the post-model is not
     [pc_model].  That is what [Kernel.Exit.wait4_spec]'s -ECHILD gate
     reads, and pinning it here is what makes the two compose. *)
 Example clone_checker_admits_a_pid :
   check_syscall pc_clone_input (mkEffect (Z_to_bv 64 4242) [] []) pc_model
-  = CheckOk (with_children pc_model) [].
+  = CheckOk (with_child (Z_to_bv 64 4242) pc_model) [].
 Proof. vm_compute. reflexivity. Qed.
 
 Example clone_checker_admits_eagain :

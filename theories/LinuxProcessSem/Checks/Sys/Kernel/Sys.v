@@ -213,20 +213,20 @@ Lemma check_ret_writes_refl : forall r ws m1,
 Proof. intros. apply check_ret_writes_ok_iff. now repeat split. Qed.
 
 (** prctl: [Kernel.Sys.prctl_spec] carries the whole argument -- which
-    five options, why [PR_CAPBSET_READ] answers 1 for CAP_SETUID and
-    CAP_SETGID and 0 or 1 for every other valid capability, why
-    [PR_SET_PDEATHSIG] stores its argument and the other two setters
-    store nothing, how [PR_GET_PDEATHSIG] stores the signal through its
-    pointer, and why every other option declines.  This mirrors its
-    branches one for one; the observed return tells the two answers of
-    the [alt] apart.  THE DECLINES ARE THE OPTION TEST AND ONE MEMORY
-    BAND: once the option is in [prctl_modeled_options] this answers
-    [CheckOk] or [CheckReject], except [PR_GET_PDEATHSIG] with a 4-byte
-    range [access_ok] admits that memory does not wholly back, the band
-    every copy-out declines.  So the option list is the whole story about
-    which OPTIONS 167 declines, which is what [Checks.ProcessCreation]'s
-    pin on [prctl_modeled_options] states.  [i] is read on the
-    [PR_SET_NO_NEW_PRIVS] branch, for a2..a4, and on the
+    seven options, why [PR_CAPBSET_READ] answers 1 for CAP_SETUID and
+    CAP_SETGID and 0 or 1 for every other valid capability, why the
+    three setters store what they set, how [PR_GET_PDEATHSIG] stores the
+    signal through its pointer, what the two other readers answer, and why
+    every other option declines.  This mirrors its branches one for one;
+    the observed return tells the two answers of the [alt] apart.  THE
+    DECLINES ARE THE OPTION TEST AND ONE MEMORY BAND: once the option is
+    in [prctl_modeled_options] this answers [CheckOk] or [CheckReject],
+    except [PR_GET_PDEATHSIG] with a 4-byte range [access_ok] admits that
+    memory does not wholly back, the band every copy-out declines.  So the
+    option list is the whole story about which OPTIONS 167 declines, which
+    is what [Checks.ProcessCreation]'s pin on [prctl_modeled_options]
+    states.  [i] is read on the [PR_SET_NO_NEW_PRIVS] and
+    [PR_GET_NO_NEW_PRIVS] branches, for a2..a4, and on the
     [PR_GET_PDEATHSIG] branch, for its writable memory. *)
 
 Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
@@ -253,11 +253,17 @@ Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z
      then check_ret_only eff (errno_ret EINVAL) m []
-     else check_ret_only eff (Z_to_bv 64 0) m [])
+     else check_ret_only eff (Z_to_bv 64 0) (with_dumpable arg2 m) [])
   else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
     (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
          && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
-     then check_ret_only eff (Z_to_bv 64 0) m []
+     then check_ret_only eff (Z_to_bv 64 0) (with_no_new_privs true m) []
+     else check_ret_only eff (errno_ret EINVAL) m [])
+  else if Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE then
+    check_ret_only eff (m_dumpable m) m []
+  else if Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS then
+    (if (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then check_ret_only eff (Z_to_bv 64 (if m_no_new_privs m then 1 else 0)) m []
      else check_ret_only eff (errno_ret EINVAL) m [])
   else CheckUnmodeled.
 
@@ -293,11 +299,23 @@ Proof.
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-      apply pure_ok. }
-  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|discriminate].
+      [apply pure_ok|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS).
+  { eapply bind_ok0; [apply input_ok|]. cbv beta.
+    destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+              && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+      apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+      [|apply pure_ok].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE).
+  { eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+    apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS); [|discriminate].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
-            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
     apply pure_ok.
 Qed.
@@ -332,10 +350,15 @@ Proof.
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       now apply check_ret_only_no_unmodeled in H. }
-  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS);
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS).
+  { destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+              && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+      now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS);
     [|apply unmodeled_intro].
-  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
-            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+  destruct (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     now apply check_ret_only_no_unmodeled in H.
 Qed.
 
@@ -369,13 +392,26 @@ Proof.
       as [[r ws]|]; [|now inversion H].
     unfold pure in H. inversion H; subst. apply check_ret_writes_refl. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
-  { destruct ((1 <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; inversion H; subst;
+  { destruct ((1 <? bv_unsigned arg2)%Z).
+    - unfold err_ret, ret_only, pure in H; inversion H; subst;
+        cbn; rewrite bv_eqb_refl; reflexivity.
+    - sys_unfold. cbv beta iota zeta in H. inv_ok.
+      apply check_ret_only_ok_iff. now repeat split. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS).
+  { apply input_bind_ok_inv in H. cbv beta in H.
+    destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+              && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool.
+    - sys_unfold. cbv beta iota zeta in H. inv_ok.
+      apply check_ret_only_ok_iff. now repeat split.
+    - unfold err_ret, ret_only, pure in H; inversion H; subst;
+        cbn; rewrite bv_eqb_refl; reflexivity. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE).
+  { apply get_model_bind_ok_inv in H. cbv beta in H.
+    unfold ret_only, pure in H; inversion H; subst;
       cbn; rewrite bv_eqb_refl; reflexivity. }
-  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|now inversion H].
-  apply input_bind_ok_inv in H. cbv beta in H.
-  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
-            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS); [|now inversion H].
+  apply bind_input_model_inv in H. cbv beta in H.
+  destruct (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     unfold err_ret, ret_only, pure in H; inversion H; subst;
     cbn; rewrite bv_eqb_refl; reflexivity.
 Qed.
@@ -405,11 +441,20 @@ Proof.
     unfold pure in H. discriminate H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; discriminate H. }
-  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|reflexivity].
-  apply input_bind_unmodeled_inv in H. cbv beta in H.
-  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
-            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+      [unfold err_ret, ret_only, pure in H; discriminate H|].
+    exfalso. sys_unfold. cbv beta iota zeta in H. inv_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS).
+  { apply input_bind_unmodeled_inv in H. cbv beta in H.
+    destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+              && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool.
+    - exfalso. sys_unfold. cbv beta iota zeta in H. inv_ok.
+    - unfold err_ret, ret_only, pure in H; discriminate H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE).
+  { apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+    unfold ret_only, pure in H; discriminate H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS); [|reflexivity].
+  apply bind_input_model_inv in H. cbv beta in H.
+  destruct (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     unfold err_ret, ret_only, pure in H; discriminate H.
 Qed.
 

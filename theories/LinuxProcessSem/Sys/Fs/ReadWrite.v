@@ -447,6 +447,207 @@ Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
       end
   end.
 
+(* =========================================================================
+   read (63) and write (64) on an eventfd ([State.OEventFd])
+   ========================================================================= *)
+
+(** Is the eventfd's file non-blocking?  [do_eventfd] (fs/eventfd.c,
+    read at v6.18.44; identical at v6.18.46) makes the file with
+    [flags & EFD_SHARED_FCNTL_FLAGS | O_RDWR], so its [f_flags] carries
+    O_NONBLOCK exactly when the [eventfd2] word did ([EFD_NONBLOCK] is
+    [O_NONBLOCK]), and [eventfd_read] and [eventfd_write] test
+    [file->f_flags & O_NONBLOCK].  Nothing modeled changes that bit
+    afterwards: [Fcntl.fcntl_spec] declines F_SETFL on an opaque
+    descriptor and [Ioctl.ioctl_spec] declines FIONBIO.  ANOTHER holder
+    of the same open file can: a child that got it at a modeled [clone]
+    shares [f_flags], and [setfl] (fs/fcntl.c, read at v6.18.44;
+    identical at v6.18.46) lets it clear O_NONBLOCK, after which a read
+    here would wait.  SCOPE.md assumes no other holder
+    does ("Assumptions that the model does not check"). *)
+Definition efd_nonblock_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) O_NONBLOCK) 0).
+
+(** Was the eventfd made with [EFD_SEMAPHORE]?  [do_eventfd] stores the
+    word as [ctx->flags], and [eventfd_ctx_do_read] reads it. *)
+Definition efd_semaphore_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) EFD_SEMAPHORE) 0).
+
+(** The 8 bytes a successful eventfd [read] may store: the counter's
+    value as a little-endian [__u64], never 0, and exactly 1 under
+    [EFD_SEMAPHORE].  [eventfd_ctx_do_read] (fs/eventfd.c, read at
+    v6.18.44; identical at v6.18.46) hands back
+    [(ctx->flags & EFD_SEMAPHORE) && ctx->count ? 1 : ctx->count], and
+    [eventfd_read] reaches it only with [ctx->count] nonzero.  Any
+    nonzero value up to [ULLONG_MAX] is admitted, because
+    [eventfd_signal_mask] raises the counter to [ULLONG_MAX] itself. *)
+Definition eventfd_value_ok (flags : word) (bs : list byte) : bool :=
+  Nat.eqb (length bs) 8
+  && negb (Z.eqb (bytes_le_to_Z bs) 0)
+  && implb (efd_semaphore_b flags) (Z.eqb (bytes_le_to_Z bs) 1).
+
+(** The successful read: 8 returned, the value at [buf]. *)
+Definition eventfd_deliver (flags buf : word) : Sys SyscallEffect :=
+  bs <- choose (fun bs : list byte => eventfd_value_ok flags bs = true) ;;
+  pure (mkEffect (Z_to_bv 64 8) [(buf, bs)] []).
+
+(** [read fd buf count] on an eventfd made with [flags].
+
+    KERNEL PATH, read at v6.18.44:
+      fs/read_write.c [ksys_read], [vfs_read], [rw_verify_area],
+        [new_sync_read]: read at v6.18.44; identical at v6.18.46.
+      fs/eventfd.c [eventfd_read], [eventfd_ctx_do_read],
+        [eventfd_signal_mask], [eventfd_fops]: read at v6.18.44; identical at v6.18.46.
+
+    THE ORDER.  [vfs_read] tests FMODE_READ and FMODE_CAN_READ (both set:
+    the file is O_RDWR and [eventfd_fops] has [.read_iter]), then
+    [access_ok(buf, count)], whose -EFAULT is first here as in every read
+    arm; [rw_verify_area] passes (the count is under [TASK_SIZE] and
+    [f_pos] stays 0: nothing moves it), and the [MAX_RW_COUNT] clamp
+    leaves any count of at least 8 at least 8.  Then [eventfd_read]:
+    [iov_iter_count(to) < 8] is -EINVAL; a zero counter is -EAGAIN on a
+    non-blocking file ([efd_nonblock_b]) and a wait otherwise; then the
+    value is read and the counter lowered, and ONE [copy_to_iter] of the
+    8 bytes follows, which answers -EFAULT when it copies short.
+
+    THE COUNTER IS THE ENVIRONMENT'S.  The model does not hold it: the
+    process that shares the eventfd (bubblewrap's sandbox init writes the
+    one its monitor reads) can add to it at any time, so on a
+    NON-BLOCKING file the arm admits -EAGAIN (a zero counter) and any
+    nonzero value ([eventfd_value_ok]).
+
+    A BLOCKING READ DECLINES, after the -EFAULT and -EINVAL that precede
+    any wait.  With a zero counter [eventfd_read] sleeps until a writer
+    comes, and nothing the model holds says whether one will: answering
+    a value there would claim the wait ends, which is a liveness claim a
+    statement that the program must exit would inherit.  No call on
+    bubblewrap's parent path reads a blocking eventfd: its monitor reads
+    [event_fd], made with EFD_NONBLOCK.
+
+    THE DESTINATION.  The value is already consumed when [copy_to_iter]
+    runs, so a fault is -EFAULT.  The arm answers only where the copy
+    cannot be partial: all 8 bytes writable (the delivery), or not one
+    (-EFAULT, nothing stored); -EAGAIN stores nothing either way.  A
+    partially writable destination is declined, because riscv's copy may
+    store a prefix first. *)
+Definition read_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+    (* [vfs_read]'s [access_ok] *)
+  else if (bv_unsigned count <? 8)%Z then err_ret EINVAL
+    (* [eventfd_read]'s [iov_iter_count(to) < sizeof(ucnt)] *)
+  else if negb (efd_nonblock_b flags) then unmodeled
+    (* a blocking read may wait: see above *)
+  else
+  i <- input ;;
+  match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+  | Some _ => alt (err_ret EAGAIN) (eventfd_deliver flags buf)
+  | None =>
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => alt (err_ret EAGAIN) (err_ret EFAULT)
+          (* not one byte can land: the copy is -EFAULT *)
+      | Some _ => unmodeled
+          (* a partially writable destination: see above *)
+      end
+  end.
+
+(** [write fd buf count] on an eventfd made with [flags].
+
+    KERNEL PATH, read at v6.18.44:
+      fs/read_write.c [ksys_write], [vfs_write], [rw_verify_area]: read at v6.18.44; identical at v6.18.46.
+      fs/eventfd.c [eventfd_write], [eventfd_fops]: read at v6.18.44; identical at v6.18.46.
+
+    THE ORDER.  [vfs_write] tests FMODE_WRITE and FMODE_CAN_WRITE (both
+    set: O_RDWR, and [eventfd_fops] has [.write]), then
+    [access_ok(buf, count)] (-EFAULT), [rw_verify_area], and the
+    [MAX_RW_COUNT] clamp, which leaves 8 at 8 and any larger count larger.
+    Then [eventfd_write]: [count != 8] is -EINVAL; [copy_from_user] of
+    the 8 bytes is -EFAULT when it fails, and a partial copy changes no
+    user byte (the kernel zero-fills its own copy); a value of
+    [ULLONG_MAX] is -EINVAL; then the write answers 8 when the counter
+    has room ([ULLONG_MAX - ctx->count > ucnt]), -EAGAIN when it has
+    none on a non-blocking file, and waits for room on a blocking one.
+
+    THE LEDGER.  The three answers past the copy record the 8 bytes read
+    ([Syscall.record_copyins]); the failed copy records nothing, the
+    convention [Kernel.Signal.rt_sigprocmask_spec]'s note states.
+
+    A BLOCKING WRITE IS ANSWERED 8, AND IT IS THE ONLY CASE THE EXCLUSION
+    BELOW COVERS.  [eventfd_write] waits only when
+    [ULLONG_MAX - ctx->count <= ucnt], that is when the counter is within
+    [ucnt] of 2^64 - 1.  The counter is the environment's, so the model
+    cannot see that case, and SCOPE.md excludes it ("Where the model is
+    narrower", the [eventfd] row): a program whose eventfd counter comes
+    within v of 2^64 - 1 at a write of v has no statement here.  For
+    v = 1 the counter needs about 1.8 x 10^19 prior increments.  The
+    exclusion is partly an ENVIRONMENT condition: the counter is shared,
+    so the program's part is its own writes and the world's part is every
+    other writer's, whoever they are.  Outside it a blocking write never
+    waits, so 8 is the kernel's answer.  A non-blocking write needs no
+    exclusion: its -EAGAIN is admitted beside the 8.  The [ULLONG_MAX]
+    value is -EINVAL in every case, decided before the room test, as
+    [eventfd_write] does.  Declining every blocking write instead would
+    decline bubblewrap's own [write(child_wait_fd, &1, 8)], whose eventfd
+    is blocking. *)
+Definition write_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+    (* [vfs_write]'s [access_ok] *)
+  else if negb (Z.eqb (bv_unsigned count) 8) then err_ret EINVAL
+    (* [eventfd_write]'s [count != sizeof(ucnt)] *)
+  else
+  i <- input ;;
+  match read_bytes_map (in_mem i) buf (Z_to_bv 64 8) with
+  | None => err_ret EFAULT        (* [copy_from_user] failed: nothing recorded *)
+  | Some bs =>
+      record_copyins [(buf, 8%nat)]
+        (if Z.eqb (bytes_le_to_Z bs) (2 ^ 64 - 1)%Z then err_ret EINVAL
+           (* [ucnt == ULLONG_MAX] *)
+         else if efd_nonblock_b flags
+         then alt (err_ret EAGAIN) (ret_only (Z_to_bv 64 8))
+           (* no room on a non-blocking file, or room *)
+         else ret_only (Z_to_bv 64 8))
+  end.
+
+(** [read] on an opaque descriptor ([State.OpaqueFd]), one arm per
+    object. *)
+Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
+  match o with
+  | OProcFile _ => read_proc_spec buf count
+      (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
+  | OEventFd fl => read_eventfd_spec fl buf count
+      (* an eventfd: see [read_eventfd_spec] *)
+  | OProcPath _ => unmodeled
+      (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
+         file (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46), which is
+         -EBADF; not written *)
+  | ONsFile _ => unmodeled
+      (* FAIL-CLOSED: the object behind the handle may be of any type,
+         and a read's answer depends on it ([State.ONsFile]) *)
+  | OProcFdDir _ _ => unmodeled
+      (* FAIL-CLOSED: [proc_fd_operations]'s [.read] is
+         [generic_read_dir], -EISDIR after [vfs_read]'s -EFAULT
+         (fs/proc/fd.c, fs/libfs.c, read at v6.18.44; identical at
+         v6.18.46); no program in reach reads it, so it is not written *)
+  | OSignalFd _ _ => unmodeled
+      (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
+         v6.18.44; identical at v6.18.46) answers from the pending
+         signals and their [siginfo], which this arm does not model *)
+  end.
+
+(** [write] on an opaque descriptor ([State.OpaqueFd]): only the eventfd
+    answers. *)
+Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
+  match o with
+  | OEventFd fl => write_eventfd_spec fl buf count
+      (* an eventfd: see [write_eventfd_spec] *)
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => unmodeled
+      (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
+         -EBADF; a /proc/sys file opened O_RDONLY and the /proc/self/fd
+         directory (O_RDONLY) are [vfs_write]'s FMODE_WRITE -EBADF; a
+         signalfd has no [.write], so [vfs_write]'s FMODE_CAN_WRITE test
+         answers -EINVAL; and an [ONsFile]'s object is of unknown type
+         (fs/read_write.c, fs/file.c, fs/signalfd.c, read at v6.18.44;
+         identical at v6.18.46).  None of these is written. *)
+  end.
+
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -877,18 +1078,8 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  queue [word_to_nat count] would have left *)
           end
       end
-  | Some (FdOpaque (OProcFile _)) => read_proc_spec buf count
-      (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
-  | Some (FdOpaque (OProcPath _)) => unmodeled
-      (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
-         file (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46), which is
-         -EBADF; not written *)
-  | Some (FdOpaque (OEventFd _)) => unmodeled
-      (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44; identical at v6.18.46)
-         answers from the counter, which the model does not hold *)
-  | Some (FdOpaque (ONsFile _)) => unmodeled
-      (* FAIL-CLOSED: the object behind the handle may be of any type,
-         and a read's answer depends on it ([State.ONsFile]) *)
+  | Some (FdOpaque o) => read_opaque_spec o buf count
+      (* one arm per opaque object: see [read_opaque_spec] *)
   end.
 
 (** [write fd buf count].
@@ -1193,9 +1384,68 @@ Definition raise_sigpipe (m : Model) : Model :=
   then with_sigpipe_pending m
   else with_killed (Z_to_bv 64 SIGPIPE) m.
 
+(** WHETHER THE MODEL FOLLOWS THE SIGNAL AT ALL, and the test every
+    write that would raise it makes first.  A write that would RAISE
+    SIGPIPE at SIG_DFL declines unless the task declared that the model
+    covers the death ([State.m_sigpipe_terminal]), whatever the mask
+    says -- the same stance [Kernel.Signal.tkill_spec] takes with
+    [State.m_abort_terminal] clear.  Declining the BLOCKED case too is
+    what keeps the death out rather than postponing it: a blocked
+    SIGPIPE is left pending, and the [rt_sigprocmask] that uncovers it
+    kills there ([Kernel.Signal.sigmask_deliver_model]).  With the
+    declaration clear no SIGPIPE is ever sent, so none is ever pending
+    and no run carries [KillEv 13]; [sigpipe_write_off_unmodeled] is
+    that, at the spec.
+
+    WHY THE ORDINARY LAUNCH DECLINES.  [Run.valid_input] pins the
+    declaration clear, so that no statement quantified over it sees a
+    death by signal: [Equivalence.error_free] sees an error transition
+    and not a death, and a declined step is an error.  That is how a
+    reader-less write was answered before this arm existed, and it is
+    what keeps those statements saying what they said.  The launches
+    that want the death name it ([Run.valid_input_sigpipe_kills],
+    [Run.valid_input_channel_closed]).
+
+    SIG_IGN IS NOT DECLINED: nothing is raised, the write answers
+    -EPIPE and the process runs on, whatever the declaration says. *)
+Definition sigpipe_declines (m : Model) : bool :=
+  (m_sigpipe_default m && negb (m_sigpipe_terminal m))%bool.
+
 Definition sigpipe_write : Sys SyscallEffect :=
-  modify raise_sigpipe ;;
-  err_ret EPIPE.
+  m <- get_model ;;
+  if sigpipe_declines m then unmodeled
+  else (modify raise_sigpipe ;; err_ret EPIPE).
+
+(** With the declaration clear and SIGPIPE at SIG_DFL the only outcome
+    is [Unmodeled], the twin of [Kernel.Signal.tkill_spec_off_unmodeled]. *)
+Lemma sigpipe_write_off_unmodeled : forall i m o,
+  m_sigpipe_default m = true -> m_sigpipe_terminal m = false ->
+  sigpipe_write i m o -> o = Unmodeled.
+Proof.
+  intros i m o Hdfl Hoff H. unfold sigpipe_write in H.
+  rewrite bind_get_model in H. cbv beta in H. unfold sigpipe_declines in H.
+  rewrite Hdfl, Hoff in H. exact H.
+Qed.
+
+(** The two outcomes, one per value of the declaration test. *)
+Lemma sigpipe_write_declines : forall i m,
+  sigpipe_declines m = true -> sigpipe_write i m Unmodeled.
+Proof.
+  intros i m Hd. unfold sigpipe_write.
+  apply (proj2 (bind_get_model _ i m Unmodeled)). cbv beta.
+  rewrite Hd. cbv iota. cbv [unmodeled]. reflexivity.
+Qed.
+
+Lemma sigpipe_write_epipe : forall i m,
+  sigpipe_declines m = false ->
+  sigpipe_write i m (Ok (mkEffect (errno_ret EPIPE) [] []) (raise_sigpipe m) []).
+Proof.
+  intros i m Hd. unfold sigpipe_write.
+  apply (proj2 (bind_get_model _ i m _)). cbv beta.
+  rewrite Hd. cbv iota. unfold bind.
+  exists tt, (raise_sigpipe m), [], []. split; [reflexivity | split; reflexivity].
+Qed.
+
 (** The faulting-source post-state of a write whose bytes would have
     landed at [off] in [p]: the file extended to [off], the descriptor
     untouched, or [None] where the hole is one the model will not build.
@@ -1307,7 +1557,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            end is a pipe, net/core/stream.c [sk_stream_error] :190-198
            when it is a socket), and under the default disposition the
            process DIES; see [raise_sigpipe], which is where the mask
-           decides between the death and the errno.
+           decides between the death and the errno, and
+           [sigpipe_declines], which declines the write instead when the
+           launch did not ask for the death.
 
            AFTER THE ZERO-COUNT BRANCH, because fs/pipe.c returns 0 for
            a zero-length write at :454-456, BEFORE the [mutex_lock] at
@@ -1390,7 +1642,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [kiocb_set_rw_flags], which no write(2) or writev(2) path
          calls.  So the process takes SIGPIPE and, at the default
          disposition, DIES; [raise_sigpipe] is where the mask decides
-         between that death and the -EPIPE.  SIGPIPE is in none of
+         between that death and the -EPIPE, and [sigpipe_declines] is
+         where a launch that did not ask for the death declines the
+         write instead.  SIGPIPE is in none of
          SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
          SIG_KERNEL_COREDUMP_MASK (include/linux/signal.h), so under
          SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit]
@@ -1413,7 +1667,10 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          class [Equivalence.modeled] cannot see.  The model now has a
          death that is not [exit] ([State.with_killed],
          [Run.sstep_killed]), so the argument no longer holds and the
-         answer is the kernel's.  The sendto/sendmsg path keeps its own
+         answer is the kernel's -- on a launch that declares the death
+         ([State.m_sigpipe_terminal]); on any other, a write that would
+         raise the signal at SIG_DFL still declines ([sigpipe_write]).
+         The sendto/sendmsg path keeps its own
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
@@ -1617,7 +1874,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            guard is true for write(2), which cannot set that kiocb flag.
            Under the default disposition the process DIES by signal 13;
            [raise_sigpipe] is where the mask decides between that death
-           and the -EPIPE a program with signal 13 blocked reads back.
+           and the -EPIPE a program with signal 13 blocked reads back,
+           and [sigpipe_declines] where a launch that did not ask for
+           the death declines the write.
 
            DECIDED AFTER the zero-count branch above, which is :454-456
            returning 0 BEFORE the [mutex_lock] at :458 and so before
@@ -1645,9 +1904,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
 
            THIS USED TO FAIL CLOSED, on the argument that the model had
            no signals and no death that is not [exit].  It has both now
-           ([State.with_killed], [Run.sstep_killed]), so the pipe write
-           is answered instead of declined, and a program that closes a
-           pipe's read end and writes is a program proofs can cover *)
+           ([State.with_killed], [Run.sstep_killed]), so on a launch
+           that declares the death ([State.m_sigpipe_terminal]) the pipe
+           write is answered, and a program that closes a pipe's read
+           end and writes is a program proofs can cover.  On a launch
+           that does not, the write still declines at SIG_DFL, as it
+           did ([sigpipe_write]) *)
         sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with
@@ -1745,12 +2007,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            The whole source IS read, so the range goes in the copy-in
            ledger exactly as the channel and file arms record theirs *)
       end
-  | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
-         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_write]'s
-         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
-         model does not hold (fs/read_write.c, fs/file.c, fs/eventfd.c,
-         read at v6.18.44; identical at v6.18.46).  None is written. *)
+  | Some (FdOpaque o) => write_opaque_spec o buf count
+      (* the eventfd answers, the other five decline: see
+         [write_opaque_spec] *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -1958,9 +2217,10 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [ksys_pread64]'s [CLASS(fd, f)]
          -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46); a
-         positional read of an eventfd or a /proc/sys file is not
-         written, and an [ONsFile]'s object is of unknown type.  None of
-         the four answers is. *)
+         positional read of an eventfd, a /proc/sys file, the
+         /proc/self/fd directory or a signalfd is not written, and an
+         [ONsFile]'s object is of unknown type.  None of the six answers
+         is. *)
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -2158,7 +2418,7 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
   | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the four answers
+      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the six answers
          is written *)
   end.
 
@@ -2499,10 +2759,13 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
         end)
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [do_writev]'s [CLASS(fd_pos, f)]
-         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_writev]'s
-         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
-         model does not hold (fs/read_write.c, fs/eventfd.c, read at
-         v6.18.44; identical at v6.18.46).  None is written. *)
+         -EBADF, a /proc/sys file opened O_RDONLY and the /proc/self/fd
+         directory are [vfs_writev]'s FMODE_WRITE -EBADF, an eventfd's
+         vectored write runs [eventfd_write] once per segment through
+         [do_loop_readv_writev], a signalfd has no write method, and an
+         [ONsFile]'s object is of unknown type (fs/read_write.c,
+         fs/eventfd.c, fs/signalfd.c, read at v6.18.44; identical at
+         v6.18.46).  None is written. *)
   end.
 
 
@@ -2648,7 +2911,8 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        [None] branch, through [State.fd_is_opaque], because [None] here means
        [vfs_readv]'s -EBADF and that is the kernel's answer only for the
        O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
-       v6.18.44; identical at v6.18.46); a /proc/sys file and an eventfd are open for reading *)
+       v6.18.44; identical at v6.18.46); a /proc/sys file, an eventfd,
+       the /proc/self/fd directory and a signalfd are open for reading *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -2873,7 +3137,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          directory's position is 0, so [rw_verify_area]'s position test
          above cannot fire — [FdDir] tracks no position because nothing
          modeled moves it ([lseek_spec] declines on a directory, and
-         [Readdir.getdents64_spec] declines every listing and answers the
+         [Readdir.getdents64_spec] declines every [FdDir] listing and answers the
          rest with [filldir64]'s -EINVAL, which leaves [f_pos] where it
          found it); give either an arm
          and this -EISDIR needs the test in front of it, since ext4's
@@ -3068,10 +3332,10 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
         (* FAIL-CLOSED ON THE OPAQUE KINDS, AHEAD OF THE -EINVAL:
            [ksys_lseek] resolves [CLASS(fd_pos, f)] before it reads
            [whence], so an O_PATH file is -EBADF for every whence; the
-           eventfd and /proc/sys objects take the -EINVAL, and an
-           [ONsFile]'s answer depends on its object of unknown type
-           (fs/read_write.c, read at v6.18.44; identical at v6.18.46);
-           the split is not written *)
+           eventfd, /proc/sys, /proc/self/fd and signalfd objects take the
+           -EINVAL, and an [ONsFile]'s answer depends on its object of
+           unknown type (fs/read_write.c, read at v6.18.44; identical at
+           v6.18.46); the split is not written *)
         (* whence past SEEK_HOLE: real -EINVAL, and the kernel answers it
            BEFORE the fd's kind is consulted — so this precedes -ESPIPE *)
       else
@@ -3225,7 +3489,12 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              [.llseek = default_llseek] over a size the model does not hold
              (fs/read_write.c [ksys_lseek], fs/eventfd.c [eventfd_fops],
              fs/proc/proc_sysctl.c [proc_sys_file_operations]: read at
-             v6.18.44; identical at v6.18.46); an [ONsFile]'s object is of
-             unknown type.  None of the four answers is written. *)
+             v6.18.44; identical at v6.18.46); the /proc/self/fd directory's
+             [proc_fd_operations] has [.llseek = generic_file_llseek], which
+             would move the position the listing reads, and a signalfd's
+             [signalfd_fops] [noop_llseek] (fs/proc/fd.c, fs/signalfd.c,
+             read at v6.18.44; identical at v6.18.46); an [ONsFile]'s
+             object is of unknown type.  None of the six answers is
+             written. *)
       end
   end.

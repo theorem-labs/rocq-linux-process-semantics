@@ -175,11 +175,11 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
 
 (** A clone that takes a task out of the released world (a flat caller,
     any namespace flag) meets state the released model does not keep: the
-    caller's capability sets (it derives them) and its no_new_privs bit
-    and dumpable mode (it stores neither).  With CLONE_NEWUSER the child's
-    sets are the new namespace's full sets whatever the caller's; without
-    it the clone declines.  The child's no_new_privs bit and dumpable mode
-    are then unknown. *)
+    caller's capability sets (it derives them).  With CLONE_NEWUSER the
+    child's sets are the new namespace's full sets whatever the caller's;
+    without it the clone declines.  The no-new-privs bit and the dumpable
+    mode are the released model's and the child's process record copies
+    them ([Procs.child_proc]). *)
 Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
   flat_view ctx st && (any_new_ns f || has_flag f CLONE_NEWUSER).
 
@@ -271,9 +271,6 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let child := with_cwd child (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx)) in
                         let child := with_caps child (cc_caps cc) in
                         let child := with_securebits child (cc_secure cc) in
-                        let child := if leaves_flat f ctx st
-                                     then with_dumpable_opt (with_nnp_opt child None) None
-                                     else child in
                         let st' := with_ns_prop (with_mounts st T') links in
                         let st' := with_userns st' U in
                         let st' := with_mntns st' (ns_mntns st ++ new_mntns) in

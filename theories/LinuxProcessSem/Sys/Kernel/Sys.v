@@ -891,22 +891,24 @@ Definition set_cred_gids (t : IdTriple) (c : Creds) : Creds :=
           (id_saved t) (cr_groups c).
 
 (** [commit_creds] for the four id setters below: the new credentials,
-    and the parent-death signal reset to 0 when the call moves the
-    effective id.
+    and, when the call moves the effective id, the parent-death signal
+    reset to 0 and the dumpable mode set to the build's [suid_dumpable]
+    ([State.kb_suid_dumpable]).
 
     kernel/cred.c [commit_creds], [cred_cap_issubset], read at v6.18.44; identical at v6.18.46.
     include/linux/capability.h [cap_issubset], read at v6.18.44; identical at v6.18.46.
     security/commoncap.c [cap_task_fix_setuid], [cap_emulate_setxuid], read at v6.18.44; identical at v6.18.46.
     kernel/sys.c [__sys_setuid], [__sys_setgid], [__sys_setresuid], [__sys_setresgid], read at v6.18.44; identical at v6.18.46.
 
-    [commit_creds] resets the signal under one test:
+    [commit_creds] resets both under one test:
 
         if (!uid_eq(old->euid, new->euid) ||
             !gid_eq(old->egid, new->egid) ||
             !uid_eq(old->fsuid, new->fsuid) ||
             !gid_eq(old->fsgid, new->fsgid) ||
             !cred_cap_issubset(old, new)) {
-                ...
+                if (task->mm)
+                        set_dumpable(task->mm, suid_dumpable);
                 task->pdeath_signal = 0;
 
     For these setters that test is "the effective id of the triple moves",
@@ -923,14 +925,18 @@ Definition set_cred_gids (t : IdTriple) (c : Creds) : Creds :=
       four GAINS a permitted capability: [cap_emulate_setxuid] only clears
       the permitted set, and the group setters do not touch capabilities.
 
-    The record is rebuilt with the signal either way, carrying the old
-    value when the effective id stays, so every other field, the address
-    space included, is carried across by conversion. *)
+    The record is rebuilt with both fields either way, carrying the old
+    values when the effective id stays, so every other field, the address
+    space included, is carried across by conversion.  A modeled process
+    always has an mm, so the [task->mm] test always holds. *)
 Definition commit_id_creds (old_eff new_eff : word) (c : Creds) (m : Model)
     : Model :=
-  with_pdeath_signal
-    (if bv_eqb new_eff old_eff then m_pdeath_signal m else Z_to_bv 64 0)
-    (with_creds c m).
+  with_dumpable
+    (if bv_eqb new_eff old_eff then m_dumpable m
+     else suid_dump_word (kb_suid_dumpable (m_kernel m)))
+    (with_pdeath_signal
+       (if bv_eqb new_eff old_eff then m_pdeath_signal m else Z_to_bv 64 0)
+       (with_creds c m)).
 
 (** [getuid] (174), [geteuid] (175), [getgid] (176), [getegid] (177):
     return one id.  TOTAL — no argument is read, no allocation happens,
@@ -1134,14 +1140,15 @@ Definition setid_errnos (real_uid_changes : bool) : list Z :=
     leaves half its effect behind.  Here every failing branch returns
     without reaching [commit_id_creds].
 
-    THE PARENT-DEATH SIGNAL.  A success commits through
-    [commit_id_creds], which resets [State.m_pdeath_signal] to 0 when the
+    THE PARENT-DEATH SIGNAL AND THE DUMPABLE MODE.  A success commits
+    through [commit_id_creds], which resets [State.m_pdeath_signal] to 0
+    and sets [State.m_dumpable] to the build's [suid_dumpable] when the
     effective id moves -- [commit_creds]'s test on the effective and
     filesystem ids, the filesystem id following the effective one -- and
-    keeps it otherwise.  So the privileged branch resets it unless [v] is
-    already the effective id, and the unprivileged branch resets it
+    keeps both otherwise.  So the privileged branch resets them unless [v] is
+    already the effective id, and the unprivileged branch resets them
     unless [v] is the effective id it replaces.  The errno branches abort
-    the new credentials and keep it.  capset never clears it, because
+    the new credentials and keep both.  capset never resets them, because
     that arm answers only where no capability is gained. *)
 Definition setid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Creds)
     (user : bool) (v : word) : Sys SyscallEffect :=
@@ -1204,15 +1211,16 @@ Definition setid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Cred
       (musl 1.2.5, src/unistd/seteuid.c, src/unistd/setegid.c), so they
       are modeled here and nowhere else.
 
-    THE PARENT-DEATH SIGNAL.  A success commits through
-    [commit_id_creds], which resets [State.m_pdeath_signal] to 0 when the
+    THE PARENT-DEATH SIGNAL AND THE DUMPABLE MODE.  A success commits
+    through [commit_id_creds], which resets [State.m_pdeath_signal] to 0
+    and sets [State.m_dumpable] to the build's [suid_dumpable] when the
     new effective id [ne] differs from the old one -- [commit_creds]'s
     test on the effective and filesystem ids, the filesystem id following
-    the effective one -- and keeps it otherwise.  So [setresuid(r, -1, s)]
-    keeps it whatever it does to the real and saved ids, and a call that
-    moves the effective id resets it.  The no-op fast path returns before
+    the effective one -- and keeps both otherwise.  So [setresuid(r, -1, s)]
+    keeps both whatever it does to the real and saved ids, and a call that
+    moves the effective id resets them.  The no-op fast path returns before
     [prepare_creds] and never reaches [commit_creds]; the -EPERM and errno
-    branches keep it.  capset never clears it, because that arm answers
+    branches keep both.  capset never resets them, because that arm answers
     only where no capability is gained. *)
 Definition setresid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Creds)
     (user : bool) (r e s : word) : Sys SyscallEffect :=
@@ -1442,7 +1450,7 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     carries is named there and is not restated here. *)
 Definition prctl_modeled_options : list Z :=
   [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_GET_PDEATHSIG; PR_SET_DUMPABLE;
-   PR_SET_NO_NEW_PRIVS].
+   PR_SET_NO_NEW_PRIVS; PR_GET_DUMPABLE; PR_GET_NO_NEW_PRIVS].
 
 (** The capabilities [State.creds_privileged]'s note assumes the
     bounding set holds: CAP_SETUID and CAP_SETGID, the two the model's
@@ -1582,15 +1590,15 @@ Definition capbset_assumed (cap : Z) : bool :=
     declining because it is what programs READ: libcap's [cap_max_bits]
     binary-searches it from a constructor.
 
-    THE FOUR OPTIONS kernel/sys.c ANSWERS: [PR_SET_PDEATHSIG],
-    [PR_GET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS].
-    [cap_task_prctl] has no case for any of them and returns -ENOSYS from
-    its [default:], which is [LSM_RET_DEFAULT(task_prctl)], so
-    [security_task_prctl] keeps -ENOSYS and [SYSCALL_DEFINE5(prctl)] goes
-    on to its own [switch].  That is the capability-only LSM the
-    credentials section above names as a standing assumption; a second
-    LSM that claims one of these options is outside the model, as for
-    [PR_CAPBSET_READ] above.  The four cases, quoted:
+    THE SIX OPTIONS kernel/sys.c ANSWERS: [PR_SET_PDEATHSIG],
+    [PR_GET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS],
+    [PR_GET_DUMPABLE] and [PR_GET_NO_NEW_PRIVS].  [cap_task_prctl] has no
+    case for any of them and returns -ENOSYS from its [default:], which is
+    [LSM_RET_DEFAULT(task_prctl)], so [security_task_prctl] keeps -ENOSYS
+    and [SYSCALL_DEFINE5(prctl)] goes on to its own [switch].  That is the
+    capability-only LSM the credentials section above names as a standing
+    assumption; a second LSM that claims one of these options is outside
+    the model, as for [PR_CAPBSET_READ] above.  The six cases, quoted:
 
         case PR_SET_PDEATHSIG:
                 if (!valid_signal(arg2)) { error = -EINVAL; break; }
@@ -1609,12 +1617,21 @@ Definition capbset_assumed (cap : Z) : bool :=
                         return -EINVAL;
                 task_set_no_new_privs(current);
                 break;
+        case PR_GET_DUMPABLE:
+                error = get_dumpable(me->mm);
+                break;
+        case PR_GET_NO_NEW_PRIVS:
+                if (arg2 || arg3 || arg4 || arg5)
+                        return -EINVAL;
+                return task_no_new_privs(current) ? 1 : 0;
 
     and the function ends [return error;] with [error = 0] set before
     the [switch].  So the three setters each answer 0 or -EINVAL, decided
     by their arguments alone, and have no other failure: none allocates,
-    and none can be refused by privilege.  The reader is a [put_user],
-    and answers as one does.
+    and none can be refused by privilege.  [PR_GET_DUMPABLE] answers the
+    stored mode with no argument read; [PR_GET_NO_NEW_PRIVS] answers 1 or
+    0, or -EINVAL when [arg2]..[arg5] -- a1..a4, whole registers -- are not
+    all 0.  [PR_GET_PDEATHSIG] is a [put_user], and answers as one does.
 
     - [valid_signal(arg2)] is [arg2 <= _NSIG] on an [unsigned long],
       [_NSIG] being 64 on riscv64: 0 to 64 is 0 (0 clears the parent-death
@@ -1632,13 +1649,15 @@ Definition capbset_assumed (cap : Z) : bool :=
     - [SUID_DUMP_DISABLE] is 0 and [SUID_DUMP_USER] is 1, so the
       dumpable flag answers 0 for [arg2] in {0, 1} and -EINVAL for any
       other value, again over the full register.  2
-      ([SUID_DUMP_ROOT]) is refused here; only [suid_dumpable] sets it.
-    - [PR_SET_NO_NEW_PRIVS] is the one option that reads [arg3], [arg4]
-      and [arg5] -- a2, a3 and a4 -- and it reads them as whole
-      registers: 0 for [arg2 = 1] with the other three 0, -EINVAL for
-      anything else.  That is why this spec reads the input, and only
-      on that branch; its signature still takes [arg2] alone, as the
-      dispatcher has always passed it.
+      ([SUID_DUMP_ROOT]) is refused here; only [suid_dumpable] sets it,
+      through [commit_id_creds].  An accepted value is STORED:
+      [State.m_dumpable] becomes [arg2].
+    - [PR_SET_NO_NEW_PRIVS] reads [arg3], [arg4] and [arg5] -- a2, a3
+      and a4 -- and it reads them as whole registers: 0 for [arg2 = 1]
+      with the other three 0, -EINVAL for anything else.  An accepted call
+      sets [State.m_no_new_privs].  That is why this spec reads the input
+      on that branch and on [PR_GET_NO_NEW_PRIVS]'s; its signature still
+      takes [arg2] alone, as the dispatcher has always passed it.
 
     THE PARENT-DEATH SIGNAL IS STORED, AND RESET WHERE [commit_creds]
     RESETS IT.  [PR_SET_PDEATHSIG] writes [State.m_pdeath_signal] and
@@ -1665,31 +1684,26 @@ Definition capbset_assumed (cap : Z) : bool :=
     the assumptions the model does not check), so no transition reads the
     field on a parent's exit.
 
-    THE MODEL STORES NOTHING FOR THE OTHER TWO SETTERS, and that is sound
-    because no modeled call reads the bit or the flag.
-    - The no-new-privs bit is read by [PR_GET_NO_NEW_PRIVS] (39), by
-      seccomp ([PR_SET_SECCOMP] (22) and [seccomp] (277)) and by
-      [execve] (fs/exec.c): 39 and 22 are outside
-      [prctl_modeled_options], and 277 and 221 have no arm.
-    - The dumpable flag is read by [PR_GET_DUMPABLE] (3), declined; by
-      core dumps, which this model has none of ([prlimit64_spec]'s
-      RLIMIT_CORE note); by ptrace access checks, and the model admits
-      no tracer; and by procfs ownership ([task_dump_owner],
-      fs/proc/base.c), to which no modeled answer is pinned.
-    A statement that needs one of them SET reads it from the call log
-    ([Run.star_calls]: [sc_no = 167], [sc_args], [sc_ret = 0]); what the
-    kernel then does with it is a kernel-side obligation.  Such a
-    statement must take the LAST such call that follows the last
-    credential change: [commit_creds] also resets the dumpable flag to
-    [suid_dumpable] under the test above, so a [setuid] that moves the
-    effective uid after [prctl(PR_SET_DUMPABLE, 1)] undoes it.  The
-    no-new-privs bit has no such reset: nothing clears it.
+    THE NO-NEW-PRIVS BIT AND THE DUMPABLE MODE ARE STORED.
+    [State.m_no_new_privs] is false at launch and only
+    [PR_SET_NO_NEW_PRIVS] writes it, to true; nothing clears it.  It is
+    also read by seccomp ([PR_SET_SECCOMP] (22) and [seccomp] (277)) and
+    by [execve] (fs/exec.c), which have no arm.  [State.m_dumpable] is 1
+    at launch; [PR_SET_DUMPABLE] writes 0 or 1, and [commit_id_creds]
+    writes the build's [suid_dumpable] under [commit_creds]'s test above,
+    so a [setuid] that moves the effective uid after
+    [prctl(PR_SET_DUMPABLE, 1)] undoes it, as on Linux.  The mode is also
+    read by core dumps, which this model has none of ([prlimit64_spec]'s
+    RLIMIT_CORE note), by ptrace access checks, and the model admits no
+    tracer, and by procfs ownership ([task_dump_owner], fs/proc/base.c),
+    which the namespace layer reads ([Ns.Files.loc_attr]) and which
+    tests the mode against [SUID_DUMP_USER], not as a boolean.
 
     EVERY OTHER OPTION IS [unmodeled], and one of them is load-bearing.
     [PR_SET_TAGGED_ADDR_CTRL] (55) is one of the two callers of riscv's
     [set_tagged_addr_ctrl] (arch/riscv/kernel/process.c), and declining
     it is half of why [State.access_okb] is exact — the other half being
-    [ptrace] (117), which has no arm at all.  None of the five answered
+    [ptrace] (117), which has no arm at all.  None of the seven answered
     options reaches [set_tagged_addr_ctrl]: its only callers are that
     option's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace regset (read at
     v6.18.44).  That argument rests
@@ -1721,10 +1735,20 @@ Definition prctl_spec (option_ arg2 : word) : Sys SyscallEffect :=
      end)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z then err_ret EINVAL    (* not 0 or 1 *)
-     else ret_only (Z_to_bv 64 0))
+     else modify (with_dumpable arg2) ;; ret_only (Z_to_bv 64 0))
   else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
     i <- input ;;
     (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
          && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
-     then ret_only (Z_to_bv 64 0) else err_ret EINVAL)
-  else unmodeled.     (* unreachable: the list has no sixth member *)
+     then modify (with_no_new_privs true) ;; ret_only (Z_to_bv 64 0)
+     else err_ret EINVAL)
+  else if Z.eqb (bv_unsigned option_) PR_GET_DUMPABLE then
+    m <- get_model ;;
+    ret_only (m_dumpable m)
+  else if Z.eqb (bv_unsigned option_) PR_GET_NO_NEW_PRIVS then
+    i <- input ;;
+    m <- get_model ;;
+    (if (w_is0 arg2 && w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then ret_only (Z_to_bv 64 (if m_no_new_privs m then 1 else 0))
+     else err_ret EINVAL)
+  else unmodeled.     (* unreachable: the list has no eighth member *)

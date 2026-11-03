@@ -54,7 +54,8 @@ Definition place_thp : Model :=
   with_kernel (mkKernelBuild true (kb_vdso default_kernel)
                  (kb_aslr default_kernel) (kb_guard default_kernel)
                  (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
-                 (kb_vlenb default_kernel) (kb_cache default_kernel))
+                 (kb_vlenb default_kernel) (kb_cache default_kernel)
+                 (kb_suid_dumpable default_kernel))
     place_model.
 
 (** The three addresses every case below is written against, as the

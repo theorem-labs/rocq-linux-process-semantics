@@ -151,7 +151,7 @@ Example clone3_at_the_top_still_resolves :
        (mkEffectU (Z_to_bv 64 4242) [] [] [] []
                   [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
        clone3_model
-     = CheckOk (with_children clone3_model) []
+     = CheckOk (with_child (Z_to_bv 64 4242) clone3_model) []
   /\ check_syscall clone3_top_call (mkEffect (errno_ret EFAULT) [] []) clone3_model
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
@@ -193,12 +193,12 @@ Definition bwrap_clone_flags : word :=
   Z_to_bv 64 (SIGCHLD + CLONE_NEWNS + CLONE_NEWUSER + CLONE_NEWPID
               + CLONE_NEWNET + CLONE_NEWIPC + CLONE_NEWUTS).
 
-(** The case: a pid, recorded with [with_children]; -EPERM (which is not
+(** The case: a pid, recorded with [with_child]; -EPERM (which is not
     in [Fork.clone_errnos]) and -ENOSPC, with the model unchanged; and
     0, the child's own return, refused. *)
 Example clone_namespace_word_answers_a_pid :
   check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_children clone_case_model) []
+    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in bwrap_clone_flags)
        (mkEffect (errno_ret EPERM) [] []) clone_case_model
        = CheckOk clone_case_model []
@@ -209,13 +209,32 @@ Example clone_namespace_word_answers_a_pid :
        clone_case_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
+(** THE PID IS RECORDED, in order.  Each successful clone appends the
+    pid it returned to [State.procst_child_pids], so two clones leave
+    the two pids oldest first ([copy_process]'s [list_add_tail],
+    kernel/fork.c, read at v6.18.44; identical at v6.18.46), and an
+    errno answer leaves the list alone.  Before this the success branch
+    set only the child bit and the list stayed [].  THE CONTROL is the
+    errno answer, which leaves the model unchanged in both texts. *)
+Example clone_records_the_pid :
+  let m1 := with_child (Z_to_bv 64 4242) clone_case_model in
+  m_child_pids m1 = [Z_to_bv 64 4242]
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] []) m1
+     = CheckOk (with_child (Z_to_bv 64 4243) m1) []
+  /\ m_child_pids (with_child (Z_to_bv 64 4243) m1)
+     = [Z_to_bv 64 4242; Z_to_bv 64 4243]
+  (* the control *)
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
+       m1 = CheckOk m1 [].
+Proof. cbv zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
 (** The controls.  [clone(SIGCHLD)] answers a pid in both texts, and
     keeps its four errnos (-EPERM is not one of them); [clone(CLONE_VM
     | SIGCHLD)] declines in both, and so does the namespace word with
     CLONE_VM added, and a namespace bit without SIGCHLD. *)
 Example clone_controls_fork_word_and_clone_vm :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_children clone_case_model) []
+    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD))
        (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckReject
   /\ check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + SIGCHLD)))
@@ -233,7 +252,8 @@ Example clone_namespace_word_keeps_the_descriptor_gate :
     (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE GATE PASSES EVERY OPAQUE KIND, for both words, end to end.
+(** THE GATE PASSES FOUR OF THE SIX OPAQUE KINDS, for both words, end
+    to end: [OProcPath], [OProcFile], [OEventFd] and [ONsFile].
     [clone_opaque_model] is the table bubblewrap's parent holds at its
     clone (channels 0-2, the O_PATH descriptor on "/proc" at fd 3, its
     two eventfds at 4 and 5), and [clone_all_opaque_model] adds the
@@ -241,7 +261,8 @@ Proof. vm_compute. reflexivity. Qed.
     descriptor.  Before [State.FdOpaque] the model held none of these,
     so it could not reach this clone at all.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
-    file still declines both words. *)
+    file still declines both words.  The other two kinds decline
+    ([clone_declines_procfd_dir_and_signalfd] below). *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
@@ -255,16 +276,45 @@ Definition clone_all_opaque_model : Model :=
 
 Example clone_passes_the_opaque_kinds :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+    clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+       clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
   (* the namespace word's errno: any but -EINTR *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
        clone_opaque_model = CheckOk clone_opaque_model []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
        clone_opaque_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE OTHER TWO OPAQUE KINDS DECLINE, for both words: the
+    /proc/self/fd directory ([State.OProcFdDir]), whose [f_pos] the
+    child would share while the model holds it in the parent's entry,
+    and a signalfd ([State.OSignalFd]), whose mask either process may
+    change ([Sys.Kernel.Fork] gives each reason).  Each is added to
+    [clone_opaque_model].  THE CONTROL is [clone_passes_the_opaque_kinds]
+    above, which the text before the gate's two declining arms answers
+    the same way. *)
+Definition clone_procfd_model : Model :=
+  with_fds (fd_insert (m_fds clone_opaque_model) 6
+              (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+    clone_opaque_model.
+
+Definition clone_signalfd_model : Model :=
+  with_fds (fd_insert (m_fds clone_opaque_model) 6
+              (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+    clone_opaque_model.
+
+Example clone_declines_procfd_dir_and_signalfd :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+    clone_procfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       clone_procfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+       clone_signalfd_model = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       clone_signalfd_model = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.

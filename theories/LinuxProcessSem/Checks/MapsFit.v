@@ -219,6 +219,8 @@ Proof.
   dif H; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   dif H; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   dif H; [discriminate|].
+  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
+  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
@@ -568,6 +570,7 @@ Proof.
     | erewrite check_connect_frame by eassumption; exact Hfit
     | erewrite check_timerfd_create_frame by eassumption; exact Hfit
     | erewrite check_eventfd2_frame by eassumption; exact Hfit
+    | erewrite check_signalfd4_frame by eassumption; exact Hfit
     | erewrite check_pipe2_frame by eassumption; exact Hfit
     | erewrite check_getcwd_frame by eassumption; exact Hfit
     | erewrite check_epoll_create1_frame by eassumption; exact Hfit

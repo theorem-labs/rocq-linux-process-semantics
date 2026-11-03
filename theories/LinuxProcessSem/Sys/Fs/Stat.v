@@ -743,6 +743,68 @@ Definition fstat_devnull_spec (statbuf : word) : Sys SyscallEffect :=
 Definition fstat_urandom_spec (statbuf : word) : Sys SyscallEffect :=
   fstat_chrdev_spec urandom_path stat_urandom_ok statbuf.
 
+(** [fstat] of the /proc/self/fd directory ([State.OProcFdDir]): a
+    128-byte [struct stat] whose [st_mode] is [Uapi.PROCFD_DIR_MODE],
+    S_IFDIR with 0500, and whose other members are the environment's.
+
+    KERNEL PATH, read at v6.18.44:
+      fs/stat.c [SYSCALL_DEFINE2(newfstat)], [vfs_fstat], [vfs_getattr],
+        [vfs_getattr_nosec], [cp_new_stat]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/fd.c [proc_fd_getattr], [proc_readfd_count]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/base.c [proc_pident_instantiate], [proc_pid_make_inode],
+        [pid_update_inode], [task_dump_owner]: read at v6.18.44; identical at v6.18.46.
+
+    [vfs_getattr] runs [security_inode_getattr] (no LSM refuses here, the
+    premise [fstat_spec]'s last paragraph states) and then the inode's
+    [.getattr], [proc_fd_getattr]: [generic_fillattr] copies the inode,
+    and [proc_readfd_count] sets [st_size] to the number of open
+    descriptors and cannot fail for a live caller.  [cp_new_stat] then
+    makes ONE 128-byte [copy_to_user] with the padding zeroed, which is
+    [Uapi.stat_buf_wf].  The mode is the inode's ([Uapi.PROCFD_DIR_MODE]
+    carries the derivation).
+
+    NO PIN, unlike the file and device arms.  [State.procst_statpins] is
+    keyed by path, and none of the members [Uapi.stat_stable_eqb] holds
+    is fixed for this name: the owner is [task_dump_owner]'s, which
+    follows the caller's effective ids and its dumpable flag, and
+    [pid_revalidate] rewrites it; the inode number is [get_next_ino]'s
+    and a later open of the name can find a new inode once the dentry is
+    dropped.  So every member but [st_mode] is chosen afresh at each
+    call, a precision gap (SCOPE.md, "Known gaps in precision").
+
+    The order and the destination are [fstat_file_spec]'s: [access_ok]'s
+    -EFAULT, then a wholly writable range, and a partially writable one
+    declined. *)
+Definition fstat_procfd_dir_spec (statbuf : word) : Sys SyscallEffect :=
+  i <- input ;;
+  if negb (access_okb statbuf STAT_SIZE) then err_ret EFAULT
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => unmodeled      (* a partial [copy_to_user] then -EFAULT *)
+    | Some _ =>
+        bs <- choose (fun bs : list byte =>
+                        stat_buf_wf bs = true /\ stat_procfd_dir_ok bs = true) ;;
+        pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
+    end.
+
+(** [fstat] on an opaque descriptor ([State.OpaqueFd]): only the
+    /proc/self/fd directory answers.
+
+    The other five decline.  [vfs_fstat]'s [CLASS(fd_raw, f)] accepts an
+    O_PATH file, so all of them reach [cp_new_stat], with metadata the
+    model does not hold: an O_PATH file's is its procfs inode's, an
+    eventfd's and a signalfd's are the anonymous inode's
+    ([anon_inode_getfile_fmode]: one inode shared by every anonymous
+    file, its mode set by [alloc_anon_inode]), a /proc/sys file's is the
+    sysctl inode's, and an [ONsFile]'s object is of unknown type
+    (fs/stat.c, fs/anon_inodes.c, read at v6.18.44; identical at
+    v6.18.46). *)
+Definition fstat_opaque_spec (o : OpaqueFd) (statbuf : word) : Sys SyscallEffect :=
+  match o with
+  | OProcFdDir _ _ => fstat_procfd_dir_spec statbuf
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => unmodeled
+  end.
+
 (** THE MATCH BELOW IS TOTAL ON [FdEntry] ON PURPOSE, with no wildcard.
     A new constructor is a new kind of file, and whoever adds it must
     decide what [fstat] says about it; the non-exhaustive-match error is
@@ -844,10 +906,9 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned once
                                         under [Uapi.urandom_path] *)
-  | Some (FdOpaque _) => unmodeled
-                                     (* DECLINED: [vfs_fstat]'s [CLASS(fd_raw, f)] accepts
-                                        an O_PATH file, so all four objects reach
-                                        [cp_new_stat], with metadata the model does not
-                                        hold (fs/stat.c, read at v6.18.44; identical at v6.18.46) *)
+  | Some (FdOpaque o) => fstat_opaque_spec o statbuf
+                                     (* the /proc/self/fd directory answers, S_IFDIR with
+                                        0500 and the rest the environment's; the other
+                                        five objects decline (see [fstat_opaque_spec]) *)
   end.
 

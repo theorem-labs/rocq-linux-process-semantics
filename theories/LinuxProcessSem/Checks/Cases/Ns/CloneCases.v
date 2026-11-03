@@ -51,9 +51,10 @@ Definition st_of (o : CloneNs) : option NsState := match o with CnOk _ _ s => So
 Definition ret_of (o : CloneNs) : option (option Z) := match o with CnOk _ r _ => Some r | _ => None end.
 
 (** The child is in a new user, mount, pid, network and UTS namespace (2
-    each), pid 1 in its own and 138 in the host's, with every capability,
-    its root on the copy of the root mount, and, having left the released
-    world, a no_new_privs bit and dumpable mode the model does not know. *)
+    each), pid 1 in its own and 138 in the host's, with every capability
+    and its root on the copy of the root mount.  Its no_new_privs bit and
+    dumpable mode are its process record's ([Procs.child_proc]), not this
+    context's. *)
 Example clone_all_child : forall m,
   child_of (clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138)
   = Some (let c := with_user_ns init_nsctx 2 in
@@ -64,8 +65,7 @@ Example clone_all_child : forall m,
           let c := with_pids c [(2%positive, 1); (1%positive, 138)] in
           let c := with_root c (2%positive, 1%positive) in
           let c := with_cwd c (2%positive, 1%positive) in
-          let c := with_caps c fullcaps in
-          with_dumpable_opt (with_nnp_opt c None) None).
+          with_caps c fullcaps).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** As on Linux: the host's mount namespace has rootfs (mount 1) as its root

@@ -32,12 +32,10 @@ Definition mem (version pid : Z) (data : list Z) : word -> option byte :=
 Definition call (n : Z) (args : list Z) (mm : word -> option byte) : SyscallInput :=
   mkInput (Z_to_bv 64 n) (map (Z_to_bv 64) args) mm mm.
 
-(** A task with pid 2 in namespace 1, the given sets, and the given
-    no_new_privs bit and dumpable mode ([None]: not known); [t0] has the
-    launch values. *)
-Definition task (c : CapSets) (nnp : option bool) (dump : option Z) : NsCtx :=
-  with_dumpable_opt (with_nnp_opt (with_caps (with_pids init_nsctx [(1%positive, 2)]) c) nnp) dump.
-Definition t0 (c : CapSets) : NsCtx := task c (Some false) (Some 1).
+(** A task with pid 2 in namespace 1 and the given sets; [t0] names it
+    by its sets alone. *)
+Definition task (c : CapSets) : NsCtx := with_caps (with_pids init_nsctx [(1%positive, 2)]) c.
+Definition t0 (c : CapSets) : NsCtx := task c.
 
 Definition U : NsState :=
   with_userns empty_nsstate [mkUserNs 1 None 0 0 None None true true INT_MAX true].
@@ -140,40 +138,27 @@ Example pdeathsig_get_is_released : forall m o,
   <-> released (call 167 [2; DATA; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o.
 Proof. intros m o. unfold prctl_arm. reflexivity. Qed.
 
-(** no_new_privs: set with exactly (1, 0, 0, 0), read with all zero. *)
-Example nnp_set : forall m,
-  option_map cx_no_new_privs (ctx_of (prctl_fn (call 167 [38; 1; 0; 0; 0] (fun _ => None)) m
-                                               (t0 caps0) U)) = Some (Some true).
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example nnp_set_bad_args : forall m,
-  ret_of (prctl_fn (call 167 [38; 1; 1; 0; 0] (fun _ => None)) m (t0 caps0) U)
-  = Some (-22).
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example nnp_get : forall m,
-  ret_of (prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (task caps0 (Some true) (Some 1)) U)
-  = Some 1.
-Proof. intros m. vm_compute. reflexivity. Qed.
+(** The no-new-privs bit and the dumpable mode are the released model's
+    state ([State.m_no_new_privs], [State.m_dumpable]): PR_GET_DUMPABLE
+    (3), PR_SET_DUMPABLE (4), PR_SET_NO_NEW_PRIVS (38) and
+    PR_GET_NO_NEW_PRIVS (39) are its answers in every world, as the
+    parent-death signal's are. *)
+Example nnp_dumpable_are_released : forall m o,
+  (prctl_arm (call 167 [38; 1; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+   <-> released (call 167 [38; 1; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o)
+  /\ (prctl_arm (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+      <-> released (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o)
+  /\ (prctl_arm (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+      <-> released (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o)
+  /\ (prctl_arm (call 167 [4; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+      <-> released (call 167 [4; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o).
+Proof. intros m o. unfold prctl_arm. repeat split; intros H; exact H. Qed.
 
-(** A bit or a mode the model does not know is not reported. *)
-Example nnp_get_unknown : forall m,
-  prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (task caps0 None (Some 1)) U = EUnmodeled.
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example dumpable_get_unknown : forall m,
-  prctl_fn (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (task caps0 (Some false) None) U = EUnmodeled.
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example dumpable_get_known : forall m,
-  ret_of (prctl_fn (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U) = Some 1.
-Proof. intros m. vm_compute. reflexivity. Qed.
-
-(** The dumpable mode: 0 or 1 only. *)
-Example dumpable_set : forall m,
-  option_map cx_dumpable (ctx_of (prctl_fn (call 167 [4; 0; 0; 0; 0] (fun _ => None)) m
-                                           (t0 caps0) U)) = Some (Some 0).
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example dumpable_invalid : forall m,
-  ret_of (prctl_fn (call 167 [4; 2; 0; 0; 0] (fun _ => None)) m (t0 caps0) U)
-  = Some (-22).
-Proof. intros m. vm_compute. reflexivity. Qed.
+(** The namespace arm itself no longer answers them. *)
+Example nnp_dumpable_not_ns_arm : forall m,
+  prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U = EUnmodeled
+  /\ prctl_fn (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U = EUnmodeled.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
 
 (** Any other option declines. *)
 Example prctl_other_declines : forall m,

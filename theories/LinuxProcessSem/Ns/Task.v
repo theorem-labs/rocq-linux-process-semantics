@@ -25,12 +25,8 @@ Import ListNotations.
 Local Open Scope Z_scope.
 
 (* =========================================================================
-   Setters on the task context (the per-field ones are [Ns.Tables]')
+   The task's credential (the context setters are [Ns.Tables]')
    ========================================================================= *)
-
-Definition with_dumpable (ctx : NsCtx) (d : Z) : NsCtx := with_dumpable_opt ctx (Some d).
-
-Definition with_no_new_privs (ctx : NsCtx) : NsCtx := with_nnp_opt ctx (Some true).
 
 (** The task's credential as the capability checks read it: its user
     namespace, euid and egid (the model's kernel ids) and effective set. *)
@@ -299,20 +295,20 @@ Definition capset_arm : NsArm := fun i m ctx st o =>
 
 (** [prctl] (167): [SYSCALL_DEFINE5(prctl)] (kernel/sys.c) after
     [cap_task_prctl] (security/commoncap.c), for the options
-    PR_CAPBSET_READ (23), PR_CAPBSET_DROP (24, [cap_prctl_drop]: CAP_SETPCAP
-    in the task's namespace, then a valid number), PR_GET_DUMPABLE (3),
-    PR_SET_DUMPABLE (4, 0 or 1), PR_SET_NO_NEW_PRIVS (38) and
-    PR_GET_NO_NEW_PRIVS (39), each with its argument checks; a GET of a
-    value the model does not know declines.  PR_SET_PDEATHSIG (1) and
-    PR_GET_PDEATHSIG (2) are the released model's answers: the signal is
-    its state ([State.m_pdeath_signal]).  The option is the low 32 bits of
-    a0.  Any other option is DECLINED ([EUnmodeled]), never read as one of
-    these eight.  Kind: exact, with [prepare_creds]'s ENOMEM for
-    PR_CAPBSET_DROP, the environment's. *)
+    PR_CAPBSET_READ (23) and PR_CAPBSET_DROP (24, [cap_prctl_drop]:
+    CAP_SETPCAP in the task's namespace, then a valid number), each with
+    its argument checks: the bounding set is this record's.
+    PR_SET_PDEATHSIG (1), PR_GET_PDEATHSIG (2), PR_GET_DUMPABLE (3),
+    PR_SET_DUMPABLE (4), PR_SET_NO_NEW_PRIVS (38) and PR_GET_NO_NEW_PRIVS
+    (39) are the released model's answers ([prctl_arm]): the signal, the
+    dumpable mode and the bit are its state ([State.m_pdeath_signal],
+    [State.m_dumpable], [State.m_no_new_privs]), which no namespace
+    changes.  The option is the low 32 bits of a0.  Any other option is
+    DECLINED ([EUnmodeled]).  Kind: exact, with [prepare_creds]'s ENOMEM
+    for PR_CAPBSET_DROP, the environment's. *)
 Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let opt := s32 (in_arg i 0) in
   let a2 := bv_unsigned (in_arg i 1) in
-  let z3 := w_is0 (in_arg i 2) && w_is0 (in_arg i 3) && w_is0 (in_arg i 4) in
   if opt =? 23 then
     (if 40 <? a2 then ns_errno EINVAL m ctx st
      else ns_ret (Z_to_bv 64 (if Z.testbit (cap_bounding (cx_caps ctx)) a2 then 1 else 0)) m ctx st)
@@ -324,22 +320,6 @@ Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
             (with_caps ctx (mkCaps (cap_effective c) (cap_permitted c) (cap_inheritable c)
                                    (Z.land (cap_bounding c) (Z.lnot (2 ^ a2))) (cap_ambient c)))
             st)
-  else if opt =? 3 then
-    (match cx_dumpable ctx with
-     | Some d => ns_ret (Z_to_bv 64 d) m ctx st
-     | None => EUnmodeled
-     end)
-  else if opt =? 4 then
-    (if 1 <? a2 then ns_errno EINVAL m ctx st else ns_ret (Z_to_bv 64 0) m (with_dumpable ctx a2) st)
-  else if opt =? 38 then
-    (if negb ((a2 =? 1) && z3) then ns_errno EINVAL m ctx st
-     else ns_ret (Z_to_bv 64 0) m (with_no_new_privs ctx) st)
-  else if opt =? 39 then
-    (if negb ((a2 =? 0) && z3) then ns_errno EINVAL m ctx st
-     else match cx_no_new_privs ctx with
-          | Some b => ns_ret (Z_to_bv 64 (if b then 1 else 0)) m ctx st
-          | None => EUnmodeled
-          end)
   else EUnmodeled.
 
 (** [cap_prctl_drop]'s [prepare_creds] ENOMEM, after its two checks. *)
@@ -349,9 +329,12 @@ Definition prctl_enomem (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
      && (bv_unsigned (in_arg i 1) <=? 40)
   then Some (ns_errno ENOMEM m ctx st) else None.
 
+(** The options whose state is the released model's. *)
+Definition prctl_released_options : list Z := [1; 2; 3; 4; 38; 39].
+
 Definition prctl_arm : NsArm := fun i m ctx st o =>
   let opt := s32 (in_arg i 0) in
-  if (opt =? 1) || (opt =? 2) then released i m ctx st o
+  if existsb (Z.eqb opt) prctl_released_options then released i m ctx st o
   else o = prctl_fn i m ctx st \/ prctl_enomem i m ctx st = Some o.
 
 (* =========================================================================
@@ -525,15 +508,15 @@ Definition task_arms : list (Z * NsArm) :=
 (** The environment's refusals of these arms, for the forced-only filter:
     [prepare_creds]'s ENOMEM.  The tables' answers ([NsInjected]):
     [capset_fn]'s EFAULT, EINVAL and EPERM; [prctl_fn]'s EINVAL and EPERM,
-    and the released answer's EINVAL and EFAULT for PR_SET_PDEATHSIG and
-    PR_GET_PDEATHSIG ([Sys.Kernel.Sys]).  [sethostname] and [setdomainname]
-    have no row: no environment refusal reaches them ([set_uts_fn]).
-    Neither has [uname]: its answers are the released ones, whose table
-    ([Run.injected_table]) has no row for 160 either.  [setsid]'s row is
-    the released one ([Run.injected_table], 157, FamCred): in the host's
-    pid namespace its EPERM is the environment's group membership, the
-    released arm's untracked condition; after a success its EPERM is the
-    tables' answer, so EPERM is also in [ni_forced]. *)
+    and the released answer's EINVAL and EFAULT for the options in
+    [prctl_released_options] ([Kernel.Sys.prctl_spec]).  [sethostname] and
+    [setdomainname] have no row: no environment refusal reaches them
+    ([set_uts_fn]).  Neither has [uname]: its answers are the released ones,
+    whose table ([Run.injected_table]) has no row for 160 either.  [setsid]'s
+    row is the released one ([Run.injected_table], 157, FamCred): in the
+    host's pid namespace its EPERM is the environment's group membership,
+    the released arm's untracked condition; after a success its EPERM is
+    the tables' answer, so EPERM is also in [ni_forced]. *)
 Definition task_injected : list NsInjected :=
   [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)] [EFAULT; EINVAL; EPERM] [];
    mkNsInjected 157 [(fun e => e =? EPERM, FamCred)] [EPERM] [EPERM];

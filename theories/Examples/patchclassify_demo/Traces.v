@@ -182,27 +182,36 @@ Qed.
 Lemma exits_c_trace_characterization :
   forall (segs : list Segment) (pc : N) (ph : PhdrInfo)
          (code : word) (fuel : nat),
-    (forall sp mem rom,
-        exits_c segs code fuel (demo_init_state pc sp mem rom) = true) ->
+    (forall vt sp mem rom,
+        exits_c (segs ++ vt) code fuel (demo_init_state pc sp mem rom) = true) ->
     forall lim en inp t,
       bh_traces (run (mkImage segs pc ph) lim en inp) t
       <-> (t = [] \/ t = [ExitEv code (in_fs inp)]).
 Proof.
   intros segs pc ph code fuel Hc lim [sp brk0 mbase rnd] inp t.
   cbn [run bh_traces]. unfold init_config.
-  (* the machine half: the premise holds at this run's initial state *)
-  assert (Hms : exits_c segs code fuel
-                  (init_machine_state segs pc ph sp mbase rnd inp) = true).
-  { destruct (init_machine_state_abstracts segs pc ph sp mbase rnd inp)
+  (* the machine half: the premise holds at this run's initial state,
+     whose segment list is the image's own followed by the vDSO pair *)
+  assert (Hms : exits_c (run_segments segs inp sp mbase) code fuel
+                  (init_machine_state (run_segments segs inp sp mbase) pc ph sp mbase rnd inp)
+                = true).
+  { destruct (init_machine_state_abstracts (run_segments segs inp sp mbase) pc ph sp mbase
+                rnd inp)
       as (mem & rom & Hshape).
-    rewrite Hshape. apply Hc. }
+    rewrite Hshape. exact (Hc (vdso_segments (in_kernel inp) sp mbase) sp mem rom). }
   (* the model half, at this run's initial model *)
-  pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hh.
-  pose proof (init_model_no_lazy (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hlazy.
-  pose proof (m_fs_init_model (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hfs.
+  set (m0 := with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rnd))
+               (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp
+                  lim inp)).
+  assert (Hh : m_halted m0 = None)
+    by exact (m_halted_init_model (segments_reserved (run_segments segs inp sp mbase))
+                brk0 mbase sp lim inp).
+  assert (Hlazy : m_vm_lazy m0 = [])
+    by exact (init_model_no_lazy (segments_reserved (run_segments segs inp sp mbase))
+                brk0 mbase sp lim inp).
+  assert (Hfs : m_fs m0 = in_fs inp)
+    by exact (m_fs_init_model (segments_reserved (run_segments segs inp sp mbase))
+                brk0 mbase sp lim inp).
   split.
   - (* every observed prefix is one of the two *)
     intros (tr' & c & Hstar & Hp).

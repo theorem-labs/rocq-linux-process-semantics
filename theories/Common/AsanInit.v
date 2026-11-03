@@ -22,7 +22,7 @@
 (* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
   PropExec CatExec CatSim SeqExec StoreOk StreamSim StepTac ShapeAlg AgentLib StartupAux RefLayout ArgvEnv
@@ -485,7 +485,11 @@ Section Init.
 
   Definition R0 : bvmap 5 word := regupd (regupd bvmap_empty 10 (Z_to_bv 64 0)) 2 sp.
   Definition FULL0 : word -> option byte := wrap_mem inp mbase ph entryw sp rdraw.
-  Definition model0 : Model := init_model (segments_reserved segs) brk0 mbase sp LIMIT inp.  (* init_model takes the run stack pointer *)
+  (** [Run.init_config]'s model: [State.init_model] at the run stack
+      pointer, with the launch's vDSO draw copied in by [State.with_vdso]. *)
+  Definition model0 : Model :=
+    with_vdso (vdso_run_init (ed_vdso rdraw))
+      (init_model (segments_reserved segs) brk0 mbase sp LIMIT inp).
 
   Let cs0 := init_acs_of A CEIL.
   Let cs0z := init_acs_of_zero A CEIL.   (* zero-draw initial state: init_kn_zero *)
@@ -1168,7 +1172,7 @@ Section Init.
     - constructor.   (* no hole tokens *)
     - apply seps_nil.
     - unfold model_ivs_wf. rewrite M5, M6, M7. repeat split; try (intros q []).
-      unfold model0. apply init_sp_ok_init_model. exact Hsp.  (* the ledger stack pointer is admissible *)
+      exact (init_sp_ok_init_model (segments_reserved segs) brk0 mbase sp LIMIT inp Hsp).  (* the ledger stack pointer is admissible *)
     - unfold CEIL, usp, model0. reflexivity.   (* co_ceil: the plan's ceiling is the run's *)
     - constructor.
     - constructor.
@@ -1201,6 +1205,11 @@ Section Init.
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
     - (* co_mres: no tracked mappings yet *) constructor.
+    - (* co_vdso: the ledger ends with the launch's own pair *)
+      replace (m_kernel model0) with (in_kernel inp) by reflexivity.
+      replace (vdso_top (m_vmmaps model0)) with VTOP
+        by (symmetry; exact (vdso_top_init_model (segments_reserved segs) brk0 mbase sp LIMIT inp)).
+      apply incl_appr, incl_refl.
   Qed.
 
   (** ZERO DRAW: the same configuration over [init_kn_zero], under the zero-draw hypothesis;
@@ -1236,7 +1245,7 @@ Section Init.
     - constructor.   (* no hole tokens *)
     - apply seps_nil.
     - unfold model_ivs_wf. rewrite M5, M6, M7. repeat split; try (intros q []).
-      unfold model0. apply init_sp_ok_init_model. exact Hsp.  (* the ledger stack pointer is admissible *)
+      exact (init_sp_ok_init_model (segments_reserved segs) brk0 mbase sp LIMIT inp Hsp).  (* the ledger stack pointer is admissible *)
     - unfold CEIL, usp, model0. reflexivity.   (* co_ceil *)
     - constructor.
     - constructor.
@@ -1269,6 +1278,11 @@ Section Init.
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
     - (* co_mres: no tracked mappings yet *) constructor.
+    - (* co_vdso: the ledger ends with the launch's own pair *)
+      replace (m_kernel model0) with (in_kernel inp) by reflexivity.
+      replace (vdso_top (m_vmmaps model0)) with VTOP
+        by (symmetry; exact (vdso_top_init_model (segments_reserved segs) brk0 mbase sp LIMIT inp)).
+      apply incl_appr, incl_refl.
   Qed.
 
   (** [Run.init_config] is the configuration [cs_ok] speaks about *)

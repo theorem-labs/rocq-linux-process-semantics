@@ -428,7 +428,8 @@ Local Open Scope Z_scope.
 
 (** ** The launch facts the boot reported
 
-{facts_note} *)
+{facts_note}  fs.suid_dumpable is not one of them: the fixture takes
+[State.default_kernel]'s, and no placement or start-state rule reads it. *)
 Definition rec_kernel : KernelBuild :=
   mkKernelBuild {thp} {kb_vdso}%N {aslr} {guard}%N {kb_rnd_bits}%N {rseq}
     {kb_vlenb}%N
@@ -436,7 +437,8 @@ Definition rec_kernel : KernelBuild :=
       ({l1i})
       ({l1d})
       ({l2})
-      ({l3})).
+      ({l3}))
+    (kb_suid_dumpable default_kernel).
 
 (** The argument vector, the environment and the exec file name, byte for
     byte as the probe recorded them. *)
@@ -461,7 +463,8 @@ Definition rec_input : ProcInput :=
   mkProcInput_full rec_argv rec_envp [] IEof
     (Z_to_bv 64 {uid}) (Z_to_bv 64 {gid}) []
     net_silent default_nofile (Z_to_bv 64 0) (Z_to_bv 64 {hwcap:#x})
-    false {va} default_urandom [] rec_kernel rec_execfn true true.
+    false {va} default_urandom [] rec_kernel rec_execfn true true false
+    (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 (** The image, as {phdr_src}: the phdr table at
     {phdr_addr:#x}, {phdr_num} entries of {phdr_ent} bytes, and an entry point

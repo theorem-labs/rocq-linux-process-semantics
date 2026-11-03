@@ -22,16 +22,22 @@
     [Run.spurious_refusal_cfg] is for the released ones: under a
     configuration [cfg], an answer that is an injected refusal of a family
     [cfg] keeps from failing, where the state did not force it, is not a
-    step.  A core MUST make [~ ext_refusal cfg i m ctx st eff] a premise of
-    the step that takes a claimed call's effect.  Without that premise a
-    statement over an extension would be strictly easier than over the
-    released model, which keeps no refusal branch the filter removes: that
-    is the soundness gap the field closes.  [ext_refusal_coherent] makes it
-    the released filter in the released world, for every [cfg]: under
-    [forced_only_cfg] it drops exactly the refusals the released step
-    drops, and under [may_fail_cfg] it drops nothing, as the released
-    filter does (no family is off there); both readings occur in
-    statements.
+    step.  It reads the call's whole outcome: the effect, and the model,
+    context and state the call leaves, so a refusal that shows only in the
+    state after the call can be filtered too.  A core MUST make
+    [~ ext_refusal cfg i m ctx st o] a premise of the step that takes a
+    claimed call's [EOk] outcome [o].  An [EUnmodeled] outcome and a step
+    that ends the process get no filter, as the released step filters
+    neither.  Without that premise a statement over an extension would be
+    strictly easier than over the released model, which keeps no refusal
+    branch the filter removes: that is the soundness gap the field closes.
+    [ext_refusal_coherent] makes it, in the released world, the released
+    filter of the outcome's effect ([outcome_eff]), for every [cfg]; so
+    there it is the filter it was when it read the effect alone
+    ([ext_refusal_released]).  Under [forced_only_cfg] it drops exactly
+    the refusals the released step drops, and under [may_fail_cfg] it
+    drops nothing, as the released filter does (no family is off there);
+    both readings occur in statements.
 
     [ext_clone] is what a successful or failing [clone] does to the
     namespace model, for a core whose own clone step creates the child:
@@ -54,9 +60,13 @@
     [ext_multiproc] names the claimed calls the extension answers soundly
     while other processes are live: those whose answer reads and writes
     only state the core shares between processes.  A core admits a
-    claimed call in a system of several processes when its own guard
-    admits it or this one does.  [ext_multiproc_coherent] gives a task in
-    the released world the core's guard alone. *)
+    claimed call in a system of several processes when its guard without
+    its class numbers admits it, or this one does, or the view is flat and
+    the number is one of the core's class-(A) or class-(B) calls
+    ([Procs.multiproc_ok]): those classes are properties of the released
+    spec, which a claimed call reaches only at a flat view.
+    [ext_multiproc_coherent] gives a task in the released world the core's
+    guard alone. *)
 
 From Stdlib Require Import List PArith ZArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import State Monad Specs Run.
@@ -66,6 +76,13 @@ Import ListNotations.
 Inductive ext_outcome :=
   | EOk (eff : SyscallEffect) (m : Model) (ctx : NsCtx) (st : NsState) (evs : list event)
   | EUnmodeled.
+
+(** The effect of an outcome that has one. *)
+Definition outcome_eff (o : ext_outcome) : option SyscallEffect :=
+  match o with
+  | EOk eff _ _ _ _ => Some eff
+  | EUnmodeled => None
+  end.
 
 (** A clone's answer: the child's context, what the parent's call returns
     when it is not the core's pid ([Some] the child's pid in the caller's
@@ -139,15 +156,15 @@ Definition released (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
 Record ExtSpec := mkExtSpec {
   ext_claims    : SyscallInput -> bool;
   ext_spec      : SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop;
-  ext_refusal   : SpuriousCfg -> SyscallInput -> Model -> NsCtx -> NsState -> SyscallEffect -> Prop;
+  ext_refusal   : SpuriousCfg -> SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop;
   ext_clone     : Z -> Model -> NsCtx -> NsState -> Z -> CloneNs -> Prop;
   ext_multiproc : SyscallInput -> Model -> NsCtx -> NsState -> bool;
   ext_coherent : forall i m ctx st,
     flat_view ctx st = true -> ext_claims i = true ->
     forall o, ext_spec i m ctx st o <-> released i m ctx st o;
-  ext_refusal_coherent : forall cfg i m ctx st eff,
-    flat_view ctx st = true -> ext_claims i = true ->
-    (ext_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff);
+  ext_refusal_coherent : forall cfg i m ctx st o eff,
+    flat_view ctx st = true -> ext_claims i = true -> outcome_eff o = Some eff ->
+    (ext_refusal cfg i m ctx st o <-> spurious_refusal_cfg cfg i m eff);
   ext_clone_coherent : forall f m ctx st hq o,
     flat_view ctx st = true -> has_ns_bits f = false ->
     (ext_clone f m ctx st hq o <-> released_clone ctx st o);
@@ -163,7 +180,7 @@ Proof.
                     (fun _ _ ctx st _ o => released_clone ctx st o) (fun _ _ _ _ => false)
                     _ _ _ _).
   - intros i m ctx st _ Hc. discriminate Hc.
-  - intros cfg i m ctx st eff _ Hc. discriminate Hc.
+  - intros cfg i m ctx st o eff _ Hc. discriminate Hc.
   - intros f m ctx st hq o _ _. reflexivity.
   - intros i m ctx st _. reflexivity.
 Defined.
@@ -176,6 +193,18 @@ Proof. reflexivity. Qed.
 
 Lemma no_ext_multiproc : forall i m ctx st, ext_multiproc no_ext i m ctx st = false.
 Proof. reflexivity. Qed.
+
+(** In the released world the filter of a claimed call's [EOk] outcome is
+    the released filter of its effect, whatever model, context and state
+    the outcome leaves: the filter a claimed call had when [ext_refusal]
+    read the effect alone. *)
+Lemma ext_refusal_released : forall ext cfg i m ctx st eff m' ctx' st' evs,
+  flat_view ctx st = true -> ext_claims ext i = true ->
+  (ext_refusal ext cfg i m ctx st (EOk eff m' ctx' st' evs) <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros ext cfg i m ctx st eff m' ctx' st' evs Hf Hc.
+  exact (ext_refusal_coherent ext cfg i m ctx st (EOk eff m' ctx' st' evs) eff Hf Hc eq_refl).
+Qed.
 
 (** The clone failures a run admits: for the clone's flag word, the
     caller's model, context and state, the pid the core gives the child,

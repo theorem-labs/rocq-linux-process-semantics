@@ -83,6 +83,112 @@ Proof.
       [apply unmodeled_intro | apply alt_r; apply pure_ok].
 Qed.
 
+(** [ReadWrite.read_eventfd_spec]: the -EFAULT, the -EINVAL, the decline
+    of a blocking eventfd, and on a non-blocking one the -EAGAIN, which
+    the spec admits beside both the delivery and the no-byte -EFAULT; a
+    partly writable range is the decline. *)
+Definition read_eventfd_witness (flags buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then ret_outcome (errno_ret EFAULT) m
+  else if (bv_unsigned count <? 8)%Z then ret_outcome (errno_ret EINVAL) m
+  else if negb (efd_nonblock_b flags) then Unmodeled
+  else match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+       | Some _ => ret_outcome (errno_ret EAGAIN) m
+       | None =>
+           match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+           | None => ret_outcome (errno_ret EAGAIN) m
+           | Some _ => Unmodeled
+           end
+       end.
+
+Lemma read_eventfd_witness_ok : forall flags buf count i m,
+  read_eventfd_spec flags buf count i m (read_eventfd_witness flags buf count i m).
+Proof.
+  intros. unfold read_eventfd_spec, read_eventfd_witness.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (bv_unsigned count <? 8)%Z; cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (efd_nonblock_b flags)); cbv beta iota; [apply unmodeled_intro|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|]; cbv beta iota.
+  - apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|]; cbv beta iota;
+      [apply unmodeled_intro|].
+    apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+Qed.
+
+(** [ReadWrite.read_opaque_spec]: one witness per object. *)
+Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  match o with
+  | OProcFile _ => read_proc_witness buf count i m
+  | OEventFd fl => read_eventfd_witness fl buf count i m
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  end.
+
+Lemma read_opaque_witness_ok : forall o buf count i m,
+  read_opaque_spec o buf count i m (read_opaque_witness o buf count i m).
+Proof.
+  intros. unfold read_opaque_spec, read_opaque_witness.
+  destruct o; cbv beta iota;
+    [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+Qed.
+
+(** [ReadWrite.write_eventfd_spec]: the -EFAULT, the -EINVAL, the failed
+    copy's -EFAULT, and past the copy, under its 8-byte ledger, the
+    [ULLONG_MAX] -EINVAL or the 8. *)
+Definition write_eventfd_witness (flags buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then ret_outcome (errno_ret EFAULT) m
+  else if negb (Z.eqb (bv_unsigned count) 8) then ret_outcome (errno_ret EINVAL) m
+  else match read_bytes_map (in_mem i) buf (Z_to_bv 64 8) with
+       | None => ret_outcome (errno_ret EFAULT) m
+       | Some bs =>
+           outcome_copyins [(buf, 8%nat)]
+             (if Z.eqb (bytes_le_to_Z bs) (2 ^ 64 - 1)%Z
+              then ret_outcome (errno_ret EINVAL) m
+              else ret_outcome (Z_to_bv 64 8) m)
+       end.
+
+Lemma write_eventfd_witness_ok : forall flags buf count i m,
+  write_eventfd_spec flags buf count i m (write_eventfd_witness flags buf count i m).
+Proof.
+  intros. unfold write_eventfd_spec, write_eventfd_witness.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (Z.eqb (bv_unsigned count) 8)); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_mem i) buf (Z_to_bv 64 8)) as [bs|]; cbv beta iota;
+    [|unfold err_ret, ret_only, ret_outcome; apply pure_ok].
+  apply record_copyins_outcome.
+  destruct (Z.eqb (bytes_le_to_Z bs) (2 ^ 64 - 1)%Z); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (efd_nonblock_b flags); cbv beta iota.
+  - apply alt_r. unfold ret_only, ret_outcome. apply pure_ok.
+  - unfold ret_only, ret_outcome. apply pure_ok.
+Qed.
+
+(** [ReadWrite.write_opaque_spec]: the eventfd's witness, [Unmodeled] on
+    the other five objects. *)
+Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  match o with
+  | OEventFd fl => write_eventfd_witness fl buf count i m
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  end.
+
+Lemma write_opaque_witness_ok : forall o buf count i m,
+  write_opaque_spec o buf count i m (write_opaque_witness o buf count i m).
+Proof.
+  intros. unfold write_opaque_spec, write_opaque_witness.
+  destruct o; cbv beta iota;
+    [ apply unmodeled_intro | apply unmodeled_intro | apply write_eventfd_witness_ok
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+Qed.
+
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -214,10 +320,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
-  | Some (FdOpaque (OProcFile _)) => read_proc_witness buf count i m
-  | Some (FdOpaque (OProcPath _)) => Unmodeled
-  | Some (FdOpaque (OEventFd _)) => Unmodeled
-  | Some (FdOpaque (ONsFile _)) => Unmodeled
+  | Some (FdOpaque o) => read_opaque_witness o buf count i m
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -266,12 +369,10 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
-  9:{ (* the opaque kinds: a /proc/sys file reads, the other three decline *)
+  9:{ (* the opaque kinds: see [read_opaque_witness] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. destruct o as [q|q|fl|h]; cbv beta iota;
-        [apply unmodeled_intro | apply read_proc_witness_ok
-        | apply unmodeled_intro | apply unmodeled_intro]. }
+      srw Hfd. apply read_opaque_witness_ok. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -543,6 +644,24 @@ Qed.
    write (64) — witness: the (deterministic) full write, or [Unmodeled]
    ========================================================================= *)
 
+(** [ReadWrite.sigpipe_write] as a witness: [Unmodeled] where the write
+    declines because the launch did not declare the SIGPIPE death
+    ([ReadWrite.sigpipe_declines]), and otherwise -EPIPE over the model
+    [ReadWrite.raise_sigpipe] produces.  The three arms that can raise
+    signal 13 exhibit through this. *)
+Definition sigpipe_write_witness (m : Model) : outcome SyscallEffect :=
+  if sigpipe_declines m then Unmodeled
+  else ret_outcome (errno_ret EPIPE) (raise_sigpipe m).
+
+Lemma sigpipe_write_witness_ok : forall i m,
+  sigpipe_write i m (sigpipe_write_witness m).
+Proof.
+  intros i m. unfold sigpipe_write_witness.
+  destruct (sigpipe_declines m) eqn:Hd;
+    [ exact (sigpipe_write_declines i m Hd)
+    | exact (sigpipe_write_epipe i m Hd) ].
+Qed.
+
 (** [ReadWrite.write_fault_extend] as a witness: the -EFAULT a
     positional file write answers when no source byte is readable, over
     the model it leaves behind -- the file extended to [off], the
@@ -577,7 +696,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], named count *)
       else
       if negb (m_channel_reader m)
-      then ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+      then sigpipe_write_witness m
         (* no reader on the far end, past [access_ok]: signal 13 -- see
            [ReadWrite.write_spec]'s channel arm *)
       else
@@ -682,10 +801,10 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
-      else ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+      else sigpipe_write_witness m
         (* no connection to send on: -EPIPE and SIGPIPE *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
-  | Some (FdOpaque _) => Unmodeled
+  | Some (FdOpaque o) => write_opaque_witness o buf count i m
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -699,7 +818,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], before the readers test *)
       else if negb (pipe_end_live (m_fds m) id false)
-      then ret_outcome (errno_ret EPIPE) (raise_sigpipe m)  (* SIGPIPE *)
+      then sigpipe_write_witness m  (* SIGPIPE *)
       else
       match pipe_lookup (m_pipes m) id with
       | None => Unmodeled
@@ -745,10 +864,10 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply pure_ok. }
-  9:{ (* the opaque kinds: declined *)
+  9:{ (* the opaque kinds: see [write_opaque_witness] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. apply unmodeled_intro. }
+      srw Hfd. apply write_opaque_witness_ok. }
   - destruct (w_is0 ch) eqn:Hm.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
@@ -773,8 +892,7 @@ Proof.
       eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hm; srw Hcr.
-      unfold sigpipe_write.
-      eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+      apply sigpipe_write_witness_ok. }
     destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
     + eapply bind_step; [apply input_ok|].
@@ -935,8 +1053,7 @@ Proof.
       (eapply bind_step; [apply get_model_ok|]);
       cbv beta iota zeta; srw Hfd; srw Hsd.
     + apply pure_ok.
-    + unfold sigpipe_write.
-      eapply bind_step; [apply modify_ok|]. apply pure_ok.
+    + apply sigpipe_write_witness_ok.
   - (* pipe: -EBADF on the read end, else the deterministic append, the
        no-reader -EPIPE with signal 13, or one of the three fail-closed
        verdicts *)
@@ -966,8 +1083,7 @@ Proof.
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
         srw Hrd.
-      unfold sigpipe_write.
-      eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+      apply sigpipe_write_witness_ok. }
     destruct (pipe_lookup (m_pipes m) id) as [st|] eqn:Hp.
     2:{ eapply bind_unmodeled2; [apply input_ok|].
         cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
@@ -1350,7 +1466,7 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate *)
                else if negb (m_channel_reader m)
-               then ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+               then sigpipe_write_witness m
                  (* no reader on the far end: -EPIPE and signal 13 *)
                else if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m   (* nothing gatherable *)
@@ -1508,9 +1624,10 @@ Proof.
     destruct (negb (m_channel_reader m)) eqn:Hrdr.
     { (* no reader on the far end: -EPIPE and signal 13 *)
       wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr.
-      eapply bind_step;
-        [ unfold sigpipe_write; eapply bind_step; [apply modify_ok | apply pure_ok]
-        | apply pure_ok ]. }
+      unfold sigpipe_write_witness.
+      destruct (sigpipe_declines m) eqn:Hd; cbv beta iota zeta.
+      - eapply bind_unmodeled1. exact (sigpipe_write_declines _ _ Hd).
+      - eapply bind_step; [exact (sigpipe_write_epipe _ _ Hd) | apply pure_ok]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
     { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }

@@ -1,0 +1,33 @@
+vdso-defconfig.so: 5704 bytes, 2 pages, sha256 0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36
+  readelf cross-check: True
+    __vdso_rt_sigreturn      parser 0x0590/LINUX_4.15  readelf 0x0590/LINUX_4.15  ok
+    __vdso_clock_gettime     parser 0x05b4/LINUX_4.15  readelf 0x05b4/LINUX_4.15  ok
+    __vdso_gettimeofday      parser 0x0870/LINUX_4.15  readelf 0x0870/LINUX_4.15  ok
+    __vdso_clock_getres      parser 0x0a64/LINUX_4.15  readelf 0x0a64/LINUX_4.15  ok
+    __vdso_getcpu            parser 0x0af8/LINUX_4.15  readelf 0x0af8/LINUX_4.15  ok
+    __vdso_flush_icache      parser 0x0b04/LINUX_4.15  readelf 0x0b04/LINUX_4.15  ok
+    __vdso_riscv_hwprobe     parser 0x0b10/LINUX_4.15  readelf 0x0b10/LINUX_4.15  ok
+    __vdso_getrandom         parser 0x0c3c/LINUX_4.15  readelf 0x0c3c/LINUX_4.15  ok
+  F = 240 bytes (__vdso_getrandom -> sub_e68)
+vdso-defconfig-thp.so: 5704 bytes, 2 pages, sha256 0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36
+  readelf cross-check: True
+    __vdso_rt_sigreturn      parser 0x0590/LINUX_4.15  readelf 0x0590/LINUX_4.15  ok
+    __vdso_clock_gettime     parser 0x05b4/LINUX_4.15  readelf 0x05b4/LINUX_4.15  ok
+    __vdso_gettimeofday      parser 0x0870/LINUX_4.15  readelf 0x0870/LINUX_4.15  ok
+    __vdso_clock_getres      parser 0x0a64/LINUX_4.15  readelf 0x0a64/LINUX_4.15  ok
+    __vdso_getcpu            parser 0x0af8/LINUX_4.15  readelf 0x0af8/LINUX_4.15  ok
+    __vdso_flush_icache      parser 0x0b04/LINUX_4.15  readelf 0x0b04/LINUX_4.15  ok
+    __vdso_riscv_hwprobe     parser 0x0b10/LINUX_4.15  readelf 0x0b10/LINUX_4.15  ok
+    __vdso_getrandom         parser 0x0c3c/LINUX_4.15  readelf 0x0c3c/LINUX_4.15  ok
+  F = 240 bytes (__vdso_getrandom -> sub_e68)
+vdso-defconfig-norandom.so: 5704 bytes, 2 pages, sha256 0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36
+  readelf cross-check: True
+    __vdso_rt_sigreturn      parser 0x0590/LINUX_4.15  readelf 0x0590/LINUX_4.15  ok
+    __vdso_clock_gettime     parser 0x05b4/LINUX_4.15  readelf 0x05b4/LINUX_4.15  ok
+    __vdso_gettimeofday      parser 0x0870/LINUX_4.15  readelf 0x0870/LINUX_4.15  ok
+    __vdso_clock_getres      parser 0x0a64/LINUX_4.15  readelf 0x0a64/LINUX_4.15  ok
+    __vdso_getcpu            parser 0x0af8/LINUX_4.15  readelf 0x0af8/LINUX_4.15  ok
+    __vdso_flush_icache      parser 0x0b04/LINUX_4.15  readelf 0x0b04/LINUX_4.15  ok
+    __vdso_riscv_hwprobe     parser 0x0b10/LINUX_4.15  readelf 0x0b10/LINUX_4.15  ok
+    __vdso_getrandom         parser 0x0c3c/LINUX_4.15  readelf 0x0c3c/LINUX_4.15  ok
+  F = 240 bytes (__vdso_getrandom -> sub_e68)

@@ -1,0 +1,3833 @@
+[
+  {
+    "file": "vdso-defconfig.so",
+    "configuration": "defconfig",
+    "size": 5704,
+    "pages": 2,
+    "page_size": 4096,
+    "sha256": "0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36",
+    "elf_magic": "7f454c46",
+    "elf_magic_ok": true,
+    "bytes_hex_chunk_chars": 1024,
+    "bytes_hex_chunks": [
+      "7f454c460201010000000000000000000300f3000100000000000000000000004000000000000000c8120000000000000100000040003800040040000e000d00010000000500000000000000000000000000000000000000000000000000000026120000000000002612000000000000001000000000000002000000040000007803000000000000780300000000000078030000000000002001000000000000200100000000000008000000000000000400000004000000a004000000000000a004000000000000a0040000000000003c000000000000003c00000000000000040000000000000050e5746404000000dc04000000000000dc04000000000000dc040000000000002c000000000000002c0000000000000004000000000000000300000002000000010000000600000001101911400100b802000000040000000900000000ca1bb0538f30681c948cfffa7e740fbe59a584a6b96d2119a3436e3c15c79a27b062650000000000000000000000000000000000000000000000000000000003000700980400000000000000000000000000002a00000012000b007008000000000000f4010000000000003e00000012000b00640a0000000000009000000000000000aa0000001100f1ff000000000000000000000000000000007400000012000b00100b0000000000001c010000000000008900000012000b00",
+      "3c0c00000000000028020000000000000100000012000b00900500000000000008000000000000001500000012000b00b405000000000000ba020000000000006000000012000b00040b0000000000000a000000000000005200000012000b00f80a0000000000000a00000000000000005f5f7664736f5f72745f73696772657475726e005f5f7664736f5f636c6f636b5f67657474696d65005f5f7664736f5f67657474696d656f66646179005f5f7664736f5f636c6f636b5f676574726573005f5f7664736f5f676574637075005f5f7664736f5f666c7573685f696361636865005f5f7664736f5f72697363765f687770726f6265005f5f7664736f5f67657472616e646f6d006c696e75782d7664736f2e736f2e31004c494e55585f342e3135000000000000020002000200020002000200020002000200000000000100010001000100a1bfee0d140000001c0000009a000000000000000100000002000100757fe70a1400000000000000aa000000000000000e000000000000009a00000000000000f5feff6f00000000200100000000000005000000000000007002000000000000060000000000000068010000000000000a00000000000000b5000000000000000b00000000000000180000000000000007000000000000000000000000000000080000000000000000000000000000000900000000000000",
+      "1800000000000000fcffff6f000000004003000000000000fdffff6f000000000200000000000000f0ffff6f0000000026030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007803000000000000040000001400000003000000474e55003abb35180f906c9dfae9a81cc752e6ae635afc980600000004000000000000004c696e75780000002e120600011b033b2800000004000000b4000000440000001c060000700000002806000084000000540700009c0000001400000000000000037a525300017c01011b0c0200000000140000001c000000680000000800000000000000000000001000000000000000037a5200017c01011b0c02001000000018000000a40500000a00000000000000140000002c0000009c0500000a00000000000000000000001000000044000000b00600000a00000000000000000000009308b0087300000001000000411122e006e40008b3c707020f000001a260026441018280dd4763e6a71439714af08547056922f826f406fc8000bb97a7001309398833f9270197c4ffff9384a4a2630809089c4013f717009b86070055e70f002002dc40d9c7f32710c0131645002696",
+      "033e86020338060203bf840083be0401904c03a3c4010f00200283a80400e39216fd0216b387e7410192b3f7d701b387c702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a9823b005019ce5e2704274a274027901452161828093f707069def914797c4ffff9384a4a6e302f5f69308100773000000e2704274a2740279012521618280d840b707008093c7f7ff6306f706b3c707020f00000115bf0905131745003706008026971346f6ff97c7ffff83a7079493f6170085e20f002002146394e1146794e50f00200297c6ffff83a62692e38dd7f6d9bf97c7ffff83a787916380c70cb3c707020f000001c1b7930810077300000001258280914717d9ffff1309099d6306f50017d9ffff1309498e03270900937717000127e5ef0f00200283274900a9d7f32710c013184500b306090103b386029072833e8900033e0901832689018328c9010f002002032f0900e310e7fd8216b387d7418192b3f7c701b387d702c29498748870b7d69a3b9386f69f32959a97b3d71701ba9763f9f608373665c4130606600147b2970527e3eef6fe021701939ce5b307a7009ce17db54eec120597d9ffff93898984aa9997d7ffff83a7e78313f7170035ef0f00200203b6090003b789000f00200297d6ffff83a60682e39df6fcaa9488649460b7d79a3b2a979387f79f369663fa",
+      "e700b73665c49386066036970529e3eee7fe931709028193b29798e59ce1e26981b5014749b72330b4fc2334a4fceff0ffd603270900033584fc833504fc937717000127e38607eef9bf2330a4fc2334b4fceff0bfd497c7ffff83a7a77a833584fc033504fc13f717003dd3f9bf0100797122f026ec06f4001897b4ffff938464784dc117b6ffff0326c6771377160061ef0f00200297b7ffff83a7e776edc7f32710c097b6ffff83a6467703be840203bf840083be040103b8040217b3ffff032303760f00200297b8ffff83a88873e31a16fb8216b387e7418192b3f7d701b387d702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a988217375762108193130737ddb387e7022330050199931ce599e50145a2700274e2644561828097b6ffff83a6266d370700801347f7ff97c7ffff9387e76b6386e60097b7ffff9387276b0567ba9703a7078c98c183a7478cdcc1c1b717b7ffff0327c769b707008093c7f7ff630ef700b3c707020f00000101b742699308900a73000000012559bf4ae817c9ffff1309a96617c7ffff0327276693771700d9eb0f00200297c7ffff83a74765f9d7f32710c097c6ffff83a6a66503388902033e8900033309018338090217c6ffff032666640f00200297ceffff83aeee61e39aeefa13970602b387c7410193b3f76700b387e702",
+      "987403b30402b7d69a3b9386f69f9a98c297b3d7c700ba9763f2f602373665c4130606600147b2970527e3eef6fe131807021358080242694698c9bd0147c5bf2338b4fc233ca4fceff05fb517c7ffff0327475b033584fd833504fd93771700b1d7f9bf411122e006e40008dd4763eaa70617b7ffff03272759b707008093c7f7ff97c6ffff9386e6576306f70097b6ffff93862657054785673b17a70093873789f98f05669de39377070695e79357070193f7f70f95c7854781c523b005009ce5a2600264014541018280b29683a7868c82178193d5b7b7173d0093870790e9bf9308200773000000a2600264012541018280010000009308800a73000000828000009308301073000000828000009398450093771700aa98a1ef11e2fdc235e797e7ffff83c76755adc397e7ffff83c7d754a1cf637c1503b9457d5817e6ffff1306264c39a094634105233cd5fe637f15011861814693173700b297e3f5e5fe2330050114e54105e36515ff014582805dcad5ca01488147b69703c307000528c287631e0300e369c8fe411122e006e40008ef00c009a2600264410182808547e315f7fe97e7ffff83c7274df9df0148e37e15fb1d6313038383b94e7d5f17eeffff130e0e4439a89c610c650dcfed8f8d8f93b7170093c717003368f8004105637715031c61939537003357f300f295058be3fbfefc2330e50123340500",
+      "0548f9bf05d759b78d8f93b71700e9b7e30f08f401478147b697238007000527ba87e36bc7fea1b72955828001000000930820107300000082800000757122e1caf80009cef46ef406e5233404f8fd57233ca4f62e89b289b68d6308f71485669387f6ffb3f7fd009387070963e8f6169d4763e6c714930700096312f71497d7ffff83c7a738638c07126381051883c79d0863960712a6fcd2f0d6ecdae8dee4e2e066fc6af8b7f7ff7fae8463edb70e8547a384fd0889472338f4f6930cf003130b84f8938a0d0697d7ffff938787339c6303b70d08639de71483c78d0813070006b305f74063eab40a033a84f7268db5ed63010d04938b0d06130c84f863f0ac0393566d0052855a86d685ef00c01593770dfc5a8cd68b3e9a137dfd036286de8589466e85ef00201423840d088147631d0d0297d7ffff9387c72c03b70d089c636317f70ca3840d082685067ae674e66a466ba66b066ce27c427daa600a644679a679a27d49618280ea85ee97b386b700528703c6070085070507a30fc7fea38f07fee398f6fe83c78d082e9a330dbd40ad9f2384fd08a9bfa685033a84f7268da1d9e1b7be8421b71dc905679307f7ffb3f7fd00938707096361f702033584f7ca854e869308601173000000aa600a644679a679a27d496182804955bdbff1f569f693078002930600090d4723a4fd0023a0dd0023a2ed009387cd001388",
+      "0d0423a007009107e31df8fe0145b9b7033704f785476311f704a3840d08e674067ae66a466ba66b066ce27c427d41bf23b0fd080f0020029308601113850d0693050002014673000000631ab500930700062384fd0861b52338f4f6b5b523b00d0865bf010000001d7122e026e44ae84eec52f056f45af85efce2e0e6e4eae8eeec83330600378e70611b0e5e86b76e20339b8eee46373f62791b0f2fd3b76f206b9b8f4f577284f6847a89fe8903aa050083aa450003ab850083abc50003ac050183ac450103ad850183adc5019e8713d80302930800001303000029473b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858009b1203011b530301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b12ca001b5a4a01336a5a009b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b003b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858009b1283001b538301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b127a001b5a9a01336a5a009b927a009bda9a01b3ea",
+      "5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1203011b530301336353009b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b009b12ca001b5a4a01336a5a003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1283001b538301336353009b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b927a009bda9a01b3ea5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b009b127a001b5a9a01336a5a007d17e31307d83b04c401bb84d4013b09e901bb89f90100c144c123242501232635018041c44103a9850083a9c5003b0a8a00bb8a9a003b0b2b01bb8b3b0123284501232a5501232c6501232e75018049c44903a9850183a9c5013b0c8c00bb8c9c003b0d2d01bb8d3d0123208503232295032324a5032326b503bb87770013d403023b0888001cd9232a0503232c1503232e6502850313050504fd16e39a06ca23307600930700001308",
+      "000093080000130300000264a2644269e269027aa27a427be27b066ca66c466de66d256182804743433a202844656269616e2031342e322e302d3139292031342e322e3000002e7368737472746162002e676e752e68617368002e64796e73796d002e64796e737472002e676e752e76657273696f6e002e676e752e76657273696f6e5f64002e64796e616d6963002e726f64617461002e6e6f7465002e65685f6672616d655f686472002e65685f6672616d65002e74657874002e636f6d6d656e740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b000000f6ffff6f0200000000000000200100000000000020010000000000004800000000000000020000000000000008000000000000000000000000000000150000000b00000002000000000000006801000000000000680100000000000008010000000000000300000002000000080000000000000018000000000000001d00000003000000020000000000000070020000000000007002000000000000b50000000000000000000000000000000100000000000000000000000000000025000000ffffff6f020000000000000026030000000000002603000000000000160000000000000002000000000000000200000000000000",
+      "020000000000000032000000fdffff6f0200000000000000400300000000000040030000000000003800000000000000030000000200000008000000000000000000000000000000410000000600000003000000000000007803000000000000780300000000000020010000000000000300000000000000080000000000000010000000000000004a00000001000000030000000000000098040000000000009804000000000000080000000000000000000000000000000800000000000000080000000000000052000000070000000200000000000000a004000000000000a0040000000000003c0000000000000000000000000000000400000000000000000000000000000058000000010000000200000000000000dc04000000000000dc040000000000002c00000000000000000000000000000004000000000000000000000000000000660000000100000002000000000000000805000000000000080500000000000084000000000000000000000000000000080000000000000000000000000000007000000001000000060000000000000090050000000000009005000000000000960c00000000000000000000000000000400000000000000000000000000000076000000010000003000000000000000000000000000000026120000000000001f0000000000000000000000000000000100000000000000",
+      "010000000000000001000000030000000000000000000000000000000000000045120000000000007f00000000000000000000000000000001000000000000000000000000000000"
+    ],
+    "elf_header": {
+      "e_type": 3,
+      "e_machine": 243,
+      "e_machine_name": "EM_RISCV",
+      "e_entry": 0,
+      "e_phoff": 64,
+      "e_phnum": 4,
+      "e_phentsize": 56,
+      "e_shoff": 4808,
+      "e_shnum": 14,
+      "e_shentsize": 64,
+      "e_flags": 1
+    },
+    "program_headers": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      },
+      {
+        "index": 1,
+        "p_type": 2,
+        "p_type_name": "PT_DYNAMIC",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 888,
+        "p_vaddr": 888,
+        "p_paddr": 888,
+        "p_filesz": 288,
+        "p_memsz": 288,
+        "p_align": 8
+      },
+      {
+        "index": 2,
+        "p_type": 4,
+        "p_type_name": "PT_NOTE",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1184,
+        "p_vaddr": 1184,
+        "p_paddr": 1184,
+        "p_filesz": 60,
+        "p_memsz": 60,
+        "p_align": 4
+      },
+      {
+        "index": 3,
+        "p_type": 1685382480,
+        "p_type_name": "PT_GNU_EH_FRAME",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1244,
+        "p_vaddr": 1244,
+        "p_paddr": 1244,
+        "p_filesz": 44,
+        "p_memsz": 44,
+        "p_align": 4
+      }
+    ],
+    "pt_load": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      }
+    ],
+    "pt_dynamic": {
+      "index": 1,
+      "p_type": 2,
+      "p_type_name": "PT_DYNAMIC",
+      "p_flags": 4,
+      "p_flags_text": "R",
+      "p_offset": 888,
+      "p_vaddr": 888,
+      "p_paddr": 888,
+      "p_filesz": 288,
+      "p_memsz": 288,
+      "p_align": 8
+    },
+    "dynamic_entries": [
+      {
+        "d_tag": 14,
+        "d_tag_name": "DT_SONAME",
+        "d_val": 154
+      },
+      {
+        "d_tag": 1879047925,
+        "d_tag_name": "DT_GNU_HASH",
+        "d_val": 288
+      },
+      {
+        "d_tag": 5,
+        "d_tag_name": "DT_STRTAB",
+        "d_val": 624
+      },
+      {
+        "d_tag": 6,
+        "d_tag_name": "DT_SYMTAB",
+        "d_val": 360
+      },
+      {
+        "d_tag": 10,
+        "d_tag_name": "DT_STRSZ",
+        "d_val": 181
+      },
+      {
+        "d_tag": 11,
+        "d_tag_name": "DT_SYMENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 7,
+        "d_tag_name": "DT_RELA",
+        "d_val": 0
+      },
+      {
+        "d_tag": 8,
+        "d_tag_name": "DT_RELASZ",
+        "d_val": 0
+      },
+      {
+        "d_tag": 9,
+        "d_tag_name": "DT_RELAENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 1879048188,
+        "d_tag_name": "DT_VERDEF",
+        "d_val": 832
+      },
+      {
+        "d_tag": 1879048189,
+        "d_tag_name": "DT_VERDEFNUM",
+        "d_val": 2
+      },
+      {
+        "d_tag": 1879048176,
+        "d_tag_name": "DT_VERSYM",
+        "d_val": 806
+      },
+      {
+        "d_tag": 0,
+        "d_tag_name": "DT_NULL",
+        "d_val": 0
+      }
+    ],
+    "dynamic": {
+      "DT_STRTAB": 624,
+      "DT_SYMTAB": 360,
+      "DT_SYMENT": 24,
+      "DT_HASH": null,
+      "DT_GNU_HASH": 288,
+      "DT_VERSYM": 806,
+      "DT_VERDEF": 832,
+      "DT_HASH_present": false,
+      "DT_GNU_HASH_present": true,
+      "symbol_count": 11,
+      "symbol_count_source": "DT_GNU_HASH",
+      "symbol_count_detail": {
+        "nbuckets": 3,
+        "symoffset": 2
+      },
+      "note": "musl's __vdsosym counts the dynamic symbols from DT_HASH when DT_HASH is present, and from DT_GNU_HASH when it is not."
+    },
+    "version_definitions": {
+      "1": {
+        "name": "linux-vdso.so.1",
+        "flags": 1,
+        "base": true
+      },
+      "2": {
+        "name": "LINUX_4.15",
+        "flags": 0,
+        "base": false
+      }
+    },
+    "dynamic_symbols": [
+      {
+        "index": 0,
+        "name": "",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 0,
+        "st_type": "STT_NOTYPE",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 0,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 1,
+        "name": "",
+        "st_value": 1176,
+        "st_size": 0,
+        "st_info": 3,
+        "st_type": "STT_SECTION",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 7,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 2,
+        "name": "__vdso_gettimeofday",
+        "st_value": 2160,
+        "st_size": 500,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 3,
+        "name": "__vdso_clock_getres",
+        "st_value": 2660,
+        "st_size": 144,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 4,
+        "name": "LINUX_4.15",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 17,
+        "st_type": "STT_OBJECT",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 65521,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 5,
+        "name": "__vdso_riscv_hwprobe",
+        "st_value": 2832,
+        "st_size": 284,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 6,
+        "name": "__vdso_getrandom",
+        "st_value": 3132,
+        "st_size": 552,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 7,
+        "name": "__vdso_rt_sigreturn",
+        "st_value": 1424,
+        "st_size": 8,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 8,
+        "name": "__vdso_clock_gettime",
+        "st_value": 1460,
+        "st_size": 698,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 9,
+        "name": "__vdso_flush_icache",
+        "st_value": 2820,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 10,
+        "name": "__vdso_getcpu",
+        "st_value": 2808,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      }
+    ],
+    "exported_symbols": [
+      {
+        "name": "__vdso_rt_sigreturn",
+        "offset": 1424,
+        "st_value": 1424,
+        "st_size": 8,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_gettime",
+        "offset": 1460,
+        "st_value": 1460,
+        "st_size": 698,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_gettimeofday",
+        "offset": 2160,
+        "st_value": 2160,
+        "st_size": 500,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_getres",
+        "offset": 2660,
+        "st_value": 2660,
+        "st_size": 144,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getcpu",
+        "offset": 2808,
+        "st_value": 2808,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_flush_icache",
+        "offset": 2820,
+        "st_value": 2820,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_riscv_hwprobe",
+        "offset": 2832,
+        "st_value": 2832,
+        "st_size": 284,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getrandom",
+        "offset": 3132,
+        "st_value": 3132,
+        "st_size": 552,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      }
+    ],
+    "stack": {
+      "F_largest_frame_bytes": 240,
+      "F_deepest_chain": [
+        "__vdso_getrandom",
+        "sub_e68"
+      ],
+      "recursion_found": [],
+      "per_function": {
+        "__vdso_rt_sigreturn": {
+          "address": "0x590",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_rt_sigreturn"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 0,
+          "problems": []
+        },
+        "sub_59c": {
+          "address": "0x59c",
+          "exported": false,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "sub_59c"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0x59c: addi sp,sp,-16"
+          ],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_clock_gettime": {
+          "address": "0x5b4",
+          "exported": true,
+          "own_frame_bytes": 64,
+          "max_frame_bytes_with_callees": 80,
+          "deepest_chain": [
+            "__vdso_clock_gettime",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x5ba: addi sp,sp,-64"
+          ],
+          "return_instructions": 12,
+          "problems": []
+        },
+        "__vdso_gettimeofday": {
+          "address": "0x870",
+          "exported": true,
+          "own_frame_bytes": 48,
+          "max_frame_bytes_with_callees": 64,
+          "deepest_chain": [
+            "__vdso_gettimeofday",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x870: addi sp,sp,-48"
+          ],
+          "return_instructions": 13,
+          "problems": []
+        },
+        "__vdso_clock_getres": {
+          "address": "0xa64",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_clock_getres"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xa64: addi sp,sp,-16"
+          ],
+          "return_instructions": 5,
+          "problems": []
+        },
+        "__vdso_getcpu": {
+          "address": "0xaf8",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_getcpu"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_flush_icache": {
+          "address": "0xb04",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_flush_icache"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_riscv_hwprobe": {
+          "address": "0xb10",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_riscv_hwprobe"
+          ],
+          "calls": [
+            "sub_c30"
+          ],
+          "sp_instructions": [
+            "0xb8c: addi sp,sp,-16"
+          ],
+          "return_instructions": 7,
+          "problems": []
+        },
+        "sub_c30": {
+          "address": "0xc30",
+          "exported": false,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "sub_c30"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_getrandom": {
+          "address": "0xc3c",
+          "exported": true,
+          "own_frame_bytes": 144,
+          "max_frame_bytes_with_callees": 240,
+          "deepest_chain": [
+            "__vdso_getrandom",
+            "sub_e68"
+          ],
+          "calls": [
+            "sub_e68"
+          ],
+          "sp_instructions": [
+            "0xc3c: addi sp,sp,-144"
+          ],
+          "return_instructions": 17,
+          "problems": []
+        },
+        "sub_e68": {
+          "address": "0xe68",
+          "exported": false,
+          "own_frame_bytes": 96,
+          "max_frame_bytes_with_callees": 96,
+          "deepest_chain": [
+            "sub_e68"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xe68: addi sp,sp,-96"
+          ],
+          "return_instructions": 3,
+          "problems": []
+        }
+      },
+      "method": "The script decodes every RV64GC instruction of every function that an exported entry can reach by a direct call, and it adds the sp decrements along each call chain."
+    },
+    "callee_saved_and_memory_writes": {
+      "__vdso_rt_sigreturn": {
+        "returns_to_caller": false,
+        "returns": [],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_rt_sigreturn"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x594 in __vdso_rt_sigreturn"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_gettime": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x70c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_gettime",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 7,
+          "arg": 44,
+          "frame": 8
+        },
+        "frame_store_range_from_caller_sp": [
+          -80,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x686 in __vdso_clock_gettime",
+          "0x706 in __vdso_clock_gettime"
+        ],
+        "problems": []
+      },
+      "__vdso_gettimeofday": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_gettimeofday",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 6,
+          "arg": 24,
+          "frame": 4
+        },
+        "frame_store_range_from_caller_sp": [
+          -64,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x98c in __vdso_gettimeofday"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_getres": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaf2",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_getres"
+        ],
+        "store_base_kinds": {
+          "sp": 2,
+          "arg": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xae6 in __vdso_clock_getres"
+        ],
+        "problems": []
+      },
+      "__vdso_getcpu": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb00",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getcpu"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xafc in __vdso_getcpu"
+        ],
+        "problems": []
+      },
+      "__vdso_flush_icache": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb0c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_flush_icache"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xb08 in __vdso_flush_icache"
+        ],
+        "problems": []
+      },
+      "__vdso_riscv_hwprobe": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xc2a",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_riscv_hwprobe",
+          "sub_c30"
+        ],
+        "store_base_kinds": {
+          "arg": 15,
+          "sp": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xc34 in sub_c30"
+        ],
+        "problems": []
+      },
+      "__vdso_getrandom": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getrandom",
+          "sub_e68"
+        ],
+        "store_base_kinds": {
+          "sp": 25,
+          "frame": 6,
+          "arg": 109
+        },
+        "frame_store_range_from_caller_sp": [
+          -240,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xdca in __vdso_getrandom",
+          "0xe46 in __vdso_getrandom"
+        ],
+        "problems": []
+      }
+    },
+    "crosscheck_readelf": {
+      "source": "riscv64-linux-gnu-readelf -W --dyn-syms -V",
+      "rows": [
+        {
+          "name": "__vdso_rt_sigreturn",
+          "parser_offset": 1424,
+          "readelf_offset": 1424,
+          "parser_size": 8,
+          "readelf_size": 8,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_gettime",
+          "parser_offset": 1460,
+          "readelf_offset": 1460,
+          "parser_size": 698,
+          "readelf_size": 698,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_gettimeofday",
+          "parser_offset": 2160,
+          "readelf_offset": 2160,
+          "parser_size": 500,
+          "readelf_size": 500,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_getres",
+          "parser_offset": 2660,
+          "readelf_offset": 2660,
+          "parser_size": 144,
+          "readelf_size": 144,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getcpu",
+          "parser_offset": 2808,
+          "readelf_offset": 2808,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_flush_icache",
+          "parser_offset": 2820,
+          "readelf_offset": 2820,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_riscv_hwprobe",
+          "parser_offset": 2832,
+          "readelf_offset": 2832,
+          "parser_size": 284,
+          "readelf_size": 284,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getrandom",
+          "parser_offset": 3132,
+          "readelf_offset": 3132,
+          "parser_size": 552,
+          "readelf_size": 552,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        }
+      ],
+      "agree": true,
+      "readelf_output": "Symbol table '.dynsym' contains 11 entries:\n   Num:    Value          Size Type    Bind   Vis      Ndx Name\n     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND\n     1: 0000000000000498     0 SECTION LOCAL  DEFAULT    7 .rodata\n     2: 0000000000000870   500 FUNC    GLOBAL DEFAULT   11 __vdso_gettimeofday@@LINUX_4.15\n     3: 0000000000000a64   144 FUNC    GLOBAL DEFAULT   11 __vdso_clock_getres@@LINUX_4.15\n     4: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  ABS LINUX_4.15\n     5: 0000000000000b10   284 FUNC    GLOBAL DEFAULT   11 __vdso_riscv_hwprobe@@LINUX_4.15\n     6: 0000000000000c3c   552 FUNC    GLOBAL DEFAULT   11 __vdso_getrandom@@LINUX_4.15\n     7: 0000000000000590     8 FUNC    GLOBAL DEFAULT   11 __vdso_rt_sigreturn@@LINUX_4.15\n     8: 00000000000005b4   698 FUNC    GLOBAL DEFAULT   11 __vdso_clock_gettime@@LINUX_4.15\n     9: 0000000000000b04    10 FUNC    GLOBAL DEFAULT   11 __vdso_flush_icache@@LINUX_4.15\n    10: 0000000000000af8    10 FUNC    GLOBAL DEFAULT   11 __vdso_getcpu@@LINUX_4.15\n\nVersion symbols section '.gnu.version' contains 11 entries:\n Addr: 0x0000000000000326  Offset: 0x00000326  Link: 2 (.dynsym)\n  000:   0 (*local*)       0 (*local*)       2 (LINUX_4.15)    2 (LINUX_4.15)\n  004:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n  008:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n\nVersion definition section '.gnu.version_d' contains 2 entries:\n Addr: 0x0000000000000340  Offset: 0x00000340  Link: 3 (.dynstr)\n  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: linux-vdso.so.1\n  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: LINUX_4.15"
+    },
+    "build": {
+      "kernel_repo": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+      "kernel_tag": "v6.18.46",
+      "kernel_commit": "1f99e9ab748fc5c32120de9c4eca31abfe54a4d5",
+      "arch": "riscv",
+      "cross_compile": "riscv64-linux-gnu-",
+      "machine": "GCE VM ossv-lpsrev-vdso (32 vCPU)",
+      "container_image": "vdsobuild:1 (built from debian:trixie)",
+      "container_image_id": "sha256:b2a3aaad7a485cbd9a372bd4aa068ce0ecc60e92125c195b6a39af95a8dfade7",
+      "container_base_image": "debian:trixie",
+      "toolchain": {
+        "gcc": "riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0",
+        "ld": "GNU ld (GNU Binutils for Debian) 2.44",
+        "objdump": "GNU objdump (GNU Binutils for Debian) 2.44",
+        "readelf": "GNU readelf (GNU Binutils for Debian) 2.44"
+      },
+      "mapped_file": "arch/riscv/kernel/vdso/vdso.so -- the stripped image. arch/riscv/kernel/vdso/vdso.S does .incbin of this path, and arch/riscv/kernel/vdso.c maps the bytes between vdso_start and vdso_end. The unstripped vdso.so.dbg is not mapped.",
+      "configurations": [
+        {
+          "name": "defconfig",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 defconfig",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + CONFIG_TRANSPARENT_HUGEPAGE=y",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 defconfig",
+            "./scripts/config --file /out/c1/.config -e TRANSPARENT_HUGEPAGE",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [
+            "-# CONFIG_TRANSPARENT_HUGEPAGE is not set",
+            "+CONFIG_TRANSPARENT_HUGEPAGE=y",
+            "+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_MADVISE is not set",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_NEVER is not set",
+            "+# CONFIG_PERSISTENT_HUGE_ZERO_FOLIO is not set",
+            "+CONFIG_MM_ID=y",
+            "+CONFIG_THP_SWAP=y",
+            "+# CONFIG_READ_ONLY_THP_FOR_FS is not set",
+            "+# CONFIG_NO_PAGE_MAPCOUNT is not set",
+            "+CONFIG_ARCH_SUPPORTS_HUGE_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PMD_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PUD_PFNMAP=y",
+            "+# CONFIG_DEV_DAX is not set"
+          ],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + no randomisation",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 defconfig",
+            "./scripts/config --file /out/c2/.config -e COMPAT_BRK -d RANDOMIZE_BASE -d RANDOMIZE_KSTACK_OFFSET",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "config_note": "The .config of this configuration is byte-identical to the defconfig .config. riscv defconfig already sets CONFIG_COMPAT_BRK=y (no brk randomisation) and leaves CONFIG_RANDOMIZE_BASE unset. CONFIG_RANDOMIZE_KSTACK_OFFSET stays y because arch/riscv selects it. There is no Kconfig option for vDSO or mmap randomisation; norandmaps is a boot parameter.",
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 arch/riscv/kernel/vdso/"
+          ]
+        }
+      ],
+      "note": "All three configurations give the same bytes. The vDSO image does not depend on CONFIG_TRANSPARENT_HUGEPAGE, and the no-randomisation configuration has the same .config as defconfig. There is one distinct image, not three."
+    }
+  },
+  {
+    "file": "vdso-defconfig-thp.so",
+    "configuration": "defconfig + CONFIG_TRANSPARENT_HUGEPAGE=y",
+    "size": 5704,
+    "pages": 2,
+    "page_size": 4096,
+    "sha256": "0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36",
+    "elf_magic": "7f454c46",
+    "elf_magic_ok": true,
+    "bytes_hex_chunk_chars": 1024,
+    "bytes_hex_chunks": [
+      "7f454c460201010000000000000000000300f3000100000000000000000000004000000000000000c8120000000000000100000040003800040040000e000d00010000000500000000000000000000000000000000000000000000000000000026120000000000002612000000000000001000000000000002000000040000007803000000000000780300000000000078030000000000002001000000000000200100000000000008000000000000000400000004000000a004000000000000a004000000000000a0040000000000003c000000000000003c00000000000000040000000000000050e5746404000000dc04000000000000dc04000000000000dc040000000000002c000000000000002c0000000000000004000000000000000300000002000000010000000600000001101911400100b802000000040000000900000000ca1bb0538f30681c948cfffa7e740fbe59a584a6b96d2119a3436e3c15c79a27b062650000000000000000000000000000000000000000000000000000000003000700980400000000000000000000000000002a00000012000b007008000000000000f4010000000000003e00000012000b00640a0000000000009000000000000000aa0000001100f1ff000000000000000000000000000000007400000012000b00100b0000000000001c010000000000008900000012000b00",
+      "3c0c00000000000028020000000000000100000012000b00900500000000000008000000000000001500000012000b00b405000000000000ba020000000000006000000012000b00040b0000000000000a000000000000005200000012000b00f80a0000000000000a00000000000000005f5f7664736f5f72745f73696772657475726e005f5f7664736f5f636c6f636b5f67657474696d65005f5f7664736f5f67657474696d656f66646179005f5f7664736f5f636c6f636b5f676574726573005f5f7664736f5f676574637075005f5f7664736f5f666c7573685f696361636865005f5f7664736f5f72697363765f687770726f6265005f5f7664736f5f67657472616e646f6d006c696e75782d7664736f2e736f2e31004c494e55585f342e3135000000000000020002000200020002000200020002000200000000000100010001000100a1bfee0d140000001c0000009a000000000000000100000002000100757fe70a1400000000000000aa000000000000000e000000000000009a00000000000000f5feff6f00000000200100000000000005000000000000007002000000000000060000000000000068010000000000000a00000000000000b5000000000000000b00000000000000180000000000000007000000000000000000000000000000080000000000000000000000000000000900000000000000",
+      "1800000000000000fcffff6f000000004003000000000000fdffff6f000000000200000000000000f0ffff6f0000000026030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007803000000000000040000001400000003000000474e55003abb35180f906c9dfae9a81cc752e6ae635afc980600000004000000000000004c696e75780000002e120600011b033b2800000004000000b4000000440000001c060000700000002806000084000000540700009c0000001400000000000000037a525300017c01011b0c0200000000140000001c000000680000000800000000000000000000001000000000000000037a5200017c01011b0c02001000000018000000a40500000a00000000000000140000002c0000009c0500000a00000000000000000000001000000044000000b00600000a00000000000000000000009308b0087300000001000000411122e006e40008b3c707020f000001a260026441018280dd4763e6a71439714af08547056922f826f406fc8000bb97a7001309398833f9270197c4ffff9384a4a2630809089c4013f717009b86070055e70f002002dc40d9c7f32710c0131645002696",
+      "033e86020338060203bf840083be0401904c03a3c4010f00200283a80400e39216fd0216b387e7410192b3f7d701b387c702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a9823b005019ce5e2704274a274027901452161828093f707069def914797c4ffff9384a4a6e302f5f69308100773000000e2704274a2740279012521618280d840b707008093c7f7ff6306f706b3c707020f00000115bf0905131745003706008026971346f6ff97c7ffff83a7079493f6170085e20f002002146394e1146794e50f00200297c6ffff83a62692e38dd7f6d9bf97c7ffff83a787916380c70cb3c707020f000001c1b7930810077300000001258280914717d9ffff1309099d6306f50017d9ffff1309498e03270900937717000127e5ef0f00200283274900a9d7f32710c013184500b306090103b386029072833e8900033e0901832689018328c9010f002002032f0900e310e7fd8216b387d7418192b3f7c701b387d702c29498748870b7d69a3b9386f69f32959a97b3d71701ba9763f9f608373665c4130606600147b2970527e3eef6fe021701939ce5b307a7009ce17db54eec120597d9ffff93898984aa9997d7ffff83a7e78313f7170035ef0f00200203b6090003b789000f00200297d6ffff83a60682e39df6fcaa9488649460b7d79a3b2a979387f79f369663fa",
+      "e700b73665c49386066036970529e3eee7fe931709028193b29798e59ce1e26981b5014749b72330b4fc2334a4fceff0ffd603270900033584fc833504fc937717000127e38607eef9bf2330a4fc2334b4fceff0bfd497c7ffff83a7a77a833584fc033504fc13f717003dd3f9bf0100797122f026ec06f4001897b4ffff938464784dc117b6ffff0326c6771377160061ef0f00200297b7ffff83a7e776edc7f32710c097b6ffff83a6467703be840203bf840083be040103b8040217b3ffff032303760f00200297b8ffff83a88873e31a16fb8216b387e7418192b3f7d701b387d702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a988217375762108193130737ddb387e7022330050199931ce599e50145a2700274e2644561828097b6ffff83a6266d370700801347f7ff97c7ffff9387e76b6386e60097b7ffff9387276b0567ba9703a7078c98c183a7478cdcc1c1b717b7ffff0327c769b707008093c7f7ff630ef700b3c707020f00000101b742699308900a73000000012559bf4ae817c9ffff1309a96617c7ffff0327276693771700d9eb0f00200297c7ffff83a74765f9d7f32710c097c6ffff83a6a66503388902033e8900033309018338090217c6ffff032666640f00200297ceffff83aeee61e39aeefa13970602b387c7410193b3f76700b387e702",
+      "987403b30402b7d69a3b9386f69f9a98c297b3d7c700ba9763f2f602373665c4130606600147b2970527e3eef6fe131807021358080242694698c9bd0147c5bf2338b4fc233ca4fceff05fb517c7ffff0327475b033584fd833504fd93771700b1d7f9bf411122e006e40008dd4763eaa70617b7ffff03272759b707008093c7f7ff97c6ffff9386e6576306f70097b6ffff93862657054785673b17a70093873789f98f05669de39377070695e79357070193f7f70f95c7854781c523b005009ce5a2600264014541018280b29683a7868c82178193d5b7b7173d0093870790e9bf9308200773000000a2600264012541018280010000009308800a73000000828000009308301073000000828000009398450093771700aa98a1ef11e2fdc235e797e7ffff83c76755adc397e7ffff83c7d754a1cf637c1503b9457d5817e6ffff1306264c39a094634105233cd5fe637f15011861814693173700b297e3f5e5fe2330050114e54105e36515ff014582805dcad5ca01488147b69703c307000528c287631e0300e369c8fe411122e006e40008ef00c009a2600264410182808547e315f7fe97e7ffff83c7274df9df0148e37e15fb1d6313038383b94e7d5f17eeffff130e0e4439a89c610c650dcfed8f8d8f93b7170093c717003368f8004105637715031c61939537003357f300f295058be3fbfefc2330e50123340500",
+      "0548f9bf05d759b78d8f93b71700e9b7e30f08f401478147b697238007000527ba87e36bc7fea1b72955828001000000930820107300000082800000757122e1caf80009cef46ef406e5233404f8fd57233ca4f62e89b289b68d6308f71485669387f6ffb3f7fd009387070963e8f6169d4763e6c714930700096312f71497d7ffff83c7a738638c07126381051883c79d0863960712a6fcd2f0d6ecdae8dee4e2e066fc6af8b7f7ff7fae8463edb70e8547a384fd0889472338f4f6930cf003130b84f8938a0d0697d7ffff938787339c6303b70d08639de71483c78d0813070006b305f74063eab40a033a84f7268db5ed63010d04938b0d06130c84f863f0ac0393566d0052855a86d685ef00c01593770dfc5a8cd68b3e9a137dfd036286de8589466e85ef00201423840d088147631d0d0297d7ffff9387c72c03b70d089c636317f70ca3840d082685067ae674e66a466ba66b066ce27c427daa600a644679a679a27d49618280ea85ee97b386b700528703c6070085070507a30fc7fea38f07fee398f6fe83c78d082e9a330dbd40ad9f2384fd08a9bfa685033a84f7268da1d9e1b7be8421b71dc905679307f7ffb3f7fd00938707096361f702033584f7ca854e869308601173000000aa600a644679a679a27d496182804955bdbff1f569f693078002930600090d4723a4fd0023a0dd0023a2ed009387cd001388",
+      "0d0423a007009107e31df8fe0145b9b7033704f785476311f704a3840d08e674067ae66a466ba66b066ce27c427d41bf23b0fd080f0020029308601113850d0693050002014673000000631ab500930700062384fd0861b52338f4f6b5b523b00d0865bf010000001d7122e026e44ae84eec52f056f45af85efce2e0e6e4eae8eeec83330600378e70611b0e5e86b76e20339b8eee46373f62791b0f2fd3b76f206b9b8f4f577284f6847a89fe8903aa050083aa450003ab850083abc50003ac050183ac450103ad850183adc5019e8713d80302930800001303000029473b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858009b1203011b530301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b12ca001b5a4a01336a5a009b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b003b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858009b1283001b538301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b127a001b5a9a01336a5a009b927a009bda9a01b3ea",
+      "5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1203011b530301336353009b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b009b12ca001b5a4a01336a5a003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1283001b538301336353009b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b927a009bda9a01b3ea5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b009b127a001b5a9a01336a5a007d17e31307d83b04c401bb84d4013b09e901bb89f90100c144c123242501232635018041c44103a9850083a9c5003b0a8a00bb8a9a003b0b2b01bb8b3b0123284501232a5501232c6501232e75018049c44903a9850183a9c5013b0c8c00bb8c9c003b0d2d01bb8d3d0123208503232295032324a5032326b503bb87770013d403023b0888001cd9232a0503232c1503232e6502850313050504fd16e39a06ca23307600930700001308",
+      "000093080000130300000264a2644269e269027aa27a427be27b066ca66c466de66d256182804743433a202844656269616e2031342e322e302d3139292031342e322e3000002e7368737472746162002e676e752e68617368002e64796e73796d002e64796e737472002e676e752e76657273696f6e002e676e752e76657273696f6e5f64002e64796e616d6963002e726f64617461002e6e6f7465002e65685f6672616d655f686472002e65685f6672616d65002e74657874002e636f6d6d656e740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b000000f6ffff6f0200000000000000200100000000000020010000000000004800000000000000020000000000000008000000000000000000000000000000150000000b00000002000000000000006801000000000000680100000000000008010000000000000300000002000000080000000000000018000000000000001d00000003000000020000000000000070020000000000007002000000000000b50000000000000000000000000000000100000000000000000000000000000025000000ffffff6f020000000000000026030000000000002603000000000000160000000000000002000000000000000200000000000000",
+      "020000000000000032000000fdffff6f0200000000000000400300000000000040030000000000003800000000000000030000000200000008000000000000000000000000000000410000000600000003000000000000007803000000000000780300000000000020010000000000000300000000000000080000000000000010000000000000004a00000001000000030000000000000098040000000000009804000000000000080000000000000000000000000000000800000000000000080000000000000052000000070000000200000000000000a004000000000000a0040000000000003c0000000000000000000000000000000400000000000000000000000000000058000000010000000200000000000000dc04000000000000dc040000000000002c00000000000000000000000000000004000000000000000000000000000000660000000100000002000000000000000805000000000000080500000000000084000000000000000000000000000000080000000000000000000000000000007000000001000000060000000000000090050000000000009005000000000000960c00000000000000000000000000000400000000000000000000000000000076000000010000003000000000000000000000000000000026120000000000001f0000000000000000000000000000000100000000000000",
+      "010000000000000001000000030000000000000000000000000000000000000045120000000000007f00000000000000000000000000000001000000000000000000000000000000"
+    ],
+    "elf_header": {
+      "e_type": 3,
+      "e_machine": 243,
+      "e_machine_name": "EM_RISCV",
+      "e_entry": 0,
+      "e_phoff": 64,
+      "e_phnum": 4,
+      "e_phentsize": 56,
+      "e_shoff": 4808,
+      "e_shnum": 14,
+      "e_shentsize": 64,
+      "e_flags": 1
+    },
+    "program_headers": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      },
+      {
+        "index": 1,
+        "p_type": 2,
+        "p_type_name": "PT_DYNAMIC",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 888,
+        "p_vaddr": 888,
+        "p_paddr": 888,
+        "p_filesz": 288,
+        "p_memsz": 288,
+        "p_align": 8
+      },
+      {
+        "index": 2,
+        "p_type": 4,
+        "p_type_name": "PT_NOTE",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1184,
+        "p_vaddr": 1184,
+        "p_paddr": 1184,
+        "p_filesz": 60,
+        "p_memsz": 60,
+        "p_align": 4
+      },
+      {
+        "index": 3,
+        "p_type": 1685382480,
+        "p_type_name": "PT_GNU_EH_FRAME",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1244,
+        "p_vaddr": 1244,
+        "p_paddr": 1244,
+        "p_filesz": 44,
+        "p_memsz": 44,
+        "p_align": 4
+      }
+    ],
+    "pt_load": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      }
+    ],
+    "pt_dynamic": {
+      "index": 1,
+      "p_type": 2,
+      "p_type_name": "PT_DYNAMIC",
+      "p_flags": 4,
+      "p_flags_text": "R",
+      "p_offset": 888,
+      "p_vaddr": 888,
+      "p_paddr": 888,
+      "p_filesz": 288,
+      "p_memsz": 288,
+      "p_align": 8
+    },
+    "dynamic_entries": [
+      {
+        "d_tag": 14,
+        "d_tag_name": "DT_SONAME",
+        "d_val": 154
+      },
+      {
+        "d_tag": 1879047925,
+        "d_tag_name": "DT_GNU_HASH",
+        "d_val": 288
+      },
+      {
+        "d_tag": 5,
+        "d_tag_name": "DT_STRTAB",
+        "d_val": 624
+      },
+      {
+        "d_tag": 6,
+        "d_tag_name": "DT_SYMTAB",
+        "d_val": 360
+      },
+      {
+        "d_tag": 10,
+        "d_tag_name": "DT_STRSZ",
+        "d_val": 181
+      },
+      {
+        "d_tag": 11,
+        "d_tag_name": "DT_SYMENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 7,
+        "d_tag_name": "DT_RELA",
+        "d_val": 0
+      },
+      {
+        "d_tag": 8,
+        "d_tag_name": "DT_RELASZ",
+        "d_val": 0
+      },
+      {
+        "d_tag": 9,
+        "d_tag_name": "DT_RELAENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 1879048188,
+        "d_tag_name": "DT_VERDEF",
+        "d_val": 832
+      },
+      {
+        "d_tag": 1879048189,
+        "d_tag_name": "DT_VERDEFNUM",
+        "d_val": 2
+      },
+      {
+        "d_tag": 1879048176,
+        "d_tag_name": "DT_VERSYM",
+        "d_val": 806
+      },
+      {
+        "d_tag": 0,
+        "d_tag_name": "DT_NULL",
+        "d_val": 0
+      }
+    ],
+    "dynamic": {
+      "DT_STRTAB": 624,
+      "DT_SYMTAB": 360,
+      "DT_SYMENT": 24,
+      "DT_HASH": null,
+      "DT_GNU_HASH": 288,
+      "DT_VERSYM": 806,
+      "DT_VERDEF": 832,
+      "DT_HASH_present": false,
+      "DT_GNU_HASH_present": true,
+      "symbol_count": 11,
+      "symbol_count_source": "DT_GNU_HASH",
+      "symbol_count_detail": {
+        "nbuckets": 3,
+        "symoffset": 2
+      },
+      "note": "musl's __vdsosym counts the dynamic symbols from DT_HASH when DT_HASH is present, and from DT_GNU_HASH when it is not."
+    },
+    "version_definitions": {
+      "1": {
+        "name": "linux-vdso.so.1",
+        "flags": 1,
+        "base": true
+      },
+      "2": {
+        "name": "LINUX_4.15",
+        "flags": 0,
+        "base": false
+      }
+    },
+    "dynamic_symbols": [
+      {
+        "index": 0,
+        "name": "",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 0,
+        "st_type": "STT_NOTYPE",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 0,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 1,
+        "name": "",
+        "st_value": 1176,
+        "st_size": 0,
+        "st_info": 3,
+        "st_type": "STT_SECTION",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 7,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 2,
+        "name": "__vdso_gettimeofday",
+        "st_value": 2160,
+        "st_size": 500,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 3,
+        "name": "__vdso_clock_getres",
+        "st_value": 2660,
+        "st_size": 144,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 4,
+        "name": "LINUX_4.15",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 17,
+        "st_type": "STT_OBJECT",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 65521,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 5,
+        "name": "__vdso_riscv_hwprobe",
+        "st_value": 2832,
+        "st_size": 284,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 6,
+        "name": "__vdso_getrandom",
+        "st_value": 3132,
+        "st_size": 552,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 7,
+        "name": "__vdso_rt_sigreturn",
+        "st_value": 1424,
+        "st_size": 8,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 8,
+        "name": "__vdso_clock_gettime",
+        "st_value": 1460,
+        "st_size": 698,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 9,
+        "name": "__vdso_flush_icache",
+        "st_value": 2820,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 10,
+        "name": "__vdso_getcpu",
+        "st_value": 2808,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      }
+    ],
+    "exported_symbols": [
+      {
+        "name": "__vdso_rt_sigreturn",
+        "offset": 1424,
+        "st_value": 1424,
+        "st_size": 8,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_gettime",
+        "offset": 1460,
+        "st_value": 1460,
+        "st_size": 698,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_gettimeofday",
+        "offset": 2160,
+        "st_value": 2160,
+        "st_size": 500,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_getres",
+        "offset": 2660,
+        "st_value": 2660,
+        "st_size": 144,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getcpu",
+        "offset": 2808,
+        "st_value": 2808,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_flush_icache",
+        "offset": 2820,
+        "st_value": 2820,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_riscv_hwprobe",
+        "offset": 2832,
+        "st_value": 2832,
+        "st_size": 284,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getrandom",
+        "offset": 3132,
+        "st_value": 3132,
+        "st_size": 552,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      }
+    ],
+    "stack": {
+      "F_largest_frame_bytes": 240,
+      "F_deepest_chain": [
+        "__vdso_getrandom",
+        "sub_e68"
+      ],
+      "recursion_found": [],
+      "per_function": {
+        "__vdso_rt_sigreturn": {
+          "address": "0x590",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_rt_sigreturn"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 0,
+          "problems": []
+        },
+        "sub_59c": {
+          "address": "0x59c",
+          "exported": false,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "sub_59c"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0x59c: addi sp,sp,-16"
+          ],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_clock_gettime": {
+          "address": "0x5b4",
+          "exported": true,
+          "own_frame_bytes": 64,
+          "max_frame_bytes_with_callees": 80,
+          "deepest_chain": [
+            "__vdso_clock_gettime",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x5ba: addi sp,sp,-64"
+          ],
+          "return_instructions": 12,
+          "problems": []
+        },
+        "__vdso_gettimeofday": {
+          "address": "0x870",
+          "exported": true,
+          "own_frame_bytes": 48,
+          "max_frame_bytes_with_callees": 64,
+          "deepest_chain": [
+            "__vdso_gettimeofday",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x870: addi sp,sp,-48"
+          ],
+          "return_instructions": 13,
+          "problems": []
+        },
+        "__vdso_clock_getres": {
+          "address": "0xa64",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_clock_getres"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xa64: addi sp,sp,-16"
+          ],
+          "return_instructions": 5,
+          "problems": []
+        },
+        "__vdso_getcpu": {
+          "address": "0xaf8",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_getcpu"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_flush_icache": {
+          "address": "0xb04",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_flush_icache"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_riscv_hwprobe": {
+          "address": "0xb10",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_riscv_hwprobe"
+          ],
+          "calls": [
+            "sub_c30"
+          ],
+          "sp_instructions": [
+            "0xb8c: addi sp,sp,-16"
+          ],
+          "return_instructions": 7,
+          "problems": []
+        },
+        "sub_c30": {
+          "address": "0xc30",
+          "exported": false,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "sub_c30"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_getrandom": {
+          "address": "0xc3c",
+          "exported": true,
+          "own_frame_bytes": 144,
+          "max_frame_bytes_with_callees": 240,
+          "deepest_chain": [
+            "__vdso_getrandom",
+            "sub_e68"
+          ],
+          "calls": [
+            "sub_e68"
+          ],
+          "sp_instructions": [
+            "0xc3c: addi sp,sp,-144"
+          ],
+          "return_instructions": 17,
+          "problems": []
+        },
+        "sub_e68": {
+          "address": "0xe68",
+          "exported": false,
+          "own_frame_bytes": 96,
+          "max_frame_bytes_with_callees": 96,
+          "deepest_chain": [
+            "sub_e68"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xe68: addi sp,sp,-96"
+          ],
+          "return_instructions": 3,
+          "problems": []
+        }
+      },
+      "method": "The script decodes every RV64GC instruction of every function that an exported entry can reach by a direct call, and it adds the sp decrements along each call chain."
+    },
+    "callee_saved_and_memory_writes": {
+      "__vdso_rt_sigreturn": {
+        "returns_to_caller": false,
+        "returns": [],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_rt_sigreturn"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x594 in __vdso_rt_sigreturn"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_gettime": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x70c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_gettime",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 7,
+          "arg": 44,
+          "frame": 8
+        },
+        "frame_store_range_from_caller_sp": [
+          -80,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x686 in __vdso_clock_gettime",
+          "0x706 in __vdso_clock_gettime"
+        ],
+        "problems": []
+      },
+      "__vdso_gettimeofday": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_gettimeofday",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 6,
+          "arg": 24,
+          "frame": 4
+        },
+        "frame_store_range_from_caller_sp": [
+          -64,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x98c in __vdso_gettimeofday"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_getres": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaf2",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_getres"
+        ],
+        "store_base_kinds": {
+          "sp": 2,
+          "arg": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xae6 in __vdso_clock_getres"
+        ],
+        "problems": []
+      },
+      "__vdso_getcpu": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb00",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getcpu"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xafc in __vdso_getcpu"
+        ],
+        "problems": []
+      },
+      "__vdso_flush_icache": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb0c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_flush_icache"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xb08 in __vdso_flush_icache"
+        ],
+        "problems": []
+      },
+      "__vdso_riscv_hwprobe": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xc2a",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_riscv_hwprobe",
+          "sub_c30"
+        ],
+        "store_base_kinds": {
+          "arg": 15,
+          "sp": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xc34 in sub_c30"
+        ],
+        "problems": []
+      },
+      "__vdso_getrandom": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getrandom",
+          "sub_e68"
+        ],
+        "store_base_kinds": {
+          "sp": 25,
+          "frame": 6,
+          "arg": 109
+        },
+        "frame_store_range_from_caller_sp": [
+          -240,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xdca in __vdso_getrandom",
+          "0xe46 in __vdso_getrandom"
+        ],
+        "problems": []
+      }
+    },
+    "crosscheck_readelf": {
+      "source": "riscv64-linux-gnu-readelf -W --dyn-syms -V",
+      "rows": [
+        {
+          "name": "__vdso_rt_sigreturn",
+          "parser_offset": 1424,
+          "readelf_offset": 1424,
+          "parser_size": 8,
+          "readelf_size": 8,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_gettime",
+          "parser_offset": 1460,
+          "readelf_offset": 1460,
+          "parser_size": 698,
+          "readelf_size": 698,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_gettimeofday",
+          "parser_offset": 2160,
+          "readelf_offset": 2160,
+          "parser_size": 500,
+          "readelf_size": 500,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_getres",
+          "parser_offset": 2660,
+          "readelf_offset": 2660,
+          "parser_size": 144,
+          "readelf_size": 144,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getcpu",
+          "parser_offset": 2808,
+          "readelf_offset": 2808,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_flush_icache",
+          "parser_offset": 2820,
+          "readelf_offset": 2820,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_riscv_hwprobe",
+          "parser_offset": 2832,
+          "readelf_offset": 2832,
+          "parser_size": 284,
+          "readelf_size": 284,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getrandom",
+          "parser_offset": 3132,
+          "readelf_offset": 3132,
+          "parser_size": 552,
+          "readelf_size": 552,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        }
+      ],
+      "agree": true,
+      "readelf_output": "Symbol table '.dynsym' contains 11 entries:\n   Num:    Value          Size Type    Bind   Vis      Ndx Name\n     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND\n     1: 0000000000000498     0 SECTION LOCAL  DEFAULT    7 .rodata\n     2: 0000000000000870   500 FUNC    GLOBAL DEFAULT   11 __vdso_gettimeofday@@LINUX_4.15\n     3: 0000000000000a64   144 FUNC    GLOBAL DEFAULT   11 __vdso_clock_getres@@LINUX_4.15\n     4: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  ABS LINUX_4.15\n     5: 0000000000000b10   284 FUNC    GLOBAL DEFAULT   11 __vdso_riscv_hwprobe@@LINUX_4.15\n     6: 0000000000000c3c   552 FUNC    GLOBAL DEFAULT   11 __vdso_getrandom@@LINUX_4.15\n     7: 0000000000000590     8 FUNC    GLOBAL DEFAULT   11 __vdso_rt_sigreturn@@LINUX_4.15\n     8: 00000000000005b4   698 FUNC    GLOBAL DEFAULT   11 __vdso_clock_gettime@@LINUX_4.15\n     9: 0000000000000b04    10 FUNC    GLOBAL DEFAULT   11 __vdso_flush_icache@@LINUX_4.15\n    10: 0000000000000af8    10 FUNC    GLOBAL DEFAULT   11 __vdso_getcpu@@LINUX_4.15\n\nVersion symbols section '.gnu.version' contains 11 entries:\n Addr: 0x0000000000000326  Offset: 0x00000326  Link: 2 (.dynsym)\n  000:   0 (*local*)       0 (*local*)       2 (LINUX_4.15)    2 (LINUX_4.15)\n  004:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n  008:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n\nVersion definition section '.gnu.version_d' contains 2 entries:\n Addr: 0x0000000000000340  Offset: 0x00000340  Link: 3 (.dynstr)\n  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: linux-vdso.so.1\n  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: LINUX_4.15"
+    },
+    "build": {
+      "kernel_repo": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+      "kernel_tag": "v6.18.46",
+      "kernel_commit": "1f99e9ab748fc5c32120de9c4eca31abfe54a4d5",
+      "arch": "riscv",
+      "cross_compile": "riscv64-linux-gnu-",
+      "machine": "GCE VM ossv-lpsrev-vdso (32 vCPU)",
+      "container_image": "vdsobuild:1 (built from debian:trixie)",
+      "container_image_id": "sha256:b2a3aaad7a485cbd9a372bd4aa068ce0ecc60e92125c195b6a39af95a8dfade7",
+      "container_base_image": "debian:trixie",
+      "toolchain": {
+        "gcc": "riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0",
+        "ld": "GNU ld (GNU Binutils for Debian) 2.44",
+        "objdump": "GNU objdump (GNU Binutils for Debian) 2.44",
+        "readelf": "GNU readelf (GNU Binutils for Debian) 2.44"
+      },
+      "mapped_file": "arch/riscv/kernel/vdso/vdso.so -- the stripped image. arch/riscv/kernel/vdso/vdso.S does .incbin of this path, and arch/riscv/kernel/vdso.c maps the bytes between vdso_start and vdso_end. The unstripped vdso.so.dbg is not mapped.",
+      "configurations": [
+        {
+          "name": "defconfig",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 defconfig",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + CONFIG_TRANSPARENT_HUGEPAGE=y",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 defconfig",
+            "./scripts/config --file /out/c1/.config -e TRANSPARENT_HUGEPAGE",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [
+            "-# CONFIG_TRANSPARENT_HUGEPAGE is not set",
+            "+CONFIG_TRANSPARENT_HUGEPAGE=y",
+            "+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_MADVISE is not set",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_NEVER is not set",
+            "+# CONFIG_PERSISTENT_HUGE_ZERO_FOLIO is not set",
+            "+CONFIG_MM_ID=y",
+            "+CONFIG_THP_SWAP=y",
+            "+# CONFIG_READ_ONLY_THP_FOR_FS is not set",
+            "+# CONFIG_NO_PAGE_MAPCOUNT is not set",
+            "+CONFIG_ARCH_SUPPORTS_HUGE_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PMD_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PUD_PFNMAP=y",
+            "+# CONFIG_DEV_DAX is not set"
+          ],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + no randomisation",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 defconfig",
+            "./scripts/config --file /out/c2/.config -e COMPAT_BRK -d RANDOMIZE_BASE -d RANDOMIZE_KSTACK_OFFSET",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "config_note": "The .config of this configuration is byte-identical to the defconfig .config. riscv defconfig already sets CONFIG_COMPAT_BRK=y (no brk randomisation) and leaves CONFIG_RANDOMIZE_BASE unset. CONFIG_RANDOMIZE_KSTACK_OFFSET stays y because arch/riscv selects it. There is no Kconfig option for vDSO or mmap randomisation; norandmaps is a boot parameter.",
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 arch/riscv/kernel/vdso/"
+          ]
+        }
+      ],
+      "note": "All three configurations give the same bytes. The vDSO image does not depend on CONFIG_TRANSPARENT_HUGEPAGE, and the no-randomisation configuration has the same .config as defconfig. There is one distinct image, not three."
+    }
+  },
+  {
+    "file": "vdso-defconfig-norandom.so",
+    "configuration": "defconfig + no randomisation",
+    "size": 5704,
+    "pages": 2,
+    "page_size": 4096,
+    "sha256": "0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39cab23958df36",
+    "elf_magic": "7f454c46",
+    "elf_magic_ok": true,
+    "bytes_hex_chunk_chars": 1024,
+    "bytes_hex_chunks": [
+      "7f454c460201010000000000000000000300f3000100000000000000000000004000000000000000c8120000000000000100000040003800040040000e000d00010000000500000000000000000000000000000000000000000000000000000026120000000000002612000000000000001000000000000002000000040000007803000000000000780300000000000078030000000000002001000000000000200100000000000008000000000000000400000004000000a004000000000000a004000000000000a0040000000000003c000000000000003c00000000000000040000000000000050e5746404000000dc04000000000000dc04000000000000dc040000000000002c000000000000002c0000000000000004000000000000000300000002000000010000000600000001101911400100b802000000040000000900000000ca1bb0538f30681c948cfffa7e740fbe59a584a6b96d2119a3436e3c15c79a27b062650000000000000000000000000000000000000000000000000000000003000700980400000000000000000000000000002a00000012000b007008000000000000f4010000000000003e00000012000b00640a0000000000009000000000000000aa0000001100f1ff000000000000000000000000000000007400000012000b00100b0000000000001c010000000000008900000012000b00",
+      "3c0c00000000000028020000000000000100000012000b00900500000000000008000000000000001500000012000b00b405000000000000ba020000000000006000000012000b00040b0000000000000a000000000000005200000012000b00f80a0000000000000a00000000000000005f5f7664736f5f72745f73696772657475726e005f5f7664736f5f636c6f636b5f67657474696d65005f5f7664736f5f67657474696d656f66646179005f5f7664736f5f636c6f636b5f676574726573005f5f7664736f5f676574637075005f5f7664736f5f666c7573685f696361636865005f5f7664736f5f72697363765f687770726f6265005f5f7664736f5f67657472616e646f6d006c696e75782d7664736f2e736f2e31004c494e55585f342e3135000000000000020002000200020002000200020002000200000000000100010001000100a1bfee0d140000001c0000009a000000000000000100000002000100757fe70a1400000000000000aa000000000000000e000000000000009a00000000000000f5feff6f00000000200100000000000005000000000000007002000000000000060000000000000068010000000000000a00000000000000b5000000000000000b00000000000000180000000000000007000000000000000000000000000000080000000000000000000000000000000900000000000000",
+      "1800000000000000fcffff6f000000004003000000000000fdffff6f000000000200000000000000f0ffff6f0000000026030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007803000000000000040000001400000003000000474e55003abb35180f906c9dfae9a81cc752e6ae635afc980600000004000000000000004c696e75780000002e120600011b033b2800000004000000b4000000440000001c060000700000002806000084000000540700009c0000001400000000000000037a525300017c01011b0c0200000000140000001c000000680000000800000000000000000000001000000000000000037a5200017c01011b0c02001000000018000000a40500000a00000000000000140000002c0000009c0500000a00000000000000000000001000000044000000b00600000a00000000000000000000009308b0087300000001000000411122e006e40008b3c707020f000001a260026441018280dd4763e6a71439714af08547056922f826f406fc8000bb97a7001309398833f9270197c4ffff9384a4a2630809089c4013f717009b86070055e70f002002dc40d9c7f32710c0131645002696",
+      "033e86020338060203bf840083be0401904c03a3c4010f00200283a80400e39216fd0216b387e7410192b3f7d701b387c702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a9823b005019ce5e2704274a274027901452161828093f707069def914797c4ffff9384a4a6e302f5f69308100773000000e2704274a2740279012521618280d840b707008093c7f7ff6306f706b3c707020f00000115bf0905131745003706008026971346f6ff97c7ffff83a7079493f6170085e20f002002146394e1146794e50f00200297c6ffff83a62692e38dd7f6d9bf97c7ffff83a787916380c70cb3c707020f000001c1b7930810077300000001258280914717d9ffff1309099d6306f50017d9ffff1309498e03270900937717000127e5ef0f00200283274900a9d7f32710c013184500b306090103b386029072833e8900033e0901832689018328c9010f002002032f0900e310e7fd8216b387d7418192b3f7c701b387d702c29498748870b7d69a3b9386f69f32959a97b3d71701ba9763f9f608373665c4130606600147b2970527e3eef6fe021701939ce5b307a7009ce17db54eec120597d9ffff93898984aa9997d7ffff83a7e78313f7170035ef0f00200203b6090003b789000f00200297d6ffff83a60682e39df6fcaa9488649460b7d79a3b2a979387f79f369663fa",
+      "e700b73665c49386066036970529e3eee7fe931709028193b29798e59ce1e26981b5014749b72330b4fc2334a4fceff0ffd603270900033584fc833504fc937717000127e38607eef9bf2330a4fc2334b4fceff0bfd497c7ffff83a7a77a833584fc033504fc13f717003dd3f9bf0100797122f026ec06f4001897b4ffff938464784dc117b6ffff0326c6771377160061ef0f00200297b7ffff83a7e776edc7f32710c097b6ffff83a6467703be840203bf840083be040103b8040217b3ffff032303760f00200297b8ffff83a88873e31a16fb8216b387e7418192b3f7d701b387d702b7d69a3b9386f69ff297b3d7670063fdf600373665c413060660b2970527e3eef6fe021701933a988217375762108193130737ddb387e7022330050199931ce599e50145a2700274e2644561828097b6ffff83a6266d370700801347f7ff97c7ffff9387e76b6386e60097b7ffff9387276b0567ba9703a7078c98c183a7478cdcc1c1b717b7ffff0327c769b707008093c7f7ff630ef700b3c707020f00000101b742699308900a73000000012559bf4ae817c9ffff1309a96617c7ffff0327276693771700d9eb0f00200297c7ffff83a74765f9d7f32710c097c6ffff83a6a66503388902033e8900033309018338090217c6ffff032666640f00200297ceffff83aeee61e39aeefa13970602b387c7410193b3f76700b387e702",
+      "987403b30402b7d69a3b9386f69f9a98c297b3d7c700ba9763f2f602373665c4130606600147b2970527e3eef6fe131807021358080242694698c9bd0147c5bf2338b4fc233ca4fceff05fb517c7ffff0327475b033584fd833504fd93771700b1d7f9bf411122e006e40008dd4763eaa70617b7ffff03272759b707008093c7f7ff97c6ffff9386e6576306f70097b6ffff93862657054785673b17a70093873789f98f05669de39377070695e79357070193f7f70f95c7854781c523b005009ce5a2600264014541018280b29683a7868c82178193d5b7b7173d0093870790e9bf9308200773000000a2600264012541018280010000009308800a73000000828000009308301073000000828000009398450093771700aa98a1ef11e2fdc235e797e7ffff83c76755adc397e7ffff83c7d754a1cf637c1503b9457d5817e6ffff1306264c39a094634105233cd5fe637f15011861814693173700b297e3f5e5fe2330050114e54105e36515ff014582805dcad5ca01488147b69703c307000528c287631e0300e369c8fe411122e006e40008ef00c009a2600264410182808547e315f7fe97e7ffff83c7274df9df0148e37e15fb1d6313038383b94e7d5f17eeffff130e0e4439a89c610c650dcfed8f8d8f93b7170093c717003368f8004105637715031c61939537003357f300f295058be3fbfefc2330e50123340500",
+      "0548f9bf05d759b78d8f93b71700e9b7e30f08f401478147b697238007000527ba87e36bc7fea1b72955828001000000930820107300000082800000757122e1caf80009cef46ef406e5233404f8fd57233ca4f62e89b289b68d6308f71485669387f6ffb3f7fd009387070963e8f6169d4763e6c714930700096312f71497d7ffff83c7a738638c07126381051883c79d0863960712a6fcd2f0d6ecdae8dee4e2e066fc6af8b7f7ff7fae8463edb70e8547a384fd0889472338f4f6930cf003130b84f8938a0d0697d7ffff938787339c6303b70d08639de71483c78d0813070006b305f74063eab40a033a84f7268db5ed63010d04938b0d06130c84f863f0ac0393566d0052855a86d685ef00c01593770dfc5a8cd68b3e9a137dfd036286de8589466e85ef00201423840d088147631d0d0297d7ffff9387c72c03b70d089c636317f70ca3840d082685067ae674e66a466ba66b066ce27c427daa600a644679a679a27d49618280ea85ee97b386b700528703c6070085070507a30fc7fea38f07fee398f6fe83c78d082e9a330dbd40ad9f2384fd08a9bfa685033a84f7268da1d9e1b7be8421b71dc905679307f7ffb3f7fd00938707096361f702033584f7ca854e869308601173000000aa600a644679a679a27d496182804955bdbff1f569f693078002930600090d4723a4fd0023a0dd0023a2ed009387cd001388",
+      "0d0423a007009107e31df8fe0145b9b7033704f785476311f704a3840d08e674067ae66a466ba66b066ce27c427d41bf23b0fd080f0020029308601113850d0693050002014673000000631ab500930700062384fd0861b52338f4f6b5b523b00d0865bf010000001d7122e026e44ae84eec52f056f45af85efce2e0e6e4eae8eeec83330600378e70611b0e5e86b76e20339b8eee46373f62791b0f2fd3b76f206b9b8f4f577284f6847a89fe8903aa050083aa450003ab850083abc50003ac050183ac450103ad850183adc5019e8713d80302930800001303000029473b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858009b1203011b530301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b12ca001b5a4a01336a5a009b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b003b044401bb8454013b096901bb897901a18f33489800b3c82801334333019b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858009b1283001b538301336353003b0cfc00bb8c0c013b0d1d01bb8d6d00334a8a01b3ca9a01334bab01b3cbbb019b127a001b5a9a01336a5a009b927a009bda9a01b3ea",
+      "5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1203011b530301336353009b9207019bd70701b3e757009b1208011b580801336858009b9208019bd80801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b92ca009bda4a01b3ea5a009b12cb001b5b4b01336b5b009b92cb009bdb4b01b3eb5b009b12ca001b5a4a01336a5a003b045401bb8464013b097901bb89490133438300a58f33482801b3c838019b1283001b538301336353009b9287009bd78701b3e757009b1288001b588801336858009b9288009bd88801b3e858003b0d6d00bb8dfd003b0c0c01bb8c1c01b3caaa01334bbb01b3cb8b01334a9a019b927a009bda9a01b3ea5a009b127b001b5b9b01336b5b009b927b009bdb9b01b3eb5b009b127a001b5a9a01336a5a007d17e31307d83b04c401bb84d4013b09e901bb89f90100c144c123242501232635018041c44103a9850083a9c5003b0a8a00bb8a9a003b0b2b01bb8b3b0123284501232a5501232c6501232e75018049c44903a9850183a9c5013b0c8c00bb8c9c003b0d2d01bb8d3d0123208503232295032324a5032326b503bb87770013d403023b0888001cd9232a0503232c1503232e6502850313050504fd16e39a06ca23307600930700001308",
+      "000093080000130300000264a2644269e269027aa27a427be27b066ca66c466de66d256182804743433a202844656269616e2031342e322e302d3139292031342e322e3000002e7368737472746162002e676e752e68617368002e64796e73796d002e64796e737472002e676e752e76657273696f6e002e676e752e76657273696f6e5f64002e64796e616d6963002e726f64617461002e6e6f7465002e65685f6672616d655f686472002e65685f6672616d65002e74657874002e636f6d6d656e740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b000000f6ffff6f0200000000000000200100000000000020010000000000004800000000000000020000000000000008000000000000000000000000000000150000000b00000002000000000000006801000000000000680100000000000008010000000000000300000002000000080000000000000018000000000000001d00000003000000020000000000000070020000000000007002000000000000b50000000000000000000000000000000100000000000000000000000000000025000000ffffff6f020000000000000026030000000000002603000000000000160000000000000002000000000000000200000000000000",
+      "020000000000000032000000fdffff6f0200000000000000400300000000000040030000000000003800000000000000030000000200000008000000000000000000000000000000410000000600000003000000000000007803000000000000780300000000000020010000000000000300000000000000080000000000000010000000000000004a00000001000000030000000000000098040000000000009804000000000000080000000000000000000000000000000800000000000000080000000000000052000000070000000200000000000000a004000000000000a0040000000000003c0000000000000000000000000000000400000000000000000000000000000058000000010000000200000000000000dc04000000000000dc040000000000002c00000000000000000000000000000004000000000000000000000000000000660000000100000002000000000000000805000000000000080500000000000084000000000000000000000000000000080000000000000000000000000000007000000001000000060000000000000090050000000000009005000000000000960c00000000000000000000000000000400000000000000000000000000000076000000010000003000000000000000000000000000000026120000000000001f0000000000000000000000000000000100000000000000",
+      "010000000000000001000000030000000000000000000000000000000000000045120000000000007f00000000000000000000000000000001000000000000000000000000000000"
+    ],
+    "elf_header": {
+      "e_type": 3,
+      "e_machine": 243,
+      "e_machine_name": "EM_RISCV",
+      "e_entry": 0,
+      "e_phoff": 64,
+      "e_phnum": 4,
+      "e_phentsize": 56,
+      "e_shoff": 4808,
+      "e_shnum": 14,
+      "e_shentsize": 64,
+      "e_flags": 1
+    },
+    "program_headers": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      },
+      {
+        "index": 1,
+        "p_type": 2,
+        "p_type_name": "PT_DYNAMIC",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 888,
+        "p_vaddr": 888,
+        "p_paddr": 888,
+        "p_filesz": 288,
+        "p_memsz": 288,
+        "p_align": 8
+      },
+      {
+        "index": 2,
+        "p_type": 4,
+        "p_type_name": "PT_NOTE",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1184,
+        "p_vaddr": 1184,
+        "p_paddr": 1184,
+        "p_filesz": 60,
+        "p_memsz": 60,
+        "p_align": 4
+      },
+      {
+        "index": 3,
+        "p_type": 1685382480,
+        "p_type_name": "PT_GNU_EH_FRAME",
+        "p_flags": 4,
+        "p_flags_text": "R",
+        "p_offset": 1244,
+        "p_vaddr": 1244,
+        "p_paddr": 1244,
+        "p_filesz": 44,
+        "p_memsz": 44,
+        "p_align": 4
+      }
+    ],
+    "pt_load": [
+      {
+        "index": 0,
+        "p_type": 1,
+        "p_type_name": "PT_LOAD",
+        "p_flags": 5,
+        "p_flags_text": "RX",
+        "p_offset": 0,
+        "p_vaddr": 0,
+        "p_paddr": 0,
+        "p_filesz": 4646,
+        "p_memsz": 4646,
+        "p_align": 4096
+      }
+    ],
+    "pt_dynamic": {
+      "index": 1,
+      "p_type": 2,
+      "p_type_name": "PT_DYNAMIC",
+      "p_flags": 4,
+      "p_flags_text": "R",
+      "p_offset": 888,
+      "p_vaddr": 888,
+      "p_paddr": 888,
+      "p_filesz": 288,
+      "p_memsz": 288,
+      "p_align": 8
+    },
+    "dynamic_entries": [
+      {
+        "d_tag": 14,
+        "d_tag_name": "DT_SONAME",
+        "d_val": 154
+      },
+      {
+        "d_tag": 1879047925,
+        "d_tag_name": "DT_GNU_HASH",
+        "d_val": 288
+      },
+      {
+        "d_tag": 5,
+        "d_tag_name": "DT_STRTAB",
+        "d_val": 624
+      },
+      {
+        "d_tag": 6,
+        "d_tag_name": "DT_SYMTAB",
+        "d_val": 360
+      },
+      {
+        "d_tag": 10,
+        "d_tag_name": "DT_STRSZ",
+        "d_val": 181
+      },
+      {
+        "d_tag": 11,
+        "d_tag_name": "DT_SYMENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 7,
+        "d_tag_name": "DT_RELA",
+        "d_val": 0
+      },
+      {
+        "d_tag": 8,
+        "d_tag_name": "DT_RELASZ",
+        "d_val": 0
+      },
+      {
+        "d_tag": 9,
+        "d_tag_name": "DT_RELAENT",
+        "d_val": 24
+      },
+      {
+        "d_tag": 1879048188,
+        "d_tag_name": "DT_VERDEF",
+        "d_val": 832
+      },
+      {
+        "d_tag": 1879048189,
+        "d_tag_name": "DT_VERDEFNUM",
+        "d_val": 2
+      },
+      {
+        "d_tag": 1879048176,
+        "d_tag_name": "DT_VERSYM",
+        "d_val": 806
+      },
+      {
+        "d_tag": 0,
+        "d_tag_name": "DT_NULL",
+        "d_val": 0
+      }
+    ],
+    "dynamic": {
+      "DT_STRTAB": 624,
+      "DT_SYMTAB": 360,
+      "DT_SYMENT": 24,
+      "DT_HASH": null,
+      "DT_GNU_HASH": 288,
+      "DT_VERSYM": 806,
+      "DT_VERDEF": 832,
+      "DT_HASH_present": false,
+      "DT_GNU_HASH_present": true,
+      "symbol_count": 11,
+      "symbol_count_source": "DT_GNU_HASH",
+      "symbol_count_detail": {
+        "nbuckets": 3,
+        "symoffset": 2
+      },
+      "note": "musl's __vdsosym counts the dynamic symbols from DT_HASH when DT_HASH is present, and from DT_GNU_HASH when it is not."
+    },
+    "version_definitions": {
+      "1": {
+        "name": "linux-vdso.so.1",
+        "flags": 1,
+        "base": true
+      },
+      "2": {
+        "name": "LINUX_4.15",
+        "flags": 0,
+        "base": false
+      }
+    },
+    "dynamic_symbols": [
+      {
+        "index": 0,
+        "name": "",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 0,
+        "st_type": "STT_NOTYPE",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 0,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 1,
+        "name": "",
+        "st_value": 1176,
+        "st_size": 0,
+        "st_info": 3,
+        "st_type": "STT_SECTION",
+        "st_bind": "STB_LOCAL",
+        "st_other": 0,
+        "st_shndx": 7,
+        "version_index": 0,
+        "version": "*local*",
+        "version_hidden": false
+      },
+      {
+        "index": 2,
+        "name": "__vdso_gettimeofday",
+        "st_value": 2160,
+        "st_size": 500,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 3,
+        "name": "__vdso_clock_getres",
+        "st_value": 2660,
+        "st_size": 144,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 4,
+        "name": "LINUX_4.15",
+        "st_value": 0,
+        "st_size": 0,
+        "st_info": 17,
+        "st_type": "STT_OBJECT",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 65521,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 5,
+        "name": "__vdso_riscv_hwprobe",
+        "st_value": 2832,
+        "st_size": 284,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 6,
+        "name": "__vdso_getrandom",
+        "st_value": 3132,
+        "st_size": 552,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 7,
+        "name": "__vdso_rt_sigreturn",
+        "st_value": 1424,
+        "st_size": 8,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 8,
+        "name": "__vdso_clock_gettime",
+        "st_value": 1460,
+        "st_size": 698,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 9,
+        "name": "__vdso_flush_icache",
+        "st_value": 2820,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      },
+      {
+        "index": 10,
+        "name": "__vdso_getcpu",
+        "st_value": 2808,
+        "st_size": 10,
+        "st_info": 18,
+        "st_type": "STT_FUNC",
+        "st_bind": "STB_GLOBAL",
+        "st_other": 0,
+        "st_shndx": 11,
+        "version_index": 2,
+        "version": "LINUX_4.15",
+        "version_hidden": false
+      }
+    ],
+    "exported_symbols": [
+      {
+        "name": "__vdso_rt_sigreturn",
+        "offset": 1424,
+        "st_value": 1424,
+        "st_size": 8,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_gettime",
+        "offset": 1460,
+        "st_value": 1460,
+        "st_size": 698,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_gettimeofday",
+        "offset": 2160,
+        "st_value": 2160,
+        "st_size": 500,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_clock_getres",
+        "offset": 2660,
+        "st_value": 2660,
+        "st_size": 144,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getcpu",
+        "offset": 2808,
+        "st_value": 2808,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_flush_icache",
+        "offset": 2820,
+        "st_value": 2820,
+        "st_size": 10,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_riscv_hwprobe",
+        "offset": 2832,
+        "st_value": 2832,
+        "st_size": 284,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      },
+      {
+        "name": "__vdso_getrandom",
+        "offset": 3132,
+        "st_value": 3132,
+        "st_size": 552,
+        "version": "LINUX_4.15",
+        "version_index": 2,
+        "st_shndx": 11
+      }
+    ],
+    "stack": {
+      "F_largest_frame_bytes": 240,
+      "F_deepest_chain": [
+        "__vdso_getrandom",
+        "sub_e68"
+      ],
+      "recursion_found": [],
+      "per_function": {
+        "__vdso_rt_sigreturn": {
+          "address": "0x590",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_rt_sigreturn"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 0,
+          "problems": []
+        },
+        "sub_59c": {
+          "address": "0x59c",
+          "exported": false,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "sub_59c"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0x59c: addi sp,sp,-16"
+          ],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_clock_gettime": {
+          "address": "0x5b4",
+          "exported": true,
+          "own_frame_bytes": 64,
+          "max_frame_bytes_with_callees": 80,
+          "deepest_chain": [
+            "__vdso_clock_gettime",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x5ba: addi sp,sp,-64"
+          ],
+          "return_instructions": 12,
+          "problems": []
+        },
+        "__vdso_gettimeofday": {
+          "address": "0x870",
+          "exported": true,
+          "own_frame_bytes": 48,
+          "max_frame_bytes_with_callees": 64,
+          "deepest_chain": [
+            "__vdso_gettimeofday",
+            "sub_59c"
+          ],
+          "calls": [
+            "sub_59c"
+          ],
+          "sp_instructions": [
+            "0x870: addi sp,sp,-48"
+          ],
+          "return_instructions": 13,
+          "problems": []
+        },
+        "__vdso_clock_getres": {
+          "address": "0xa64",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_clock_getres"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xa64: addi sp,sp,-16"
+          ],
+          "return_instructions": 5,
+          "problems": []
+        },
+        "__vdso_getcpu": {
+          "address": "0xaf8",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_getcpu"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_flush_icache": {
+          "address": "0xb04",
+          "exported": true,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "__vdso_flush_icache"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_riscv_hwprobe": {
+          "address": "0xb10",
+          "exported": true,
+          "own_frame_bytes": 16,
+          "max_frame_bytes_with_callees": 16,
+          "deepest_chain": [
+            "__vdso_riscv_hwprobe"
+          ],
+          "calls": [
+            "sub_c30"
+          ],
+          "sp_instructions": [
+            "0xb8c: addi sp,sp,-16"
+          ],
+          "return_instructions": 7,
+          "problems": []
+        },
+        "sub_c30": {
+          "address": "0xc30",
+          "exported": false,
+          "own_frame_bytes": 0,
+          "max_frame_bytes_with_callees": 0,
+          "deepest_chain": [
+            "sub_c30"
+          ],
+          "calls": [],
+          "sp_instructions": [],
+          "return_instructions": 1,
+          "problems": []
+        },
+        "__vdso_getrandom": {
+          "address": "0xc3c",
+          "exported": true,
+          "own_frame_bytes": 144,
+          "max_frame_bytes_with_callees": 240,
+          "deepest_chain": [
+            "__vdso_getrandom",
+            "sub_e68"
+          ],
+          "calls": [
+            "sub_e68"
+          ],
+          "sp_instructions": [
+            "0xc3c: addi sp,sp,-144"
+          ],
+          "return_instructions": 17,
+          "problems": []
+        },
+        "sub_e68": {
+          "address": "0xe68",
+          "exported": false,
+          "own_frame_bytes": 96,
+          "max_frame_bytes_with_callees": 96,
+          "deepest_chain": [
+            "sub_e68"
+          ],
+          "calls": [],
+          "sp_instructions": [
+            "0xe68: addi sp,sp,-96"
+          ],
+          "return_instructions": 3,
+          "problems": []
+        }
+      },
+      "method": "The script decodes every RV64GC instruction of every function that an exported entry can reach by a direct call, and it adds the sp decrements along each call chain."
+    },
+    "callee_saved_and_memory_writes": {
+      "__vdso_rt_sigreturn": {
+        "returns_to_caller": false,
+        "returns": [],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_rt_sigreturn"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x594 in __vdso_rt_sigreturn"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_gettime": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x696",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x66c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x70c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_gettime",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 7,
+          "arg": 44,
+          "frame": 8
+        },
+        "frame_store_range_from_caller_sp": [
+          -80,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x686 in __vdso_clock_gettime",
+          "0x706 in __vdso_clock_gettime"
+        ],
+        "problems": []
+      },
+      "__vdso_gettimeofday": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0x930",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_gettimeofday",
+          "sub_59c"
+        ],
+        "store_base_kinds": {
+          "sp": 6,
+          "arg": 24,
+          "frame": 4
+        },
+        "frame_store_range_from_caller_sp": [
+          -64,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0x98c in __vdso_gettimeofday"
+        ],
+        "problems": []
+      },
+      "__vdso_clock_getres": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaf2",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xaca",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_clock_getres"
+        ],
+        "store_base_kinds": {
+          "sp": 2,
+          "arg": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xae6 in __vdso_clock_getres"
+        ],
+        "problems": []
+      },
+      "__vdso_getcpu": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb00",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getcpu"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xafc in __vdso_getcpu"
+        ],
+        "problems": []
+      },
+      "__vdso_flush_icache": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb0c",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_flush_icache"
+        ],
+        "store_base_kinds": {},
+        "frame_store_range_from_caller_sp": [
+          0,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xb08 in __vdso_flush_icache"
+        ],
+        "problems": []
+      },
+      "__vdso_riscv_hwprobe": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb70",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xb9e",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xc2a",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_riscv_hwprobe",
+          "sub_c30"
+        ],
+        "store_base_kinds": {
+          "arg": 15,
+          "sp": 6
+        },
+        "frame_store_range_from_caller_sp": [
+          -16,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xc34 in sub_c30"
+        ],
+        "problems": []
+      },
+      "__vdso_getrandom": {
+        "returns_to_caller": true,
+        "returns": [
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xd68",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          },
+          {
+            "addr": "0xdda",
+            "sp_delta": 0,
+            "clobbered_callee_saved": []
+          }
+        ],
+        "callee_saved_left_clobbered_at_return": [],
+        "writes_callee_saved_without_restoring_it": false,
+        "sp_restored_at_every_return": true,
+        "reachable_functions": [
+          "__vdso_getrandom",
+          "sub_e68"
+        ],
+        "store_base_kinds": {
+          "sp": 25,
+          "frame": 6,
+          "arg": 109
+        },
+        "frame_store_range_from_caller_sp": [
+          -240,
+          0
+        ],
+        "frame_stores_outside_F_window": [],
+        "stores_outside_frame_and_arguments": [],
+        "writes_only_frame_and_argument_buffers": true,
+        "ecall_sites": [
+          "0xdca in __vdso_getrandom",
+          "0xe46 in __vdso_getrandom"
+        ],
+        "problems": []
+      }
+    },
+    "crosscheck_readelf": {
+      "source": "riscv64-linux-gnu-readelf -W --dyn-syms -V",
+      "rows": [
+        {
+          "name": "__vdso_rt_sigreturn",
+          "parser_offset": 1424,
+          "readelf_offset": 1424,
+          "parser_size": 8,
+          "readelf_size": 8,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_gettime",
+          "parser_offset": 1460,
+          "readelf_offset": 1460,
+          "parser_size": 698,
+          "readelf_size": 698,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_gettimeofday",
+          "parser_offset": 2160,
+          "readelf_offset": 2160,
+          "parser_size": 500,
+          "readelf_size": 500,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_clock_getres",
+          "parser_offset": 2660,
+          "readelf_offset": 2660,
+          "parser_size": 144,
+          "readelf_size": 144,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getcpu",
+          "parser_offset": 2808,
+          "readelf_offset": 2808,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_flush_icache",
+          "parser_offset": 2820,
+          "readelf_offset": 2820,
+          "parser_size": 10,
+          "readelf_size": 10,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_riscv_hwprobe",
+          "parser_offset": 2832,
+          "readelf_offset": 2832,
+          "parser_size": 284,
+          "readelf_size": 284,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        },
+        {
+          "name": "__vdso_getrandom",
+          "parser_offset": 3132,
+          "readelf_offset": 3132,
+          "parser_size": 552,
+          "readelf_size": 552,
+          "parser_version": "LINUX_4.15",
+          "readelf_version": "LINUX_4.15",
+          "agree": true
+        }
+      ],
+      "agree": true,
+      "readelf_output": "Symbol table '.dynsym' contains 11 entries:\n   Num:    Value          Size Type    Bind   Vis      Ndx Name\n     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND\n     1: 0000000000000498     0 SECTION LOCAL  DEFAULT    7 .rodata\n     2: 0000000000000870   500 FUNC    GLOBAL DEFAULT   11 __vdso_gettimeofday@@LINUX_4.15\n     3: 0000000000000a64   144 FUNC    GLOBAL DEFAULT   11 __vdso_clock_getres@@LINUX_4.15\n     4: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  ABS LINUX_4.15\n     5: 0000000000000b10   284 FUNC    GLOBAL DEFAULT   11 __vdso_riscv_hwprobe@@LINUX_4.15\n     6: 0000000000000c3c   552 FUNC    GLOBAL DEFAULT   11 __vdso_getrandom@@LINUX_4.15\n     7: 0000000000000590     8 FUNC    GLOBAL DEFAULT   11 __vdso_rt_sigreturn@@LINUX_4.15\n     8: 00000000000005b4   698 FUNC    GLOBAL DEFAULT   11 __vdso_clock_gettime@@LINUX_4.15\n     9: 0000000000000b04    10 FUNC    GLOBAL DEFAULT   11 __vdso_flush_icache@@LINUX_4.15\n    10: 0000000000000af8    10 FUNC    GLOBAL DEFAULT   11 __vdso_getcpu@@LINUX_4.15\n\nVersion symbols section '.gnu.version' contains 11 entries:\n Addr: 0x0000000000000326  Offset: 0x00000326  Link: 2 (.dynsym)\n  000:   0 (*local*)       0 (*local*)       2 (LINUX_4.15)    2 (LINUX_4.15)\n  004:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n  008:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)\n\nVersion definition section '.gnu.version_d' contains 2 entries:\n Addr: 0x0000000000000340  Offset: 0x00000340  Link: 3 (.dynstr)\n  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: linux-vdso.so.1\n  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: LINUX_4.15"
+    },
+    "build": {
+      "kernel_repo": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+      "kernel_tag": "v6.18.46",
+      "kernel_commit": "1f99e9ab748fc5c32120de9c4eca31abfe54a4d5",
+      "arch": "riscv",
+      "cross_compile": "riscv64-linux-gnu-",
+      "machine": "GCE VM ossv-lpsrev-vdso (32 vCPU)",
+      "container_image": "vdsobuild:1 (built from debian:trixie)",
+      "container_image_id": "sha256:b2a3aaad7a485cbd9a372bd4aa068ce0ecc60e92125c195b6a39af95a8dfade7",
+      "container_base_image": "debian:trixie",
+      "toolchain": {
+        "gcc": "riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0",
+        "ld": "GNU ld (GNU Binutils for Debian) 2.44",
+        "objdump": "GNU objdump (GNU Binutils for Debian) 2.44",
+        "readelf": "GNU readelf (GNU Binutils for Debian) 2.44"
+      },
+      "mapped_file": "arch/riscv/kernel/vdso/vdso.so -- the stripped image. arch/riscv/kernel/vdso/vdso.S does .incbin of this path, and arch/riscv/kernel/vdso.c maps the bytes between vdso_start and vdso_end. The unstripped vdso.so.dbg is not mapped.",
+      "configurations": [
+        {
+          "name": "defconfig",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 defconfig",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c0 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + CONFIG_TRANSPARENT_HUGEPAGE=y",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 defconfig",
+            "./scripts/config --file /out/c1/.config -e TRANSPARENT_HUGEPAGE",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [
+            "-# CONFIG_TRANSPARENT_HUGEPAGE is not set",
+            "+CONFIG_TRANSPARENT_HUGEPAGE=y",
+            "+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_MADVISE is not set",
+            "+# CONFIG_TRANSPARENT_HUGEPAGE_NEVER is not set",
+            "+# CONFIG_PERSISTENT_HUGE_ZERO_FOLIO is not set",
+            "+CONFIG_MM_ID=y",
+            "+CONFIG_THP_SWAP=y",
+            "+# CONFIG_READ_ONLY_THP_FOR_FS is not set",
+            "+# CONFIG_NO_PAGE_MAPCOUNT is not set",
+            "+CONFIG_ARCH_SUPPORTS_HUGE_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PMD_PFNMAP=y",
+            "+CONFIG_ARCH_SUPPORTS_PUD_PFNMAP=y",
+            "+# CONFIG_DEV_DAX is not set"
+          ],
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c1 -j32 arch/riscv/kernel/vdso/"
+          ]
+        },
+        {
+          "name": "defconfig + no randomisation",
+          "config_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 defconfig",
+            "./scripts/config --file /out/c2/.config -e COMPAT_BRK -d RANDOMIZE_BASE -d RANDOMIZE_KSTACK_OFFSET",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 olddefconfig"
+          ],
+          "config_delta_from_defconfig": [],
+          "config_note": "The .config of this configuration is byte-identical to the defconfig .config. riscv defconfig already sets CONFIG_COMPAT_BRK=y (no brk randomisation) and leaves CONFIG_RANDOMIZE_BASE unset. CONFIG_RANDOMIZE_KSTACK_OFFSET stays y because arch/riscv selects it. There is no Kconfig option for vDSO or mmap randomisation; norandmaps is a boot parameter.",
+          "make_commands": [
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 prepare",
+            "make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- O=/out/c2 -j32 arch/riscv/kernel/vdso/"
+          ]
+        }
+      ],
+      "note": "All three configurations give the same bytes. The vDSO image does not depend on CONFIG_TRANSPARENT_HUGEPAGE, and the no-randomisation configuration has the same .config as defconfig. There is one distinct image, not three."
+    }
+  }
+]

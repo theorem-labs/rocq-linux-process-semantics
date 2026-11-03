@@ -158,6 +158,17 @@ Definition O_NONBLOCK : Z := 2048%Z.
     steps being reached.  Linux v6.18.46. *)
 Definition O_DIRECTORY : Z := 65536%Z.
 
+(** O_NOCTTY: 00000400 (include/uapi/asm-generic/fcntl.h, read at
+    v6.18.44; identical at v6.18.46; riscv64 does not override it).
+    [Open.modeled_open_flags] admits it in one place only: beside
+    O_RDONLY, with or without O_DIRECTORY, for the open of
+    "/proc/self/fd" that bubblewrap's [fdwalk] issues
+    ([Open.procfd_noctty_word]).  On that directory it does nothing:
+    [do_dentry_open] (fs/open.c, read at v6.18.44; identical at
+    v6.18.46) clears it from [f_flags], and only a terminal's [->open]
+    reads it. *)
+Definition O_NOCTTY : Z := 256%Z.
+
 (** O_NOFOLLOW: 00400000, and O_PATH: 010000000
     (include/uapi/asm-generic/fcntl.h, read at v6.18.44; identical at
     v6.18.46; riscv64 overrides neither).  Interpreted only together:
@@ -591,6 +602,26 @@ Definition EFD_SEMAPHORE : Z := 1%Z.
     and a model that spelled one gate with the other's mask would be
     wrong on exactly one input each way. *)
 Definition EFD_FLAGS_SET : Z := Z.lor (Z.lor O_CLOEXEC O_NONBLOCK) EFD_SEMAPHORE.
+
+(** [SFD_CLOEXEC] and [SFD_NONBLOCK], the two flag bits [signalfd4]
+    accepts: include/uapi/linux/signalfd.h defines them as [O_CLOEXEC]
+    and [O_NONBLOCK], and [do_signalfd4] (fs/signalfd.c) asserts both
+    with [BUILD_BUG_ON] before its [flags & ~(SFD_CLOEXEC | SFD_NONBLOCK)]
+    test.  Both read at v6.18.44; identical at v6.18.46. *)
+Definition SFD_CLOEXEC : Z := O_CLOEXEC.
+Definition SFD_NONBLOCK : Z := O_NONBLOCK.
+Definition SFD_FLAGS_SET : Z := Z.lor SFD_CLOEXEC SFD_NONBLOCK.
+
+(** The three [d_type] values a [getdents64] of /proc/self/fd can
+    carry (include/linux/fs_types.h [DT_UNKNOWN], [DT_DIR], [DT_LNK],
+    read at v6.18.44; identical at v6.18.46): "." and ".." are [DT_DIR]
+    ([dir_emit_dot], [dir_emit_dotdot], include/linux/fs.h), and a
+    descriptor's entry is the [S_IFLNK] inode's type, [DT_LNK], or
+    [DT_UNKNOWN] when [proc_fill_cache] (fs/proc/base.c) could not make
+    the inode.  See [Fs.Readdir.dirent64_rec_ok]. *)
+Definition DT_UNKNOWN : Z := 0%Z.
+Definition DT_DIR : Z := 4%Z.
+Definition DT_LNK : Z := 10%Z.
 
 (** The range [ktime_t] represents, in nanoseconds.
 
@@ -1077,7 +1108,7 @@ Definition NEW_UTS_LEN : Z := 64%Z.
     [machine], [domainname], at offsets 0, 65, 130, 195, 260 and 325. *)
 Definition NEW_UTSNAME_SIZE : Z := 390%Z.
 
-(** [PR_CAPBSET_READ], the first of the five [prctl] options this model answers
+(** [PR_CAPBSET_READ], the first of the seven [prctl] options this model answers
     (include/uapi/linux/prctl.h, Linux v6.18.46, commit 1f99e9ab748f).
     It is NOT handled in kernel/sys.c's own [switch]: the LSM hook
     [security_task_prctl] runs first, and capability's implementation of
@@ -1104,6 +1135,14 @@ Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
     [switch] for the reason the three above do, and
     [Kernel.Sys.prctl_spec] answers it from [State.m_pdeath_signal]. *)
 Definition PR_GET_PDEATHSIG : Z := 2%Z.
+
+(** The readers of the other two setters' state (include/uapi/linux/prctl.h,
+    [#define PR_GET_DUMPABLE 3], [#define PR_GET_NO_NEW_PRIVS 39]; read at
+    v6.18.44, identical at v6.18.46).  They reach kernel/sys.c's own
+    [switch] for the reason the setters do, and [Kernel.Sys.prctl_spec]
+    answers them from [State.m_dumpable] and [State.m_no_new_privs]. *)
+Definition PR_GET_DUMPABLE : Z := 3%Z.
+Definition PR_GET_NO_NEW_PRIVS : Z := 39%Z.
 
 (** [CAP_LAST_CAP], the highest capability number the kernel recognises:
     [CAP_CHECKPOINT_RESTORE], 40 (include/uapi/linux/capability.h, Linux
@@ -1334,6 +1373,26 @@ Definition stat_devnull_ok (bs : list byte) : bool := stat_chrdev_ok DEVNULL_RDE
 Definition URANDOM_RDEV : Z := 265%Z.
 
 Definition stat_urandom_ok (bs : list byte) : bool := stat_chrdev_ok URANDOM_RDEV bs.
+
+(** [st_mode] of the /proc/self/fd directory: [S_IFDIR | S_IRUSR |
+    S_IXUSR], 040500.  fs/proc/base.c's [tgid_base_stuff] lists it as
+    [DIR("fd", S_IRUSR|S_IXUSR, proc_fd_inode_operations,
+    proc_fd_operations)], [proc_pident_instantiate] gives the inode that
+    mode through [proc_pid_make_inode], and [pid_update_inode] clears
+    only S_ISUID and S_ISGID, which it does not have.  [proc_fd_getattr]
+    (fs/proc/fd.c) fills the stat with [generic_fillattr] and then sets
+    [st_size] to the number of open descriptors, and touches no mode bit.
+      fs/proc/base.c [tgid_base_stuff], [proc_pident_instantiate],
+        [proc_pid_make_inode], [pid_update_inode]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/fd.c [proc_fd_getattr]: read at v6.18.44; identical at v6.18.46. *)
+Definition PROCFD_DIR_MODE : Z := (S_IFDIR + 320)%Z.
+
+(** The member a [struct stat] of the /proc/self/fd directory carries
+    from the kernel and the model knows: its whole [st_mode].  The
+    other members are the environment's ([Fs.Stat.fstat_procfd_dir_spec]
+    says why none is pinned). *)
+Definition stat_procfd_dir_ok (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_MODE_OFF 4 bs) PROCFD_DIR_MODE.
 
 (** Byte-list equality, for comparing a delivered [struct stat] against
     a pin.  [Fs.path_eqb] is the same function over the same type; a

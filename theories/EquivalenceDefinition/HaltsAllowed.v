@@ -367,7 +367,9 @@ Lemma halts_allowed_T_refuted_by_wrong_status : forall S img en inp tr c' code,
   valid_input inp ->
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      star segs (init_config segs pc ph sp brk0 mbase rnd source_alloc_limit inp) tr c'
+      let vsegs := run_segments segs inp sp mbase in
+      star vsegs (init_config vsegs pc ph sp brk0 mbase rnd source_alloc_limit inp)
+        tr c'
   end ->
   m_halted (cfg_model c') = Some code ->
   ~ In code S ->
