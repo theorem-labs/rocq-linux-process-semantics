@@ -49,6 +49,28 @@ Definition is_child_of (p : Pid) (kv : Pid * ProcessEntry) : bool :=
 Definition children_keys (ps : list (Pid * ProcessEntry)) (p : Pid) : list Pid :=
   List.map fst (List.filter (is_child_of p) ps).
 
+(** No child in the table: no key either. *)
+Lemma children_keys_nil_of_no_child : forall P p,
+  has_child_b P p = false -> children_keys (pcfg_procs P) p = [].
+Proof.
+  intros P p H. unfold children_keys.
+  destruct (List.filter (is_child_of p) (pcfg_procs P)) as [|kv l] eqn:E;
+    [reflexivity|].
+  exfalso.
+  assert (Hin : List.In kv (List.filter (is_child_of p) (pcfg_procs P)))
+    by (rewrite E; left; reflexivity).
+  apply List.filter_In in Hin as [Hin Hc].
+  unfold has_child_b, children_of in H.
+  match type of H with
+  | context [List.map snd ?t] =>
+      destruct (List.map snd t) as [|y ys] eqn:Em; [|cbn in H; discriminate H];
+      apply List.map_eq_nil in Em;
+      assert (Hin' : List.In kv t)
+        by (apply List.filter_In; split; [exact Hin | exact Hc]);
+      rewrite Em in Hin'; exact Hin'
+  end.
+Qed.
+
 (** THE INVARIANT: every running entry's list is its children's keys. *)
 Definition child_pids_ok (P : pconfig) : Prop :=
   forall k f, look P k = Some f -> m_halted (pe_model f) = None ->
@@ -383,11 +405,21 @@ Proof.
        | Hl0 : look _ (pe_pid ?e0) = Some ?e0 |- _ =>
            assert (eh = e0) by congruence; subst eh
        end.
-  - (* the released step: not a successful clone *)
+  - (* the released step: not a successful clone, and at a [wait4] the
+       caller has no child in the table, so (by the invariant) no recorded
+       pid for the released [wait4] to reap *)
     apply child_pids_ok_absorb; try assumption.
     match goal with
-    | Hss : sstep_cfg _ _ _ _ (SNext ?c1), Hcs : clone_success_b _ ?c1 = false |- _ =>
-        exact (sstep_child_pids_kept _ _ _ _ _ Hss Hcs)
+    | Hss : sstep_cfg _ _ _ _ (SNext ?c1), Hcs : clone_success_b _ ?c1 = false,
+      Hwo : wait4_owned_b _ ?e0 = false |- _ =>
+        refine (sstep_child_pids_kept _ _ _ _ _ Hss Hcs _);
+        intros x8 Hs H260;
+        unfold wait4_owned_b in Hwo; cbn [pe_cfg cfg_ms] in Hs;
+        rewrite Hs in Hwo; cbv beta iota in Hwo;
+        rewrite H260, Z.eqb_refl, andb_true_l in Hwo;
+        transitivity (m_child_pids (pe_model e0)); [reflexivity|];
+        rewrite (Hok _ _ Hlh Hhh);
+        exact (children_keys_nil_of_no_child _ _ Hwo)
     end.
   - (* the clone *)
     match goal with

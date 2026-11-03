@@ -518,11 +518,12 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     [do_notify_parent] reads the bit: [psig->action[SIGCHLD-1].sa.sa_flags
     & SA_NOCLDWAIT] sets [autoreap], so a child that exits under it is
     reaped at once instead of being left a zombie, and a later [wait4]
-    finds a different state.  Admitting it would be sound today only
-    because [Exit.wait4_spec] declines once [State.m_has_children] is
-    set: this arm's soundness would rest on a fact about another arm,
-    and a later [wait4] arm for a live child would make it unsound with
-    no failing proof.  Nothing in scope needs it: bwrap 0.13.1 and musl
+    finds a different state: Linux answers 0 and then -ECHILD, never the
+    pid, while [Exit.wait4_spec] admits a reap of every child the model
+    recorded.  Admitting the install would make that arm unsound with no
+    failing proof; the decline here is what keeps it sound, and the
+    launch's own SIG_IGN is an assumption SCOPE.md states.  Nothing in
+    scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are
     [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a
     handler) and

@@ -914,8 +914,9 @@ Definition sigpipe_blocked (mask : word) : bool :=
     Linux accepts — WUNTRACED, WCONTINUED, __WNOTHREAD, __WCLONE,
     __WALL — are not named here because no arm reads them: they select
     which children are eligible and which state changes are reportable,
-    questions about children this model does not have.  Anything but
-    WNOHANG declines; see [Kernel.Exit.wait4_spec]. *)
+    and the model asks neither: every child it records is eligible
+    without them, and it holds no stop or continue of a child.  Anything
+    but WNOHANG declines; see [Kernel.Exit.wait4_spec]. *)
 Definition WNOHANG : Z := 1%Z.
 (** MSG_CMSG_COMPAT (include/linux/socket.h).  Its VALUE depends on the
     kernel's configuration: [0x80000000] under CONFIG_COMPAT and [0]
