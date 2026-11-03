@@ -272,12 +272,38 @@ Proof. vm_compute. reflexivity. Qed.
 (** A lower id the shown namespace's map does not hold is [(gid_t)-1],
     4294967295 (map_id_range_up, 399; from_kgid, 509-513), which "%10u"
     prints as "4294967295" (647-650), not 65534.  [map_write] builds no
-    such table (it maps every lower range through the parent's map); this
-    hand-built one checks the branch.  The case states the id that
-    [map_line] prints: rendering it through [decimal_bytes], which counts
-    in unary [nat], is not computable for 4294967295. *)
+    such table for a task's own map (it maps every lower range through the
+    parent's map); this hand-built one checks the branch.  The case states
+    the id that [map_line] prints: rendering it through [decimal_bytes],
+    which counts in unary [nat], is not computable for 4294967295. *)
 Example read_gid_map_unmapped_lower :
-  shown_lower [map_root; ns_a; ns_b 300000] 3%positive b_cred GidMap 300000 = 4294967295.
+  shown_lower [map_root; ns_a; ns_b 300000] 3%positive b_cred GidMap 300000 = Some 4294967295.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The same id from tables Linux does produce: namespace 4 (C), a sibling
+    of A under the initial namespace, maps uid and gid 0 to kernel id
+    300000.  A task of C that opens A's gid_map (fs/proc/base.c:3082-3105
+    binds the target task's namespace, whatever the opener's) is shown its
+    own namespace, C (641-643 take the parent only when the opener's
+    namespace is the file's), and C's gid map does not hold A's lower gid
+    200000: the line shows 4294967295.  As above, the case states the id. *)
+Definition ns_c : UserNs :=
+  mkUserNs 4 (Some 1%positive) 1 0 (Some [mkExtent 0 300000 1]) (Some [mkExtent 0 300000 1])
+    true false INT_MAX true.
+Definition c_cred : IdCred := mkIdCred 4 300000 300000 0.
+
+Example read_gid_map_sibling_unmapped :
+  shown_lower [map_root; ns_a; ns_c] 2%positive c_cred GidMap 200000 = Some 4294967295.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A shown namespace the tables do not hold: B's parent A is left out, so
+    the namespace a task of B is shown when it reads its own map is absent.
+    Linux keeps that namespace alive (kernel/user_namespace.c:133-134), so
+    the tables lack its map and the read has no answer; before this
+    correction the line showed the lower id 65534. *)
+Example read_gid_map_shown_absent :
+  read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_b 200000]) 1%N b_gid_reader
+  = EUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
 Definition file_state : NsState :=

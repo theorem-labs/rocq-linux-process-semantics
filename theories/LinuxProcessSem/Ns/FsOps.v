@@ -253,9 +253,13 @@ Definition left_pad (n : nat) (bs : list byte) : list byte :=
     [from_kuid] for uid_map and [from_kgid] for gid_map (624, 645).  An id
     that map does not hold is [(u32) -1] ([map_id_range_up], 399; through
     [map_id_up] 404-407, [from_kuid] 441-445, [from_kgid] 509-513), which
-    "%10u" prints as 4294967295 (626-629, 647-650). *)
+    "%10u" prints as 4294967295 (626-629, 647-650).  [None]: the tables do
+    not hold the namespace shown.  Linux keeps it alive (a namespace holds
+    a reference to its parent, 133-134; the open file's credential holds
+    the opener's), so the tables, not Linux, lack its map, and the line has
+    no answer. *)
 Definition shown_lower (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
-    (lower : Z) : Z :=
+    (lower : Z) : option Z :=
   let shown := if Pos.eqb (ic_ns opener) bound
                then match find_userns us bound with
                     | Some u => match uns_parent u with Some p => p | None => bound end
@@ -264,29 +268,42 @@ Definition shown_lower (us : list UserNs) (bound : positive) (opener : IdCred) (
                else ic_ns opener in
   match find_userns us shown with
   | Some u => match uns_parent u with
-              | None => lower
+              | None => Some lower
               | Some _ => match the_map k u with
                           | Some es => match map_up es lower with
-                                       | Some x => x
-                                       | None => 4294967295
+                                       | Some x => Some x
+                                       | None => Some 4294967295
                                        end
-                          | None => 4294967295
+                          | None => Some 4294967295
                           end
               end
-  | None => 65534
+  | None => None
   end.
 
 Definition map_line (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
-    (e : IdExtent) : list byte :=
-  left_pad 10 (decimal_bytes (ext_first e)) ++ [space]
-  ++ left_pad 10 (decimal_bytes (shown_lower us bound opener k (ext_lower e))) ++ [space]
-  ++ left_pad 10 (decimal_bytes (ext_count e)) ++ [newline].
+    (e : IdExtent) : option (list byte) :=
+  option_map (fun lower =>
+                left_pad 10 (decimal_bytes (ext_first e)) ++ [space]
+                ++ left_pad 10 (decimal_bytes lower) ++ [space]
+                ++ left_pad 10 (decimal_bytes (ext_count e)) ++ [newline])
+             (shown_lower us bound opener k (ext_lower e)).
+
+(** The lines of [es], in order; [None] when a line has no answer. *)
+Fixpoint map_lines (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
+    (es : list IdExtent) : option (list byte) :=
+  match es with
+  | [] => Some []
+  | e :: r => match map_line us bound opener k e, map_lines us bound opener k r with
+              | Some l, Some t => Some (l ++ t)
+              | _, _ => None
+              end
+  end.
 
 Definition map_text (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind) : option (list byte) :=
   match find_userns us bound with
   | None => None
   | Some u => match the_map k u with
-              | Some es => Some (flat_map (map_line us bound opener k) es)
+              | Some es => map_lines us bound opener k es
               | None => Some []
               end
   end.
