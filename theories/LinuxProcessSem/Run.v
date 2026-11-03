@@ -2696,7 +2696,7 @@ Qed.
    Nothing above this section changes.
 
    A configuration is budget-refused when the run is about to be
-   declined for exceeding [State.vm_limit], in one of three ways:
+   declined for exceeding [State.vm_limit], in one of four ways:
 
    - the pending INSTRUCTION touches a lazy page the budget cannot back:
      the interpreter answers [MachineOk] (the access itself is fine) and
@@ -2716,16 +2716,21 @@ Qed.
      this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
-     back — the [sstep_syscall_materialization_fault] premises.
+     back — the [sstep_syscall_materialization_fault] premises;
+   - a CALL TO AN EXPORTED vDSO ENTRY has an admissible outcome whose
+     effect touches a lazy page the budget cannot back — exactly the
+     premises of [sstep_vdso_materialization_fault], which refuses the
+     call as [sstep_syscall_materialization_fault] refuses a syscall.
 
-   The first and third are premises of an [SError] transition
-   ([budget_fault_instr_sstep_error], [budget_fault_syscall_sstep_error]);
-   the second is not an error at all — the program is answered -ENOMEM
-   or the old break and goes on — which is why the premise is a
+   Three kinds are first-touch faults, premises of an [SError]
+   transition ([budget_fault_instr_sstep_error],
+   [budget_fault_syscall_sstep_error], [budget_fault_vdso_sstep_error]);
+   the grant clause is not an error at all — the program is answered
+   -ENOMEM or the old break and goes on — which is why the premise is a
    separate observable rather than a reading of [bh_errors].
 
    On a run with no MAP_NORESERVE mapping — every plain musl build —
-   [State.m_vm_lazy] is empty at every reachable state and the two
+   [State.m_vm_lazy] is empty at every reachable state and the three
    first-touch clauses are false ([materialize_model_accesses_no_lazy]),
    so discharging the premise is the grant clause at each ecall
    ([budget_refused_at_no_lazy_instr], [budget_refused_at_no_lazy_syscall]).
@@ -2745,7 +2750,17 @@ Definition budget_refused_at (c : config) : Prop :=
        \/ exists eff model' evs,
             syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs)
             /\ m_halted model' = None
-            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)) ).
+            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None))
+  \/ (ms_svc_pending (cfg_ms c) = None /\
+       mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+       exists fn n eff model' evs,
+         vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+         /\ vdso_fn_sysno fn = Some n
+         /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+              (Ok eff model' evs)
+         /\ eff_ret eff <> errno_ret EFAULT
+         /\ m_halted model' = None
+         /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None) ).
 
 (** The run can reach a budget-refused configuration. *)
 Definition reaches_budget_refused (c0 : config) : Prop :=
@@ -2786,6 +2801,32 @@ Proof.
   intros. eapply sstep_syscall_materialization_fault; eassumption.
 Qed.
 
+Lemma budget_fault_vdso_sstep_error : forall ms model fn n eff model' evs,
+  m_halted model = None ->
+  ms_svc_pending ms = None ->
+  mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = Some fn ->
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  eff_ret eff <> errno_ret EFAULT ->
+  m_halted model' = None ->
+  materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+  sstep segs (mkCfg ms model) [] SError.
+Proof.
+  intros. eapply sstep_vdso_materialization_fault; eassumption.
+Qed.
+
+(** The vDSO clause's [MachineUnmodeled] is the interpreter's own: the
+    accounting never turns an answered step into an unmodeled one. *)
+Lemma mi_account_step_unmodeled_inv : forall ms model,
+  mi_account_step segs ms model = MachineUnmodeled ->
+  RiscvSemantics.step_accesses segs ms = MachineUnmodeled.
+Proof.
+  intros ms model H. unfold mi_account_step in H.
+  destruct (RiscvSemantics.step_accesses segs ms) as [r| |]; [|discriminate H|reflexivity].
+  destruct (materialize_model_accesses model _); discriminate H.
+Qed.
+
 (** Discharging the premise: an invariant of the reachable
     configurations that excludes the mark. *)
 Lemma star_invariant : forall (I : config -> Prop),
@@ -2809,17 +2850,49 @@ Qed.
 
 (** With no lazy mapping, an instruction configuration is never
     budget-refused: the first-touch clause needs [None] where
-    [materialize_model_accesses_no_lazy] answers [Some], and the other
-    two need a pending syscall. *)
+    [materialize_model_accesses_no_lazy] answers [Some], the grant and
+    effect clauses need a pending syscall, and the vDSO clause needs an
+    outcome of the call that is materialized against a lazy mapping,
+    which the last hypothesis excludes.  That hypothesis is vacuous
+    wherever the instruction is modeled
+    ([budget_refused_at_no_lazy_modeled_instr]). *)
 Lemma budget_refused_at_no_lazy_instr : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
+  (mi_account_step segs ms model = MachineUnmodeled ->
+   forall fn n eff model' evs,
+     vdso_entry_fn segs (ms_pc ms) = Some fn ->
+     vdso_fn_sysno fn = Some n ->
+     syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+     m_vm_lazy model' = []) ->
   ~ budget_refused_at (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc (_ & [(_ & report & _ & Hmat) | (x8 & Hx8 & _)]);
+  intros ms model Hlazy Hsvc Hv
+    (_ & [(_ & report & _ & Hmat)
+         | [(x8 & Hx8 & _)
+           | (_ & HU & fn & n & eff & model' & evs & Hfn & Hn & Hspec & _ & _ & Hmat)]]);
     cbn [cfg_ms cfg_model] in *.
   - rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat. discriminate Hmat.
   - congruence.
+  - rewrite (materialize_model_accesses_no_lazy model' _
+               (Hv HU fn n eff model' evs Hfn Hn Hspec)) in Hmat.
+    discriminate Hmat.
+Qed.
+
+(** The hypothesis above, discharged where the interpreter answers: on a
+    model with no lazy mapping, [mi_account_step] is [RiscvSemantics.step]
+    with the model unchanged, which is never [MachineUnmodeled] when the
+    step is [MachineOk] or [MachineFault]. *)
+Lemma budget_refused_at_no_lazy_modeled_instr : forall ms model,
+  m_vm_lazy model = [] ->
+  ms_svc_pending ms = None ->
+  RiscvSemantics.step segs ms <> MachineUnmodeled ->
+  ~ budget_refused_at (mkCfg ms model).
+Proof.
+  intros ms model Hlazy Hsvc Hstep.
+  apply (budget_refused_at_no_lazy_instr ms model Hlazy Hsvc).
+  intros HU. exfalso. rewrite (mi_account_step_no_lazy segs ms model Hlazy) in HU.
+  destruct (RiscvSemantics.step segs ms) eqn:E; try discriminate HU. exact (Hstep eq_refl).
 Qed.
 
 (** ... and a syscall configuration whose every outcome leaves no lazy
@@ -2834,14 +2907,17 @@ Lemma budget_refused_at_no_lazy_syscall : forall ms model x8,
    <-> alloc_budget_refused_b (sys_input segs ms x8) model = true).
 Proof.
   intros ms model x8 Hh Hsvc Hlazy. split.
-  - intros (_ & [(Hnone & _) | (y8 & Hy8 & [Hb | (eff & model' & evs & Hspec & _ & Hmat)])]);
+  - intros (_ & [(Hnone & _)
+               | [(y8 & Hy8 & [Hb | (eff & model' & evs & Hspec & _ & Hmat)])
+                 | (Hnone & _)]]);
       cbn [cfg_ms cfg_model] in *.
     + congruence.
     + rewrite Hsvc in Hy8. injection Hy8 as <-. exact Hb.
     + rewrite Hsvc in Hy8. injection Hy8 as <-.
       rewrite (materialize_model_accesses_no_lazy model' _ (Hlazy _ _ _ Hspec)) in Hmat.
       discriminate Hmat.
-  - intros Hb. split; [exact Hh |]. right. exists x8. split; [exact Hsvc |]. left. exact Hb.
+    + congruence.
+  - intros Hb. split; [exact Hh |]. right. left. exists x8. split; [exact Hsvc |]. left. exact Hb.
 Qed.
 
 
@@ -2854,6 +2930,9 @@ Qed.
     an outcome the configured run never takes — an over-approximation
     of "the configured run is about to be refused", in the safe
     direction (the premise is false more often, never true wrongly).
+    Its vDSO clause is exact under every configuration: it is the
+    premise list of [sstep_cfg_vdso_materialization_fault], which, like
+    the other vDSO arms of [sstep_cfg], carries no filter premise.
     What the configuration changes otherwise is WHICH configurations
     the run reaches: fewer, never more ([reaches_budget_refused_cfg_sub]),
     so the unfiltered premise discharges the configured one, and at
@@ -5555,7 +5634,7 @@ Proof.
 Qed.
 
 (** [budget_refused_at] with the grant disjunct narrowed to
-    [alloc_refuse_reason i m = Some RefuseBudget]; the two first-touch
+    [alloc_refuse_reason i m = Some RefuseBudget]; the three first-touch
     clauses are unchanged.  It implies [budget_refused_at], so
     [~ run_budget_only_refused] admits every input [~ run_budget_refused]
     admits, and also those whose only refusal is oversize. *)
@@ -5570,17 +5649,28 @@ Definition budget_only_refused_at (segs : list Segment) (c : config) : Prop :=
        \/ exists eff model' evs,
             syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs)
             /\ m_halted model' = None
-            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)) ).
+            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None))
+  \/ (ms_svc_pending (cfg_ms c) = None /\
+       mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+       exists fn n eff model' evs,
+         vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+         /\ vdso_fn_sysno fn = Some n
+         /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+              (Ok eff model' evs)
+         /\ eff_ret eff <> errno_ret EFAULT
+         /\ m_halted model' = None
+         /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None) ).
 
 Lemma budget_only_refused_at_implies : forall segs c,
   budget_only_refused_at segs c -> budget_refused_at segs c.
 Proof.
   intros segs c [Hh Hd]. split; [exact Hh|].
-  destruct Hd as [H1 | (x8 & Hp & [Hb | H3])].
+  destruct Hd as [H1 | [(x8 & Hp & [Hb | H3]) | H4]].
   - left; exact H1.
-  - right. exists x8. split; [exact Hp|]. left.
+  - right. left. exists x8. split; [exact Hp|]. left.
     apply refuse_reason_budget_implies_refused; exact Hb.
-  - right. exists x8. split; [exact Hp|]. right. exact H3.
+  - right. left. exists x8. split; [exact Hp|]. right. exact H3.
+  - right. right. exact H4.
 Qed.
 
 Definition reaches_budget_only_refused (segs : list Segment) (c0 : config) : Prop :=

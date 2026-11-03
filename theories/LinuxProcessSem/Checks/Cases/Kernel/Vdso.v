@@ -11,7 +11,9 @@
     3. a call at an exported entry is one step with the system call's
        own specification — and the two routes to a clock reading agree;
     4. a fetch at another text address is [MachineUnmodeled], and a
-       store to the text is a fault.
+       store to the text is a fault;
+    5. a call whose write the backed-memory budget refuses is marked by
+       [Run.budget_refused_at] and is the error transition.
 
     Plus the claim the design exists for: musl's own lookup
     ([Checks.Cases.Kernel.VdsoSym], a transcription of
@@ -24,6 +26,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel Require Import VdsoSym.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Mm Require Import Mprotect.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -412,3 +415,86 @@ Example mprotect_one_page_below_the_pair_is_not_refused :
                    (vdso_top (m_vmmaps fx_model)))
        (Z_to_bv 64 (fx_vvar_base - 4096)) (Z_to_bv 64 4096) = true.
 Proof. right. vm_compute. reflexivity. Qed.
+
+(* =========================================================================
+   Step 3, continued — the budget refuses what a call would write
+   ========================================================================= *)
+
+(** A call of [__vdso_clock_gettime(CLOCK_REALTIME, tp)] whose [tp] is
+    a page of a lazy reservation with nothing charged, at budget [lim].
+    SYNTHETIC, as [Checks.BudgetPremise.touch_model] is: the lazy range
+    has no [vm_maps] entry, which no grant produces; the state exercises
+    the vDSO clause of [Run.budget_refused_at], not the allocator. *)
+Definition vb_tp : Z := 0x20000.
+
+Definition vb_ms : machine_state :=
+  {| ms_regs := bvmap_set 10 (Z_to_bv 64 0)
+                  (bvmap_set 11 (Z_to_bv 64 vb_tp) (bvmap_set 2 fx_sp bvmap_empty));
+     ms_fregs := bvmap_empty;
+     ms_pc_val := fx_entry VdsoClockGettime;
+     ms_svc_pending := None;
+     ms_resv := None;
+     ms_fcsr := Z_to_bv 32 0;
+     ms_mem := fun a =>
+       if ((vb_tp <=? bv_unsigned a) && (bv_unsigned a <? vb_tp + page_size))%Z
+       then Some (Z_to_bv 8 0) else None;
+     ms_rom := fun a => match memory_read fx_segs a 1 with
+                        | Some (b :: _) => Some b
+                        | _ => None
+                        end |}.
+
+Definition vb_model (lim : Z) : Model :=
+  with_vm_backing [(Z_to_bv 64 vb_tp, Z_to_bv 64 page_size)] []
+    (init_model [] 0 fx_mbase fx_sp lim fx_inp).
+
+(** The reading the call writes: the epoch, which [realtime_ok_b]
+    admits. *)
+Definition vb_eff : SyscallEffect :=
+  mkEffect (Z_to_bv 64 0) [(Z_to_bv 64 vb_tp, repeat (Z_to_bv 8 0) 16%nat)] [].
+
+(** The specification admits that outcome and leaves the model as it
+    was: the realtime arm keeps no reading. *)
+Example vb_checker :
+  check_syscall (sys_input fx_segs vb_ms (Z_to_bv 64 113)) vb_eff (vb_model 0)
+  = CheckOk (vb_model 0) [].
+Proof. vm_compute. reflexivity. Qed.
+
+(** THE CASE: with the budget spent (zero), the call is budget-refused,
+    by the vDSO clause. *)
+Example vdso_call_on_spent_budget_is_budget_refused :
+  budget_refused_at fx_segs (mkCfg vb_ms (vb_model 0)).
+Proof.
+  split; [vm_compute; reflexivity |]. right. right.
+  split; [reflexivity |]. split; [vm_compute; reflexivity |].
+  exists VdsoClockGettime, 113%Z, vb_eff, (vb_model 0), [].
+  split; [vm_compute; reflexivity |]. split; [reflexivity |].
+  split; [apply check_syscall_sound_ok; exact vb_checker |].
+  split; [intro Hr; vm_compute in Hr; discriminate Hr |].
+  split; [vm_compute; reflexivity |].
+  vm_compute. reflexivity.
+Qed.
+
+(** ... and the configuration IS the error transition
+    [Run.sstep_vdso_materialization_fault]. *)
+Example vdso_call_on_spent_budget_errors :
+  sstep fx_segs (mkCfg vb_ms (vb_model 0)) [] SError.
+Proof.
+  apply (budget_fault_vdso_sstep_error fx_segs vb_ms (vb_model 0)
+           VdsoClockGettime 113%Z vb_eff (vb_model 0) []);
+    [ vm_compute; reflexivity
+    | reflexivity
+    | vm_compute; reflexivity
+    | vm_compute; reflexivity
+    | reflexivity
+    | apply check_syscall_sound_ok; exact vb_checker
+    | intro Hr; vm_compute in Hr; discriminate Hr
+    | vm_compute; reflexivity
+    | vm_compute; reflexivity ].
+Qed.
+
+(** With a page of budget left the same write materializes, so the
+    vDSO clause does not fire on this outcome. *)
+Example vdso_call_within_budget_materializes :
+  materialize_model_accesses (vb_model page_size) (syscall_effect_accesses vb_eff)
+  <> None.
+Proof. intro Hm. vm_compute in Hm. discriminate Hm. Qed.
