@@ -4398,10 +4398,13 @@ Record ProcState := mkProcState {
 
        WHY IT IS PROCESS STATE.  Linux keeps it in the UTS NAMESPACE
        ([current->nsproxy->uts_ns->name], include/linux/utsname.h's
-       [utsname]), not in [task_struct].  This model has exactly one
-       process in exactly one namespace, so the distinction has nothing
-       to bite on here; if a second namespace ever becomes reachable
-       this field moves rather than gains a case.
+       [utsname]), not in [task_struct].  The model keeps one copy per
+       process, which is enough because it never changes a member here:
+       [release] and [version] are the build's, and the re-choice of
+       [nodename] and [domainname] at each call (above) already admits
+       every write another process in the same namespace can make.  If
+       a second namespace ever becomes reachable this field moves rather
+       than gains a case.
 
        BYTES, NOT SIX DECODED STRINGS, for [limst_core]'s reason: the
        model only ever COPIES this field out, so storing it decoded
@@ -5156,8 +5159,9 @@ Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
     on the branch where [m_utsname] was [None], so the pin is written
     once and never overwritten.  A later [uname] reads the pin's
     [release] and [version] and chooses [nodename] and [domainname]
-    again ([Kernel.Sys.uts_repeat_ok]), because a process of the host may
-    change those two between calls; so [Checks.Sys.Kernel.Sys]'s
+    again ([Kernel.Sys.uts_repeat_ok]), because another process that
+    shares this process's UTS namespace may change those two between
+    calls; so [Checks.Sys.Kernel.Sys]'s
     [check_uname_copy] tests a relation ([uts_repeat_okb]), not an
     equality.  An arm for [sethostname] (161) or [setdomainname] (162)
     in this process writes nothing here: the pin does not hold the two
@@ -7485,7 +7489,7 @@ Record ProcInput := mkProcInput_full {
        model used to answer a byte count and let the program run on.
 
        A LAUNCH FACT AND NOT A PER-CALL CHOICE, for the reason
-       [procst_utsname] is pinned rather than chosen afresh: a [choose]
+       [procst_utsname]'s [release] and [version] are pinned rather than chosen afresh: a [choose]
        at each write would admit a trace in which one write to stdout
        finds a reader and the next does not with no close in between,
        which no launch produces.  One run has one answer.
