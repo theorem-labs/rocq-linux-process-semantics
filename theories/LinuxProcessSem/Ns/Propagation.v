@@ -1252,9 +1252,15 @@ Definition prop_enospc (T : list Mount) (mx : Z) (ns0 : positive) (size : nat) (
     - a namespace that gets a secondary is not in the tables;
     - [count_mounts] refuses ([prop_enospc]): ENOSPC, the tables' answer
       (fs/pnode.c:351);
-    - the walk took an order the model does not know and one namespace gets
-      two or more secondaries: their creation order, which mountinfo shows,
-      is not known.
+    - the walk read, anywhere in the propagation tree, a ring or slave
+      list whose order the model does not know, and some namespace gets
+      two or more secondaries: the creation order of those secondaries,
+      which mountinfo shows, may then be unknown.  The test declines
+      whenever both hold, also when the unknown order cannot change the
+      order of those secondaries (for example an unknown slave list whose
+      groups get no secondary).  It is conservative: a bind or a new mount
+      onto a shared mount had no answer before propagation was modelled,
+      so no answer the model gave before is lost.
     The allocators' refusals (ENOMEM from [clone_mnt] and
     [get_mountpoint], ENOMEM and ENOSPC from [mnt_alloc_group_id], ENOSPC
     from [count_mounts] of a namespace outside the tables) are the
