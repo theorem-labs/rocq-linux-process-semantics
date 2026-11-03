@@ -25,6 +25,11 @@
 # run that way. Every review reads the comments and reviews of the author and of accounts with write access, and no
 # others.
 #
+# - A maintainer can measure the screen: -f measure=true, with no number, runs every listed check three times on each
+#   text of a labelled set kept in the private bucket (measure/set-v1.json), and puts the false holds and missed
+#   injections of each rule of SCREEN_RULE's choices in the run's summary. The texts, and each check's words for
+#   them, stay in the bucket.
+#
 #   trust   decides the route: review, screen, or held at the limit. It checks nothing out, and its token can only read
 #           metadata and this workflow's runs.
 #   gather  reads the pull request or the issue as data into .review/, and keeps it as this run's artifact, which the
@@ -64,7 +69,8 @@
 # pull request's or the issue's text, in the run's log, and anyone can read the logs of a public repository.
 name: review
 run-name: >-
-  ${{ format('review #{0}', github.event.pull_request.number || github.event.issue.number || inputs.number) }}
+  ${{ inputs.measure && 'measure the screen' || format('review #{0}', github.event.pull_request.number
+  || github.event.issue.number || inputs.number) }}
 
 on:
   pull_request_target:
@@ -76,11 +82,15 @@ on:
   workflow_dispatch:
     inputs:
       number:
-        description: Number of the pull request or issue to review
-        required: true
+        description: Number of the pull request or issue to review (none when measuring)
+        required: false
         type: number
       screen:
         description: Screen it first, as the pull request or issue of an account without write access is screened
+        type: boolean
+        default: false
+      measure:
+        description: Measure the screen's rules on its private labelled set, and review nothing
         type: boolean
         default: false
 
@@ -137,6 +147,7 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
           ACTOR: ${{ github.actor }}
           SCREEN: ${{ inputs.screen }}
+          MEASURE: ${{ inputs.measure }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -187,6 +198,15 @@ jobs:
               >> "$GITHUB_OUTPUT"
             exit 0
           }
+          # A measurement of the screen, by hand, reads no pull request or issue (the screen job's Measure step).
+          if [[ $EVENT == workflow_dispatch && $MEASURE == true ]]; then
+            if [[ $ACTOR == *'[bot]' ]]; then
+              known "$ACTOR" || { echo "::notice::No measurement: the App that started this run ($ACTOR) is not one" \
+                "of the APPS."; exit 0; }
+            fi
+            NUMBER=""
+            route measure ""
+          fi
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
           case $EVENT in
@@ -394,13 +414,16 @@ jobs:
   screen:
     name: screen ${{ needs.trust.outputs.outsider }}
     needs: [trust, gather]
-    if: needs.trust.outputs.route == 'screen' && needs.gather.outputs.digest != ''
+    # A screen of what the gather job kept, or a measurement, which needs no gather job.
+    if: >-
+      ${{ !cancelled() && ((needs.trust.outputs.route == 'screen' && needs.gather.result == 'success'
+          && needs.gather.outputs.digest != '') || needs.trust.outputs.route == 'measure') }}
     environment: {name: review-screen, deployment: false}
     concurrency:
       group: screen-${{ needs.trust.outputs.number }}
       cancel-in-progress: true
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: ${{ needs.trust.outputs.route == 'measure' && 60 || 15 }}
     permissions: {contents: read, id-token: write}
     outputs:
       verdict: ${{ steps.screen.outputs.verdict }}
@@ -433,13 +456,17 @@ jobs:
       # The checks that run, all three. A listed check whose settings are missing, or that cannot answer (a 429 of
       # Prompt Shields' free tier among the causes), holds the item; a check leaves only by leaving this list.
       SCREEN_CHECKS: model_armor,prompt_shields,claude
+      # How the checks' words make the verdict (.github/screen.py, RULES): any, two_of_three or detectors.
+      SCREEN_RULE: any
     steps:
       # main's .github/, for screen.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        if: needs.trust.outputs.route != 'measure'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       - name: Take the gathered pull request or issue
+        if: needs.trust.outputs.route != 'measure'
         env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
         run: |
           set -euo pipefail
@@ -464,6 +491,7 @@ jobs:
         with: {workload_identity_provider: "${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", service_account: "${{ env.GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 600s, create_credentials_file: false, export_environment_variables: false}
       - name: Screen
         id: screen
+        if: needs.trust.outputs.route != 'measure'
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
           REPOSITORY: ${{ github.repository }}
@@ -471,6 +499,18 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REASON_OBJECT: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
         run: python3 .github/screen.py .review
+      # Every listed check, three times, on each text of the labelled set kept in the private bucket, and the verdict
+      # of each rule of SCREEN_RULE's choices. The texts and their words stay in the bucket; this log and the run's
+      # summary get the counts per rule alone.
+      - name: Measure
+        if: needs.trust.outputs.route == 'measure'
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MEASURE_SET: measure/set-v1.json
+          MEASURE_OBJECT: measure/runs/${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
+          MEASURE_REPEATS: "3"
+        run: python3 .github/screen.py --measure
 
   review:
     # The hourly caps tell the two kinds of review apart by this name.
@@ -558,8 +598,10 @@ jobs:
           echo "$count reviews ($POOL) in the last hour, under the cap of $CAP."
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        if: needs.trust.outputs.route != 'measure'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       - name: Take the gathered pull request or issue
+        if: needs.trust.outputs.route != 'measure'
         env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
         run: |
           set -euo pipefail
