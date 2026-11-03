@@ -280,6 +280,51 @@ def expected_segment(data, ph):
     return ext_lo, mapped + b"\x00" * (ext_size - len(mapped))
 
 
+def test_et_dyn_refused(tmp):
+    """An ET_DYN image (a PIE) is refused with the e_type message.
+
+    The model's initial ledger puts the vDSO pair directly below the mmap
+    base, which holds only when nothing else was placed by the top-down
+    search first.  For an ET_DYN image load_elf_binary (fs/binfmt_elf.c,
+    Linux v6.18.46) maps the segments with a load bias out of the mmap
+    region before ARCH_SETUP_ADDITIONAL_PAGES installs the pair, so that
+    ledger, and the initial program break, are both wrong."""
+    path = os.path.join(tmp, "pie.elf")
+    data = bytearray(build_elf(SEG_SPECS))
+    struct.pack_into("<H", data, 16, 3)  # e_type = ET_DYN
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+    try:
+        _parse_elf(path)
+        raise AssertionError("an ET_DYN image was accepted")
+    except ValueError as e:
+        assert str(e) == (
+            "elf-snapshot: e_type 3 is not ET_EXEC; the model covers static "
+            "non-PIE executables only"
+        ), str(e)
+    # The same refusal reaches the whole-tree check and the snapshot path.
+    assert elf_snapshot.verify_paths([path]) == 1
+    try:
+        snapshot_binary(path, os.path.join(tmp, "pie.out"), prefix="MemImage")
+        raise AssertionError("an ET_DYN image was snapshotted")
+    except ValueError as e:
+        assert "is not ET_EXEC" in str(e), str(e)
+
+
+def test_et_exec_accepted(tmp):
+    """The same image with e_type = ET_EXEC (2) parses."""
+    path = os.path.join(tmp, "exec.elf")
+    data = bytearray(build_elf(SEG_SPECS))
+    assert struct.unpack_from("<H", data, 16)[0] == 2, "fixture is not ET_EXEC"
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+    parsed = _parse_elf(path)
+    assert parsed["entry"] == ENTRY, (
+        "entry mismatch: got 0x%x, want 0x%x" % (parsed["entry"], ENTRY)
+    )
+    assert elf_snapshot.verify_paths([path]) == 0
+
+
 def main():
     groups_passed = []
 
@@ -1606,6 +1651,12 @@ def main():
         assert rebuild(bad_v, os.path.join(tmp, "never")) == 1
         assert not os.path.exists(os.path.join(tmp, "never"))
         groups_passed.append("--rebuild round trip (fixtures, committed examples; edited/short/dropped/interp/flags/non-snapshot refusals)")
+
+    # -- e_type: the model covers a static non-PIE executable only.
+    with tempfile.TemporaryDirectory() as tmp:
+        test_et_dyn_refused(tmp)
+        test_et_exec_accepted(tmp)
+    groups_passed.append("e_type gate (ET_DYN refused, ET_EXEC accepted)")
 
     for g in groups_passed:
         print("PASS: %s" % g)

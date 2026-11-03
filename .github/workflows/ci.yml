@@ -31,6 +31,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # A merge conflict left in a file no compiler reads has no other gate.
+      # README.md carried three markers through six landings, one red head,
+      # one repair and two fully green CI runs; SCOPE.md carried two on a
+      # branch at the same time. Both are outside the Rocq lanes, and the
+      # route below skips those lanes entirely for a *.md-only change, so
+      # this runs here, before the routing decision, on every event.
+      - name: No conflict markers
+        run: |
+          set -euo pipefail
+          # Only the opening and closing arms. The middle arm of a conflict
+          # is seven '=' alone on a line, which is also how Markdown
+          # underlines a title -- a gate that fails on a heading is worse
+          # than no gate. Nothing loses by leaving it out: a conflict block
+          # always carries both of these.
+          if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':(exclude).github/workflows/ci.yml'; then
+            echo "::error::a merge conflict marker is committed in the lines above"
+            exit 1
+          fi
+          echo "no conflict markers (searched every tracked file)"
       - id: route
         env:
           EVENT: ${{ github.event_name }}

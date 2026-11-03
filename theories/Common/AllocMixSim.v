@@ -316,7 +316,7 @@ End WithSegs.
     erroring branch contributes only the empty trace, which is a prefix
     of every outcome trace). *)
 Lemma alloc_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes_mix segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_outcomes_mix segs (init_machine_state segs pc ph sp mb rnd inp)
                   (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   (exists o, U o) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
@@ -324,7 +324,7 @@ Lemma alloc_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
     by reflexivity.
   assert (Hlazy : m_vm_lazy
@@ -356,10 +356,10 @@ Lemma alloc_mix_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
   to_outcomes_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
   to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
   (exists o, U o) ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -393,10 +393,10 @@ Qed.
 Lemma alloc_mix_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
   to_outcomes_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
   to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
   (exists o, U o) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)

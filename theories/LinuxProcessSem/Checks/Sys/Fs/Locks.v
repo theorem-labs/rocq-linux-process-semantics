@@ -18,8 +18,9 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
 
 (** flock: a LOCK_MAND word answers 0 without reading the fd, an
     unrecognized operation answers -EINVAL still without reading it, a
-    closed fd is then -EBADF, an unlock on any open fd is 0, and a
-    shared or exclusive request is 0 only on a file descriptor whose
+    closed fd is then -EBADF, an opaque object ([State.FdOpaque]) is
+    declined on every command, an unlock on any other open fd is 0, and
+    a shared or exclusive request is 0 only on a file descriptor whose
     path no other descriptor names. *)
 Definition check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
@@ -29,7 +30,8 @@ Definition check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model)
     match fd_lookup (m_fds m) fd with
     | None => check_ret_only eff (errno_ret EBADF) m []
     | Some e =>
-        if flock_unlock_b cmd then check_ret_only eff (Z_to_bv 64 0) m []
+        if fd_is_opaque e then CheckUnmodeled
+        else if flock_unlock_b cmd then check_ret_only eff (Z_to_bv 64 0) m []
         else
           match e with
           | FdFile p _ =>
@@ -54,6 +56,7 @@ Definition check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model)
           | FdPipe _ _  => CheckUnmodeled
           | FdDevNull _ _ => CheckUnmodeled
           | FdUrandom => CheckUnmodeled
+          | FdOpaque _ => CheckUnmodeled   (* unreachable: declined above *)
           end
     end.
 
@@ -77,11 +80,14 @@ Proof.
     [| apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
        eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
        srw Hfd; apply pure_ok ].
-  destruct (flock_unlock_b cmd) eqn:Hun.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-    srw Hfd. apply pure_ok. }
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| ]; try discriminate;
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o]; cbv beta iota in H;
+    (* the opaque kinds: [CheckUnmodeled] *)
+    try discriminate;
+    destruct (flock_unlock_b cmd) eqn:Hun;
+    try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+         eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
+         srw Hfd; apply pure_ok);
+    try discriminate;
     destruct (flock_sole_opener (m_fds m) p) eqn:Hsole; try discriminate;
     apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
     (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
@@ -99,9 +105,12 @@ Proof.
     [now apply check_ret_only_no_unmodeled in H|].
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [|now apply check_ret_only_no_unmodeled in H].
-  destruct (flock_unlock_b cmd) eqn:Hun;
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o]; cbv beta iota in H.
+  11: { (* the opaque kinds, declined ahead of the unlock *)
+        eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+        srw Hfd. apply unmodeled_intro. }
+  all: destruct (flock_unlock_b cmd) eqn:Hun;
     [now apply check_ret_only_no_unmodeled in H|].
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| ].
   - eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
@@ -144,7 +153,7 @@ Proof.
     try (destruct (negb (flock_cmd_ok_b cmd)) eqn:Hok; hall Hok; inv_ok;
          try (destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
               try (destruct (flock_unlock_b cmd) eqn:Hun; hall Hun; inv_ok;
-                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| ]; hall Hfd; inv_ok;
+                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o]; hall Hfd; inv_ok;
                         try (destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
                              hall Hsole; inv_ok)))));
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
@@ -160,7 +169,7 @@ Proof.
     try (destruct (negb (flock_cmd_ok_b cmd)) eqn:Hok; hall Hok; inv_ok;
          try (destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
               try (destruct (flock_unlock_b cmd) eqn:Hun; hall Hun; inv_ok;
-                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| ]; hall Hfd; inv_ok;
+                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o]; hall Hfd; inv_ok;
                         try (destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
                              hall Hsole; inv_ok)))));
     reflexivity.

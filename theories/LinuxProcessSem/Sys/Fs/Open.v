@@ -45,16 +45,60 @@ Definition is_excl_create (fl : Z) : bool :=
     O_WRONLY|O_CREAT|O_APPEND, the word C's [fopen(p, "a")] issues (musl
     1.2.6, src/stdio/fopen.c through [__fmodeflags]) and the one zlib's
     gzio output path uses.  It is a SINGLE word and not a mask test: the
-    O_TRUNC and O_EXCL spellings beside it are declined, each for its own
-    reason, and [modeled_open_flags]'s note says which.
+    O_TRUNC spelling beside it is declined, the O_EXCL spellings have an
+    arm of their own ([is_excl_append_create]), and
+    [modeled_open_flags]'s note says why each is not this one.
 
-    THIS IS THE ONE ADMITTED WORD WHOSE RESIDUE MEETS
-    [Fs.Fcntl.setfl_acted_on], because O_APPEND is a bit F_SETFL acts
-    on.  That is why the fd it mints is a [State.FdFileA] rather than a
+    ITS RESIDUE MEETS [Fs.Fcntl.setfl_acted_on], because O_APPEND is a
+    bit F_SETFL acts on, and so does every residue
+    [is_excl_append_create] admits; [Fs.Fcntl.modeled_open_flags_clear_of_setfl]
+    proves every other admitted word clear of it.  That is why the fd
+    these words mint is a [State.FdFileA] rather than a
     [State.FdFileW]: [Fs.Fcntl.setfl_noop_on] declines the new kind, and
-    its arm carries the argument.  A future widening that routed this
+    its arm carries the argument.  A future widening that routed either
     word to [FdFileW] would silently make that predicate unsound. *)
 Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
+
+(** The EXCLUSIVE APPEND write-open combinations the model covers:
+    O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without O_TRUNC.  The plain
+    spelling is the word zlib's [gz_open] (gzlib.c) builds for
+    [gzopen(p, "ax")].  Ported from main LPS
+    (theorem-labs/linux-process-semantics) commit 4d80c33d83, #1760,
+    with the one change the next paragraph names.
+
+    EACH HALF OF ITS ANSWER IS ALREADY A NEIGHBOUR'S, and that is the
+    whole derivation.  [do_open] (fs/namei.c, Linux v6.18.46) opens its
+    [open_flag & O_CREAT] block with
+    [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], and
+    returns -EEXIST there, BEFORE the [d_is_dir(nd->path.dentry)] test
+    that answers -EISDIR.  So a name that exists -- a key, a directory
+    reference, or a directory some key lives under -- is -EEXIST before
+    anything else is looked at: the answer [openat_excl_spec] gives, and
+    the reason no append rule ever meets an existing tail.  A DIRECTORY
+    REFERENCE IS -EEXIST AND NOTHING ELSE HERE, which is the one place
+    this port differs from main LPS 4d80c33d83: that model admits
+    -EISDIR beside it, the answer kernels v4.17 through v5.6 give in the
+    function [do_open] replaced.  This model describes Linux v6.18.46
+    alone, so the arm answers
+    v6.18.46's -EEXIST and offers no alternative across kernel
+    versions.  An absent name is
+    created, and then
+    [do_open] clears O_TRUNC under [FMODE_CREATED] (which is why the
+    O_TRUNC spelling is the same behaviour, as it is for
+    [is_excl_create]), while O_APPEND survives into [f_flags]:
+    [do_dentry_open] (fs/open.c, Linux v6.18.46) clears only
+    O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC there.  So the created descriptor is
+    the append kind on a new empty file, which is what [open_append]
+    records for an absent name.
+
+    The descriptor is a [State.FdFileA] for the reason
+    [append_create_flags] gives: the residue carries O_APPEND. *)
+Definition excl_append_create_flags : Z :=
+  (O_WRONLY + O_CREAT + O_EXCL + O_APPEND)%Z.
+
+Definition is_excl_append_create (fl : Z) : bool :=
+  Z.eqb fl excl_append_create_flags
+  || Z.eqb fl (excl_append_create_flags + O_TRUNC).
 
 (** Is bit [b] set in the flag residue [fl]?  Used only by the O_RDWR
     arms, which derive their behavior from the O_CREAT and O_TRUNC bits
@@ -111,19 +155,39 @@ Definition is_rdwr_excl_create (fl : Z) : bool :=
     search. *)
 Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 
+(** The O_PATH words, read past [open_ignored_flags]: O_PATH alone or
+    beside O_DIRECTORY and O_NOFOLLOW.  [SYSCALL_DEFINE4(openat)] hands
+    its word to [build_open_how] (fs/open.c), whose
+    [if (how.flags & O_PATH) how.flags &= O_PATH_FLAGS] keeps only
+    O_DIRECTORY, O_NOFOLLOW, O_PATH and O_CLOEXEC, so the O_LARGEFILE
+    [SYSCALL_DEFINE4(openat)] adds and an O_NONBLOCK the caller passed
+    are dropped before anything reads them (fs/open.c [build_open_how],
+    [build_open_flags]: read at v6.18.44; identical at v6.18.46).  A
+    word with any other bit set beside O_PATH is DECLINED, a narrowing:
+    Linux drops those bits too. *)
+Definition open_path_word (fl : Z) : bool :=
+  Z.eqb (Z.ldiff fl (O_DIRECTORY + O_NOFOLLOW)) O_PATH.
+
 (** The flag WORDS [openat_spec] interprets: O_RDONLY, the clobbering
     write-create shape, the exclusive write-create shapes, the
     read-a-directory shape O_RDONLY|O_DIRECTORY, the APPEND
-    write-create shape, and the READ-WRITE shapes ([rdwr_open_word] and
-    [is_rdwr_excl_create]), each modulo the bits in
-    [open_ignored_flags].
+    write-create shape, the READ-WRITE shapes ([rdwr_open_word] and
+    [is_rdwr_excl_create]), the EXCLUSIVE APPEND shapes
+    ([is_excl_append_create]), and the O_PATH words ([open_path_word]),
+    each modulo the bits in [open_ignored_flags].
     Linux validates
     the flags in [build_open_flags()] BEFORE it fetches the pathname, so
     this test runs first in [openat_spec] too — see the ORDER paragraph
     there.
 
-    O_DIRECTORY IS INTERPRETED, NOT IGNORED, and it is the only flag here
-    that is neither an access mode nor a creation flag.  The reason it
+    THE O_PATH WORDS PASS THIS GATE AND ARE ANSWERED ONLY ON A PROCFS
+    NAME.  [openat_body_spec] hands them to [openat_proc_spec] when
+    [proc_open_target] finds one, and declines them everywhere else,
+    before any of the arms below them is reached; so every arm written
+    for the access-mode words still sees only those words.
+
+    O_DIRECTORY IS INTERPRETED, NOT IGNORED, and outside the O_PATH words
+    it is the only flag here that is neither an access mode nor a creation flag.  The reason it
     can be admitted at all is that its answer does not depend on WHICH
     non-directory the name turned out to be.  [do_open] (fs/namei.c)
     answers -ENOTDIR for a dentry [d_can_lookup] (include/linux/dcache.h)
@@ -134,8 +198,8 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
     v6.18.46.
 
     DELIBERATELY STILL DECLINED.  Two flags real programs reach for that
-    this set does NOT admit, each for its own reason, and three
-    O_APPEND SPELLINGS beside the one that is admitted:
+    this set does NOT admit, each for its own reason, and the O_APPEND
+    SPELLINGS beside the admitted ones:
 
     - O_WRONLY|O_APPEND without O_CREAT is a different syscall answer,
       not a different name for the same one: the file must already
@@ -148,11 +212,10 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
       and the resulting fd is indistinguishable from an append fd on a
       file the open just emptied — which is exactly why it is worth an
       arm of its own with its own test rather than being folded in
-      here on the strength of that sentence.
-    - O_WRONLY|O_CREAT|O_EXCL|O_APPEND cannot open an existing file at
-      all, so the append rule never has an existing tail to append to;
-      it is declined for the same reason as the O_TRUNC spelling, being
-      a shape no test in this repository exercises.
+      here on the strength of that sentence.  The O_EXCL spelling is
+      NOT this case and is admitted: there O_EXCL refuses every
+      existing name before O_TRUNC could act, so nothing is composed
+      ([is_excl_append_create]).
 
     - O_RDWR IS ADMITTED, in the six words [rdwr_open_word] and
       [is_rdwr_excl_create] name, and [State.FdFileRW] is its
@@ -203,7 +266,8 @@ Definition modeled_open_flags (flags : word) : bool :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
   Z.eqb fl 0 || Z.eqb fl wr_create_flags || is_excl_create fl
   || Z.eqb fl O_DIRECTORY || Z.eqb fl append_create_flags
-  || rdwr_open_word fl || is_rdwr_excl_create fl.
+  || rdwr_open_word fl || is_rdwr_excl_create fl
+  || is_excl_append_create fl || open_path_word fl.
 
 (** One introduction lemma per modeled shape, so a proof that already
     knows which arm it is in can clear the flags guard. *)
@@ -255,6 +319,22 @@ Qed.
 
 Lemma modeled_open_flags_rdwr_excl : forall flags,
   is_rdwr_excl_create (Z.ldiff (bv_unsigned flags) open_ignored_flags) = true ->
+  modeled_open_flags flags = true.
+Proof.
+  intros flags H. unfold modeled_open_flags. cbv zeta. rewrite H.
+  now rewrite Bool.orb_true_r.
+Qed.
+
+Lemma modeled_open_flags_excl_append : forall flags,
+  is_excl_append_create (Z.ldiff (bv_unsigned flags) open_ignored_flags) = true ->
+  modeled_open_flags flags = true.
+Proof.
+  intros flags H. unfold modeled_open_flags. cbv zeta. rewrite H.
+  now rewrite Bool.orb_true_r.
+Qed.
+
+Lemma modeled_open_flags_path : forall flags,
+  open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags) = true ->
   modeled_open_flags flags = true.
 Proof.
   intros flags H. unfold modeled_open_flags. cbv zeta. rewrite H.
@@ -477,20 +557,56 @@ Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
        set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
        ret_only fd).
 
-(** Resolve the APPEND write-create open shape.
+(** Resolve the two APPEND write-create open shapes: the plain word
+    ([excl] false) and the exclusive one ([excl] true).  Both
+    create an absent name with [open_append]; they differ in what an
+    existing name gets.  The exclusive half is ported from main LPS
+    (theorem-labs/linux-process-semantics) commit 4d80c33d83 (#1760).
 
-    A DIRECTORY REFERENCE IS -EISDIR, the clobbering shape's answer and
-    not the exclusive shape's -EEXIST, and the reason is which test
-    [do_open] (fs/namei.c) reaches first.  With O_CREAT set it returns
-    -EEXIST only under O_EXCL, which this word does not carry; the next
-    test is [d_is_dir(nd->path.dentry)], and that is -EISDIR.  So "." and
-    ".." answer here exactly as they do for O_WRONLY|O_CREAT|O_TRUNC,
+    THE PLAIN WORD: A DIRECTORY REFERENCE IS -EISDIR, the clobbering
+    shape's answer and not the exclusive shape's -EEXIST, and the reason
+    is which test [do_open] (fs/namei.c) reaches first.  With O_CREAT set
+    it returns -EEXIST only under O_EXCL, which this word does not carry;
+    the next test is [d_is_dir(nd->path.dentry)], and that is -EISDIR.  So
+    "." and ".." answer here exactly as they do for O_WRONLY|O_CREAT|O_TRUNC,
     ahead of [may_open], and O_APPEND changes nothing about it.  An
     IMPLIED directory ([fs_under]) takes the same branch for the reason
     given above [openat_create_spec]: the dentry the lookup finds is
-    positive and [d_is_dir], and the word carries no O_EXCL. *)
-Definition openat_append_spec (p : path) (m : Model) : Sys SyscallEffect :=
-  if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
+    positive and [d_is_dir], and the word carries no O_EXCL.  An existing
+    file is opened, and keeps its bytes ([append_open_fs]).
+
+    THE EXCLUSIVE WORD: [openat_excl_spec]'s -EEXIST for every name that
+    exists ([is_excl_append_create] gives the derivation), and the same
+    creation as the plain word for one that does not.  The -EEXIST is
+    deterministic, as the exclusive shape's is; only the creation admits
+    an [openat_errnos] alternative.  One thing differs from
+    [openat_excl_spec], and it is what that arm would do if no example
+    already reached it: a name longer than [Uapi.NAME_MAX] declines,
+    ahead of the implied-directory test and the lookup.  No such name
+    can exist, so the create would reach the filesystem's own
+    -ENAMETOOLONG, which [openat_dir_spec] declines for the same reason
+    and the create arms answer by minting the key.
+
+    A DIRECTORY REFERENCE IS -EEXIST, with no second answer.  Main LPS
+    4d80c33d83 admits -EISDIR beside it, for kernels v4.17 through v5.6.
+    This model describes Linux v6.18.46 alone, and an [alt] over two kernel
+    versions is the same defect as an [alt] over two systems.  At
+    v6.18.46 [do_open] (fs/namei.c) returns -EEXIST at
+    [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], the test
+    before [d_is_dir(nd->path.dentry)], so -EEXIST is the whole
+    answer. *)
+Definition openat_append_spec (excl : bool) (p : path) (m : Model)
+    : Sys SyscallEffect :=
+  if excl then
+    (if path_is_dirref p then err_ret EEXIST
+     else if Nat.ltb NAME_MAX (length p) then unmodeled  (* the filesystem's own -ENAMETOOLONG *)
+     else if fs_under (m_fs m) p then err_ret EEXIST
+     else
+       match fs_lookup (m_fs m) p with
+       | Some _ => err_ret EEXIST
+       | None => open_append p m
+       end)
+  else if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
   else open_append p m.
 
 (** Resolve an exclusive write-create open after pathname fetch.  A
@@ -834,7 +950,10 @@ Qed.
     pathname is fetched, so the O_CREAT-free residues that arrive here
     are exactly O_RDONLY, O_RDONLY|O_DIRECTORY, O_RDWR and
     O_RDWR|O_TRUNC, the words the paragraph above answers for.  A
-    widening of [modeled_open_flags] has to revisit this arm.
+    widening of [modeled_open_flags] has to revisit this arm.  The
+    O_PATH words were that widening, and they do not reach it:
+    [openat_body_spec] declines an O_PATH word on every name that is
+    not a procfs one, ahead of [openat_resolved_spec].
 
     WHAT IT DOES NOT COVER, each fail-closed rather than answered:
 
@@ -922,7 +1041,8 @@ Definition openat_localtime_spec (flags : word) (m : Model)
       word does.  That is exactly the O_APPEND-is-unobservable argument
       [State.FdFileA] exists because a REGULAR file breaks; here it
       holds.
-    - O_CREAT|O_EXCL, in either access mode: [do_open]'s
+    - O_CREAT|O_EXCL, in every admitted word that carries it (either
+      access mode, with or without O_APPEND): [do_open]'s
       [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)] is
       -EEXIST, before [may_open] — deterministic, as on every existing
       name.
@@ -962,6 +1082,7 @@ Definition openat_devnull_spec (flags : word) (m : Model)
       else if Z.eqb fl append_create_flags then open_devnull m false true
       else if rdwr_open_word fl then open_devnull m true true
       else if is_rdwr_excl_create fl then err_ret EEXIST
+      else if is_excl_append_create fl then err_ret EEXIST
       else unmodeled   (* unreachable: [modeled_open_flags] admitted the word *)
   end.
 
@@ -999,14 +1120,17 @@ Definition openat_devnull_spec (flags : word) (m : Model)
       [urandom_fops].  The descriptor carries FMODE_READ, FMODE_PREAD
       and FMODE_LSEEK ([do_dentry_open] sets the latter two and
       [memory_open] clears nothing).
-    - O_CREAT|O_EXCL, in either access mode: [do_open]'s
+    - O_CREAT|O_EXCL, in every admitted word that carries it (either
+      access mode, with or without O_APPEND): [do_open]'s
       [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)] is
       -EEXIST, before [may_open] — deterministic, as on every existing
-      name.
+      name.  That is why the exclusive APPEND word is answered here
+      although it is a write word: it never opens the device.
     - O_RDONLY|O_DIRECTORY: [do_open]'s [(nd->flags & LOOKUP_DIRECTORY)
       && !d_can_lookup(...)] is -ENOTDIR.
     - THE WRITE WORDS ARE DECLINED, not answered: O_WRONLY and O_RDWR,
-      with or without O_CREAT, O_TRUNC and O_APPEND.  Linux admits them
+      with or without O_CREAT, O_TRUNC and O_APPEND, and without
+      O_EXCL.  Linux admits them
       — [may_open] passes, [may_open]'s [flag &= ~O_TRUNC] drops the
       truncation, and a write through the descriptor reaches
       [random_write_iter], which mixes the bytes into the input pool
@@ -1041,6 +1165,7 @@ Definition openat_urandom_spec (flags : word) (m : Model)
       else if is_excl_create fl then err_ret EEXIST
       else if Z.eqb fl O_DIRECTORY then err_ret ENOTDIR
       else if is_rdwr_excl_create fl then err_ret EEXIST
+      else if is_excl_append_create fl then err_ret EEXIST
       else unmodeled   (* the write words ([wr_create_flags],
                           [append_create_flags], [rdwr_open_word]):
                           admitted by Linux into the pool, declined here *)
@@ -1182,10 +1307,11 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     fact about this file rather than an argument about Linux:
     [openat_core_spec] has ALREADY refused every flag word the model
     does not interpret, through [modeled_open_flags], before this
-    definition is reached.  So the [else unmodeled] below is
-    unreachable, both orders answer [unmodeled] on exactly the same
-    inputs, and hoisting changes no answer the model gives — only which
-    of two reasons it declines for.  The kernel's order agrees, which is
+    definition is reached, and [openat_body_spec] has refused every
+    O_PATH word ([open_path_word]) off procfs.  So the [else unmodeled]
+    below is unreachable, both orders answer [unmodeled] on exactly the
+    same inputs, and hoisting changes no answer the model gives — only
+    which of two reasons it declines for.  The kernel's order agrees, which is
     why the hoisted position is also the faithful one:  The walk that cannot be
     modeled precedes the flag-dependent decision in Linux too
     ([link_path_walk] runs before [may_open]'s -EISDIR), so the hoisted
@@ -1194,8 +1320,10 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     THE ARMS ARE NOT ALL TOTAL.  All but one answer every
     pathname they are handed; [openat_dir_spec] does not, and its
     declines are on the path rather than on the flag word.  The FINAL
-    [else unmodeled] here is still unreachable — the branches
-    exhaust what [modeled_open_flags] admits — but this dispatcher does
+    [else unmodeled] here is still unreachable — the branches exhaust
+    what [modeled_open_flags] admits once [openat_body_spec] has taken
+    the O_PATH words away, which [modeled_open_flags] admits too — but
+    this dispatcher does
     not decline only above an arm: it also declines inside one, and the
     [Checks] mirror carries a matching decline inside
     [check_openat_dir]. *)
@@ -1207,10 +1335,203 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
   else if Z.eqb fl wr_create_flags then openat_create_spec p m
   else if is_excl_create fl then openat_excl_spec p m
   else if Z.eqb fl O_DIRECTORY then openat_dir_spec p m
-  else if Z.eqb fl append_create_flags then openat_append_spec p m
+  else if Z.eqb fl append_create_flags then openat_append_spec false p m
   else if rdwr_open_word fl then
     openat_rdwr_spec (flag_set fl O_CREAT) (flag_set fl O_TRUNC) p m
   else if is_rdwr_excl_create fl then openat_rdwr_excl_spec p m
+  else if is_excl_append_create fl then openat_append_spec true p m
+  else unmodeled.
+
+(* =========================================================================
+   Paths under /proc: the O_PATH descriptor and the /proc/sys read
+   ========================================================================= *)
+
+(** "/proc": the five bytes '/', 'p', 'r', 'o', 'c'. *)
+Definition proc_root_path : path :=
+  [Z_to_bv 8 47; Z_to_bv 8 112; Z_to_bv 8 114; Z_to_bv 8 111; Z_to_bv 8 99].
+
+(** "/proc/sys/". *)
+Definition proc_sys_prefix : path :=
+  proc_root_path ++
+    [slash_byte; Z_to_bv 8 115; Z_to_bv 8 121; Z_to_bv 8 115; slash_byte].
+
+(** The components of a path, split at every separator: [link_path_walk]
+    (fs/namei.c) walks exactly these, skipping the empty ones a doubled
+    or leading separator makes.  [cur] is the current component,
+    reversed. *)
+Fixpoint path_components_aux (cur : path) (p : path) : list path :=
+  match p with
+  | [] => [rev cur]
+  | b :: r =>
+      if bv_eqb b slash_byte then rev cur :: path_components_aux [] r
+      else path_components_aux (b :: cur) r
+  end.
+
+(** Does some component of [p] read ".."?  [link_path_walk] types such a
+    component LAST_DOTDOT and [follow_dotdot] climbs to the parent, so a
+    path that starts with "/proc/" and holds one can leave procfs
+    ("/proc/../etc").  The two predicates below refuse it. *)
+Definition path_has_dotdot (p : path) : bool :=
+  existsb (fun c => path_eqb c dotdot_path) (path_components_aux [] p).
+
+(** [p] names procfs: it is "/proc" or starts with "/proc/", and no
+    component is "..".
+
+    TWO ENVIRONMENT ASSUMPTIONS, stated in SCOPE.md ("Assumptions that
+    the model does not check"): procfs is mounted at /proc in the
+    process's root, and nothing under /proc/sys is a symbolic link.  The
+    first is what makes "/proc" a procfs name at all.  A procfs name can
+    still be a LINK out of procfs ("/proc/self/root", "/proc/self/fd/N",
+    "/proc/self/cwd"); [openat_proc_spec] says why that costs precision
+    and not soundness. *)
+Definition proc_path_b (p : path) : bool :=
+  negb (path_has_dotdot p)
+  && (path_eqb p proc_root_path
+      || match path_strip_prefix (proc_root_path ++ [slash_byte]) p with
+         | Some _ => true
+         | None => false
+         end).
+
+(** The two regular sysctl leaves this model knows.  In kernel/sys.c's
+    [overflow_sysctl_table], [overflowuid] at line 186 and [overflowgid]
+    at line 195 use [proc_dointvec_minmax] (read at v6.18.44; identical
+    at v6.18.46). *)
+Definition proc_sys_kernel_prefix : path :=
+  proc_sys_prefix ++
+    [Z_to_bv 8 107; Z_to_bv 8 101; Z_to_bv 8 114; Z_to_bv 8 110;
+     Z_to_bv 8 101; Z_to_bv 8 108; slash_byte].
+
+Definition proc_sys_overflowuid_path : path :=
+  proc_sys_kernel_prefix ++
+    [Z_to_bv 8 111; Z_to_bv 8 118; Z_to_bv 8 101; Z_to_bv 8 114;
+     Z_to_bv 8 102; Z_to_bv 8 108; Z_to_bv 8 111; Z_to_bv 8 119;
+     Z_to_bv 8 117; Z_to_bv 8 105; Z_to_bv 8 100].
+
+Definition proc_sys_overflowgid_path : path :=
+  proc_sys_kernel_prefix ++
+    [Z_to_bv 8 111; Z_to_bv 8 118; Z_to_bv 8 101; Z_to_bv 8 114;
+     Z_to_bv 8 102; Z_to_bv 8 108; Z_to_bv 8 111; Z_to_bv 8 119;
+     Z_to_bv 8 103; Z_to_bv 8 105; Z_to_bv 8 100].
+
+(** [p] names a regular sysctl file the model reads.  Every other sysctl
+    name is declined, so a directory cannot become an [OProcFile]. *)
+Definition proc_sys_file_b (p : path) : bool :=
+  path_eqb p proc_sys_overflowuid_path || path_eqb p proc_sys_overflowgid_path.
+
+(** The procfs name an [openat] reaches, or [None] where this section
+    does not apply.
+
+    - An ABSOLUTE path is resolved from the root whatever [dirfd] is:
+      [path_init] (fs/namei.c) takes [nd_jump_root] for a leading '/'
+      before it looks at [nd->dfd] at all.  So [dirfd] is not consulted.
+    - A RELATIVE path is resolved from [dirfd]'s [f_path] ([path_init]'s
+      [CLASS(fd_raw, f)], which accepts an O_PATH file), and when that
+      descriptor is an [OProcPath q] the name is [q], a separator, and
+      the path.
+    - Anything else ([AT_FDCWD] with a relative path, or any other
+      dirfd) is [None], and the existing arms decide it.  [AT_FDCWD] is
+      tested before the table is read: it is not a descriptor, and the
+      test keeps the answer for a relative name from depending on what
+      the table holds at the number [AT_FDCWD32].
+
+    fs/namei.c [path_init]: read at v6.18.44; identical at v6.18.46. *)
+Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
+    (p : path) : option path :=
+  match p with
+  | b :: _ =>
+      if bv_eqb b slash_byte then
+        (if proc_path_b p then Some p else None)
+      else if bv_eqb dirfd AT_FDCWD32 then None
+      else
+        match fd_lookup fds dirfd with
+        | Some (FdOpaque (OProcPath q)) =>
+            let c := q ++ slash_byte :: p in
+            if proc_path_b c then Some c else None
+        | _ => None
+        end
+  | [] => None
+  end.
+
+(** A name with no separator, from [AT_FDCWD], is never a procfs
+    target: the existing arms decide it whatever the table holds. *)
+Lemma proc_open_target_cwd_noslash : forall fds p,
+  path_has_slash p = false -> proc_open_target fds AT_FDCWD32 p = None.
+Proof.
+  intros fds [|b p] H; [reflexivity|].
+  cbn [proc_open_target]. cbn [path_has_slash existsb] in H.
+  apply Bool.orb_false_iff in H as [Hb _]. rewrite Hb.
+  replace (bv_eqb AT_FDCWD32 AT_FDCWD32) with true by (symmetry; apply bv_eqb_eq; reflexivity).
+  reflexivity.
+Qed.
+
+(** A fresh opaque descriptor at the lowest free fd, or any errno; see
+    [openat_proc_spec] for why every errno. *)
+Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
+  alt (e <- errno_any ;; err_ret e)
+      (fd <- lowest_fd (m_fds m) ;;
+       modify (with_fds (fd_insert (m_fds m) fd (FdOpaque o))) ;;
+       ret_only fd).
+
+(** [openat] of the procfs name [c] ([proc_open_target]), as bubblewrap's
+    parent issues it: [openat(AT_FDCWD, "/proc", O_PATH)],
+    [openat(AT_FDCWD, "/proc/sys/kernel/overflowuid", O_RDONLY|O_CLOEXEC)]
+    and [openat(proc_fd, "<pid>/ns", O_PATH)].
+
+    TWO SHAPES ARE ANSWERED:
+    - an O_PATH word ([open_path_word]) on any procfs name: an
+      [OProcPath c] descriptor, or an errno;
+    - O_RDONLY (with [open_ignored_flags]) on either
+      [proc_sys_overflowuid_path] or [proc_sys_overflowgid_path]: an
+      [OProcFile c] descriptor, or an errno.
+    Every other word and sysctl name is declined, as it was before this arm.
+
+    KERNEL PATH, read at v6.18.44:
+      fs/open.c [SYSCALL_DEFINE4(openat)], [do_sys_openat2],
+        [build_open_how], [build_open_flags], [do_dentry_open]: read at v6.18.44; identical at v6.18.46.
+      fs/namei.c [do_filp_open], [path_openat], [path_init],
+        [link_path_walk], [do_open]: read at v6.18.44; identical at v6.18.46.
+      fs/file.c [get_unused_fd_flags], [alloc_fd]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/proc_sysctl.c [proc_sys_open], [proc_sys_permission]: read at v6.18.44; identical at v6.18.46.
+
+    THE SUCCESS.  [do_sys_openat2] takes the lowest free descriptor
+    ([get_unused_fd_flags]) before the walk and installs the file there.
+    An O_PATH file gets [FMODE_PATH] and [empty_fops] in
+    [do_dentry_open], which returns before any [->open] runs (the walk's
+    and [may_open]'s refusals come earlier and are errnos);
+    [proc_sys_open] (the O_RDONLY case) attaches a poll event and changes
+    nothing the process
+    can see.  Neither open writes user memory or changes any other
+    state the model holds.
+
+    WHY EVERY ERRNO ([Syscall.errno_any]).  The walk runs through
+    procfs's own lookups ([proc_root_lookup], [proc_pid_lookup], the
+    per-process directories, [proc_ns_dir], [proc_sys_lookup]), through
+    every magic link's [get_link] and its [ptrace_may_access] test, and
+    through the LSM's [inode_permission] and [inode_follow_link] hooks;
+    then [do_open]'s -ENOTDIR and -ELOOP, [proc_sys_permission]'s
+    -EACCES, the descriptor table's -EMFILE and the file table's
+    -ENFILE.  No list written from that would be one this model could
+    defend, and a missing errno would make it reject a real run.
+
+    WHAT THE ARM COSTS IN PRECISION (SCOPE.md, "Known gaps in
+    precision").  A success is admitted for every procfs name, including
+    ones Linux refuses (a pid that does not exist) and names that are
+    LINKS out of procfs ("/proc/self/root/etc", "/proc/self/fd/N"): the
+    descriptor is then an [OProcPath] on an object outside procfs.
+    That is still sound, because nothing the model does with an
+    [OProcPath] reads the object: an [openat] or a [newfstatat] relative
+    to it answers any errno or an opaque result, and every other arm
+    declines the kind.  An O_RDONLY open is answered only for
+    [proc_sys_overflowuid_path] and [proc_sys_overflowgid_path], where
+    the assumption above rules the links out.
+
+    A PIPE CANNOT GAIN A READER OR A WRITER HERE, although
+    "/proc/self/fd/N" can name one: see [State.pipe_end_live]. *)
+Definition openat_proc_spec (c : path) (flags : word) (m : Model)
+    : Sys SyscallEffect :=
+  let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
+  if open_path_word fl then proc_open_result m (OProcPath c)
+  else if Z.eqb fl 0 && proc_sys_file_b c then proc_open_result m (OProcFile c)
   else unmodeled.
 
 (** [openat dirfd path flags mode].  Modeled shapes (the
@@ -1257,6 +1578,11 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
       O_CREAT and O_TRUNC bits each decide, and
       [openat_rdwr_excl_spec] the -EEXIST that separates the exclusive
       words from them.
+    - O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without O_TRUNC
+      ([is_excl_append_create]): the exclusive shape's deterministic
+      -EEXIST on every name that exists, and otherwise the append
+      shape's creation, an empty file and a [State.FdFileA]
+      ([openat_append_spec] with [excl] true).
 
     ALL OF THEM ARE ON A PATHNAME WITH NO SEPARATOR IN IT.  One with a
     separator is declined ahead of the flag test and reaches none of the
@@ -1299,6 +1625,14 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     one with an unmapped byte, and the string itself otherwise.  Both
     failures are deterministic returns the model tracks, like -ENOENT —
     not injectable, so they are not in [openat_errnos].
+
+    PROCFS NAMES ARE THE OTHER EXCEPTION, ahead of all of the above: an
+    absolute name under "/proc", from any dirfd, or a name relative to
+    an O_PATH descriptor on one ([State.OProcPath]), is
+    [openat_proc_spec]'s, which answers the O_PATH words and O_RDONLY
+    only for [proc_sys_overflowuid_path] and [proc_sys_overflowgid_path],
+    and declines the rest ([proc_open_target]).  An O_PATH word on any
+    other name is declined.
 
     Anything else — a dirfd other than AT_FDCWD, other flag
     combinations — is unmodeled: [unmodeled].  An open on an arm that can
@@ -1343,11 +1677,23 @@ Definition openat_body_spec (i : SyscallInput) (m : Model)
     | CstrFault => err_ret EFAULT                (* unmapped byte in the path string *)
     | CstrOk p =>
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: always a real -ENOENT on Linux *)
+        else
+        (* a procfs name, absolute from any dirfd or relative to an
+           [OProcPath] descriptor: [openat_proc_spec] *)
+        match proc_open_target (m_fds m) dirfd p with
+        | Some c => openat_proc_spec c flags m
+        | None =>
         (* only now the dirfd ([path_init]'s [fdget_raw] runs after
-           [getname]): the relative-to-a-dirfd modes aren't modeled, so we
-           can't judge the call — [unmodeled], NOT the program faulting. *)
-        else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+           [getname]): the other relative-to-a-dirfd modes aren't
+           modeled, so we can't decide the call — [unmodeled], NOT the
+           program faulting. *)
+        if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+        (* an O_PATH word off procfs: declined, so that every arm below
+           sees only the access-mode words it was written for *)
+        else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+        then unmodeled
         else openat_resolved_spec p flags m
+        end
   end.
 
 Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
@@ -1369,7 +1715,10 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
-    [close(2^32)] closes stdin.
+    [close(2^32)] closes stdin.  The answer is [filp_flush]'s result; an
+    [State.ONsFile] answers 0 on the condition its doc states (its
+    object's [f_op->flush] is absent or cannot fail).
+      fs/open.c [SYSCALL_DEFINE1(close)], [filp_flush]: read at v6.18.44; identical at v6.18.46.
 
     THE ARM IS KIND-BLIND ON PURPOSE, AND FOR A PIPE THAT IS
     LOAD-BEARING.  Removing the fd is the whole of what [pipe_release]
@@ -1379,8 +1728,9 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     ([State.pipe_end_live]) instead of keeping a counter.  So closing the
     last WRITE end is exactly what turns a
     later read of the drained pipe from a block into end-of-file, and
-    closing the last READ end is what makes a later write a SIGPIPE the
-    model declines — both without a line of pipe-specific code here.
+    closing the last READ end is what makes a later write raise SIGPIPE
+    ([Fs.ReadWrite.raise_sigpipe]) — both without a line of
+    pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
     sees them, as it does on Linux. *)
@@ -1619,6 +1969,13 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     is the same -EINVAL, tested before FMODE_WRITE *)
   | Some (FdFile _ _) => err_ret EINVAL          (* fd open read-only: no FMODE_WRITE, real -EINVAL *)
   | Some FdDir => err_ret EINVAL                 (* a directory is not S_ISREG: real -EINVAL, not -EISDIR *)
+  | Some (FdOpaque _) => unmodeled               (* FAIL-CLOSED: [do_sys_ftruncate]'s [CLASS(fd, f)]
+                                                    refuses an O_PATH file (-EBADF), the eventfd
+                                                    and /proc/sys objects take [do_ftruncate]'s
+                                                    -EINVAL, and an [ONsFile]'s object is of
+                                                    unknown type; the split is not written
+                                                    (fs/open.c, read at v6.18.44; identical at
+                                                    v6.18.46) *)
   | Some (FdFileA p _) =>
       (* AN APPEND FD IS A WRITABLE REGULAR FILE, so it takes the arm
          below rather than the -EINVAL the five kinds above get:

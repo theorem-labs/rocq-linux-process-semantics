@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), tkill (130), tgkill (131)
+(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), tkill (130), tgkill (131)
 
     This file answers to Linux [kernel/signal.c]: it holds what the
     kernel defines there, and nothing else.  Which file a spec belongs
@@ -14,6 +14,10 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Uaccess.
+(* [Kernel.Fork.SIGCHLD], the one signal number [sigchld_dfl_install]
+   names; imported, not exported, so this module's namespace is
+   unchanged for its importers. *)
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Kernel.Fork.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -44,8 +48,8 @@ Open Scope sys_scope.
     process keeps going.
 
     This spec closes that by construction rather than by bookkeeping.
-    Nothing is recorded, and the accepted set is chosen so that nothing
-    NEEDS to be.  What that takes is two things, and only one of them is
+    No disposition is stored, and the accepted set is chosen so that
+    none NEEDS to be.  What that takes is two things, and only one of them is
     the list below.
 
     WHAT SOUNDNESS ACTUALLY REQUIRES.  A no-op install is sound only if
@@ -55,12 +59,14 @@ Open Scope sys_scope.
     only from outside the process, so both pass the operational test
     while reality could still deliver either.  If reality did, this spec
     would be wrong about a signal it ACCEPTS.  [State.event] is [ReadEv]/[WriteEv]/[ExitEv] only and
-    the accepting arm is [ret_only 0], recording neither an event nor
-    model state, so a source calling [sigaction(SIGTERM, &h, NULL, 8)]
-    and a target that never calls [rt_sigaction] AT ALL have identical
-    [Equivalence.bh_traces], both satisfy [Equivalence.modeled], and
-    [Equivalence.strong_equiv] holds — while under a real SIGTERM the
-    source runs [h] and continues and the target dies.
+    the accepting arm is [ret_only 0] under the 24-byte copy-in of [act],
+    recording no event and no disposition, so a source calling
+    [sigaction(SIGTERM, &h, NULL, 8)] and a target that never calls
+    [rt_sigaction] AT ALL have the same [Equivalence.bh_traces] wherever
+    that copy-in's charge does not decide the budget, both satisfy
+    [Equivalence.modeled], and [Equivalence.strong_equiv] can hold —
+    while under a real SIGTERM the source runs [h] and continues and the
+    target dies.
 
     THE OTHER HALF IS A PREMISE OF THE THEOREM, NOT A DERIVED FACT: THE
     ENVIRONMENT THE THEOREM QUANTIFIES OVER DELIVERS NO SIGNALS.
@@ -104,13 +110,17 @@ Open Scope sys_scope.
         outside the view, [DecodeC.is_defined_illegal] in [decode_exec],
         and the odd-pc / unmapped / non-executable arms of
         [fetch_failure].
-      - SIGPIPE (13) — a modeled [write].  [ReadWrite.write_spec]
-        classifies fds 1 and 2 as [FdChannel] without knowing whether the
-        far end is a pipe, so a real channel with a closed reader raises
-        SIGPIPE at a call the model answers.  The model has no EPIPE arm
-        and assumes a live reader; that assumption is what makes
-        SIGPIPE's disposition unobservable HERE, which is not the same as
-        unraisable, so it stays out.
+      - SIGPIPE (13) — a modeled [write], and the model RAISES it: the
+        channel, pipe and socket arms of [ReadWrite.write_spec] send it
+        through [ReadWrite.raise_sigpipe] when the far end has no
+        reader.  That is exactly why it must stay off this list.  The
+        model has one disposition for signal 13, SIG_DFL, and the
+        launch premise above [Run.unmodeled_at] is what supplies it;
+        an accepted [rt_sigaction] here would let a program install
+        SIG_IGN or a handler and then take a write this spec answers as
+        a death, which is a wrong MODELED answer.  It is out for
+        SIGABRT's reason rather than for an absence, and that is the
+        stronger of the two.
       - SIGXFSZ (25) — a modeled [write], and a modeled [ftruncate] as
         well: neither [ReadWrite.write_spec] nor [Open.ftruncate_spec]
         consults RLIMIT_FSIZE, where Linux raises SIGXFSZ alongside
@@ -135,6 +145,23 @@ Open Scope sys_scope.
     does not disturb that: a mask decides DELIVERY, not sending, and
     what the premise below rules out is a signal arriving at all.
 
+    TWO INSTALLS OUTSIDE THIS LIST ARE ANSWERED, AND NEITHER IS A NO-OP
+    OF THE KIND THIS NOTE IS ABOUT.  Each sets SIG_DFL, the disposition
+    the model already assumes for that signal, so neither rests on the
+    signal being unraisable:
+    - SIG_DFL FOR SIGABRT ([sigabrt_dfl_install]).  A modeled operation
+      does raise SIGABRT ([tkill_self]), and the model delivers it at
+      SIG_DFL.  After the install Linux has the disposition the model
+      already assumes.  Every other SIGABRT install fails closed.
+    - SIG_DFL FOR SIGCHLD ([sigchld_dfl_install]).  A child's exit
+      raises SIGCHLD, and [Fork.clone_spec]'s argument that nothing
+      comes of it is an argument about SIG_DFL, under which the signal
+      is discarded when it is generated.  After the install that is the
+      disposition.  The install must leave SA_NOCLDWAIT clear, because
+      that bit makes Linux reap an exiting child itself.  Every other
+      SIGCHLD install -- SIG_IGN, a handler, SIG_DFL with SA_NOCLDWAIT
+      -- fails closed.
+
     SIGCHLD (17) IS NOT ACCEPTED, AND THAT IS THE INVARIANT BELOW
     BEING DISCHARGED.  That invariant says the
     change which GIVES THE MODEL A CHILD must take SIGCHLD out of this
@@ -142,13 +169,16 @@ Open Scope sys_scope.
     that change — it is an admission that a child can exist — and so
     would be a modeled [wait4], which is an admission that one can be
     reaped.  An accepted set NARROWER than the operational test demands
-    costs coverage and cannot cost soundness.
+    costs coverage and cannot cost soundness.  The SIG_DFL install
+    above is not a member of the set: membership answers an install
+    whatever its handler word, and SIGCHLD is answered for one handler
+    word only.
 
-    What it costs is one install the model
-    declines: [sigaction(SIGCHLD, &act, NULL, 8)], the shape dropbear
-    uses to reap its children.  A decline is not a wrong answer — it puts
-    such a program outside the theorem's coverage rather than making a
-    false claim about it.
+    What it costs is the SIGCHLD install with a HANDLER, which the
+    model declines: [sigaction(SIGCHLD, &act, NULL, 8)] with a reaping
+    function, the shape dropbear uses.  A decline is not a wrong answer
+    — it puts such a program outside the theorem's coverage rather than
+    making a false claim about it.
 
     WHAT THE OPERATIONAL RULE NEVER ESTABLISHED IS THAT REALITY HAS NO
     SENDER.  This model begins AT [execve]: [State.ProcInput] carries
@@ -160,13 +190,16 @@ Open Scope sys_scope.
     rule, which only narrows who could send it: "arrives only from
     outside the process" says the model cannot raise it, not that it is
     never raised.  That gap matters most for SIGCHLD, since
-    a child survives [execve] and could raise a real one at any moment;
-    the decline closes that instance rather than leaving it to the
-    premise, and SIGINT and SIGTERM still need the premise in full.
+    a child survives [execve] and could raise a real one at any moment.
+    The decline of every SIGCHLD handler and of SIG_IGN closes that
+    instance rather than leaving it to the premise, and the one SIGCHLD
+    install the model answers, SIG_DFL, does not reopen it: a real
+    SIGCHLD arriving at SIG_DFL is discarded on arrival.  SIGINT and
+    SIGTERM still need the premise in full.
 
     THE INVARIANT TO KEEP: this list is a claim about the REST of the
-    model.  If a later change gives [ReadWrite.write_spec] an EPIPE arm,
-    or gives the model a timer, a controlling terminal, or any
+    model.  If a later change gives the model a timer, a controlling
+    terminal, or any
     [kill]-shaped syscall, the corresponding signal must leave
     [sigaction_accepted] in the SAME commit — or better, in a commit
     AHEAD of it, so that no ordering of the
@@ -190,7 +223,9 @@ Definition sig32 (sig : word) : word := abi_low32 sig.
     a fact about [rt_sigaction]: read the note above before touching this
     list.  Every other signal — the four fault signals above all, and
     SIGCHLD, because the model can have a child —
-    fails closed at an install. *)
+    fails closed at an install, with two exceptions that this list does
+    not carry, both SIG_DFL: for SIGABRT, which [sigabrt_dfl_install]
+    admits, and for SIGCHLD, which [sigchld_dfl_install] admits. *)
 Definition sigaction_accepted (sig : word) : bool :=
   let s := bv_unsigned sig in
   (Z.eqb s 2 || Z.eqb s 15)%bool.
@@ -316,36 +351,190 @@ Definition sa_flags_ok (fl : word) : bool :=
     syscall entry raises before the copy — arm 1 below — and the [oact]
     [copy_to_user] runs after [do_sigaction], so a bad [oact] with a bad
     [sig] is -EINVAL rather than -EFAULT.  This returns [sa_flags]
-    exactly when all 24 bytes are readable.
+    exactly when [access_ok] admits all 24 bytes and they are readable.
 
-    NO [State.access_okb] GUARD, and that is not an omission.  The
-    delivering syscalls need one because they answer for ranges they do
-    not require to be mapped; here all 24 bytes must be mapped before
-    anything is answered, and a mapping cannot sit above the address
-    space it was made in — so a readable range is below [TASK_SIZE],
-    which is the limit [__access_ok] tests (include/asm-generic/access_ok.h;
-    riscv overrides [access_ok] for pointer masking but not
-    [__access_ok]; see [State.TASK_SIZE]).
-    The word addition in [readable_bytes] cannot manufacture one either:
-    wrapping needs [act] within 24 bytes of 2^64, and no model state has
-    a mapping there ([alloc_top] and [sp_window_hi] both sit at or
-    below 2^47 for any [Run.valid_sp]), so the walk stops on its first unmapped byte and the
-    answer is -EFAULT.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigaction)] (kernel/signal.c) reads
+    the struct with [copy_from_user] before [do_sigaction] runs, and that
+    is [access_ok] over all 24 bytes before a byte moves
+    (include/linux/uaccess.h, [_inline_copy_from_user];
+    include/asm-generic/access_ok.h, [__access_ok]; riscv overrides
+    [access_ok] for pointer masking but not [__access_ok], see
+    [State.TASK_SIZE]).  This note used to give two reasons for leaving
+    the test out, and only one of them holds.  The WRAP half holds in a
+    run, for a reason other than the one it gave: completing a wrap
+    needs a mapped byte at 2^64-1 and one at 0, and
+    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
+    ascription, bounds every loaded segment's end below 2^64.  The
+    [TASK_SIZE] half does not hold.  That hypothesis bounds the image at
+    2^64 and not at 2^47, and [Run.valid_brk] asks only that the break
+    sit at or above the image's top, so an admissible image may carry a
+    LOAD segment above the user limit whose bytes reach this spec through
+    [in_mem] ([Run.sys_input]); and [Checks.ExecutableSpecs.check_syscall]
+    takes an arbitrary [SyscallInput] besides.  A wholly readable range
+    above [TASK_SIZE] therefore exists, the bare walk answered the call
+    on it, and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note and is not repeated here.
 
-    The flags word is the only field the model consults.  The handler
-    (SIG_DFL, SIG_IGN or an address) and [sa_mask] describe delivery,
-    which cannot occur, so their values change nothing — and for the same
-    reason the kernel's two silent side effects here are unobservable:
-    [sigdelsetmask] clearing SIGKILL and SIGSTOP from the stored mask,
-    and the POSIX 3.3.1.3 flush of pending signals ([sig_handler_ignored]
-    then [flush_sigqueue_mask]) when the new disposition ignores them.
-    The model has neither a stored mask nor a pending queue, and [oact] —
-    declined below — is the only window onto either. *)
+    For a signal in [sigaction_accepted] the flags word is the only field
+    the model consults.  The handler (SIG_DFL, SIG_IGN or an address) and
+    [sa_mask] describe delivery, which cannot occur for those signals, so
+    their values change nothing — and for the same reason the kernel's two
+    silent side effects here are unobservable: [sigdelsetmask] clearing
+    SIGKILL and SIGSTOP from the stored mask, and the POSIX 3.3.1.3 flush
+    of pending signals ([sig_handler_ignored] then [flush_sigqueue_mask])
+    when the new disposition ignores them.  The model has neither a stored
+    mask nor a pending queue for those signals, and [oact] — declined
+    below — is the only window onto either.  The handler word is read
+    once, by [sigaction_handler], and only for SIGABRT; see
+    [sigabrt_dfl_install]. *)
 Definition sigaction_flags (mp : word -> option byte) (act : word)
     : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp (bv_add act (Z_to_bv 64 8))
-  else None.
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp (bv_add act (Z_to_bv 64 8))
+  | None => None
+  end.
+
+(** [sa_handler], the eight bytes at offset 0 of the struct above, under
+    the same range test and all-or-nothing readability as
+    [sigaction_flags]: SIG_DFL is 0 and SIG_IGN is 1
+    (include/uapi/asm-generic/signal-defs.h); any other value is the
+    address of a handler. *)
+Definition sigaction_handler (mp : word -> option byte) (act : word)
+    : option word :=
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp act
+  | None => None
+  end.
+
+(** The one install outside [sigaction_accepted] that the spec answers:
+    SIG_DFL for SIGABRT.  musl's [abort] makes it on its second path
+    (src/exit/abort.c, musl 1.2.6:
+    [__syscall(SYS_rt_sigaction, SIGABRT,
+    &(struct k_sigaction){.handler = SIG_DFL}, 0, _NSIG/8)]), which it
+    takes when [raise(SIGABRT)] returns — in this model, when the signal
+    mask at the call already blocks SIGABRT: the launch mask, or a mask
+    the program installed with [rt_sigprocmask] (see [sigabrt_blocked]).
+
+    WHY 0, AND NO STATE.  Linux answers 0 here: SIGABRT is in 1..64 and
+    is not SIGKILL or SIGSTOP, and no live process has SA_IMMUTABLE set
+    (see the note at [rt_sigaction_spec]).  Linux changes two things, and
+    the model needs neither:
+
+      - the disposition becomes SIG_DFL.  That is the disposition
+        [tkill_self] delivers SIGABRT against ("WHY SIGABRT'S
+        DISPOSITION IS SIG_DFL, BY CONSTRUCTION", below).  So after the
+        call Linux is in the state the model assumes, also when the
+        launcher left an inherited SIG_IGN ([execve]'s
+        [flush_signal_handlers] keeps SIG_IGN; arm 2 of
+        [rt_sigaction_spec]).
+      - a pending SIGABRT is NOT discarded.  [do_sigaction] flushes the
+        pending signal only when [sig_handler_ignored] holds for the new
+        handler: SIG_IGN, or SIG_DFL for a signal whose default action is
+        to ignore it ([sig_kernel_ignore]: SIGCONT, SIGCHLD, SIGWINCH,
+        SIGURG).  SIGABRT's default action dumps core, so a pending
+        SIGABRT stays pending, as [State.procst_sigabrt_pending] keeps it
+        (kernel/signal.c, [do_sigaction] and [sig_handler_ignored];
+        include/linux/signal.h; Linux v6.18.46, commit 1f99e9ab748f).
+
+    [sa_flags] and [sa_mask] describe how a handler runs, and SIG_DFL
+    runs none, so neither is read here; [sa_flags_ok] has already
+    declined SA_RESTART and every bit outside [sa_flags_accepted].
+
+    WHAT STAYS DECLINED: SIGABRT with any other handler word, SIG_IGN or
+    an address.  Either would change what [tkill_self] must do, and the
+    model has one answer for SIGABRT.  [sig] arrives as [sig32] made it;
+    at this arm it is in 1..64, so [bv_unsigned sig] is the signal
+    number. *)
+Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : word)
+    : bool :=
+  Z.eqb (bv_unsigned sig) SIGABRT &&
+  match sigaction_handler mp act with
+  | Some h => w_is0 h
+  | None => false
+  end.
+
+(** The [sa_flags] bit that asks Linux to reap an exiting child itself
+    rather than leave it a zombie for [wait4]
+    (include/uapi/asm-generic/signal-defs.h).  [sigchld_dfl_install]
+    declines an install that sets it. *)
+Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
+
+(** The second install outside [sigaction_accepted] that the spec
+    answers: SIG_DFL for SIGCHLD, under a flag word [sa_flags_ok]
+    admits and with SA_NOCLDWAIT clear.  bwrap 0.13.1 makes it first
+    thing in [main] ([struct sigaction sa = {}; sa.sa_handler = SIG_DFL;
+    sigaction(SIGCHLD, &sa, NULL)], to undo a SIG_IGN its launcher may
+    have left); musl passes that as [rt_sigaction(SIGCHLD, act, NULL,
+    8)] with a zero flag word.
+
+    kernel/signal.c [SYSCALL_DEFINE4(rt_sigaction)], [do_sigaction], [sig_handler_ignored], [do_notify_parent], read at v6.18.44; identical at v6.18.46.
+    include/linux/signal.h [SIG_KERNEL_IGNORE_MASK], [sig_kernel_ignore], read at v6.18.44; identical at v6.18.46.
+    include/uapi/asm-generic/signal-defs.h [SA_NOCLDSTOP], [SA_NOCLDWAIT], read at v6.18.44; identical at v6.18.46.
+
+    WHY 0.  SIGCHLD (17) is in 1..64 and is not SIGKILL or SIGSTOP, and
+    no live process carries SA_IMMUTABLE (the note at
+    [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
+    and with [oact] NULL so does the syscall.
+
+    WHY NO STATE.  After the call SIGCHLD's disposition is SIG_DFL, and a
+    SIG_DFL SIGCHLD is the disposition every SIGCHLD argument in this
+    model is written against, so the install moves the process TOWARDS
+    the model's assumption rather than away from it:
+    - [Fork.clone_spec]'s header argues that the SIGCHLD a child's exit
+      sends comes to nothing because it is discarded at generation:
+      [sig_handler_ignored] holds for SIG_DFL on a signal in
+      [SIG_KERNEL_IGNORE_MASK], SIGCHLD is in that mask, and
+      [__send_signal_locked] skips the queue.  After this install that
+      is certain; before it, the disposition is the launch's -- SIG_DFL,
+      or a SIG_IGN [execve] kept -- and both discard.
+    - [do_sigaction] itself flushes a pending SIGCHLD here, because
+      [sig_handler_ignored(SIG_DFL, SIGCHLD)] holds (POSIX 3.3.1.3).
+      The model carries no SIGCHLD queue, and a queued SIGCHLD would
+      have been discarded at delivery anyway ([get_signal] finds
+      SIG_DFL and [sig_kernel_ignore]), so nothing observable moves.
+      [posixtimer_sig_unignore] is not reached: it runs only when the
+      new handler is NOT ignored.
+    - Of the flags this arm admits, one is read for SIGCHLD:
+      SA_NOCLDSTOP stops a child's STOP from raising SIGCHLD, which
+      SIG_DFL discards anyway.  The rest ([sa_mask], SA_SIGINFO,
+      SA_ONSTACK, SA_NODEFER, SA_RESETHAND, SA_EXPOSE_TAGBITS) describe
+      how a handler runs, and SIG_DFL runs none.  So the arm answers
+      every flag word [sa_flags_ok] admits with SA_NOCLDWAIT clear, not
+      only bwrap's 0: each of those bits changes nothing under SIG_DFL.
+
+    WHAT STAYS DECLINED: SIGCHLD with SIG_IGN or a handler address, and
+    SIG_DFL with SA_NOCLDWAIT set.  A handler is unsound outright: it
+    would run on each child's exit, and could interrupt a modeled call
+    with an -EINTR or a restart this model does not have.  SIG_IGN
+    discards as SIG_DFL does, but it also autoreaps every child and is
+    the one disposition [execve] passes on ([flush_signal_handlers]
+    keeps it), so admitting it would have to be argued against every
+    child-facing arm; nothing in scope needs it, and declining it keeps
+    the disposition after any answered SIGCHLD install exactly the
+    SIG_DFL named above.  SIG_DFL with SA_NOCLDWAIT is declined because
+    [do_notify_parent] reads the bit: [psig->action[SIGCHLD-1].sa.sa_flags
+    & SA_NOCLDWAIT] sets [autoreap], so a child that exits under it is
+    reaped at once instead of being left a zombie, and a later [wait4]
+    finds a different state.  Admitting it would be sound today only
+    because [Exit.wait4_spec] declines once [State.m_has_children] is
+    set: this arm's soundness would rest on a fact about another arm,
+    and a later [wait4] arm for a live child would make it unsound with
+    no failing proof.  Nothing in scope needs it: bwrap 0.13.1 and musl
+    pass a flag word without it.  The tripwires are
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a
+    handler) and
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_dfl_nocldwait_unmodeled]
+    (SIG_DFL with SA_NOCLDWAIT).  [mp] and [act] give the handler word
+    and the flag word under the same 24-byte readability
+    ([sigaction_handler], [sigaction_flags]). *)
+Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : word)
+    : bool :=
+  Z.eqb (bv_unsigned sig) SIGCHLD &&
+  match sigaction_handler mp act, sigaction_flags mp act with
+  | Some h, Some fl => w_is0 h && Z.eqb (Z.land (bv_unsigned fl) SA_NOCLDWAIT) 0
+  | _, _ => false
+  end.
 
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
@@ -385,12 +574,23 @@ Definition sigaction_flags (mp : word -> option byte) (act : word)
          no-op for EVERY valid signal, fault signals included: 0, or
          -EINVAL outside 1..64.  This is also why SIGKILL and SIGSTOP are
          only rejected in arm 4.
-      4. with [act] non-NULL: -EFAULT unless all 24 bytes are readable;
+      4. with [act] non-NULL: -EFAULT unless [access_ok] admits all 24
+         bytes and they are readable;
          then -EINVAL for an out-of-range signal and for SIGKILL/SIGSTOP;
          then fail closed on SA_RESTART and on any bit outside
          [sa_flags_accepted]; then 0 for a signal in
-         [sigaction_accepted], recording nothing, and UNMODELED for every
-         other signal.
+         [sigaction_accepted], storing no disposition; then 0 for SIGABRT
+         with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
+         disposition; then 0 for SIGCHLD with the handler SIG_DFL and
+         SA_NOCLDWAIT clear ([sigchld_dfl_install]), storing no
+         disposition; and UNMODELED for every other signal, handler and
+         SIGCHLD flag word.
+         Every answer after the copy records the 24
+         bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
+         (kernel/signal.c:4650, v6.18.46) has already read them with
+         [copy_from_user], and [State.materialize_model_accesses] charges
+         a lazy anonymous page the read faults in.  The -EFAULT records
+         nothing, the convention [rt_sigprocmask_spec] states.
 
     Arm 4's last case is the one that matters: it is what keeps a
     SIGSEGV, SIGILL, SIGBUS or SIGTRAP handler out of the modeled
@@ -415,13 +615,17 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
   else
     i <- input ;;
     match sigaction_flags (in_mem i) act with
-    | None => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
+    | None => err_ret EFAULT   (* [access_ok] refuses the struct, or it is not
+                                  wholly readable: real -EFAULT *)
     | Some fl =>
-        if negb (sig_valid sig) then err_ret EINVAL
-        else if sig_kernel_only sig then err_ret EINVAL
-        else if negb (sa_flags_ok fl) then unmodeled
-        else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
-        else unmodeled           (* a signal a modeled operation can raise: fail closed *)
+        record_copyins [(act, 24%nat)]
+        (if negb (sig_valid sig) then err_ret EINVAL
+         else if sig_kernel_only sig then err_ret EINVAL
+         else if negb (sa_flags_ok fl) then unmodeled
+         else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
+         else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else if sigchld_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
 (* =========================================================================
@@ -491,10 +695,16 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     [generic_write_check_limits] (fs/read_write.c), which sends SIGXFSZ
     past RLIMIT_FSIZE; [ftruncate] (46) reaches [inode_newsize_ok]
     (fs/attr.c), which sends SIGXFSZ on the same limit before returning
-    -EFBIG.  What is true is the weaker and sufficient claim: NO SPEC IN
-    THIS MODEL RAISES A SIGNAL, because [write_spec] assumes a live
-    reader and neither it nor [ftruncate_spec] carries a file-size
-    limit.  The live reader is an assumption nothing checks.  The
+    -EFBIG.
+
+    WHICH SPECS RAISE ONE, AND WHICH ASSUMPTION COVERS THE REST.
+    [write_spec] DOES raise signal 13, through
+    [ReadWrite.raise_sigpipe], on each of its three arms whose far end
+    has no reader, and this spec is what decides between the death and
+    the -EPIPE: the mask is READ there.  What stays assumed rather
+    than raised is SIGXFSZ: neither [write_spec] nor
+    [ftruncate_spec] carries a file-size
+    limit.  The
     RLIMIT_FSIZE half of the limit is a premise of the run —
     RLIM_INFINITY at exec, and the set fails closed, see
     [Open.ftruncate_spec] — and the [s_maxbytes] half, which the model
@@ -513,10 +723,12 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     file adds no wrong answer — the missing limit owns it, with or
     without this file — but it is a pair the
     equivalence relation cannot separate.  The obligation the invariant below states
-    therefore binds those three specs too: an -EPIPE arm in
-    [ReadWrite.write_spec], or a file-size limit in [ftruncate_spec],
-    turns a blocked mask into something the model reads, and must give
-    this spec state in the same commit.
+    therefore binds those specs too: a file-size limit in
+    [ftruncate_spec] would turn a blocked mask into something the model
+    reads, and must give this spec state in the same commit.  The
+    -EPIPE arm in [ReadWrite.write_spec] is the case that already
+    happened, and it brought [State.procst_sigpipe_pending] and
+    [sigmask_deliver_model]'s second branch with it.
 
     With that stated, [oset] is the ONLY window onto the mask that is
     open, and this spec is the only thing that writes one.  The list
@@ -577,7 +789,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         134's is [oact], the only way to read an [sa_mask] back, and
         [rt_sigaction_spec] declines a non-NULL [oact] outright; the
         [sa_mask] an accepted install carries is not stored either —
-        that spec answers [ret_only 0] and records nothing — so there is
+        that spec answers [ret_only 0] and stores no disposition — so there is
         no second window behind the first.  72's is [set_user_sigmask]
         itself, and it is a real read-back: it saves [current->blocked]
         into [current->saved_sigmask] on the way in.  [Fs.Select]'s
@@ -676,19 +888,18 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     Signal delivery of any kind is the obvious one.  So is any of the
     numbers enumerated above, and so is relaxing [Fs.Select]'s
     [PsSigReal] decline, which is the only such window inside
-    [Specs.modeled_sysnos] today.  The one that would not announce
-    itself is an -EPIPE arm in [ReadWrite.write_spec]: SIGPIPE blocked
-    turns a write to a channel with a closed reader from process death
-    into a return of -EPIPE, which is a mask READ at a call this model
-    already answers.  WHAT KEEPS THAT SHUT: the model has real pipes
-    ([Fs.Pipe]), so it HAS
-    a notion of a live reader, and a pipe whose reader is gone is [unmodeled] —
-    [ReadWrite.write_spec]'s [pipe_end_live] arm — because SIGPIPE's
-    default disposition terminates the process and this model has no
-    death that is not [exit].  So the -EPIPE arm is held off by a
-    DECLINE, not by an absence, which is the stronger of the two;
-    the live-reader assumption holds only for [FdChannel], where the model
-    cannot see whether the far end is closed. *)
+    [Specs.modeled_sysnos] today.  The reader that used to be named
+    here as the one that would not announce itself -- an -EPIPE arm in
+    [ReadWrite.write_spec] -- HAS LANDED, and it announced itself
+    exactly as this paragraph asked: SIGPIPE blocked turns a write to a
+    far end with no reader from process death into a return of -EPIPE,
+    so the three write arms read the mask through
+    [Uapi.sigpipe_blocked] at a call this model answers, and
+    [State.procst_sigpipe_pending] records what the block left behind.
+    [sigmask_deliver_model] above is the writer that pairs with it:
+    the install that uncovers signal 13 kills there, in the same way
+    the SIGABRT branch does, so [oset]'s value stays the value of a
+    mask the next reader will agree with. *)
 
 (** [how] is [int] ([SYSCALL_DEFINE4(rt_sigprocmask, int, how, ...)]),
     so the kernel sees only the low half of the register and
@@ -709,26 +920,29 @@ Definition how_valid (how : word) : bool :=
     installed.  [sizeof(sigset_t)] is [Uapi.NSIG_BYTES] = 8, so this is
     readability of eight bytes and no more.
 
-    NO [State.access_okb] GUARD.  All eight bytes must be mapped
-    before anything is answered, and a mapping cannot sit above the
-    address space it was made in, so a wholly readable range is below
-    [TASK_SIZE].  The word addition inside
-    [State.read_bytes_map] cannot manufacture one either — but NAME THE
-    RIGHT REASON, because the obvious one is incomplete.
-    [State.alloc_top] and [State.sp_window_hi] bound the mmap, brk
-    and stack sources and sit far below 2^64; they say nothing about
-    the third source [in_mem] merges in, which is the ELF ROM image,
-    whose [MemImageType.Segment] carries [seg_base] and [seg_size] as
-    unbounded [N] with no side condition in the trusted tree.  What
-    actually excludes a byte in the last page is
-    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
-    module type each example's generated Checker ascribes — so
-    completing a wrap would need two segments, one supplying the byte
-    at 2^64-1 and one at 0, and that hypothesis forbids it.  Outside
-    that ascription the specs quantify over an arbitrary
-    [mp : word -> option byte], so this is a property of the
-    well-formedness the equivalence theorem is stated under and not of
-    the syscall layer.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigprocmask)] (kernel/signal.c)
+    copies [nset] with [copy_from_user] and answers -EFAULT before
+    [sigprocmask] runs, and [copy_from_user] is [access_ok] over the
+    eight bytes and then the copy (include/linux/uaccess.h,
+    [_inline_copy_from_user]; include/asm-generic/access_ok.h,
+    [__access_ok]).  This note used to give two reasons for leaving the
+    test out, and only the first survives.  The WRAP is impossible in a
+    run, and the reason is [Equivalence.image_brk_satisfiable], a
+    hypothesis of the IMAGE_WF module type each example's generated
+    Checker ascribes: it bounds every loaded segment's end below 2^64,
+    so no image supplies both a byte at 2^64-1 and one at 0
+    ([State.alloc_top] and [State.sp_window_hi] bound only the mmap, brk
+    and stack sources, not the ELF ROM image [in_mem] merges in).  The
+    [TASK_SIZE] half is false.  That same hypothesis bounds the image at
+    2^64, not at 2^47, and [Run.valid_brk] asks only that the break sit
+    at or above the image's top, so an admissible image may carry a LOAD
+    segment above the user limit whose bytes [Run.sys_input] hands to
+    this spec; and [Checks.ExecutableSpecs.check_syscall] takes an
+    arbitrary [SyscallInput] besides.  A wholly readable [nset] above
+    [TASK_SIZE] therefore exists, the bare walk installed a mask from it,
+    and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note.
 
     THE CONTENTS ARE READ: the value
     decides what gets installed, so the test and the read are one
@@ -736,7 +950,7 @@ Definition how_valid (how : word) : bool :=
     [Sys/Uaccess.v]: it is the [sigset_t] ABI shape, not a uaccess
     policy, and one syscall uses it. *)
 Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
-  match read_bytes_map mp p (Z_to_bv 64 NSIG_BYTES) with
+  match copy_bytes_map mp p NSIG_BYTES with
   | Some bs => Some (le_bytes_to_word bs)
   | None => None
   end.
@@ -768,7 +982,8 @@ Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
          oversight, and it is pinned by
          [Checks.Cases.Kernel.Signal].  The call is
          not a no-op even so: arm 5 still runs, so a query WRITES.
-      4. with [nset] non-NULL: -EFAULT unless all 8 bytes are readable,
+      4. with [nset] non-NULL: -EFAULT unless [access_ok] admits the 8
+         bytes and they are readable,
          then SIGKILL and SIGSTOP are stripped from the new set
          ([sigmask_strip], silently — the call succeeds), then -EINVAL
          for a [how] outside {0, 1, 2}, then the install
@@ -984,20 +1199,45 @@ Definition write_oset (oset old : word) : Sys SyscallEffect :=
     discarded by [Run.sstep_killed] exactly as [Kernel.Exit.exit_spec]'s
     is by [Run.sstep_exit].
 
-    A LAUNCH MASK THAT ALREADY BLOCKS SIGABRT IS A DECLINE, NOT A DEATH.
+    A LAUNCH MASK THAT ALREADY BLOCKS SIGABRT IS A DEATH ONE PATH LATER.
     [oldset] is then a mask with bit 5 set, the restore does not unblock
     anything, [raise] RETURNS, and musl's [abort] goes on to its second
-    path -- [rt_sigaction(SIGABRT, {SIG_DFL}, 0, 8)] -- which
-    [rt_sigaction_spec] declines, because [sigaction_accepted] admits
-    SIGINT and SIGTERM and nothing else.  [State.valid_sigmask] does not
-    forbid such a launch and should not: it is a launch Linux really
-    performs.  The run simply leaves the modeled surface, which is the
-    honest answer. *)
+    path (src/exit/abort.c, musl 1.2.6): [__block_all_sigs], then
+    [rt_sigaction(SIGABRT, {SIG_DFL}, 0, 8)], then [tkill] again, then
+    [rt_sigprocmask(SIG_UNBLOCK, {SIGABRT}, 0, 8)].  Each step is
+    answered here.  The block-all mask is installed with SIGKILL and
+    SIGSTOP stripped ([sigmask_strip]).  [rt_sigaction_spec] answers the
+    install 0 and changes nothing ([sigabrt_dfl_install]).  The second
+    [tkill] finds SIGABRT already pending: Linux drops a second instance
+    of a pending signal below SIGRTMIN ([legacy_queue], kernel/signal.c,
+    Linux v6.18.46, commit 1f99e9ab748f), and [State.with_sigabrt_pending]
+    sets a bit that is already set.  The unblock is the mask install that
+    takes the pending signal, and [sigmask_deliver_model] kills there.
+    [Run.valid_sigmask] does not forbid such a launch and should not: it
+    is a launch Linux really performs.  A mask the program installs
+    itself with [rt_sigprocmask] before [abort] takes the same path.
+    [Checks.AbortWitness.abrt_blocked_dies_by_signal] and
+    [Checks.AbortWitness.abrt_blocked_error_free] walk that run. *)
 Definition sigabrt_blocked (mask : word) : bool :=
   negb (w_is0 (bv_and mask (Z_to_bv 64 sigabrt_mask))).
 
-(** ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
-    over two monadic steps, because that is what the checker and the
+(** TWO SIGNALS, IN THE KERNEL'S ORDER.  A mask install that uncovers a
+    pending signal delivers it on the way back to user space, and both
+    signals this model can raise are FATAL at their default
+    disposition, so the install that uncovers one ends the process.
+
+    SIGABRT IS TESTED FIRST, and that is [next_signal]'s rule rather
+    than a choice: kernel/signal.c [get_signal] dequeues through
+    [dequeue_signal], which takes the LOWEST-numbered pending signal,
+    and 6 is below 13.  A fatal one never returns to the loop, so a
+    process with both pending and both uncovered dies of SIGABRT and
+    signal 13 is never dequeued.  That is only visible in the NUMBER the
+    trace carries, and it is visible: [State.KillEv] carries it, and a
+    waiting parent reads it through WTERMSIG.  Linux v6.18.46, commit
+    1f99e9ab748f.
+
+    ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
+    over monadic steps, because that is what the checker and the
     witness can follow: [Checks.Sys.Kernel.Signal] and
     [Checks.Witness.Kernel.Signal] discharge this call with the same
     [modify_ok] they discharged the plain [set_sigmask] with, and the
@@ -1005,26 +1245,32 @@ Definition sigabrt_blocked (mask : word) : bool :=
 Definition sigmask_deliver_model (new : word) (m : Model) : Model :=
   if (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool
   then with_killed (Z_to_bv 64 SIGABRT) (with_sigmask new m)
+  else if (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool
+  then with_killed (Z_to_bv 64 SIGPIPE) (with_sigmask new m)
   else with_sigmask new m.
 
 Definition set_sigmask_deliver (new : word) : Sys unit :=
   modify (sigmask_deliver_model new).
 
-(** MEANING PRESERVED: with nothing pending -- every state a run whose
-    task did not declare the abort path can reach, since
-    [State.with_sigabrt_pending]'s only caller is [tkill_spec] and that
-    spec declines outright with the declaration off -- installing a mask
-    is plain [with_sigmask]. *)
+(** MEANING PRESERVED: with NEITHER signal pending, installing a mask is
+    plain [with_sigmask].  [State.with_sigabrt_pending]'s only caller is
+    [tkill_spec], which declines outright with the declaration off, so
+    every state a run whose task did not declare the abort path can
+    reach has the first bit clear; the second is clear until a write
+    finds a far end with no reader while signal 13 is blocked
+    ([Fs.ReadWrite.raise_sigpipe]), which is NOT behind a declaration. *)
 Lemma sigmask_deliver_model_no_pending : forall new m,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   sigmask_deliver_model new m = with_sigmask new m.
 Proof.
-  intros new m Hp. unfold sigmask_deliver_model. rewrite Hp. reflexivity.
+  intros new m Ha Hp. unfold sigmask_deliver_model.
+  rewrite Ha, Hp. reflexivity.
 Qed.
 
 (** The two projections the checker and the witness need through the
     delivery: the mask installed is the mask asked for, and the address
-    space is untouched.  Both branches of [sigmask_deliver_model] go
+    space is untouched.  Every branch of [sigmask_deliver_model] goes
     through [State.with_sigmask], and [State.with_killed] on top of it
     rebuilds [ProcState] alone. *)
 Lemma m_sigmask_sigmask_deliver_model : forall new m,
@@ -1032,6 +1278,8 @@ Lemma m_sigmask_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
@@ -1040,15 +1288,18 @@ Lemma m_vmmaps_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
 Lemma set_sigmask_deliver_no_pending : forall new i m o,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   (set_sigmask_deliver new i m o <-> set_sigmask new i m o).
 Proof.
-  intros new i m o Hp. unfold set_sigmask_deliver, set_sigmask, modify.
-  rewrite sigmask_deliver_model_no_pending by exact Hp. reflexivity.
+  intros new i m o Ha Hp. unfold set_sigmask_deliver, set_sigmask, modify.
+  rewrite sigmask_deliver_model_no_pending by assumption. reflexivity.
 Qed.
 
 Definition rt_sigprocmask_spec (how nset oset ss : word) : Sys SyscallEffect :=
@@ -1231,18 +1482,26 @@ Definition ss_mode_ok (fl : word) : bool :=
 
 Definition ss_disabling (fl : word) : bool := Z.eqb (ss_mode fl) SS_DISABLE.
 
-(** The [stack_t] at [uss], or [None] if any of its 24 bytes is
-    unreadable.  All-or-nothing because [SYSCALL_DEFINE2(sigaltstack)]
+(** The [stack_t] at [uss], or [None] if [access_ok] refuses its 24
+    bytes or any of them is unreadable.  All-or-nothing because
+    [SYSCALL_DEFINE2(sigaltstack)]
     fetches the struct with ONE [copy_from_user] before [do_sigaltstack]
     runs, so -EFAULT precedes every other answer this call has.
 
-    NO [State.access_okb] GUARD, for the reason [sigaction_flags] gives
-    above and by the same argument: all 24 bytes must be readable before
-    anything is answered, and the word addition cannot manufacture a
-    readable range across 2^64 because no model state maps one there. *)
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map]:
+    [SYSCALL_DEFINE2(sigaltstack)] (kernel/signal.c) copies with
+    [copy_from_user], which is [access_ok] over the 24 bytes before the
+    copy, and both come before [do_sigaltstack] runs.  This note used to
+    lean on [sigaction_flags]'s argument for leaving the test out, and
+    that argument is withdrawn there for the reason given there: the
+    wrap is impossible in a run, because
+    [Equivalence.image_brk_satisfiable] bounds the image below 2^64, but
+    nothing bounds a wholly readable range below [TASK_SIZE], so the
+    test is asked rather than argued.  The wrap itself is
+    [State.copy_bytes_map]'s note. *)
 Definition sigaltstack_at (mp : word -> option byte) (uss : word)
     : option (list byte) :=
-  read_bytes_map mp uss (Z_to_bv 64 SIGALTSTACK_BYTES).
+  copy_bytes_map mp uss SIGALTSTACK_BYTES.
 
 (** [sigaltstack uss uoss].  The arms follow the kernel's own order:
 
@@ -1253,7 +1512,8 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          bit is part of the answer.
       3. with both pointers NULL [do_sigaltstack] runs and does nothing:
          0.
-      4. -EFAULT unless all 24 bytes at [uss] are readable.
+      4. -EFAULT unless [access_ok] admits the 24 bytes at [uss] and
+         they are readable.
       5. -EINVAL for a mode outside {0, SS_ONSTACK, SS_DISABLE}.  It is
          decided AFTER the copy and BEFORE the fast path, exactly where
          the kernel decides it, and after an -EPERM that cannot fire —
@@ -1282,9 +1542,12 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          the only arm that raises [sas_ss_size] above zero, and the
          [Uapi.MINSIGSTKSZ] bound arm 8 just applied is why.
 
-    No arm writes user memory, and none records a copy-in: the 24 bytes
-    are read into a kernel local ([stack_t new] on the syscall's own
-    stack), the same shape [rt_sigaction_spec] has above. *)
+    No arm writes user memory.  Every answer after the copy records the
+    24 bytes at [uss] in [State.eff_copyins]: [SYSCALL_DEFINE2(sigaltstack)]
+    (kernel/signal.c:4459, v6.18.46) has read them with [copy_from_user]
+    before [do_sigaltstack] runs, and [State.materialize_model_accesses]
+    charges a lazy anonymous page that read faults in.  The -EFAULT of
+    arm 4 records nothing, the convention [rt_sigprocmask_spec] states. *)
 Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if m_sigaltstack_installed m then unmodeled
@@ -1295,15 +1558,16 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
     match sigaltstack_at (in_mem i) uss with
     | None => err_ret EFAULT
     | Some bs =>
-        let fl := ss_flags_of bs in
-        if negb (ss_mode_ok fl) then err_ret EINVAL
-        else if ss_disabling fl
-        then ret_only (Z_to_bv 64 0)
-        else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
-        then unmodeled
-        else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
-        then err_ret ENOMEM
-        else set_sigaltstack_installed ;; ret_only (Z_to_bv 64 0)
+        record_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+        (let fl := ss_flags_of bs in
+         if negb (ss_mode_ok fl) then err_ret EINVAL
+         else if ss_disabling fl
+         then ret_only (Z_to_bv 64 0)
+         else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
+         then unmodeled
+         else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
+         then err_ret ENOMEM
+         else set_sigaltstack_installed ;; ret_only (Z_to_bv 64 0))
     end.
 
 (* =========================================================================
@@ -1384,25 +1648,35 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
       answer is whatever [security_task_kill] says, which is an LSM
       question rather than a kernel one.
     - any other signal in 1..64.  The model has a disposition for
-      SIGABRT and for no other signal: [rt_sigaction_spec] declines
-      every install outside SIGINT and SIGTERM, so what SIGKILL or
-      SIGUSR1 would do to this process is not something the model can
-      read off its own state.
+      SIGABRT and for no other signal: [rt_sigaction_spec] answers an
+      install only for SIGINT and SIGTERM, and for SIGABRT and SIGCHLD
+      only with the handler SIG_DFL, so what SIGKILL or SIGUSR1 would do to this
+      process is not something the model can read off its own state.
     - [State.m_tid] not yet pinned.  Nothing has made the tid
       observable, so there is no value to compare [pid] against.
 
     ** WHY SIGABRT'S DISPOSITION IS SIG_DFL, BY CONSTRUCTION
 
-    The whole arm rests on it, and it is not an assumption: SIGABRT's
-    disposition cannot be changed inside the modeled surface.
-    [rt_sigaction_spec] answers an install only when
-    [sigaction_accepted] holds, and that predicate admits signals 2 and
-    15.  Signal 6 with a non-NULL [act] is [unmodeled], whatever handler
-    it carries — including musl's own SIG_DFL install on abort's second
-    path.  So in any run this model covers, SIGABRT still has its
-    boot-time disposition, which is SIG_CORE: terminate, and dump core
-    (kernel/signal.c, SIG_KERNEL_COREDUMP_MASK; the core dump is a file
-    the process never sees, so nothing of it reaches the trace).
+    The whole arm rests on it.  INSIDE THE MODELED SURFACE it is not an
+    assumption: SIGABRT's disposition cannot be changed there.
+    [rt_sigaction_spec] answers an install for signal 6 in one case
+    only: the handler word is SIG_DFL ([sigabrt_dfl_install]), which is
+    musl's own install on abort's second path.  Signal 6 with SIG_IGN or
+    a handler address is [unmodeled].  So the one install the model
+    admits sets the disposition it already has.  What the model DOES
+    assume is the start: that the launch leaves SIGABRT at SIG_DFL.  It
+    cannot derive that, because [execve] keeps an inherited SIG_IGN, so
+    it is the launch premise written down above [Run.unmodeled_at]
+    ("THE PROCESS STARTS WITH SIGABRT AT ITS DEFAULT DISPOSITION").
+    Under that premise SIGABRT keeps its boot-time
+    disposition in every run this model covers, which is SIG_CORE:
+    terminate, and dump core (kernel/signal.c, SIG_KERNEL_COREDUMP_MASK;
+    the core dump is a file the process never sees, so nothing of it
+    reaches the trace).  On abort's second path Linux agrees with the
+    model even after an inherited SIG_IGN: a blocked signal is never
+    ignored at send time ([sig_ignored]), the SIG_DFL install does not
+    discard it ([do_sigaction]), and the unblock delivers it at SIG_DFL
+    (kernel/signal.c, Linux v6.18.46, commit 1f99e9ab748f).
 
     That is the sentence [sigaction_accepted]'s own note has to be read
     against: its list is "the signals whose disposition no modeled

@@ -43,6 +43,7 @@ Definition check_getdents64 (fd count : word) (eff : SyscallEffect) (m : Model)
   | Some (FdSocket _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdOpaque _) => CheckUnmodeled   (* declined: [Readdir.getdents64_spec] *)
   | Some FdDir =>
       if getdents64_no_room count then
         match eff with
@@ -62,6 +63,7 @@ Proof.
   intros fd count eff m m' evs i H.
   unfold check_getdents64 in H. unfold getdents64_spec.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
+    try discriminate;
     (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
     (* the five -ENOTDIR arms and the -EBADF one are plain returns *)
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
@@ -93,7 +95,10 @@ Proof.
   intros fd count eff m i H.
   unfold check_getdents64 in H. unfold getdents64_spec.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
-    try (now apply check_ret_only_no_unmodeled in H).
+    try (now apply check_ret_only_no_unmodeled in H);
+    (* the opaque kinds: the spec declines them outright *)
+    try (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota; srw Hfd;
+         apply unmodeled_intro).
   eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota; srw Hfd.
   destruct (getdents64_no_room count) eqn:Hroom; [|apply unmodeled_intro].
   exfalso.
@@ -146,6 +151,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
     hall Hfd.
   all: try (exfalso; inv_ok; discriminate).
+  (* the opaque kinds, declined on both sides *)
+  all: try reflexivity.
   destruct (getdents64_no_room count) eqn:Hroom; cbv iota in *;
     [|reflexivity].
   (* Neither arm of the [alt] can be [Unmodeled]: a [choose] bound to a

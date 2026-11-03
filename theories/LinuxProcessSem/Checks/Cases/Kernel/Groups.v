@@ -32,10 +32,10 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
    produce it — and for two separate readings of it.  A user program
    cannot choose how many supplementary groups its own process has:
    [setgroups] needs privilege the run does not have, and the model
-   declines it anyway, so the branches that turn on that number are only
-   conditionally reachable from a run and the fixtures below choose it
-   instead.  And a [CheckReject] needs a kernel answering something no
-   kernel answers.
+   answers it only for the EMPTY list, so the branches that turn on a
+   non-zero count are only conditionally reachable from a run and the
+   fixtures below choose it instead.  And a [CheckReject] needs a kernel
+   answering something no kernel answers.
    ------------------------------------------------------------------------- *)
 
 (** A process with NO supplementary groups.  [Cases.Prelude.demo_groups]
@@ -175,12 +175,66 @@ Example setgroups_refuses_before_it_reads_an_argument :
        (mkEffect (errno_ret EFAULT) [] []) demo_model = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
-(** A PRIVILEGED [setgroups] would write the supplementary group list
-    that [getgroups] above reports the length of, so accepting the call
-    and discarding what it wrote would make the next [getgroups] answer
-    for a list nobody set; the model declines instead.  [ENVIRONMENT]:
-    needs uid 0. *)
+(** A PRIVILEGED [setgroups] with a NON-EMPTY list would write a list
+    read from user memory, which the model does not import, so it
+    declines -- for a size of 1, for a size Linux refuses with -EINVAL
+    ([NGROUPS_MAX] + 1), and for a negative size alike.  [ENVIRONMENT]:
+    needs uid 0.  The empty list is answered; see
+    [root_setgroups_empty_list_clears_the_groups] below. *)
 Example privileged_setgroups_fails_closed :
-  check_syscall (mkInput 159 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) root_model = CheckUnmodeled.
+  check_syscall (mkInput 159 [1; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) root_model = CheckUnmodeled
+  /\ check_syscall (mkInput 159 [65537; 4096; 0; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) root_model = CheckUnmodeled
+  /\ check_syscall (mkInput 159 [4294967295; 4096; 0; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) root_model = CheckUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Definition setgroups_in (gidsetsize grouplist : word) : SyscallInput :=
+  mkInput 159 [gidsetsize; grouplist; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** THE PRIVILEGED EMPTY LIST, which the model before this arm declined:
+    [setgroups(0, NULL)] by root answers 0 and clears the list, or
+    answers -ENOMEM ([groups_alloc] or [prepare_creds]) and keeps it.
+    The pointer is never read at size 0, so a garbage one is the same
+    call, and [gidsetsize] is an [int], so a0 = 2^32 is size 0 too.  No
+    other answer is admitted: not -EPERM (the caller is privileged), not
+    -EFAULT (nothing is copied).  [ENVIRONMENT]: needs uid 0. *)
+Example root_setgroups_empty_list_clears_the_groups :
+  check_syscall (setgroups_in 0 0) (mkEffect 0 [] []) root_model
+    = CheckOk (with_creds (mkCreds 0 0 0 0 0 0 []) demo_model) []
+  /\ check_syscall (setgroups_in 0 3735928559) (mkEffect 0 [] []) root_model
+       = CheckOk (with_creds (mkCreds 0 0 0 0 0 0 []) demo_model) []
+  /\ check_syscall (setgroups_in 4294967296 0) (mkEffect 0 [] []) root_model
+       = CheckOk (with_creds (mkCreds 0 0 0 0 0 0 []) demo_model) []
+  /\ check_syscall (setgroups_in 0 0) (mkEffect (errno_ret ENOMEM) [] [])
+       root_model = CheckOk root_model []
+  /\ check_syscall (setgroups_in 0 0) (mkEffect (errno_ret EPERM) [] [])
+       root_model = CheckReject
+  /\ check_syscall (setgroups_in 0 0) (mkEffect (errno_ret EFAULT) [] [])
+       root_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** ...and the list it leaves is the one [getgroups] then reports: the
+    count was 3 ([demo_groups]) and is 0 after the call. *)
+Example root_setgroups_empty_list_then_getgroups_reports_zero :
+  match check_syscall (setgroups_in 0 0) (mkEffect 0 [] []) root_model with
+  | CheckOk m' _ => check_syscall (getgroups_in 0 0) (mkEffect 0 [] []) m'
+                      = CheckOk m' []
+  | _ => False
+  end.
 Proof. vm_compute; reflexivity. Qed.
+
+(** THE CONTROL, which the model before this arm passed too: the same
+    [setgroups(0, NULL)] by an UNPRIVILEGED caller is -EPERM and nothing
+    else -- [may_setgroups] is tested before the size. *)
+Example setgroups_unprivileged_still_eperm :
+  check_syscall (setgroups_in 0 0) (mkEffect (errno_ret EPERM) [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (setgroups_in 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (setgroups_in 0 0) (mkEffect (errno_ret ENOMEM) [] [])
+       demo_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.

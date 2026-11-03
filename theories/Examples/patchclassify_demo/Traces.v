@@ -91,12 +91,15 @@
 
     ** How it is proved, and the two hazards avoided
 
-    The engine is [exits_c_star_trace]: an induction on the fuel of
-    [Checks.Examples.exits_c], run in parallel with an inversion of the
-    [Run.star], exactly as [Checks.Examples.exits_c_must_exit_at] runs
-    the same induction against [MustExit.must_exit_at].  It reaches an
-    upper bound on the accumulated trace of any [Run.star], which is the
-    half [MustExit] cannot give.
+    The engine is [Checks.Examples.exits_c_star_trace]: an induction on
+    the fuel of [Checks.Examples.exits_c], run in parallel with an
+    inversion of the [Run.star], exactly as
+    [Checks.Examples.exits_c_must_exit_at] runs the same induction against
+    [MustExit.must_exit_at].  It reaches an upper bound on the accumulated
+    trace of any [Run.star], which is the half [MustExit] cannot give.
+    It lives in [Checks.Examples] beside that lemma because the checks
+    layer needs the same upper bound for
+    [Checks.Examples.exits_c_never_dies].
 
     The lower half is then FREE: [MustExit.must_exit_at_realizes] already
     produces a [Run.star] whose trace ends in the exit event, and the
@@ -113,8 +116,9 @@
     [vm_compute] is asked to find: chaining existential holes through
     the step function does not terminate, while the same reduction under
     a hypothesis finishes at once.  The proofs below have no [eexists]
-    at all — [exit_step_forced] states the one-step fact as an equation
-    between the events and lets inversion supply the successor. *)
+    at all — [Checks.Examples.exit_step_forced] states the one-step fact
+    as an equation between the events and lets inversion supply the
+    successor. *)
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -155,118 +159,6 @@ Proof.
 Qed.
 
 (* =========================================================================
-   One step out of a configuration whose pending syscall is [exit]
-   ========================================================================= *)
-
-(** At an [ecall] carrying the exit number there is exactly one kind of
-    successor transition, it emits exactly one event, and it lands
-    halted.
-
-    All three halves are needed by the induction below and none is
-    available from [MustExit]: [MustExit.must_exit_at] speaks about
-    where the run ENDS and says nothing about what it EMITTED on the
-    way.  The proof is [Checks.Examples.exit_dispatch_forced] (the exit
-    spec admits one outcome triple, whose event list is empty) against
-    [Checks.Examples.exit_dispatch_halts] (that outcome halts, which is
-    what rules out the ordinary-syscall transition); the error
-    constructors of [Run.sstep] cannot unify with [Run.SNext] and are
-    discarded by inversion. *)
-Lemma exit_step_forced : forall segs ms model x8 evs c',
-  m_halted model = None ->
-  ms_svc_pending ms = Some x8 ->
-  exit_sysno (in_sysno (sys_input segs ms x8)) ->
-  sstep segs (mkCfg ms model) evs (SNext c') ->
-  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
-  /\ m_halted (cfg_model c') <> None.
-Proof.
-  intros segs ms model x8 evs c' Hh Hsvc Hno Hss.
-  assert (Harg : in_arg (sys_input segs ms x8) 0 = ms_gpr ms 0) by reflexivity.
-  inversion Hss; subst; try congruence; unify_svc x8.
-  - (* an ordinary syscall step: its post-model would have to run on,
-       and every admissible exit outcome halts *)
-    match goal with
-    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
-        pose proof (exit_dispatch_halts _ _ _ _ _ Hno H) as Hhalts
-    end.
-    congruence.
-  - (* the exit transition: its event list is forced empty, its
-       post-model is the pre-model with the status stored, and the
-       status is the low byte of a0 — which is what [exits_c] compared *)
-    match goal with
-    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
-        destruct (exit_dispatch_forced _ _ _ _ _ Hno H) as (_ & Hm' & Hevs)
-    end.
-    subst.
-    match goal with
-    | [ H : m_halted (with_halted ?v _) = Some ?c |- _ ] =>
-        assert (Hcode : c = v)
-          by (rewrite m_halted_with_halted in H; congruence)
-    end.
-    rewrite Harg in Hcode.
-    split.
-    + cbn [List.app]. rewrite m_fs_with_halted, Hcode. reflexivity.
-    + cbn [cfg_model]. rewrite m_halted_with_halted. discriminate.
-  - (* the kill transition: an exit's post-model is not a killed one *)
-    exfalso.
-    match goal with
-    | [ H : syscall_spec _ _ (Monad.Ok _ ?m' _), Hk : m_killed ?m' = Some _ |- _ ] =>
-        rewrite (exit_dispatch_not_killed _ _ _ _ _ Hno H) in Hk; discriminate
-    end.
-Qed.
-
-(* =========================================================================
-   The upper bound: every [Run.star] emits at most the exit event
-   ========================================================================= *)
-
-(** The engine.  Same induction as
-    [Checks.Examples.exits_c_must_exit_at], against a [Run.star] instead
-    of against [MustExit.must_exit_at]: at an instruction the star's
-    first transition is forced to be [Run.sstep_instr], which emits
-    nothing and leaves the model fixed (that is what
-    [Run.mi_account_step_no_lazy] buys, and it is why [m_fs model] in the
-    conclusion survives the step); at the [ecall] it is forced to be
-    [Run.sstep_exit] by [exit_step_forced], and the configuration it
-    lands in is halted, so [MustExit.star_from_halted] ends the run
-    there. *)
-Lemma exits_c_star_trace : forall segs code fuel ms model tr c',
-  m_halted model = None ->
-  m_vm_lazy model = [] ->
-  exits_c segs code fuel ms = true ->
-  star segs (mkCfg ms model) tr c' ->
-  tr = [] \/ tr = [ExitEv code (m_fs model)].
-Proof.
-  intros segs code fuel. induction fuel as [|fuel IH];
-    intros ms model tr c' Hh Hlazy Hc Hstar; [discriminate|].
-  cbn [exits_c] in Hc.
-  destruct (ms_svc_pending ms) as [x8|] eqn:Hsvc.
-  - (* the terminating ecall *)
-    apply andb_true_iff in Hc as [Hx8 Hcode].
-    apply bv_eqb_eq in Hcode. subst code.
-    assert (Hno : exit_sysno (in_sysno (sys_input segs ms x8))).
-    { cbn [in_sysno sys_input].
-      apply orb_true_iff in Hx8. destruct Hx8 as [H|H]; apply Z.eqb_eq in H;
-        [left|right]; exact H. }
-    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
-      [left; reflexivity |].
-    destruct (exit_step_forced _ _ _ _ _ _ Hh Hsvc Hno Hss) as (Hevs & Hne).
-    destruct (star_from_halted _ _ _ _ Hstar1 Hne) as (Htr1 & _).
-    right. rewrite Hevs, Htr1, app_nil_r. reflexivity.
-  - (* an ordinary instruction *)
-    destruct (RiscvSemantics.step segs ms) as [ms'| |] eqn:Hstep;
-      [|discriminate|discriminate].
-    assert (Hacc : mi_account_step segs ms model = MachineOk (ms', model)).
-    { rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity. }
-    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
-      [left; reflexivity |].
-    inversion Hss; subst; try congruence.
-    match goal with
-    | [ H : mi_account_step _ _ _ = MachineOk (?a, ?b) |- _ ] =>
-        rewrite Hacc in H; injection H as -> ->
-    end.
-    cbn [List.app]. exact (IH _ _ _ _ Hh Hlazy Hc Hstar1).
-Qed.
-
-(* =========================================================================
    The characterization
    ========================================================================= *)
 
@@ -300,10 +192,9 @@ Proof.
   cbn [run bh_traces]. unfold init_config.
   (* the machine half: the premise holds at this run's initial state *)
   assert (Hms : exits_c segs code fuel
-                  (init_machine_state segs pc ph sp rnd (in_argv inp)
-                     (in_envp inp) (in_uid inp) (in_hwcap inp)) = true).
-  { destruct (init_machine_state_abstracts segs pc ph sp rnd (in_argv inp)
-                (in_envp inp) (in_uid inp) (in_hwcap inp)) as (mem & rom & Hshape).
+                  (init_machine_state segs pc ph sp mbase rnd inp) = true).
+  { destruct (init_machine_state_abstracts segs pc ph sp mbase rnd inp)
+      as (mem & rom & Hshape).
     rewrite Hshape. apply Hc. }
   (* the model half, at this run's initial model *)
   pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp lim inp)

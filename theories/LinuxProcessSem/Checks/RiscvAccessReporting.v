@@ -124,9 +124,20 @@ Example store_conditional_reports :
       Some (access_at 0x200 8).
 Proof. vm_compute. repeat split. Qed.
 
-Example failed_store_conditionals_report_no_access :
-  reported_ranges (access_state 0x138 0x200 None) = Some [] /\
-  reported_ranges (access_state 0x13c 0x200 None) = Some [].
+(** A FAILING sc still passes the store permission check ([Sem.exec]'s
+    [Sc] arm), so it reports the load and the store-back of the same
+    bytes that check is written as: with no reservation, and with a
+    reservation at another address.  On memory the process may not write
+    -- the read-only code segment at [0x100] -- it faults instead of
+    retiring with rd = 1. *)
+Example failed_store_conditionals_check_store_permission :
+  reported_ranges (access_state 0x138 0x200 None) = Some (access_pair 0x200 4) /\
+  reported_ranges (access_state 0x13c 0x200 None) = Some (access_pair 0x200 8) /\
+  reported_ranges
+    (access_state 0x138 0x200 (Some (Z_to_bv 64 0x208))) =
+      Some (access_pair 0x200 4) /\
+  reported_ranges (access_state 0x138 0x100 None) = None /\
+  reported_ranges (access_state 0x13c 0x100 None) = None.
 Proof. vm_compute. repeat split. Qed.
 
 Example atomic_read_modify_write_reports :

@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Sys — worked examples over getpid (172), gettid (178), uname (160), prlimit64 (261)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Sys — worked examples over getpid (172), getppid (173), gettid (178), getsid (156), uname (160), prctl (167), prlimit64 (261)
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the worked examples for the syscalls defined there,
@@ -311,6 +311,165 @@ Example prlimit64_read_after_set_rejects_the_old_pair :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
+(* -------------------------------------------------------------------------
+   prlimit64 (261): THE TWO STRUCT COPIES THAT WALKED OFF THE TOP
+
+   Both arms read their 16-byte [struct rlimit64] through
+   [State.copy_bytes_map], which asks [State.access_okb] before the
+   walk; [Kernel.Sys.prlimit64_spec]'s note says why, and
+   [State.copy_bytes_map]'s note carries the wrap argument.  Each group
+   has the shape of [Checks.Cases.Net.Socket]'s wrapping-read groups:
+   the wrapping call refused, a NEIGHBOURING ordinary call at the top of
+   what [State.access_okb] accepts still answered — so the guard is not
+   a blanket refusal of high addresses — and the control that the bare
+   walk really would have passed, without which the refusal would also
+   hold if the memory quietly stopped short.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE: [wmem_open] answers [Some]
+   everywhere and could not tell a wrapping pointer from any other.
+   ------------------------------------------------------------------------- *)
+
+(* ---- the read's [old_rlim] --------------------------------------------- *)
+
+(** Eight writable bytes below the top and eight from 0: the 16-byte
+    copy-out covers both halves, so the bare walk answered [Some] and
+    the first read was answered 0, with the pair stored across the wrap
+    and pinned as the record. *)
+Definition prlimit64_wrap_old_rlim : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition prlimit64_wrap_old_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example prlimit64_wrap_old_would_pass_the_bare_walk :
+  read_bytes_map prlimit64_wrap_old_mem prlimit64_wrap_old_rlim (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example prlimit64_wrap_old_is_not_copyable :
+  copy_bytes_map prlimit64_wrap_old_mem prlimit64_wrap_old_rlim 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT, nothing stored and nothing pinned: the model it answers in
+    is the one the call started in.  The [copy_to_user] of [old_rlim] in
+    [SYSCALL_DEFINE4(prlimit64)] (kernel/sys.c) refuses this range in
+    [access_ok] before it stores a byte.  The first read the bare walk
+    admitted is refused, and so is an -EFAULT claiming a copy-in. *)
+Example prlimit64_wrapping_old_rlim_is_efault :
+  check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                   (fun _ => None) prlimit64_wrap_old_mem)
+    (mkEffect (errno_ret EFAULT) [] []) rlim_model
+  = CheckOk rlim_model []
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_wrap_old_mem)
+       (mkEffect 0 [(prlimit64_wrap_old_rlim, rlim_bytes 3 7)] []) rlim_model
+     = CheckReject
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_wrap_old_mem)
+       (with_copyins [(prlimit64_wrap_old_rlim, 16%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) rlim_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the last sixteen bytes [State.access_okb] accepts,
+    writable end to end.  The same first read is still answered there —
+    0, the pair stored at the top, the record pinned — and -EFAULT is
+    refused. *)
+Definition prlimit64_top_old_rlim : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition prlimit64_top_old_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example prlimit64_old_rlim_at_the_top_still_answers :
+  check_syscall (mkInput 261 [0; 4; 0; prlimit64_top_old_rlim; 0; 0]
+                   (fun _ => None) prlimit64_top_old_mem)
+    (mkEffect 0 [(prlimit64_top_old_rlim, rlim_bytes 3 7)] []) rlim_model
+  = CheckOk (with_rlimit_core (rlim_bytes 3 7) rlim_model) []
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_top_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_top_old_mem)
+       (mkEffect (errno_ret EFAULT) [] []) rlim_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- the set's [new_rlim] ---------------------------------------------- *)
+
+(** Eight readable bytes below the top and eight from 0, holding
+    dropbear's own set: soft 0 in the eight bytes below the top, hard 7
+    in the byte at 0.  The bare walk reads exactly that pair across the
+    wrap, and against [rlim_pinned]'s hard limit of 7 it is the set
+    [Kernel.Sys.prlimit64_spec] answers 0 to and records. *)
+Definition prlimit64_wrap_new_rlim : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition prlimit64_wrap_new_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (if (bv_unsigned a =? 0)%Z then Z_to_bv 8 7 else Z_to_bv 8 0)
+           else None.
+
+Example prlimit64_wrap_new_would_pass_the_bare_walk :
+  read_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** ...and what it reads is the pair the set arm would have installed. *)
+Example prlimit64_wrap_new_bare_walk_reads_a_settable_pair :
+  read_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim (Z_to_bv 64 16)
+    = Some (rlim_bytes 0 7).
+Proof. check_eq. Qed.
+
+Example prlimit64_wrap_new_is_not_copyable :
+  copy_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with an empty copy-in ledger and the record unchanged.  The
+    [copy_from_user] of [new_rlim] in [SYSCALL_DEFINE4(prlimit64)]
+    (kernel/sys.c) refuses this range in [access_ok] before it loads a
+    byte, and before the pid lookup.  The set the bare walk admitted —
+    0, the 16 bytes in the ledger, the record moved to [(0, 7)] — is
+    refused, and so is an -EFAULT claiming the copy-in. *)
+Example prlimit64_wrapping_new_rlim_is_efault :
+  check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                   prlimit64_wrap_new_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) rlim_pinned
+  = CheckOk rlim_pinned []
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                     prlimit64_wrap_new_mem (fun _ => None))
+       (with_copyins [(prlimit64_wrap_new_rlim, 16%nat)] (mkEffect 0 [] []))
+       rlim_pinned
+     = CheckReject
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                     prlimit64_wrap_new_mem (fun _ => None))
+       (with_copyins [(prlimit64_wrap_new_rlim, 16%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) rlim_pinned
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the same pair in the last sixteen bytes
+    [State.access_okb] accepts, readable end to end.  The set is still
+    answered — 0, the copy-in recorded, the record moved — and -EFAULT
+    is refused. *)
+Definition prlimit64_top_new_rlim : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition prlimit64_top_new_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if (bv_unsigned a =? TASK_SIZE - 8)%Z
+                      then Z_to_bv 8 7 else Z_to_bv 8 0)
+           else None.
+
+Example prlimit64_new_rlim_at_the_top_still_sets :
+  check_syscall (mkInput 261 [0; 4; prlimit64_top_new_rlim; 0; 0; 0]
+                   prlimit64_top_new_mem (fun _ => None))
+    (with_copyins [(prlimit64_top_new_rlim, 16%nat)] (mkEffect 0 [] []))
+    rlim_pinned
+  = CheckOk (with_rlimit_core (rlim_bytes 0 7) rlim_pinned) []
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_top_new_rlim; 0; 0; 0]
+                     prlimit64_top_new_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) rlim_pinned
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
 (* =========================================================================
    PART 5 — process inputs (argv and the auxv)
 
@@ -486,4 +645,422 @@ Example unprivileged_setresuid_may_rearrange_held_ids :
   /\ check_syscall (mkInput 147 [4294967295; 1003; 4294967295; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   prctl (167): the setters kernel/sys.c answers
+
+   Each extension is pinned in pairs: the call the model used to DECLINE
+   (every option but [PR_CAPBSET_READ] was [unmodeled]) now answered, its
+   refusal answered too, and beside them a control the old model already
+   passed -- an option that still declines, and [PR_CAPBSET_READ]
+   unchanged -- so a [prctl] that answered everything would fail here as
+   surely as one that answered nothing.  The model is [demo_model]
+   throughout.  [PR_SET_DUMPABLE] and [PR_SET_NO_NEW_PRIVS] hand it back
+   unchanged; [PR_SET_PDEATHSIG] stores its argument, and its reader
+   [PR_GET_PDEATHSIG] has examples of its own at the end of this file.
+   ========================================================================= *)
+
+Definition prctl_in (opt a2 a3 a4 a5 : word) : SyscallInput :=
+  mkInput 167 [opt; a2; a3; a4; a5; 0] (fun _ => None) (fun _ => None).
+
+(** [prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)] is 0, the call bwrap makes
+    in [main]; any other [arg2], or any nonzero [arg3]..[arg5] -- a2..a4,
+    read as whole registers -- is -EINVAL.  The option is an [int], so a
+    high half on a0 is discarded and 2^32 + 38 is the same call. *)
+Example prctl_no_new_privs_answered :
+  check_syscall (prctl_in 38 1 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 2 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 1 0 0 1)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 1 4294967296 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4294967334 1 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  (* and each answer is the only one: no 0 for a refused shape, no
+     -EINVAL for the accepted one *)
+  /\ check_syscall (prctl_in 38 2 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 38 1 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [prctl(PR_SET_PDEATHSIG, sig)] is 0 for [sig] in 0..64 -- the full
+    register, [valid_signal] on an [unsigned long] -- and stores [sig];
+    -EINVAL above, 65 and 2^32 + 9 included, stores nothing.  bwrap's call
+    is [SIGKILL] (9). *)
+Example prctl_pdeathsig_answered :
+  check_syscall (prctl_in 1 9 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk (with_pdeath_signal 9 demo_model) []
+  /\ check_syscall (prctl_in 1 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk (with_pdeath_signal 0 demo_model) []
+  /\ check_syscall (prctl_in 1 64 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk (with_pdeath_signal 64 demo_model) []
+  /\ check_syscall (prctl_in 1 65 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 4294967305 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 65 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  (* arg3..arg5 are not read on this option *)
+  /\ check_syscall (prctl_in 1 9 7 7 7) (mkEffect 0 [] []) demo_model
+       = CheckOk (with_pdeath_signal 9 demo_model) [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [prctl(PR_SET_DUMPABLE, v)] is 0 for [SUID_DUMP_DISABLE] (0) and
+    [SUID_DUMP_USER] (1), the call bwrap makes after it drops privilege,
+    and -EINVAL for anything else, [SUID_DUMP_ROOT] (2) included. *)
+Example prctl_dumpable_answered :
+  check_syscall (prctl_in 4 1 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 2 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 2 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before these three options passed too.
+    The readers [PR_GET_NO_NEW_PRIVS] (39) and [PR_GET_DUMPABLE] (3)
+    still decline, as does the tagging option 55 the [State.access_okb]
+    argument rests on, and [PR_CAPBSET_READ] still admits 1 for
+    capability 0. *)
+Example prctl_options_still_declined :
+  check_syscall (prctl_in 39 0 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckUnmodeled
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckUnmodeled
+  /\ check_syscall (prctl_in 55 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckUnmodeled
+  /\ check_syscall (prctl_in 23 0 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [PR_CAPBSET_READ] FOR A CAPABILITY THE MODEL DOES NOT ASSUME: 0 or 1.
+    [prctl(PR_CAPBSET_READ, 32)] reads bit 32 ([CAP_MAC_OVERRIDE]) of the
+    bounding set, which a container's set lacks (Docker's default does
+    not hold it), and there Linux answers 0.  The model before
+    [Kernel.Sys.capbset_assumed] answered 1 alone and REFUSED that 0;
+    now both are admitted, the model is left unchanged, and an errno
+    is still refused. *)
+Example prctl_capbset_read_unassumed_cap_is_a_choice :
+  check_syscall (prctl_in 23 32 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 32 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 32 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROLS, which the model before the narrowing passed too.
+    [CAP_SETUID] (7) and [CAP_SETGID] (6) are the bits
+    [State.creds_privileged] assumes, so 1 is their only answer and the
+    kernel's 0 is REFUSED: a kernel whose bounding set lacks them shows
+    up as a rejection.  41, past [CAP_LAST_CAP], is -EINVAL and nothing
+    else. *)
+Example prctl_capbset_read_assumed_caps_and_bound :
+  check_syscall (prctl_in 23 7 0 0 0) (mkEffect 1 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 7 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 6 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 6 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 41 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 41 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 41 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   getppid (173): a fresh choice on every call
+   ========================================================================= *)
+
+Definition getppid_in : SyscallInput :=
+  mkInput 173 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** Any pid below [Fork.PID_MAX_ENVELOPE] is admitted, 0 (a parent in
+    an ancestor pid namespace) included, and the model comes back
+    UNCHANGED: two different answers are both admissible on the same
+    model, which is the "no pin" half of the spec.  The envelope bound
+    and an errno are refused.  The model before this arm declined every
+    [getppid]. *)
+Example getppid_answers_any_pid_in_the_envelope :
+  check_syscall getppid_in (mkEffect 4242 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       demo_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before this arm passed too: [getpid]
+    on the same model is untouched by the new number -- it still pins
+    the tid at its first answer, where [getppid] pins nothing. *)
+Example getppid_leaves_getpid_alone :
+  check_syscall (mkInput 172 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 4242 [] []) demo_model
+  = CheckOk (with_tid 4242 demo_model) [].
+Proof. check_eq. Qed.
+
+(* =========================================================================
+   getresuid (148) / getresgid (150): three stores, in order
+
+   The model before these two arms declined both numbers, so every
+   answered example below is one it declined.  [split_ids_model]'s six
+   different ids make each store's value tell which id it is.
+   ========================================================================= *)
+
+(** Twelve writable bytes at 4096: room for three ids at 4096, 4100 and
+    4104, and nothing at 8192. *)
+Definition getres_wmem : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a 4108 then Some 0 else None.
+
+Definition getresuid_in (rp ep sp : word) : SyscallInput :=
+  mkInput 148 [rp; ep; sp; 0; 0; 0] (fun _ => None) getres_wmem.
+
+Definition getresgid_in (rp ep sp : word) : SyscallInput :=
+  mkInput 150 [rp; ep; sp; 0; 0; 0] (fun _ => None) getres_wmem.
+
+(** Three good pointers: the real, effective and saved ids land in that
+    order, 4 bytes each, the call answers 0 and the model is unchanged.
+    The uid call stores the uid triple and the gid call the gid triple;
+    the other triple, the triple out of order, and an errno are each
+    refused. *)
+Example getresid_stores_the_triple :
+  check_syscall (getresuid_in 4096 4100 4104)
+    (mkEffect 0 [(4096, word_le4 1000); (4100, word_le4 1001);
+                 (4104, word_le4 1002)] []) split_ids_model
+    = CheckOk split_ids_model []
+  /\ check_syscall (getresgid_in 4096 4100 4104)
+       (mkEffect 0 [(4096, word_le4 2000); (4100, word_le4 2001);
+                    (4104, word_le4 2002)] []) split_ids_model
+     = CheckOk split_ids_model []
+  /\ check_syscall (getresgid_in 4096 4100 4104)
+       (mkEffect 0 [(4096, word_le4 1000); (4100, word_le4 1001);
+                    (4104, word_le4 1002)] []) split_ids_model
+     = CheckReject
+  /\ check_syscall (getresuid_in 4096 4100 4104)
+       (mkEffect 0 [(4096, word_le4 1001); (4100, word_le4 1000);
+                    (4104, word_le4 1002)] []) split_ids_model
+     = CheckReject
+  /\ check_syscall (getresuid_in 4096 4100 4104)
+       (mkEffect (errno_ret EFAULT) [] []) split_ids_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** A POINTER [access_ok] REFUSES: -EFAULT, with the stores before it
+    already made and none after.  [AT_FDCWD] read as an address lies above
+    [State.TASK_SIZE].  A refused second pointer leaves the real id at
+    the first, and -EFAULT without that store is refused; a refused first
+    pointer stores nothing; a refused third leaves two stores.  A range
+    [access_ok] admits that memory does not back is declined, after a
+    store (8192) and for a store that runs past the mapping (4106). *)
+Example getresid_fault_after_a_store :
+  check_syscall (getresuid_in 4096 AT_FDCWD 4104)
+    (mkEffect (errno_ret EFAULT) [(4096, word_le4 1000)] []) split_ids_model
+    = CheckOk split_ids_model []
+  /\ check_syscall (getresuid_in 4096 AT_FDCWD 4104)
+       (mkEffect (errno_ret EFAULT) [] []) split_ids_model = CheckReject
+  /\ check_syscall (getresuid_in AT_FDCWD 4100 4104)
+       (mkEffect (errno_ret EFAULT) [] []) split_ids_model
+     = CheckOk split_ids_model []
+  /\ check_syscall (getresgid_in 4096 4100 AT_FDCWD)
+       (mkEffect (errno_ret EFAULT) [(4096, word_le4 2000); (4100, word_le4 2001)] [])
+       split_ids_model = CheckOk split_ids_model []
+  /\ check_syscall (getresuid_in 4096 8192 4104)
+       (mkEffect (errno_ret EFAULT) [(4096, word_le4 1000)] []) split_ids_model
+     = CheckUnmodeled
+  /\ check_syscall (getresuid_in 4106 4100 4104)
+       (mkEffect (errno_ret EFAULT) [] []) split_ids_model = CheckUnmodeled.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before these arms passed too: the
+    one-id readers on the same model still answer their own field, and
+    [setfsuid] (151), the number between the two new ones, still
+    declines. *)
+Example getresid_leaves_the_readers_alone :
+  check_syscall (mkInput 175 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 1001 [] []) split_ids_model = CheckOk split_ids_model []
+  /\ check_syscall (mkInput 177 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2001 [] []) split_ids_model = CheckOk split_ids_model []
+  /\ check_syscall (mkInput 151 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 1001 [] []) split_ids_model = CheckUnmodeled.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   getsid (156): the tid after a setsid, a fresh choice before one
+   ========================================================================= *)
+
+Definition getsid_in (pid : word) : SyscallInput :=
+  mkInput 156 [pid; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** A model whose setsid has succeeded with the tid 1234. *)
+Definition session_leader_model : Model :=
+  with_setsid_succeeded (with_tid 1234 demo_model).
+
+(** BEFORE A SETSID: any pid below [Fork.PID_MAX_ENVELOPE] is admitted for
+    pid 0, 0 included (a session led from an ancestor pid namespace), and
+    the model comes back unchanged, so two different answers are both
+    admissible.  The envelope bound and an errno are refused.  The pid is
+    a [pid_t], so 2^32 is pid 0.  The model before this arm declined
+    every [getsid]. *)
+Example getsid_before_setsid_is_a_fresh_choice :
+  check_syscall (getsid_in 0) (mkEffect 4242 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (getsid_in 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (getsid_in 4294967296) (mkEffect 7 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (getsid_in 0) (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       demo_model = CheckReject
+  /\ check_syscall (getsid_in 0) (mkEffect (errno_ret ESRCH) [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** AFTER A SETSID: the tid and nothing else, for pid 0 and for the
+    caller's own tid.  Another pid declines, as does a negative one, and
+    the tid itself declines on a model that has not pinned it. *)
+Example getsid_after_setsid_is_the_tid :
+  check_syscall (getsid_in 0) (mkEffect 1234 [] []) session_leader_model
+    = CheckOk session_leader_model []
+  /\ check_syscall (getsid_in 0) (mkEffect 4242 [] []) session_leader_model
+       = CheckReject
+  /\ check_syscall (getsid_in 1234) (mkEffect 1234 [] []) session_leader_model
+       = CheckOk session_leader_model []
+  /\ check_syscall (getsid_in 4242) (mkEffect 4242 [] []) session_leader_model
+       = CheckUnmodeled
+  /\ check_syscall (getsid_in 4294967295) (mkEffect (errno_ret ESRCH) [] [])
+       session_leader_model = CheckUnmodeled
+  /\ check_syscall (getsid_in 1234) (mkEffect 1234 [] []) demo_model
+       = CheckUnmodeled.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before this arm passed too: [setsid]
+    still records its first success, and refuses a second one. *)
+Example getsid_leaves_setsid_alone :
+  check_syscall (mkInput 157 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 1234 [] []) demo_model = CheckOk session_leader_model []
+  /\ check_syscall (mkInput 157 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 1234 [] []) session_leader_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   The parent-death signal: stored by PR_SET_PDEATHSIG, read by
+   PR_GET_PDEATHSIG (2), reset by a credential change
+
+   The model before this field stored nothing for [PR_SET_PDEATHSIG] and
+   declined [PR_GET_PDEATHSIG], so every read below is one it declined.
+   ========================================================================= *)
+
+(** [prctl(option, arg2)] with [getres_wmem]'s twelve writable bytes at
+    4096. *)
+Definition prctl_mem_in (opt a2 : word) : SyscallInput :=
+  mkInput 167 [opt; a2; 0; 0; 0; 0] (fun _ => None) getres_wmem.
+
+(** A root process that has set [SIGKILL] (9) as its parent-death
+    signal, as bwrap's parent does. *)
+Definition pdeath_root_model : Model := with_pdeath_signal 9 root_model.
+
+(** SET, THEN GET: [prctl(PR_SET_PDEATHSIG, SIGKILL)] stores 9, and
+    [prctl(PR_GET_PDEATHSIG, p)] then stores the 4-byte [int] 9 at [p] and
+    answers 0.  The launch value 0 at [p] is refused after the set, and so
+    is 9 before it. *)
+Example pdeath_set_then_get_reads_sigkill :
+  check_syscall (prctl_mem_in 1 9) (mkEffect 0 [] []) root_model
+    = CheckOk pdeath_root_model []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
+       pdeath_root_model = CheckOk pdeath_root_model []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
+       pdeath_root_model = CheckReject
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
+       root_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** SET, THEN A CREDENTIAL CHANGE, THEN GET.  [setresuid(1000, 1000,
+    1000)] moves the effective uid off 0, so [commit_creds] resets the
+    signal and the read gives 0.  [setresuid(1000, 0, 1000)] keeps the
+    effective uid 0, so the signal stays 9: the reset follows the
+    effective id, not the real or saved one. *)
+Example pdeath_reset_by_effective_uid_change :
+  check_syscall (prctl_mem_in 1 9) (mkEffect 0 [] []) root_model
+    = CheckOk pdeath_root_model []
+  /\ check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) pdeath_root_model
+    = CheckOk (with_pdeath_signal 0
+                 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+                    pdeath_root_model)) []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
+       (with_pdeath_signal 0
+          (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+             pdeath_root_model))
+     = CheckOk (with_pdeath_signal 0
+                  (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+                     pdeath_root_model)) []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
+       (with_pdeath_signal 0
+          (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+             pdeath_root_model))
+     = CheckReject
+  /\ check_syscall (mkInput 147 [1000; 0; 1000; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) pdeath_root_model
+     = CheckOk (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
+                  pdeath_root_model) []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
+       (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups) pdeath_root_model)
+     = CheckOk (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
+                  pdeath_root_model) [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** SET, THEN [setgroups(0, NULL)], THEN GET: the list is cleared, no id
+    moves, and the read still gives 9. *)
+Example pdeath_kept_by_setgroups :
+  check_syscall (prctl_mem_in 1 9) (mkEffect 0 [] []) root_model
+    = CheckOk pdeath_root_model []
+  /\ check_syscall (mkInput 159 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) pdeath_root_model
+    = CheckOk (with_creds (mkCreds 0 0 0 0 0 0 []) pdeath_root_model) []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
+       (with_creds (mkCreds 0 0 0 0 0 0 []) pdeath_root_model)
+     = CheckOk (with_creds (mkCreds 0 0 0 0 0 0 []) pdeath_root_model) []
+  /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
+       (with_creds (mkCreds 0 0 0 0 0 0 []) pdeath_root_model)
+     = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE GET'S POINTER, in the three bands: a range [access_ok] refuses is
+    -EFAULT with nothing stored, and the 0 with the store is refused there;
+    a range [access_ok] admits that memory does not back (8192, and 4106,
+    which runs past the mapping) is declined. *)
+Example pdeath_get_pointer_bands :
+  check_syscall (prctl_mem_in 2 AT_FDCWD) (mkEffect (errno_ret EFAULT) [] [])
+    pdeath_root_model = CheckOk pdeath_root_model []
+  /\ check_syscall (prctl_mem_in 2 AT_FDCWD)
+       (mkEffect 0 [(AT_FDCWD, word_le4 9)] []) pdeath_root_model = CheckReject
+  /\ check_syscall (prctl_mem_in 2 8192) (mkEffect 0 [(8192, word_le4 9)] [])
+       pdeath_root_model = CheckUnmodeled
+  /\ check_syscall (prctl_mem_in 2 4106) (mkEffect 0 [(4106, word_le4 9)] [])
+       pdeath_root_model = CheckUnmodeled.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROLS.  At launch the read gives 0
+    ([State.m_pdeath_signal_init_model]), and an option the model still
+    does not answer, [PR_GET_DUMPABLE] (3), stays declined with the
+    signal set. *)
+Example pdeath_controls :
+  check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
+    demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_mem_in 3 0) (mkEffect 1 [] []) pdeath_root_model
+     = CheckUnmodeled.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.

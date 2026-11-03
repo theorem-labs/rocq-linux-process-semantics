@@ -35,8 +35,10 @@
     the execution looks at.  Three facts make that precise, and none of
     them is asserted:
 
-    - [init_machine_state_abstracts]: the entry's stack pointer and the
-      whole [State.ProcInput] reach the initial MACHINE state only
+    - [init_machine_state_abstracts]: the entry — its stack pointer,
+      its mmap base and its launch draw, the three fields
+      [Run.init_machine_state] reads — and the whole [State.ProcInput]
+      reach the initial MACHINE state only
       through three components — the sp register, the writable memory
       and the read-only backing.  Everything else in
       [Run.init_machine_state] is fixed by the process model
@@ -121,19 +123,25 @@ Definition demo_init_state (pc : N) (sp : word)
      ms_mem := mem;
      ms_rom := rom |}.
 
-(** ... and it really is [Run.init_machine_state]: whatever the argv,
-    the envp, the uid and the published hart capabilities, the initial
-    machine state is the shape above at SOME memory and SOME backing.
-    This is the first of the three facts in this file's header — the one
-    that says the input reaches the machine through no other field, so
-    every field the input grows has to be quantified here or the claim
-    narrows without saying so. *)
-Lemma init_machine_state_abstracts : forall segs pc ph sp rnd argv envp uid hw,
+(** ... and it really is [Run.init_machine_state]: whatever the mmap
+    base, the launch draw and the [State.ProcInput] — and the input is
+    now passed WHOLE, since [Run.init_machine_state] reads the argv,
+    the envp, the credentials, the kernel build and the exec file name
+    off it through projections — the initial machine state is the shape
+    above at SOME memory and SOME backing.  This is the first of the
+    three facts in this file's header — the one that says the input
+    reaches the machine through no other field, so every field the
+    input grows has to be quantified here or the claim narrows without
+    saying so.  Taking the input whole is what keeps that true as
+    [State.ProcInput] grows: [State.in_kernel] and [State.in_execfn]
+    joined it for Linux's exact entry block and neither needed a new
+    parameter here. *)
+Lemma init_machine_state_abstracts : forall segs pc ph sp mbase rnd inp,
   exists mem rom,
-    init_machine_state segs pc ph sp rnd argv envp uid hw
+    init_machine_state segs pc ph sp mbase rnd inp
     = demo_init_state pc sp mem rom.
 Proof.
-  intros segs pc ph sp rnd argv envp uid hw.
+  intros segs pc ph sp mbase rnd inp.
   unfold init_machine_state, demo_init_state.
   eexists. eexists. reflexivity.
 Qed.
@@ -185,8 +193,8 @@ Proof.
   cbn [must_exit_with]. unfold init_config.
   apply (exits_c_must_exit_at _ _ fuel);
     [apply m_halted_init_model | apply init_model_no_lazy |].
-  destruct (init_machine_state_abstracts segs pc ph sp rnd (in_argv inp)
-              (in_envp inp) (in_uid inp) (in_hwcap inp)) as (mem & rom & Hshape).
+  destruct (init_machine_state_abstracts segs pc ph sp mbase rnd inp)
+    as (mem & rom & Hshape).
   rewrite Hshape. apply Hc.
 Qed.
 

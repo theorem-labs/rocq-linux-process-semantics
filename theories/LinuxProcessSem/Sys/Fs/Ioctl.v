@@ -245,4 +245,11 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          driver, which answers -EINVAL for them.  A real answer would
          be derived from that switch over a request word and a
          capability set; neither is written, so declined. *)
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED, on every request.  [SYSCALL_DEFINE3(ioctl)]'s
+         [CLASS(fd, f)] refuses an O_PATH file (-EBADF), and an eventfd
+         or a /proc/sys file reach [vfs_ioctl] through tables this model
+         has not read for the eight requests, and an [ONsFile]'s object
+         is of unknown type (fs/ioctl.c and fs/file.c, read at v6.18.44;
+         identical at v6.18.46). *)
   end.

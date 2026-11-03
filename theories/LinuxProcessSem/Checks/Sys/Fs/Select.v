@@ -17,19 +17,22 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude.
 
 (** pselect6: deterministic throughout the modeled band, so the acceptor
-    is the spec's own computation plus one equality.  Everything that
-    makes this syscall hard -- readiness, the timeout write-back, the
-    [fdt->max_fds] clamp, a real signal mask -- is decided by
-    [Select.pselect6_outcome] answering [None], which is [CheckUnmodeled]
-    here. *)
+    is the spec's own computation plus one equality, on the return, the
+    writes and the copy-from-user ledger [Select.pselect6_reads].
+    Everything that makes this syscall hard -- readiness, the timeout
+    write-back, the [fdt->max_fds] clamp, a real signal mask -- is decided
+    by [Select.pselect6_outcome] answering [None], which is
+    [CheckUnmodeled] here. *)
 Definition check_pselect6 (i : SyscallInput) (n32 inp outp exp tsp sig : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => CheckUnmodeled
   | Some (r, ws) =>
       match eff with
-      | mkEffectU r' ws' [] [] [] [] =>
-          if bv_eqb r' r && writes_eqb ws' ws then CheckOk m [] else CheckReject
+      | mkEffectU r' ws' [] [] [] ks =>
+          if bv_eqb r' r && writes_eqb ws' ws
+             && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig)
+          then CheckOk m [] else CheckReject
       | _ => CheckReject
       end
   end.
@@ -49,10 +52,13 @@ Proof.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
-  destruct ks as [|? ?]; [|discriminate].
-  destruct (bv_eqb r' r && writes_eqb ws' ws) eqn:Hg; [|discriminate].
+  destruct (bv_eqb r' r && writes_eqb ws' ws
+            && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig))
+    eqn:Hg; [|discriminate].
+  apply Bool.andb_true_iff in Hg. destruct Hg as [Hg Hk].
   apply Bool.andb_true_iff in Hg. destruct Hg as [Hr Hw].
-  apply bv_eqb_eq in Hr. apply writes_eqb_eq in Hw. subst r' ws'.
+  apply bv_eqb_eq in Hr. apply writes_eqb_eq in Hw.
+  apply access_ranges_eqb_eq in Hk. subst r' ws' ks.
   injection H as <- <-. apply pure_ok.
 Qed.
 
@@ -71,8 +77,9 @@ Proof.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
-  destruct ks as [|? ?]; [|discriminate].
-  destruct (bv_eqb r' r && writes_eqb ws' ws); discriminate.
+  destruct (bv_eqb r' r && writes_eqb ws' ws
+            && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig));
+    discriminate.
 Qed.
 
 Lemma check_pselect6_complete_ok :
@@ -85,8 +92,10 @@ Proof.
   cbv iota in H. inv_ok.
   destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [[r ws]|] eqn:Ho;
     hall Ho; inv_ok.
-  cbn. rewrite bv_eqb_refl.
-  rewrite (proj2 (writes_eqb_eq _ _) eq_refl). reflexivity.
+  cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
+  rewrite bv_eqb_refl, (proj2 (writes_eqb_eq _ _) eq_refl),
+    access_ranges_eqb_refl.
+  reflexivity.
 Qed.
 
 Lemma check_pselect6_complete_unmodeled :
@@ -103,19 +112,22 @@ Qed.
 
 (** ppoll: deterministic throughout the modeled band, exactly as
     pselect6 is above, so the acceptor is the spec's own computation
-    plus one equality.  Everything that makes this syscall hard --
-    readiness for a descriptor whose answer is a schedule, the timeout
-    write-back, the [kmalloc] above [N_STACK_PPS], a real signal mask --
-    is decided by [Select.ppoll_outcome] answering [None], which is
-    [CheckUnmodeled] here. *)
+    plus one equality, the ledger [Select.ppoll_reads] included.
+    Everything that makes this syscall hard -- readiness for a descriptor
+    whose answer is a schedule, the timeout write-back, the [kmalloc]
+    above [N_STACK_PPS], a real signal mask -- is decided by
+    [Select.ppoll_outcome] answering [None], which is [CheckUnmodeled]
+    here. *)
 Definition check_ppoll (i : SyscallInput) (ufds nfds tsp sig sigsetsize : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => CheckUnmodeled
   | Some (r, ws) =>
       match eff with
-      | mkEffectU r' ws' [] [] [] [] =>
-          if bv_eqb r' r && writes_eqb ws' ws then CheckOk m [] else CheckReject
+      | mkEffectU r' ws' [] [] [] ks =>
+          if bv_eqb r' r && writes_eqb ws' ws
+             && access_ranges_eqb ks (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+          then CheckOk m [] else CheckReject
       | _ => CheckReject
       end
   end.
@@ -135,10 +147,13 @@ Proof.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
-  destruct ks as [|? ?]; [|discriminate].
-  destruct (bv_eqb r' r && writes_eqb ws' ws) eqn:Hg; [|discriminate].
+  destruct (bv_eqb r' r && writes_eqb ws' ws
+            && access_ranges_eqb ks (ppoll_reads i m ufds nfds tsp sig sigsetsize))
+    eqn:Hg; [|discriminate].
+  apply Bool.andb_true_iff in Hg. destruct Hg as [Hg Hk].
   apply Bool.andb_true_iff in Hg. destruct Hg as [Hr Hw].
-  apply bv_eqb_eq in Hr. apply writes_eqb_eq in Hw. subst r' ws'.
+  apply bv_eqb_eq in Hr. apply writes_eqb_eq in Hw.
+  apply access_ranges_eqb_eq in Hk. subst r' ws' ks.
   injection H as <- <-. apply pure_ok.
 Qed.
 
@@ -157,8 +172,9 @@ Proof.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
-  destruct ks as [|? ?]; [|discriminate].
-  destruct (bv_eqb r' r && writes_eqb ws' ws); discriminate.
+  destruct (bv_eqb r' r && writes_eqb ws' ws
+            && access_ranges_eqb ks (ppoll_reads i m ufds nfds tsp sig sigsetsize));
+    discriminate.
 Qed.
 
 Lemma check_ppoll_complete_ok :
@@ -171,8 +187,10 @@ Proof.
   cbv iota in H. inv_ok.
   destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [[r ws]|] eqn:Ho;
     hall Ho; inv_ok.
-  cbn. rewrite bv_eqb_refl.
-  rewrite (proj2 (writes_eqb_eq _ _) eq_refl). reflexivity.
+  cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
+  rewrite bv_eqb_refl, (proj2 (writes_eqb_eq _ _) eq_refl),
+    access_ranges_eqb_refl.
+  reflexivity.
 Qed.
 
 Lemma check_ppoll_complete_unmodeled :

@@ -87,10 +87,11 @@ Open Scope sys_scope.
     misattribute — so fsync on a descriptor opened O_RDONLY succeeds
     exactly as on one opened for writing, and [FdFile] and [FdFileW]
     agree.  (The one fd that defeats the shorthand is an O_PATH one,
-    which is -EINVAL rather than 0 — [do_dentry_open] gives it
-    [empty_fops], so it fails the [.fsync] test above rather than any
-    mode test.  [Open.openat_spec] models three flag words and O_PATH is not
-    among them, so no such fd exists here.)  This is
+    which is -EBADF rather than 0: [do_fsync]'s [CLASS(fd, f)] is
+    [fdget], which refuses an FMODE_PATH file before [vfs_fsync] runs
+    (fs/sync.c and fs/file.c, read at v6.18.44; identical at
+    v6.18.46).  The model's one O_PATH kind, [State.OProcPath], is
+    declined below with the other three opaque objects.)  This is
     the arm where copying [ReadWrite.write_spec]'s -EBADF-on-a-read-only-fd would
     be a confident wrong answer.
 
@@ -191,17 +192,18 @@ Open Scope sys_scope.
     not an optimization.
 
     -EINVAL FOR A PIPE END, and here the missing [.fsync] the channel
-    arm ASSUMES is instead a fact the model owns.  [pipeanon_fops], the
-    table [create_pipe_files] installs on both ends of an anonymous pipe
-    (fs/pipe.c:1257-1266, installed at :946 and :957, v6.18.46), has no
-    [.fsync] line — nor does the FIFO table [pipefifo_fops] (:1246-1255),
+    arm ASSUMES is instead a fact the model owns.  The file-scope
+    initializer [static const struct file_operations pipeanon_fops] in
+    fs/pipe.c -- the table [create_pipe_files] installs on both ends of
+    an anonymous pipe -- has no [.fsync] line, nor does the FIFO table
+    [pipefifo_fops] beside it,
     which a [pipe2] fd never gets.  That is the same table
     [ReadWrite.lseek_spec]'s -ESPIPE arm reads, and for the same reason:
     both errnos come from an absent method rather than from a test on the
-    file.  So [vfs_fsync_range] (fs/sync.c:179-188, v6.18.46) takes its
-    opening [if (!file->f_op->fsync) return -EINVAL] (:183-184) before it
+    file.  So [vfs_fsync_range] (fs/sync.c) takes its
+    opening [if (!file->f_op->fsync) return -EINVAL] before it
     does anything else, on both ends and whatever the pipe holds.  That
-    test also precedes the [datasync] read at :185, so fdatasync agrees —
+    test also precedes the [datasync] read, so fdatasync agrees --
     the sharing argument above needs no pipe-specific clause.
 
     THE DIRECTORY ARM IS WHAT THIS MUST NOT BE CONFUSED WITH.  Three of
@@ -236,6 +238,13 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
                                                      [.splice_read] and [.splice_write] and no
                                                      [.fsync], so the same opening test in
                                                      [vfs_fsync_range] answers -EINVAL *)
+  | Some (FdOpaque _) => unmodeled                (* FAIL-CLOSED: an O_PATH file is [do_fsync]'s
+                                                     -EBADF ([fdget] refuses FMODE_PATH), an
+                                                     eventfd has no [.fsync] (-EINVAL), and a
+                                                     /proc/sys file has none either, and an
+                                                     [ONsFile]'s object is of unknown type; the
+                                                     split is not written (fs/sync.c, fs/eventfd.c,
+                                                     fs/proc/proc_sysctl.c, read at v6.18.44; identical at v6.18.46) *)
   | Some (FdFile _ _)  => ret_only (Z_to_bv 64 0) (* O_RDONLY is not an error here: no [f_mode] check *)
   | Some (FdFileW _ _) => ret_only (Z_to_bv 64 0)
   | Some (FdFileA _ _) => ret_only (Z_to_bv 64 0) (* the same file, opened in append mode: [vfs_fsync_range]

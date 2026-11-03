@@ -65,7 +65,7 @@
     The pay-off is that the arena's contents at loop exit are
     [firstn CAP stdin] — a FUNCTION of the stream, not a nondeterministic
     fold — which is what lets an otherwise wildly nondeterministic
-    chunking collapse to a deterministic tail.  [drain_acc_firstn] proves
+    chunking collapse to a deterministic tail.  [t_drain_ch_collapse] proves
     that: every [acc] the loop can exit with is [firstn CAP] of the
     original stream (as a list).
 

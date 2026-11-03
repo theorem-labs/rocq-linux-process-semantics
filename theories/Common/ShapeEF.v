@@ -2,7 +2,7 @@
 (** * Common.ShapeEF — the ERROR-FREE master theorem over [ShapeAlg.realizes].
 
     Image-INDEPENDENT.  ([init_config] / [mkEntry] take the mmap base and
-    the AT_RANDOM draw [en_random] as extra arguments, so every statement
+    the AT_RANDOM draw [ed_random] as extra arguments, so every statement
     carries one more binder of each per side.)
 
     [ShapeAlg.shape_strong_equiv] concludes [modeled /\ equiv]; the checked

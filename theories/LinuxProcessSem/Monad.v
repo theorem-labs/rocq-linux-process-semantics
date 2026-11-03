@@ -336,6 +336,9 @@ Definition set_rlimit_core (bs : list byte) : Sys unit :=
 Definition set_utsname (bs : list byte) : Sys unit :=
   modify (with_utsname bs).
 Definition set_setsid_succeeded : Sys unit := modify with_setsid_succeeded.
+(** Install the parent-death signal: [Kernel.Sys.prctl_spec]'s
+    [PR_SET_PDEATHSIG] arm is the caller.  See [State.with_pdeath_signal]. *)
+Definition set_pdeath_signal (s : word) : Sys unit := modify (with_pdeath_signal s).
 (** Record the [struct stat] a file was first seen with.  Called on
     exactly one branch of [Sys.Fs.Stat.fstat_spec] -- the one where
     [State.statpin_lookup] was [None] -- so a path's pin is written

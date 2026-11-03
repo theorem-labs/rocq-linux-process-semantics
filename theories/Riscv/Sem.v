@@ -145,10 +145,15 @@ Definition mul_div {n : N} (op : mulop) (a b : bv n) : bv n :=
     is SIGBUS under qemu-user, so [exec] gates all three on this check
     and emits [EFault].  The check runs FIRST, before sc consults its
     reservation: the spec raises the exception whether or not the sc
-    would succeed, and Sail agrees.  One known divergence: qemu's
-    FAILING-sc path (reservation mismatch) skips the memory access
-    entirely and retires with rd = 1, so qemu retires a misaligned sc
-    the model faults.  We follow the spec/Sail. *)
+    would succeed, and Sail agrees.  One known divergence: QEMU 8.2.2's
+    FAILING-sc path (reservation mismatch, [gen_sc] in
+    target/riscv/insn_trans/trans_rva.c.inc) skips the memory access
+    entirely and retires with rd = 1, so it retires a misaligned sc the
+    model faults, and a failing sc on memory the process may not write,
+    which the model also faults (see the [Sc] arm of [exec]).  QEMU
+    fixed both in commit d107b748072c ("Generate access fault if sc
+    comparison fails", 2026-04-29; in 10.0.10, 10.2.3 and 11.0.1).  We
+    follow the spec/Sail. *)
 Definition amo_bytes (wd : awidth) : Z :=
   match wd with AW => 4 | AD => 8 end.
 
@@ -515,7 +520,31 @@ Definition exec (sz : word) (i : instr) (c : core) : eff :=
          | AW => EStore 32 a (low32 (rget c rs2))
          | AD => EStore 64 a (rget c rs2)
          end) (EDone (rset rd w0 c1))
-      else EDone (rset rd w1 c1)
+      (* A FAILING sc still passes the store permission check: "No SC.W
+         instruction shall retire unless it passes memory permission
+         checks" (RISC-V unprivileged ISA v20260120, Zalrsc), and the
+         check is a store's: "Attempting to execute a store,
+         store-conditional, AMO ... whose effective address lies within
+         a page without write permissions raises a store page-fault
+         exception" (privileged ISA v20260120, 11.1.3.1).  Sail's
+         STORECON reaches [vmem_write_addr] (model/sys/vmem_utils.sail),
+         which translates the address for a write before it matches the
+         reservation.  The check is written as a load and a store back
+         of the same bytes: every read returns the same values afterwards,
+         a range the process may not write faults as a store there does,
+         and the access is reported, so a first touch of a lazy anonymous
+         page is charged, as the store page fault that Linux takes for it
+         is.  The load adds one condition the store check lacks: the
+         bytes must be readable.  Linux on riscv maps every writable page
+         readable, and the model already refuses a load from a writable
+         segment without 'r' ([RiscvSemantics.memory_read]), so a failing
+         sc there faults in the model and retires on Linux; SCOPE.md
+         names it. *)
+      else
+        match wd with
+        | AW => ELoad 32 a (λ v, EStore 32 a v (EDone (rset rd w1 c1)))
+        | AD => ELoad 64 a (λ v, EStore 64 a v (EDone (rset rd w1 c1)))
+        end
   | Amo op wd _ _ rd rs1 rs2 =>
       let a := rget c rs1 in
       if negb (amo_aligned wd a) then EFault c

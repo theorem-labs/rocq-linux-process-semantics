@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Fs.File — the dup (23) and dup3 (24) witnesses, and their proofs
+(** * LinuxProcessSem.Checks.Witness.Fs.File — the dup (23), dup3 (24) and close_range (436) witnesses, and their proofs
 
     Mirrors [Sys/Fs/File.v], which answers to Linux [fs/file.c]: this
     file holds the witnesses for the syscalls defined there, and no
@@ -10,8 +10,8 @@
     progress is proved from.
 
     dup allocates, so its witness takes the environment-failure branch,
-    as openat's does; dup3 is deterministic on every arm it answers and
-    has none to take. *)
+    as openat's does; dup3 and close_range are deterministic on every
+    arm they answer and have none to take. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -95,4 +95,30 @@ Proof.
         apply unmodeled_intro.
   - eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hl; srw Hfd. apply pure_ok.
+Qed.
+
+(** close_range: the spec's own answer on every arm -- the two -EINVALs,
+    the decline for a known flag, and 0 with the range removed. *)
+Definition close_range_witness (fd max_fd flags : word) (m : Model)
+    : outcome SyscallEffect :=
+  if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                          (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)
+  then ret_outcome (errno_ret EINVAL) m
+  else if (bv_unsigned max_fd <? bv_unsigned fd)%Z
+  then ret_outcome (errno_ret EINVAL) m
+  else if negb (Z.eqb (bv_unsigned flags) 0) then Unmodeled
+  else ret_outcome (Z_to_bv 64 0)
+         (with_fds (close_range_fds fd max_fd (m_fds m)) m).
+
+Lemma close_range_witness_ok : forall fd max_fd flags i m,
+  close_range_spec fd max_fd flags i m (close_range_witness fd max_fd flags m).
+Proof.
+  intros. unfold close_range_spec, close_range_witness.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                                 (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0));
+    [apply pure_ok|].
+  destruct ((bv_unsigned max_fd <? bv_unsigned fd)%Z); [apply pure_ok|].
+  destruct (negb (Z.eqb (bv_unsigned flags) 0)); [apply unmodeled_intro|].
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  eapply bind_step; [apply modify_ok|]. apply pure_ok.
 Qed.
