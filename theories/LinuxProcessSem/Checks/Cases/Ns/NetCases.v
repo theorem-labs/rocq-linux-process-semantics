@@ -354,6 +354,22 @@ Example handler_reached_cases :
   /\ nl_handler_errnos 17 = [].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** The forced-only filter reads an acknowledgement's errno and the type
+    of the request it echoes ([nl_fail_ack_alloc]): it marks only the
+    allocation errno of that type ([nl_handler_errnos]): -ENOBUFS for a
+    link dump or RTM_NEWADDR, -ENOMEM for RTM_NEWLINK.  Another errno
+    (-EPERM, -EEXIST, -ENOBUFS on RTM_NEWLINK) and a success are not
+    marked, so they are never removed. *)
+Example fail_ack_alloc_by_type :
+  nl_fail_ack_alloc (handler_fail_ack 2 getlink_req ENOBUFS) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req ENOMEM) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newaddr_req ENOBUFS) = true
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req EPERM) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req ENOBUFS) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newaddr_req EEXIST) = false
+  /\ nl_fail_ack_alloc (nl_ack 2 newlink_req 0) = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** A bound socket (port 2) of the sealed namespace 2 sends the link dump
     request [getlink_req] to the kernel, from a task of that namespace
     ([snd_ctx]).  The dump's first part can fail for lack of memory:

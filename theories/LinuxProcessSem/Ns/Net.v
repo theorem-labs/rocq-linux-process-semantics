@@ -1220,11 +1220,12 @@ Definition sendto_arm : NsArm := fun i m ctx st o =>
 
 (** [a] is the acknowledgement of a handler's allocation failure
     ([handler_fail_ack]): an NLMSG_ERROR message whose error, at byte 16,
-    is an errno [nl_handler_errnos] lists for the type of the request whose
-    header it echoes at byte 20 ([nl_ack]). *)
+    is an errno [nl_handler_errnos] lists for the type of the request.
+    [nl_ack] puts the request's header from byte 20: its length at bytes
+    20-23, its type at bytes 24-25. *)
 Definition nl_fail_ack_alloc (a : list byte) : bool :=
   (36 <=? nl_len a) && (nl_u16 a 4 =? NLMSG_ERROR)
-  && errno_in (nl_handler_errnos (nl_u16 a 20)) (4294967296 - nl_u32 a 16).
+  && errno_in (nl_handler_errnos (nl_u16 a 24)) (4294967296 - nl_u32 a 16).
 
 (** THE ALLOCATION FAILURES [sendto] SHOWS ONLY IN THE STATE AFTER IT.  Two
     answers of [netlink_sendto] are reached only when an allocation of the
