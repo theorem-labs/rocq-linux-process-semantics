@@ -426,10 +426,9 @@ Qed.
 Definition admin : IdCred := mkIdCred 2 65534 65534 (2 ^ CAP_NET_ADMIN).
 Definition up_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 admin.
 Definition up_state : NsState :=
-  mkNsState [] users [] [] [net2 [lo IFF_LOOPBACK []]] [] [] [] [(7%N, up_file)] (ns_env empty_nsstate).
+  with_files (with_netns (with_userns empty_nsstate users) [net2 [lo IFF_LOOPBACK []]]) [(7%N, up_file)].
 Definition up_ctx : NsCtx :=
-  mkNsCtx 2 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0) 0 [] (Some false) (Some 1).
+  with_caps (with_net_ns (with_user_ns init_nsctx 2) 2) (mkCaps (2 ^ CAP_NET_ADMIN) 0 0 0 0).
 Definition up_len : Z := Z.of_nat (length newlink_req).
 Definition up_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in
