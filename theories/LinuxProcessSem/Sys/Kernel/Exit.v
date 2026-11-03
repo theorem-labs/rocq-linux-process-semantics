@@ -10,9 +10,10 @@
     file's header for the representation and fail-closed conventions
     every spec here follows. *)
 
-From Stdlib Require Import ZArith Bool.
+From Stdlib Require Import ZArith Bool List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export Syscall Uapi.
+Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
@@ -24,7 +25,7 @@ Definition exit_spec (code : word) : Sys SyscallEffect :=
 
 
 (* =========================================================================
-   Process reaping: wait4 (260) — A CALLER WITH NO CHILDREN
+   Process reaping: wait4 (260)
    ========================================================================= *)
 
 (** [upid = -1] after the [int] truncation [Syscall.pid32] applies:
@@ -32,97 +33,134 @@ Definition exit_spec (code : word) : Sys SyscallEffect :=
     [wait4_spec]. *)
 Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
 
-(** [wait4 upid stat_addr options rusage] (260) — the whole call, for
-    the only caller it ANSWERS: one with no children.  Not the only
-    caller the model can have — [clone] creates one — the other is
-    declined, at the [State.m_has_children] gate in the body below.
+(** THE STATUS WORDS A REAP CAN REPORT for a child that exited or was
+    killed.  [wait_task_zombie] (kernel/exit.c) hands back
+    [SIGNAL_GROUP_EXIT ? group_exit_code : exit_code], and that word has
+    one of two shapes:
 
-    Kernel side read at v6.12.  [kernel_wait4] and
-    [SYSCALL_DEFINE4(wait4, ...)] (kernel/exit.c) are byte-identical IN
-    MAINLINE from v4.13 — where Al Viro's 359566faefa8,
+    - AN EXIT: [(code & 0xff) << 8], what [SYSCALL_DEFINE1(exit)] and
+      [SYSCALL_DEFINE1(exit_group)] pass to [do_exit] and
+      [do_group_exit].  The low byte is 0 and the word is below 0x10000.
+    - A DEATH BY A SIGNAL: the signal number, which [get_signal]
+      (kernel/signal.c) passes to [do_group_exit] and [complete_signal]
+      stores as [group_exit_code], with 0x80 added by [coredump_finish]
+      (fs/coredump.c) when a core was written.  Bits 0..6 hold a signal
+      1..64 and the word is below 0x100.
+
+    A stopped report (0x7f in the low byte) or a continued one (0xffff)
+    needs WUNTRACED or WCONTINUED, which [wait4_spec] declines, so
+    neither is here.
+
+    THIS ADMITS MORE THAN LINUX GIVES.  Every signal 1..64, with or
+    without the core bit, counts as a death, where Linux kills only by a
+    signal whose action is fatal (SIGSTOP stops, and SIGCHLD and SIGCONT
+    are ignored, under their default actions) and sets the core bit only
+    for a signal whose default action dumps core.  SCOPE.md lists this
+    under "Known gaps in precision".
+
+    Over [Z] rather than [word] so that a checker can decode the four
+    stored bytes with [BvBase.bytes_le_to_Z] and test the value it
+    reads.  Kernel citations read at v6.18.44; identical at v6.18.46. *)
+Definition wait_status_okz (s : Z) : bool :=
+  (0 <=? s)%Z
+  && (((Z.land s 255 =? 0)%Z && (s <? 65536)%Z)
+      || ((1 <=? Z.land s 127)%Z && (Z.land s 127 <=? 64)%Z && (s <? 256)%Z)).
+
+(** [q] is one of the recorded children [l]: [In q l], as a boolean
+    test. *)
+Definition pid_recorded_b (q : word) (l : list word) : bool :=
+  existsb (bv_eqb q) l.
+
+(** [l] without the FIRST occurrence of [q], the rest in their order:
+    what [release_task] (kernel/exit.c) leaves of the parent's
+    [children] list when it unlinks the reaped task
+    ([__unhash_process]'s [list_del_init(&p->sibling)]).  Read at
+    v6.18.44; identical at v6.18.46. *)
+Fixpoint remove_pid (q : word) (l : list word) : list word :=
+  match l with
+  | [] => []
+  | p :: l' => if bv_eqb q p then l' else p :: remove_pid q l'
+  end.
+
+(** The status pointer a reap can store through: NULL, which asks for no
+    store, or four bytes that [State.copy_bytes_map] admits ([access_ok]
+    over the range, then the walk over [wmem]). *)
+Definition wait4_stat_ok_b (wmem : word -> option byte) (stat_addr : word)
+    : bool :=
+  w_is0 stat_addr
+  || match copy_bytes_map wmem stat_addr 4 with
+     | Some _ => true
+     | None => false
+     end.
+
+(** The store a reap makes: [put_user] of the [int] status to
+    [stat_addr], four bytes little-endian, and nothing when [stat_addr]
+    is NULL. *)
+Definition wait4_stat_store (stat_addr : word) (s : Z)
+    : list (word * list byte) :=
+  if w_is0 stat_addr then [] else [(stat_addr, Z_to_le_bytes 4 s)].
+
+(** [wait4 upid stat_addr options rusage] (260) — the whole call, for
+    the one argument shape it answers: [wait4(-1, stat_addr, WNOHANG,
+    NULL)].  It is the call bubblewrap 0.13.1's [monitor_child] loop
+    makes through [waitpid(-1, &died_status, WNOHANG)] (bubblewrap.c),
+    and musl's [waitpid] is [sys_wait4_cp(pid, status, options, 0)]
+    (src/process/waitpid.c, v1.2.5 and v1.2.6).
+
+    Kernel side read at v6.18.44; identical at v6.18.46: kernel/exit.c
+    [SYSCALL_DEFINE4(wait4)], [kernel_wait4], [do_wait], [__do_wait],
+    [do_wait_thread], [wait_consider_task], [eligible_child],
+    [wait_task_zombie] and [release_task].  [kernel_wait4] and
+    [SYSCALL_DEFINE4(wait4, ...)] are byte-identical IN MAINLINE from
+    v4.13 — where Al Viro's 359566faefa8,
     "kernel_wait4()/kernel_waitid(): delay copying status to userland",
     turned [wo_stat] from an [int __user *] into an [int] and put the
-    copy-out behind the [ret > 0] guard this spec rests on, so there is
-    no earlier tag for the claim to reach — through v7.2, the newest
-    release.  Spot-checked against the HEADS of linux-6.6.y and
-    linux-6.12.y, which do not diverge; that is a claim about those two
-    heads and not about every point release along them.  Every claim
-    below about those two functions holds over that window.
+    copy-out behind the [ret > 0] guard this spec rests on — through
+    v7.2.
 
-    ** THE ANSWER IS -ECHILD, AND IT IS THE ONLY ANSWER
+    ** WHAT THE MODEL HOLDS OF A CHILD
 
-    The model is single-process, and STRUCTURALLY so: [Run.config]
-    holds one [machine_state] and one [Model], and no [Run.sstep] rule
-    produces a second of either.  THAT IS NOT THE SAME AS THE CALLER
-    HAVING NO CHILD.  [clone] (220) and [clone3] (435) are modeled, and
-    the success branches of [Kernel.Fork.clone_resolve] and
-    [Kernel.Fork.clone_ns_resolve] are exactly the
-    operation that creates one: the child is never a configuration, but
-    the FACT that the caller has one is, in [State.m_has_children].  So
-    -ECHILD is carried by two things rather than by an absence.
+    The model has one process: [Run.config] holds one [machine_state]
+    and one [Model], and no [Run.sstep] rule produces a second of
+    either.  The child a [clone] (220) or [clone3] (435) creates is
+    never a configuration here.  What the model holds of it is the FACT
+    that it exists ([State.m_has_children]) and the pid the clone
+    returned ([State.m_child_pids], oldest first).  The success branches
+    of [Kernel.Fork.clone_resolve] and [Kernel.Fork.clone_ns_resolve]
+    record both through [State.with_child], and
+    [Checks.ProcessCreation.clone_resolve_declines_or_sets_children],
+    [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
+    and [Checks.ProcessCreation.clone_success_records_pid] are the
+    universal statements of it.  WHAT A NEW CHILD-CREATING ARM OWES is
+    [State.with_child] on its post-state: an arm that creates a child
+    and never applies it leaves this spec answering -ECHILD for a caller
+    that has one, with every proof in the tree still closing.
 
-    - THE CREATING ARMS RECORD THE CHILD.  [clone_resolve] and
-      [clone_ns_resolve] end their pid branch with
-      [modify (with_child pid)] ([State.with_children]'s bit and the pid
-      appended to [State.procst_child_pids]), and
-      [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
-      and [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
-      are the universal statements of it, over every model, every
-      argument shape and every admissible resolution: an errno answer
-      leaves the model untouched, and any other answer leaves
-      [m_has_children] set.
-    - THIS SPEC READS WHAT THAT ARM WROTE.  The gate in the body below
-      answers -ECHILD only while the field is clear, and yields
-      [unmodeled] otherwise.  A caller with a child gets no answer here
-      rather than a wrong one.
+    ** THREE CALLERS, THREE ANSWERS
 
-    WHAT A NEW CHILD-CREATING ARM OWES is [State.with_child] on its
-    post-state.  Nothing enforces that: an arm that creates a child and
-    never applies the setter leaves this spec answering -ECHILD for a
-    caller that has one, with the gate proved and the creating arm
-    proved and no proof in the tree disturbed.  See
-    [State.with_children]'s own note, which records the same obligation
-    beside the setter.
+    - NO CHILD ([State.m_has_children] clear): -ECHILD, and nothing
+      else.
+    - A RECORDED CHILD (the bit set and [State.m_child_pids] not empty):
+      the environment's choice of 0, with nothing stored and the model
+      unchanged, or of a reap: the pid [q] of a recorded child, never 0,
+      with a status word [s] that [wait_status_okz] admits, [s] stored at
+      [stat_addr] unless it is NULL ([wait4_stat_store]), and the FIRST
+      [q] removed from the list ([remove_pid]).  The child bit stays set.
+    - A CHILD THE MODEL DID NOT RECORD (the bit set and the list empty):
+      [unmodeled].  Every recorded child has been reaped by an earlier
+      call, and the bit is never cleared ([State.with_children] says
+      why), so the model does not know whether a child remains.
 
-    THE TRACEE LIST IS STILL CLOSED BY A DECLINE.  [ptrace] (117) is
-    the only route to the caller's [current->ptraced] a modeled syscall
-    could take, and it is outside the modeled surface —
-    [Checks.ProcessCreation.ptrace_unmodeled] pins that against
-    [Specs.syscall_spec] itself, as [execve_unmodeled] and
-    [execveat_unmodeled] do for 221 and 281 — which are declined for
-    reasons of their own rather than for this one, since Linux's
-    [execve] adds to neither list.
+    Before this, the second caller was declined too, and the model
+    contained no reap.
 
-    THAT IS ONLY HALF OF IT, AND THE OTHER HALF IS ASSUMED.  For the
-    lists to be empty they must also have STARTED empty, and that is a
-    property of how the process was launched rather than anything this
-    model can see.  It is not a property of [execve]: at v6.18.46
-    (commit 1f99e9ab748f) [fs/exec.c] never reads or writes
-    [current->children] at all — [begin_new_exec] and [de_thread] kill
-    sibling THREADS ([zap_other_threads], kernel/signal.c) and reap no
-    child — and [exit_ptrace] (kernel/ptrace.c) is reached only through
-    [forget_original_parent] from [exit_notify] on the EXIT path.  A
-    launcher that forks a grandchild, or attaches
-    a tracee, before exec'ing this image hands the caller something to
-    wait for, and Linux then answers 0 or a pid where this spec
-    answers -ECHILD.  That is a FALSE REJECTION, the expensive
-    direction named below.  Nothing here binds the launcher: this is a
-    premise of the run, and a known gap.  The argument
-    for answering rather than declining: the only alternative is
-    admitting all three resolutions on every call, which is a trace
-    Linux cannot produce
-    under EVERY launcher rather than an unusual one.  The ordinary
-    [fork]-then-[execve] launch satisfies the assumption, but for a
-    reason that is not exec: [copy_process] (kernel/fork.c) and
-    [ptrace_init_task] (include/linux/ptrace.h) give a FRESH task
-    empty lists, and a task that forks nothing before exec'ing keeps
-    them.
+    ** A CALLER WITH NO CHILD: -ECHILD IS THE ONE ANSWER LINUX GIVES
 
-    An empty pair of lists is exactly the state [do_wait] answers
-    -ECHILD to.  [__do_wait]
-    (kernel/exit.c, v6.7 and later; the same body is inline in [do_wait]
-    before that — Jens Axboe's 06a101ca45b2, "exit: move core of
-    do_wait() into helper", is a pure refactor) seeds
+    An empty pair of lists ([current->children] and [current->ptraced])
+    is exactly the state [do_wait] answers -ECHILD to.  [__do_wait]
+    (kernel/exit.c, v6.7 and later; the same body is inline in
+    [do_wait] before that — Jens Axboe's 06a101ca45b2, "exit: move core
+    of do_wait() into helper", is a pure refactor) seeds
     [wo->notask_error] with -ECHILD.  With [upid = -1] the type is
     [PIDTYPE_MAX], so the [wo_type < PIDTYPE_MAX] early exit is NOT
     taken and the tasklist walk runs; [do_wait_thread] and
@@ -131,34 +169,99 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
     thing that clears [notask_error] or fills [wo_stat] — never runs.
     Control reaches [notask:] with [notask_error] still -ECHILD, and
     the -ERESTARTSYS assignment there is guarded on [!retval], which
-    -ECHILD fails; the WNOHANG conjunct beside it never has to be
-    consulted.  [do_wait] then returns that value unchanged: its loop
-    breaks on anything but -ERESTARTSYS, before [signal_pending] or
-    [schedule] is reached, so there is no sleep and no interruption
+    -ECHILD fails.  [do_wait] then returns that value unchanged: its
+    loop breaks on anything but -ERESTARTSYS, before [signal_pending]
+    or [schedule] is reached, so there is no sleep and no interruption
     point.  WNOHANG's bare 0 is NOT admissible here — it is what
     [notask_error] cleared to 0 returns, and only a child that exists
-    but has nothing to report clears it.
+    clears it.
 
-    So this is not an over-approximation.  It is the one answer Linux
-    gives, and admitting any other — a pid, a bare 0 — would put a
-    trace in the model that Linux cannot produce.
+    ** A CALLER WITH A RECORDED CHILD: 0 OR A REAP
 
-    ** [stat_addr] IS NOT READ, AND THAT IS BEHAVIOR
+    EVERY RECORDED CHILD IS ELIGIBLE.  [eligible_child] takes a child
+    whose [exit_signal] is SIGCHLD when __WCLONE and __WALL are clear,
+    and every recorded child was created by a clone whose exit signal is
+    SIGCHLD ([Kernel.Fork.clone_fork_flags_b],
+    [Kernel.Fork.clone_ns_flags_b], [Kernel.Fork.clone3_fork_args_b]).
+    So [wait_consider_task] reaches each one.  A live child clears
+    [notask_error] to 0 and reports nothing (a stop or a continue is
+    reported only under WUNTRACED or WCONTINUED), and [__do_wait] then
+    returns 0 under WNOHANG.  A zombie child goes to
+    [wait_task_zombie], which reaps it ([release_task]) and returns its
+    pid with the status word in [wo_stat].
 
-    No arm here looks at [stat_addr], not even to check that it is
-    writable, and the spec takes it as an argument to say so.
+    WHICH ANSWER IS THE ENVIRONMENT'S.  The child runs outside this
+    model, so whether it has exited by this call, and with which status,
+    is not a thing the model can know.  [do_wait_thread] walks
+    [current->children] oldest first and reaps the first zombie it
+    finds; the model lets the environment name ANY recorded child, which
+    is the first zombie for some timing of the children's exits.  Each
+    admitted answer is one Linux gives for some such timing.  The pid
+    is never 0 because [task_pid_vnr] of a live task is not, and
+    because a recorded 0 reaped through a NULL [stat_addr] would give
+    the same effect as the bare 0 with a different model, which no
+    checker could tell apart.
+
+    ** [stat_addr]
+
     [kernel_wait4]'s copy-out is
 
       if (ret > 0 && stat_addr && put_user(wo.wo_stat, stat_addr))
+          ret = -EFAULT;
 
-    and C short-circuits: at [ret = -ECHILD] the pointer is never
-    dereferenced.  An unmapped [stat_addr], one past
-    [State.TASK_SIZE], one the model cannot see as writable — every
-    one of them answers -ECHILD and faults on nothing.  A spec that
-    judged the pointer would REJECT calls Linux answers, which costs
-    the equivalence theorem rather than merely costing coverage.  The
-    [rusage] copy in [SYSCALL_DEFINE4(wait4, ...)] is guarded the same
-    way, on [err > 0], and is likewise never reached.
+    and C short-circuits: at -ECHILD and at 0 the pointer is never
+    dereferenced.  So the childless caller's -ECHILD does not read
+    [stat_addr] at all: an unmapped pointer, one past
+    [State.TASK_SIZE], one the model cannot see as writable — every one
+    of them answers -ECHILD and faults on nothing.  A spec that judged
+    the pointer there would REJECT calls Linux answers.
+
+    At a caller with a recorded child the pointer IS judged, before any
+    choice: a non-NULL [stat_addr] that is not four writable bytes
+    ([wait4_stat_ok_b]) declines THE WHOLE CALL, so a caller never sees
+    [Unmodeled] beside an [Ok].  Linux's answer there is LOSSY:
+    [wait_task_zombie] has already run [release_task] when [put_user]
+    fails, so the call answers -EFAULT and the zombie and its status are
+    gone.  The model does not carry that answer, and the multi-process
+    core ([Procs]) declines the same path.  Deciding the decline first
+    also declines the bare 0, which Linux would give without touching
+    the pointer: coverage lost, not soundness.
+
+    ** WHAT THE LAUNCH IS ASSUMED TO GIVE (both in SCOPE.md)
+
+    - NO CHILDREN AND NO TRACEES AT LAUNCH.  For the lists to match what
+      the model recorded they must have STARTED empty, and that is a
+      property of how the process was launched rather than anything this
+      model can see.  It is not a property of [execve]: at v6.18.46
+      (commit 1f99e9ab748f) [fs/exec.c] never reads or writes
+      [current->children] at all — [begin_new_exec] and [de_thread] kill
+      sibling THREADS ([zap_other_threads], kernel/signal.c) and reap no
+      child — and [exit_ptrace] (kernel/ptrace.c) is reached only
+      through [forget_original_parent] from [exit_notify] on the EXIT
+      path.  A launcher that forks a grandchild, or attaches a tracee,
+      before exec'ing this image hands the caller something to wait for,
+      and Linux then answers 0 or a pid where this spec answers -ECHILD.
+      That is a FALSE REJECTION.  The ordinary [fork]-then-[execve]
+      launch satisfies the assumption: [copy_process] (kernel/fork.c)
+      and [ptrace_init_task] (include/linux/ptrace.h) give a FRESH task
+      empty lists, and a task that forks nothing before exec'ing keeps
+      them.
+    - SIGCHLD IS NOT AT SIG_IGN AT LAUNCH.  A launcher's SIG_IGN
+      survives [execve] ([begin_new_exec] calls
+      [flush_signal_handlers(me, 0)], which keeps SIG_IGN, fs/exec.c and
+      kernel/signal.c), and under it [do_notify_parent] (kernel/signal.c)
+      reaps an exiting child itself, so [wait4] answers 0 and then
+      -ECHILD, never a pid.  The model declines every in-process SIG_IGN
+      or SA_NOCLDWAIT install for SIGCHLD ([Kernel.Signal.sigchld_dfl_install]),
+      and [flush_signal_handlers] clears [sa_flags], so a launcher's
+      SA_NOCLDWAIT does not survive; only the launch's SIG_IGN is open.
+
+    THE TRACEE LIST IS CLOSED BY A DECLINE.  [ptrace] (117) is the only
+    route to the caller's [current->ptraced] a modeled syscall could
+    take, and it is outside the modeled surface —
+    [Checks.ProcessCreation.ptrace_unmodeled] pins that against
+    [Specs.syscall_spec] itself, as [execve_unmodeled] and
+    [execveat_unmodeled] do for 221 and 281.
 
     ** The argument surface, which is narrow on purpose
 
@@ -168,14 +271,12 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
 
     - [upid] must be -1, "any child" ([type = PIDTYPE_MAX]).  It is
       also the only selector dropbear issues: both call sites are
-      [waitpid(-1, ...)] (svr-chansession.c, svr-main.c), and musl's
-      [waitpid] is [sys_wait4_cp(pid, status, options, 0)]
-      (src/process/waitpid.c, v1.2.5 and v1.2.6).  The other shapes are
-      not interchangeable with it.  THREE are different eligible-child
-      rules — [upid > 0] one child, [upid == 0] the caller's process
-      group, [upid < 0] the group [-upid] — and each takes the
-      [wo_type < PIDTYPE_MAX] early exit whose verdict depends on
-      whether the named pid or group EXISTS, which is state outside
+      [waitpid(-1, ...)] (svr-chansession.c, svr-main.c).  The other
+      shapes are not interchangeable with it.  THREE are different
+      eligible-child rules — [upid > 0] one child, [upid == 0] the
+      caller's process group, [upid < 0] the group [-upid] — and each
+      takes the [wo_type < PIDTYPE_MAX] early exit whose verdict depends
+      on whether the named pid or group EXISTS, which is state outside
       this model: a live process group with no children answers
       -ECHILD too, but through [pid_has_task], and a group that does
       not exist answers it through a NULL [wo_pid].  Answering them
@@ -191,7 +292,7 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
 
     - [options] must be exactly [Uapi.WNOHANG].  Two separate reasons,
       and the first is the load-bearing one: WITHOUT WNOHANG THE CALL
-      BLOCKS ONCE A CHILD EXISTS, and blocking is a wait-queue sleep
+      BLOCKS WHILE A CHILD LIVES, and blocking is a wait-queue sleep
       this model has no vocabulary for.  [__do_wait] returns
       -ERESTARTSYS when a child exists but nothing is ready, and
       [do_wait] then sleeps until a signal or a child wakes it — so a
@@ -199,9 +300,8 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
       here produces.  A childless caller would get -ECHILD from a
       blocking call as well, since the -ERESTARTSYS assignment is
       guarded on [!retval]; declining anyway keeps the guard on the
-      ARGUMENT rather than on a coincidence of the state, so the spec
-      does not have to be re-argued the day a child becomes
-      expressible.
+      ARGUMENT rather than on a coincidence of the state.  The
+      multi-process core answers the blocking reap ([Procs]).
 
       NOTE WHICH FAILURE THE OTHER CHOICE WOULD BE.  Admitting the
       blocking call without admitting -EINTR would not leave a program
@@ -215,36 +315,13 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
       an unknown option bit is -EINVAL, tested before anything else
       ([options & ~(WNOHANG|WUNTRACED|WCONTINUED|__WNOTHREAD|__WCLONE|
       __WALL)]), and the reportable-state bits WUNTRACED and WCONTINUED
-      ask about a child's stop and continue.  Both dropbear call sites
-      pass WNOHANG, so nothing is lost.
+      ask about a child's stop and continue, which the model does not
+      hold.  bubblewrap's and dropbear's call sites pass WNOHANG alone.
 
     - [rusage] must be NULL.  It is the literal 0 musl passes.  A
-      non-NULL one is never written at -ECHILD, so answering it would
-      be sound — but it asks for a [struct rusage] of accounting the
-      model does not carry, and the day a reap becomes expressible the
-      arm would have to be rewritten rather than extended.
-
-    ** WHAT THIS COSTS, AND WHAT HAS TO CHANGE IF A CHILD APPEARS
-
-    Nothing in the equivalence theorem is narrowed by answering
-    -ECHILD: a spec that admits fewer resolutions admits fewer traces,
-    and every trace it does admit is one Linux produces.  What the
-    narrowness buys is priority 2 — the model contains no
-    successful reap, which is a trace this process cannot have.
-
-    The whole of this spec is CONDITIONAL ON THERE BEING NO CHILD.
-    Half of that condition is discharged by the [State.m_has_children]
-    gate in the body below — a caller the model gave a child is
-    declined rather than answered — and half is a premise about the
-    launcher, the lists having to have STARTED empty, as the second
-    section above says, and nothing here binds the launcher.
-    If a child ever becomes a configuration in this model,
-    this spec is wrong rather than incomplete, and it is the first
-    thing that has to change: the reap, WNOHANG's bare 0, the
-    [put_user] and the -EFAULT it can answer, and the fact that Linux's
-    -EFAULT is LOSSY — [kernel_wait4] reaps the child and drops the pid
-    reference BEFORE the copy-out, so a failed copy destroys a zombie
-    and an exit status nothing can recover — all arrive together. *)
+      non-NULL one asks, at a reap, for a [struct rusage] of accounting
+      the model does not carry ([SYSCALL_DEFINE4(wait4)] copies it out
+      on [err > 0]). *)
 Definition wait4_spec (upid stat_addr options rusage : word)
     : Sys SyscallEffect :=
   if negb (Z.eqb (bv_unsigned upid) WAIT_ANY32) then unmodeled
@@ -252,5 +329,20 @@ Definition wait4_spec (upid stat_addr options rusage : word)
   else if negb (w_is0 rusage) then unmodeled
   else
     m <- get_model ;;
-    if State.m_has_children m then unmodeled
+    if State.m_has_children m then
+      match State.m_child_pids m with
+      | [] => unmodeled
+      | _ :: _ =>
+          i <- input ;;
+          if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then unmodeled
+          else
+            alt (ret_only (Z_to_bv 64 0))
+                (q <- choose (fun q =>
+                        (pid_recorded_b q (State.m_child_pids m)
+                         && negb (w_is0 q)) = true) ;;
+                 s <- choose (fun s => wait_status_okz s = true) ;;
+                 modify (with_child_pids
+                           (remove_pid q (State.m_child_pids m))) ;;
+                 pure (mkEffect q (wait4_stat_store stat_addr s) []))
+      end
     else err_ret ECHILD.
