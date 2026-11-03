@@ -423,6 +423,18 @@ Example fchmod_fowner_gid_unmapped_drops_sgid :
   ret_of o = Some 0 /\ perm_of o 2 = Some 420.
 Proof. vm_compute. split; reflexivity. Qed.
 
+(** A caller whose user namespace (3) the tables do not hold: with
+    CAP_FOWNER the answer needs that namespace's uid map, which the tables
+    do not give, so fchmod has no answer (before this correction: EPERM);
+    without CAP_FOWNER, EPERM whatever the map holds (fs/inode.c:2634). *)
+Definition fown_absent_ctx (caps : Z) : NsCtx := with_user_ns (with_caps base_ctx (mkCaps caps caps 0 0 0)) 3.
+
+Example fchmod_fowner_userns_absent :
+  fchmod_fn (fchmod_call 420) base_model (fown_absent_ctx 8) (fown_state 5000) chmod_file = EUnmodeled
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model (fown_absent_ctx 0) (fown_state 5000) chmod_file)
+     = Some (-1).
+Proof. vm_compute. split; reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not
