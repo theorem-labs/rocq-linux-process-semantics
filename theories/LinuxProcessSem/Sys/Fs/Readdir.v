@@ -317,13 +317,14 @@ Definition getdents64_opaque_spec (fd : word) (o : OpaqueFd) (dirent count : wor
     : Sys SyscallEffect :=
   match o with
   | OProcFdDir fl pos => procfd_getdents_spec fd fl pos dirent count
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => unmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OInherited _ => unmodeled
       (* FAIL-CLOSED: [CLASS(fd_pos, f)] refuses an O_PATH file (-EBADF);
-         the two sysctl files, an eventfd and a signalfd have no
-         [.iterate_shared] (-ENOTDIR); an [ONsFile]'s object is of unknown
-         type.  None of these is written (fs/readdir.c, fs/file.c,
-         fs/eventfd.c, fs/proc/proc_sysctl.c, fs/signalfd.c, read at
-         v6.18.44; identical at v6.18.46). *)
+         the two sysctl files, an eventfd, a signalfd and an inherited
+         regular file have no [.iterate_shared] (-ENOTDIR); an [ONsFile]'s
+         object is of unknown type.  None of these is written (fs/readdir.c,
+         fs/file.c, fs/eventfd.c, fs/proc/proc_sysctl.c, fs/signalfd.c,
+         read at v6.18.44; identical at v6.18.46). *)
   end.
 
 (** [getdents64 fd dirent count]: read directory entries into [dirent].

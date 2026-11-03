@@ -3908,12 +3908,23 @@ Proof.
   (* through the accessors, not by position: [valid_input] grows *)
   pose proof (valid_input_va_size inp Hvi) as Hva.
   pose proof (valid_input_launch inp Hvi) as Hvl.
+  (* the launch inherits no descriptor, so the clone gate reads the
+     three channels alone: the table is [init_model]'s
+     ([with_vdso] keeps it), which [State.m_fds_init_model_no_inherited]
+     gives as the three channels *)
+  pose proof (valid_input_no_inherited inp Hvi) as Hnoi.
   unfold valid_entry, valid_entry_va in Hve. rewrite Hva in Hve.
   destruct Hve as (Hsp & _ & _ & _ & Hlau).
   unfold pinit_config. left.
   apply fw_shape_one_proc;
     [split; [reflexivity|]; split; [reflexivity|];
-     split; [reflexivity | reflexivity]|].
+     split; [ change (clone_no_shared_file_b
+                        (m_fds (init_model
+                                  (segments_reserved ForkwaitMemImage_loaded_segments)
+                                  brk0 mbase sp lim inp)) = true);
+              rewrite (m_fds_init_model_no_inherited _ _ _ _ _ _ Hnoi);
+              reflexivity
+            | reflexivity ]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
   assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd

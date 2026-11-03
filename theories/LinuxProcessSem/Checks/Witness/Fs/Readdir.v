@@ -176,7 +176,8 @@ Definition getdents64_opaque_witness (fd : word) (o : OpaqueFd) (dirent count : 
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match o with
   | OProcFdDir fl pos => procfd_getdents_witness fd fl pos dirent count i m
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _ => Unmodeled
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OInherited _ => Unmodeled
   end.
 
 Lemma getdents64_opaque_witness_ok : forall fd o dirent count i m,

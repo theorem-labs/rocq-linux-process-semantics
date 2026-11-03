@@ -361,7 +361,7 @@ Lemma check_read_fs : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_urandom, check_socket_pending_error,
+  unfold check_read, check_read_file_data, check_read_urandom, check_socket_pending_error,
     check_access_ok_zero in H.
   cbv zeta in H.
   repeat (vm_step H || fs_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try fs_leaf.
