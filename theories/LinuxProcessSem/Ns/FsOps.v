@@ -452,6 +452,22 @@ Definition set_user_limit (st : NsState) (bound : positive) (value : Z) : option
   | None => None
   end.
 
+(** Where a write to tmpfs inode [ino] through open file [f] at offset
+    [off] starts: at the end of the file under O_APPEND
+    ([generic_write_checks], fs/read_write.c), else at [off]. *)
+Definition tmpfs_write_start (f : NsFile) (ino : Inode) (off : Z) : Z :=
+  if has (nf_flags f) O_APPEND then Z.of_nat (length (ino_bytes ino)) else off.
+
+(** A write of [bs] at [start] to tmpfs inode [ino] through open file [h]
+    at [l]: the bytes land, the offset moves past them, and the call
+    returns their count. *)
+Definition tmpfs_wrote (m : Model) (ctx : NsCtx) (st : NsState) (h : N) (l : Loc) (ino : Inode)
+    (start : Z) (bs : list byte) : ext_outcome :=
+  let n := Z.of_nat (length bs) in
+  ans [] (Z_to_bv 64 n) [] m ctx
+      (set_file_kind (set_inode_bytes st (ino_id ino) (file_write (ino_bytes ino) (Z_to_bv 64 start) bs))
+                     h (NfFile l (start + n))).
+
 (** [write] (64) on an [ONsFile].  Map and setgroups writes delegate their
     ordered permission checks to [map_write] and [setgroups_write].  A
     /proc/sys/user/max_user_namespaces write follows [proc_sys_call_handler]
@@ -460,9 +476,14 @@ Definition set_user_limit (st : NsState) (bound : positive) (value : Z) : option
     [shmem_file_write_iter]; kernel/user_namespace.c [proc_uid_map_write],
     [proc_gid_map_write], [proc_setgroups_write]; kernel/sysctl.c
     [proc_doulongvec_minmax], [__do_proc_doulongvec_minmax], [proc_get_long];
-    and fs/proc/proc_sysctl.c [proc_sys_call_handler].  Kind: exact on
-    tmpfs and the named procfs files, with [write_env]'s refusals; host
-    regular files and other kinds decline. *)
+    and fs/proc/proc_sysctl.c [proc_sys_call_handler].  This is the answer
+    when the environment fails nothing.  Kind ([write_arm]): on tmpfs and
+    the named procfs files, this answer, beside it [write_env]'s refusals,
+    and on tmpfs [write_short]'s short counts; over, since the arm admits
+    [write_env]'s refusals after every answer, also where Linux allocates
+    nothing first (a write of no bytes to tmpfs, a map write that
+    [map_write] refuses before [memdup_user_nul]).  Host regular files and
+    other kinds decline. *)
 Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) : ext_outcome :=
   if negb (file_can_write f) then ns_errno EBADF m ctx st
@@ -476,11 +497,7 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
            | NfDir _ _ => ns_errno EISDIR m ctx st
            | NfFile l off =>
                match regular_tmpfs st l with
-               | Some ino =>
-                   let start := if has (nf_flags f) O_APPEND then Z.of_nat (length (ino_bytes ino)) else off in
-                   let st' := set_inode_bytes st (ino_id ino)
-                                     (file_write (ino_bytes ino) (Z_to_bv 64 start) bs) in
-                   ans [] (Z_to_bv 64 n) [] m ctx (set_file_kind st' h (NfFile l (start + n)))
+               | Some ino => tmpfs_wrote m ctx st h l ino (tmpfs_write_start f ino off) bs
                | None => EUnmodeled
                end
            | NfUserNsFile l bound off =>
@@ -557,11 +574,42 @@ Definition write_env (st : NsState) (f : NsFile) (e : Z) : bool :=
 Definition write_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM], FamAlloc); (errno_in [ENOSPC; EIO], FamFs)].
 
+(** [k] can end a short write of [n] bytes from [start]: it ends on a page
+    boundary, strictly inside the write. *)
+Definition short_count (start : Z) (n k : nat) : bool :=
+  Nat.ltb 0 k && Nat.ltb k n && ((start + Z.of_nat k) mod Z.of_nat PAGE_SIZE =? 0).
+
+(** A short write to a tmpfs regular file, Linux 6.18.44:
+    [shmem_file_write_iter]'s [generic_perform_write] (mm/filemap.c) writes
+    folio by folio, and when the [shmem_write_begin] of a later folio fails
+    (with one of [write_env]'s errnos) it returns the count it has already
+    written.  A folio of the default tmpfs mount is one page
+    ([__shmem_get_inode] allows large folios only under the mount's
+    [huge] option), and a large folio starts on a page boundary too, so
+    that count [k] is a [short_count]: the first [k] bytes land and the
+    offset moves by [k].  A count is no refusal, so the forced-only filter
+    keeps it. *)
+Definition write_short (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) (h : N)
+    (f : NsFile) (o : ext_outcome) : Prop :=
+  file_can_write f = true
+  /\ match write_bytes i, nf_kind f with
+     | WBytes bs, NfFile l off =>
+         match regular_tmpfs st l with
+         | Some ino =>
+             let start := tmpfs_write_start f ino off in
+             exists k, short_count start (length bs) k = true
+                       /\ o = tmpfs_wrote m ctx st h l ino start (firstn k bs)
+         | None => False
+         end
+     | _, _ => False
+     end.
+
 Definition write_arm : NsArm := fun i m ctx st o =>
   match ns_file_of m st (fd_word (in_arg i 0)) with
   | Some (h, f) =>
       o = write_fn i m ctx st h f
       \/ injected_after (write_env st f) (write_fn i m ctx st h f) m ctx st o
+      \/ write_short i m ctx st h f o
   | None => released i m ctx st o
   end.
 
@@ -794,7 +842,8 @@ Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx s
       long one, [shmem_get_folio]'s ENOSPC or ENOMEM.
     - [unlinkat] (35): the parent walk's and [lookup_one_qstr_excl]'s
       ([Arm.walk_pairs]); [shmem_unlink] does not fail.
-    - [write] (64): on a file of the model, [write_env]'s ([write_pairs]);
+    - [write] (64): on a file of the model, [write_env]'s ([write_pairs]),
+      and none for [write_short]'s counts, which are no refusal;
       on a descriptor of the released model the arm answers as the
       released arm does, so the released arm's refusals
       ([Arm.released_pairs]), which the arm admits already.

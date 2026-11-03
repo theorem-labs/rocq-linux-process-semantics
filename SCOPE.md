@@ -454,16 +454,25 @@ not apply.
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
-- An rtnetlink handler can fail for lack of memory. When one does
-  (`rtnl_newlink`, `inet_rtm_newaddr` or a dump's start meeting
-  `-ENOMEM` or `-ENOBUFS`), Linux still answers `sendto` with the
-  request's length, reports the error inside the acknowledgement
-  (`netlink_ack`, `net/netlink/af_netlink.c`, v6.18.44), and leaves the
-  namespace unchanged. The namespace model admits that outcome
-  (`Ns.Net.nl_handler_errnos`). Under forced-only, this one injected
-  refusal is not removed: the refusal filter (`Ns.Ext.ext_refusal`) sees
-  the state before the call and the call's effect, not the state after
-  it, where the acknowledgement lives.
+- An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
+  `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
+  (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when
+  `__netlink_dump_start` cannot allocate the dump's first part
+  (`netlink_dump`, `net/netlink/af_netlink.c`, v6.18.44). Linux still
+  answers `sendto` with the request's length and reports the error inside
+  the acknowledgement (`netlink_ack`). A change leaves the namespace
+  unchanged. A dump keeps running: once the acknowledgement is read,
+  `netlink_recvmsg` runs the dump again from its first part, so the
+  dump's datagrams follow the acknowledgement. The namespace model admits
+  that outcome (`Ns.Net.nl_handler_errnos`). Under forced-only, this one
+  injected refusal is not removed: the refusal filter
+  (`Ns.Ext.ext_refusal`) sees the state before the call and the call's
+  effect, not the state after it, where the acknowledgement lives.
+- A write to a tmpfs file can stop short. When a later page of the write
+  cannot be allocated or read, `generic_perform_write` (`mm/filemap.c`,
+  v6.18.44) returns the bytes it has already written, a count that ends
+  on a page boundary (`Ns.FsOps.write_short`). A count is no refusal, so
+  forced-only keeps it too.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

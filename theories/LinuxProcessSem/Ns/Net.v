@@ -95,7 +95,9 @@
     allocation failure reported asynchronously, by an acknowledgement or a
     dump that could not be queued, is admitted as [recvfrom]'s refusal
     rather than a stored [sk_err]; a handler's own allocation failure is
-    the error of the acknowledgement [sendto] queues ([nl_handler_errnos]).
+    the error of the acknowledgement [sendto] queues, and a dump that fails
+    so keeps running, its datagrams behind that acknowledgement
+    ([nl_handler_errnos]).
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -986,30 +988,54 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
 (** [netlink_alloc_large_skb]'s failure, -ENOBUFS. *)
 Definition nl_alloc_errnos : list Z := [ENOBUFS].
 
-(** An rtnetlink handler's allocation failure, Linux 6.18.44: a change
-    ([rtnl_newlink] and [do_setlink], net/core/rtnetlink.c;
-    [inet_rtm_newaddr]'s [inet_alloc_ifa], net/ipv4/devinet.c) or a dump's
-    first part ([__netlink_dump_start]'s [netlink_dump],
-    net/netlink/af_netlink.c) returns ENOMEM or ENOBUFS, and
+(** The request [dg] reaches an rtnetlink handler: the tests [rt_handle]
+    makes before one runs hold, and its type is RTM_NEWLINK, RTM_NEWADDR,
+    RTM_GETLINK or RTM_GETADDR.  The tests: a header of at least 16 bytes
+    that fits the datagram ([netlink_rcv_skb] drops it otherwise,
+    net/netlink/af_netlink.c); NLM_F_REQUEST; a payload of at least one
+    byte ([rtnetlink_rcv_msg] answers 0 before any handler otherwise,
+    net/core/rtnetlink.c); and for RTM_NEWLINK and RTM_NEWADDR,
+    CAP_NET_ADMIN ([rtnetlink_rcv_msg]'s -EPERM otherwise).  [sendto]
+    asks it only of a request [rt_handle] answers, which then reaches its
+    type's handler or dump. *)
+Definition handler_reached (x : NetNs) (U : list UserNs) (opener caller : IdCred) (dst : bool)
+    (dg : list byte) : bool :=
+  let nl := nl_u32 dg 0 in
+  let ty := nl_u16 dg 4 in
+  (16 <=? nl) && (nl <=? nl_len dg) && (1 <=? nl - 16)
+  && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
+  && ((ty =? RTM_GETLINK) || (ty =? RTM_GETADDR)
+      || (((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR))
+          && net_admin U (netns_owner x) opener caller dst)).
+
+(** The errno a reached handler of request type [ty] returns when an
+    allocation fails, Linux 6.18.44:
+    - RTM_NEWLINK: ENOMEM, from [rtnl_newlink]'s first step, the
+      [kmalloc] of its attribute table (net/core/rtnetlink.c);
+    - RTM_NEWADDR: ENOBUFS, which [inet_rtm_to_ifa] sets before its
+      [inet_alloc_ifa] (net/ipv4/devinet.c).  Over: a request that
+      [inet_validate_rtm] refuses, whose address is 0 or whose device is
+      absent does not get there;
+    - RTM_GETLINK and RTM_GETADDR dumps: ENOBUFS, the one allocation error
+      of [netlink_dump], which [__netlink_dump_start] runs for the dump's
+      first part (net/netlink/af_netlink.c).
     [netlink_rcv_skb] acknowledges the request with that error
-    ([netlink_ack]); the namespace does not change and [sendto] still
-    returns the length.  The environment's refusal, carried in the
+    ([netlink_ack]) and [sendto] still returns the length.  A change
+    leaves the namespace as it was.  A dump keeps running:
+    [__netlink_dump_start] set [cb_running] before the failed
+    [netlink_dump], and [netlink_recvmsg] runs the dump again from its
+    first part once the acknowledgement is read, so its datagrams follow
+    the acknowledgement.  The environment's refusal, carried in the
     acknowledgement: the forced-only filter, which sees the call's effect
     and not the queue after it, does not remove it (SCOPE.md). *)
-Definition nl_handler_errnos : list Z := [ENOMEM; ENOBUFS].
+Definition nl_handler_errnos (ty : Z) : list Z :=
+  if ty =? RTM_NEWLINK then [ENOMEM]
+  else if (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR) then [ENOBUFS]
+  else [].
 
-(** The request [dg] reaches an rtnetlink handler: RTM_NEWLINK,
-    RTM_NEWADDR, RTM_GETLINK or RTM_GETADDR, which [rt_handle] answers.
-    Over: a request [rtnetlink_rcv_msg] refuses before its handler (EPERM)
-    is not told apart. *)
-Definition handler_reached (dg : list byte) (s : NlStep) : bool :=
-  match s with
-  | SDecline => false
-  | SDone _ _ =>
-      let ty := nl_u16 dg 4 in
-      (16 <=? nl_len dg) && negb (Z.land (nl_u16 dg 6) NLM_F_REQUEST =? 0)
-      && ((ty =? RTM_NEWLINK) || (ty =? RTM_NEWADDR) || (ty =? RTM_GETLINK) || (ty =? RTM_GETADDR))
-  end.
+(** A reply that is a dump. *)
+Definition reply_dumps (r : NlReply) : bool :=
+  match r with RLinkDump _ _ _ | RAddrDump _ _ _ => true | RNone | RAck _ => false end.
 
 (** The acknowledgement of request [dg] from port [port] with its handler's
     error [e] ([netlink_ack] of the request's first message). *)
@@ -1082,23 +1108,24 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                       \/ match dgo with
                          | None => o = ns_fail EFAULT rd0 m ctx st1
                          | Some dg =>
+                             let sent st' qs := ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
+                                                       (set_file st' h (netlink_file f n p (q ++ qs))) in
+                             let fails e := handler_reached x (ns_userns st) (nf_cred f) caller dst dg = true
+                                            /\ errno_in (nl_handler_errnos (nl_u16 dg 4)) e = true in
                              match rt_handle x (ns_userns st) (nf_cred f) caller dst p dg with
                              | SDecline => False
                              | SDone ifs r =>
                                  (exists env dgs,
                                    nl_env_ok (env_nl_link_max (ns_env st)) env r = true /\
                                    reply_dgrams env r = Some dgs /\
-                                   let st2 := match ifs with
+                                   (o = sent (match ifs with
                                               | Some l => set_netns_ifs st n l
                                               | None => st
-                                              end in
-                                   o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                              (set_file st2 h (netlink_file f n p (q ++ dgs))))
-                                 \/ (handler_reached dg (SDone ifs r) = true
-                                     /\ exists e, errno_in nl_handler_errnos e = true
-                                        /\ o = ns_out (Z_to_bv 64 len) [] (rd0 ++ [(buf, Z.to_nat len)]) m ctx
-                                                 (set_file st h (netlink_file f n p
-                                                                   (q ++ [handler_fail_ack p dg e]))))
+                                              end) dgs
+                                    \/ (reply_dumps r = true
+                                        /\ exists e, fails e /\ o = sent st (handler_fail_ack p dg e :: dgs))))
+                                 \/ (reply_dumps r = false
+                                     /\ exists e, fails e /\ o = sent st [handler_fail_ack p dg e])
                              end
                          end)
           end
@@ -1110,8 +1137,9 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
     Kind: exact on the namespace's new state and on acknowledgements, over
     on dump replies ([NlEnv], within [nl_env_ok]); [nl_insert_errnos] (an
     autobind) and [nl_alloc_errnos] beside the answer, and beside a request
-    that reaches an rtnetlink handler, the acknowledgement of its
-    allocation failure ([nl_handler_errnos]) with the namespace unchanged.
+    that reaches an rtnetlink handler ([handler_reached]), the
+    acknowledgement of its allocation failure ([nl_handler_errnos]) with
+    the namespace unchanged and, for a dump, the dump behind it.
     Declines: the AF_UNIX socket; a
     destination other than the kernel (a port or a group); a request longer
     than [NL_SEND_MAX]; an autobind for a task with no pid in its

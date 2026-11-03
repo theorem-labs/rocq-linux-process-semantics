@@ -8,9 +8,9 @@
     the namespace state. *)
 
 From Stdlib Require Import ZArith List Bool NArith PArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Userns Ext Arm Net.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Spec Tables Userns Ext Arm Net.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -334,16 +334,41 @@ Proof. intros o H. unfold recvfrom_arm in H. vm_compute in H. subst o. vm_comput
    An rtnetlink handler's allocation failure
    ========================================================================= *)
 
+(** [handler_reached] makes [rt_handle]'s tests: a change request without
+    CAP_NET_ADMIN (-EPERM), a request with no payload (answered 0) and a
+    header longer than its datagram (dropped) reach no handler.  The errno
+    by type: ENOMEM for RTM_NEWLINK, ENOBUFS for RTM_NEWADDR and the
+    dumps, none for another type (17, RTM_DELLINK). *)
+Definition getlink_bare : list byte := bs [16; 0; 0; 0; 18; 0; 1; 3; 3; 0; 0; 0; 0; 0; 0; 0].
+Definition getlink_long : list byte :=
+  bs [40; 0; 0; 0; 18; 0; 1; 3; 3; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0].
+
+Example handler_reached_cases :
+  handler_reached (net2 [lo IFF_LOOPBACK []]) users capable (mkIdCred 2 65534 65534 0) false newaddr_req
+    = false
+  /\ handler_reached (net2 [lo_up]) users capable capable false getlink_bare = false
+  /\ handler_reached (net2 [lo_up]) users capable capable false getlink_long = false
+  /\ handler_reached (net2 [lo_up]) users capable capable false getlink_req = true
+  /\ nl_handler_errnos RTM_NEWLINK = [ENOMEM] /\ nl_handler_errnos RTM_NEWADDR = [ENOBUFS]
+  /\ nl_handler_errnos RTM_GETLINK = [ENOBUFS] /\ nl_handler_errnos RTM_GETADDR = [ENOBUFS]
+  /\ nl_handler_errnos 17 = [].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** A bound socket (port 2) of the sealed namespace 2 sends the link dump
-    request [getlink_req] to the kernel.  Beside the dump, the model admits
-    the handler's allocation failure: [sendto] still returns the request's
-    length, the queue holds the acknowledgement with -ENOMEM
-    ([handler_fail_ack]), and the namespace does not change.  The
-    forced-only filter does not remove this answer (SCOPE.md). *)
+    request [getlink_req] to the kernel, from a task of that namespace
+    ([snd_ctx]).  The dump's first part can fail for lack of memory:
+    [sendto] still returns the request's length, the queue holds the
+    acknowledgement with -ENOBUFS ([handler_fail_ack]) and behind it the
+    dump ([lo_dump]), which keeps running, and the namespace does not
+    change.  [ns_spec] admits that answer, and the forced-only filter does
+    not remove it: a length matches no pair (SCOPE.md). *)
 Definition snd_len : Z := Z.of_nat (length getlink_req).
 Definition snd_file : NsFile := mkNsFile (NfNetlink 2 2 []) 2 capable.
 Definition snd_state : NsState :=
   mkNsState [] users [] [] [net2 [lo_up]] [] [] [] [(7%N, snd_file)] (ns_env empty_nsstate).
+Definition snd_ctx : NsCtx :=
+  mkNsCtx 1 1 1 2 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 (mkCaps 0 0 0 0 0) 0 []
+          (Some false) (Some 1).
 Definition snd_mem : word -> option byte :=
   fun a => let k := bv_unsigned a - 65536 in
            if (0 <=? k) && (k <? snd_len) then Some (nth (Z.to_nat k) getlink_req (Z_to_bv 8 0))
@@ -351,20 +376,39 @@ Definition snd_mem : word -> option byte :=
 Definition snd_in : SyscallInput :=
   mkInput (Z_to_bv 64 206) (map (Z_to_bv 64) [3; 65536; snd_len; 0; 0; 0]) snd_mem snd_mem.
 
+(** The link dump of [lo_up]: one datagram, then NLMSG_DONE. *)
+Definition lo_env : NlEnv := mkNlEnv [] [[]] [] [1%nat].
+Definition lo_dump : list (list byte) :=
+  match reply_dgrams lo_env (RLinkDump 3 2 [lo_up]) with Some dgs => dgs | None => [] end.
+
+Definition fail_eff : SyscallEffect :=
+  mkEffectU (Z_to_bv 64 snd_len) [] [] [] [] [(Z_to_bv 64 65536, Z.to_nat snd_len)].
+Definition fail_out : ext_outcome :=
+  EOk fail_eff rcv_model snd_ctx
+      (set_file snd_state 7 (netlink_file snd_file 2 2 (handler_fail_ack 2 getlink_req ENOBUFS :: lo_dump)))
+      [].
+
 Example getlink_handler_failure_admitted :
-  handler_reached getlink_req (sendto_fn (net2 [lo_up]) users capable capable false 2 getlink_req) = true
-  /\ nl_u32 (handler_fail_ack 2 getlink_req ENOMEM) 16 = 4294967284
-  /\ netlink_sendto snd_in rcv_model init_nsctx snd_state 7 snd_file 2 2 [] (Z_to_bv 64 65536) snd_len 0
-       (Z_to_bv 64 0) 0
-       (ns_out (Z_to_bv 64 snd_len) [] [(Z_to_bv 64 65536, Z.to_nat snd_len)] rcv_model init_nsctx
-               (set_file snd_state 7 (netlink_file snd_file 2 2 [handler_fail_ack 2 getlink_req ENOMEM]))).
+  nl_u32 (handler_fail_ack 2 getlink_req ENOBUFS) 16 = 4294967191
+  /\ ns_spec snd_in rcv_model snd_ctx snd_state fail_out.
 Proof.
-  split; [vm_compute; reflexivity|].
   split; [vm_compute; reflexivity|].
   (* Head reductions only: a full normalization of the relation, whose
      dump branch quantifies over the environment's NlEnv, does not fit in
      memory. *)
-  unfold netlink_sendto. hnf. right. exists 2. split; [exact eq_refl|].
-  hnf. right. hnf. right. split; [vm_compute; reflexivity|].
-  exists ENOMEM. split; [reflexivity | vm_compute; reflexivity].
+  hnf. left. hnf. right. exists 2. split; [exact eq_refl|].
+  hnf. right. hnf. left. exists lo_env, lo_dump.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  right. split; [vm_compute; reflexivity|].
+  exists ENOBUFS. split; [split; vm_compute; reflexivity | vm_compute; reflexivity].
+Qed.
+
+Example getlink_handler_failure_kept :
+  ~ ns_refusal forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff.
+Proof.
+  intros H.
+  apply (proj1 (ns_refusal_ns forced_only_cfg snd_in rcv_model snd_ctx snd_state fail_eff
+                  ltac:(vm_compute; reflexivity))) in H.
+  destruct H as [Hoff _]. vm_compute in Hoff. discriminate Hoff.
 Qed.

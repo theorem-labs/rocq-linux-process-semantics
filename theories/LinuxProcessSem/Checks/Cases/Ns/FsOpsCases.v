@@ -398,3 +398,35 @@ Example write_env_refusals :
   /\ write_env file_state offset_file ENOSPC = false
   /\ ni_errno write_injected ENOSPC = true /\ ni_errno write_injected EBADF = false.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** A short write ([write_short]): two bytes written at offset 4095 of a
+    writable tmpfs file cross a page boundary, so the write can stop after
+    the first byte, with the offset moved to 4096; every short count the
+    arm admits there is that one. *)
+Definition edge_file : NsFile := mkNsFile (NfFile (LDentry 1 2) 4095) 2 (mkIdCred 1 1000 1002 0).
+Definition edge_state : NsState := with_files file_state [(1%N, edge_file)].
+Definition file_off_of (o : ext_outcome) (h : N) : option Z :=
+  match o with
+  | EOk _ _ _ s _ =>
+      match lookup_file (ns_files s) h with
+      | Some f => match nf_kind f with NfFile _ off => Some off | _ => None end
+      | None => None
+      end
+  | EUnmodeled => None
+  end.
+
+Example write_short_page_end :
+  (exists o, write_short (write_in [120; 121]) base_model base_ctx edge_state 1%N edge_file o
+             /\ ret_of o = Some 1 /\ file_off_of o 1%N = Some 4096)
+  /\ forall o, write_short (write_in [120; 121]) base_model base_ctx edge_state 1%N edge_file o ->
+               ret_of o = Some 1.
+Proof.
+  split.
+  - eexists. split.
+    + hnf. split; [reflexivity|]. hnf. exists 1%nat.
+      split; [vm_compute; reflexivity | reflexivity].
+    + vm_compute. split; reflexivity.
+  - intros o [_ H]. hnf in H. destruct H as (k & Hk & ->).
+    destruct k as [|[|k]]; vm_compute in Hk; try discriminate Hk.
+    vm_compute. reflexivity.
+Qed.
