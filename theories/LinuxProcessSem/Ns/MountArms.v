@@ -12,7 +12,9 @@
       3963-4052, 4216-4248; onto a shared mount, [attach_recursive_mnt]
       and [propagate_mnt], fs/namespace.c:2559-2673, fs/pnode.c:311-366;
     - [SYSCALL_DEFINE2(umount)], [ksys_umount], [path_umount], and
-      [can_umount], fs/namespace.c:2016-2071;
+      [can_umount], fs/namespace.c:2016-2071; [do_umount] and [umount_tree]
+      with UMOUNT_PROPAGATE, fs/namespace.c:1771-1838, 1937-1950, and
+      [propagate_umount], fs/pnode.c:466-687;
     - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4556-4638, and
       [chroot_fs_refs], fs/fs_struct.c:55-81;
     - [SYSCALL_DEFINE5(mount_setattr)], [wants_mount_setattr],
@@ -457,8 +459,16 @@ Definition mount_arm : NsArm := fun i m ctx st o =>
 Definition umount_valid (flags : Z) : bool :=
   Z.eqb (Z.land flags (Z.lnot (MNT_FORCE + MNT_DETACH + MNT_EXPIRE + UMOUNT_NOFOLLOW))) 0.
 
-(** [can_umount] and [path_umount] (fs/namespace.c:2016-2045).  The
-    MNT_DETACH tree operation itself is [Mount.umount_detach]. *)
+(** [can_umount] and [path_umount] (fs/namespace.c:2016-2045), then
+    [do_umount]'s checks (fs/namespace.c:1937-1945).  Every MNT_DETACH runs
+    [umount_tree] with UMOUNT_PROPAGATE (fs/namespace.c:1948-1950), so
+    [propagate_umount] gathers its candidates on the receivers of every
+    parent in the subtree (fs/namespace.c:1793-1794; fs/pnode.c:505-531)
+    and [bulk_make_private] moves the slaves of the removed mounts
+    (fs/namespace.c:1796): [Propagation.umount_detach_prop].  A parent that
+    is neither shared nor a slave does not stop it: a shared mount inside
+    the subtree has receivers too.  No answer when a mount the unmount
+    reads can receive an event from an open group. *)
 Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let pathp := in_arg i 0 in
   let flags := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
@@ -486,8 +496,14 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
                        | Some mount, Some true =>
                            if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
                            else if mnt_locked mount then err reads EINVAL m ctx st
-                           else if umount_propagates (ns_mounts st) mount then EUnmodeled
-                           else mount_mresult reads (umount_detach (ns_mounts st) top) m ctx st
+                           else match mnt_parent mount with
+                                | None => err reads EINVAL m ctx st
+                                | Some _ =>
+                                    match umount_detach_prop st top with
+                                    | Some st' => mount_ok reads m ctx st'
+                                    | None => EUnmodeled
+                                    end
+                                end
                        | Some _, Some false => err reads EINVAL m ctx st
                        | _, _ => EUnmodeled
                        end

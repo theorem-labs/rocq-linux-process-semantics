@@ -489,10 +489,15 @@ not apply.
   `env_open_groups`. With a non-empty list, a call whose answer reads a
   mount that can receive such an event has no answer: a path walk that
   enters such a mount (`Ns.Walk.follow_mounts_fuel`,
-  `Ns.Propagation.open_mount`), and a bind or a new mount (`mount(2)`)
+  `Ns.Propagation.open_mount`), a bind or a new mount (`mount(2)`)
   in a mount namespace that holds such a mount, or onto a shared mount
   whose propagation tree holds one or reaches a namespace that holds one
-  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`).
+  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), and an
+  `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
+  and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
+  `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,
+  `fs/namespace.c:1949`, `1793-1794`, and `propagate_umount` gathers its
+  candidates on those peers and slaves, `fs/pnode.c:505-531`).
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when

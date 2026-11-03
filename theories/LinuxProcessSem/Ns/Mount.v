@@ -26,7 +26,9 @@
       submount has it; no copy is unbindable.  A source outside the
       caller's namespace and a shared target are left undecided;
     - a detaching unmount: [can_umount] refuses a mount that is MNT_LOCKED
-      with EINVAL; [umount_tree] removes the subtree;
+      with EINVAL; [umount_tree] removes the subtree (the mounts it removes
+      by propagation and the slaves it moves are
+      [Propagation.umount_detach_prop]'s);
     - a propagation change with or without MS_REC: [do_change_type] over the
       subtree in pre-order, [change_mnt_propagation] and [do_make_slave] on
       each mount (fs/pnode.c): MS_PRIVATE leaves peer group and master;
@@ -371,9 +373,10 @@ Definition umount_detach (T : list Mount) (i : positive) : MResult :=
       end
   end.
 
-(** [umount_tree(..., UMOUNT_PROPAGATE)] reaches peers and slaves of a
-    parent.  The tree update models only the local subtree, so its caller
-    declines such a parent rather than silently omit the propagated copies. *)
+(** [umount_tree(..., UMOUNT_PROPAGATE)] reaches the peers and slaves of a
+    parent that is shared or a slave.  [umount_detach] models only the local
+    subtree; the MNT_DETACH arm runs [Propagation.umount_detach_prop], which
+    propagates for every parent, and no arm reads this test. *)
 Definition umount_propagates (T : list Mount) (m : Mount) : bool :=
   match mnt_parent m with
   | None => false

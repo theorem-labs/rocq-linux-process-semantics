@@ -8,8 +8,9 @@
     mounts can receive a mount or unmount event from a peer group that has a
     member outside the tables ([open_reach]), how a propagation type changes
     a mount ([change_type]), what a copy of a mount links ([clone_links]),
-    and how a tree attached on a shared mount propagates ([propagate_copies],
-    [attach_tree]).
+    how a tree attached on a shared mount propagates ([propagate_copies],
+    [attach_tree]), and what an MNT_DETACH unmount removes and changes
+    ([umount_detach_prop]).
 
     Linux v6.18.46 sources: [struct mount] (fs/mount.h:68-71, 95, 103-115);
     [next_peer], [first_slave], [next_slave] (fs/pnode.c:17-30);
@@ -19,7 +20,10 @@
     group; [next_group], [need_secondary], [find_master] and
     [propagate_mnt] (fs/pnode.c:228-366); [copy_tree], [lock_mnt_tree],
     [invent_group_ids], [count_mounts] and [attach_recursive_mnt]
-    (fs/namespace.c:2157-2230, 2412-2437, 2449-2487, 2559-2673).
+    (fs/namespace.c:2157-2230, 2412-2437, 2449-2487, 2559-2673);
+    [umount_tree] (fs/namespace.c:1771-1838), [bulk_make_private]
+    (fs/pnode.c:126-175), [propagate_mount_unlock] and [propagate_umount]
+    (fs/pnode.c:466-687; Documentation/filesystems/propagate_umount.txt).
 
     The rules of the data ([prop_ok]):
     1. a ring entry [(g, l)] lists, without repeating one, exactly the mounts
@@ -1428,3 +1432,287 @@ Definition bind_mount_shared (st : NsState) (ns owner : positive)
            end
   | _, _ => AOver
   end.
+
+(* =========================================================================
+   Unmount: propagate_mount_unlock, propagate_umount, bulk_make_private
+   ========================================================================= *)
+
+(** The mounts that receive the mount and unmount events of mount [p]
+    ([propagation_next (p, p)], fs/pnode.c:177-212): every mount of the
+    units of its propagation tree but [p] itself; none for a mount in no
+    group, which has no slave. *)
+Definition receivers (T : list Mount) (p : positive) : list positive :=
+  match find_mount T p with
+  | Some m =>
+      match mnt_peer m with
+      | Some g => List.filter (fun q => negb (Pos.eqb q p)) (flat_map snd (plan_units T g p))
+      | None => []
+      end
+  | None => []
+  end.
+
+(** The mounts at dentry [d] of the receivers of mount [p] ([__lookup_mnt]
+    on each, fs/pnode.c:473-478, 510-513). *)
+Definition received_children (T : list Mount) (p d : positive) : list positive :=
+  flat_map (fun q => match mount_at T q d with Some c => [mnt_id c] | None => [] end)
+           (receivers T p).
+
+(** [propagate_mount_unlock] (fs/pnode.c:466-479), the first step of
+    [umount_tree] with UMOUNT_PROPAGATE (fs/namespace.c:1776-1777): the
+    mount at [x]'s mount point on each receiver of [x]'s parent loses
+    MNT_LOCKED, before anything is decided. *)
+Definition unlock_propagated (T : list Mount) (x : Mount) : list Mount :=
+  match mnt_parent x with
+  | Some p =>
+      let cs := received_children T p (mnt_mountpoint x) in
+      map (fun m => if mem (mnt_id m) cs then mnt_with_locked m false else m) T
+  | None => T
+  end.
+
+Fixpoint dedup_pos (l : list positive) : list positive :=
+  match l with
+  | [] => []
+  | x :: r => x :: List.filter (fun y => negb (Pos.eqb y x)) (dedup_pos r)
+  end.
+
+(** The candidates of [propagate_umount] for the subtree [U]
+    ([gather_candidates], fs/pnode.c:500-535; propagate_umount.txt:51-62):
+    for each mount of [U], the mount at its mount point on each receiver of
+    its parent, when that mount is not in [U]. *)
+Definition umount_candidates (T : list Mount) (U : list positive) : list positive :=
+  dedup_pos (List.filter (fun c => negb (mem c U))
+    (flat_map (fun i => match find_mount T i with
+                        | Some m => match mnt_parent m with
+                                    | Some p => received_children T p (mnt_mountpoint m)
+                                    | None => []
+                                    end
+                        | None => []
+                        end) U)).
+
+(** Mount [x] is forbidden in the set [kept] (propagate_umount.txt:12-14,
+    107-111): a subtree mounted strictly inside [x], that is on a child of
+    [x] that does not sit on [x]'s root, holds a mount outside [kept]. *)
+Definition forbidden (T : list Mount) (kept : list positive) (x : Mount) : bool :=
+  existsb (fun c => is_child_of (mnt_id x) c && negb (Pos.eqb (mnt_mountpoint c) (mnt_root x))
+                    && negb (forallb (fun i => mem i kept) (subtree T (mnt_id c)))) T.
+
+(** The largest non-shifting subset of [U] and the candidates [C]
+    (propagate_umount.txt:107-197; [trim_one], [trim_ancestors],
+    fs/pnode.c:542-595): every forbidden candidate goes, again until none
+    is.  A mount forbidden in a set is forbidden in each subset of it, so
+    the order of removal does not matter.  [U] is a whole subtree, so none
+    of it is forbidden.  Each round that removes nothing ends, so [C]'s
+    length bounds the rounds. *)
+Fixpoint trim_shifting (fuel : nat) (T : list Mount) (U C : list positive) : list positive :=
+  match fuel with
+  | O => C
+  | Datatypes.S f =>
+      let C' := List.filter (fun i => match find_mount T i with
+                                      | Some x => negb (forbidden T (U ++ C) x)
+                                      | None => false
+                                      end) C in
+      if Nat.eqb (length C') (length C) then C else trim_shifting f T U C'
+  end.
+
+(** The largest non-revealing subset (propagate_umount.txt:16-17, 349-413;
+    [handle_locked], fs/pnode.c:597-616): every MNT_LOCKED candidate whose
+    parent is not in the set goes, again until none does. *)
+Fixpoint trim_revealing (fuel : nat) (T : list Mount) (U C : list positive) : list positive :=
+  match fuel with
+  | O => C
+  | Datatypes.S f =>
+      let C' := List.filter (fun i => match find_mount T i with
+                                      | Some x => negb (mnt_locked x)
+                                                  || match mnt_parent x with
+                                                     | Some p => mem p (U ++ C)
+                                                     | None => false
+                                                     end
+                                      | None => false
+                                      end) C in
+      if Nat.eqb (length C') (length C) then C else trim_revealing f T U C'
+  end.
+
+(** The candidates [propagate_umount] adds to the subtree of mount [i]
+    (fs/pnode.c:658-687): those in the largest non-shifting, non-revealing
+    subset of the subtree and its candidates.  That subset is unique
+    (propagate_umount.txt:43-47), so the kernel's list surgery reaches it
+    in every order of its lists. *)
+Definition umount_added (T : list Mount) (i : positive) : list positive :=
+  let U := subtree T i in
+  let C0 := umount_candidates T U in
+  let C1 := trim_shifting (Datatypes.S (length C0)) T U C0 in
+  trim_revealing (Datatypes.S (length C1)) T U C1.
+
+(** Every mount MNT_DETACH of mount [i] removes: its subtree
+    ([umount_tree], fs/namespace.c:1780-1785) and the candidates
+    [propagate_umount] adds (fs/namespace.c:1793-1794). *)
+Definition umount_set (T : list Mount) (i : positive) : list positive :=
+  subtree T i ++ umount_added T i.
+
+(** The set reads the mount table alone: no order data decides it
+    (design rule of section 3.3), so the arm answers whatever order the
+    model knows. *)
+Theorem umount_set_order_free : forall st pl i,
+  umount_set (ns_mounts (with_ns_prop st pl)) i = umount_set (ns_mounts st) i.
+Proof. reflexivity. Qed.
+
+(** Where a mount that stays on the root of a removed candidate [m] goes
+    ([reparent], fs/pnode.c:631-643, from 679-683): down the stack of
+    removed mounts under it, onto the first ancestor that stays, at the
+    mount point the bottom of the stack had there. *)
+Fixpoint stack_base (fuel : nat) (T : list Mount) (R : list positive) (m : Mount)
+    : option (positive * positive) :=
+  match fuel with
+  | O => None
+  | Datatypes.S f =>
+      match mnt_parent m with
+      | Some p => if mem p R
+                  then match find_mount T p with
+                       | Some pm => stack_base f T R pm
+                       | None => None
+                       end
+                  else Some (p, mnt_mountpoint m)
+      | None => None
+      end
+  end.
+
+(** Each mount that stays on the root of a removed candidate of [C] (its
+    [overmount], fs/mount.h:99), with its new parent and mount point. *)
+Definition reparents (T : list Mount) (R C : list positive) : list (positive * (positive * positive)) :=
+  flat_map (fun i => match find_mount T i with
+                     | Some m =>
+                         match mount_at T i (mnt_root m) with
+                         | Some o => if mem (mnt_id o) R then []
+                                     else match stack_base (length T) T R m with
+                                          | Some b => [(mnt_id o, b)]
+                                          | None => []
+                                          end
+                         | None => []
+                         end
+                     | None => []
+                     end) C.
+
+(** The group a slave of group [g] receives from once the mounts [R] are
+    gone ([bulk_make_private], [trace_transfers], [set_destinations],
+    fs/pnode.c:126-175: from a removed mount to its next peer that stays,
+    else to its master, and on up): [g] while a member stays, or when [g]
+    has no member in the tables (none is removed); else the first group up
+    the chain of master groups with a member that stays; none when the
+    chain ends ([transfer_propagation] to NULL, fs/pnode.c:79-82). *)
+Fixpoint dest_group (fuel : nat) (T : list Mount) (R : list positive) (g : positive)
+    : option positive :=
+  match fuel with
+  | O => None
+  | Datatypes.S f =>
+      if existsb (fun m => in_peer_group g m && negb (mem (mnt_id m) R)) T
+         || negb (existsb (in_peer_group g) T)
+      then Some g
+      else match group_master T g with
+           | Some (Some h) => dest_group f T R h
+           | _ => None
+           end
+  end.
+
+Definition new_master (T : list Mount) (R : list positive) (o : option positive) : option positive :=
+  match o with
+  | Some g => dest_group (Datatypes.S (length T)) T R g
+  | None => None
+  end.
+
+(** The groups with a member in [R] and none outside it: they end, and
+    their keys are not given again ([mnt_release_group_id] in
+    [trace_transfers], fs/pnode.c:136-137). *)
+Definition dead_groups (T : list Mount) (R : list positive) : list positive :=
+  dedup_pos (flat_map (fun m => match mnt_peer m with
+                                | Some g =>
+                                    if mem (mnt_id m) R
+                                       && negb (existsb (fun x => in_peer_group g x
+                                                                 && negb (mem (mnt_id x) R)) T)
+                                    then [g] else []
+                                | None => []
+                                end) T).
+
+(** The order data once the mounts [R] are gone: they leave every ring and
+    slave list ([list_del_init], [hlist_del_init], fs/pnode.c:132, 140),
+    and their own lists go; a group that ends loses its entry and its key.
+    The slaves of a removed mount go, in their order, to the head of the
+    slave list of the mount [trace_transfers] reaches ([transfer_propagation],
+    fs/pnode.c:74-88, 170-171), which ring and list orders choose: the
+    slave lists of the members of each group that receives them become
+    unknown. *)
+Definition umount_links (st : NsState) (T : list Mount) (R : list positive) : PropLinks :=
+  let pl := ns_prop st in
+  let keep := fun l => List.filter (fun i => negb (mem i R)) l in
+  let rings := flat_map (fun e => match keep (snd e) with [] => [] | l => [(fst e, l)] end)
+                        (pl_rings pl) in
+  let slaves := flat_map (fun e => if mem (fst e) R then [] else [(fst e, keep (snd e))])
+                         (pl_slaves pl) in
+  let gets := flat_map (fun m =>
+                 if mem (mnt_id m) R then []
+                 else match mnt_master m with
+                      | Some g =>
+                          if existsb (fun x => in_peer_group g x && mem (mnt_id x) R) T
+                          then match new_master T R (Some g) with Some h => [h] | None => [] end
+                          else []
+                      | None => []
+                      end) T in
+  let pl1 := forget_lists (pl_with_slaves (pl_with_rings pl rings) slaves)
+                          (flat_map (members T) (dedup_pos gets)) in
+  pl_with_next_group pl1 (fold_left (fun acc g => Pos.max acc (Pos.succ g)) (dead_groups T R)
+                                    (pl_next_group pl1)).
+
+(** The mounts an MNT_DETACH of mount [i] reads: its subtree, the
+    candidates, and the parent of each mount of the subtree with that
+    parent's receivers. *)
+Definition umount_reads (T : list Mount) (i : positive) : list positive :=
+  let U := subtree T i in
+  U ++ umount_candidates T U
+  ++ flat_map (fun j => match find_mount T j with
+                        | Some m => match mnt_parent m with Some p => p :: receivers T p | None => [] end
+                        | None => []
+                        end) U.
+
+(** [umount_tree (X, UMOUNT_PROPAGATE)] of mount [i] (fs/namespace.c:
+    1771-1838), which do_umount runs for every MNT_DETACH
+    (fs/namespace.c:1948-1950), after the arm's checks: MNT_LOCKED cleared
+    on the propagated mounts ([unlock_propagated], fs/namespace.c:
+    1776-1777); the subtree and the candidates [propagate_umount] adds
+    leave the tables (fs/namespace.c:1793-1794; fs/pnode.c:505-531 gathers
+    them); a mount on the root of a removed candidate moves down
+    ([reparents]); the slaves of removed mounts pass on
+    ([bulk_make_private], fs/namespace.c:1796).  [None] when a mount it
+    reads can receive an event from an open group: the host can mount or
+    unmount there at any time (design section 5.1). *)
+Definition umount_detach_prop (st : NsState) (i : positive) : option NsState :=
+  let T0 := ns_mounts st in
+  match find_mount T0 i with
+  | None => None
+  | Some x =>
+      if existsb (open_mount st) (umount_reads T0 i) then None
+      else
+        let T := unlock_propagated T0 x in
+        let R := umount_set T i in
+        let mv := reparents T R (umount_added T i) in
+        let T2 := map (fun m =>
+                         let m' := mnt_with_master m (new_master T R (mnt_master m)) in
+                         match find (fun e => Pos.eqb (fst e) (mnt_id m)) mv with
+                         | Some e => mnt_with_place m' (Some (fst (snd e))) (snd (snd e))
+                         | None => m'
+                         end)
+                      (List.filter (fun m => negb (mem (mnt_id m) R)) T) in
+        Some (with_ns_prop (with_mounts st T2) (umount_links st T R))
+  end.
+
+(** The mounts after an unmount do not depend on the order data: other
+    order data gives the same table, or no answer in both. *)
+Theorem umount_detach_prop_order_free : forall st pl i,
+  option_map ns_mounts (umount_detach_prop (with_ns_prop st pl) i)
+  = option_map ns_mounts (umount_detach_prop st i).
+Proof.
+  intros st pl i.
+  assert (HT : ns_mounts (with_ns_prop st pl) = ns_mounts st) by reflexivity.
+  assert (HO : open_mount (with_ns_prop st pl) = open_mount st) by reflexivity.
+  unfold umount_detach_prop. rewrite HO, HT. cbv zeta.
+  destruct (find_mount (ns_mounts st) i) as [x|]; [|reflexivity].
+  destruct (existsb (open_mount st) (umount_reads (ns_mounts st) i)); reflexivity.
+Qed.
