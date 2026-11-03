@@ -247,8 +247,7 @@ Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg)
     RLIMIT_NPROC, a security module) is outside it, and the statement's
     header must say so.  The released arm ([Fork.clone_ns_resolve]) cannot
     make that cut itself: without the namespace tables it cannot tell a
-    forced EPERM from a security module's (the LPS owner's decision,
-    2026-11-01).
+    forced EPERM from a security module's.
 
     ON THIS CORE the whole-system form holds for programs whose processes
     in the released world make, while another process lives, only the

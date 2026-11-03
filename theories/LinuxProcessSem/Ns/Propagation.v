@@ -1221,8 +1221,9 @@ Definition prop_enospc (T : list Mount) (mx : Z) (ns0 : positive) (size : nat) (
     - the order data breaks a rule ([prop_okb]), or the walk meets a mount
       twice (no Linux mount tree does);
     - a mount of the propagation tree can receive an event from an open
-      group, or a namespace the call adds mounts to holds one (the host can
-      change the tree and the counts, design section 5.1);
+      group, or a namespace the call adds mounts to holds one: the host
+      can mount or unmount there at any time, which changes the tree and
+      the counts, so the call has no answer;
     - a namespace that gets a secondary is not in the tables;
     - [count_mounts] refuses ([prop_enospc]): ENOSPC, the tables' answer
       (fs/pnode.c:351);
@@ -1551,9 +1552,8 @@ Definition umount_added (T : list Mount) (i : positive) : list positive :=
 Definition umount_set (T : list Mount) (i : positive) : list positive :=
   subtree T i ++ umount_added T i.
 
-(** The set reads the mount table alone: no order data decides it
-    (design rule of section 3.3), so the arm answers whatever order the
-    model knows. *)
+(** The set reads the mount table alone: the order data never decides it,
+    so the arm answers whatever the model knows of the order. *)
 Theorem umount_set_order_free : forall st pl i,
   umount_set (ns_mounts (with_ns_prop st pl)) i = umount_set (ns_mounts st) i.
 Proof. reflexivity. Qed.
@@ -1684,7 +1684,8 @@ Definition umount_reads (T : list Mount) (i : positive) : list positive :=
     ([reparents]); the slaves of removed mounts pass on
     ([bulk_make_private], fs/namespace.c:1796).  [None] when a mount it
     reads can receive an event from an open group: the host can mount or
-    unmount there at any time (design section 5.1). *)
+    unmount there at any time, so a call whose answer reads such a mount
+    has no answer. *)
 Definition umount_detach_prop (st : NsState) (i : positive) : option NsState :=
   let T0 := ns_mounts st in
   match find_mount T0 i with

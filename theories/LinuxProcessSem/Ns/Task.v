@@ -113,8 +113,7 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     session and group ids become the caller's pid; no call of the
     namespace model reads them ([getsid] 156 and [getpgid] 155 have no
     arm here).  [m_tid] is not written: it holds the host's numbering,
-    and a pid of another namespace must not go there (the multi-process
-    core's owner, 2026-11-03).
+    and a pid of another namespace must not go there.
     Kind: exact in a pid namespace the tables made while
     [env_foreign_pgroups] is [false]; over in the host's pid namespace or
     under [true]; a task with no pid in its own namespace declines. *)
