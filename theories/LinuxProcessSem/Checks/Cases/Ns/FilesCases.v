@@ -410,6 +410,20 @@ Example openat_creat_sticky_other_owners_denied :
   ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at 3000 2000 384)) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.
 
+(** One owner INVALID and the other valid: the owners differ for
+    [vfsuid_eq] and for the old plain comparison alike, so the model
+    declined before.  Now, as for two valid owners that differ, a denied
+    open of "st/f" (0600) by the caller with fsuid 1000 answers EACCES,
+    which Linux gives under every protected_regular value (1327-1329, or
+    [may_open]'s [inode_permission], 3973): the directory owned by 3000
+    and the file by INVALID, then the directory owned by INVALID and the
+    file by 2000. *)
+Example openat_creat_sticky_mixed_owners_denied :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at 3000 invalid_id 384)) = Some (-13)
+  /\ ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at invalid_id 2000 384))
+     = Some (-13).
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** [W] with the sticky world-writable directory "ro/st" (01777) on the
     read-only mount 4, holding the regular file "ro/st/f" (0666), both
     owned by uid and gid [owner]. *)
@@ -437,6 +451,31 @@ Example openat_creat_trunc_sticky_same_owner_readonly :
   ret_of (openat_fn (open_in s_ro_st_f creat_trunc_write 438) (with_creds uid2000 m3) c0 (W_sticky_ro 1000))
   = Some (-30).
 Proof. vm_compute. reflexivity. Qed.
+
+(** A superblock with SB_RDONLY, built as [sb] builds the others. *)
+Definition sb_ro (i root : positive) (k : SbKind) (magic : Z) : SuperBlock :=
+  mkSb i k 1 root true magic false false false.
+
+(** [W_sticky_ro] with the superblock of mount 4 read-only too. *)
+Definition W_sticky_rosb (owner : Z) : NsState :=
+  with_sbs (W_sticky_ro owner)
+    [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
+     sb_ro 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836].
+
+Definition creat_write : Z := 1 + O_CREAT.
+
+(** An O_CREAT write open without O_TRUNC of "ro/st/f" on the read-only
+    superblock, both owners INVALID, by the caller with fsuid 1000: Linux
+    answers EACCES with protected_regular 1 (1327-1329) and EROFS from
+    [sb_permission] in [may_open]'s [inode_permission] (550-551, 3973)
+    with protected_regular 0, so the model has no answer; it answered
+    EROFS before the correction.  Both owned by 1000 and a caller with
+    fsuid 2000: the owners match (1321-1322) and the answer is EROFS. *)
+Example openat_creat_write_sticky_invalid_owners_rosb :
+  openat_fn (open_in s_ro_st_f creat_write 438) m3 c0 (W_sticky_rosb invalid_id) = EUnmodeled
+  /\ ret_of (openat_fn (open_in s_ro_st_f creat_write 438) (with_creds uid2000 m3) c0
+               (W_sticky_rosb 1000)) = Some (-30).
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** [may_follow_link] (fs/namei.c:1168-1196) lets a follower that does not
     own a last-component link in a sticky world-writable directory follow
