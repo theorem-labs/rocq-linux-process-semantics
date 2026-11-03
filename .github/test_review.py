@@ -1742,6 +1742,55 @@ class RescreenJobTest(Held):
                     self.assertEqual((rc, runs), (1, []), out)
                     self.assertIn("a maintainer must look at it", out)
 
+    def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
+        """The hold comment stops promising an automatic screen: it is replaced with fixed words and the command a
+        maintainer runs, with no marker. That run fails; the next one finds no hold that is tried again, starts
+        nothing and passes."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        hours_ago = (datetime.datetime.now(datetime.timezone.utc)
+                     - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.items((7, "open"))
+        older = dict(screen_hold(at="1999-01-01T00:00:00Z"), id=4)
+        self.held(7, older, limit_hold(50, at=hours_ago, kind="transient", tries=1))
+        self.origin(50, "mallory")
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c50"})
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                    for i in range(tries)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertIn(f"::error::#7: screened again {tries} times since its hold", out)
+        patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
+        self.assertEqual(len(patches), 1, gh_calls(self.api))
+        self.assertEqual(patches[0][2], f"repos/{REPO}/issues/comments/50")
+        body = next(a for a in patches[0] if a.startswith("body="))[len("body="):]
+        self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nIt was screened again "
+                               f"automatically {tries} times since it was held, and none of those runs ended in a new "
+                               "hold or a posted review. It is not screened again automatically. A maintainer will "
+                               "look at it, and can start the screen and the review with `gh workflow run review.yml "
+                               f"-R {REPO} -f number=7 -f screen=true`.")
+        self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+        self.assertNotIn("screened again automatically, with no maintainer", body)
+        # The next run sees the comment as it was replaced.
+        os.remove(os.path.join(self.api, "calls"))
+        os.remove(os.path.join(self.api, "args"))
+        self.held(7, older, {"id": 50, "user": {"login": BOT}, "updated_at": "2999-01-01T00:00:00Z", "body": body})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn("#7: no hold that is tried again", out)
+        self.assertFalse(any(c[:2] == ["--method", "PATCH"] for c in gh_calls(self.api)))
+
+    def test_a_hold_comment_that_cannot_be_replaced_is_tried_again_next_run(self):
+        """The PATCH fails (no stand-in answer): the job fails, and the comment keeps its marker for the next run."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        self.items((7, "open"))
+        self.held(7, limit_hold(50, kind="cap", tries=0))
+        self.origin(50, "mallory")
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                    for i in range(tries)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertIn("the hold comment of #7 could not be replaced; the next run tries again", out)
+
     def test_a_draft_is_left_alone(self):
         """The trust job takes no draft, and a run it stops would still count toward the account's limit, held
         there for as long as it stays a draft. Marking it ready starts its own run."""
@@ -1821,7 +1870,9 @@ class RescreenJobTest(Held):
     def test_only_this_job_can_start_a_run(self):
         """actions: write is what starting a run needs: only this job has it, and only this job starts one."""
         self.assertEqual(WF["permissions"], {})
-        self.assertEqual(JOBS["rescreen"]["permissions"], {"actions": "write", "issues": "read", "pull-requests": "read"})
+        # actions: write starts the runs; issues and pull-requests: write replace a hold comment at REVIEW_TRIES.
+        self.assertEqual(JOBS["rescreen"]["permissions"],
+                         {"actions": "write", "issues": "write", "pull-requests": "write"})
         for name, job in JOBS.items():
             if name != "rescreen":
                 with self.subTest(job=name):

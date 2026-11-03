@@ -12,8 +12,11 @@ three times in an hour; later ones are held without a screen, and the item
 is screened again automatically after that hour. So is an item the screen
 passed whose review met the hourly limit of such reviews, or did not finish
 (up to three tries). Such a rescreen counts as started by the account whose
-event was held, not by the automation that starts it. A maintainer can also
-ask for a review. The review is advice. A maintainer decides what to merge.
+event was held, not by the automation that starts it. When three rescreens of
+an item since it was held end with neither a new hold nor a posted review,
+it is not screened again automatically: its hold comment says so, and a
+maintainer decides. A maintainer can also ask for a review. The review is
+advice. A maintainer decides what to merge.
 
 The review uses the copy of this file on `main`, so a change to it takes
 effect after it merges.

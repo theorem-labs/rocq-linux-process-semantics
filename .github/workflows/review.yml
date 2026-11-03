@@ -18,8 +18,10 @@
 #   without a screen, and screened again later with no person (below).
 # - An item held for a reason that is not its own is screened again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review that failed or ran out of time, until it has failed
-#   REVIEW_TRIES times. Every 15 minutes (the schedule below) the rescreen job lists the open pull requests and issues
-#   labelled review-held whose newest hold comment is such a hold, not the screen's, and is over an hour old, and
+#   REVIEW_TRIES times. After REVIEW_TRIES rescreens since its hold that end with neither a new hold nor a posted
+#   review, a person decides, and its hold comment says so. Every 15 minutes (the schedule below) the rescreen job
+#   lists the open pull requests and issues labelled review-held whose newest hold comment is such a hold, not the
+#   screen's, and is over an hour old, and
 #   starts this workflow for each with -f rescreen=true and the account the hold names (-f account=<login>). Such a run
 #   takes an outsider's path: the trust job reads the author, the hold and the account again from the API, never from
 #   the inputs alone, and the item is screened, then reviewed and the review posted, as for an event; only when the
@@ -44,7 +46,7 @@
 #   them, stay in the bucket.
 #
 #   trust   decides the route: review, screen, or held at the limit. It checks nothing out, and its token can only read
-#           metadata, the pull request or issue, and this workflow's runs.
+#           metadata, pull requests and issues, and this workflow's runs.
 #   gather  reads the pull request or the issue as data into .review/, and keeps it as this run's artifact, which the
 #           screen job and the review job both take, by its SHA-256: the review reads what the screen passed. Its
 #           token can only read, and it holds no model.
@@ -171,6 +173,8 @@ env:
   # The most times the review of a screened item that the screen passed may fail, or run out of time, before a person
   # decides: each such hold is tried again with no person (the rescreen job), and the third one is not. A review stopped
   # at SCREENED_HOURLY_CAP is not such a failure, and is tried again whatever this number: the cap is not the item's.
+  # It is also the most rescreens of a held item, since its hold, that may end with neither a new hold nor a posted
+  # review (a run that failed on a GitHub read, say) before the rescreen job leaves it to a person.
   REVIEW_TRIES: "3"
 
 jobs:
@@ -1150,10 +1154,13 @@ jobs:
   # person decides on that. Oldest hold first, each account gets at most OUTSIDE_HOURLY_LIMIT rescreens an hour, less
   # those it had in the last hour; the trust job of each run counts again, with the account's own events, and holds
   # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
-  # item for the next run and fails this job.
-  # It is the only job of this file with actions: write, which starting a run needs; it checks nothing out, holds no
-  # model, and writes nothing but those runs. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a
-  # standard runner, whose minutes GitHub does not bill in a public repository.
+  # item for the next run and fails this job. An item whose rescreens since its hold reach REVIEW_TRIES with no new
+  # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job replaces its
+  # hold comment with one that says a maintainer will look at it, with no marker, and fails for that run.
+  # It is the only job of this file with actions: write, which starting a run needs; issues and pull-requests: write
+  # let it replace that hold comment. It checks nothing out, holds no model, and writes nothing but those runs and
+  # those comments. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose
+  # minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.repository == 'theorem-labs/rocq-linux-process-semantics'
@@ -1162,7 +1169,7 @@ jobs:
     timeout-minutes: 10
     # One at a time, so that two runs cannot start the same item.
     concurrency: {group: review-rescreen, cancel-in-progress: false}
-    permissions: {actions: write, issues: read, pull-requests: read}
+    permissions: {actions: write, issues: write, pull-requests: write}
     steps:
       - name: Start the screen again of each held item whose hold is over an hour old
         env:
@@ -1276,9 +1283,21 @@ jobs:
               || { echo "::error::the runs since the hold of #$number could not be read."; failed=1; continue; }
             unsettled=$(grep -c . <<< "$since_hold" || true)
             if (( unsettled >= REVIEW_TRIES )); then
+              # The hold comment is replaced with words that promise nothing, and with no marker, so no later run picks
+              # the item again, and this run alone fails for it. A comment that could not be replaced keeps its
+              # marker, and the next run tries again.
               echo "::error::#$number: screened again $unsettled times since its hold at $at, with no new hold and no" \
                 "review posted: a maintainer must look at it."
               failed=1
+              id=$(gh api --paginate "repos/$REPO/issues/$number/comments" --jq '.[]
+                | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+                | "\(.updated_at) \(.id)"' | sort | tail -n 1 | cut -d' ' -f2) \
+                || { echo "::error::the comments of #$number could not be read."; continue; }
+              [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::#$number has no hold comment to replace."; continue; }
+              body=$(printf '%s\n%s\n\n%s\n' '<!-- review-held -->' "**Automated review held.**" \
+                "It was screened again automatically $unsettled times since it was held, and none of those runs ended in a new hold or a posted review. It is not screened again automatically. A maintainer will look at it, and can start the screen and the review with \`gh workflow run review.yml -R $REPO -f number=$number -f screen=true\`.")
+              gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url \
+                || echo "::error::the hold comment of #$number could not be replaced; the next run tries again."
               continue
             fi
             (( unsettled == 0 )) || echo "#$number: $unsettled rescreens since its hold settled nothing; trying again."
