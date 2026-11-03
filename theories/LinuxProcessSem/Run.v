@@ -2681,6 +2681,108 @@ Proof.
 Qed.
 
 (* =========================================================================
+   No vDSO call touches the lazy ledger
+   =========================================================================
+
+   The numbers [Vdso.vdso_fn_sysno] hands [Specs.syscall_spec] are
+   gettimeofday (169), clock_gettime (113), clock_getres (114) and three
+   with no arm today (168, 258, 259).  None of the three specifications
+   maps memory: each reads the input and the model and at most records a
+   clock reading ([State.with_clock]).  So every admitted outcome of a
+   vDSO call leaves [State.m_vm_lazy] as it was, which is what lets the
+   budget mark's vDSO clause be discharged on a run with no lazy mapping
+   ([budget_refused_at_no_lazy_instr]). *)
+
+Lemma syscall_spec_unarmed : forall i m eff m' evs,
+  LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.lookup_arm
+    LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable.spec_table
+    (bv_unsigned (in_sysno i)) = None ->
+  ~ syscall_spec i m (Ok eff m' evs).
+Proof.
+  intros i m eff m' evs E H.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch in H.
+  rewrite E in H. cbv beta iota delta [unmodeled] in H. discriminate H.
+Qed.
+
+Lemma syscall_spec_at_113 : forall i m o,
+  in_sysno i = Z_to_bv 64 113 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_114 : forall i m o,
+  in_sysno i = Z_to_bv 64 114 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_169 : forall i m o,
+  in_sysno i = Z_to_bv 64 169 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec
+     (in_arg i 0) (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+(** Unfold a specification's monadic chain in [H] and take every branch;
+    each surviving branch leaves the model as it was or with a new clock
+    reading, and [m_vm_lazy] reads through both. *)
+Local Ltac keeps_lazy_in H :=
+  cbv beta iota delta [bind pure input get_model choose unmodeled alt modify set_clock
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.err_ret
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.ret_only
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_result_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec] in H;
+  repeat match goal with
+  | H0 : _ /\ _ |- _ => destruct H0
+  | H0 : exists _, _ |- _ => destruct H0
+  | H0 : _ \/ _ |- _ => destruct H0
+  | H0 : Ok _ _ _ = Ok _ _ _ |- _ => inversion H0; clear H0; subst
+  | H0 : Ok _ _ _ = Unmodeled |- _ => discriminate H0
+  | H0 : Unmodeled = Ok _ _ _ |- _ => discriminate H0
+  | H0 : context [match ?x with _ => _ end] |- _ =>
+      destruct x eqn:?; cbv beta iota in H0
+  end;
+  reflexivity.
+
+Lemma vdso_spec_keeps_lazy : forall segs ms model fn n eff model' evs,
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  m_vm_lazy model' = m_vm_lazy model.
+Proof.
+  intros segs ms model fn n eff model' evs Hn H.
+  destruct fn; cbn in Hn; try discriminate Hn; injection Hn as <-;
+    first
+    [ exfalso; refine (syscall_spec_unarmed _ _ _ _ _ _ H); reflexivity
+    | pose proof (proj1 (syscall_spec_at_113 (sys_input segs ms (Z_to_bv 64 113)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_114 (sys_input segs ms (Z_to_bv 64 114)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_169 (sys_input segs ms (Z_to_bv 64 169)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1 ].
+Qed.
+
+(* =========================================================================
    The budget mark: where a run is refused for exceeding its budget
    =========================================================================
 
@@ -2696,7 +2798,7 @@ Qed.
    Nothing above this section changes.
 
    A configuration is budget-refused when the run is about to be
-   declined for exceeding [State.vm_limit], in one of three ways:
+   declined for exceeding [State.vm_limit], in one of four ways:
 
    - the pending INSTRUCTION touches a lazy page the budget cannot back:
      the interpreter answers [MachineOk] (the access itself is fine) and
@@ -2716,16 +2818,21 @@ Qed.
      this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
-     back — the [sstep_syscall_materialization_fault] premises.
+     back — the [sstep_syscall_materialization_fault] premises;
+   - a CALL TO AN EXPORTED vDSO ENTRY has an admissible outcome whose
+     effect touches a lazy page the budget cannot back — exactly the
+     premises of [sstep_vdso_materialization_fault], which refuses the
+     call as [sstep_syscall_materialization_fault] refuses a syscall.
 
-   The first and third are premises of an [SError] transition
-   ([budget_fault_instr_sstep_error], [budget_fault_syscall_sstep_error]);
-   the second is not an error at all — the program is answered -ENOMEM
-   or the old break and goes on — which is why the premise is a
+   Three kinds are first-touch faults, premises of an [SError]
+   transition ([budget_fault_instr_sstep_error],
+   [budget_fault_syscall_sstep_error], [budget_fault_vdso_sstep_error]);
+   the grant clause is not an error at all — the program is answered
+   -ENOMEM or the old break and goes on — which is why the premise is a
    separate observable rather than a reading of [bh_errors].
 
    On a run with no MAP_NORESERVE mapping — every plain musl build —
-   [State.m_vm_lazy] is empty at every reachable state and the two
+   [State.m_vm_lazy] is empty at every reachable state and the three
    first-touch clauses are false ([materialize_model_accesses_no_lazy]),
    so discharging the premise is the grant clause at each ecall
    ([budget_refused_at_no_lazy_instr], [budget_refused_at_no_lazy_syscall]).
@@ -2737,9 +2844,18 @@ Variable segs : list Segment.
 Definition budget_refused_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_budget_refused_b (sys_input segs (cfg_ms c) x8) (cfg_model c) = true
        \/ exists eff model' evs,
@@ -2786,6 +2902,32 @@ Proof.
   intros. eapply sstep_syscall_materialization_fault; eassumption.
 Qed.
 
+Lemma budget_fault_vdso_sstep_error : forall ms model fn n eff model' evs,
+  m_halted model = None ->
+  ms_svc_pending ms = None ->
+  mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = Some fn ->
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  eff_ret eff <> errno_ret EFAULT ->
+  m_halted model' = None ->
+  materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+  sstep segs (mkCfg ms model) [] SError.
+Proof.
+  intros. eapply sstep_vdso_materialization_fault; eassumption.
+Qed.
+
+(** The vDSO clause's [MachineUnmodeled] is the interpreter's own: the
+    accounting never turns an answered step into an unmodeled one. *)
+Lemma mi_account_step_unmodeled_inv : forall ms model,
+  mi_account_step segs ms model = MachineUnmodeled ->
+  RiscvSemantics.step_accesses segs ms = MachineUnmodeled.
+Proof.
+  intros ms model H. unfold mi_account_step in H.
+  destruct (RiscvSemantics.step_accesses segs ms) as [r| |]; [|discriminate H|reflexivity].
+  destruct (materialize_model_accesses model _); discriminate H.
+Qed.
+
 (** Discharging the premise: an invariant of the reachable
     configurations that excludes the mark. *)
 Lemma star_invariant : forall (I : config -> Prop),
@@ -2809,16 +2951,25 @@ Qed.
 
 (** With no lazy mapping, an instruction configuration is never
     budget-refused: the first-touch clause needs [None] where
-    [materialize_model_accesses_no_lazy] answers [Some], and the other
-    two need a pending syscall. *)
+    [materialize_model_accesses_no_lazy] answers [Some], the grant and
+    effect clauses need a pending syscall, and the vDSO clause needs an
+    outcome of the call materialized against a lazy mapping, which no
+    vDSO call creates ([vdso_spec_keeps_lazy]). *)
 Lemma budget_refused_at_no_lazy_instr : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
   ~ budget_refused_at (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc (_ & [(_ & report & _ & Hmat) | (x8 & Hx8 & _)]);
+  intros ms model Hlazy Hsvc
+    (_ & [(_ & [(report & _ & Hmat)
+               | (_ & fn & n & eff & model' & evs & _ & Hn & Hspec & _ & _ & Hmat)])
+         | (x8 & Hx8 & _)]);
     cbn [cfg_ms cfg_model] in *.
   - rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat. discriminate Hmat.
+  - assert (Hl : m_vm_lazy model' = []).
+    { rewrite (vdso_spec_keeps_lazy segs ms model fn n eff model' evs Hn Hspec). exact Hlazy. }
+    rewrite (materialize_model_accesses_no_lazy model' _ Hl) in Hmat.
+    discriminate Hmat.
   - congruence.
 Qed.
 
@@ -2854,6 +3005,9 @@ Qed.
     an outcome the configured run never takes — an over-approximation
     of "the configured run is about to be refused", in the safe
     direction (the premise is false more often, never true wrongly).
+    Its vDSO clause is exact under every configuration: it is the
+    premise list of [sstep_cfg_vdso_materialization_fault], which, like
+    the other vDSO arms of [sstep_cfg], carries no filter premise.
     What the configuration changes otherwise is WHICH configurations
     the run reaches: fewer, never more ([reaches_budget_refused_cfg_sub]),
     so the unfiltered premise discharges the configured one, and at
@@ -5555,16 +5709,25 @@ Proof.
 Qed.
 
 (** [budget_refused_at] with the grant disjunct narrowed to
-    [alloc_refuse_reason i m = Some RefuseBudget]; the two first-touch
+    [alloc_refuse_reason i m = Some RefuseBudget]; the three first-touch
     clauses are unchanged.  It implies [budget_refused_at], so
     [~ run_budget_only_refused] admits every input [~ run_budget_refused]
     admits, and also those whose only refusal is oversize. *)
 Definition budget_only_refused_at (segs : list Segment) (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_refuse_reason (sys_input segs (cfg_ms c) x8) (cfg_model c) = Some RefuseBudget
        \/ exists eff model' evs,
