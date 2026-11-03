@@ -409,6 +409,20 @@ Example fchmod_fowner_uid_unmapped :
   ret_of (fchmod_fn (fchmod_call 420) base_model fown_ctx (fown_state 6000) chmod_file) = Some (-1).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The S_ISGID test after it reads the gid's mapping: [setattr_prepare]
+    drops S_ISGID unless [in_group_or_capable] holds (fs/attr.c:203-205),
+    whose CAP_FSETID test is [capable_wrt_inode_uidgid] (fs/inode.c:
+    2910-2918; kernel/capability.c:455-480).  The same caller and file,
+    the caller now with CAP_FOWNER and CAP_FSETID and not in group 7000,
+    asks for 02644 (= 1444).  Gid 7000 does not map into namespace 2, so
+    CAP_FSETID does not count: 0, and the mode is 0644 (= 420). *)
+Definition fown_fsetid_ctx : NsCtx := with_user_ns (with_caps base_ctx (mkCaps 24 24 0 0 0)) 2.
+
+Example fchmod_fowner_gid_unmapped_drops_sgid :
+  let o := fchmod_fn (fchmod_call 1444) base_model fown_fsetid_ctx (fown_state 5000) chmod_file in
+  ret_of o = Some 0 /\ perm_of o 2 = Some 420.
+Proof. vm_compute. split; reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not

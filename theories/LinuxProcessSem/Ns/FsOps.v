@@ -722,7 +722,8 @@ Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
     kernel order: an O_PATH file, EBADF ([fdget] skips FMODE_PATH); a
     read-only mount or superblock, EROFS ([mnt_want_write]); an inode with
     an invalid owner or group, EOVERFLOW ([notify_change]); a fsuid that
-    does not own the inode, with no CAP_FOWNER over it, EPERM
+    does not own the inode, when either the inode's uid does not map into
+    the caller's user namespace or the task lacks CAP_FOWNER, EPERM
     ([setattr_prepare]); else the new mode [mode & 07777], less S_ISGID
     when the inode's group is not the fsgid or a supplementary group and
     the task has no CAP_FSETID over it.  For a tmpfs file or directory

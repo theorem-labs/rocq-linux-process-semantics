@@ -370,6 +370,20 @@ Definition uid_mapped (st : NsState) (ctx : NsCtx) (uid : Z) : bool :=
       end
   end.
 
+(** [uid_mapped] is the uid half of [uidgid_mapped]: whenever both ids
+    map, the uid maps. *)
+Lemma uidgid_mapped_uid : forall st ctx uid gid,
+  uidgid_mapped st ctx uid gid = true -> uid_mapped st ctx uid = true.
+Proof.
+  intros st ctx uid gid. unfold uidgid_mapped, uid_mapped.
+  destruct (find_userns (ns_userns st) (cx_user ctx)) as [u|];
+    [|cbv beta iota; intros H; discriminate H].
+  destruct (uns_parent u) as [p|]; [|cbv beta iota; intros _; reflexivity].
+  destruct (uns_uid_map u) as [um|], (uns_gid_map u) as [gm|];
+    cbv beta iota; intros H; try discriminate H.
+  apply andb_prop in H. destruct H as [H _]. exact H.
+Qed.
+
 (** [capable_wrt_inode_uidgid] with the effective set [eff]. *)
 Definition capable_over (st : NsState) (ctx : NsCtx) (eff : Z) (a : ObjAttr) (cap : Z) : bool :=
   Z.testbit eff cap && uidgid_mapped st ctx (oa_uid a) (oa_gid a).
