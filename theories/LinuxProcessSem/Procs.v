@@ -737,11 +737,14 @@ Definition child_ms (c c' : config) : machine_state :=
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
-    parent's own).  The child parent pid is the parent's pinned tid, or
-    0 before it is pinned; [getppid] observes that value.  The inheritable
-    capability set copies with the credentials.  Kernel citations, read at
-    v6.18.44, identical at v6.18.46. *)
-Definition child_proc (ps : ProcState) : ProcState :=
+    parent's own).  The child's parent pid is its parent's pid [ppid], the
+    parent's key in the process table, which the core always knows:
+    [copy_process] sets [p->real_parent = current] (kernel/fork.c), and
+    [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
+    a child cloned before its parent's first [getpid] would otherwise start
+    at 0.  The inheritable capability set copies with the credentials.
+    Kernel citations, read at v6.18.44, identical at v6.18.46. *)
+Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               false (procst_sigmask ps)
               false (procst_utsname ps) (procst_sigaltstack_installed ps)
@@ -758,10 +761,7 @@ Definition child_proc (ps : ProcState) : ProcState :=
               (procst_sigpipe_terminal ps)
               (Z_to_bv 64 0)
               [] (procst_no_new_privs ps) (procst_dumpable ps)
-              (match procst_tid ps with
-               | Some tid => tid
-               | None => Z_to_bv 64 0
-               end)
+              ppid
               (procst_cap_inheritable ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
@@ -770,7 +770,7 @@ Definition with_proc (ps : ProcState) (m : Model) : Model :=
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
-          (clear_shared (with_proc (child_proc (m_proc (pe_model e)))
+          (clear_shared (with_proc (child_proc (pe_pid e) (m_proc (pe_model e)))
                                    (pe_model e)))
           (pe_ofd e) (pe_nsctx e).
 

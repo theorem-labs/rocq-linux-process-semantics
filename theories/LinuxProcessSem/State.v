@@ -4506,9 +4506,9 @@ Record ProcState := mkProcState {
                                     (kernel/sys.c).  It is seeded from
                                     [ProcInput] at launch.  No modeled call
                                     writes it on this branch; [with_ppid] is the
-                                    one setter.  A child gets the parent's
-                                    pinned tid, or 0 before the parent has
-                                    pinned one; [Procs.child_proc] names that
+                                    one setter.  A child gets its parent's
+                                    pid, the parent's key in the process
+                                    table; [Procs.child_proc] names that
                                     rule.  Kernel citations, read at v6.18.44
                                     and identical at v6.18.46: kernel/sys.c
                                     [getppid], kernel/sched/core.c
