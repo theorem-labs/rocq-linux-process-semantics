@@ -80,7 +80,7 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 (** In the released world the same calls are the released model's. *)
 Example getpid_flat_is_released : forall m ctx o,
   ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
-Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
+Proof. intros m ctx o. apply ns_spec_flat. apply flat_view_empty. Qed.
 
 (** While other processes are live ([Spec.ns_multiproc]): a task in the
     released world gets the core's guard alone.  Outside it, the calls the
@@ -97,7 +97,7 @@ Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
     ([clock_gettime]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
   ext_multiproc ns_ext i m ctx empty_nsstate = false.
-Proof. intros i m ctx. reflexivity. Qed.
+Proof. intros i m ctx. exact (ns_multiproc_coherent i m ctx empty_nsstate (flat_view_empty ctx)). Qed.
 
 Example multiproc_getpid_inside : forall m,
   ext_multiproc ns_ext (call 172) m (task 2 18) one_mount = true.
