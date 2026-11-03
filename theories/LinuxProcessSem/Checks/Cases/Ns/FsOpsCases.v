@@ -234,6 +234,52 @@ Example read_setgroups :
   = Some [(BUF, deny_line)].
 Proof. vm_compute. reflexivity. Qed.
 
+(** A gid_map line shows its lower id through the gid map of the parent
+    namespace, an uid_map line through its uid map ([gid_m_show] calls
+    [from_kgid], [uid_m_show] calls [from_kuid], kernel/user_namespace.c:624,
+    645, Linux v6.18.46).  Namespace 2 (A), a child of the initial one, maps
+    uids 0-65535 to 100000 and gids 0-65535 to 200000; namespace 3 (B), a
+    child of A, maps uid 0 to kernel uid 100000 and gid 0 to kernel gid
+    200000.  A task of B reads its own maps, so the namespace shown is A
+    (620-622, 641-643): both lines are "0 0 1".  Before this correction the
+    gid line went through A's uid map, which does not hold 200000, and
+    showed 65534. *)
+Definition ns_a : UserNs :=
+  mkUserNs 2 (Some 1%positive) 1 0 (Some [mkExtent 0 100000 65536]) (Some [mkExtent 0 200000 65536])
+    true false INT_MAX true.
+Definition ns_b (gid_lower : Z) : UserNs :=
+  mkUserNs 3 (Some 2%positive) 2 100000 (Some [mkExtent 0 100000 1]) (Some [mkExtent 0 gid_lower 1])
+    true false INT_MAX true.
+Definition gid_loc : Loc := LProcTask 1 42 [bytes [103; 105; 100; 95; 109; 97; 112]].
+Definition b_cred : IdCred := mkIdCred 3 0 0 0.
+Definition b_uid_reader : NsFile := mkNsFile (NfUserNsFile uid_loc 3 0) 0 b_cred.
+Definition b_gid_reader : NsFile := mkNsFile (NfUserNsFile gid_loc 3 0) 0 b_cred.
+Definition zero_line : list Z :=
+  repeat 32 9 ++ [48; 32] ++ repeat 32 9 ++ [48; 32] ++ repeat 32 9 ++ [49; 10].
+
+Example read_gid_map_through_gid_map :
+  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 200000])
+                     1%N b_gid_reader)
+  = Some [(BUF, zero_line)].
+Proof. vm_compute. reflexivity. Qed.
+
+Example read_uid_map_through_uid_map :
+  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 200000])
+                     1%N b_uid_reader)
+  = Some [(BUF, zero_line)].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A lower id the shown namespace's map does not hold prints as
+    [(gid_t)-1], 4294967295 (map_id_range_up, 399; "%10u", 647-650), not
+    65534.  [map_write] builds no such table (it maps every lower range
+    through the parent's map); this hand-built one checks the branch. *)
+Example read_gid_map_unmapped_lower :
+  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 300000])
+                     1%N b_gid_reader)
+  = Some [(BUF, repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
+                ++ repeat 32 9 ++ [49; 10])].
+Proof. vm_compute. reflexivity. Qed.
+
 Definition file_state : NsState :=
   with_tree base_state
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
