@@ -361,7 +361,10 @@ Example getlink_handler_failure_admitted :
 Proof.
   split; [vm_compute; reflexivity|].
   split; [vm_compute; reflexivity|].
-  vm_compute. right. exists 2. split; [reflexivity|].
-  right. right. split; [reflexivity|].
-  exists 12. split; reflexivity.
+  (* Head reductions only: a full normalization of the relation, whose
+     dump branch quantifies over the environment's NlEnv, does not fit in
+     memory. *)
+  unfold netlink_sendto. hnf. right. exists 2. split; [exact eq_refl|].
+  hnf. right. hnf. right. split; [vm_compute; reflexivity|].
+  exists ENOMEM. split; [reflexivity | vm_compute; reflexivity].
 Qed.
