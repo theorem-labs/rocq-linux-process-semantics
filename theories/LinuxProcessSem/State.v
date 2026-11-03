@@ -5527,7 +5527,9 @@ Definition with_ppid (p : word) (m : Model) : Model :=
     [procst_reparent_unseen] is cleared (the answer has shown the parent
     as it is now), and [procst_reparent_moved] is set when [p] differs
     from the pid it replaces and kept otherwise.  Every other field is
-    carried.  Its one caller is [Kernel.Sys.getppid_spec]; see
+    carried.  Two callers: [Kernel.Sys.getppid_spec], and
+    [Run.sstep_pcfg_reparent], the parent's death under
+    [Run.parent_may_die], which records the reaper the same way; see
     [procst_reparent_unseen] and [procst_reparent_moved]. *)
 Definition with_ppid_answered (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5570,8 +5572,8 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     [procst_killed] alone -- [Run.sstep_exit] declines a death by signal
     and [Run.sstep_killed] takes it -- so the two cannot both apply.
 
-    IT HAS FOUR CALLERS, IN TWO SIGNALS, and which is which decides what
-    guards them.
+    IN THE DISPATCHER IT HAS FOUR CALLERS, IN TWO SIGNALS, and which is
+    which decides what guards them (a fifth, outside it, is at the end).
 
     SIGABRT (6).  [Kernel.Signal.send_sigabrt] is the SEND, and it sits
     behind the task's declaration.  [Kernel.Signal.sigmask_deliver_model]
@@ -5605,11 +5607,17 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     death is followed at all; [Run.valid_input_sigpipe_kills] and
     [Run.valid_input_channel_closed] are the launches that set it.
 
-    THAT THESE ARE THE ONLY CALLERS, AND THAT EACH IS GATED, IS A
-    THEOREM: [Checks.KillFree.kill_frame_holds] goes through every arm
-    of the dispatcher, and [Checks.KillFree.valid_input_no_kill] is the
-    consequence for every run under [Run.valid_input].  A new caller
-    that is not behind a gate breaks that proof. *)
+    THAT THESE ARE THE ONLY CALLERS IN THE DISPATCHER, AND THAT EACH IS
+    GATED, IS A THEOREM: [Checks.KillFree.kill_frame_holds] goes through
+    every arm of the dispatcher, and [Checks.KillFree.valid_input_no_kill]
+    is the consequence for every run under [Run.valid_input].  A new
+    caller that is not behind a gate breaks that proof.
+
+    SIGKILL (9), OUTSIDE THE DISPATCHER.  [Run.sstep_pcfg_parent_kill] is
+    the parent's death under the named environment [Run.parent_may_die],
+    a step of the configured run [Run.sstep_pcfg] and of no [sstep_cfg]
+    run; under [Run.parent_lives] that run is [sstep_cfg]
+    ([Run.sstep_pcfg_lives_iff]), so the theorem above is untouched. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)

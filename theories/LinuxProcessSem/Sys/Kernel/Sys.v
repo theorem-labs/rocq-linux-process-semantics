@@ -460,8 +460,9 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
       second move needs a new window.
 
     The parent's death at ANY moment, and the kill its signal then sends,
-    are not offered by this arm: a run in which the parent dies while
-    the signal is set is not a run of [Run.valid_input].
+    are not this arm's: they are steps of the configured run
+    [Run.sstep_pcfg] under the named environment [Run.parent_may_die],
+    which records the reaper through the same setter.
 
     No argument register is read and no memory is touched: the riscv
     [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec] covers this

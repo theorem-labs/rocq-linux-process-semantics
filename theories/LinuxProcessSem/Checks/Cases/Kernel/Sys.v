@@ -904,6 +904,73 @@ Example getppid_leaves_getpid_alone :
 Proof. check_eq. Qed.
 
 (* =========================================================================
+   The parent's death at any moment: [Run.parent_may_die]
+   ========================================================================= *)
+
+(** The launch of [ppid_open_model] with a parent-death signal [s]. *)
+Definition pdeath_model (s : Z) : Model :=
+  with_pdeath_signal (Z_to_bv 64 s) ppid_open_model.
+
+(** SIGKILL: the parent's death kills the process, with the event a
+    death by signal gives ([State.KillEv]). *)
+Example parent_death_sigkill_kills : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms (pdeath_model 9))
+    [KillEv SIGKILL_W (m_fs (with_killed SIGKILL_W (pdeath_model 9)))]
+    (SNext (mkCfg ms (with_killed SIGKILL_W (pdeath_model 9))))
+  /\ m_killed (with_killed SIGKILL_W (pdeath_model 9)) = Some SIGKILL_W.
+Proof.
+  intros segs cfg ms. split.
+  - apply sstep_pcfg_parent_kill; vm_compute; reflexivity.
+  - vm_compute. reflexivity.
+Qed.
+
+(** Any other signal: the model delivers none, so the death is the error
+    transition, an uncovered point of the configured run. *)
+Example parent_death_other_signal_errors : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms (pdeath_model 15)) [] SError
+  /\ unmodeled_pat segs parent_may_die (mkCfg ms (pdeath_model 15)).
+Proof.
+  intros segs cfg ms.
+  assert (H0 : bv_unsigned (m_pdeath_signal (pdeath_model 15)) <> 0%Z)
+    by (intro Hc; vm_compute in Hc; discriminate Hc).
+  assert (H9 : bv_unsigned (m_pdeath_signal (pdeath_model 15)) <> 9%Z)
+    by (intro Hc; vm_compute in Hc; discriminate Hc).
+  assert (Hh : m_halted (pdeath_model 15) = None) by (vm_compute; reflexivity).
+  split.
+  - apply sstep_pcfg_parent_signal; [reflexivity | exact Hh | exact H0 | exact H9].
+  - right. cbn [cfg_model]. split; [reflexivity |]. split; [exact Hh |].
+    split; [exact H0 | exact H9].
+Qed.
+
+(** No signal: the death kills nothing and moves the parent to a reaper,
+    which the next [getppid] shows, and after which the pid has moved:
+    the old parent 77 is refused. *)
+Example parent_death_with_no_signal_reparents : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms ppid_open_model) []
+    (SNext (mkCfg ms (with_ppid_answered 1 ppid_open_model)))
+  /\ m_killed (with_ppid_answered 1 ppid_open_model) = None
+  /\ check_syscall getppid_in (mkEffect 1 [] []) (with_ppid_answered 1 ppid_open_model)
+     = CheckOk (with_ppid_answered 1 (with_ppid_answered 1 ppid_open_model)) []
+  /\ check_syscall getppid_in (mkEffect 77 [] []) (with_ppid_answered 1 ppid_open_model)
+     = CheckReject.
+Proof.
+  intros segs cfg ms. split; [| split; [vm_compute; reflexivity | split; check_eq]].
+  apply sstep_pcfg_reparent;
+    [reflexivity | vm_compute; reflexivity | vm_compute; reflexivity
+    | vm_compute; reflexivity |].
+  intro Hc. apply (f_equal bv_unsigned) in Hc. vm_compute in Hc. discriminate Hc.
+Qed.
+
+(** THE CONTROL: under the default [Run.parent_lives] the configured run
+    is the run of every statement before this environment existed,
+    observation by observation, so none of the three steps above is
+    offered there. *)
+Example parent_lives_is_the_old_run : forall cfg img lim en inp,
+  behavior_equiv (run_pcfg cfg parent_lives img lim en inp)
+                 (run_scfg cfg img lim en inp).
+Proof. exact run_pcfg_lives. Qed.
+
+(* =========================================================================
    getresuid (148) / getresgid (150): three stores, in order
 
    The model before these two arms declined both numbers, so every
