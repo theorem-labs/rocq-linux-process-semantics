@@ -271,10 +271,6 @@ Definition new_netns (id owner : positive) (fallback : list NetIf) : NetNs :=
 Definition find_netns (st : NsState) (n : positive) : option NetNs :=
   List.find (fun x => Pos.eqb (netns_id x) n) (ns_netns st).
 
-Definition with_netns (st : NsState) (ns : list NetNs) : NsState :=
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) ns (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
-
 Definition set_netns_ifs (st : NsState) (n : positive) (ifs : list NetIf) : NsState :=
   with_netns st (map (fun x => if Pos.eqb (netns_id x) n
                                then mkNetNs (netns_id x) (netns_owner x) ifs (netns_sealed x)

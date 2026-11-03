@@ -310,13 +310,13 @@ Definition new_mount (st : NsState) (ctx : NsCtx) (cred : IdCred) (fsuid fsgid :
                        let '(s, ds, ins) := new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid in
                        let mid := Pos.succ (max_mount_id (ns_mounts st)) in
                        NMOk locks (fun lk =>
-                         mkNsState
-                           (ns_mounts st ++
-                              [mkMount mid (cx_mount ctx) (Some tgt) tgt_dentry (sb_root s) (sb_id s) mf
-                                       (mkMountFlags lk false false false) false false None None])
-                           (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st)
-                           (ns_sbs st ++ [s]) (ns_dentries st ++ ds) (ns_inodes st ++ ins)
-                           (ns_files st) (ns_env st))
+                         let st' := with_mounts st
+                                      (ns_mounts st ++
+                                         [mkMount mid (cx_mount ctx) (Some tgt) tgt_dentry (sb_root s) (sb_id s) mf
+                                                  (mkMountFlags lk false false false) false false None None]) in
+                         let st' := with_sbs st' (ns_sbs st ++ [s]) in
+                         let st' := with_dentries st' (ns_dentries st ++ ds) in
+                         with_inodes st' (ns_inodes st ++ ins))
                  end
         end
   | _, _ => NMOver
@@ -344,7 +344,7 @@ Proof.
   destruct (is_shared (ns_mounts st) tgt); [intros Hc; discriminate Hc|].
   destruct (new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid) as [[s ds] ins].
   intros H. injection H as Hl Hmk. subst mk.
-  eexists; exists s. cbn [ns_mounts ns_sbs].
+  eexists; exists s. cbn [ns_mounts ns_sbs with_mounts with_sbs with_dentries with_inodes].
   split; [reflexivity|]. split; [apply in_or_app; right; left; reflexivity|].
   repeat split; reflexivity.
 Qed.

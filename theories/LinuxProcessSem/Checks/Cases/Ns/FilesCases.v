@@ -44,13 +44,17 @@ Definition uns (i : positive) (parent : option positive) (level : nat)
   mkUserNs i parent level 0 umap gmap true false INT_MAX true.
 
 Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
-  mkNsState
+  let st := with_mounts empty_nsstate
     [mnt 1 None 1 1 1 no_flags; mnt 2 (Some 1%positive) 3 20 2 no_flags;
      mnt 3 (Some 1%positive) 9 30 3 no_flags; mnt 4 (Some 1%positive) 5 40 4 ro_nosuid_nodev;
-     mnt 5 (Some 1%positive) 10 50 5 noexec_flags]
-    users [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0 0] []
+     mnt 5 (Some 1%positive) 10 50 5 noexec_flags] in
+  let st := with_userns st users in
+  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_sbs st
     [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
-     sb 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836]
+     sb 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836] in
+  let st := with_dentries st
     [dent 1 1 None [] 1;
      dent 2 1 (Some 1%positive) (bytes [104; 111; 109; 101]) 2;
      dent 3 1 (Some 1%positive) (bytes [116; 109; 112]) 3;
@@ -68,16 +72,17 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
      dent 40 4 None [] 40;
      dent 41 4 (Some 40%positive) (bytes [102]) 41;
      dent 50 5 None [] 50;
-     dent 51 5 (Some 50%positive) (bytes [114; 117; 110]) 51]
+     dent 51 5 (Some 50%positive) (bytes [114; 117; 110]) 51] in
+  let st := with_inodes st
     [dir 1 493 1000 1002; dir 2 493 1000 1002; dir 3 493 1000 1002; reg 4 420 1000 1002;
      dir 5 493 1000 1002; lnk 6 (bytes [102; 105; 108; 101]); dir 7 448 2000 2000;
      reg 8 420 5000 5000; dir 9 493 1000 1002; dir 10 493 1000 1002;
      dir 20 511 0 0; reg 21 420 1000 1002; dir 22 493 0 0; dir 30 365 0 0;
-     dir 40 511 0 0; reg 41 438 1000 1002; dir 50 511 0 0; reg 51 493 1000 1002]
-    files (ns_env empty_nsstate).
+     dir 40 511 0 0; reg 41 438 1000 1002; dir 50 511 0 0; reg 51 493 1000 1002] in
+  with_files st files.
 
 Definition ctx_at (u : positive) (caps : CapSets) (root cwd : positive * positive) : NsCtx :=
-  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root cwd 18 caps 0 [] (Some false) (Some 1%Z).
+  with_cwd (with_root (with_caps (with_pids (with_user_ns init_nsctx u) [(1%positive, 42%Z)]) caps) root) cwd.
 
 Definition root_user : UserNs := uns 1 None 0 None None.
 (** A child user namespace mapping its 0 to kernel uid 1000 and gid 1002. *)
@@ -95,15 +100,14 @@ Definition W : NsState := state [root_user; child_user] [].
 
 (** A listed /proc/sys/user/max_user_namespaces file below the procfs root. *)
 Definition W_user_sys : NsState :=
-  mkNsState (ns_mounts W) (ns_userns W) (ns_mntns W) (ns_pidns W) (ns_netns W) (ns_sbs W)
+  with_tree W
     (ns_dentries W ++
      [dent 31 3 (Some 30%positive) (bytes [115; 121; 115]) 31;
       dent 32 3 (Some 31%positive) (bytes [117; 115; 101; 114]) 32;
       dent 33 3 (Some 32%positive)
            (bytes [109; 97; 120; 95; 117; 115; 101; 114; 95; 110; 97; 109; 101; 115; 112; 97; 99; 101; 115])
            33])
-    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 0 0])
-    (ns_files W) (ns_env W).
+    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 0 0]).
 
 Definition base_model : Model :=
   init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) demo_sp demo_limit (demo_input [] IEof).
@@ -590,9 +594,7 @@ Example readlinkat_proc_self :
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** A caller with no pid in the procfs's pid namespace: ENOENT. *)
-Definition c_nopid : NsCtx :=
-  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 2%positive) 18 no_caps 0 []
-          (Some false) (Some 1%Z).
+Definition c_nopid : NsCtx := with_caps (with_cwd init_nsctx (1%positive, 2%positive)) no_caps.
 Example readlinkat_proc_self_no_pid :
   ret_of (readlinkat_fn (readlink_in CWD s_self 64) m3 c_nopid W) = Some (-2).
 Proof. vm_compute. reflexivity. Qed.
