@@ -464,8 +464,8 @@ Proof. vm_compute. reflexivity. Qed.
 Example vdso_call_on_spent_budget_is_budget_refused :
   budget_refused_at fx_segs (mkCfg vb_ms (vb_model 0)).
 Proof.
-  split; [vm_compute; reflexivity |]. right. right.
-  split; [reflexivity |]. split; [vm_compute; reflexivity |].
+  split; [vm_compute; reflexivity |]. left.
+  split; [reflexivity |]. right. split; [vm_compute; reflexivity |].
   exists VdsoClockGettime, 113%Z, vb_eff, (vb_model 0), [].
   split; [vm_compute; reflexivity |]. split; [reflexivity |].
   split; [apply check_syscall_sound_ok; exact vb_checker |].

@@ -128,13 +128,13 @@ Qed.
 Lemma mm_never_bor_c7 : mm_never_bor (mkCfg mm_ms7 mm_model).
 Proof.
   apply mm_never_bor_intro.
-  - intros (_ & [(_ & report & Hacc & _) | [(x8 & Hx8 & _) | (_ & HU & _)]]);
+  - intros (_ & [(_ & [(report & Hacc & _) | (HU & _)]) | (x8 & Hx8 & _)]);
       cbn [cfg_ms cfg_model] in *.
     + exact (mm_ms7_accesses_fault report Hacc).
-    + rewrite mm_ms7_svc in Hx8. discriminate Hx8.
     + apply mi_account_step_unmodeled_inv in HU.
       pose proof (drop_step_accesses mm_rsegs mm_ms7) as Hd.
       rewrite HU, mm_ms7_faults in Hd. discriminate Hd.
+    + rewrite mm_ms7_svc in Hx8. discriminate Hx8.
   - intros evs c2 Hss.
     destruct (sstep_fault_only mm_rsegs mm_ms7 mm_model eq_refl mm_ms7_svc
                 mm_ms7_faults _ _ Hss) as [_ Habs].
@@ -144,8 +144,7 @@ Qed.
 Lemma mm_never_bor_c6 : mm_never_bor (mkCfg (mm_s 6) mm_model).
 Proof.
   apply mm_never_bor_intro.
-  - intros (_ & [(Hnone & _)
-               | [(x8 & Hx8 & [Hb | (eff & m' & evs & Hspec & _ & Hmat)]) | (Hnone & _)]]);
+  - intros (_ & [(Hnone & _) | (x8 & Hx8 & [Hb | (eff & m' & evs & Hspec & _ & Hmat)])]);
       cbn [cfg_ms cfg_model] in *.
     + rewrite mm_svc6 in Hnone. discriminate Hnone.
     + rewrite mm_svc6 in Hx8. injection Hx8 as <-.
@@ -155,7 +154,6 @@ Proof.
       apply mm_ecall_only in Hspec. injection Hspec as -> -> ->.
       rewrite (materialize_model_accesses_no_lazy mm_model _ eq_refl) in Hmat.
       discriminate Hmat.
-    + rewrite mm_svc6 in Hnone. discriminate Hnone.
   - intros evs c2 Hss.
     pose proof mm_svc6 as H6.
     inversion Hss; subst; try congruence;
@@ -477,7 +475,7 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma cm_ecall2_is_budget_only_refused :
   budget_only_refused_at cm_rsegs (mkCfg (cm_t 1) cm_model1).
 Proof.
-  split; [vm_compute; reflexivity |]. right. left.
+  split; [vm_compute; reflexivity |]. right.
   exists (Z_to_bv 64 222). split; [exact cm_svc_t1 |]. left.
   exact cm_ecall2_classifies_budget.
 Qed.

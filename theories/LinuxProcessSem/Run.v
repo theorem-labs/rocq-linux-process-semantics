@@ -2844,25 +2844,24 @@ Variable segs : list Segment.
 Definition budget_refused_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_budget_refused_b (sys_input segs (cfg_ms c) x8) (cfg_model c) = true
        \/ exists eff model' evs,
             syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs)
             /\ m_halted model' = None
-            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None))
-  \/ (ms_svc_pending (cfg_ms c) = None /\
-       mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
-       exists fn n eff model' evs,
-         vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
-         /\ vdso_fn_sysno fn = Some n
-         /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
-              (Ok eff model' evs)
-         /\ eff_ret eff <> errno_ret EFAULT
-         /\ m_halted model' = None
-         /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None) ).
+            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)) ).
 
 (** The run can reach a budget-refused configuration. *)
 Definition reaches_budget_refused (c0 : config) : Prop :=
@@ -2962,16 +2961,16 @@ Lemma budget_refused_at_no_lazy_instr : forall ms model,
   ~ budget_refused_at (mkCfg ms model).
 Proof.
   intros ms model Hlazy Hsvc
-    (_ & [(_ & report & _ & Hmat)
-         | [(x8 & Hx8 & _)
-           | (_ & _ & fn & n & eff & model' & evs & _ & Hn & Hspec & _ & _ & Hmat)]]);
+    (_ & [(_ & [(report & _ & Hmat)
+               | (_ & fn & n & eff & model' & evs & _ & Hn & Hspec & _ & _ & Hmat)])
+         | (x8 & Hx8 & _)]);
     cbn [cfg_ms cfg_model] in *.
   - rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat. discriminate Hmat.
-  - congruence.
   - assert (Hl : m_vm_lazy model' = []).
     { rewrite (vdso_spec_keeps_lazy segs ms model fn n eff model' evs Hn Hspec). exact Hlazy. }
     rewrite (materialize_model_accesses_no_lazy model' _ Hl) in Hmat.
     discriminate Hmat.
+  - congruence.
 Qed.
 
 (** ... and a syscall configuration whose every outcome leaves no lazy
@@ -2986,17 +2985,14 @@ Lemma budget_refused_at_no_lazy_syscall : forall ms model x8,
    <-> alloc_budget_refused_b (sys_input segs ms x8) model = true).
 Proof.
   intros ms model x8 Hh Hsvc Hlazy. split.
-  - intros (_ & [(Hnone & _)
-               | [(y8 & Hy8 & [Hb | (eff & model' & evs & Hspec & _ & Hmat)])
-                 | (Hnone & _)]]);
+  - intros (_ & [(Hnone & _) | (y8 & Hy8 & [Hb | (eff & model' & evs & Hspec & _ & Hmat)])]);
       cbn [cfg_ms cfg_model] in *.
     + congruence.
     + rewrite Hsvc in Hy8. injection Hy8 as <-. exact Hb.
     + rewrite Hsvc in Hy8. injection Hy8 as <-.
       rewrite (materialize_model_accesses_no_lazy model' _ (Hlazy _ _ _ Hspec)) in Hmat.
       discriminate Hmat.
-    + congruence.
-  - intros Hb. split; [exact Hh |]. right. left. exists x8. split; [exact Hsvc |]. left. exact Hb.
+  - intros Hb. split; [exact Hh |]. right. exists x8. split; [exact Hsvc |]. left. exact Hb.
 Qed.
 
 
@@ -5720,36 +5716,34 @@ Qed.
 Definition budget_only_refused_at (segs : list Segment) (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_refuse_reason (sys_input segs (cfg_ms c) x8) (cfg_model c) = Some RefuseBudget
        \/ exists eff model' evs,
             syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs)
             /\ m_halted model' = None
-            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None))
-  \/ (ms_svc_pending (cfg_ms c) = None /\
-       mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
-       exists fn n eff model' evs,
-         vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
-         /\ vdso_fn_sysno fn = Some n
-         /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
-              (Ok eff model' evs)
-         /\ eff_ret eff <> errno_ret EFAULT
-         /\ m_halted model' = None
-         /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None) ).
+            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)) ).
 
 Lemma budget_only_refused_at_implies : forall segs c,
   budget_only_refused_at segs c -> budget_refused_at segs c.
 Proof.
   intros segs c [Hh Hd]. split; [exact Hh|].
-  destruct Hd as [H1 | [(x8 & Hp & [Hb | H3]) | H4]].
+  destruct Hd as [H1 | (x8 & Hp & [Hb | H3])].
   - left; exact H1.
-  - right. left. exists x8. split; [exact Hp|]. left.
+  - right. exists x8. split; [exact Hp|]. left.
     apply refuse_reason_budget_implies_refused; exact Hb.
-  - right. left. exists x8. split; [exact Hp|]. right. exact H3.
-  - right. right. exact H4.
+  - right. exists x8. split; [exact Hp|]. right. exact H3.
 Qed.
 
 Definition reaches_budget_only_refused (segs : list Segment) (c0 : config) : Prop :=
