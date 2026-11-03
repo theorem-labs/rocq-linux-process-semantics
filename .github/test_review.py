@@ -1181,7 +1181,7 @@ class HoldTest(Runner):
     def test_a_maintainers_screen_says_so(self):
         """A maintainer's -f screen=true has no outsider: the comment does not say the account lacks write access, and
         nothing tries it again."""
-        for review in ("skipped", "failure"):
+        for review in ("skipped", "failure", "cancelled"):
             with self.subTest(review=review):
                 self.tearDown()
                 self.setUp()
@@ -1189,6 +1189,17 @@ class HoldTest(Runner):
                 self.assertIn("A maintainer asked for the automated screen first", body)
                 self.assertNotIn("without write access", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+
+    def test_a_maintainers_screened_review_that_a_newer_run_cancelled_holds_nothing(self):
+        """The newer run decides, whoever asked for this one: the old run neither labels nor comments."""
+        for name in ("review #7", "rescreen #7 of mallory"):
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                rc, out, posts, _ = self.run_hold("screen", outsider="", review="cancelled", runs=[(101, name)])
+                self.assertEqual((rc, posts), (0, []), out)
+                self.assertIn("A newer run of #7 cancelled this run's review", out)
+                self.assertFalse(any("labels" in " ".join(c) for c in gh_calls(self.api)), gh_calls(self.api))
 
 
 class PostLabelTest(Runner):

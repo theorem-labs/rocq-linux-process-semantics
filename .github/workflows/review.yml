@@ -1092,6 +1092,30 @@ jobs:
           again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
           again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
           again_other="$again If it is held again, this comment says why."
+          if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
+            # A newer run of the item (its next push, its rescreen, or a maintainer's request) cancels this run's
+            # review: that run decides, whoever asked for this one. Not a newer run whose trust job was skipped (an edit
+            # of a pull request that left its base as it was), failed or was cancelled: it decides nothing, so this run
+            # holds the item. A trust job not listed yet, still running, or passed may still decide.
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+              -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
+                | select(.id > ($ENV.RUN_ID | tonumber)
+                         and (.event == "pull_request_target" or .event == "issues" or .event == "workflow_dispatch")
+                         and ((.display_title // "") == "review #" + $ENV.NUMBER
+                         or ((.display_title // "") | startswith("rescreen #" + $ENV.NUMBER + " of ")))) | .id') \
+              || { echo "::error::the runs of this workflow could not be read"; exit 1; }
+            for id in $newer; do
+              [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
+              trust=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
+                --jq '.jobs[] | select(.name == "trust") | .conclusion // "running"') \
+                || { echo "::error::the jobs of run $id could not be read"; exit 1; }
+              case $trust in
+                skipped|failure|cancelled) ;;
+                *) echo "A newer run of #$NUMBER cancelled this run's review: that run decides."; exit 0 ;;
+              esac
+            done
+          fi
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             kind=limit
@@ -1099,30 +1123,6 @@ jobs:
           elif [ -z "$OUTSIDER" ]; then
             why="A maintainer asked for the automated screen first, and the screen did not pass it, or the automated review after it did not finish. A maintainer will look at it."
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
-            if [ "$REVIEW" = cancelled ]; then
-              # A newer run of the item (its next push, or its rescreen) cancels this run's review: that run decides.
-              # Not a newer run whose trust job was skipped (an edit of a pull request that left its base as it was),
-              # failed or was cancelled: it decides nothing, so this run holds the item. A trust job not listed yet,
-              # still running, or passed may still decide.
-              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-              newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-                -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
-                  | select(.id > ($ENV.RUN_ID | tonumber)
-                           and (.event == "pull_request_target" or .event == "issues" or .event == "workflow_dispatch")
-                           and ((.display_title // "") == "review #" + $ENV.NUMBER
-                           or ((.display_title // "") | startswith("rescreen #" + $ENV.NUMBER + " of ")))) | .id') \
-                || { echo "::error::the runs of this workflow could not be read"; exit 1; }
-              for id in $newer; do
-                [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
-                trust=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
-                  --jq '.jobs[] | select(.name == "trust") | .conclusion // "running"') \
-                  || { echo "::error::the jobs of run $id could not be read"; exit 1; }
-                case $trust in
-                  skipped|failure|cancelled) ;;
-                  *) echo "A newer run of #$NUMBER cancelled this run's review: that run decides."; exit 0 ;;
-                esac
-              done
-            fi
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run.
             capped=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[]
               | .steps[]? | select(.name == "Hold at the hourly cap" and .conclusion == "failure") | .name') \
