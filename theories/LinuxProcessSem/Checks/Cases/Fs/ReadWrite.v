@@ -249,6 +249,46 @@ Proof.
   rewrite Nat2Z.inj_min. rewrite Z2Nat.id by lia. lia.
 Qed.
 
+(** The shared read of a regular file's bytes delivers under the clamp:
+    what [Checks.Sys.Fs.ReadWrite.check_read_file_data] accepts for the
+    [FdFile], [FdFileRW] and live inherited arms is a prefix of
+    [file_read] at the clamped count. *)
+Lemma check_read_file_data_delivery_clamped :
+  forall i m fd buf count data off entry eff m' evs a bs,
+  check_read_file_data i m fd buf count data off entry eff = CheckOk m' evs ->
+  eff_writes eff = [(a, bs)] ->
+  (Z.of_nat (length bs) <= MAX_RW_COUNT)%Z.
+Proof.
+  intros i m fd buf count data off entry eff m' evs a bs H Hws.
+  unfold check_read_file_data in H. cbv zeta in H.
+  destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
+    as [|b bsr] eqn:Hbs.
+  - destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)));
+      cbv iota in H.
+    + apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _).
+      discriminate Hws.
+    + destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv iota in H;
+        [discriminate H|].
+      apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _).
+      discriminate Hws.
+  - destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr))); cbv iota in H.
+    2: { destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv iota in H;
+           [discriminate H|].
+         apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _).
+         discriminate Hws. }
+    destruct eff as [ret ws zs us cs copyins]. cbn in Hws. subst ws.
+    destruct zs; destruct us; destruct cs; destruct copyins;
+      cbv iota in H; try discriminate H.
+    destruct (bv_eqb a buf && listN_eqb bs (b :: bsr)
+              && bv_eqb ret (len_word (b :: bsr))) eqn:Hcond;
+      cbv iota in H; [|discriminate H].
+    apply andb_true_iff in Hcond as [Hcond _].
+    apply andb_true_iff in Hcond as [_ Hbs'].
+    apply listN_eqb_eq in Hbs'. subst bs.
+    pose proof (file_read_clamped_len data off count) as Hl.
+    rewrite Hbs in Hl. exact Hl.
+Qed.
+
 Lemma read_delivery_clamped : forall fd buf count i m eff m' evs a bs,
   read_spec fd buf count i m (Ok eff m' evs) ->
   eff_writes eff = [(a, bs)] ->
@@ -277,8 +317,8 @@ Proof.
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
      too, and so does a pipe READ end, an O_RDWR file, a /proc/sys file
-     ([State.OProcFile]) and an eventfd ([State.OEventFd]), so each gets a
-     bullet rather than a one-line
+     ([State.OProcFile]), an eventfd ([State.OEventFd]) and a live inherited
+     file ([State.OInherited]), so each gets a bullet rather than a one-line
      dismissal.  The two write-only kinds ([FdFileW] and the append
      [FdFileA]) are the -EBADF pair. *)
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
@@ -297,8 +337,14 @@ Proof.
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
       | (* the opaque kinds: a /proc/sys file delivers at most [count]
-           bytes under the count gate, an eventfd 8 *)
-        exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws)
+           bytes under the count gate, an eventfd 8, a live inherited file
+           the shared file read's prefix *)
+        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv iota in Hspec;
+        try exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws);
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+        [ now destruct (Hro _ _ _ Hspec)
+        | exact (check_read_file_data_delivery_clamped
+                   _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -333,61 +379,13 @@ Proof.
       [now destruct (Hro _ _ _ Hspec)|].
     destruct (fs_lookup (m_fs m) p) as [data|]; cbv iota in Hspec;
       [|discriminate].
-    cbv zeta in Hspec.
-    destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
-      as [|b bsr] eqn:Hbs; cbv iota in Hspec.
-    + destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)));
-        cbv iota in Hspec.
-      * now destruct (Hro _ _ _ Hspec).
-      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
-          cbv iota in Hspec;
-          [discriminate|now destruct (Hro _ _ _ Hspec)].
-    + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)));
-        cbv iota in Hspec.
-      2: { destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
-             cbv iota in Hspec;
-             [discriminate|now destruct (Hro _ _ _ Hspec)]. }
-      destruct eff as [ret ws zs us cs copyins]. cbn in Hws. subst ws.
-      destruct zs; destruct us; destruct cs; destruct copyins;
-        cbv iota in Hspec; try discriminate Hspec.
-      destruct (bv_eqb a buf && listN_eqb bs (b :: bsr)
-                && bv_eqb ret (len_word (b :: bsr))) eqn:Hcond;
-        cbv iota in Hspec; [|discriminate Hspec].
-      apply andb_true_iff in Hcond as [Hcond _].
-      apply andb_true_iff in Hcond as [_ Hbs'].
-      apply listN_eqb_eq in Hbs'. subst bs.
-      pose proof (file_read_clamped_len data off count) as Hl.
-      rewrite Hbs in Hl. exact Hl.
+    exact (check_read_file_data_delivery_clamped _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws).
   - (* the same file opened O_RDWR: the file bullet above *)
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
       [now destruct (Hro _ _ _ Hspec)|].
     destruct (fs_lookup (m_fs m) p) as [data|]; cbv iota in Hspec;
       [|discriminate].
-    cbv zeta in Hspec.
-    destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
-      as [|b bsr] eqn:Hbs; cbv iota in Hspec.
-    + destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)));
-        cbv iota in Hspec.
-      * now destruct (Hro _ _ _ Hspec).
-      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
-          cbv iota in Hspec;
-          [discriminate|now destruct (Hro _ _ _ Hspec)].
-    + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)));
-        cbv iota in Hspec.
-      2: { destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
-             cbv iota in Hspec;
-             [discriminate|now destruct (Hro _ _ _ Hspec)]. }
-      destruct eff as [ret ws zs us cs copyins]. cbn in Hws. subst ws.
-      destruct zs; destruct us; destruct cs; destruct copyins;
-        cbv iota in Hspec; try discriminate Hspec.
-      destruct (bv_eqb a buf && listN_eqb bs (b :: bsr)
-                && bv_eqb ret (len_word (b :: bsr))) eqn:Hcond;
-        cbv iota in Hspec; [|discriminate Hspec].
-      apply andb_true_iff in Hcond as [Hcond _].
-      apply andb_true_iff in Hcond as [_ Hbs'].
-      apply listN_eqb_eq in Hbs'. subst bs.
-      pose proof (file_read_clamped_len data off count) as Hl.
-      rewrite Hbs in Hl. exact Hl.
+    exact (check_read_file_data_delivery_clamped _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws).
   - (* socket.  The delivery arm bounds the prefix by
        [State.rw_count_clamp] of the count, exactly as the channel and
        file arms do, so the bound is the clamp's own range and not a gap
@@ -493,6 +491,7 @@ Proof.
   intros i m fd p data buf count off w Hfd Hfs Hc Hok Hw Hne.
   unfold check_read. rewrite Hfd, Hok. cbv beta iota.
   rewrite Hfs. cbv beta iota zeta.
+  unfold check_read_file_data. cbv beta iota zeta.
   destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
     as [|b bsr] eqn:Hbs; [congruence|].
   rewrite <- Hbs in *. rewrite Hw. cbv beta iota.
