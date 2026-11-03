@@ -435,14 +435,21 @@ Proof. vm_compute. reflexivity. Qed.
 (* ---- fstat, newfstatat ------------------------------------------------- *)
 
 (** In user namespace 2 (0 -> 1000), "other" (owner 5000) shows the
-    overflow ids 65534.  st_dev and st_ino are environment bytes. *)
+    overflow ids 65534, the default launch value [env_overflow_ids], and
+    no other value.  st_dev and st_ino are environment bytes. *)
 Definition c_child : NsCtx := ctx_at 2 no_caps (1%positive, 1%positive) (1%positive, 2%positive).
 
 Example fstat_fields_unmapped_owner :
-  option_map (fun a => map (fun p => (Z.of_nat (fst p), map bv_unsigned (snd p))) (stat_fields W c_child a))
+  option_map (fun a => map (fun p => (Z.of_nat (fst p), map bv_unsigned (snd p))) (stat_fields a))
              (loc_attr m3 c_child W (LDentry 1 8))
-  = Some [(16, [164; 129; 0; 0]); (24, [254; 255; 0; 0]); (28, [254; 255; 0; 0])].
-Proof. vm_compute. reflexivity. Qed.
+  = Some [(16, [164; 129; 0; 0])]
+  /\ option_map (fun a => (oa_uid a, oa_gid a)) (loc_attr m3 c_child W (LDentry 1 8)) = Some (5000, 5000)
+  /\ (forall v, munged_ok W c_child false 5000 v = Z.eqb v 65534)
+  /\ (forall v, munged_ok W c_child true 5000 v = Z.eqb v 65534).
+Proof.
+  split; [vm_compute; reflexivity |]. split; [vm_compute; reflexivity |].
+  split; intro v; vm_compute; reflexivity.
+Qed.
 
 Definition stat_bytes : list byte :=
   Z_to_le_bytes 8 1 ++ Z_to_le_bytes 8 8 ++ Z_to_le_bytes 4 33188 ++ Z_to_le_bytes 4 0
@@ -455,7 +462,7 @@ Example fstat_admits_overflow_ids :
             (with_open [(1%N, other_file)])
             (ans [] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, stat_bytes)] (model_with [(3, 1%N)]) c_child
                  (with_open [(1%N, other_file)])).
-Proof. vm_compute. exists stat_bytes. split; vm_compute; reflexivity. Qed.
+Proof. vm_compute. exists stat_bytes. repeat split; vm_compute; reflexivity. Qed.
 
 (** newfstatat with AT_EMPTY_PATH on an O_PATH descriptor stats its
     object; an unknown flag is EINVAL before the name's error. *)
@@ -467,7 +474,7 @@ Example newfstatat_empty_path :
   newfstatat_arm (call 79 [3; PATH; BUF; AT_EMPTY_PATH] (path_mem []) (wmem 128)) m_dir3 c0 W_dir3
                  (ans [(Z_to_bv 64 PATH, 1%nat)] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, tmp_root_bytes)]
                       m_dir3 c0 W_dir3).
-Proof. vm_compute. exists tmp_root_bytes. split; vm_compute; reflexivity. Qed.
+Proof. vm_compute. exists tmp_root_bytes. repeat split; vm_compute; reflexivity. Qed.
 
 Example newfstatat_bad_flag :
   newfstatat_arm (call 79 [3; PATH; BUF; 32768] (path_mem []) (wmem 128)) m_dir3 c0 W_dir3
@@ -518,6 +525,165 @@ Example user_sys_permission :
   /\ ret_of (faccessat_fn (access_in s_max_user_namespaces 2) (with_creds uid0 m3)
                (c_caps sys_resource_caps) W_user_sys) = Some 0.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(* ---- the id 4294967295 and the overflow ids ---------------------------- *)
+
+(** [W] with the file "o" (mode 0000) and the directory "d" (mode 0000),
+    both owned by uid [uid] and gid [gid]; "d" holds the file "f" (0644,
+    uid 1000).  The id 4294967295 is INVALID_UID and INVALID_GID
+    (include/linux/uidgid.h:50-51): no user namespace maps it, the initial
+    one included (its one extent holds 0 to 4294967294, kernel/user.c:40-55). *)
+Definition W_owned (uid gid : Z) : NsState :=
+  with_tree W
+    (ns_dentries W ++
+     [dent 14 1 (Some 1%positive) (bytes [111]) 14;
+      dent 15 1 (Some 1%positive) (bytes [100]) 15;
+      dent 16 1 (Some 15%positive) (bytes [102]) 16])
+    (ns_inodes W ++ [reg 14 0 uid gid; dir 15 0 uid gid; reg 16 420 1000 1002]).
+
+Definition s_o : list Z := [47; 111].                                       (* /o *)
+Definition s_d_f : list Z := [47; 100; 47; 102].                            (* /d/f *)
+
+(** [privileged_wrt_inode_uidgid] (kernel/capability.c:455-461) needs the
+    inode's uid and gid to map into the caller's user namespace
+    ([vfsuid_has_mapping], [vfsgid_has_mapping],
+    include/linux/mnt_idmapping.h:158-162, 196-200).  A caller in the
+    initial namespace with CAP_DAC_OVERRIDE opens the mode-0000 "o" for
+    reading when it is owned by 1000:0, but not when its uid or its gid is
+    4294967295: EACCES ([generic_permission], fs/namei.c).  The same for
+    the search of the mode-0000 directory "d" ([may_lookup]). *)
+Example openat_invalid_owner_not_capable :
+  ret_of (openat_fn (open_in s_o 0 0) m3 (c_caps dac_override_caps) (W_owned 4294967295 0)) = Some (-13)
+  /\ ret_of (openat_fn (open_in s_o 0 0) m3 (c_caps dac_override_caps) (W_owned 1000 4294967295))
+     = Some (-13)
+  /\ ret_of (openat_fn (open_in s_o 0 0) m3 (c_caps dac_override_caps) (W_owned 1000 0)) = Some 3.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example openat_invalid_dir_owner_not_searchable :
+  ret_of (openat_fn (open_in s_d_f 0 0) m3 (c_caps dac_override_caps) (W_owned 4294967295 0))
+  = Some (-13)
+  /\ ret_of (openat_fn (open_in s_d_f 0 0) m3 (c_caps dac_override_caps) (W_owned 1000 0)) = Some 3.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** [mode_strip_sgid] (fs/inode.c:2935-2945) keeps S_ISGID on a new file
+    in a setgid directory only for a caller in the directory's group or
+    with CAP_FSETID over it ([in_group_or_capable], 2910-2918), and that
+    capability needs the directory's uid and gid to map
+    ([capable_wrt_inode_uidgid], kernel/capability.c:455-480).  A caller
+    with CAP_FSETID, in neither group 0 nor 4294967295, creates "new" with
+    mode 02775 in the tmpfs directory "/tmp/g" (02777): owned by 0:0, the
+    file keeps S_ISGID (02755 after the umask); owned by 4294967295, it
+    loses it (0755). *)
+Definition W_sgid (owner : Z) : NsState :=
+  with_tree W (ns_dentries W ++ [dent 23 2 (Some 20%positive) (bytes [103]) 23])
+              (ns_inodes W ++ [dir 23 1535 owner owner]).
+Definition s_g_new : list Z := s_tmp ++ [47; 103; 47; 110; 101; 119].     (* /tmp/g/new *)
+Definition fsetid_caps : CapSets := mkCaps (2 ^ 4) (2 ^ 4) 0 0 0.
+
+Example openat_create_sgid_invalid_dir_owner :
+  newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps fsetid_caps) (W_sgid 0))
+  = Some (52, 1517, 1000, 0)
+  /\ newest_inode (openat_fn (open_in s_g_new creat_excl 1533) m3 (c_caps fsetid_caps) (W_sgid 4294967295))
+     = Some (52, 493, 1000, 4294967295).
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** The tables [st] with the launch value [env_overflow_ids] set to [o]. *)
+Definition with_overflow (st : NsState) (o : option (Z * Z)) : NsState :=
+  with_env st (env_with_overflow_ids (ns_env st) o).
+
+(** The default launch assumes the kernel's default overflow ids
+    (include/linux/highuid.h:41-42, kernel/sys.c:167-168). *)
+Example overflow_ids_launch_default :
+  env_overflow_ids (ns_env empty_nsstate) = Some (65534, 65534)
+  /\ env_overflow_ids (ns_env W) = Some (65534, 65534).
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** An fstat of descriptor 3, open on "o", answered with [bs]. *)
+Definition o_file : NsFile := mkNsFile (NfFile (LDentry 1 14) 0) O_LARGEFILE cred0.
+Definition o_open (st : NsState) : NsState := with_files st [(1%N, o_file)].
+Definition o_stat (uid gid : Z) : list byte :=
+  Z_to_le_bytes 8 1 ++ Z_to_le_bytes 8 14 ++ Z_to_le_bytes 4 32768 ++ Z_to_le_bytes 4 0
+  ++ Z_to_le_bytes 4 uid ++ Z_to_le_bytes 4 gid ++ repeat (Z_to_bv 8 0) 96.
+Definition fstat_o (ctx : NsCtx) (st : NsState) (bs : list byte) : Prop :=
+  fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) ctx (o_open st)
+            (ans [] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, bs)] (model_with [(3, 1%N)]) ctx (o_open st)).
+
+(** [cp_new_stat] (fs/stat.c:492-493) shows [from_kuid_munged] of the
+    owner (kernel/user_namespace.c:466-473): for uid 4294967295, which no
+    namespace maps, the overflow id, 65534 by default, and no other value;
+    for uid 1000 in the initial namespace, 1000. *)
+Example stat_invalid_owner_overflow :
+  fstat_o c0 (W_owned 4294967295 0) (o_stat 65534 0)
+  /\ (forall v, munged_ok (W_owned 4294967295 0) c0 false 4294967295 v = Z.eqb v 65534)
+  /\ fstat_o c0 (W_owned 1000 0) (o_stat 1000 0)
+  /\ (forall v, munged_ok (W_owned 1000 0) c0 false 1000 v = Z.eqb v 1000).
+Proof.
+  split; [vm_compute; exists (o_stat 65534 0); repeat split; vm_compute; reflexivity |].
+  split; [intro v; vm_compute; reflexivity |].
+  split; [vm_compute; exists (o_stat 1000 0); repeat split; vm_compute; reflexivity |].
+  intro v; vm_compute; reflexivity.
+Qed.
+
+(** An fstat of descriptor 3, open on "other" (owner 5000:5000, mode
+    0644), by the caller in namespace 2, answered with [bs]. *)
+Definition other_stat (uid gid : Z) : list byte :=
+  Z_to_le_bytes 8 1 ++ Z_to_le_bytes 8 8 ++ Z_to_le_bytes 4 33188 ++ Z_to_le_bytes 4 0
+  ++ Z_to_le_bytes 4 uid ++ Z_to_le_bytes 4 gid ++ repeat (Z_to_bv 8 0) 96.
+Definition fstat_other (st : NsState) (bs : list byte) : Prop :=
+  fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c_child
+            (with_files st [(1%N, other_file)])
+            (ans [] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, bs)] (model_with [(3, 1%N)]) c_child
+                 (with_files st [(1%N, other_file)])).
+
+(** A launch that measured kernel.overflowuid and kernel.overflowgid as
+    1234 ([Some (1234, 1234)]): the uid 4294967295 in the initial
+    namespace and the uid 5000 of "other", which namespace 2 does not map,
+    both show 1234 and no other value (kernel/user_namespace.c:471-472;
+    kernel/sys.c:184-193). *)
+Example stat_overflow_launch_value :
+  fstat_o c0 (with_overflow (W_owned 4294967295 0) (Some (1234, 1234))) (o_stat 1234 0)
+  /\ (forall v, munged_ok (with_overflow (W_owned 4294967295 0) (Some (1234, 1234))) c0 false
+                          4294967295 v = Z.eqb v 1234)
+  /\ fstat_other (with_overflow W (Some (1234, 1234))) (other_stat 1234 1234)
+  /\ (forall v, munged_ok (with_overflow W (Some (1234, 1234))) c_child false 5000 v = Z.eqb v 1234).
+Proof.
+  split; [vm_compute; exists (o_stat 1234 0); repeat split; vm_compute; reflexivity |].
+  split; [intro v; vm_compute; reflexivity |].
+  split; [vm_compute; exists (other_stat 1234 1234); repeat split; vm_compute; reflexivity |].
+  intro v; vm_compute; reflexivity.
+Qed.
+
+(** The same two ids under [None] (the host may write the sysctls during
+    the run): any value from 0 to 65535 (kernel/sys.c:191-192). *)
+Example stat_overflow_unknown :
+  fstat_o c0 (with_overflow (W_owned 4294967295 0) None) (o_stat 4242 0)
+  /\ (forall v, munged_ok (with_overflow (W_owned 4294967295 0) None) c0 false 4294967295 v
+                = (0 <=? v) && (v <=? 65535))
+  /\ (forall v, munged_ok (with_overflow W None) c_child false 5000 v = (0 <=? v) && (v <=? 65535)).
+Proof.
+  split; [vm_compute; exists (o_stat 4242 0); repeat split; vm_compute; reflexivity |].
+  split; intro v; vm_compute; reflexivity.
+Qed.
+
+(** A mapped id stays exact under [None].  A caller in user namespace 3,
+    whose uid map is "0 1000 1" and whose gid map is "0 1000 1", stats "o"
+    owned by uid 1000 and gid 2000: st_uid is exactly 0 ([from_kuid],
+    kernel/user_namespace.c:441-445), st_gid any value from 0 to 65535
+    ([from_kgid_munged], 533-541). *)
+Definition one_user : UserNs :=
+  uns 3 (Some 1%positive) 1 (Some [mkExtent 0 1000 1]) (Some [mkExtent 0 1000 1]).
+Definition c_one : NsCtx := ctx_at 3 no_caps (1%positive, 1%positive) (1%positive, 2%positive).
+Definition W_mixed : NsState :=
+  with_overflow (with_userns (W_owned 1000 2000) [root_user; child_user; one_user]) None.
+
+Example stat_mixed_unknown :
+  fstat_o c_one W_mixed (o_stat 0 4242)
+  /\ (forall v, munged_ok W_mixed c_one false 1000 v = Z.eqb v 0)
+  /\ (forall v, munged_ok W_mixed c_one true 2000 v = (0 <=? v) && (v <=? 65535)).
+Proof.
+  split; [vm_compute; exists (o_stat 0 4242); repeat split; vm_compute; reflexivity |].
+  split; intro v; vm_compute; reflexivity.
+Qed.
 
 (* ---- statfs, fstatfs --------------------------------------------------- *)
 

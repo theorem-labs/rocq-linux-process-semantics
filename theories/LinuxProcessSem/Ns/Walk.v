@@ -327,21 +327,29 @@ Definition inode_exec_bit (cr : WalkCreds) (ino : Inode) : bool :=
        then Z.testbit (ino_perm ino) 3
        else Z.testbit (ino_perm ino) 0.
 
+(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h:50-51):
+    the id no namespace maps, which [vfsuid_valid] refuses
+    (include/linux/mnt_idmapping.h:55-58). *)
+Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
+
 (** [kuid_has_mapping] (include/linux/uidgid.h) through [map_id_up]
     (kernel/user_namespace.c): a kernel id has a mapping when an extent's
     lower range holds it. *)
 Definition kid_mapped (exts : list IdExtent) (x : Z) : bool :=
   existsb (fun e => (ext_lower e <=? x) && (x <? ext_lower e + ext_count e)) exts.
 
-(** [privileged_wrt_inode_uidgid] (kernel/capability.c): the inode's kuid
-    and kgid are both mapped in the task's user namespace.  An unwritten map
-    maps nothing; the initial namespace maps every id. *)
+(** [privileged_wrt_inode_uidgid] (kernel/capability.c:455-461): the
+    inode's kuid and kgid are both mapped in the task's user namespace
+    ([vfsuid_has_mapping], [vfsgid_has_mapping],
+    include/linux/mnt_idmapping.h:158-162, 196-200).  An unwritten map maps
+    nothing; the initial namespace maps every id but INVALID (its one
+    extent holds 0 to 4294967294, kernel/user.c:40-55). *)
 Definition inode_ids_mapped (st : NsState) (ctx : NsCtx) (ino : Inode) : bool :=
   match find_userns (ns_userns st) (cx_user ctx) with
   | None => false
   | Some u =>
       match uns_parent u with
-      | None => true
+      | None => negb (kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino))
       | Some _ =>
           match uns_uid_map u, uns_gid_map u with
           | Some um, Some gm => kid_mapped um (ino_uid ino) && kid_mapped gm (ino_gid ino)
