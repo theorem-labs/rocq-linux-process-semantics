@@ -3,16 +3,18 @@
 
 Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail), against a stand-in gh that answers
 from files: who is reviewed and who is screened first, the hourly limit of an account without write access, which
-comments and reviews the review reads, what the posted comment can notify or link, and what a held pull request or
-issue is told. Each job's condition is evaluated for every route, to show which jobs run. The rest checks what each
-job holds, and the settings that keep Claude to the checkout and to the pinned binaries. .github/test_screen.py tests
-the screen itself.
+comments and reviews the review reads, what the posted comment can notify or link, what a held pull request or issue
+is told, and how one held for a reason not its own is screened again (the rescreen job, and the trust job's check of
+a rescreen). Each job's condition is evaluated for every route, to show which jobs run. The rest checks what each job
+holds, and the settings that keep Claude to the checkout and to the pinned binaries. .github/test_screen.py tests the
+screen itself.
 
 No network is used. Needs python3, bash, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
 Exits non-zero on any failure.
 """
 
+import datetime
 import json
 import os
 import re
@@ -23,13 +25,15 @@ import unittest
 
 WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "review.yml")
 REPO = "acme/model"
+TRUST = "Whether the author and the account that started the run have write access"
 WJ = "\u2060"   # the word joiner the comment step puts in each mention and reference
 RULES = "https://github.com/acme/model/blob/main/.github/review.md"
 RUN = "https://github.com/acme/model/actions/runs/1"
 
 # gh api <endpoint> [--paginate] [--jq <filter>] [--method M] [-f|-F k=v], answered from $FAKE_GH/<endpoint>.json
 # (the endpoint's slashes as underscores, its query dropped) through jq, as gh applies --jq; an endpoint with no file
-# answers as GitHub's 404 does. <endpoint>.2.json and on are the pages that only --paginate reads.
+# answers as GitHub's 404 does. <endpoint>.2.json and on are the pages that only --paginate reads. <endpoint>.then.json,
+# when there is one, takes the place of <endpoint>.json after the first read: an answer that changes in between.
 FAKE_GH = r"""#!/usr/bin/env bash
 [ "$1" = api ] || { echo "gh: only api is served here: $*" >&2; exit 9; }
 shift
@@ -53,6 +57,7 @@ n=2
 while [ -n "$paginate" ] && [ -f "${file%.json}.$n.json" ]; do
   jq -r "$filter" "${file%.json}.$n.json"; n=$((n + 1))
 done
+[ ! -f "${file%.json}.then.json" ] || mv "${file%.json}.then.json" "$file"
 """
 
 
@@ -68,13 +73,13 @@ APPS = WF["env"]["APPS"]
 
 def evaluate(expression, ctx):
     """A GitHub Actions expression, with or without ${{ }}, as GitHub evaluates it for what these tests need: string,
-    boolean and null literals, contexts looked up whole in ctx (a missing one is null), == and != (strings compared
-    without case), !, && and || (which give an operand, not a boolean), parentheses, and the functions endsWith,
-    format, cancelled and always. ctx["cancelled"] is cancelled()'s answer (False when absent)."""
+    whole number, boolean and null literals, contexts looked up whole in ctx (a missing one is null), == and !=
+    (strings compared without case), !, && and || (which give an operand, not a boolean), parentheses, and the
+    functions endsWith, format, cancelled and always. ctx["cancelled"] is cancelled()'s answer (False when absent)."""
     text = expression.strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2]
-    tokens = re.findall(r"\s*('(?:[^']|'')*'|&&|\|\||==|!=|!|\(|\)|,|[A-Za-z_][A-Za-z0-9_.\-]*)", text)
+    tokens = re.findall(r"\s*('(?:[^']|'')*'|&&|\|\||==|!=|!|\(|\)|,|[0-9]+(?![A-Za-z_])|[A-Za-z_][A-Za-z0-9_.\-]*)", text)
     assert "".join(tokens).replace(" ", "") == re.sub(r"\s+", "", text), text
     toks = [t.strip() for t in tokens]
     pos = [0]
@@ -108,6 +113,8 @@ def evaluate(expression, ctx):
             return not truthy(primary())
         if t.startswith("'"):
             return t[1:-1].replace("''", "'")
+        if t.isdigit():
+            return int(t)
         if t in ("true", "false"):
             return t == "true"
         if t == "null":
@@ -241,12 +248,12 @@ class Runner(unittest.TestCase):
 class TrustTest(Runner):
     """The trust job: who is reviewed without being asked, and who is screened first."""
 
-    def trust(self, event, author="", actor="", number="7", screen="", measure=""):
-        s = step("trust", "Whether the author and the account that started the run have write access")
+    def trust(self, event, author="", actor="", number="7", screen="", measure="", rescreen="", account=""):
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
-        return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number, SCREEN=screen,
-                               MEASURE=measure,
-                               RUN_ID="100", OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        return self.run_script(step("trust", TRUST)["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
+                               SCREEN=screen, MEASURE=measure, RESCREEN=rescreen, ACCOUNT=account,
+                               RUN_ID="100", OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                               HELD_LABEL=WF["env"]["HELD_LABEL"])
 
     def assertReview(self, want, *args, **kwargs):
         """want is the route: "review", "screen", "limit", or None for no route (no job after trust runs)."""
@@ -282,6 +289,9 @@ class TrustTest(Runner):
         """A pull request of a writer, pushed to by an account without write access."""
         self.permissions(alice="write", mallory="read")
         _out, got = self.assertReview("screen", "pull_request_target", "alice", "mallory")
+        # This run is the one a later hold of the item names (at the limit, at the cap, or a review that did not
+        # finish), so the rescreen job finds the account by it.
+        self.assertEqual((got.get("origin"), got.get("tries"), got.get("rescreen")), ("100", "0", "false"))
         self.assertEqual(got["outsider"], "mallory")
 
     def test_a_push_by_another_outsider_names_the_pusher(self):
@@ -337,10 +347,25 @@ class TrustTest(Runner):
 
     def test_the_job_reads_only_and_checks_nothing_out(self):
         job = JOBS["trust"]
-        self.assertEqual(job["permissions"], {"actions": "read"})
+        self.assertEqual(job["permissions"], {"actions": "read", "issues": "read", "pull-requests": "read"})
         self.assertFalse(any("uses" in s for s in job["steps"]))
-        for name in ("route", "outsider", "number", "started"):
+        for name in ("route", "outsider", "number", "started", "rescreen", "origin", "tries"):
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
+
+    def test_only_this_repository_and_no_scheduled_run(self):
+        """Every other job needs the trust job, so nothing runs in a fork, nor on the schedule; but the rescreen job,
+        which has a guard of its own (RescreenJobTest) and is a scheduled run's only job."""
+        cond = JOBS["trust"]["if"]
+        self.assertIn("github.repository_id == 1425819621 && github.event_name != 'schedule'", cond)
+        here = {"github.repository_id": 1425819621, "github.event_name": "issues"}
+        self.assertIs(evaluate(cond, here), True)
+        self.assertFalse(evaluate(cond, dict(here, **{"github.event_name": "schedule"})))
+        self.assertFalse(evaluate(cond, dict(here, **{"github.repository_id": 1})))
+        for name, job in JOBS.items():
+            if name not in ("trust", "rescreen"):
+                with self.subTest(job=name):
+                    self.assertTrue(set(job["needs"] if isinstance(job["needs"], list) else [job["needs"]])
+                                    & {"trust", "review"}, name)
 
     def test_a_run_the_trust_job_stops_cancels_no_review(self):
         """The concurrency group is the review job's, not the workflow's: an outsider's push to a pull request that a
@@ -573,11 +598,16 @@ class ReachTest(Runner):
         access, or an App not in APPS, only when the route is the screen's, and the review job runs on that route
         only when the screen's verdict is clean (RouteTest)."""
         w = self.review["with"]
-        for route, outsider, users, bots in (
-                ("review", "", "", APPS), ("screen", "mallory", "mallory", APPS),
-                ("screen", "dependabot[bot]", "dependabot[bot]", APPS + ",dependabot[bot]"), ("screen", "", "", APPS)):
-            with self.subTest(route=route, outsider=outsider):
-                ctx = {"needs.trust.outputs.route": route, "needs.trust.outputs.outsider": outsider, "env.APPS": APPS}
+        for route, outsider, rescreen, users, bots in (
+                ("review", "", "", "", APPS), ("screen", "mallory", "", "mallory", APPS),
+                ("screen", "dependabot[bot]", "", "dependabot[bot]", APPS + ",dependabot[bot]"), ("screen", "", "", "", APPS),
+                # A rescreen the trust job accepted: its run's actor is github-actions[bot], the rescreen job's.
+                ("screen", "mallory", "true", "mallory", APPS + ",github-actions[bot]"),
+                ("review", "", "true", "", APPS + ",github-actions[bot]"),
+                ("screen", "mallory", "false", "mallory", APPS), ("limit", "mallory", "false", "", APPS)):
+            with self.subTest(route=route, outsider=outsider, rescreen=rescreen):
+                ctx = {"needs.trust.outputs.route": route, "needs.trust.outputs.outsider": outsider, "env.APPS": APPS,
+                       "needs.trust.outputs.rescreen": rescreen}
                 self.assertEqual(evaluate(w["allowed_non_write_users"], ctx), users)
                 self.assertEqual(evaluate(w["allowed_bots"], ctx), bots)
 
@@ -647,8 +677,9 @@ def run_graph(trust, results=None, outputs=None):
     outputs.setdefault("gather", {"kind": "pr", "number": trust.get("number", ""), "digest": "0" * 64})
     got = {"trust": "success"}
     out = {"trust": trust}
+    # The rescreen job needs no other job, and runs on the schedule alone (RescreenJobTest).
     order = ["trust", "gather", "screen", "review", "post", "hold"]
-    assert set(order) == set(JOBS), set(JOBS)
+    assert set(order) | {"rescreen"} == set(JOBS), set(JOBS)
     for name in order[1:]:
         job = JOBS[name]
         needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
@@ -714,6 +745,14 @@ class RouteTest(unittest.TestCase):
     def test_at_the_limit_it_is_held_without_a_screen(self):
         self.assertEqual(self.ran({"route": "limit", "outsider": "mallory", "number": "7"}), {"hold"})
 
+    def test_a_rescreen_takes_the_outsiders_path(self):
+        """screen, then review, then post; or held again at the limit; never the writer's path while it screens."""
+        rescreen = {"route": "screen", "outsider": "mallory", "number": "7", "rescreen": "true", "origin": "50"}
+        self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "clean"}}),
+                         {"gather", "screen", "review", "post"})
+        self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "held"}}), {"gather", "screen", "hold"})
+        self.assertEqual(self.ran(dict(rescreen, route="limit")), {"hold"})
+
     def test_a_measurement_runs_the_screen_job_alone(self):
         self.assertEqual(self.ran({"route": "measure", "number": ""}, outputs={"gather": {}}), {"screen"})
         steps = {x.get("name") or x.get("uses", "").split("@")[0]: x.get("if") for x in JOBS["screen"]["steps"]}
@@ -739,13 +778,13 @@ class RouteTest(unittest.TestCase):
                          {"gather", "review"})
 
     def test_a_screened_review_that_does_not_finish_is_held(self):
-        """SCREENED_HOURLY_CAP among the causes: the item is not left with neither a review nor a hold."""
-        self.assertEqual(self.ran({"route": "screen", "outsider": "mallory", "number": "7"},
-                                  results={"review": "failure"}, outputs={"screen": {"verdict": "clean"}}),
-                         {"gather", "screen", "review", "hold"})
-        self.assertEqual(self.ran({"route": "screen", "outsider": "mallory", "number": "7"},
-                                  results={"review": "cancelled"}, outputs={"screen": {"verdict": "clean"}}),
-                         {"gather", "screen", "review"})
+        """SCREENED_HOURLY_CAP among the causes, or a review that ran out of time (cancelled): the item is not left
+        with neither a review nor a hold. The hold job decides whether a newer run cancelled it (HoldTest)."""
+        for result in ("failure", "cancelled"):
+            with self.subTest(result=result):
+                self.assertEqual(self.ran({"route": "screen", "outsider": "mallory", "number": "7"},
+                                          results={"review": result}, outputs={"screen": {"verdict": "clean"}}),
+                                 {"gather", "screen", "review", "hold"})
 
     def test_a_pull_request_that_moved_on_is_left_to_its_newer_run(self):
         """The gather job keeps nothing when the head is no longer the event's: neither screen, review nor hold."""
@@ -773,19 +812,20 @@ class LimitTest(Runner):
         self.permissions(alice="write", mallory="read", eve="read")
 
     def runs(self, *runs):
-        """Serve the runs list and each run's jobs: (id, login, event, trust job's conclusion or None for unlisted)."""
+        """Serve the runs list and each run's jobs: (id, login, event, trust job's conclusion or None for unlisted,
+        and the run's name, if any)."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
-            {"id": i, "actor": {"login": who}, "triggering_actor": {"login": "alice"}, "event": event,
-             "created_at": "2026-11-02T10:00:00Z"}
-            for i, who, event, _c in runs]})
-        for i, _who, _event, conclusion in runs:
-            jobs = [] if conclusion is None else [{"name": "trust", "conclusion": conclusion}]
-            self.serve(f"repos/{REPO}/actions/runs/{i}/jobs", {"jobs": jobs + [{"name": "review", "conclusion": None}]})
+            {"id": r[0], "actor": {"login": r[1]}, "triggering_actor": {"login": "alice"}, "event": r[2],
+             "created_at": "2026-11-02T10:00:00Z", **({"display_title": r[4]} if len(r) > 4 else {})}
+            for r in runs]})
+        for r in runs:
+            jobs = [] if r[3] is None else [{"name": "trust", "conclusion": r[3]}]
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": jobs + [{"name": "review", "conclusion": None}]})
 
     def trust(self, author, actor, event="issues"):
         s = step("trust", "Whether the author and the account that started the run have write access")
         return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER="7", SCREEN="",
-                               RUN_ID="100", OUTSIDE_HOURLY_LIMIT=str(self.LIMIT))
+                               RESCREEN="", ACCOUNT="", RUN_ID="100", OUTSIDE_HOURLY_LIMIT=str(self.LIMIT))
 
     def route(self, *args, **kwargs):
         rc, out, got = self.trust(*args, **kwargs)
@@ -827,6 +867,18 @@ class LimitTest(Runner):
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
         self.assertEqual(self.route("mallory", "alice", event="pull_request_target"), "screen")
 
+    def test_rescreens_of_that_account_count_with_its_events(self):
+        """One count and one limit: a held item's rescreens use the account's hour as its own events do. A run's
+        name counts only for a run started by hand: an event's run cannot make another account's count."""
+        rescreens = [(10 + i, "github-actions[bot]", "workflow_dispatch", "success", f"rescreen #{8 + i} of mallory")
+                     for i in range(self.LIMIT - 1)]
+        self.runs(*rescreens, (20, "mallory", "issues", "success"))
+        self.assertEqual(self.route("mallory", "mallory"), "limit")
+        self.runs(*rescreens, (20, "eve", "workflow_dispatch", "success", "rescreen #9 of eve"),
+                  (21, "eve", "pull_request_target", "success", "rescreen #9 of mallory"),
+                  (22, "alice", "workflow_dispatch", "success", "rescreen #9 of xmallory"))
+        self.assertEqual(self.route("mallory", "mallory"), "screen")
+
     def test_runs_that_cannot_be_read_stop_the_run(self):
         rc, out, got = self.trust("mallory", "mallory")   # no runs served: GitHub's 404
         self.assertEqual((rc, got.get("route")), (1, None), out)
@@ -865,7 +917,10 @@ class HoldingsTest(unittest.TestCase):
         for name in ("post", "hold"):
             with self.subTest(job=name):
                 job = JOBS[name]
-                self.assertEqual(job["permissions"], {"issues": "write", "pull-requests": "write"})
+                # The hold job reads this workflow's runs and jobs too: was its review stopped at the cap, or cancelled
+                # by a newer run of the item?
+                self.assertEqual(job["permissions"], {"issues": "write", "pull-requests": "write",
+                                                      **({"actions": "read"} if name == "hold" else {})})
                 self.assertFalse(any("uses" in s for s in job["steps"]))
                 # its condition reads the screen's verdict; nothing it runs reads anything of the screen's
                 text = json.dumps({k: v for k, v in job.items() if k != "if"}).lower()
@@ -974,22 +1029,49 @@ class TakeTest(Runner):
 
 
 class HoldTest(Runner):
-    """The hold job's comment: fixed words, which say nothing of why."""
+    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again."""
 
-    def hold(self, route, outsider="mallory", comments=()):
+    STEP = "Label it and say that it was held"
+    TRIES = int(WF["env"]["REVIEW_TRIES"])
+
+    def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
+                 uncounted=False, runs=()):
+        """Run the hold step; capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews
+        failed, so it stopped before the cap's step; runs: this workflow's runs, (id, name[, its trust job's
+        conclusion, success when absent, None for not listed yet[, its event, pull_request_target when absent]])."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
-        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
         self.serve(f"repos/{REPO}/issues/comments/5", {"html_url": "https://github.com/acme/model/issues/7#c5"})
-        rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
-                                     ROUTE=route, OUTSIDER=outsider, REVIEW="skipped", HELD_LABEL=WF["env"]["HELD_LABEL"],
+        self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": [
+            {"name": "trust", "steps": [{"name": "Whether ...", "conclusion": "success"}]},
+            {"name": "review (screened)", "steps": [
+                {"name": "Count the reviews of the last hour", "conclusion": "failure" if uncounted else "success"},
+                {"name": "Hold at the hourly cap",
+                 "conclusion": "skipped" if uncounted else "failure" if capped else "success"},
+                {"name": "Review", "conclusion": "skipped" if capped or uncounted else "failure"}]}]})
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+            {"id": r[0], "display_title": r[1], "event": r[3] if len(r) > 3 else "pull_request_target"} for r in runs]})
+        for r in runs:
+            trust = r[2] if len(r) > 2 else "success"
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
+                       {"jobs": [] if trust is None else [{"name": "trust", "conclusion": trust}]})
+        rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER="7", ROUTE=route, OUTSIDER=outsider,
+                                     REVIEW=review, ORIGIN=origin, TRIES=tries, RUN_ID="100", RUN_ATTEMPT="1",
+                                     HELD_LABEL=WF["env"]["HELD_LABEL"], REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
+                                     SCREENED_HOURLY_CAP=WF["env"]["SCREENED_HOURLY_CAP"],
                                      OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        posts = [c for c in gh_calls(self.api) if "body=" in " ".join(c)]
+        body = next((a for c in posts for a in c if a.startswith("body=")), "body=")[len("body="):]
+        return rc, out, posts, body
+
+    def hold(self, route, **kwargs):
+        if route == "limit":
+            kwargs.setdefault("origin", "50")
+        rc, out, posts, body = self.run_hold(route, **kwargs)
         self.assertEqual(rc, 0, out)
-        calls = gh_calls(self.api)
-        posts = [c for c in calls if "body=" in " ".join(c)]
-        self.assertEqual(len(posts), 1, calls)
-        body = next(a for a in posts[0] if a.startswith("body="))[len("body="):]
-        return calls, posts[0], body
+        self.assertEqual(len(posts), 1, gh_calls(self.api))
+        return gh_calls(self.api), posts[0], body
 
     def test_a_held_item_is_labelled_and_told_in_fixed_words(self):
         calls, post, body = self.hold("screen")
@@ -1002,10 +1084,85 @@ class HoldTest(Runner):
                                "maintainer can start the review with `gh workflow run review.yml -R acme/model -f "
                                "number=7`.")
 
+    AGAIN = (r"It is screened again automatically, with no maintainer, from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} "
+             r"UTC, by a check that runs every 15 minutes\. ")
+    # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
+    # be held for another reason, says only that a new hold says why.
+    AGAIN_LIMIT = AGAIN + (r"If that account is still at the limit then, the check tries again later, and if the item "
+                           r"is held again, this comment gives the new time\. ")
+    AGAIN_OTHER = AGAIN + r"If it is held again, this comment says why\. "
+
     def test_at_the_limit_it_says_so(self):
-        _calls, _post, body = self.hold("limit")
+        """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
+        of the screen carries no such marker, so it is never screened again on its own."""
+        _calls, _post, body = self.hold("limit", tries="1")
         self.assertIn(f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour", body)
+        self.assertRegex(body, self.AGAIN_LIMIT)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
+
+    def test_a_hold_tried_again_needs_its_run(self):
+        for kwargs in ({"route": "limit"}, {"route": "screen", "review": "failure"},
+                       {"route": "screen", "review": "failure", "capped": True}):
+            for origin in ("", "5 0", "-1"):
+                with self.subTest(origin=origin, **kwargs):
+                    rc, out, _, _ = self.run_hold(origin=origin, **kwargs)
+                    self.assertEqual(rc, 1, out)
+
+    def test_a_review_stopped_at_the_cap_is_tried_again_and_counts_no_try(self):
+        _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", capped=True)
+        self.assertIn(f"had reached their limit of {WF['env']['SCREENED_HOURLY_CAP']} an hour", body)
+        self.assertRegex(body, self.AGAIN_OTHER)
+        self.assertNotIn("account is still at the limit", body)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
+
+    def test_a_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
+        """The count of the hour's reviews could not be read: the cap was not reached, so the hold says so and counts a
+        try, and REVIEW_TRIES still ends the tries."""
+        _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", uncounted=True)
+        self.assertNotIn("had reached their limit", body)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
+
+    def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
+        self.assertGreater(self.TRIES, 1)
+        for review in ("failure", "cancelled"):
+            for before in range(self.TRIES - 1):
+                with self.subTest(review=review, before=before):
+                    self.tearDown()
+                    self.setUp()
+                    _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(before))
+                    self.assertIn(f"did not finish ({before + 1} of the {self.TRIES} times it is tried)", body)
+                    self.assertRegex(body, self.AGAIN_OTHER)
+                    self.assertNotIn("account is still at the limit", body)
+                    self.assertTrue(body.endswith(f"\n\n<!-- review-held-transient 50 {before + 1} -->"), body)
+            with self.subTest(review=review, before=self.TRIES - 1):
+                self.tearDown()
+                self.setUp()
+                _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(self.TRIES - 1))
+                self.assertIn(f"did not finish, {self.TRIES} times. A maintainer will look at it.", body)
+                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+
+    def test_a_review_that_a_newer_run_of_the_item_cancelled_holds_nothing(self):
+        for name, trust in (("review #7", "success"), ("rescreen #7 of mallory", "success"), ("review #7", None)):
+            with self.subTest(name=name, trust=trust):
+                self.tearDown()
+                self.setUp()
+                rc, out, posts, _ = self.run_hold("screen", review="cancelled", origin="50",
+                                                  runs=[(90, "review #7"), (101, name, trust), (102, "review #8")])
+                self.assertEqual((rc, posts), (0, []), out)
+                self.assertIn("A newer run of #7 cancelled this run's review", out)
+        # An older run, another item's newer one, or a newer run of the item that its trust job skipped (an edit that
+        # left the base as it was) is no such run: it is held as a review that did not finish, and the try counts.
+        self.tearDown()
+        self.setUp()
+        _calls, _post, body = self.hold("screen", review="cancelled", origin="50",
+                                        runs=[(90, "review #7"), (102, "review #70"), (103, "rescreen #70 of eve"),
+                                              (104, "review #7", "skipped"), (105, "review #7", "failure"),
+                                              (106, "rescreen #7 of mallory", "cancelled"),
+                                              # a fork's own copy of this file, which names its runs as it likes
+                                              (107, "review #7", "success", "pull_request"),
+                                              (108, "rescreen #7 of mallory", "success", "pull_request")])
+        self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
     def test_a_later_hold_replaces_the_comment(self):
         _calls, post, _body = self.hold("screen", comments=[
@@ -1015,35 +1172,34 @@ class HoldTest(Runner):
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
-        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "ROUTE", "OUTSIDER", "REVIEW"})
+        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "ROUTE", "OUTSIDER", "REVIEW", "ORIGIN", "TRIES",
+                                  "RUN_ID", "RUN_ATTEMPT"})
         self.assertEqual(e["REVIEW"], "${{ needs.review.result }}")
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
 
     def test_a_maintainers_screen_says_so(self):
-        """A maintainer's -f screen=true has no outsider: the comment does not say the account lacks write access."""
-        self.serve(f"repos/{REPO}/issues/7/comments", [])
-        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
-        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
-        rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
-                                     ROUTE="screen", OUTSIDER="", REVIEW="skipped", HELD_LABEL=WF["env"]["HELD_LABEL"],
-                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
-        self.assertEqual(rc, 0, out)
-        body = next(a for c in gh_calls(self.api) for a in c if a.startswith("body="))
-        self.assertIn("A maintainer asked for the automated screen first", body)
-        self.assertNotIn("without write access", body)
+        """A maintainer's -f screen=true has no outsider: the comment does not say the account lacks write access, and
+        nothing tries it again."""
+        for review in ("skipped", "failure", "cancelled"):
+            with self.subTest(review=review):
+                self.tearDown()
+                self.setUp()
+                _calls, _post, body = self.hold("screen", outsider="", review=review)
+                self.assertIn("A maintainer asked for the automated screen first", body)
+                self.assertNotIn("without write access", body)
+                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
 
-    def test_a_screened_review_that_did_not_finish_says_so(self):
-        self.serve(f"repos/{REPO}/issues/7/comments", [])
-        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
-        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
-        rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
-                                     ROUTE="screen", OUTSIDER="mallory", REVIEW="failure",
-                                     HELD_LABEL=WF["env"]["HELD_LABEL"],
-                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
-        self.assertEqual(rc, 0, out)
-        body = next(a for c in gh_calls(self.api) for a in c if a.startswith("body="))
-        self.assertIn("The automated screen passed it, but the automated review of it did not finish", body)
+    def test_a_maintainers_screened_review_that_a_newer_run_cancelled_holds_nothing(self):
+        """The newer run decides, whoever asked for this one: the old run neither labels nor comments."""
+        for name in ("review #7", "rescreen #7 of mallory"):
+            with self.subTest(name=name):
+                self.tearDown()
+                self.setUp()
+                rc, out, posts, _ = self.run_hold("screen", outsider="", review="cancelled", runs=[(101, name)])
+                self.assertEqual((rc, posts), (0, []), out)
+                self.assertIn("A newer run of #7 cancelled this run's review", out)
+                self.assertFalse(any("labels" in " ".join(c) for c in gh_calls(self.api)), gh_calls(self.api))
 
 
 class PostLabelTest(Runner):
@@ -1104,21 +1260,88 @@ class PostLabelTest(Runner):
 class CapTest(Runner):
     """HOURLY_CAP and SCREENED_HOURLY_CAP count apart: accounts without write access cannot use up writers' reviews."""
 
-    def cap(self, route, jobs):
-        """jobs: names of review jobs of earlier runs whose Review step ran in the last hour."""
+    COUNT = "Count the reviews of the last hour"
+    CHECK = "Check the count and the cap"
+    CAP = "Hold at the hourly cap"
+
+    def step_env(self, name, route):
+        ctx = {"needs.trust.outputs.route": route, "env.HOURLY_CAP": WF["env"]["HOURLY_CAP"],
+               "env.SCREENED_HOURLY_CAP": WF["env"]["SCREENED_HOURLY_CAP"]}
+        return {k: str(evaluate(v, ctx)) for k, v in step("review", name)["env"].items() if k in ("POOL", "CAP")}
+
+    def cap(self, route, jobs, event="pull_request_target"):
+        """jobs: names of review jobs of earlier runs whose Review step ran in the last hour, each run of event. Runs
+        the count, the check and the cap's step, as the job does; a step does not run when one before it fails."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
-            {"id": 10 + i, "created_at": "2099-01-01T00:00:00Z"} for i in range(len(jobs))]})
+            {"id": 10 + i, "created_at": "2099-01-01T00:00:00Z", "event": event} for i in range(len(jobs))]})
         for i, name in enumerate(jobs):
             self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": [
                 {"name": name, "run_id": 10 + i, "run_attempt": 1, "status": "completed",
                  "started_at": "2099-01-01T00:00:00Z",
                  "steps": [{"name": "Review", "status": "completed", "conclusion": "success"}]}]})
-        s = step("review", "Hold at the hourly cap")
-        ctx = {"needs.trust.outputs.route": route, "env.HOURLY_CAP": WF["env"]["HOURLY_CAP"],
-               "env.SCREENED_HOURLY_CAP": WF["env"]["SCREENED_HOURLY_CAP"]}
-        env = {k: str(evaluate(v, ctx)) for k, v in s["env"].items() if k in ("POOL", "CAP")}
-        rc, out, _ = self.run_script(s["run"], RUN_ID="100", RUN_ATTEMPT="1", **env)
+        rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                       **self.step_env(self.COUNT, route))
+        if rc != 0:
+            return rc, out
+        for name in (self.CHECK, self.CAP):
+            rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"], **self.step_env(name, route))
+            if rc != 0:
+                break
         return rc, out
+
+    def test_a_forks_own_runs_do_not_fill_the_cap(self):
+        """A fork's pull request can run its own copy of this file (event pull_request), with jobs named as it likes:
+        they do not count, so they cannot keep the screened reviews at their cap."""
+        screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        self.assertEqual(self.cap("screen", ["review (screened)"] * screened, event="pull_request")[0], 0)
+        self.assertEqual(self.cap("screen", ["review (screened)"] * screened, event="workflow_dispatch")[0], 1)
+
+    def test_a_count_that_fails_stops_before_the_caps_step(self):
+        """The hold job reads a failure of the cap's step as the cap reached: a failed read, or a count that is not a
+        number, must not be one. Each fails a step of its own before the cap's."""
+        names = [s.get("name") for s in JOBS["review"]["steps"]]
+        self.assertEqual(names.index(self.CHECK), names.index(self.COUNT) + 1)
+        self.assertEqual(names.index(self.CAP), names.index(self.CHECK) + 1)
+        self.assertLess(names.index(self.CAP), names.index("Review"))
+        for name in (self.CHECK, self.CAP):
+            self.assertEqual(step("review", name)["env"]["COUNT"], "${{ steps.count.outputs.count }}")
+            self.assertNotIn("if", step("review", name))
+        self.assertEqual(step("review", self.COUNT)["id"], "count")
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     **self.step_env(self.COUNT, "screen"))   # no runs served: GitHub's 404
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the runs could not be read", out)
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     POOL="review", CAP="x")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the cap is not a number", out)
+
+    def test_a_count_that_cannot_be_written_or_is_empty_lets_no_review_run(self):
+        """An empty count would read as 0 and let the review run with no cap. The count step stops when its output
+        cannot be written, and the check step refuses a count or a cap that is not a number. The cap's step itself
+        does no such check, so its failure stays the cap reached alone."""
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
+                                     GITHUB_OUTPUT=self.dir, **self.step_env(self.COUNT, "screen"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the count could not be written", out)
+        for count, cap in (("", None), ("x", None), ("-1", None), ("2", "x"), ("2", "0")):
+            with self.subTest(count=count, cap=cap):
+                env = self.step_env(self.CHECK, "screen")
+                if cap is not None:
+                    env["CAP"] = cap
+                rc, out, _ = self.run_script(step("review", self.CHECK)["run"], COUNT=count, **env)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("No model ran", out)
+        rc, out, _ = self.run_script(step("review", self.CHECK)["run"], COUNT="2", **self.step_env(self.CHECK, "screen"))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("=~", step("review", self.CAP)["run"])
+
+    def test_a_check_that_fails_is_held_as_a_review_that_did_not_finish(self):
+        """Its failure leaves the cap's step skipped, which the hold job counts as a try, not as the cap."""
+        hold = step("hold", "Label it and say that it was held")["run"]
+        self.assertIn('select(.name == "Hold at the hourly cap" and .conclusion == "failure")', hold)
+        self.assertNotIn(self.CHECK, hold)
 
     def test_screened_reviews_do_not_use_up_the_writers_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
@@ -1161,6 +1384,612 @@ class BunTest(Runner):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("ahead of the pinned Bun", out)
                 os.remove(path)
+
+
+RESCREEN_JOB = "Start the screen again of each held item whose hold is over an hour old"
+OLD, NEW = "2000-01-01T00:00:00Z", "2999-01-01T00:00:00Z"   # a hold over an hour old, and one under it
+BOT = "github-actions[bot]"
+
+
+def limit_hold(run, at=OLD, user=BOT, kind="limit", tries=None):
+    """A hold comment that the rescreen job tries again, as the hold job writes it, naming the run of the event the hold
+    comes from; kind limit, cap or transient, and the tries so far (none: a marker without them, read as 0)."""
+    count = "" if tries is None else f" {tries}"
+    return {"id": run, "user": {"login": user}, "updated_at": at,
+            "body": f"<!-- review-held -->\n**Automated review held.**\n\nHeld.\n\n<!-- review-held-{kind} {run}{count} -->"}
+
+
+def screen_hold(at=OLD, user=BOT):
+    """A hold comment of the screen: no marker of a run."""
+    return {"id": 1, "user": {"login": user}, "updated_at": at,
+            "body": "<!-- review-held -->\n**Automated review held.**\n\nThe screen did not pass it."}
+
+
+class Held(Runner):
+    """Stand-in answers for held items: this workflow's id, the runs that holds name, and the rescreens of the hour."""
+
+    WORKFLOW_ID = 99
+    LIMIT = int(WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+
+    def setUp(self):
+        super().setUp()
+        self.permissions(alice="write", bob="write", mallory="read", eve="read")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml", {"id": self.WORKFLOW_ID})
+
+    def origin(self, run, login, event="issues", workflow=None):
+        self.serve(f"repos/{REPO}/actions/runs/{run}",
+                   {"workflow_id": workflow or self.WORKFLOW_ID, "event": event, "actor": {"login": login}})
+
+    def held(self, number, *comments):
+        self.serve(f"repos/{REPO}/issues/{number}/comments", list(comments))
+
+    def runs(self, *runs):
+        """The runs of the last hours, with their trust jobs: (id, actor, event, name), and the run's status and how
+        many minutes ago it was made when they are not completed and 10."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+            {"id": r[0], "actor": {"login": r[1]}, "event": r[2], "display_title": r[3],
+             "status": r[4] if len(r) > 4 else "completed",
+             "created_at": (now - datetime.timedelta(minutes=r[5] if len(r) > 5 else 10))
+             .strftime("%Y-%m-%dT%H:%M:%SZ")}
+            for r in runs]})
+        for i, *_ in runs:
+            self.serve(f"repos/{REPO}/actions/runs/{i}/jobs", {"jobs": [{"name": "trust", "conclusion": "success"}]})
+
+    @staticmethod
+    def rescreened(account, n, first=10):
+        return [(first + i, BOT, "workflow_dispatch", f"rescreen #{20 + i} of {account}") for i in range(n)]
+
+
+class RescreenTrustTest(Held):
+    """A rescreen's run (workflow_dispatch, rescreen=true): the trust job decides it again from the API."""
+
+    def setUp(self):
+        super().setUp()
+        self.item()
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.runs()
+
+    def item(self, author="mallory", state="open", labels=("review-held",), draft=None):
+        data = {"number": 7, "state": state, "user": {"login": author}, "labels": [{"name": n} for n in labels]}
+        if draft is not None:
+            data["draft"] = draft
+        self.serve(f"repos/{REPO}/issues/7", data)
+
+    def rescreen(self, actor=BOT, account="mallory", event="workflow_dispatch", author="", rescreen="true"):
+        return self.run_script(step("trust", TRUST)["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER="7",
+                               SCREEN="", MEASURE="", RESCREEN=rescreen, ACCOUNT=account, RUN_ID="100",
+                               OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"], HELD_LABEL=WF["env"]["HELD_LABEL"])
+
+    def route(self, **kwargs):
+        rc, out, got = self.rescreen(**kwargs)
+        self.assertEqual(rc, 0, out)
+        return got
+
+    def test_a_rescreen_takes_the_outsiders_path(self):
+        """Started by the rescreen job (github-actions[bot]) or by a maintainer, it is screened: never a maintainer's
+        request, which would skip the screen."""
+        for actor in (BOT, "alice", "sjawhar-agent[bot]"):
+            with self.subTest(actor=actor):
+                got = self.route(actor=actor)
+                self.assertEqual((got.get("route"), got.get("outsider"), got.get("rescreen"), got.get("origin"),
+                                  got.get("number")), ("screen", "mallory", "true", "50", "7"))
+
+    def test_a_writers_item_still_skips_the_screen(self):
+        """The author and the account whose event the hold names, read again from the API: both writers, no screen. A
+        writer's item whose hold names an outsider's push is screened, as that push's own run would screen it."""
+        self.item(author="alice")
+        self.origin(50, "bob")
+        self.assertEqual(self.route(account="bob").get("route"), "review")
+        self.origin(50, "mallory")
+        got = self.route(account="mallory")
+        self.assertEqual((got.get("route"), got.get("outsider")), ("screen", "mallory"))
+        self.item(author="mallory")
+        self.origin(50, "bob")
+        got = self.route(account="bob")
+        self.assertEqual((got.get("route"), got.get("outsider")), ("screen", "mallory"))
+
+    def test_holds_at_the_cap_and_of_a_review_that_did_not_finish_take_the_outsiders_path_and_keep_their_tries(self):
+        for kind, tries, want in (("cap", 1, "1"), ("transient", 2, "2"), ("limit", None, "0")):
+            with self.subTest(kind=kind):
+                self.held(7, limit_hold(50, kind=kind, tries=tries))
+                got = self.route()
+                self.assertEqual((got.get("route"), got.get("outsider"), got.get("origin"), got.get("tries")),
+                                 ("screen", "mallory", "50", want))
+
+    def test_a_rescreen_its_trust_job_refused_does_not_count(self):
+        """The item closed or lost its label in between: every other job of that run was skipped, and it screened
+        nothing. A rescreen held again at the limit, or still running, counts; so does one whose trust job has just
+        accepted it, with only the rescreen job (which every dispatched run skips) listed beside it."""
+        rescreens = self.rescreened("mallory", self.LIMIT)
+        self.runs(*rescreens)
+        skipped_rescreen = {"name": "rescreen", "status": "completed", "conclusion": "skipped"}
+        refused = [{"name": "trust", "status": "completed", "conclusion": "success"},
+                   {"name": "gather", "status": "completed", "conclusion": "skipped"},
+                   {"name": "hold", "status": "completed", "conclusion": "skipped"}, skipped_rescreen]
+        self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": refused})
+        self.assertEqual(self.route().get("route"), "screen")
+        held_again = [dict(j, conclusion="success") if j["name"] == "hold" else j for j in refused]
+        self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": held_again})
+        self.assertEqual(self.route().get("route"), "limit")
+        running = [{"name": "trust", "status": "in_progress", "conclusion": None},
+                   {"name": "gather", "status": "queued", "conclusion": None}, skipped_rescreen]
+        self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": running})
+        self.assertEqual(self.route().get("route"), "limit")
+        accepted = [{"name": "trust", "status": "completed", "conclusion": "success"}, skipped_rescreen]
+        self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": accepted})
+        self.assertEqual(self.route().get("route"), "limit")
+
+    def test_an_events_run_with_every_other_job_skipped_still_counts(self):
+        """Only a rescreen is let off: an event's run is counted as before, whatever its trust job decided."""
+        self.runs(*self.rescreened("mallory", self.LIMIT - 1), (30, "mallory", "issues", "review #8"))
+        self.serve(f"repos/{REPO}/actions/runs/30/jobs", {"jobs": [
+            {"name": "trust", "status": "completed", "conclusion": "success"},
+            {"name": "gather", "status": "completed", "conclusion": "skipped"}]})
+        self.assertEqual(self.route().get("route"), "limit")
+
+    def test_the_cap(self):
+        """The account's rescreens and events of the last hour, together, against OUTSIDE_HOURLY_LIMIT: at it the item
+        is held again, and its hold keeps naming the run the limit first held."""
+        self.runs(*self.rescreened("mallory", self.LIMIT - 1))
+        self.assertEqual(self.route().get("route"), "screen")
+        self.runs(*self.rescreened("mallory", self.LIMIT))
+        got = self.route()
+        self.assertEqual((got.get("route"), got.get("outsider"), got.get("origin")), ("limit", "mallory", "50"))
+        self.runs(*self.rescreened("mallory", self.LIMIT - 1), (30, "mallory", "issues", "review #8"))
+        self.assertEqual(self.route().get("route"), "limit")
+        self.runs(*self.rescreened("mallory", self.LIMIT - 1), *self.rescreened("eve", self.LIMIT, first=40))
+        self.assertEqual(self.route().get("route"), "screen")
+
+    def test_an_outsider_cannot_start_a_rescreen_or_skip_the_screen_with_one(self):
+        """Each case gets no route, so no job after trust runs."""
+        cases = {
+            "an App outside APPS started it": lambda: {"actor": "dependabot[bot]"},
+            "the inputs name another account": lambda: {"account": "eve"},
+            "the inputs name no account": lambda: {"account": ""},
+            "the screen held it last": lambda: self.held(7, limit_hold(50, at="2026-01-01T00:00:00Z"),
+                                                         screen_hold(at="2026-02-01T00:00:00Z")),
+            "only the outsider's own comment has the marker": lambda: self.held(
+                7, screen_hold(), limit_hold(50, at="2026-02-01T00:00:00Z", user="mallory")),
+            "it has no hold comment": lambda: self.held(7),
+            "the run is another workflow's": lambda: self.origin(50, "mallory", workflow=98),
+            "the run is not an event's": lambda: self.origin(50, "mallory", event="workflow_dispatch"),
+            "it is closed": lambda: self.item(state="closed"),
+            "it is not labelled": lambda: self.item(labels=()),
+            "it is a draft": lambda: self.item(draft=True),
+        }
+        for case, arrange in cases.items():
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                kwargs = arrange() or {}
+                got = self.route(**kwargs)
+                self.assertEqual(got.get("route"), None, case)
+
+    def test_a_dispatch_by_github_actions_is_refused_unless_it_is_a_rescreen(self):
+        """The exception for github-actions[bot] is a rescreen's alone: a plain run by hand that it started gets no
+        route, as any App outside APPS."""
+        for screen in ("", "true"):
+            with self.subTest(screen=screen):
+                rc, out, got = self.run_script(step("trust", TRUST)["run"], EVENT="workflow_dispatch", AUTHOR="",
+                                               ACTOR=BOT, NUMBER="7", SCREEN=screen, MEASURE="", RESCREEN="",
+                                               ACCOUNT="", RUN_ID="100",
+                                               OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                               HELD_LABEL=WF["env"]["HELD_LABEL"])
+                self.assertEqual((rc, got.get("route")), (0, None), out)
+
+    def test_an_event_never_takes_the_rescreen_path(self):
+        """inputs.rescreen is empty on an event; were it not, the event's own path decides, from its own author and
+        account, and reads no hold."""
+        got = self.route(event="pull_request_target", author="mallory", actor="mallory", account="bob")
+        self.assertEqual((got.get("route"), got.get("rescreen")), ("screen", "false"))
+        got = self.route(event="issues", author="alice", actor="alice")
+        self.assertEqual((got.get("route"), got.get("rescreen")), ("review", "false"))
+        self.assertFalse(any(f"repos/{REPO}/issues/7" in c for c in gh_calls(self.api)))
+
+    def test_a_read_that_fails_stops_the_run(self):
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_issues_7.json"))
+        rc, out, got = self.rescreen()
+        self.assertEqual((rc, got.get("route")), (1, None), out)
+
+    def test_only_the_trust_job_reads_the_rescreen_inputs(self):
+        for name, job in JOBS.items():
+            with self.subTest(job=name):
+                text = json.dumps(job)
+                self.assertEqual("inputs.rescreen" in text or "inputs.account" in text, name == "trust")
+
+    def test_both_copies_of_held_are_the_same(self):
+        def held(text):
+            found = re.findall(r"# held\n(.*?)# end of held\n", text, re.S)
+            self.assertEqual(len(found), 1)
+            return found[0]
+        self.assertEqual(held(step("rescreen", RESCREEN_JOB)["run"]), held(step("trust", TRUST)["run"]))
+
+
+class RescreenJobTest(Held):
+    """The rescreen job: which held items it starts a run for, how many for one account, and where it runs."""
+
+    def setUp(self):
+        super().setUp()
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/dispatches", {})
+        self.runs()
+
+    def items(self, *items):
+        """The open items labelled review-held, as GitHub lists them: (number, state[, draft])."""
+        self.serve(f"repos/{REPO}/issues", [{"number": i[0], "state": i[1], **({"draft": i[2]} if len(i) > 2 else {})}
+                                            for i in items])
+
+    def started(self, post_review=None):
+        rc, out, _ = self.run_script(step("rescreen", RESCREEN_JOB)["run"],
+                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                     HELD_LABEL=WF["env"]["HELD_LABEL"], REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
+                                     POST_REVIEW=WF["env"]["POST_REVIEW"] if post_review is None else post_review)
+        runs = []
+        for call in gh_calls(self.api):
+            if call[:3] == ["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]:
+                f = dict(a.split("=", 1) for a in call[3:] if a != "-f")
+                self.assertEqual(f["ref"], "main")
+                runs.append((f["inputs[number]"], f["inputs[rescreen]"], f["inputs[account]"]))
+        return rc, out, runs
+
+    def test_nothing_is_started_when_reviews_are_not_posted(self):
+        """Without a posted review the label never comes off, so every held item would be screened and reviewed again
+        up to REVIEW_TRIES times for nothing, and then left to a person."""
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.assertEqual(WF["env"]["POST_REVIEW"], "true")
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+        self.tearDown()
+        self.setUp()
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        rc, out, runs = self.started(post_review="false")
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn("POST_REVIEW is not true", out)
+
+    def test_the_selection(self):
+        """A hold at the limit over an hour old is picked; a fresh one, a hold of the screen, a closed item, an
+        outsider's comment that copies the marker, and an item with no hold comment are not."""
+        self.items((7, "open"), (8, "open"), (9, "open"), (10, "closed"), (11, "open"), (12, "open"))
+        self.held(7, limit_hold(50))
+        self.held(8, limit_hold(51, at=NEW))
+        self.held(9, screen_hold())
+        self.held(10, limit_hold(52))
+        self.held(11, screen_hold(), limit_hold(53, at="2001-01-01T00:00:00Z", user="mallory"))
+        self.held(12)
+        for run in (50, 51, 52, 53):
+            self.origin(run, "mallory")
+        rc, out, runs = self.started()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(runs, [("7", "true", "mallory")])
+
+    def test_holds_at_the_cap_and_of_a_review_that_did_not_finish_are_picked_too(self):
+        """Neither is the item's own doing; a hold whose marker is another word is not one."""
+        self.items((7, "open"), (8, "open"), (9, "open"), (10, "open"))
+        self.held(7, limit_hold(50, kind="cap", tries=1))
+        self.held(8, limit_hold(51, kind="transient", tries=2))
+        self.held(9, limit_hold(52, kind="screen"))
+        self.held(10, limit_hold(53, kind="transient", tries=1, at=NEW))
+        for run, who in ((50, "mallory"), (51, "eve"), (52, "mallory"), (53, "eve")):
+            self.origin(run, who)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "true", "mallory"), ("8", "true", "eve")]), out)
+
+    def test_the_cap_per_account_oldest_first(self):
+        """At most OUTSIDE_HOURLY_LIMIT rescreens of one account an hour, those it had already counted; the others
+        wait, and another account's items do not."""
+        self.items(*[(n, "open") for n in (7, 8, 9, 10, 11)])
+        for n, day in ((7, "04"), (8, "02"), (9, "01"), (10, "03")):
+            self.held(n, limit_hold(40 + n, at=f"2000-01-{day}T00:00:00Z"))
+            self.origin(40 + n, "mallory")
+        self.held(11, limit_hold(51, at="2000-01-05T00:00:00Z"))
+        self.origin(51, "eve")
+        self.runs(*self.rescreened("mallory", 1))
+        rc, out, runs = self.started()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(runs, [(n, "true", "mallory") for n in ("9", "8")][:self.LIMIT - 1] + [("11", "true", "eve")])
+        self.assertIn("#10 waits: mallory had", out)
+
+    def test_an_item_with_a_run_not_finished_is_not_started_again(self):
+        """Its screen and review can outlast the 15 minutes between runs: a second run would cancel them. A run of its
+        own event, or a maintainer's, is such a run too."""
+        for status in ("in_progress", "queued", "waiting"):
+            for run in ((10, BOT, "workflow_dispatch", "rescreen #7 of mallory"),
+                        (10, "mallory", "pull_request_target", "review #7"),
+                        (10, "alice", "workflow_dispatch", "review #7")):
+                with self.subTest(status=status, run=run):
+                    self.tearDown()
+                    self.setUp()
+                    self.items((7, "open"), (8, "open"))
+                    self.held(7, limit_hold(50))
+                    self.held(8, limit_hold(51))
+                    self.origin(50, "mallory")
+                    self.origin(51, "eve")
+                    # Started 2 hours ago: it no longer counts toward the hour, but it still runs.
+                    self.runs((*run, status, 120))
+                    rc, out, runs = self.started()
+                    self.assertEqual((rc, runs), (0, [("8", "true", "eve")]), out)
+                    self.assertIn("#7: a run of it has not finished", out)
+
+    def test_a_forks_own_run_holds_no_item_back(self):
+        """A fork's pull request can run its own copy of this file (event pull_request), named as it likes: such a run
+        does not keep another item from being screened again."""
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.runs((10, "mallory", "pull_request", "review #7", "in_progress"),
+                  (11, "mallory", "pull_request", "rescreen #7 of mallory", "in_progress"))
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+
+    def test_a_line_break_in_a_run_name_cannot_add_a_run(self):
+        """The job reads each run as one line. A fork's run named with a line break and a made-up line after it
+        (here, an unfinished run of #7's own event) is still one run, of the event pull_request, and holds nothing
+        back."""
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        for brk in ("\n", "\r\n", "\r"):
+            with self.subTest(brk=repr(brk)):
+                self.runs((10, "mallory", "pull_request", f"x{brk}{now} in_progress pull_request_target review #7"))
+                self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+                os.remove(os.path.join(self.api, "calls"))
+                os.remove(os.path.join(self.api, "args"))
+
+    def test_rescreens_since_the_hold_that_settled_nothing_are_tried_up_to_review_tries(self):
+        """A rescreen that left neither a new hold nor a posted review (its trust job failed on a GitHub read, its
+        hold job could not write, or its review or post failed on the writers' route) is followed by another start,
+        up to REVIEW_TRIES in all since the hold, however long ago. Then a person decides, and the job fails so that
+        someone sees it. A rescreen before the hold (the one the hold came from), or another item's, does not count."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        self.assertGreater(tries, 1)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        hour_ago = (now - datetime.timedelta(minutes=180)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.items((7, "open"), (8, "open"), (9, "open"))
+        self.held(7, limit_hold(50, at=hour_ago, kind="transient", tries=1))
+        self.held(8, limit_hold(51, at=hour_ago, kind="transient", tries=1))
+        self.held(9, limit_hold(52, kind="cap", tries=0))   # held in 2000
+        self.origin(50, "mallory")
+        self.origin(51, "eve")
+        self.origin(52, "bob")
+        self.runs((10, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 70),
+                  (11, BOT, "workflow_dispatch", "rescreen #8 of eve", "completed", 200),
+                  *[(12 + i, BOT, "workflow_dispatch", "rescreen #9 of bob", "completed", (3 + i) * 24 * 60)
+                    for i in range(tries)],
+                  (20, BOT, "workflow_dispatch", "rescreen #80 of eve", "completed", 30))
+        # #7's rescreen since its hold failed in its trust job: it screened nothing and wrote no hold.
+        self.serve(f"repos/{REPO}/actions/runs/10/jobs", {"jobs": [
+            {"name": "trust", "status": "completed", "conclusion": "failure"}]})
+        rc, out, runs = self.started()
+        self.assertEqual(sorted(runs), [("7", "true", "mallory"), ("8", "true", "eve")], out)
+        self.assertIn("#7: 1 rescreens since its hold settled nothing; trying again.", out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"::error::#9: screened again {tries} times since its hold", out)
+
+    def test_the_next_try_waits_an_hour_after_the_last_rescreen(self):
+        """Retries of a hold that rescreens did not settle are spaced as the hold's own hour is: not again while the
+        newest rescreen since the hold is under an hour old, so a short outage of GitHub does not use up the tries."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        held_at = (now - datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for ages, want in (((30,), []), ((150, 20), []), ((61,), [("7", "true", "mallory")]),
+                           ((150, 90), [("7", "true", "mallory")])):
+            with self.subTest(ages=ages):
+                self.tearDown()
+                self.setUp()
+                self.items((7, "open"))
+                self.held(7, limit_hold(50, at=held_at, kind="transient", tries=1))
+                self.origin(50, "mallory")
+                self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", age)
+                            for i, age in enumerate(ages)])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if not want:
+                    self.assertIn("less than an hour ago, with no new hold: tried again later", out)
+
+    def test_a_failed_rescreen_is_tried_again_until_the_last_try(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        hours_ago = (now - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        for before in range(tries + 1):
+            with self.subTest(before=before):
+                self.tearDown()
+                self.setUp()
+                self.items((7, "open"))
+                self.held(7, limit_hold(50, at=hours_ago))
+                self.origin(50, "mallory")
+                self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                            for i in range(before)])
+                rc, out, runs = self.started()
+                if before < tries:
+                    self.assertEqual((rc, runs), (0, [("7", "true", "mallory")]), out)
+                else:
+                    self.assertEqual((rc, runs), (1, []), out)
+                    self.assertIn("a maintainer must look at it", out)
+
+    def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
+        """The hold comment stops promising an automatic screen: it is replaced with fixed words and the command a
+        maintainer runs, with no marker. That run fails; the next one finds no hold that is tried again, starts
+        nothing and passes."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        hours_ago = (datetime.datetime.now(datetime.timezone.utc)
+                     - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.items((7, "open"))
+        older = dict(screen_hold(at="1999-01-01T00:00:00Z"), id=4)
+        self.held(7, older, limit_hold(50, at=hours_ago, kind="transient", tries=1))
+        self.origin(50, "mallory")
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c50"})
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                    for i in range(tries)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertIn(f"::error::#7: screened again {tries} times since its hold", out)
+        patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
+        self.assertEqual(len(patches), 1, gh_calls(self.api))
+        self.assertEqual(patches[0][2], f"repos/{REPO}/issues/comments/50")
+        body = next(a for a in patches[0] if a.startswith("body="))[len("body="):]
+        self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nIt was screened again "
+                               f"automatically {tries} times since it was held, and none of those runs ended in a new "
+                               "hold or a posted review. It is not screened again automatically. A maintainer will "
+                               "look at it, and can start the screen and the review with `gh workflow run review.yml "
+                               f"-R {REPO} -f number=7 -f screen=true`.")
+        self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+        self.assertNotIn("screened again automatically, with no maintainer", body)
+        # The next run sees the comment as it was replaced.
+        os.remove(os.path.join(self.api, "calls"))
+        os.remove(os.path.join(self.api, "args"))
+        self.held(7, older, {"id": 50, "user": {"login": BOT}, "updated_at": "2999-01-01T00:00:00Z", "body": body})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn("#7: no hold that is tried again", out)
+        self.assertFalse(any(c[:2] == ["--method", "PATCH"] for c in gh_calls(self.api)))
+
+    def test_at_the_bound_a_hold_that_changed_meanwhile_is_not_overwritten(self):
+        """The comment is replaced only while the newest hold is still the one the run read. A newer hold written in
+        between (a new event's, or a rescreen's that finished) is left as it is, for the next run, and the job does
+        not fail for it; the same hold read twice is replaced."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        for changed in (True, False):
+            with self.subTest(changed=changed):
+                self.tearDown()
+                self.setUp()
+                self.items((7, "open"))
+                self.held(7, limit_hold(50, kind="cap", tries=0))
+                if changed:
+                    self.serve(f"repos/{REPO}/issues/7/comments.then",
+                               [limit_hold(50, kind="cap", tries=0),
+                                dict(limit_hold(60, at="2999-01-01T00:00:00Z"), id=60)])
+                self.origin(50, "mallory")
+                self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c"})
+                self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                            for i in range(tries)])
+                rc, out, runs = self.started()
+                patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
+                self.assertEqual(runs, [], out)
+                if changed:
+                    self.assertEqual((rc, patches), (0, []), out)
+                    self.assertIn("#7: its hold changed (2999-01-01T00:00:00Z, read at 2000-01-01T00:00:00Z)", out)
+                    self.assertNotIn("::error::", out)
+                else:
+                    self.assertEqual(rc, 1, out)
+                    self.assertEqual([p[2] for p in patches], [f"repos/{REPO}/issues/comments/50"])
+
+    def test_a_hold_comment_that_cannot_be_replaced_is_tried_again_next_run(self):
+        """The PATCH fails (no stand-in answer): the job fails, and the comment keeps its marker for the next run."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        self.items((7, "open"))
+        self.held(7, limit_hold(50, kind="cap", tries=0))
+        self.origin(50, "mallory")
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                    for i in range(tries)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertIn("the hold comment of #7 could not be replaced; the next run tries again", out)
+
+    def test_a_draft_is_left_alone(self):
+        """The trust job takes no draft, and a run it stops would still count toward the account's limit, held
+        there for as long as it stays a draft. Marking it ready starts its own run."""
+        self.items((7, "open", True), (8, "open", False))
+        self.held(7, limit_hold(50))
+        self.held(8, limit_hold(51))
+        self.origin(50, "mallory")
+        self.origin(51, "mallory")
+        self.assertEqual(self.started()[2], [("8", "true", "mallory")])
+
+    def test_a_finished_run_of_the_item_does_not_hold_it_back_nor_an_events_name_count(self):
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.runs((10, "mallory", "pull_request_target", "review #7"),
+                  *[(20 + i, "mallory", "pull_request_target", "rescreen #7 of mallory") for i in range(self.LIMIT)])
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+
+    def test_a_finished_rescreen_over_an_hour_ago_does_not_count(self):
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", f"rescreen #{20 + i} of mallory", "completed", 90)
+                    for i in range(self.LIMIT)])
+        self.assertEqual(self.started()[2], [("7", "true", "mallory")])
+
+    def test_an_apps_account_is_capped_too(self):
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "dependabot[bot]")
+        self.runs(*self.rescreened("dependabot[bot]", self.LIMIT))
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.runs(*self.rescreened("dependabot[bot]", self.LIMIT - 1))
+        self.assertEqual(self.started()[2], [("7", "true", "dependabot[bot]")])
+
+    def test_a_hold_naming_a_run_github_no_longer_has_is_left_alone(self):
+        """A deleted or expired run: a person decides, and the job does not fail on it each time."""
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+
+    def test_one_rescreen_job_at_a_time(self):
+        self.assertEqual(JOBS["rescreen"]["concurrency"], {"group": "review-rescreen", "cancel-in-progress": False})
+
+    def test_a_hold_naming_a_run_that_is_not_an_events_of_this_workflow_is_left_alone(self):
+        self.items((7, "open"), (8, "open"))
+        self.held(7, limit_hold(50))
+        self.held(8, limit_hold(51))
+        self.origin(50, "mallory", workflow=98)
+        self.origin(51, "mallory", event="workflow_dispatch")
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+
+    def test_a_read_that_fails_fails_the_job_and_starts_the_others(self):
+        self.items((7, "open"), (8, "open"))
+        self.held(8, limit_hold(51))
+        self.origin(51, "mallory")
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("8", "true", "mallory")]), out)
+        self.assertIn("the comments of #7 could not be read", out)
+
+    def test_it_runs_on_the_schedule_alone_in_the_public_repository(self):
+        cond = JOBS["rescreen"]["if"]
+        here = {"github.event_name": "schedule", "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                "github.repository_id": 1425819621}
+        self.assertIs(evaluate(cond, here), True)
+        for change in ({"github.event_name": "workflow_dispatch"}, {"github.event_name": "issues"},
+                       {"github.repository": "someone/rocq-linux-process-semantics"},
+                       {"github.repository_id": 1425069221}):
+            with self.subTest(change=change):
+                self.assertFalse(evaluate(cond, dict(here, **change)))
+        on = WF.get("on", WF.get(True))
+        self.assertEqual(on["schedule"], [{"cron": "7,22,37,52 * * * *"}])
+
+    def test_only_this_job_can_start_a_run(self):
+        """actions: write is what starting a run needs: only this job has it, and only this job starts one."""
+        self.assertEqual(WF["permissions"], {})
+        # actions: write starts the runs; issues and pull-requests: write replace a hold comment at REVIEW_TRIES.
+        self.assertEqual(JOBS["rescreen"]["permissions"],
+                         {"actions": "write", "issues": "write", "pull-requests": "write"})
+        for name, job in JOBS.items():
+            if name != "rescreen":
+                with self.subTest(job=name):
+                    self.assertNotEqual((job.get("permissions") or {}).get("actions"), "write")
+                    self.assertNotIn("/dispatches", json.dumps(job))
+                    self.assertNotIn("gh workflow run", "".join(s.get("run", "") for s in job["steps"])
+                                     .replace("gh workflow run review.yml -R", ""))
+        self.assertFalse(any("uses" in s for s in JOBS["rescreen"]["steps"]))
+
+    def test_the_names_the_counts_read_are_the_rescreens_own(self):
+        """run-name gives a rescreen's run its name, which both counts read; on the schedule, a name of its own."""
+        ctx = {"github.event_name": "workflow_dispatch", "inputs.rescreen": True, "inputs.number": 7,
+               "inputs.account": "mallory"}
+        self.assertEqual(evaluate(WF["run-name"], ctx), "rescreen #7 of mallory")
+        self.assertEqual(evaluate(WF["run-name"], {"github.event_name": "schedule"}),
+                         "rescreen the held items")
+        self.assertEqual(evaluate(WF["run-name"], dict(ctx, **{"inputs.rescreen": False})), "review #7")
+        self.assertIn("rescreen_re='^rescreen #([0-9]+) of ([A-Za-z0-9-]+(\\[bot\\])?)$'",
+                      step("rescreen", RESCREEN_JOB)["run"])
+        self.assertIn('test("^rescreen #[0-9]+ of [A-Za-z0-9-]+(\\\\[bot\\\\])?$")', step("trust", TRUST)["run"])
 
 
 if __name__ == "__main__":

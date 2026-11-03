@@ -5,9 +5,21 @@
 or the account that started the run, has no write access, an automated
 screen reads the pull request or the issue first (`.github/screen.py`), and
 the review runs only when the screen passes it; otherwise the pull request
-or the issue gets the label `review-held`, and a maintainer decides. A
-maintainer can also ask for a review. The review is advice. A maintainer
-decides what to merge.
+or the issue gets the label `review-held`, and a maintainer decides. The
+events of an account without write access (opening, reopening, pushing,
+marking a draft ready, or retargeting to `main`) reach the screen at most
+`OUTSIDE_HOURLY_LIMIT` times in an hour (a setting of the workflow); later
+ones are held without a screen, and the item is tried again automatically
+after that hour (held again while the account is still at its limit). So is
+an item of an account without write access that the screen passed but whose
+review met the hourly limit of such reviews, or did not finish (up to
+`REVIEW_TRIES` tries, another setting of the workflow); not one a maintainer
+asked to screen first. Such a rescreen counts as started by the account whose
+event was held, not by the automation that starts it. When
+`REVIEW_TRIES` rescreens of an item since it was held end with neither a new
+hold nor a posted review, it is not screened again automatically: its hold
+comment says so, and a maintainer decides. A maintainer can also ask for a
+review. The review is advice. A maintainer decides what to merge.
 
 The review uses the copy of this file on `main`, so a change to it takes
 effect after it merges.
