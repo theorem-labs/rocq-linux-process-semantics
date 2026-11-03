@@ -2165,6 +2165,10 @@ Qed.
       [fin_abort_terminal] is: [false] would be valid only under
       [Run.valid_input_sigpipe_ignored], which this library's callers
       do not discharge.
+    - [fin_sigpipe_terminal] is [false], the SIGPIPE death declined.
+      [Run.valid_input] fixes it too, so it is forced in the same way:
+      [true] would be valid only under [Run.valid_input_sigpipe_kills]
+      or [Run.valid_input_channel_closed].
 
     The choice is arbitrary and is allowed to be, because
     [FinInput.fin_core] forgets all thirteen ([FinInput.fin_core_env_eq]
@@ -2182,7 +2186,7 @@ Definition core_input (c : FinCore) : FinProcInput :=
   mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] []
-                 default_kernel default_execfn true true.
+                 default_kernel default_execfn true true false.
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
     definition claims nothing about them.  A caller proving its own
@@ -2196,8 +2200,9 @@ Definition core_input (c : FinCore) : FinProcInput :=
     every core's input unprovable, whatever its argv said.  Choosing a
     value that CAN be valid is not the same as claiming it is.
 
-    [fin_abort_terminal] is [false] and [fin_sigpipe_default] is
-    [true], declarations [Run.valid_input] pins, for the same reason:
+    [fin_abort_terminal] is [false], [fin_sigpipe_default] is [true] and
+    [fin_sigpipe_terminal] is [false], declarations [Run.valid_input]
+    pins, for the same reason:
     each is the only value that can be valid under the predicate this
     library's callers discharge.  [fin_execfn] is
     [State.default_execfn] on the same ground -- the empty name is

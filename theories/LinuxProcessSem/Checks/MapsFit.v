@@ -219,6 +219,8 @@ Proof.
   dif H; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   dif H; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   dif H; [discriminate|].
+  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
+  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
@@ -495,6 +497,7 @@ Proof.
     | erewrite check_pwrite64_frame by eassumption; exact Hfit
     | erewrite check_readv_frame by eassumption; exact Hfit
     | erewrite check_writev_frame by eassumption; exact Hfit
+    | erewrite check_pwritev2_frame by eassumption; exact Hfit
     | erewrite check_openat_frame by eassumption; exact Hfit
     | erewrite check_close_frame by eassumption; exact Hfit
     | erewrite check_lseek_frame by eassumption; exact Hfit

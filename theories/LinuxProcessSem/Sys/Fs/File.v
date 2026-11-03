@@ -162,6 +162,35 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      modeled arm reads.  An [ONsFile] is declined so that no arm of this
      model mints one.  None of that is needed, so it is not written. *)
   | FdOpaque _ => false
+  (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
+     own.  [State.stream_peer] finds an end's peer by scanning the fd
+     table, and [unix_release_sock] runs at the LAST [fput] of a socket
+     file, not at each close, so a second fd naming one end would make
+     a close of either look like the peer going away.  And the end
+     carries its file's O_NONBLOCK ([State.se_nonblock]), which two
+     copies would let drift apart where Linux's two fds share one
+     [f_flags].  [State.FdStream]'s own note relies on this decline:
+     it is what keeps [socketpair] the only thing that makes an end. *)
+  | FdStream _ _ _ => false
+  (* AN EVENTFD DECLINES, for the stream-pair end's reasons: its counter
+     lives in the entry ([State.EventfdCtx]), so two copies would count
+     apart where Linux's two fds share one [eventfd_ctx], and so would
+     the O_NONBLOCK it carries for its one [struct file].
+     [State.FdEventfd]'s note relies on this decline. *)
+  | FdEventfd _ => false
+  (* A DATAGRAM SOCKET TAKES THE [FdSocket] ANSWER.  Nothing it carries
+     drifts -- only its family -- but every call that would read the
+     shared socket declines anyway, so copying it would buy nothing,
+     and a decline keeps one rule for every socket kind *)
+  | FdDgram _ => false
+  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
+     carries the descriptor's [f_pos] ([State.af_off]), which read, write
+     and lseek rewrite in place, so a copied entry would split the one
+     offset two Linux descriptors on one [struct file] share.  It carries
+     the file's contents too, which [State.anon_update] keeps in step
+     across entries; it is the offset that has no such keeper.
+     [State.FdAnon]'s note relies on this decline. *)
+  | FdAnon _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

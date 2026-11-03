@@ -42,7 +42,8 @@ Definition access_code_segment : Segment := {|
   seg_size := 76;
   seg_perms := "r-x";
   seg_bytes :=
-    ["038505000395050003a5050003b505002380c5002390c50023a0c50023b0c50007a5050007b5050027a0c50027b0c5002fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c50013000000"%pstring]
+    ["038505000395050003a5050003b505002380c5002390c50023a0c50023b0c50007a5050007b5050027a0c50027b0c5002fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c50013000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition access_segments : list Segment := [access_code_segment].

@@ -431,23 +431,32 @@ Proof. vm_compute. reflexivity. Qed.
    What the computed states hold
    ========================================================================= *)
 
-(** The clone's answer is the pid with the child recorded, and nothing
-    else of the model moves. *)
+(** The clone's answer is the pid with the child recorded and the two
+    eventfds shared ([Fork.clone_child_made]), and nothing else of the
+    model moves. *)
 Example parent_trace_clone_records_the_child :
-  parent_trace_s35 = with_children parent_trace_s34.
+  parent_trace_s35 = clone_child_made parent_trace_s34.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The clone runs with the descriptors the trace has open then: the
     O_PATH descriptor on "/proc" at 3 and the two eventfds at 4 and 5,
     beside channels 0-2, so the namespace word passes the clone's
-    descriptor gate with them. *)
+    descriptor gate with them.  Before the clone the eventfds hold their
+    counters ([State.FdEventfd]: 0x80800 is non-blocking, 0x80000 is
+    not); after it they are the shared kind ([State.OEventFd]), with w
+    the O_NONBLOCK bit and 0, so every counter call on them declines. *)
 Example parent_trace_clone_descriptors :
   fd_lookup (m_fds parent_trace_s34) 3 = Some (FdOpaque (OProcPath s_proc))
   /\ fd_lookup (m_fds parent_trace_s34) 4
-     = Some (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))
+     = Some (FdEventfd (mkEventfdCtx 0 false true))
   /\ fd_lookup (m_fds parent_trace_s34) 5
-     = Some (FdOpaque (OEventFd (Z_to_bv 64 0x80000)))
-  /\ fd_lookup (m_fds parent_trace_s34) 6 = None.
+     = Some (FdEventfd (mkEventfdCtx 0 false false))
+  /\ fd_lookup (m_fds parent_trace_s34) 6 = None
+  /\ fd_lookup (m_fds parent_trace_s35) 3 = Some (FdOpaque (OProcPath s_proc))
+  /\ fd_lookup (m_fds parent_trace_s35) 4
+     = Some (FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)))
+  /\ fd_lookup (m_fds parent_trace_s35) 5
+     = Some (FdOpaque (OEventFd (Z_to_bv 64 0))).
 Proof. repeat split; check_eq. Qed.
 
 (** After the last mapping: the break is 0x53000, the brk pages and the
@@ -472,7 +481,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
     ends in the clone's answer: the model with the child recorded. *)
 Lemma parent_trace_replays_to_the_clone :
   parent_trace_run parent_trace_calls parent_trace_s00
-  = Some (with_children parent_trace_s34).
+  = Some (clone_child_made parent_trace_s34).
 Proof.
   rewrite <- parent_trace_clone_records_the_child.
   unfold parent_trace_calls.

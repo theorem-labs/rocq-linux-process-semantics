@@ -375,6 +375,47 @@ Example ftruncate_on_a_dangling_fd_is_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
+(* ======================================== close (57), ftruncate (46) on
+   a stream-pair end *)
+
+(** One AF_UNIX stream pair, id 0: side [false] at fd 3 holds two bytes
+    its peer wrote and nobody has read, side [true] at fd 4 holds
+    nothing.  Both ends block and neither is shut down; the buffer sizes
+    are [State.default_kernel]'s, and nothing below reads them. *)
+Definition close_pair_end (rx : list byte) : StreamEnd :=
+  mkStreamEnd rx false 212992%Z 212992%Z false false RsUnknown.
+
+Definition close_pair_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1);
+           (3, FdStream 0 false (close_pair_end [104; 105]));
+           (4, FdStream 0 true (close_pair_end []))]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** CLOSING AN END MOVES NOTHING BUT ITS OWN ENTRY: [Open.close_spec]
+    is kind-blind on a stream-pair end too, and the survivor at fd 4
+    keeps its entry exactly as it was -- it reads its peer's close off
+    the table ([State.stream_peer] is [None]), not off its own state.
+    A close that wrote [SHUTDOWN_MASK] into the survivor, as
+    [unix_release_sock] does, fails this line. *)
+Example close_of_a_stream_end_moves_only_its_entry :
+  check_syscall (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) close_pair_model
+  = CheckOk (with_fds [(0, FdChannel 0); (1, FdChannel 1);
+                       (4, FdStream 0 true (close_pair_end []))] close_pair_model) [].
+Proof. check_eq. Qed.
+
+(** ftruncate on a stream-pair end is -EINVAL: the inode is S_ISSOCK,
+    and [do_ftruncate]'s [!S_ISREG] test answers before FMODE_WRITE is
+    read.  The 0 is the reject twin. *)
+Example ftruncate_on_a_stream_end_is_einval :
+  check_syscall (mkInput 46 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) close_pair_model
+  = CheckOk close_pair_model []
+  /\ check_syscall (mkInput 46 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) close_pair_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
 (* ================================================ faccessat (48)
 
    Four claims.  One needs a file-system image no modeled syscall can
@@ -1052,7 +1093,7 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
      fixture does) rather than [IEof]. *)
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0
-                   default_kernel default_execfn true true.
+                   default_kernel default_execfn true true false.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1443,7 +1484,7 @@ Example urandom_same_bytes_on_both_sides :
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                (urandom_stream urandom_decl) [] default_kernel default_execfn
-               true true in
+               true true false in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in

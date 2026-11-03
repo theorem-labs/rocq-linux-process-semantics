@@ -233,20 +233,27 @@ Example clone_namespace_word_keeps_the_descriptor_gate :
     (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE GATE PASSES EVERY OPAQUE KIND, for both words, end to end.
-    [clone_opaque_model] is the table bubblewrap's parent holds at its
-    clone (channels 0-2, the O_PATH descriptor on "/proc" at fd 3, its
-    two eventfds at 4 and 5), and [clone_all_opaque_model] adds the
-    modeled [overflowuid] sysctl file and a namespace and mount model
-    descriptor.  Before [State.FdOpaque] the model held none of these,
-    so it could not reach this clone at all.  THE CONTROL is
+(** THE GATE PASSES EVERY OPAQUE KIND AND THE EVENTFDS, for both words,
+    end to end.  [clone_opaque_model] is the table bubblewrap's parent
+    holds at its clone (channels 0-2, the O_PATH descriptor on "/proc" at
+    fd 3, its two eventfds at 4 and 5, made with 0x80800 and 0x80000),
+    and [clone_all_opaque_model] adds the modeled [overflowuid] sysctl
+    file and a namespace and mount model descriptor.  Before
+    [State.FdOpaque] the model held none of the opaque kinds, so it could
+    not reach this clone at all.
+
+    A SUCCESSFUL CLONE SHARES THE TWO EVENTFDS ([Fork.clone_child_made]):
+    each [State.FdEventfd] becomes [State.FdOpaque (State.OEventFd w)],
+    with w the O_NONBLOCK bit for the 0x80800 one and 0 for the other
+    (EFD_CLOEXEC is not part of w).  An errno leaves the table as it
+    was, counters included.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
     file still declines both words. *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
-            (4, FdOpaque (OEventFd (Z_to_bv 64 0x80800)));
-            (5, FdOpaque (OEventFd (Z_to_bv 64 0x80000)))] clone_case_model.
+            (4, FdEventfd (mkEventfdCtx 0 false true));
+            (5, FdEventfd (mkEventfdCtx 0 false false))] clone_case_model.
 
 Definition clone_all_opaque_model : Model :=
   with_fds (fd_insert (fd_insert (m_fds clone_opaque_model) 6
@@ -255,14 +262,21 @@ Definition clone_all_opaque_model : Model :=
 
 Example clone_passes_the_opaque_kinds :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+    clone_opaque_model = CheckOk (clone_child_made clone_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+       clone_opaque_model = CheckOk (clone_child_made clone_opaque_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (clone_child_made clone_all_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
-  (* the namespace word's errno: any but -EINTR *)
+       clone_all_opaque_model = CheckOk (clone_child_made clone_all_opaque_model) []
+  (* the two eventfds after the clone: the shared kind, w from the context *)
+  /\ m_fds (clone_child_made clone_opaque_model)
+     = [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+        (3, FdOpaque (OProcPath proc_root_path));
+        (4, FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)));
+        (5, FdOpaque (OEventFd (Z_to_bv 64 0)))]
+  /\ m_has_children (clone_child_made clone_opaque_model) = true
+  (* the namespace word's errno: any but -EINTR, and the table unchanged *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
        clone_opaque_model = CheckOk clone_opaque_model []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])

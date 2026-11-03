@@ -145,7 +145,8 @@ Definition exit0_code_segment : Segment := {|
   seg_base  := 0x10000%N;
   seg_size  := 12%N;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305000073000000"%pstring]
+  seg_bytes := ["9308d0051305000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 (** [addi a7, x0, 93; addi a0, x0, 1; ecall] — exit(1). *)
@@ -153,7 +154,8 @@ Definition exit1_code_segment : Segment := {|
   seg_base  := 0x10000%N;
   seg_size  := 12%N;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305100073000000"%pstring]
+  seg_bytes := ["9308d0051305100073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 (** The entry point: the first instruction of either program. *)
@@ -173,7 +175,8 @@ Definition demo_phdr_segment : Segment := {|
   seg_base  := 0x11000%N;
   seg_size  := 336%N;
   seg_perms := "r--"%string;
-  seg_bytes := [demo_phdr_bytes]
+  seg_bytes := [demo_phdr_bytes];
+  seg_kind  := SegLoader
 |}.
 
 (** Where the table sits, as the auxv advertises it: 6 entries of 56

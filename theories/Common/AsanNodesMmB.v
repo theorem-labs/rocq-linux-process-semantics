@@ -799,6 +799,8 @@ Proof.
             apply orb_prop in Hm as [Hm|Hm]; [|exact Hm]; apply andb_prop in Hm as [_ Hm]; apply Z.ltb_lt in Hm; lia ]
       | |- SINV _ _ =>
           eapply SINV_frame; [|exact co_sinv0]; intros a Ha; apply F1; pose proof (argH_high _ _ Ha); unfold KHI in *; ceilnum; lia
+      | |- incl _ _ =>   (* co_vdso: the grant keeps the ledger, the kernel build and the bounds [vdso_top] reads *)
+          exact co_vdso0
       | |- ?g => idtac "UNSOLVED FIELD:" g
       end.
     + (* the caller's facts hold at the new visibility: the heap range is visible, mapped, not PROT_NONE, zero *)
@@ -1421,7 +1423,7 @@ Proof.
     split; [exact Hm'|]. split; [exact Hne'|]. intros Hnf'. exact (DISJ' m' Hm' Hnf' Hne'). }
   assert (KNF : forall m', am_kind m' = KNONE \/ am_kind m' = KNONELAZY \/ am_kind m' = KRWLAZY -> is_fog m' = false).
   { intros m' Hk. unfold is_fog. destruct Hk as [-> |[-> | ->]]; reflexivity. }
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres Xvdso].
   destruct Hlohi as (L1 & L2 & L3 & L4 & L5).
   assert (HAeq : ALLOW E cs' = flat_map (allow1 A E) (kept ++ gone ++ a_ghost cs)) by reflexivity.
   constructor; rewrite ?HAeq; subst cs'; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss];
@@ -1550,6 +1552,8 @@ Proof.
   - (* mres: munmap only removes entries *)
     rewrite PM. unfold map_remove. apply Forall_forall. intros iv Hiv.
     apply filter_In in Hiv as [Hiv _]. exact (proj1 (Forall_forall _ _) Xmres iv Hiv).
+  - (* vdso: munmap keeps the ledger, the kernel build and the bounds [vdso_top] reads *)
+    exact Xvdso.
 Qed.
 
 End SoundMunmap.

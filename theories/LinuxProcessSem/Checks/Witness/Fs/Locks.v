@@ -49,6 +49,10 @@ Definition flock_witness (fd cmd : word) (m : Model) : outcome SyscallEffect :=
           | FdPipe _ _  => Unmodeled
           | FdDevNull _ _ => Unmodeled
           | FdUrandom => Unmodeled
+          | FdStream _ _ _ => Unmodeled
+          | FdDgram _ => Unmodeled
+          | FdEventfd _ => Unmodeled
+          | FdAnon _ _ => Unmodeled
           | FdOpaque _ => Unmodeled   (* unreachable: declined above *)
           end
     end.
@@ -64,8 +68,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [| eapply bind_step; [apply get_model_ok|];
        cbv beta iota; srw Hfd; apply pure_ok ].
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o].
-  11: { (* the opaque kinds, declined ahead of the unlock *)
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o].
+  15: { (* the opaque kinds, declined ahead of the unlock *)
         eapply bind_step; [apply get_model_ok|]. cbv beta iota.
         srw Hfd. apply unmodeled_intro. }
   all: destruct (flock_unlock_b cmd) eqn:Hun;
@@ -95,6 +99,18 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - (* /dev/urandom: declined *)
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* a stream-pair end: declined, the [FdSocket] case *)
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an eventfd: declined *)
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* a datagram socket: declined, the [FdSocket] case *)
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an unnamed file: declined *)
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
 Qed.
