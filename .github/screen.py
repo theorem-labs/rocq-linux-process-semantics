@@ -469,16 +469,30 @@ def listed():
 # --- the verdict --------------------------------------------------------------------------------------------------
 
 # How the checks' words make the verdict. Whatever the rule, a check that cannot answer holds the item.
-#   any            held when any check answers suspicious.
-#   two_of_three   held when two of the three answer suspicious: the two detectors decide when they agree, and the
-#                  model breaks a tie.
-#   detectors      held when Model Armor or Prompt Shields answers suspicious; the model's word is recorded only.
+#   any                        held when any check answers suspicious.
+#   two_of_three               held when two of the three answer suspicious: the two detectors decide when they
+#                              agree, and the model breaks a tie.
+#   detectors                  held when Model Armor or Prompt Shields answers suspicious; the model's word is
+#                              recorded only.
+#   claude                     held when the model answers suspicious; the detectors' words are recorded only.
+#   claude_or_both_detectors   held when the model answers suspicious, or Model Armor and Prompt Shields both do.
+# Measured on a set of 20 texts we wrote (10 ordinary, 10 injections, 3 answers each), on 2026-11-03: any held 8 of
+# 30 ordinary answers and missed none; two_of_three and detectors each missed 12 of 30 injections (four injections
+# only the model caught); claude and claude_or_both_detectors held 5 of 30 and missed none.
+def _flagged(words, *checks):
+    return [words.get(c) == "suspicious" for c in checks]
+
+
 RULES = {
-    "any": (("model_armor",), lambda flags: flags >= 1),
-    "two_of_three": (("model_armor", "prompt_shields", "claude"), lambda flags: flags >= 2),
-    "detectors": (("model_armor", "prompt_shields"), lambda flags: flags >= 1),
+    "any": (("model_armor",), lambda w: "suspicious" in w.values()),
+    "two_of_three": (("model_armor", "prompt_shields", "claude"),
+                     lambda w: sum(_flagged(w, "model_armor", "prompt_shields", "claude")) >= 2),
+    "detectors": (("model_armor", "prompt_shields"), lambda w: any(_flagged(w, "model_armor", "prompt_shields"))),
+    "claude": (("model_armor", "claude"), lambda w: w.get("claude") == "suspicious"),
+    "claude_or_both_detectors": (("model_armor", "prompt_shields", "claude"),
+                                 lambda w: w.get("claude") == "suspicious"
+                                 or all(_flagged(w, "model_armor", "prompt_shields"))),
 }
-RULE_COUNTS = {"any": None, "two_of_three": None, "detectors": ("model_armor", "prompt_shields")}
 
 
 def rule(ran):
@@ -497,9 +511,7 @@ def combine(words, name):
     rule says."""
     if any(w not in WORDS for w in words.values()):
         return "held"
-    counted = RULE_COUNTS[name] or tuple(words)
-    flags = sum(words.get(c) == "suspicious" for c in counted)
-    return "held" if RULES[name][1](flags) else "clean"
+    return "held" if RULES[name][1](words) else "clean"
 
 
 def run_checks(found, ran):
