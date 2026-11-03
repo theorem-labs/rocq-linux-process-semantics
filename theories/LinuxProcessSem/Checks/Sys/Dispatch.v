@@ -29,7 +29,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls
-  Kernel.Signal Kernel.Sys Kernel.Time.Hrtimer Kernel.Time.PosixTimers
+  Kernel.Signal Kernel.Sys Kernel.Nsproxy Kernel.Time.Hrtimer Kernel.Time.PosixTimers
   Kernel.Time.Time
   Net.Socket
   Drivers.Char.Random.
@@ -39,7 +39,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Import
   Fs.EventPoll Fs.EventFd Fs.Signalfd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
-  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
+  Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
   Net.Socket
   Drivers.Char.Random.
@@ -1165,6 +1165,18 @@ Proof.
     eauto using check_prlimit64_sound_ok, check_prlimit64_sound_unmodeled, check_prlimit64_complete_ok, check_prlimit64_complete_unmodeled, prlimit64_witness_ok.
 Defined.
 
+(** setns (268).  [fd] is [int] and narrowed here, at the ABI boundary;
+    no answer reads [nstype]. *)
+Definition arm_setns : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 268%Z (fun i => setns_spec (fd32 (in_arg i 0)) i))
+                       (fun i eff m => check_setns (fd32 (in_arg i 0)) eff m)
+                       (fun i m => setns_witness (fd32 (in_arg i 0)) m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_setns_sound_ok, check_setns_sound_unmodeled, check_setns_complete_ok, check_setns_complete_unmodeled, setns_witness_ok.
+Defined.
+
 (** getrandom (278). *)
 Definition arm_getrandom : CheckedArm.
 Proof.
@@ -1308,6 +1320,7 @@ Definition checked_table : list CheckedArm :=
   arm_accept4 ::
   arm_wait4 ::
   arm_prlimit64 ::
+  arm_setns ::
   arm_getrandom ::
   arm_clone3 ::
   arm_close_range ::
@@ -2294,6 +2307,16 @@ Lemma sa_spec_arm_prlimit64 : forall i m o,
   sa_spec (ca_arm arm_prlimit64) i m o = prlimit64_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_setns : forall i eff m,
+  ca_check arm_setns i eff m = check_setns (fd32 (in_arg i 0)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_setns : forall i m,
+  ca_witness arm_setns i m = setns_witness (fd32 (in_arg i 0)) m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_setns : forall i m o,
+  sa_spec (ca_arm arm_setns) i m o = setns_spec (fd32 (in_arg i 0)) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_getrandom : forall i eff m,
   ca_check arm_getrandom i eff m = check_getrandom i (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
 Proof. reflexivity. Qed.
@@ -2430,6 +2453,7 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_accept4 ca_witness_arm_accept4 sa_spec_arm_accept4 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_wait4 ca_witness_arm_wait4 sa_spec_arm_wait4 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_prlimit64 ca_witness_arm_prlimit64 sa_spec_arm_prlimit64 : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_setns ca_witness_arm_setns sa_spec_arm_setns : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getrandom ca_witness_arm_getrandom sa_spec_arm_getrandom : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_clone3 ca_witness_arm_clone3 sa_spec_arm_clone3 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_close_range ca_witness_arm_close_range sa_spec_arm_close_range : arm_unfold.
@@ -2786,6 +2810,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_prlimit64 : ca_no arm_prlimit64 = 261%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_prlimit64 : arm_unfold.
+
+Lemma ca_no_arm_setns : ca_no arm_setns = 268%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_setns : arm_unfold.
 
 Lemma ca_no_arm_getrandom : ca_no arm_getrandom = 278%Z.
 Proof. reflexivity. Qed.

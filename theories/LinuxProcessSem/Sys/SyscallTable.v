@@ -31,7 +31,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
   Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
-  Kernel.Signal Kernel.Sys
+  Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
   Net.Socket
   Drivers.Char.Random.
@@ -136,6 +136,7 @@ Definition spec_table : list SpecArm :=
   (* accept4         *) mkSpecArm 242%Z (fun i => accept4_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* wait4           *) mkSpecArm 260%Z (fun i => wait4_spec (pid32 (in_arg i 0)) (in_arg i 1) (waitopts32 (in_arg i 2)) (in_arg i 3) i) ::
   (* prlimit64       *) mkSpecArm 261%Z (fun i => prlimit64_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
+  (* setns           *) mkSpecArm 268%Z (fun i => setns_spec (fd32 (in_arg i 0)) i) ::
   (* getrandom       *) mkSpecArm 278%Z (fun i => getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i) ::
   (* clone3          *) mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i) ::
   (* close_range     *) mkSpecArm 436%Z (fun i => close_range_spec (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) i) ::
