@@ -1049,7 +1049,7 @@ Definition handler_reached (x : NetNs) (U : list UserNs) (opener caller : IdCred
           && net_admin U (netns_owner x) opener caller dst)).
 
 (** The errno a reached handler of request type [ty] returns when an
-    allocation fails, Linux 6.18.44:
+    allocation fails, Linux v6.18.46:
     - RTM_NEWLINK: ENOMEM, from [rtnl_newlink]'s first step, the
       [kmalloc] of its attribute table (net/core/rtnetlink.c);
     - RTM_NEWADDR: ENOBUFS, which [inet_rtm_to_ifa] sets before its
