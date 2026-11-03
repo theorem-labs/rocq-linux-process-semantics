@@ -33,6 +33,7 @@ Definition getdents64_witness (fd count : word) (m : Model)
   | Some (FdSocket _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdOpaque _) => Unmodeled   (* declined by the spec *)
   | Some FdDir =>
       if getdents64_no_room count
       then ret_outcome (errno_ret EINVAL) m
@@ -45,7 +46,7 @@ Proof.
   intros fd count i m. unfold getdents64_spec, getdents64_witness.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
     (eapply bind_step; [apply get_model_ok|]);
-    cbv beta iota zeta; srw Hfd; try apply pure_ok.
+    cbv beta iota zeta; srw Hfd; try solve [apply pure_ok | apply unmodeled_intro].
   destruct (getdents64_no_room count) eqn:Hroom; [|apply unmodeled_intro].
   apply alt_r. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
 Qed.

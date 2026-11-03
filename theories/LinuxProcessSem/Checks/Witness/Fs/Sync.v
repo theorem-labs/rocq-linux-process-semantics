@@ -29,6 +29,7 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | Some (FdFile _ _)  => ret_outcome (Z_to_bv 64 0) m
   | Some (FdFileW _ _) => ret_outcome (Z_to_bv 64 0) m
   | Some FdDir         => ret_outcome (Z_to_bv 64 0) m
+  | Some (FdOpaque _)  => Unmodeled   (* the spec declines the opaque kinds *)
   end.
 
 Lemma fsync_witness_ok : forall fd i m, fsync_spec fd i m (fsync_witness fd m).
@@ -36,7 +37,7 @@ Proof.
   intros. unfold fsync_spec, fsync_witness.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
     (eapply bind_step; [apply get_model_ok|]);
-    cbv beta iota zeta; srw Hfd; apply pure_ok.
+    cbv beta iota zeta; srw Hfd; solve [apply pure_ok | apply unmodeled_intro].
 Qed.
 
 (* =========================================================================

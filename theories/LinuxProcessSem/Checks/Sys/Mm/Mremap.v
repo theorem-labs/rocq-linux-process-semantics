@@ -13,8 +13,25 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
 Import ListNotations.
 Open Scope bv_scope.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite Mm.Mmap.
+
+(** The two side conditions [Placement.linux_place_is_iff] takes, from
+    the gate [mremap_spec] has already passed: the new length is not
+    zero and does not wrap. *)
+Lemma mremap_grant_len_ok : forall len,
+  page_align_is0_b len = false ->
+  (0 < page_round_up_Z (bv_unsigned len))%Z
+  /\ (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z.
+Proof.
+  intros len H. unfold page_align_is0_b in H.
+  apply orb_false_iff in H as [H _].
+  apply w_is0_false_pos in H.
+  split; [| apply page_round_up_Z_aligned].
+  pose proof (page_round_up_Z_pos (bv_unsigned len) H).
+  unfold page_size in *. lia.
+Qed.
 
 Definition check_mremap (old old_size new_size flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -64,6 +81,10 @@ Definition check_mremap (old old_size new_size flags : word)
                else CheckReject
           else CheckReject
         else if (old_nZ <? new_nZ)%Z
+                  && negb (mremap_inplace_room_b m old old_n new_n
+                             old_nZ new_nZ)
+                  && linux_place_is (m_vmmaps m) (kb_thp (m_kernel m))
+                       (Z_to_bv 64 0) new_nZ r
                   && mremap_fresh_b m old_nZ new_nZ old old_n r new_n
                   && listNN_eqb zs (mremap_tail r old_n old_nZ new_nZ)
                   && listNN_eqb us [(old, old_n)]
@@ -193,14 +214,26 @@ Proof.
         apply listNN_eqb_eq in Hzs; subst zs.
         apply listNN_eqb_eq in Hus; subst us.
         apply listCopy_eqb_eq in Hcs; subst cs.
+        apply andb_true_iff in Hgrow as [Hroom Hbud].
         eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
         try rewrite Hsrc. try rewrite Heq. apply alt_r.
-        try rewrite Hlt. try rewrite Hgrow.
-        apply alt_l. eapply bind_ok0; [apply modify_ok|].
+        try rewrite Hlt. rewrite Hroom.
+        eapply bind_ok0; [apply (choose_ok _ tt); exact Hbud|].
+        eapply bind_ok0; [apply modify_ok|].
         unfold mremap_inplace_effect. rewrite Hlt. apply pure_ok.
     + destruct ((page_round_up_Z (bv_unsigned old_size)
                    <? page_round_up_Z (bv_unsigned new_size))%Z)
                 eqn:Hmove; [|destruct copyins; discriminate].
+      destruct (negb (mremap_inplace_room_b m old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+                  (page_round_up_Z (bv_unsigned old_size))
+                  (page_round_up_Z (bv_unsigned new_size)))) eqn:Hnoroom;
+        [|destruct copyins; discriminate].
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m))
+                  (Z_to_bv 64 0)
+                  (page_round_up_Z (bv_unsigned new_size)) r) eqn:Hplace;
+        [|destruct copyins; discriminate].
       destruct (mremap_fresh_b m
                   (page_round_up_Z (bv_unsigned old_size))
                   (page_round_up_Z (bv_unsigned new_size)) old
@@ -230,17 +263,15 @@ Proof.
       destruct ((page_round_up_Z (bv_unsigned new_size)
                    <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt.
       * apply Z.ltb_lt in Hmove. apply Z.ltb_lt in Hlt. lia.
-      * destruct (mremap_inplace_grow_b m old
-             (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-             (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
-             (page_round_up_Z (bv_unsigned old_size))
-             (page_round_up_Z (bv_unsigned new_size))) eqn:Hgrow.
-        -- apply alt_r. eapply bind_ok0; [apply (choose_ok _ r); exact Hfresh|].
-           eapply bind_ok0; [apply modify_ok|].
-           unfold mremap_move_effect. apply pure_ok.
-        -- eapply bind_ok0; [apply (choose_ok _ r); exact Hfresh|].
-           eapply bind_ok0; [apply modify_ok|].
-           unfold mremap_move_effect. apply pure_ok.
+      * apply negb_true_iff in Hnoroom. rewrite Hnoroom.
+        eapply bind_ok0; [apply (choose_ok _ r)|].
+        { split; [|exact Hfresh].
+          apply (linux_place_is_iff _ _ _ _ _
+                   (proj1 (mremap_grant_len_ok _ Hnew))
+                   (proj2 (mremap_grant_len_ok _ Hnew))).
+          exact Hplace. }
+        eapply bind_ok0; [apply modify_ok|].
+        unfold mremap_move_effect. apply pure_ok.
 Qed.
 
 Lemma check_mremap_sound_unmodeled : forall old old_size new_size flags eff m i,
@@ -299,6 +330,15 @@ Proof.
       discriminate.
   - destruct ((page_round_up_Z (bv_unsigned old_size)
                  <? page_round_up_Z (bv_unsigned new_size))%Z);
+      [|destruct copyins; discriminate].
+    destruct (negb (mremap_inplace_room_b m old
+      (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+      (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+      (page_round_up_Z (bv_unsigned old_size))
+      (page_round_up_Z (bv_unsigned new_size))));
+      [|destruct copyins; discriminate].
+    destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) (Z_to_bv 64 0)
+      (page_round_up_Z (bv_unsigned new_size)) r);
       [|destruct copyins; discriminate].
     destruct (mremap_fresh_b m
       (page_round_up_Z (bv_unsigned old_size))
@@ -375,41 +415,44 @@ Proof.
       assert (Hmove : (page_round_up_Z (bv_unsigned old_size)
                          <? page_round_up_Z (bv_unsigned new_size))%Z = true).
       { apply Z.ltb_lt. apply Z.ltb_ge in Hlt. apply Z.eqb_neq in Heq. lia. }
-      destruct (mremap_inplace_grow_b m old
+      destruct (mremap_inplace_room_b m old
           (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
           (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
           (page_round_up_Z (bv_unsigned old_size))
-          (page_round_up_Z (bv_unsigned new_size))) eqn:Hgrow.
-      * hall Hgrow; inv_ok.
-        -- cbv beta iota zeta in *; subst.
-           unfold mremap_inplace_effect. rewrite Hlt.
-           try rewrite Hold_errno. try rewrite bv_eqb_refl.
-           try rewrite Heq. try rewrite Hlt.
-           try rewrite Hgrow.
-           repeat match goal with
-           | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
-           | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
-           end. reflexivity.
-        -- cbv beta iota zeta in *; subst.
-           unfold mremap_move_effect.
-           match goal with
-           | Hfresh : mremap_fresh_b _ _ _ old ?old_n ?dst _ = true |- _ =>
-               rewrite (mremap_fresh_ret_not_errno _ _ _ old old_n dst _ Hnew_nonneg Hfresh);
-               rewrite (mremap_fresh_neq_old _ _ _ old old_n dst _ Hfresh);
-               try rewrite Hmove; try rewrite Hfresh
-           end.
-           repeat match goal with
-           | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
-           | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
-           end. reflexivity.
-      * hall Hgrow; inv_ok. cbv beta iota zeta in *; subst.
-        unfold mremap_move_effect.
+          (page_round_up_Z (bv_unsigned new_size))) eqn:Hroom.
+      * (* ROOM ABOVE THE SOURCE: Linux expands there and does not
+           move, so the only non-errno answer is the in-place one and
+           its budget gate came through the [choose]. *)
+        hall Hroom; inv_ok. cbv beta iota zeta in *; subst.
+        unfold mremap_inplace_effect. rewrite Hlt.
+        try rewrite Hold_errno. try rewrite bv_eqb_refl.
+        try rewrite Heq. try rewrite Hlt.
+        unfold mremap_inplace_grow_b. rewrite Hroom. cbn [andb].
         match goal with
-        | Hfresh : mremap_fresh_b _ _ _ old ?old_n ?dst _ = true |- _ =>
-            rewrite (mremap_fresh_ret_not_errno _ _ _ old old_n dst _ Hnew_nonneg Hfresh);
-            rewrite (mremap_fresh_neq_old _ _ _ old old_n dst _ Hfresh);
-            try rewrite Hmove; try rewrite Hfresh
+        | Hb : mremap_final_budget_b _ _ _ _ _ = true |- _ => rewrite Hb
         end.
+        repeat match goal with
+        | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
+        | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
+        end. reflexivity.
+      * (* NO ROOM: the move, to the one address Linux's search gives. *)
+        hall Hroom; inv_ok. cbv beta iota zeta in *; subst.
+        unfold mremap_move_effect.
+        lazymatch goal with
+        | Hd : mremap_dst_ok _ _ _ old _ _ _ |- _ =>
+            destruct Hd as [Hpl Hfresh]
+        end.
+        lazymatch goal with
+        | Hf : mremap_fresh_b _ _ _ old ?old_n ?dst _ = true |- _ =>
+            rewrite (mremap_fresh_ret_not_errno _ _ _ old old_n dst _
+                       Hnew_nonneg Hf);
+            rewrite (mremap_fresh_neq_old _ _ _ old old_n dst _ Hf)
+        end.
+        rewrite Hmove. cbn [negb andb].
+        rewrite (proj2 (linux_place_is_iff _ _ _ _ _
+                          (proj1 (mremap_grant_len_ok _ Hnew))
+                          (proj2 (mremap_grant_len_ok _ Hnew))) Hpl).
+        rewrite Hfresh.
         repeat match goal with
         | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
         | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
@@ -446,10 +489,10 @@ Proof.
   destruct ((page_round_up_Z (bv_unsigned new_size)
                <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt;
     hall Hlt; inv_ok; try discriminate.
-  destruct (mremap_inplace_grow_b m old
+  destruct (mremap_inplace_room_b m old
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
       (page_round_up_Z (bv_unsigned old_size))
-      (page_round_up_Z (bv_unsigned new_size))) eqn:Hgrow;
-    hall Hgrow; inv_ok; discriminate.
+      (page_round_up_Z (bv_unsigned new_size))) eqn:Hroom;
+    hall Hroom; inv_ok; discriminate.
 Qed.

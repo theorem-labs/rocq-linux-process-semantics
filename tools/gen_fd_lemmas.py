@@ -54,7 +54,7 @@ sync.)
 
 Usage:
   gen_fd_lemmas.py <name> [--examples-dir DIR] [--loadpath DIR] [--out FILE]
-                   [--steptac-module MOD]
+                   [--steptac-module MOD] [--single]
                    [--source-image NAME] [--target-image NAME]
       Emit theories/Examples/<name>/<name>_code.v to stdout (or FILE).
 
@@ -63,6 +63,8 @@ Usage:
   --source-image/--target-image name the memory-image modules to read,
   without the .v extension (defaults: SourceMemImage, TargetMemImage);
   the segment .hex files named by each image are found next to it.
+  --single says the example is ONE binary, not an equivalence pair: only
+  the source image is read and only its lemmas are emitted.
 
 Needs `rocq` on PATH, with the LinuxProcessSemantics library visible:
 either installed (opam install .), or located by --loadpath, or discovered
@@ -79,14 +81,16 @@ import sys
 import tempfile
 
 # Definition <prefix>_segment_<nnn> : Segment := {| seg_base := 0x..%N;
-# seg_size := 0x..%N; seg_perms := "r-x"; seg_bytes := ... |}, as
+# seg_size := 0x..%N; seg_perms := "r-x"; seg_bytes := ...;
+# seg_kind := SegLoader |}, as
 # elf-snapshot writes it.
 SEGMENT_RE = re.compile(
     r"Definition\s+\w+_segment_(?P<idx>\d+)\s*:\s*Segment\s*:=\s*\{\|"
     r"\s*seg_base\s*:=\s*0x(?P<base>[0-9a-f]+)%N;"
     r"\s*seg_size\s*:=\s*0x(?P<size>[0-9a-f]+)%N;"
     r'\s*seg_perms\s*:=\s*"(?P<perms>[^"]*)";'
-    r"\s*seg_bytes\s*:=\s*(?P<bytes>.*?)\s*\|\}\.", re.DOTALL)
+    r"\s*seg_bytes\s*:=\s*(?P<bytes>.*?);"
+    r"\s*seg_kind\s*:=\s*SegLoader\s*\|\}\.", re.DOTALL)
 
 DEPENDENCY_RE = re.compile(
     r'Extra Dependency\s+"(?P<file>[^"]+)"\s+as\s+(?P<dep>\w+)\.\s*'
@@ -97,10 +101,13 @@ PHDRS_RE = re.compile(
     r"\s*ph_ent\s*:=\s*(?P<ent>\d+)%N;"
     r"\s*ph_num\s*:=\s*(?P<num>\d+)%N")
 
-# Every example has BOTH images: an equivalence task is a pair of binaries,
+# An EQUIVALENCE example has BOTH images: the task is a pair of binaries,
 # and theories/Examples/README.md's bring-up path reaches a compiling
 # Proof.v (admit-first) rather than stopping at a lone reference program.
-# A missing image is therefore an error, not an intermediate state.
+# A missing image is therefore an error there, not an intermediate state.
+# An example that is about ONE binary — a halting claim rather than an
+# equivalence — says so with --single, and then only the source image is
+# read; a missing image is still an error for the images in play.
 # Each entry is (module, side, lemma prefix); the module (overridable with
 # --source-image/--target-image) is both the .v file's basename and the
 # prefix of its definitions (<module>_loaded_segments, <module>_phdrs,
@@ -448,6 +455,9 @@ def main():
                          "where the nonzero-run locator does not apply)")
     ap.add_argument("--target-text", default=None, metavar="0xLO:0xHI",
                     help="explicit .text address range of the target image")
+    ap.add_argument("--single", action="store_true",
+                    help="the example is ONE binary, not an equivalence "
+                         "pair: read the source image only")
     args = ap.parse_args()
 
     def parse_range(flag, value):
@@ -467,12 +477,15 @@ def main():
 
     images = [(args.source_image,) + DEFAULT_IMAGES[0][1:],
               (args.target_image,) + DEFAULT_IMAGES[1][1:]]
+    if args.single:
+        images, text_ranges = images[:1], text_ranges[:1]
     # Reproduced in the generated header so a by-hand regeneration matches.
     regen_flags = [
-        "%s %s" % (flag, value)
+        "%s %s" % (flag, value) if value is not True else flag
         for flag, value, default in
         [("--steptac-module", args.steptac_module,
           ap.get_default("steptac_module")),
+         ("--single", args.single, False),
          ("--source-image", args.source_image, DEFAULT_IMAGES[0][0]),
          ("--target-image", args.target_image, DEFAULT_IMAGES[1][0]),
          ("--source-text", args.source_text, None),

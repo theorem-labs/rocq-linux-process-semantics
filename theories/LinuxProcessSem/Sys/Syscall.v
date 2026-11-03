@@ -49,6 +49,15 @@ Proof.
   now apply record_copyins_ok.
 Qed.
 
+(** [record_copyins_ok] with the recorded effect stated as an equation,
+    so that a nested ledger ([record_copyins] around a spec that records
+    its own) can be matched by conversion rather than by unification. *)
+Lemma record_copyins_ok_eq : forall reads spec i m eff m' evs effc,
+  effc = with_copyins (reads ++ eff_copyins eff) eff ->
+  spec i m (Ok eff m' evs) ->
+  record_copyins reads spec i m (Ok effc m' evs).
+Proof. intros reads spec i m eff m' evs effc -> H. now apply record_copyins_ok. Qed.
+
 Lemma record_copyins_unmodeled : forall reads spec i m,
   spec i m Unmodeled -> record_copyins reads spec i m Unmodeled.
 Proof. intros. unfold record_copyins. now left. Qed.
@@ -75,6 +84,60 @@ Qed.
     fail with -EBADF.  Each syscall with an injectable failure carries
     its own small list below. *)
 Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
+
+(** EVERY errno from 1 to 4095 BUT -EINTR.  The one exception to the
+    per-syscall rule above, for an arm whose kernel path runs through
+    code whose errnos cannot be enumerated with confidence (a namespace
+    clone's per-namespace init functions, a procfs lookup, a sysctl
+    handler).  Each arm that draws from it says why a list would not be
+    safe; a missing errno makes the model reject a real behaviour, while
+    this set only admits more than Linux gives.
+
+    WHY NOT -EINTR.  A call answers -EINTR only when it is interrupted:
+    the restart codes ([ERESTARTSYS], [ERESTARTNOHAND],
+    [ERESTART_RESTARTBLOCK]; include/linux/errno.h) become -EINTR only
+    in [arch_do_signal_or_restart] when [get_signal] hands it a signal
+    with a handler to run (arch/riscv/kernel/signal.c), and the code that
+    returns -EINTR itself does so on [signal_pending]
+    (include/linux/sched/signal.h: a pending unblocked signal, or
+    TIF_NOTIFY_SIGNAL).  In a modeled run neither happens: the model
+    installs no handler ([rt_sigaction] declines every handler install),
+    and SCOPE.md's assumption "Nothing outside the process makes a
+    signal pending for it, or wakes it as if one were" ("Assumptions
+    that the model does not check") rules out the three outside agents
+    that set one without a handler: another process's signal, freezing
+    ([freeze_task] for suspend and the cgroup v1 freezer;
+    [cgroup_freeze_task] for the cgroup v2 freezer, kept pending by
+    [recalc_sigpending_tsk]), and a livepatch transition's
+    [set_notify_signal].  The process's own child's SIGCHLD is no such
+    agent: at SIG_DFL [sig_ignored] discards it, and while blocked it
+    does not make [signal_pending] true.  Admitting -EINTR here would
+    let the environment interrupt a call that bwrap retries without
+    bound ([TEMP_FAILURE_RETRY]) forever.
+      arch/riscv/kernel/signal.c [arch_do_signal_or_restart], [handle_signal]: read at v6.18.44; identical at v6.18.46.
+      include/linux/errno.h [ERESTARTSYS], [ERESTARTNOHAND], [ERESTART_RESTARTBLOCK]: read at v6.18.44; identical at v6.18.46.
+      include/linux/sched/signal.h [signal_pending]: read at v6.18.44; identical at v6.18.46.
+      kernel/freezer.c [freeze_task]: read at v6.18.44; identical at v6.18.46.
+      kernel/cgroup/freezer.c [cgroup_freeze_task]: read at v6.18.44; identical at v6.18.46.
+      kernel/livepatch/transition.c [klp_send_signals]: read at v6.18.44; identical at v6.18.46.
+      kernel/signal.c [sig_ignored], [recalc_sigpending_tsk]: read at v6.18.44; identical at v6.18.46.
+
+    THE WARRANT, AND WHEN IT LAPSES.  -EINTR is left out because Linux
+    cannot give it to any call of a modeled run TODAY: the model runs no
+    signal handlers ([rt_sigaction] declines every handler install), and
+    SCOPE.md assumes no signal arrives from outside the process.  The
+    model still ADMITS -EINTR in one older place,
+    [Kernel.Time.Hrtimer.nanosleep_spec]'s interrupted sleep: a widening
+    (it admits more than Linux gives, so it is sound), which
+    [Run.injected_table]'s note keeps on purpose for the forced-only
+    filter.  It is not a reason to admit -EINTR here, where admitting it
+    would let a retry loop run forever.  Whoever adds the first call
+    that can REALLY be interrupted, or a way for a signal to arrive (the
+    planned namespace and mount model's wait call and signal readiness), invalidates this
+    exclusion and must put -EINTR back, or prove that call cannot see
+    it.  [Checks.Sys.Prelude.errno_any_b] is the acceptor side and must
+    move with this definition. *)
+Definition errno_any : Sys Z := choose (fun e => (1 <= e <= 4095)%Z /\ e <> EINTR).
 
 (** Word-against-zero test, used all over the dispatcher. *)
 Definition w_is0 (w : word) : bool := bv_eqb w (Z_to_bv 64 0).

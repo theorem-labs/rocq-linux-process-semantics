@@ -392,6 +392,17 @@ Definition sched_getaffinity_spec (len : word) : Sys SyscallEffect :=
     answers -EFAULT there too, but which bytes it read first is not
     something the ledger can state.
 
+    THE RANGE TEST COMES BEFORE THE WALK: the four bytes are read
+    through [State.copy_bytes_map], whose note says why that order is
+    the guard.  [do_sched_setscheduler]'s [copy_from_user] of [struct
+    sched_param] (kernel/sched/syscalls.c) asks [access_ok] over all
+    four bytes before it loads one, so a [param] whose range wraps past
+    2^64 and reads back from 0 is -EFAULT with an empty ledger, and the
+    priority those bytes would decode to is never judged.
+    [Checks.Cases.Kernel.Sched.Syscalls]'s [sched_setscheduler_wrap_]
+    group pins it, beside a neighbour at the top of what [access_ok]
+    accepts.
+
     COST OF THE DECLINES.  A program that lowers itself to SCHED_IDLE
     stays inside the modeled surface, which is the shape a
     [pthread_setschedparam(self, SCHED_IDLE, {0})] takes; a program that
@@ -462,7 +473,7 @@ Definition sched_setscheduler_spec (pid policy param : word)
   else
   i <- input ;;
   m <- get_model ;;
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
+  match copy_bytes_map (in_mem i) param 4 with
   | None =>
       if negb (access_okb param 4) then err_ret EFAULT else unmodeled
   | Some bs =>
@@ -508,7 +519,8 @@ Definition sched_setscheduler_spec (pid policy param : word)
     another task may run in between, so a [sched_yield] can separate two
     of this process's observations.  That costs nothing here because
     this model has one process — [Fork.clone_fork_flags_b] admits
-    [SIGCHLD] alone and every sharing flag forces [Unmodeled], so there
+    [SIGCHLD] alone, [Fork.clone_ns_flags_b] adds only namespace bits,
+    and every sharing flag forces [Unmodeled], so there
     is no second thread whose interleaving a yield could expose.  The
     day a shared-memory clone is modeled, this comment is what has to be
     re-read.

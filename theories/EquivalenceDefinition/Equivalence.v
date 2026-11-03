@@ -219,11 +219,24 @@ Definition error_free (b : behavior) : Prop := ~ bh_errors b.
    ========================================================================= *)
 
 (** The run can end by being KILLED, rather than by exiting: some
-    admissible trace carries a [State.KillEv].  Under the declaration
-    [Run.valid_input] pins there are none, because the only arm that can
-    produce one declines
-    ([Kernel.Signal.tkill_spec_off_unmodeled]); under
-    [Run.valid_input_abort] a program that calls [abort] has one.
+    admissible trace carries a [State.KillEv].  Under the declarations
+    [Run.valid_input] pins there are none, and that is a THEOREM,
+    [Checks.KillFree.valid_input_no_kill]: no trace of [Run.run] or of
+    [Run.run_scfg] under any configuration carries one.  It is proved
+    arm by arm over the dispatcher ([Checks.KillFree.kill_frame_holds]),
+    because both signals the model raises sit behind a declaration that
+    [Run.valid_input] pins clear
+    ([Kernel.Signal.tkill_spec_off_unmodeled] for SIGABRT,
+    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled] for SIGPIPE).  Under
+    [Run.valid_input_abort] a program that calls [abort] has one, and
+    under [Run.valid_input_sigpipe_kills] or
+    [Run.valid_input_channel_closed] a write whose far end has no reader
+    has one.  If a kill ever became reachable under [Run.valid_input],
+    every error-free statement in this tree would silently weaken; that
+    theorem is what would break first, and
+    [Checks.KillFree.valid_input_error_free_unkilled_iff] states the
+    consequence: under [Run.valid_input], [error_free] and
+    [error_free_unkilled] below are the same predicate of a run.
 
     IT IS READ OFF [bh_traces] rather than carried as a new field of
     [Run.behavior], and that is the point of the event being an event: a
@@ -555,6 +568,46 @@ Definition image_brk_witness (segs : list Segment) : Z :=
 Definition image_brk_satisfiable (segs : list Segment) : bool :=
   (image_brk_witness segs <? 2 ^ 64)%Z.
 
+(** WHAT THIS BOUNDS, AND WHAT IT DOES NOT.  It is worth stating here
+    because the syscall layer leans on it twice and got the reason wrong
+    once.
+
+    [reserved_top] is the MAXIMUM of [base + size] over every loaded
+    segment, in [Z], and the witness above is that maximum rounded up to
+    a page.  So this check IS an address bound and not only an
+    anti-vacuity test: under it no loaded byte can lie in the last page
+    of the address space, since a reservation reaching into that page
+    rounds up to 2^64 and the check is then [false].  That is exactly
+    what makes a WRAPPING user access unreachable in a run under this
+    ascription — a wrap needs the byte at 2^64-1, the image cannot
+    supply it, and [State.alloc_top] and [State.sp_window_hi] hold
+    mmap, brk and the stack far below it.
+    [Sys.Kernel.Signal]'s notes name this check for that argument.
+
+    THE BOUND IS BELOW 2^64 AND NOT BELOW [State.TASK_SIZE] (2^47), and
+    nothing else closes the difference: [Run.valid_entry] adds only
+    [Run.valid_brk], which asks the break to sit at or above
+    [reserved_top] and gives no 2^47 ceiling, and the other two IMAGE_WF
+    parameters are about the entry and the program headers.  So an image
+    carrying a LOAD segment ABOVE the user address space satisfies every
+    well-formedness condition this tree asserts, [Run.sys_input] hands
+    its bytes to the syscall layer as [State.in_mem], and a syscall
+    pointer into it is a range that is wholly mapped and that
+    [State.access_okb] refuses — the shape every [copy_from_user] and
+    [copy_to_user] in Linux answers -EFAULT for.  A spec that tests only
+    whether a range is mapped therefore ANSWERS such a call, in a run,
+    under the full ascription, with no wrap anywhere.  That is why the
+    range test is asked per site rather than argued away from this
+    check, and it is the half of the argument a bound on the image would
+    not remove.
+
+    THE CAVEAT, which belongs with the claim wherever it travels: this
+    is argued from the well-formedness conditions and [Run.valid_entry],
+    which were read, and not from a survey of shipped images.  No image
+    in theories/Examples and no ELF snapshot read while this was written
+    places a segment above 2^47 — the snapshot tool records real riscv64
+    loads, which sit far below it. *)
+
 Lemma reserved_top_nonneg : forall maps,
   (0 <= reserved_top maps)%Z.
 Proof.
@@ -602,42 +655,39 @@ Proof.
 Qed.
 
 (** The entry is satisfiable FOR A GIVEN VALID INPUT, since
-    [Run.valid_entry]'s stack-image conjunct reads argv and envp: the
-    witness stack pointer is the bottom of the sp window, which leaves
-    two gigabytes of room below [sp_window_hi] for a block the
-    [valid_argv]/[valid_envp] limits cap at [entry_stack_span_max]
-    (2238671 bytes).  So adding that conjunct did not open a second way
-    to empty the entry quantifier, which is the exact failure this
-    boolean exists to rule out. *)
+    [Run.valid_entry]'s last two conjuncts read the input: the stack
+    image has to fit, and the whole (stack top, sp, mmap base) triple
+    has to be one a Linux v6.18.46 launch can give
+    ([Run.entry_launch_ok_va]).  So adding either conjunct did not open
+    a second way to empty the entry quantifier, which is the exact
+    failure this boolean exists to rule out.
+
+    THE WITNESS IS THE CORE'S, [Run.launch_entry_va]: the stack at the
+    very top of the address space, the stack pointer at the top of the
+    sp rule (the launch with no [arch_align_stack] pad), the mmap base
+    of the base rule with the draw at 0, and a vDSO that leaves its
+    caller's registers and frame alone ([Run.vdso_keeps_all]).  The
+    break is the one [image_brk_satisfiable_sound] reads off the image,
+    which is the only part of the entry this file has to supply --
+    [Run.launch_entry_va_valid] discharges the other four conjuncts
+    from [Run.valid_argv], [Run.valid_envp] and [Run.valid_launch],
+    all three of which [Run.valid_input] carries. *)
 Lemma image_brk_satisfiable_entry : forall img inp,
   valid_input inp ->
   image_brk_satisfiable (img_segments img) = true ->
   exists en, valid_entry img en inp.
 Proof.
   intros [segs pc ph] inp Hv H.
-  pose proof (valid_input_va_size _ Hv) as Hsize.
-  destruct Hv as (Hargv & Henvp & _ & _).
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp) as Hspan.
-  exists (mkEntry (Z_to_bv 64 sp_window_lo) brk
-            (Z_to_bv 64 mmap_base_max)
-            (mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0))).
-  rewrite (valid_entry_sv48 _ _ _ Hsize).
-  cbn. split; [| split; [exact Hbrk | split]].
-  - unfold valid_sp, sp_window_lo, sp_window_hi.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus; cbn; lia).
-    lia.
-  - unfold valid_mmap_base, mmap_base_min, mmap_base_max, sp_window_hi,
-      page_size.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus; cbn; lia).
-    lia.
-  - unfold entry_stack_fits.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus, sp_window_lo; cbn; lia).
-    unfold entry_stack_span_max in Hspan.
-    unfold sp_window_lo, sp_window_hi. lia.
+  (* Split [valid_input] WITHOUT counting its conjuncts: the predicate
+     grows one whenever the input class learns to say something new,
+     and a positional pattern here silently rebinds when it does.
+     [red] first, because the hypothesis pattern below is syntactic. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
+            vdso_keeps_all).
+  apply launch_entry_va_valid; assumption.
 Qed.
 
 (** The check bites: an image whose reservations reach the top of the
@@ -1030,6 +1080,121 @@ Lemma strong_universal_error_free_T_either_implies_abort :
   strong_universal_error_free_T_either -> strong_universal_error_free_T_abort.
 Proof. intros (_ & H). exact H. Qed.
 
+(* =========================================================================
+   The SIGPIPE-ignored statements: the same obligations, quantified over
+   the launches that ignore signal 13
+   ========================================================================= *)
+
+(** THE QUANTIFIER IS AGAIN THE WHOLE DIFFERENCE, and here it is the
+    TASK'S launch declaration rather than the environment's.
+    [Run.valid_input] pins [State.in_sigpipe_default] to [true]: the
+    launch left signal 13 at SIG_DFL, and with the death not declared
+    ([State.in_sigpipe_terminal] [false]) a write whose far end has no
+    reader DECLINES ([Sys.Fs.ReadWrite.sigpipe_write]).
+    [Run.valid_input_sigpipe_ignored] pins it to [false]: the launcher
+    ran `signal(SIGPIPE, SIG_IGN)` before execve -- which execve
+    preserves, see [State.in_sigpipe_default] -- so the same write
+    answers -EPIPE and the program runs on.
+
+    WHAT A PROOF OF THIS BUYS, AND WHAT IT COSTS.  It buys a world in
+    which no write arm ends the run or declines, so a program that
+    writes to a channel, a pipe or a socket with no reader is still
+    running afterwards and its halting is decided by its own code.  It
+    costs the program's own handling: the -EPIPE is returned, and what
+    the program does next is then part of the obligation, where under
+    [Run.valid_input] the same write is an error.  Neither statement
+    implies the other, and that is why both exist.
+
+    ONE PER-TRIPLE OBLIGATION, UNLIKE THE ABORT PAIR.  The abort
+    stances needed two, because the declaration-on statement had to ask
+    [error_free_unkilled] where the other asked [error_free].  Neither
+    SIGPIPE stance can reach a death -- under SIG_IGN nothing is raised,
+    and under [Run.valid_input] the raising write declines -- so both
+    ask [error_free], these shapes are quantifier shells over the SAME
+    triple obligation, and the either shape below is a shell too. *)
+Definition strong_universal_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv en_source en_target inp.
+
+Definition strong_universal_error_free_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+(** Neither SIGPIPE stance pinned: the obligation over every input the
+    shared clauses accept.  It is exactly the conjunction of the two
+    stances, so a task that says nothing about the disposition its
+    launcher left is held to both readings. *)
+Definition strong_universal_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv en_source en_target inp.
+
+Lemma strong_universal_T_sigpipe_either_splits :
+  strong_universal_T_sigpipe_either
+  <-> (strong_universal_T /\ strong_universal_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies :
+  strong_universal_T_sigpipe_either -> strong_universal_T.
+Proof.
+  intros H. exact (proj1 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies_ignored :
+  strong_universal_T_sigpipe_either -> strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H. exact (proj2 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Definition strong_universal_error_free_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+Lemma strong_universal_error_free_T_sigpipe_either_splits :
+  strong_universal_error_free_T_sigpipe_either
+  <-> (strong_universal_error_free_T
+       /\ strong_universal_error_free_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_error_free_T_sigpipe_ignored_implies :
+  strong_universal_error_free_T_sigpipe_ignored ->
+  strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H en_s en_t inp Hs Ht Hv.
+  apply strong_equiv_error_free_implies, H; assumption.
+Qed.
+
 (** And it bites on an abort: a source that can be killed on one valid
     triple refutes it.  This is the clause that keeps "the reference can
     abort" a proof obligation under the declaration, rather than only
@@ -1132,30 +1297,24 @@ End SPEC_ERROR_FREE.
     declares. *)
 
 (** The entry predicates are inhabited under every declaration, by the
-    same witness [image_brk_satisfiable_entry] uses moved to the declared
-    size's window.  Stated over [valid_input_va_any] and the size read off
-    the input, so that one lemma serves the three pinned predicates. *)
+    same witness [image_brk_satisfiable_entry] uses: [Run.launch_entry_va]
+    takes the address-space size as an argument, so the one witness
+    moves to the declared size's window on its own.  Stated over
+    [valid_input_va_any] and the size read off the input, so that one
+    lemma serves the three pinned predicates. *)
 Lemma image_brk_satisfiable_entry_va : forall img inp,
   valid_input_va_any inp ->
   image_brk_satisfiable (img_segments img) = true ->
   exists en, valid_entry img en inp.
 Proof.
-  intros [segs pc ph] inp (Hargv & Henvp & _ & _) H.
+  intros [segs pc ph] inp Hv H.
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp) as Hspan.
-  unfold entry_stack_span_max in Hspan.
-  exists (mkEntry (Z_to_bv 64 (va_sp_window_lo (in_va_size inp))) brk
-            (Z_to_bv 64 (va_mmap_base_max (in_va_size inp)))
-            (mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0))).
-  unfold valid_entry. cbn [valid_entry_va].
-  unfold valid_sp_va, valid_mmap_base_va, entry_stack_fits_va,
-    va_sp_window_lo, va_sp_window_hi, va_mmap_base_min, va_mmap_base_max,
-    va_stack_top.
-  destruct (in_va_size inp);
-    unfold sp_window_hi, sv39_task_size, mmap_base_min, page_size;
-    (split; [| split; [exact Hbrk | split]]);
-    rewrite Z_to_bv_unsigned, bv_wrap_small by (unfold bv_modulus; cbn; lia);
-    lia.
+  (* Conjunct-count-free, as in [image_brk_satisfiable_entry]. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
+            vdso_keeps_all).
+  apply launch_entry_va_valid; assumption.
 Qed.
 
 Section SpecVa.
@@ -1232,9 +1391,13 @@ Lemma strong_universal_T_sv39_refuted :
     valid_input_sv39 inp ->
     ~ strong_universal_T_sv39.
 Proof.
-  intros en_s en_t inp Hs Ht Hv H.
-  destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  intros en_s en_t inp Hv_s Hv_t Hv H.
+  destruct (H en_s en_t inp Hv_s Hv_t Hv) as (H48 & _).
+  (* No conjunct count: [red] then split everything, and let
+     [congruence] find the declared size among the pieces. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  congruence.
 Qed.
 
 Lemma strong_universal_T_sv57_refuted :
@@ -1244,9 +1407,11 @@ Lemma strong_universal_T_sv57_refuted :
     valid_input_sv57 inp ->
     ~ strong_universal_T_sv57.
 Proof.
-  intros en_s en_t inp Hs Ht Hv H.
-  destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  intros en_s en_t inp Hv_s Hv_t Hv H.
+  destruct (H en_s en_t inp Hv_s Hv_t Hv) as (H48 & _).
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  congruence.
 Qed.
 
 End SpecVa.
@@ -1535,6 +1700,7 @@ Proof.
   pose proof (dies_by_signal_behavior_equiv _ _ Hb).
   tauto.
 Qed.
+
 
 Section SpecScfg.
 

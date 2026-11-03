@@ -75,3 +75,20 @@
   (deps %{project_root}/tools/gen_checker.py)
   (action
    (run python3 %{project_root}/tools/gen_checker.py rwx_flag_ns --out %{target}))))
+
+(subdir forkwait
+ (rule
+  (target forkwait_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  ; forkwait is ONE binary making a halting claim, not an equivalence pair,
+  ; so --single, and its image module is named for the example rather than
+  ; for a side.  Its .text needs no explicit range: the executable LOAD is
+  ; r-x with p_filesz 0x68, which is the 26 instructions and nothing else.
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py forkwait
+    --single --source-image ForkwaitMemImage
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target}))))

@@ -58,15 +58,33 @@ Proof.
   apply pure_ok.
 Qed.
 
+(** The namespace word's resolution admits every errno but -EINTR, so
+    the same -EAGAIN outcome witnesses it. *)
+Lemma clone_ns_resolve_witness_ok : forall i m,
+  clone_ns_resolve i m (clone_resolve_witness m).
+Proof.
+  intros. unfold clone_ns_resolve, clone_resolve_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (m_fds m))); cbv iota;
+    [apply unmodeled_intro|].
+  apply alt_l. eapply bind_step.
+  { apply (choose_ok _ EAGAIN). cbv beta. unfold EAGAIN, EINTR. lia. }
+  apply pure_ok.
+Qed.
+
 Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
-  if clone_fork_flags_b flags then clone_resolve_witness m else Unmodeled.
+  if clone_fork_flags_b flags then clone_resolve_witness m
+  else if clone_ns_flags_b flags then clone_resolve_witness m
+  else Unmodeled.
 
 Lemma clone_witness_ok : forall flags i m,
   clone_spec flags i m (clone_witness flags m).
 Proof.
   intros. unfold clone_spec, clone_witness.
-  destruct (clone_fork_flags_b flags);
-    [apply clone_resolve_witness_ok | apply unmodeled_intro].
+  destruct (clone_fork_flags_b flags); cbv iota;
+    [apply clone_resolve_witness_ok|].
+  destruct (clone_ns_flags_b flags); cbv iota;
+    [apply clone_ns_resolve_witness_ok | apply unmodeled_intro].
 Qed.
 
 (** The same witness, carrying the copy-in ledger the [clone3] resolution
@@ -94,8 +112,11 @@ Qed.
 Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then Unmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => Unmodeled                     (* unreadable clone_args *)
+  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+       | None =>
+           if negb (access_okb uargs CLONE_ARGS_SIZE)
+           then ret_outcome (errno_ret EFAULT) m   (* [access_ok] refuses: nothing read *)
+           else Unmodeled                         (* admitted, not wholly readable *)
        | Some bs =>
            if clone3_fork_args_b bs then clone3_resolve_witness uargs m
            else Unmodeled
@@ -108,8 +129,10 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota;
     [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|]; [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|].
+  2: { cbv iota. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota;
+         [unfold err_ret, ret_only, ret_outcome; apply pure_ok
+         |apply unmodeled_intro]. }
   destruct (clone3_fork_args_b bs);
     [apply clone3_resolve_witness_ok | apply unmodeled_intro].
 Qed.

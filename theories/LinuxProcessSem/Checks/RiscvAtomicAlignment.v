@@ -33,7 +33,8 @@ Definition atomic_code_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x";
-  seg_bytes := ["2fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c500"%pstring]
+  seg_bytes := ["2fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c500"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition atomic_segments : list Segment := [atomic_code_segment].
@@ -110,8 +111,9 @@ Proof. vm_compute. reflexivity. Qed.
 
     A misaligned sc faults even with NO live reservation — without the
     gate (or with it placed after the reservation test) this case would
-    retire cleanly with rd = 1, never touching memory.  With a live
-    matching reservation the aligned twin stores and retires. *)
+    retire cleanly with rd = 1, since the failing arm's permission check
+    is an ordinary load and store and those may be misaligned.  With a
+    live matching reservation the aligned twin stores and retires. *)
 
 Example sc_w_aligned_success :
   steps_ok (atomic_state pc_sc_w 0x204 (Some (Z_to_bv 64 0x204))).
@@ -140,3 +142,31 @@ Example sc_d_mod_4_live_resv :
   step atomic_segments
     (atomic_state pc_sc_d 0x204 (Some (Z_to_bv 64 0x204))) = MachineFault.
 Proof. vm_compute. reflexivity. Qed.
+
+(** *** sc: a FAILING sc still passes the store permission check
+    ([Sem.exec]'s [Sc] arm).  On memory the process may write it retires
+    with rd = 1 and every byte reads as before.  On the read-only code
+    segment at [0x100], which is readable and naturally aligned for
+    both widths, it faults on the store check; on an unmapped address it
+    faults too. *)
+Example sc_fail_retires_and_keeps_memory :
+  match step atomic_segments (atomic_state pc_sc_w 0x204 None) with
+  | MachineOk ms' =>
+      bv_unsigned (ms_gpr ms' 0) = 1%Z
+      /\ option_map bv_unsigned (ms_mem ms' (Z_to_bv 64 0x204)) = Some 0x5a%Z
+      /\ option_map bv_unsigned (ms_mem ms' (Z_to_bv 64 0x207)) = Some 0x5a%Z
+  | _ => False
+  end.
+Proof. vm_compute. repeat split. Qed.
+
+Example sc_fail_on_read_only_memory_faults :
+  step atomic_segments (atomic_state pc_sc_w 0x100 None) = MachineFault
+  /\ step atomic_segments (atomic_state pc_sc_d 0x100 None) = MachineFault
+  /\ step atomic_segments
+       (atomic_state pc_sc_w 0x100 (Some (Z_to_bv 64 0x104))) = MachineFault.
+Proof. vm_compute. repeat split. Qed.
+
+Example sc_fail_on_unmapped_memory_faults :
+  step atomic_segments (atomic_state pc_sc_w 0x300 None) = MachineFault
+  /\ step atomic_segments (atomic_state pc_sc_d 0x300 None) = MachineFault.
+Proof. vm_compute. repeat split. Qed.

@@ -1116,24 +1116,90 @@ Proof.
   rewrite Zplus_mod_idemp_l. f_equal. lia.
 Qed.
 
-(** Upper bound on the initial stack image (feeds every read lemma's
-    no-overflow side condition; the numbers come from [valid_argv]/
-    [valid_envp]).
-
-    Derived rather than computed: the layout arithmetic
-    is [PropExec.build_stack_bytes_within_span] and the [valid_argv]/
-    [valid_envp] arithmetic is [Run.entry_stack_span_bound], and this is
-    their composition.  The SAME derivation backs both this bound and
-    [Run.entry_stack_fits], so the two cannot disagree about how
-    big an initial stack image can be. *)
-Lemma bsb_bound : forall ph (sp : word) (a e : list (list byte)) uid hw rnd,
-  valid_argv a -> valid_envp e ->
-  (Z.of_nat (length (build_stack_bytes ph sp a e uid hw rnd)) <= 2240000)%Z.
+(** C, the distance [create_elf_tables] (fs/binfmt_elf.c, Linux
+    v6.18.46, commit 1f99e9ab748f) puts between the entry stack pointer
+    and the top of AT_RANDOM, is the pointer vector plus at most 512
+    fixed bytes: 29 auxv pairs at most (464), the three NULL/argc slots
+    (24), [STACK_ALLOC]'s 16 and [STACK_ROUND]'s odd-item 8. *)
+Lemma block_head_size_le : forall rseq argv envp,
+  (Z.of_nat (block_head_size rseq argv envp)
+   <= 8 * Z.of_nat (length argv) + 8 * Z.of_nat (length envp) + 512)%Z.
 Proof.
-  intros ph sp a e uid hw rnd Hva Hve.
-  pose proof (build_stack_bytes_within_span ph sp a e uid hw rnd).
-  pose proof (entry_stack_span_bound a e Hva Hve).
-  unfold entry_stack_span_max in *. lia.
+  intros rseq argv envp.
+  unfold block_head_size, block_items, auxv_size, auxv_count.
+  pose proof (Nat.mod_upper_bound
+                (length argv + length envp + 3) 2 ltac:(lia)).
+  destruct rseq; lia.
+Qed.
+
+(** The entry stack pointer is below the stack VMA's end:
+    [create_elf_tables] only ever subtracts from [bprm->p], which
+    already sits [8 + L] below the end. *)
+Lemma launch_sp_le_top : forall inp (top sp : word),
+  valid_launch_sp top inp sp ->
+  (bv_unsigned sp <= bv_unsigned top)%Z.
+Proof.
+  intros inp top sp [_ [_ Hhi]].
+  unfold launch_sp_hi, align_down16 in Hhi.
+  pose proof (Nat2Z.is_nonneg
+    (launch_string_bytes (in_argv inp) (in_envp inp) (in_execfn inp))).
+  pose proof (Nat2Z.is_nonneg
+    (block_head_size (kb_rseq (in_kernel inp)) (in_argv inp) (in_envp inp))).
+  pose proof (Z.mod_pos_bound
+    (bv_unsigned top - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp))) 16 ltac:(lia)).
+  lia.
+Qed.
+
+(** How far below the stack VMA's end the entry stack pointer can sit.
+    [Run.launch_sp_lo] is [align_down16 (top - 8 - L - 4095) - C], and
+    [align_down16] drops at most 15, so the distance is at most
+    [L + C + 4118].  [Run.valid_launch] caps [L + 8 * (argc + envc)] at
+    [Run.e2big_limit] (2 MiB) and [block_head_size_le] caps [C] at
+    [8 * (argc + envc) + 512], so the sum is at most 2101782 whatever
+    the input. *)
+Lemma launch_top_minus_sp : forall inp (top sp : word),
+  valid_launch inp ->
+  valid_launch_sp top inp sp ->
+  (bv_unsigned top - bv_unsigned sp <= 2101782)%Z.
+Proof.
+  intros inp top sp [_ Hb] [_ [Hlo _]].
+  unfold launch_bytes, e2big_limit in Hb.
+  unfold launch_sp_lo, align_down16 in Hlo.
+  pose proof (block_head_size_le (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)).
+  pose proof (Z.mod_pos_bound
+    (bv_unsigned top - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp))
+     - 4095) 16 ltac:(lia)).
+  lia.
+Qed.
+
+(** Upper bound on the initial stack image (feeds every read lemma's
+    no-overflow side condition).
+
+    Derived rather than computed, and now from the LAUNCH rather than
+    from [valid_argv]/[valid_envp]: the image is exactly the block
+    between [sp] and the stack VMA's end
+    ([PropExec.length_entry_stack_image_launch]), and
+    [launch_top_minus_sp] bounds that distance.  The older derivation
+    went through [PropExec.build_stack_bytes_within_span] and
+    [Run.entry_stack_span_bound]; that span counted neither the exec
+    file name nor [arch_align_stack]'s pad, so it is no longer an upper
+    bound on the block and the lemma behind it is retired. *)
+Lemma bsb_bound : forall v inp mbase ph entry (sp brk : word) draw,
+  valid_launch inp ->
+  entry_launch_ok_va v (mkEntry sp brk mbase draw) inp ->
+  (Z.of_nat (length (entry_stack_image inp mbase ph entry sp draw))
+   <= 2101782)%Z.
+Proof.
+  intros v inp mbase ph entry sp brk draw Hvl Hlau.
+  rewrite (length_entry_stack_image_launch v inp mbase ph entry sp brk draw
+             Hlau).
+  destruct Hlau as (_ & Hsp & _).
+  exact (launch_top_minus_sp inp (ed_top draw) sp Hvl Hsp).
 Qed.
 
 (** A store range at/above the ends of both segments of a two-segment
@@ -1151,7 +1217,7 @@ Qed.
 
 (** ** Avoiding the read-only segments, for any number of segments
 
-    [range_avoids_ro_two] above is fixed at two segments.  Each example
+    [range_avoids_two] above is fixed at two segments.  Each example
     proves the same fact about its own image, and the hand-rolled proof
     names every segment explicitly — so it has to be edited by hand
     whenever the segment COUNT changes (for example, gcc can give
@@ -1173,7 +1239,7 @@ Qed.
       Qed.
 
     Note the range's LENGTH is irrelevant, as it is for
-    [range_avoids_ro_two]: a range that starts above every read-only
+    [range_avoids_two]: a range that starts above every read-only
     segment cannot re-enter one by being long, because the segments lie
     below it. *)
 Definition ro_segs_below (segs : list Segment) (data_base : Z) : bool :=

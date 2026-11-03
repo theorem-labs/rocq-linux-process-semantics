@@ -292,6 +292,10 @@ Proof. check_eq. Qed.
     both, so the destination it hands the second call is one the first
     call already found writable.  The disjunction covers the other
     spelling, where [rmtp] is NULL and no remainder is reported at all.
+    Both hypotheses are on the bare walk and not on
+    [State.copy_bytes_map], and the statement keeps that strength: a
+    range [access_ok] refuses is answered with -EFAULT at either
+    pointer, never declined, so the range test cannot reopen the hole.
 
     THE STATEMENT IS A NON-DECLINE, not an acceptance, on purpose: it
     must hold for EVERY effect, and most effects at a given input are
@@ -410,6 +414,11 @@ Proof.
     unfold timespec_ns, CLOCK_NS_ENVELOPE, tv_sec_of, tv_frac_of in *.
     change (2 ^ 63)%Z with 9223372036854775808%Z in *. lia. }
   intro Hc. unfold check_nanosleep in Hc.
+  destruct (access_okb rqtp 16) eqn:Hok.
+  2:{ rewrite (copy_bytes_map_refused (in_mem i) rqtp 16 Hok) in Hc.
+      cbv iota in Hc. try rewrite Hok in Hc. cbn [negb] in Hc. cbv iota in Hc.
+      now apply check_ret_only_no_unmodeled in Hc. }
+  rewrite (copy_bytes_map_accepted (in_mem i) rqtp 16 Hok) in Hc.
   rewrite Hread, Hvalid in Hc. cbn [negb] in Hc. cbv iota in Hc.
   destruct eff as [ret ws zs us cs cp].
   destruct (w_is0 rmtp) eqn:Hw; cbv iota in Hc.
@@ -423,6 +432,19 @@ Proof.
     destruct (bv_eqb ret (Z_to_bv 64 0)); [discriminate|].
     destruct (bv_eqb ret (errno_ret EINTR)); discriminate.
   - destruct Hdest as [Hz|Hd]; [rewrite Hz in Hw; discriminate|].
+    destruct (access_okb rmtp 16) eqn:Hok2.
+    2:{ rewrite (copy_bytes_map_refused (in_wmem i) rmtp 16 Hok2) in Hc.
+        cbv iota in Hc. try rewrite Hok2 in Hc. cbn [negb] in Hc. cbv iota in Hc.
+        unfold check_copyins in Hc.
+        destruct (access_ranges_eqb (eff_copyins _) [(rqtp, 16%nat)]);
+          [|discriminate].
+        destruct ws as [|? ?]; [|discriminate].
+        destruct zs as [|? ?]; [|discriminate].
+        destruct us as [|? ?]; [|discriminate].
+        destruct cs as [|? ?]; [|discriminate].
+        destruct (bv_eqb ret (Z_to_bv 64 0)); [discriminate|].
+        destruct (bv_eqb ret (errno_ret EFAULT)); discriminate. }
+    rewrite (copy_bytes_map_accepted (in_wmem i) rmtp 16 Hok2) in Hc.
     destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hr2;
       [|now apply Hd]. cbv iota in Hc.
     unfold check_copyins in Hc.
@@ -692,3 +714,156 @@ Example nanosleep_copyin_at_the_wrong_pointer_rejected :
     (with_copyins [(4096, 16%nat)] (mkEffect 0 [] []))
     (clock_model 0) = CheckReject.
 Proof. check_eq. Qed.
+
+(* =========================================================================
+   THE TWO TIME POINTERS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   [nanosleep_spec] read [rqtp] and tested [rmtp] with
+   [State.read_bytes_map] bare, and that walk WRAPS at 2^64
+   ([State.copy_bytes_map]'s note).  A pointer in the last sixteen bytes
+   of the address space read the bytes below the wrap and then the bytes
+   from 0, said [Some], and the arm ANSWERED: a request there was slept
+   on, and an interruption wrote its remainder there.  Both now go
+   through [State.copy_bytes_map], and [Checks.Cases.Net.Socket]'s wrap
+   groups are the shape these take.
+
+   EACH GROUP IS THREE EXAMPLES.  The wrapping call is judged by the
+   range test; a NEIGHBOURING ordinary call at the top of what
+   [State.access_okb] accepts is still answered, so the guard is not a
+   blanket refusal of high addresses; and the bare walk is shown reading
+   the wrapped range back, so the refusal cannot be passing because the
+   memory stopped short.  Every memory maps EXACTLY its own sixteen
+   bytes and nothing else.
+   ========================================================================= *)
+
+(* ---- the request, [rqtp] ------------------------------------------------ *)
+
+(** Eight bytes below the top and eight from 0, all zero: the request
+    decodes as [{0, 0}], which [timespec_valid_b] accepts, so before the
+    guard this call slept and returned 0. *)
+Definition nanosleep_wrap_rqtp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition nanosleep_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Definition nanosleep_wrap_rqtp_input : SyscallInput :=
+  mkInput 101 [nanosleep_wrap_rqtp; 0; 0; 0; 0; 0]
+    nanosleep_wrap_mem (fun _ => None).
+
+Example nanosleep_wrap_rqtp_would_pass_the_bare_walk :
+  read_bytes_map nanosleep_wrap_mem nanosleep_wrap_rqtp (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** -EFAULT with an EMPTY ledger is the answer: [get_timespec64]'s
+    [copy_from_user] (kernel/time/time.c) refuses the range before a
+    byte moves, and [SYSCALL_DEFINE2(nanosleep)] (kernel/time/hrtimer.c)
+    returns that before it validates or sleeps.  Refused: the completed
+    sleep the bare walk admitted, and the -EFAULT claiming the request
+    was read. *)
+Example nanosleep_wrapping_rqtp_is_efault :
+  check_syscall nanosleep_wrap_rqtp_input
+    (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall nanosleep_wrap_rqtp_input
+       (with_copyins [(nanosleep_wrap_rqtp, 16%nat)] (mkEffect 0 [] []))
+       (clock_model 0)
+     = CheckReject
+  /\ check_syscall nanosleep_wrap_rqtp_input
+       (with_copyins [(nanosleep_wrap_rqtp, 16%nat)]
+          (mkEffect (errno_ret EFAULT) [] []))
+       (clock_model 0)
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the last sixteen bytes [State.access_okb] accepts,
+    holding one second.  The sleep is answered with the copy-in ledger
+    and carries the clock a second on, and -EFAULT is refused there. *)
+Definition nanosleep_top_rqtp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition nanosleep_top_rqtp_input : SyscallInput :=
+  mkInput 101 [nanosleep_top_rqtp; 0; 0; 0; 0; 0]
+    (mem_at (TASK_SIZE - 16) ts_1s) (fun _ => None).
+
+Example nanosleep_rqtp_at_the_top_still_sleeps :
+  check_syscall nanosleep_top_rqtp_input
+    (with_copyins [(nanosleep_top_rqtp, 16%nat)] (mkEffect 0 [] []))
+    (clock_model 0)
+  = CheckOk (clock_model 1000000000) []
+  /\ check_syscall nanosleep_top_rqtp_input
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- the remainder destination, [rmtp] ---------------------------------- *)
+
+(** The request is the ordinary one at 8192; [rmtp] is eight bytes below
+    the top and its sixteen bytes wrap onto the eight from 0. *)
+Definition nanosleep_wrap_rmtp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition nanosleep_wrap_wmem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Definition nanosleep_wrap_rmtp_input : SyscallInput :=
+  mkInput 101 [8192; nanosleep_wrap_rmtp; 0; 0; 0; 0]
+    (mem_at 8192 ts_1s) nanosleep_wrap_wmem.
+
+Example nanosleep_wrap_rmtp_would_pass_the_bare_walk :
+  read_bytes_map nanosleep_wrap_wmem nanosleep_wrap_rmtp (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** [put_timespec64]'s [copy_to_user] (kernel/time/time.c) refuses the
+    range, so an interruption is [nanosleep_copyout]'s -EFAULT with
+    nothing written and the clock held (kernel/time/hrtimer.c), and a
+    completed sleep, which never reaches the copy, is still 0.  Both are
+    accepted, each with the request's ledger, since the request WAS
+    read.  Refused: the -EINTR with a remainder written at the wrapping
+    [rmtp], which the bare walk admitted, and the -EFAULT without the
+    request's ledger. *)
+Example nanosleep_wrapping_rmtp_is_efault_or_completed :
+  check_syscall nanosleep_wrap_rmtp_input
+    (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall nanosleep_wrap_rmtp_input
+       (with_copyins [(8192, 16%nat)] (mkEffect 0 [] []))
+       (clock_model 0)
+     = CheckOk (clock_model 1000000000) []
+  /\ check_syscall nanosleep_wrap_rmtp_input
+       (with_copyins [(8192, 16%nat)]
+          (mkEffect (errno_ret EINTR) [(nanosleep_wrap_rmtp, ts_250ms)] []))
+       (clock_model 0)
+     = CheckReject
+  /\ check_syscall nanosleep_wrap_rmtp_input
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; [|split; [|split]]; check_eq. Qed.
+
+(** THE NEIGHBOUR: an [rmtp] at the last sixteen bytes
+    [State.access_okb] accepts, mapped end to end.  The interruption
+    writes its remainder there and is accepted, and -EFAULT is
+    refused. *)
+Definition nanosleep_top_rmtp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition nanosleep_top_wmem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Definition nanosleep_top_rmtp_input : SyscallInput :=
+  mkInput 101 [8192; nanosleep_top_rmtp; 0; 0; 0; 0]
+    (mem_at 8192 ts_1s) nanosleep_top_wmem.
+
+Example nanosleep_rmtp_at_the_top_still_gets_the_remainder :
+  check_syscall nanosleep_top_rmtp_input
+    (with_copyins [(8192, 16%nat)]
+       (mkEffect (errno_ret EINTR) [(nanosleep_top_rmtp, ts_250ms)] []))
+    (clock_model 0)
+  = CheckOk (clock_model 750000000) []
+  /\ check_syscall nanosleep_top_rmtp_input
+       (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.

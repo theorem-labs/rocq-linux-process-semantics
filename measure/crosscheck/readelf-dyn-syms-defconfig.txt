@@ -1,0 +1,25 @@
+
+Symbol table '.dynsym' contains 11 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 0000000000000498     0 SECTION LOCAL  DEFAULT    7 .rodata
+     2: 0000000000000870   500 FUNC    GLOBAL DEFAULT   11 __vdso_gettimeofday@@LINUX_4.15
+     3: 0000000000000a64   144 FUNC    GLOBAL DEFAULT   11 __vdso_clock_getres@@LINUX_4.15
+     4: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  ABS LINUX_4.15
+     5: 0000000000000b10   284 FUNC    GLOBAL DEFAULT   11 __vdso_riscv_hwprobe@@LINUX_4.15
+     6: 0000000000000c3c   552 FUNC    GLOBAL DEFAULT   11 __vdso_getrandom@@LINUX_4.15
+     7: 0000000000000590     8 FUNC    GLOBAL DEFAULT   11 __vdso_rt_sigreturn@@LINUX_4.15
+     8: 00000000000005b4   698 FUNC    GLOBAL DEFAULT   11 __vdso_clock_gettime@@LINUX_4.15
+     9: 0000000000000b04    10 FUNC    GLOBAL DEFAULT   11 __vdso_flush_icache@@LINUX_4.15
+    10: 0000000000000af8    10 FUNC    GLOBAL DEFAULT   11 __vdso_getcpu@@LINUX_4.15
+
+Version symbols section '.gnu.version' contains 11 entries:
+ Addr: 0x0000000000000326  Offset: 0x00000326  Link: 2 (.dynsym)
+  000:   0 (*local*)       0 (*local*)       2 (LINUX_4.15)    2 (LINUX_4.15) 
+  004:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15) 
+  008:   2 (LINUX_4.15)    2 (LINUX_4.15)    2 (LINUX_4.15) 
+
+Version definition section '.gnu.version_d' contains 2 entries:
+ Addr: 0x0000000000000340  Offset: 0x00000340  Link: 3 (.dynstr)
+  000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: linux-vdso.so.1
+  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: LINUX_4.15

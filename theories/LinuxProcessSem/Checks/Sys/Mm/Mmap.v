@@ -13,8 +13,53 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
 Import ListNotations.
 Open Scope bv_scope.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
+
+(** The two side conditions every use of [Placement.linux_place_is_iff]
+    in this file needs, from the one gate [mmap_spec] has already
+    passed when it reaches a fresh-grant arm: the length is not zero.
+    [page_round_up_Z] of a nonzero length is a whole number of pages,
+    and at least one. *)
+Lemma mmap_grant_len_ok : forall len,
+  w_is0 len = false ->
+  (0 < page_round_up_Z (bv_unsigned len))%Z
+  /\ (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z.
+Proof.
+  intros len H. apply w_is0_false_pos in H.
+  split; [| apply page_round_up_Z_aligned].
+  pose proof (page_round_up_Z_pos (bv_unsigned len) H).
+  unfold page_size in *. lia.
+Qed.
+
+(** The fresh-grant guard, discharged in one step: the checker's test
+    is true, so the address is the one [Sys/Mm/Mmap.linux_place]
+    gives. *)
+Ltac place_from_check H Hlen :=
+  apply (linux_place_is_iff _ _ _ _ _
+           (proj1 (mmap_grant_len_ok _ Hlen))
+           (proj2 (mmap_grant_len_ok _ Hlen))); exact H.
+
+(** The other direction, for the completeness proofs: the spec's guard
+    holds, so the checker's placement test is true and the returned
+    address is far enough below the top that it is no encoded errno. *)
+Ltac place_complete Hlen :=
+  lazymatch goal with
+  | Hp : linux_place _ _ _ _ (bv_unsigned ?a) |- _ =>
+      let Hal := fresh "Hal" in let Hpos := fresh "Hpos" in
+      let Hb := fresh "Hb" in let Hfree := fresh "Hfree" in
+      destruct (linux_place_admissible _ _ _ _ _
+                  (proj1 (mmap_grant_len_ok _ Hlen))
+                  (proj2 (mmap_grant_len_ok _ Hlen)) Hp)
+        as (Hal & Hpos & Hb & Hfree);
+      rewrite (errno_ret_in_below mmap_errnos a) by
+        first [ reflexivity
+              | alloc_top_bounds; unfold two_pow_64 in *; lia ];
+      rewrite (proj2 (linux_place_is_iff _ _ _ _ a
+                        (proj1 (mmap_grant_len_ok _ Hlen))
+                        (proj2 (mmap_grant_len_ok _ Hlen))) Hp)
+  end.
 
 Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
@@ -31,10 +76,12 @@ Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
 Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (mmap_off_aligned_b off) then
-    (if mmap_pglen_ok_b len
-     then check_ret_only eff (errno_ret EINVAL) m []
-     else CheckUnmodeled)
-  else if negb (mmap_anon_b flags) then CheckUnmodeled
+    check_ret_only eff (errno_ret EINVAL) m []
+  else if negb (mmap_anon_b flags) then
+    (match fd_lookup (m_fds m) (fd32 fd) with
+     | None => check_ret_only eff (errno_ret EBADF) m []
+     | Some _ => CheckUnmodeled
+     end)
   else if w_is0 len then
     (if mmap_plain_anon_b flags
      then check_ret_only eff (errno_ret EINVAL) m []
@@ -47,9 +94,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-           && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
-           && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
            && mmap_noreserve_backed_ok flags m nZ
            && listNN_eqb zs [(r, n)]
         then CheckOk
@@ -73,9 +118,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-           && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
-           && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
            && listNN_eqb us [(r, n)]
         then CheckOk
                (with_mmap_backing flags r n
@@ -369,18 +412,14 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
     if map_has (vm_maps (m_vmmaps m)) addr n then
       match eff with
       | mkEffectU r [] [] us [] [] =>
-          if w_is0 r && listNN_eqb us [(addr, n)]
+          if errno_ret_in munmap_errnos r
+          then match us with
+               | [] => CheckOk m []
+               | _ => CheckReject
+               end
+          else if w_is0 r && listNN_eqb us [(addr, n)]
           then CheckOk (with_mmap_destroyed addr n
-                          (mkVmMapsFull (vm_reserved (m_vmmaps m))
-                             (map_remove (vm_maps (m_vmmaps m)) addr)
-                             (maps_subtract (vm_noaccess (m_vmmaps m))
-                                            (bv_unsigned addr)
-                                            (bv_unsigned addr + bv_unsigned n))
-                             (vm_start_brk (m_vmmaps m))
-                             (vm_brk (m_vmmaps m))
-                             (vm_limit (m_vmmaps m))
-                             (vm_mmap_base (m_vmmaps m))
-                             (vm_init_sp (m_vmmaps m))) m) []
+                          (mmap_fixed_destroyed_next (m_vmmaps m) addr n) m) []
           else CheckReject
       | _ => CheckReject
       end
@@ -419,18 +458,23 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
     are modeled ([Mprotect.mprotect_modeled_b]); any other [prot] — PROT_EXEC
     above all — is fail-closed. *)
 
-(** getrandom: destination must be writable-mapped; then a nonzero
-    request of at most [Random.getrandom_small_max] bytes is exactly
-    [cap] arbitrary bytes written at [buf], and a larger one is either
-    an error return with no writes or arbitrary bytes written at [buf]
-    — at least one (a bare 0 return is admissible only for [cap = 0])
-    — and only flags 0 / GRND_NONBLOCK are modeled (see
-    [Random.getrandom_spec]). *)
+(** getrandom: the checker is [check_getrandom] in
+    [Checks/Sys/Drivers/Char/Random.v].  The destination is asked through
+    [State.copy_bytes_map]: a range [access_ok] refuses is -EFAULT beside
+    -EINTR at every length, and one it admits that is not wholly
+    writable is declined.  Past that a nonzero request of at most
+    [Random.getrandom_small_max] bytes is exactly [cap] arbitrary bytes
+    written at [buf], and a larger one is either -EINTR with no writes or
+    arbitrary bytes written at [buf] — at least one (a bare 0 return is
+    admissible only for [cap = 0]) — and only flags 0 / GRND_NONBLOCK are
+    modeled (see [Random.getrandom_spec]). *)
 
-(** The acceptor for a ZERO-BYTE getrandom request once the range
-    verdict is known: [r0] is what that verdict allows besides the
-    interrupted return, which stays admissible either way (Linux can be
-    interrupted before it imports the buffer). *)
+(** [check_getrandom_zero], beside it, is the acceptor for a getrandom
+    that moves no byte: [r0] is the one answer besides the interrupted
+    return — 0 for a zero-byte request the range test admits, -EFAULT for
+    any range it refuses — and the interrupted return stays admissible
+    either way (Linux can be interrupted in [wait_for_random_bytes] before
+    [import_ubuf] tests the range). *)
 
 Lemma page_round_up_Z_nonneg : forall z,
   (0 <= z)%Z -> (0 <= page_round_up_Z z)%Z.
@@ -513,10 +557,13 @@ Proof.
   intros addr len prot flags fd off eff m m' evs i H.
   unfold check_mmap in H. unfold mmap_spec.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl; [|discriminate].
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { eapply bind_ok0; [apply get_model_ok|]. cbv beta iota zeta.
+    destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [discriminate|].
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa; [|discriminate].
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -534,26 +581,21 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
-                 && mmap_noreserve_backed_ok flags m
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
+                && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
         eqn:HC; [|discriminate].
       inversion H; clear H; subst.
       apply andb_true_iff in HC as [HC HZs].
-      apply andb_true_iff in HC as [HC HL].
-      apply andb_true_iff in HC as [HC HD].
-      apply andb_true_iff in HC as [HC HB].
-      apply andb_true_iff in HC as [HA HZ].
-      apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
+      apply andb_true_iff in HC as [HP HL].
       apply listNN_eqb_eq in HZs; subst zs.
       apply alt_r.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
       eapply bind_ok0.
-      { apply (choose_ok _ r). cbv beta. repeat split; assumption. }
+      { apply (choose_ok _ r). cbv beta. split;
+          [place_from_check HP Hl | exact HL]. }
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
@@ -568,24 +610,18 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
         eqn:HC; [|discriminate].
       inversion H; clear H; subst.
-      apply andb_true_iff in HC as [HC HUs].
-      apply andb_true_iff in HC as [HC HD].
-      apply andb_true_iff in HC as [HC HB].
-      apply andb_true_iff in HC as [HA HZ].
-      apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
+      apply andb_true_iff in HC as [HP HUs].
       apply listNN_eqb_eq in HUs; subst us.
       apply alt_r.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
       eapply bind_ok0.
-      { apply (choose_ok _ r). cbv beta. repeat split; assumption. }
+      { apply (choose_ok _ r). cbv beta. place_from_check HP Hl. }
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.
@@ -947,9 +983,11 @@ Proof.
   intros addr len prot flags fd off [r ws zs us cs copyins] m i H.
   unfold check_mmap in H. unfold mmap_spec.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl;
-      [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro]. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [apply unmodeled_intro|].
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|];
+      [apply unmodeled_intro | now apply check_ret_only_no_unmodeled in H]. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro]. }
@@ -958,11 +996,9 @@ Proof.
       [destruct us; [destruct cs; [destruct copyins|]|]|].
     + destruct (errno_ret_in mmap_errnos r); [destruct zs; discriminate|].
       cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
-                 && mmap_noreserve_backed_ok flags m
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
+                && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
@@ -978,10 +1014,8 @@ Proof.
     destruct (errno_ret_in mmap_errnos r).
     - destruct us; discriminate.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
         discriminate. }
@@ -1204,9 +1238,12 @@ Proof.
   unfold mmap_spec in H.
   unfold check_mmap.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl; sys_unfold; inv_ok.
+  { sys_unfold; inv_ok.
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [sys_unfold; inv_ok|].
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { sys_unfold; inv_ok.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|]; sys_unfold; inv_ok;
+      cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa; sys_unfold; inv_ok.
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
@@ -1221,13 +1258,7 @@ Proof.
     - cbv zeta.
       pose proof (word_unsigned_range len) as Hlen.
       pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
-      match goal with
-      | Hb : (bv_unsigned ?a + _ <= _)%Z |- context [errno_ret_in ?es ?a] =>
-          rewrite (errno_ret_in_below es a) by
-            first [ reflexivity
-                  | alloc_top_bounds;
-                      unfold two_pow_64 in *; lia ]
-      end.
+      place_complete Hl.
       bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
@@ -1241,13 +1272,7 @@ Proof.
     - cbv zeta.
       pose proof (word_unsigned_range len) as Hlen.
       pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
-      match goal with
-      | Hb : (bv_unsigned ?a + _ <= _)%Z |- context [errno_ret_in ?es ?a] =>
-          rewrite (errno_ret_in_below es a) by
-            first [ reflexivity
-                  | alloc_top_bounds;
-                      unfold two_pow_64 in *; lia ]
-      end.
+      place_complete Hl.
       bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.
@@ -1591,9 +1616,11 @@ Proof.
   unfold mmap_spec in H.
   unfold check_mmap.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl;
-      [sys_unfold; inv_ok; discriminate | reflexivity]. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [reflexivity|].
+  { sys_unfold; inv_ok. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { sys_unfold; inv_ok.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|]; [reflexivity|].
+    sys_unfold; inv_ok. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [sys_unfold; inv_ok; discriminate | reflexivity]. }
@@ -1721,17 +1748,26 @@ Proof.
   - destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
       [destruct zs as [|? ?]|]; try discriminate.
     destruct cs as [|? ?]; [destruct copyins as [|? ?]|]; try discriminate.
-    destruct (w_is0 r
-              && listNN_eqb us [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
-      eqn:HC; [|discriminate].
-    inversion H; clear H; subst.
-    apply andb_true_iff in HC as [Hr Hus].
-    unfold w_is0 in Hr. apply bv_eqb_eq in Hr; subst r.
-    apply listNN_eqb_eq in Hus; subst us.
     eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta.
     srw Hhas.
-    eapply bind_ok0; [apply modify_ok|].
-    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+    destruct (errno_ret_in munmap_errnos r) eqn:He.
+    + (* -ENOMEM, nothing unmapped *)
+      destruct us as [|? ?]; [|discriminate].
+      inversion H; clear H; subst.
+      apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+      apply alt_l.
+      eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+    + (* the cut *)
+      destruct (w_is0 r
+                && listNN_eqb us [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
+        eqn:HC; [|discriminate].
+      inversion H; clear H; subst.
+      apply andb_true_iff in HC as [Hr Hus].
+      unfold w_is0 in Hr. apply bv_eqb_eq in Hr; subst r.
+      apply listNN_eqb_eq in Hus; subst us.
+      apply alt_r.
+      eapply bind_ok0; [apply modify_ok|].
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
       eqn:Hfree.
@@ -1781,9 +1817,11 @@ Proof.
       [destruct zs as [|? ?];
        [destruct cs as [|? ?];
         [destruct copyins as [|? ?];
-         [destruct (w_is0 r
-                  && listNN_eqb us
-                       [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])|]|]|]|];
+         [destruct (errno_ret_in munmap_errnos r);
+          [destruct us
+          |destruct (w_is0 r
+                   && listNN_eqb us
+                        [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])]|]|]|]|];
       discriminate.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
@@ -1821,7 +1859,18 @@ Proof.
   destruct (map_has (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hhas;
     hall Hhas; inv_ok.
-  - cbv iota. unfold w_is0. rewrite bv_eqb_refl.
+  - (* -ENOMEM on the whole mapping *)
+    cbv iota.
+    match goal with
+    | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+        rewrite (errno_ret_in_intro es e) by assumption
+    end.
+    reflexivity.
+  - (* the cut *)
+    cbv iota.
+    replace (errno_ret_in munmap_errnos (Z_to_bv 64 0)) with false
+      by reflexivity.
+    unfold w_is0. rewrite bv_eqb_refl.
     rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
@@ -1872,5 +1921,6 @@ Qed.
 
 (* --------------------------------------------------------------- getrandom *)
 
-(** The zero-byte arm proved once, for whichever return the range
-    verdict allows beside the interrupted one. *)
+(** The no-byte arm — an admitted zero-byte request's 0 or a refused
+    range's -EFAULT, beside the interrupted return — is proved once, as
+    [check_getrandom_zero_sound] in [Checks/Sys/Drivers/Char/Random.v]. *)

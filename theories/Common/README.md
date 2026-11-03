@@ -1,9 +1,10 @@
 # Common: the proof library
 
 This directory is the Rocq theory `LinuxProcessSemantics.Common` (opam
-package `rocq-linux-process-semantics-common`). It helps you prove the
-statements of `theories/EquivalenceDefinition/` about RISC-V binaries. No
-file in it depends on a specific binary.
+package `rocq-linux-process-semantics-core`, the package that also installs
+the model). It helps you prove the statements of
+`theories/EquivalenceDefinition/` about RISC-V binaries. No file in it
+depends on a specific binary.
 
 Read this document to find the part of the library that you need. For the
 steps to write a full proof, read
@@ -155,9 +156,11 @@ The method:
 
 1. Write a *plan* (`AP.plan`, in `AsanPlan.v`). A plan says what to do at
    each point: run the executor to the next stop (`PRun`), take a system
-   call node with one child for each result (`PMmap`, `PBrk2`, `PSys`, ...),
-   apply a routine summary (`PX`), change the known facts (`PFact`,
-   `PSplit`, ...), or stop (`PExit`, `PSpin`, `PHandoff`).
+   call node with one child for each result (`PMmap`, `PBrk2`, `PMunmap2`,
+   `PSys`, ...), apply a routine summary (`PX`), change the known facts
+   (`PFact`, `PSplit`, ...), or stop (`PExit`, `PSpin`, `PHandoff`).
+   `munmap` of exactly one tracked entry is `PMunmap2`: its first child is
+   the refusal (`-ENOMEM`, nothing else changes), its second child the cut.
 2. Run the checker to get the result:
    `Eval vm_compute in AP.check SEGS IT A nx0 LIMIT HS bfuel fuel cs plan.`
    A good result is `COk shape`. `CErr` names the node and the state that
@@ -176,15 +179,15 @@ Use `cert_refl_vm`, not `cert_refl`. `cert_refl` uses the native compiler,
 which needs `.coq-native` files for every module that the file requires,
 also the memory-image modules.
 
-Two hypotheses need attention:
+One hypothesis needs attention, and one that used to be here no longer is:
 
 - `AsanCeil.placement_policy` says that each `mmap` without an address hint
-  gets an address below a fixed ceiling, as the first-fit search gives it.
-  The model does not give this: it lets the kernel put such a mapping at
-  any free address. Thus a proof that uses the `mmap` nodes of
-  `AsanNodesMmLib` and `AsanNodesMmA` is conditional on this hypothesis.
-  You can remove it if the runtime gives an address hint for each `mmap`
-  that the plan uses.
+  gets an address the checker's placement gate accepts. It is no longer a
+  hypothesis: `AsanCeil.placement_policy_holds` proves it from
+  `Sys/Mm/Mmap.linux_place`, the one address the spec gives such a mapping,
+  so a proof that uses the `mmap` nodes of `AsanNodesMmLib` and
+  `AsanNodesMmA` is conditional on nothing here. Those nodes used to take it
+  as a named `PLACEMENT` hypothesis and do not any more.
 - `AsanCeil.zero_random_draw` says that the `AT_RANDOM` bytes are zero.
   This is false for every real run. Only the old initial state
   `init_kn_zero` uses it. Use `init_kn` (the default), which needs no

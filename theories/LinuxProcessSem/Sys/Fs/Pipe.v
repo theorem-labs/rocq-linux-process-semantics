@@ -117,12 +117,21 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
     What changes is coverage — programs that create and use a pipe move
     from [unmodeled] to modeled, and the parts that stay [unmodeled] are
     named where they arise: a read of an empty pipe with a live writer
-    and a write to a pipe with no reader (both would block or signal), a
+    (it would block), a
     write needing a second ring slot (see [State.pipe_write_room]), a
     faulting source or a partially writable destination, and every
     vectored pipe transfer.  A source binary that reaches any of those
     fails [Equivalence.modeled], so the task is REJECTED rather than
     vacuously satisfied.
+
+    A WRITE TO A PIPE WITH NO READER IS NOT ON THAT LIST ANY MORE.  It
+    used to be, on the argument that SIGPIPE's default action ends the
+    process and the model had no death that is not [exit].  It has one
+    ([State.with_killed], [Run.sstep_killed]), so
+    [Fs.ReadWrite.write_spec]'s pipe arm answers the call -- a death by
+    signal 13, or -EPIPE where the launch mask blocks it -- and a
+    program that closes a pipe's read end and writes is a program a
+    proof can cover.
 
     WHY A PIPE IS THE FIRST FD KIND TO COST ANYTHING HERE.  Every fd kind
     before it either always has an answer (a channel, a file) or never
@@ -132,8 +141,8 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
     know something about a peer it does not represent.
 
     WHAT WOULD CLOSE IT: a model of blocking, which means a notion of a
-    call that has no answer until the other end acts, and of the process
-    death a SIGPIPE is; or at minimum a model of [O_NONBLOCK], whose
+    call that has no answer until the other end acts; or at minimum a
+    model of [O_NONBLOCK], whose
     [-EAGAIN] answers are a function of the pipe state alone, plus a way
     for a program to ASK for them.  There are two such ways and neither
     is available today: [pipe2]'s own [O_NONBLOCK] is inside the accepted
