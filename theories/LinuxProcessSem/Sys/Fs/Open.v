@@ -146,13 +146,15 @@ Definition rdwr_excl_create_flags : Z := (O_RDWR + O_CREAT + O_EXCL)%Z.
 Definition is_rdwr_excl_create (fl : Z) : bool :=
   Z.eqb fl rdwr_excl_create_flags || Z.eqb fl (rdwr_excl_create_flags + O_TRUNC).
 
-(** The flag bits every modeled shape accepts and ignores.  Each is
+(** The flag bits every modeled SHAPE accepts and ignores.  Each is
     ignorable for its own reason, recorded at its own definition in
     [Uapi]; the mask exists so that every mirror of the flag test —
     [openat_resolved_spec], [Checks.Sys.Fs.Open.check_openat] and
     [Checks.Witness.Fs.Open.openat_witness] — strips exactly the same
     bits, and so that widening the set is one edit rather than a
-    search. *)
+    search.  O_CLOEXEC picks no shape, but it is not lost: [openat_spec]
+    records it as the new descriptor's close-on-exec bit
+    ([open_cloexec_b]). *)
 Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 
 (** The O_PATH words, read past [open_ignored_flags]: O_PATH alone or
@@ -1244,8 +1246,9 @@ Definition openat_urandom_spec (flags : word) (m : Model)
     three before the test, exactly as every other arm in this file does.
     So O_RDONLY|O_NONBLOCK and O_RDONLY|O_LARGEFILE reach the read arm
     and the create word reaches the create arm with any of the three
-    set.  All three are inert on a regular file — O_CLOEXEC is a
-    descriptor-table flag the model does not record, O_LARGEFILE is
+    set.  All three are inert on the shape — O_CLOEXEC is a
+    descriptor-table flag that [openat_spec] records after every shape
+    ([open_cloexec_model]), O_LARGEFILE is
     unconditional on a 64-bit ABI, and O_NONBLOCK on a regular file
     changes no answer any modeled operation gives — which is the
     argument the mask's own definition carries and the reason this arm
