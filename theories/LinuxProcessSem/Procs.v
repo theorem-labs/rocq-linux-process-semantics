@@ -767,16 +767,15 @@ Definition child_ms (c c' : config) : machine_state :=
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
-    parent's own).  The child's parent pid is its parent's pid [ppid], the
-    parent's key in the process table, which the core always knows:
-    [copy_process] sets [p->real_parent = current] (kernel/fork.c), and
-    [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
-    a child cloned before its parent's first [getpid] would otherwise start
-    at 0.  The reparent window is open in a new child, with nothing moved:
+    parent's own). The child's parent pid [ppid] is the parent's pinned
+    tid when known, otherwise its provisional table key. [copy_process]
+    sets [p->real_parent = current] (v6.18.46:kernel/fork.c); the table
+    aligns that provisional pid when the root is first pinned. This is
+    not a getppid observation and does not consume the child's reparent
+    move. The reparent window is open in a new child, with nothing moved:
     its parent-death signal is 0, and [procst_reparent_unseen] and
-    [procst_reparent_moved] start [false].  The inheritable capability set
-    copies with the credentials.  Kernel citations, read at v6.18.44,
-    identical at v6.18.46. *)
+    [procst_reparent_moved] start [false]. The inheritable capability set
+    copies with the credentials. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               false (procst_sigmask ps)
@@ -804,8 +803,9 @@ Definition with_proc (ps : ProcState) (m : Model) : Model :=
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
-          (clear_shared (with_proc (child_proc (pe_pid e) (m_proc (pe_model e)))
-                                   (pe_model e)))
+          (clear_shared (with_proc (child_proc
+             (match m_tid (pe_model e) with Some t => t | None => pe_pid e end)
+             (m_proc (pe_model e))) (pe_model e)))
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);
@@ -959,9 +959,72 @@ Definition orphan_at_exit (m : Model) (p : Pid) (ps : list (Pid * ProcessEntry))
   | None => ps
   end.
 
+(** A first root-tid pin resolves its children's provisional parent pid.
+    Only running children of this root change. This is table bookkeeping,
+    not an observed reparent: [with_ppid] preserves both reparent flags. *)
+Definition root_child_ppid_one (root t : Pid) (kv : Pid * ProcessEntry)
+    : Pid * ProcessEntry :=
+  if negb (bv_eqb (fst kv) root)
+     && match pe_parent (snd kv) with Some p => bv_eqb p root | None => false end
+     && match m_halted (pe_model (snd kv)) with None => true | Some _ => false end
+  then (fst kv, mkEntry (pe_pid (snd kv)) (pe_parent (snd kv)) (pe_ms (snd kv))
+                       (with_ppid t (pe_model (snd kv)))
+                       (pe_ofd (snd kv)) (pe_nsctx (snd kv)))
+  else kv.
+
+Definition root_children_ppid (root t : Pid) (ps : list (Pid * ProcessEntry))
+    : list (Pid * ProcessEntry) :=
+  List.map (root_child_ppid_one root t) ps.
+
+Definition first_root_pin_children (P : pconfig) (e : ProcessEntry) (m' : Model)
+    (ps : list (Pid * ProcessEntry)) : list (Pid * ProcessEntry) :=
+  if bv_eqb (pe_pid e) (pcfg_root P) then
+    match m_tid (pe_model e), m_tid m' with
+    | None, Some t => root_children_ppid (pcfg_root P) t ps
+    | _, _ => ps
+    end
+  else ps.
+
+Lemma root_children_ppid_single : forall root t e,
+  root_children_ppid root t [(root, e)] = [(root, e)].
+Proof.
+  intros root t e. unfold root_children_ppid, root_child_ppid_one.
+  cbn [List.map fst]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+Lemma first_root_pin_children_single : forall P e m' x,
+  first_root_pin_children P e m' [(pe_pid e, x)] = [(pe_pid e, x)].
+Proof.
+  intros P e m' x. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:E; [|reflexivity].
+  destruct (m_tid (pe_model e)); [reflexivity|].
+  destruct (m_tid m'); [|reflexivity].
+  unfold root_children_ppid, root_child_ppid_one. cbn [List.map fst].
+  rewrite E. reflexivity.
+Qed.
+
+Lemma look_in_root_children_ppid : forall root t ps q,
+  look_in (root_children_ppid root t ps) q =
+  option_map (fun e => snd (root_child_ppid_one root t (q, e))) (look_in ps q).
+Proof.
+  intros root t ps q. unfold root_children_ppid.
+  induction ps as [|[k e] ps IH]; [reflexivity|].
+  cbn [List.map look_in fst snd].
+  unfold root_child_ppid_one at 1. cbn [fst snd].
+  destruct (negb (bv_eqb k root)
+    && match pe_parent e with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model e) with None => true | Some _ => false end) eqn:E;
+    cbn [look_in fst snd]; destruct (bv_eqb k q) eqn:Hk; try exact IH;
+    apply bv_eqb_true_eq in Hk; subst q;
+    cbn [option_map]; unfold root_child_ppid_one; cbn [fst snd]; rewrite E;
+    reflexivity.
+Qed.
+
+
 Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')))
+            (first_root_pin_children P e (cfg_model c')
+              (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c'))))
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
 
@@ -1319,9 +1382,13 @@ Definition root_pin_pending_b (P : pconfig) (e : ProcessEntry) : bool :=
 
 (** The table with the root's tid pinned to [t]. *)
 Definition pin_root (P : pconfig) (r : ProcessEntry) (t : word) : pconfig :=
-  mkPCfg (replace_in (pcfg_procs P) (pcfg_root P)
-            (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
-                     (pe_ofd r) (pe_nsctx r)))
+  let ps := replace_in (pcfg_procs P) (pcfg_root P)
+              (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
+                       (pe_ofd r) (pe_nsctx r)) in
+  mkPCfg (match m_tid (pe_model r) with
+          | None => root_children_ppid (pcfg_root P) t ps
+          | Some _ => ps
+          end)
          (pcfg_root P) (pcfg_shared P).
 
 (** [p] was a path of [old] and is not one of [new]. *)
@@ -1910,7 +1977,7 @@ Proof.
     with [(one_pid, pe_absorb (one_entry c) c')]
     by (cbn; rewrite bv_eqb_same; reflexivity).
   change (pe_pid (one_entry c)) with one_pid.
-  rewrite orphan_at_exit_single.
+  rewrite first_root_pin_children_single, orphan_at_exit_single.
   unfold one_proc, one_entry. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
@@ -2654,7 +2721,8 @@ Definition with_nsctx (e : ProcessEntry) (ctx : NsCtx) : ProcessEntry :=
 Definition absorb_x (P : pconfig) (e : ProcessEntry) (c' : config) (ctx' : NsCtx)
     (st' : NsState) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx')))
+            (first_root_pin_children P e (cfg_model c')
+              (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx'))))
          (pcfg_root P)
          (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
 
