@@ -335,7 +335,7 @@ Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
     default_urandom [] replay_kernel default_execfn true true false
-    (Z_to_bv 64 0) (Z_to_bv 64 0) [] false.
+    (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)

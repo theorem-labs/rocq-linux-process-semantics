@@ -62,8 +62,9 @@
 
     SIGKILL.  The same shape again, through a third declaration.
     [Kernel.Signal.kill_spec] raises signal 9 for a [kill] that names
-    the caller's own process id, but only when the launch declares the
-    death ([State.in_selfkill_terminal]); with the declaration off it
+    the caller's own positive non-init process id, but only when the
+    launch declares the death ([State.in_selfkill_terminal]). Pid 1
+    instead ignores its own SIGKILL and returns 0 unchanged. With the declaration off it
     declines every call ([Kernel.Signal.kill_spec_off_unmodeled]), and
     [Run.valid_input] pins that declaration [false].  So under the
     ordinary predicate no run ends in [KillEv 9]

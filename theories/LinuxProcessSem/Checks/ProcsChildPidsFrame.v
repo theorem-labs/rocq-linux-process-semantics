@@ -35,12 +35,11 @@ Local Open Scope bool_scope.
 
 Definition cp_of (m : Model) : list word := m_child_pids m.
 
-(** What each arm's lemma below shows its answer keeps: the list, and the
-    self-kill declaration ([State.m_selfkill_terminal]), which only the
-    launch writes ([State.init_model]).  Both ride on the same lemmas:
-    every setter carries each of them across by conversion. *)
-Definition cps_of (m : Model) : list word * bool :=
-  (m_child_pids m, m_selfkill_terminal m).
+(** Every non-clone answer retains the child list and both launch
+    values: self-kill and cgroup-BPF setsockopt. Only [init_model] seeds
+    the launch values; every transition setter carries them across. *)
+Definition cps_of (m : Model) : list word * (bool * bool) :=
+  (m_child_pids m, (m_selfkill_terminal m, m_cgroup_bpf_setsockopt m)).
 
 Ltac cp_frame H := repeat vm_step H; reflexivity.
 
@@ -1343,9 +1342,9 @@ Proof.
     | fail 1 "checked_table_cp has no case for this arm: give its checker a *_cp lemma above" ].
 Qed.
 
-(** THE SPEC FACT: every released answer keeps the list and the
-    self-kill declaration, but a clone's, which leaves the model alone
-    with an errno or is [with_child] of the pid it returns. *)
+(** Every released answer retains the launch values and, except for
+    clone, the child list. Clone either leaves the model alone with an
+    errno or records the returned child pid. *)
 Theorem syscall_spec_cps : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   (clone_sysno (bv_unsigned (in_sysno i)) = false /\ cps_of m' = cps_of m)
@@ -1382,10 +1381,23 @@ Proof.
   intros i m eff m' evs H.
   destruct (syscall_spec_cps _ _ _ _ _ H)
     as [(_ & E) | (_ & [(-> & _) | (-> & _)])].
-  - exact (f_equal snd E).
+  - exact (f_equal (fun p => fst (snd p)) E).
   - reflexivity.
   - reflexivity.
 Qed.
+
+Theorem syscall_spec_cgroup_bpf_setsockopt_kept : forall i m eff m' evs,
+  syscall_spec i m (Ok eff m' evs) ->
+  m_cgroup_bpf_setsockopt m' = m_cgroup_bpf_setsockopt m.
+Proof.
+  intros i m eff m' evs H.
+  destruct (syscall_spec_cps _ _ _ _ _ H)
+    as [(_ & E) | (_ & [(-> & _) | (-> & _)])].
+  - exact (f_equal (fun p => snd (snd p)) E).
+  - reflexivity.
+  - reflexivity.
+Qed.
+Print Assumptions syscall_spec_cgroup_bpf_setsockopt_kept.
 
 (* =========================================================================
    The released step

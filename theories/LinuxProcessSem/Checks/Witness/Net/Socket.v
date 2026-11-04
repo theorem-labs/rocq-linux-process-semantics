@@ -566,7 +566,8 @@ Qed.
 
 Definition setsockopt_witness (i : SyscallInput) (fd level optlen : word) (m : Model)
     : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled
+  if m_cgroup_bpf_setsockopt m then Unmodeled
+  else if fd_is_ns_file (m_fds m) fd then Unmodeled
   else match fd_lookup (m_fds m) fd with
        | Some (FdSeqpacket id side st) =>
            seqpacket_setsockopt_witness i fd id side st level optlen m
@@ -576,6 +577,9 @@ Lemma setsockopt_witness_ok : forall fd level optlen i m,
   setsockopt_spec fd level optlen i m (setsockopt_witness i fd level optlen m).
 Proof.
   intros. unfold setsockopt_spec, setsockopt_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (m_cgroup_bpf_setsockopt m); cbv beta iota; [apply unmodeled_intro|].
+  unfold setsockopt_no_cgroup_bpf_spec.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota; [apply unmodeled_intro|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|]; cbv beta iota;

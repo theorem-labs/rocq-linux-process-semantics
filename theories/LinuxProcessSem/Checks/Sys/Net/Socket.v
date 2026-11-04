@@ -1830,7 +1830,8 @@ Definition check_getpeername (fd : word) (eff : SyscallEffect) (m : Model)
 
 Definition check_setsockopt (i : SyscallInput) (fd level optlen : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+  if m_cgroup_bpf_setsockopt m then CheckUnmodeled
+  else if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
   else match fd_lookup (m_fds m) fd with
        | Some (FdSeqpacket id side st) =>
            check_seqpacket_setsockopt i fd id side st level optlen eff m
@@ -1964,17 +1965,19 @@ Proof.
                    (check_getpeername_core_complete_unmodeled fd m i eff) H).
 Qed.
 
-(** setsockopt's four directions: the [State.ONsFile] decline, then the
-    entry's kind picks [check_seqpacket_setsockopt] or the [_core]
-    acceptor, as [Net.Socket.setsockopt_spec] picks its two bodies. *)
+(** setsockopt's four directions: a cgroup-BPF hook declines; without
+    one, the namespace-file decline and the descriptor's kind pick the
+    same option body as [Net.Socket.setsockopt_spec]. *)
 Lemma check_setsockopt_sound_ok : forall i fd level optlen eff m m' evs,
   check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   setsockopt_spec fd level optlen i m (Ok eff m' evs).
 Proof.
   intros i fd level optlen eff m m' evs H.
   unfold check_setsockopt in H. unfold setsockopt_spec.
-  destruct (fd_is_ns_file (m_fds m) fd) eqn:Hns; [discriminate|].
-  eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hns.
+  rewrite bind_get_model.
+  destruct (m_cgroup_bpf_setsockopt m); cbv beta iota in H |- *; [discriminate|].
+  unfold setsockopt_no_cgroup_bpf_spec. rewrite bind_get_model.
+  destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *; [discriminate|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;
     first [ exact (check_seqpacket_setsockopt_sound_ok _ _ _ _ _ _ _ _ _ _ _ H)
@@ -1986,7 +1989,10 @@ Lemma check_setsockopt_sound_unmodeled : forall i fd level optlen eff m,
 Proof.
   intros i fd level optlen eff m H.
   unfold check_setsockopt in H. unfold setsockopt_spec.
-  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  rewrite bind_get_model.
+  destruct (m_cgroup_bpf_setsockopt m); cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  unfold setsockopt_no_cgroup_bpf_spec. rewrite bind_get_model.
   destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *;
     [apply unmodeled_intro|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
@@ -2000,7 +2006,10 @@ Lemma check_setsockopt_complete_ok : forall i fd level optlen eff m m' evs,
 Proof.
   intros i fd level optlen eff m m' evs H.
   unfold setsockopt_spec in H. unfold check_setsockopt.
-  apply get_model_bind_ok_inv in H. cbv beta in H.
+  rewrite bind_get_model in H.
+  destruct (m_cgroup_bpf_setsockopt m); cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate|].
+  unfold setsockopt_no_cgroup_bpf_spec in H. rewrite bind_get_model in H.
   destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *;
     [unfold unmodeled in H; discriminate|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
@@ -2014,7 +2023,9 @@ Lemma check_setsockopt_complete_unmodeled : forall i fd level optlen m eff,
 Proof.
   intros i fd level optlen m eff H.
   unfold setsockopt_spec in H. unfold check_setsockopt.
-  apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+  rewrite bind_get_model in H.
+  destruct (m_cgroup_bpf_setsockopt m); cbv beta iota in H |- *; [reflexivity|].
+  unfold setsockopt_no_cgroup_bpf_spec in H. rewrite bind_get_model in H.
   destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *; [reflexivity|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;

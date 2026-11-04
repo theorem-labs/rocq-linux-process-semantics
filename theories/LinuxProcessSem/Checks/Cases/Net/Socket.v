@@ -3059,3 +3059,24 @@ Example seqpacket_recvmsg_matches_pair_id :
     (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] [] seqp_reads)
     seqp_two_pairs_model = CheckUnmodeled.
 Proof. split; check_eq. Qed.
+
+(** A cgroup-BPF setsockopt hook can rewrite the option or bypass its
+    handler (net/socket.c:2342-2351, v6.18.46). Its launch value therefore
+    declines the call, rather than substituting an errno-only answer. *)
+Example setsockopt_cgroup_bpf_launch_declines :
+  check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)])
+    (with_cgroup_bpf_setsockopt true seqp_pair_model) = CheckUnmodeled /\
+  check_syscall (seqp_setsockopt_in 3 6 16 4 1)
+    (mkEffect (errno_ret EOPNOTSUPP) [] [])
+    (with_cgroup_bpf_setsockopt true seqp_pair_model) = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example setsockopt_without_cgroup_bpf_keeps_the_answer :
+  check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)])
+    (with_cgroup_bpf_setsockopt false seqp_pair_model)
+  = CheckOk (with_cgroup_bpf_setsockopt false seqp_passcred_model) [].
+Proof. check_eq. Qed.
+Print Assumptions setsockopt_cgroup_bpf_launch_declines.
+Print Assumptions setsockopt_without_cgroup_bpf_keeps_the_answer.

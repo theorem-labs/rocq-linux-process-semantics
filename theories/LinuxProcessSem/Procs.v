@@ -792,7 +792,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps).
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

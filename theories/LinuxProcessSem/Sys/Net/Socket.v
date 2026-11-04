@@ -1654,13 +1654,31 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
   else if fd_is_seqpacket_end (m_fds m) fd then unmodeled
   else getpeername_core_spec fd.
 
-Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+Definition setsockopt_no_cgroup_bpf_spec (fd level optlen : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if fd_is_ns_file (m_fds m) fd then unmodeled
   else match fd_lookup (m_fds m) fd with
        | Some (FdSeqpacket id side st) => seqpacket_setsockopt fd id side st level optlen
        | _ => setsockopt_core_spec fd level optlen
        end.
+
+(** A cgroup-BPF setsockopt hook can replace option bytes, change the
+    level/name/length, or bypass the handler with success
+    (do_sock_setsockopt, net/socket.c:2342-2363, v6.18.46). Its presence
+    is a launch value, not an errno-only failure choice. *)
+Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if m_cgroup_bpf_setsockopt m then unmodeled
+  else setsockopt_no_cgroup_bpf_spec fd level optlen.
+
+Lemma setsockopt_no_cgroup_bpf : forall fd level optlen i m o,
+  m_cgroup_bpf_setsockopt m = false ->
+  (setsockopt_spec fd level optlen i m o <->
+   setsockopt_no_cgroup_bpf_spec fd level optlen i m o).
+Proof.
+  intros fd level optlen i m o H.
+  unfold setsockopt_spec. rewrite bind_get_model, H. reflexivity.
+Qed.
 
 Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
   m <- get_model ;;
