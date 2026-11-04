@@ -32,7 +32,6 @@
   "theories/LinuxProcessSem/Checks/Cases/Fs/Open.v": 2,
   "theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v": 2,
   "theories/LinuxProcessSem/Checks/Cases/Fs/SigpipeLaunch.v": 1,
-  "theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v": 1,
   "theories/LinuxProcessSem/Checks/Cases/Prelude.v": 1,
   "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
   "theories/LinuxProcessSem/Checks/Examples.v": 1,

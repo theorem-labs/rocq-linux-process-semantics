@@ -304,3 +304,7 @@ Proof.
   intros r ext cenv segs cfg P evs P' Hext Hall (p & H).
   exact (pstep_x_at_preserves_clone_refusers r ext cenv segs cfg p P evs P' Hext Hall H).
 Qed.
+
+Print Assumptions clone_refusers_reachable.
+Print Assumptions pinit_clone_refusers_reachable.
+Print Assumptions pstep_x_at_preserves_clone_refusers.
