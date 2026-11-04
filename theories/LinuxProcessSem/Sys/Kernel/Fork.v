@@ -1092,8 +1092,11 @@ Record CloneArgs := mkCloneArgs {
 }.
 
 (** What the core hands the namespace extension about a pending clone's
-    arguments: the decoded record of a call the core answers from it, or
-    nothing ([Procs.clone_in_of] says which). *)
+    arguments: the decoded record of the call, or nothing.  A record is
+    not a promise that the core answers the call — a [clone] (220) word
+    the core declines still has one — only that the decoders built one
+    and that the core reads the call from it ([Procs.clone_in_of] says
+    exactly which calls have one). *)
 Inductive CloneIn := CiArgs (r : CloneArgs) | CiNoArgs.
 
 (** [clone]'s registers under [CONFIG_CLONE_BACKWARDS], which

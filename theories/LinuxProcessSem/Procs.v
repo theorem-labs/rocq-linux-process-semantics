@@ -814,15 +814,24 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
 
     KNOWN GAP until the namespace extension takes the decoded argument
     record ([Fork.CloneIn]) in place of this word.  Closing it takes two
-    answers of the extension, not one: [CnErr EINVAL] where
-    [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record, AND, for a
-    call whose [clone_in_of] is [Fork.CiNoArgs] while the released step
-    answers, [CnUnmodeled] — a [clone3] struct [Fork.clone3_einval_b]
-    refuses has no record at all ([clone_in_of] gives [Fork.CiNoArgs]),
-    so the first answer alone never reaches it.  The released step now
-    answers -EINVAL for a word the argument checks refuse (and, for
-    [clone3], a struct its own tests refuse: [Fork.clone3_einval_b]),
-    while the extension still sees this word, so:
+    answers of the extension, not one.  The first is [CnErr EINVAL]
+    where [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record.  It
+    does not reach every call the core now answers: a [clone3] struct
+    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose struct
+    range [access_ok] refuses (-EFAULT) have no record at all
+    ([clone_in_of] gives [Fork.CiNoArgs]), so no rule over a record can
+    run for them.  The second answer covers those: for a caller in the
+    NAMESPACE world whose [clone_in_of] is [Fork.CiNoArgs] while the
+    released step answers, [CnUnmodeled].  For a caller in the released
+    world the extension keeps [Ns.Ext.released_clone], which has no
+    [CnUnmodeled] (Ns/Ext.v) and which [NsProcs.ns_flat_iff] rests on;
+    there these calls keep today's released answer.  (A struct whose own
+    tests pass and whose record the argument checks refuse is not in
+    this class: [clone_in_of] gives its record, and the first answer
+    reaches it.)  The released step now answers -EINVAL for a word the
+    argument checks refuse (and, for [clone3], a struct its own tests
+    refuse: [Fork.clone3_einval_b]), while the extension still sees this
+    word, so:
     - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
       extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
       whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
@@ -926,12 +935,14 @@ Qed.
 
 (** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
-    [clone3] has no record, whatever the released step answers for it
-    (-EINVAL for [Fork.CdErr], [Fork.clone3_einval_b]).  With
-    [Checks.Cases.Kernel.Fork.clone3_newtime_declines], which gives
-    [Fork.CdDecline] for the CLONE_NEWTIME image, this is the second
-    answer the namespace extension owes: a call the core answers while
-    its [CloneIn] is [Fork.CiNoArgs]. *)
+    [clone3] has no record, whatever the released step answers for it.
+    The [Fork.CdErr] half is the second answer the namespace extension
+    owes: the core answers -EINVAL ([Fork.clone3_einval_b]) while the
+    call's [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of
+    65 in [Checks.Cases.Kernel.Fork.clone3_einval_words].  The
+    [Fork.CdDecline] half owes nothing: the core declines there, as
+    [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
+    CLONE_NEWTIME image. *)
 Lemma clone_in_of_no_record : forall c bs x8,
   ms_svc_pending (cfg_ms c) = Some x8 ->
   bv_unsigned x8 = 435%Z ->
