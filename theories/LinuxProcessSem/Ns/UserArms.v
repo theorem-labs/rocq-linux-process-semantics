@@ -66,9 +66,10 @@ Definition CAP_FULL_SET : Z := 2 ^ 41 - 1.
     mount ([topmost_overmount], fs/mount.h:243-248).  [None] when the
     tables do not list that namespace or mount, and when a mount of the
     stack from the root mount to the top can receive a mount or unmount
-    event from an open group ([Walk.ns_top_open]): the host can change
-    the top without a call of the model, so the tables do not decide it.
-    With no open group the test is false ([Walk.ns_top_open_closed]). *)
+    event from an open group or belongs to an entered namespace
+    ([Walk.ns_top_open]): the host can change the top without a call of
+    the model. With both uncertainty lists empty the test is false
+    ([Walk.ns_top_open_closed]). *)
 Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
   match find (fun n => Pos.eqb (mntns_id n) (cx_mount ctx)) (ns_mntns st) with
   | None => None

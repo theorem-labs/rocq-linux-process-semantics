@@ -11,11 +11,14 @@
   "tools/placement_conformance/log_to_rocq.py": 1,
   "tools/placement_conformance/start_state_to_rocq.py": 1
  },
+ "mkMntNs": {
+  "theories/LinuxProcessSem/Ns/Tables.v": 4
+ },
  "mkNsCtx": {
   "theories/LinuxProcessSem/Ns/Tables.v": 14
  },
  "mkNsEnv": {
-  "theories/LinuxProcessSem/Ns/Tables.v": 11
+  "theories/LinuxProcessSem/Ns/Tables.v": 12
  },
  "mkNsState": {
   "theories/LinuxProcessSem/Ns/Tables.v": 14
@@ -44,6 +47,7 @@
   "theories/LinuxProcessSem/Procs.v": 6
  },
  "mkVmState": {
+  "theories/Common/WfInvariant.v": 1,
   "theories/LinuxProcessSem/State.v": 7
  }
 }

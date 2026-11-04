@@ -226,7 +226,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                   let nid := Pos.succ (max_mntns_id st) in
                   let other := negb (Pos.eqb (cc_user cc) (mntns_owner old)) in
                   let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid other in
-                  Some (nid, T', [mkMntNs nid (cc_user cc) (where_ (mntns_root old)) false], where_,
+                  Some (nid, T', [mk_mntns nid (cc_user cc) (where_ (mntns_root old)) false], where_,
                         copy_ns_links st (mntns_root old) other)
               | None => None
               end
@@ -284,6 +284,19 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let st' := with_ns_prop (with_mounts st T') links in
                         let st' := with_userns st' U in
                         let st' := with_mntns st' (ns_mntns st ++ new_mntns) in
+                        (* A copy of a listed real namespace is exposed too. *)
+                        let st' :=
+                          if has_flag f CLONE_NEWNS then
+                            match find_mntns st (cx_mount ctx) with
+                            | Some old =>
+                                if negb (mntns_anon old) &&
+                                   mem (cx_mount ctx) (env_entered_mntns (ns_env st))
+                                then with_entered_mntns st'
+                                       (mntns :: env_entered_mntns (ns_env st))
+                                else st'
+                            | None => st'
+                            end
+                          else st' in
                         let st' := with_pidns st' pidns' in
                         let st' := with_netns st' (ns_netns st ++ new_net) in
                         let st' := with_utsns st' (ns_utsns st ++ new_uts) in

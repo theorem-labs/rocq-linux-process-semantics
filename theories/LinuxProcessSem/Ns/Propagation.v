@@ -36,8 +36,8 @@
        [mnt_slave] is on one list);
     3. the members of one peer group have the same master group;
     4. no mount is a slave of its own peer group;
-    5. an open group ([env_open_groups]) has no ring entry: the order of a
-       ring with members outside the tables is not the model's to know.
+    5. an open group ([open_groups]) has no ring entry: outside events or
+       entry can change its members, so the ring order is not known.
     Every state whose order data is empty satisfies rules 1, 2 and 5
     ([empty_prop_ok]); rules 3 and 4 hold of every Linux mount tree. *)
 
@@ -157,6 +157,33 @@ Definition groups_ok (T : list Mount) : Prop :=
                  mnt_master a = mnt_master b)
   /\ (forall m g, In m T -> mnt_peer m = Some g -> mnt_master m <> Some g).
 
+(** Outside entry includes anonymous trees by their originating real
+    namespace. Origin [None] trees are exposed under any nonempty launch
+    list. Querying the current table also covers trees created later
+    (Linux v6.18.46, fs/namespace.c:964-965, 3028-3034). *)
+Definition entered_closure (st : NsState) : list positive :=
+  match env_entered_mntns (ns_env st) with
+  | [] => []
+  | ns => ns ++ map mntns_id
+      (filter (fun n => mntns_anon n &&
+          match mntns_origin n with Some o => mem o ns | None => true end) (ns_mntns st))
+  end.
+
+(** A private mount in an entered namespace can join any group on its
+    superblock through SET_GROUP, even in an unlisted namespace
+    (Linux v6.18.46, fs/namespace.c:3328-3355). *)
+Definition open_groups (st : NsState) : list positive :=
+  match env_entered_mntns (ns_env st) with
+  | [] => env_open_groups (ns_env st)
+  | _ =>
+      let ns := entered_closure st in
+      let sbs := map mnt_sb (filter (fun m => mem (mnt_ns m) ns) (ns_mounts st)) in
+      env_open_groups (ns_env st) ++
+        flat_map (fun m => if mem (mnt_sb m) sbs
+                          then match mnt_peer m with Some g => [g] | None => [] end
+                          else []) (ns_mounts st)
+  end.
+
 Definition prop_ok (st : NsState) : Prop :=
   let T := ns_mounts st in
   let pl := ns_prop st in
@@ -166,7 +193,7 @@ Definition prop_ok (st : NsState) : Prop :=
   /\ NoDup (flat_map snd (pl_slaves pl))
   /\ (forall k l, In (k, l) (pl_slaves pl) -> slave_entry_ok T k l)
   /\ groups_ok T
-  /\ (forall g l, In g (env_open_groups (ns_env st)) -> ~ In (g, l) (pl_rings pl)).
+  /\ (forall g l, In g (open_groups st) -> ~ In (g, l) (pl_rings pl)).
 
 (** The checker, rule by rule. *)
 Definition ring_entry_okb (T : list Mount) (g : positive) (l : list positive) : bool :=
@@ -203,7 +230,7 @@ Definition prop_okb (st : NsState) : bool :=
   && forallb (fun e => slave_entry_okb T (fst e) (snd e)) (pl_slaves pl)
   && groups_okb T
   && forallb (fun g => negb (existsb (fun e => Pos.eqb (fst e) g) (pl_rings pl)))
-             (env_open_groups (ns_env st)).
+             (open_groups st).
 
 Lemma ring_entry_okb_ok : forall T g l, ring_entry_okb T g l = true -> ring_entry_ok T g l.
 Proof.
@@ -335,16 +362,16 @@ Definition receives_from (T : list Mount) (m : Mount) : list positive :=
     can add or remove a mount at [m] without a call of the model.  An arm
     whose answer reads such a mount declines. *)
 Definition open_reach (st : NsState) (m : Mount) : bool :=
-  existsb (fun g => mem g (env_open_groups (ns_env st))) (receives_from (ns_mounts st) m).
+  existsb (fun g => mem g (open_groups st)) (receives_from (ns_mounts st) m).
 
-(** With no open group, the launch the model names by default
-    ([empty_nsenv]), no mount of the tables can receive an event from a
-    mount outside them: only calls of the model change the mounts of its
-    namespaces. *)
+(** Under both default launch facts, outside mount events cannot reach a
+    model mount: neither an outside peer nor an outside task can change
+    its topology. *)
 Theorem closed_no_outside_event : forall st m,
-  env_open_groups (ns_env st) = [] -> open_reach st m = false.
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  open_reach st m = false.
 Proof.
-  intros st m H. unfold open_reach. rewrite H.
+  intros st m H E. unfold open_reach, open_groups. rewrite E, H.
   generalize (receives_from (ns_mounts st) m) as l.
   induction l as [|g l IH]; [reflexivity | exact IH].
 Qed.
@@ -397,7 +424,7 @@ Definition members (T : list Mount) (g : positive) : list positive :=
 Definition group_slaves (T : list Mount) (g : positive) : list positive :=
   map mnt_id (List.filter (slave_of_group g) T).
 
-Definition is_open (st : NsState) (g : positive) : bool := mem g (env_open_groups (ns_env st)).
+Definition is_open (st : NsState) (g : positive) : bool := mem g (open_groups st).
 
 (** The ring of group [g], its members in [next_peer] order, when the model
     knows it: the ring entry, or the members themselves when the tables
@@ -792,26 +819,22 @@ Definition copy_ns_links (st : NsState) (root : positive) (other_userns : bool) 
    Open groups at the arms
    ========================================================================= *)
 
-(** [open_reach] of mount [i], computed only when the launch names an open
-    group: with none it is false ([closed_no_outside_event]), and a path
-    walk pays nothing for it. *)
+(** Both-empty launches pay no closure or graph traversal on a walk. *)
 Definition open_mount (st : NsState) (i : positive) : bool :=
-  match env_open_groups (ns_env st) with
-  | [] => false
-  | _ => match find_mount (ns_mounts st) i with
-         | Some m => open_reach st m
-         | None => false
-         end
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => match find_mount (ns_mounts st) i with
+            | Some m => mem (mnt_ns m) (entered_closure st) || open_reach st m
+            | None => false
+            end
   end.
 
-(** Mount namespace [n] holds a mount that can receive an event from an
-    open group: the host can add mounts to it or remove mounts from it, so
-    the number of its mounts, which [count_mounts] reads, is not the
-    tables'. *)
+(** Outside entry or propagation can change the namespace's mount count. *)
 Definition ns_open (st : NsState) (n : positive) : bool :=
-  match env_open_groups (ns_env st) with
-  | [] => false
-  | _ => existsb (fun m => Pos.eqb (mnt_ns m) n && open_reach st m) (ns_mounts st)
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => mem n (entered_closure st) ||
+            existsb (fun m => Pos.eqb (mnt_ns m) n && open_reach st m) (ns_mounts st)
   end.
 
 (** The mounts besides [m] that [change_mnt_propagation (m, k)]
@@ -882,22 +905,23 @@ Fixpoint change_type_reads (k : PropType) (st : NsState) (l : list positive) : l
     above, makes an MS_SLAVE mount a slave of the group it leaves or of
     its master group, and gives a new group a key above every open group
     ([new_group_key]), so no mount comes to receive from an open group.
-    Computed only when the launch names an open group, as [open_mount]. *)
+    Computed only when either uncertainty list is nonempty, as [open_mount]. *)
 Definition targets_open (st : NsState) (k : option PropType) (r : positive) (recursive : bool)
     : bool :=
-  match env_open_groups (ns_env st) with
-  | [] => false
-  | _ =>
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ =>
       let ts := setattr_targets (ns_mounts st) r recursive in
       existsb (open_mount st) (match k with Some k => change_type_reads k st ts | None => ts end)
   end.
 
-(** With no open group, the default launch, no mount is open: the arms
-    answer as they do without the test. *)
+(** With both uncertainty lists empty, no mount is open: the arms answer
+    as they do without the test. *)
 Theorem targets_open_closed : forall st k r recursive,
-  env_open_groups (ns_env st) = [] -> targets_open st k r recursive = false.
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  targets_open st k r recursive = false.
 Proof.
-  intros st k r recursive H. unfold targets_open. rewrite H. reflexivity.
+  intros st k r recursive H E. unfold targets_open. rewrite H, E. reflexivity.
 Qed.
 
 (* =========================================================================

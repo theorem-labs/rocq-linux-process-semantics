@@ -23,7 +23,7 @@ Definition full : list IdExtent := [mkExtent 0 0 4294967295].
 Definition tables (ms : list Mount) (us : list UserNs) (ps : list PidNs) : NsState :=
   let st := with_mounts empty_nsstate ms in
   let st := with_userns st us in
-  let st := with_mntns st [mkMntNs 1 1 1 true] in
+  let st := with_mntns st [mk_mntns 1 1 1 true] in
   let st := with_pidns st ps in
   with_netns st [mkNetNs 1 1 [] false].
 

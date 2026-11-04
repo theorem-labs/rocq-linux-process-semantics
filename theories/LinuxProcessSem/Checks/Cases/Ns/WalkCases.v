@@ -62,7 +62,7 @@ Definition world : NsState :=
   state
     [mnt 1 None 1 1 1; mnt 2 (Some 1%positive) 3 20 2; mnt 3 (Some 1%positive) 9 30 3]
     [root_user]
-    [mkMntNs 1 1 1 false]
+    [mk_mntns 1 1 1 false]
     [mkPidNs 1 None 1 0 0]
     [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 (SbProc 1)]
     [dent 1 1 None [] 1;
@@ -390,3 +390,12 @@ Example walk_host_absent :
   /\ walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_home) f_follow
      = (WOk (LDentry 1 2), false).
 Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example entered_private_walk_declines :
+  walk (with_entered_mntns world [1%positive]) (ctx 1 no_caps) creds no_fd
+       (LDentry 1 1) (bytes [47] ++ s_home) f_follow = (WOver, false)
+  /\ walk (with_entered_mntns world [9%positive]) (ctx 1 no_caps) creds no_fd
+       (LDentry 1 1) (bytes [47] ++ s_home) f_follow = (WOk (LDentry 1 2), false).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Print Assumptions entered_private_walk_declines.
