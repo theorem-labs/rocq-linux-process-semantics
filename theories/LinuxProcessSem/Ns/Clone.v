@@ -283,16 +283,19 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
     end.
 
 
+Definition bump_pid_cursor (x : PidNs) : list PidNs :=
+  match pidns_parent x with
+  | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
+      (pidns_level x) (pidns_last x + 1)]
+  | None => []
+  end.
+
 (** The pid namespaces the model made, from [active] outwards, each with
     its cursor one further: what an [alloc_pid] that a later failure undid
     ([free_pid] does not move the cursor) leaves. *)
 Definition pid_advanced (st : NsState) (active : positive) : NsState :=
   let chain := pidns_chain (length (ns_pidns st)) st active in
-  let bumped := flat_map (fun x => match pidns_parent x with
-                                   | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-                                                        (pidns_level x) (pidns_last x + 1)]
-                                   | None => []
-                                   end) chain in
+  let bumped := flat_map bump_pid_cursor chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
 (** An [alloc_pid] failure at chain index [k]: the inner [k] namespaces
@@ -301,25 +304,28 @@ Definition pid_advanced (st : NsState) (active : positive) : NsState :=
     v6.18.46, kernel/pid.c:191-251,294-299; lib/idr.c:127-136,154-157). *)
 Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
   let chain := firstn k (pidns_chain (length (ns_pidns st)) st active) in
-  let bumped := flat_map (fun x => match pidns_parent x with
-    | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-        (pidns_level x) (pidns_last x + 1)]
-    | None => []
-    end) chain in
+  let bumped := flat_map bump_pid_cursor chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
+
+(** A table failure from copy_creds or copy_namespaces prevents alloc_pid
+    (kernel/fork.c:2053-2055,2188-2208, Linux v6.18.46). *)
+Definition clone_pid_allocates (o : CloneNs) : bool :=
+  match o with CnOk _ _ _ => true | _ => false end.
 
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
-    a namespace's init function), which leaves the shared state as it was,
-    with only an inner prefix advanced, or with every model cursor advanced. *)
+    a namespace's init function).  Cursor movement requires that the
+    tables let the clone reach pid allocation; an earlier table error
+    admits only the unchanged state. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st hq
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
       /\ exists e st', 1 <= e <= 4095
-          /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx)
-              \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)))%nat
-                    /\ st' = pid_partial st (cx_pidns ctx) k)
+          /\ (st' = st \/ (clone_pid_allocates (clone_ns_exact f m ctx st hq) = true
+              /\ (st' = pid_advanced st (cx_pidns ctx)
+                  \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)))%nat
+                        /\ st' = pid_partial st (cx_pidns ctx) k)))
                        /\ o = CnErr e st').
 
 (** A task in the released world has no pid namespace the model made
@@ -331,13 +337,9 @@ Proof.
   apply andb_true_iff in H as [H _].
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
   unfold pid_advanced.
-  assert (Hb : flat_map (fun x => match pidns_parent x with
-                                  | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-                                                       (pidns_level x) (pidns_last x + 1)]
-                                  | None => []
-                                  end)
-                        (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).
-  { destruct (length (ns_pidns st)) as [|n]; [reflexivity|].
+  assert (Hb : flat_map bump_pid_cursor
+      (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).
+  { unfold bump_pid_cursor. destruct (length (ns_pidns st)) as [|n]; [reflexivity|].
     cbn [pidns_chain]. unfold find_pidns.
     destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef;
       [|reflexivity].
@@ -356,12 +358,9 @@ Proof.
   apply andb_true_iff in H as [H _].
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
   unfold pid_partial.
-  assert (Hb : flat_map (fun x => match pidns_parent x with
-      | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-          (pidns_level x) (pidns_last x + 1)]
-      | None => [] end)
+  assert (Hb : flat_map bump_pid_cursor
       (firstn k (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx))) = []).
-  { destruct (length (ns_pidns st)) as [|n].
+  { unfold bump_pid_cursor. destruct (length (ns_pidns st)) as [|n].
     - destruct k; reflexivity.
     - cbn [pidns_chain]. unfold find_pidns.
       destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef.
@@ -400,7 +399,7 @@ Proof.
   split.
   - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
     right. exists e. split; [exact He|].
-    destruct Hst as [-> | [-> | (k & _ & ->)]]; try exact Ho.
+    destruct Hst as [-> | [_ [-> | (k & _ & ->)]]]; try exact Ho.
     rewrite (pid_partial_flat ctx st k Hf) in Ho. exact Ho.
   - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
     right. split; [intros Hc; discriminate Hc|].
