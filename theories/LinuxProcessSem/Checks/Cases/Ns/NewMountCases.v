@@ -48,7 +48,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
   let w := with_userns w
     [mkUserNs 1 None 0 0 None None true true 100 false;
      mkUserNs 2 (Some 1%positive) 1 1000 None None true true 100 true] in
-  let w := with_mntns w [mkMntNs 1 2 1 false] in
+  let w := with_mntns w [mk_mntns 1 2 1 false] in
   let w := with_pidns w [mkPidNs 1 None 2 0 0] in
   let w := with_sbs w
     [mkSb 1 SbTmpfs 2 1 false TMPFS_MAGIC false false true;
@@ -64,8 +64,8 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
      mkInode 3 IDir 493 1000 1000 0 [] false;
      mkInode 30 IDir 365 0 0 0 [] false; mkInode 31 IDir 365 0 0 0 [] empty;
      mkInode 40 IDir 493 0 0 0 [] false] in
-  with_env w (mkNsEnv 100 [mkProcEntry [b [115;121;115]] IDir 365 0 0 false] [] default_mi_env 65536 [] false
-                      (Some (65534, 65534))).
+  with_env w (env_with_proc_entries (env_with_mount_max empty_nsenv 100)
+                [mkProcEntry [b [115;121;115]] IDir 365 0 0 false]).
 
 (** A task in user namespace 2, mount namespace 1 and pid namespace 1,
     holding every capability there. *)
@@ -130,7 +130,6 @@ Example devpts_ptmx :
   end = mkInode 42 IChr 438 1000 1000 1282 [] false := eq_refl.
 
 (** The mount limit: 3 mounts and a limit of 3 refuse a fourth. *)
-Definition at_limit : NsState :=
-  with_env (world true false) (mkNsEnv 3 [] [] default_mi_env 65536 [] false (Some (65534, 65534))).
+Definition at_limit : NsState := with_env (world true false) (env_with_mount_max empty_nsenv 3).
 Example limit_refuses :
   err (new_mount at_limit ctx cred 1000 1000 (NewTmpfs 493) nf 2 1 3) = Some 28 := eq_refl.

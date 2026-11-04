@@ -5,22 +5,28 @@
     path walk of [Ns.Walk].  New filesystem instances remain the named
     [do_new_mount] hook for the companion filesystem-instance model.
 
-    Linux 6.18.44 sources:
+    Linux v6.18.46 sources:
     - [SYSCALL_DEFINE5(mount)], [do_mount], [path_mount], [may_mount],
       [do_loopback], [__do_loopback], [do_change_type], and [do_new_mount],
-      fs/namespace.c:2954-3007, 3963-4051, 4216-4244;
+      fs/namespace.c:2002-2005, 2823-2887, 2954-3009, 3681-3732,
+      3963-4052, 4216-4248; onto a shared mount, [attach_recursive_mnt]
+      and [propagate_mnt], fs/namespace.c:2559-2673, fs/pnode.c:311-366;
+      the change of one mount's propagation, [change_mnt_propagation] and
+      [transfer_propagation], fs/pnode.c:74-124;
     - [SYSCALL_DEFINE2(umount)], [ksys_umount], [path_umount], and
-      [can_umount], fs/namespace.c:2016-2071;
-    - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4551-4633, and
-      [chroot_fs_refs], fs/fs_struct.c:55-78;
+      [can_umount], fs/namespace.c:2016-2071; [do_umount] and [umount_tree]
+      with UMOUNT_PROPAGATE, fs/namespace.c:1771-1838, 1937-1950, and
+      [propagate_umount], fs/pnode.c:466-687;
+    - [SYSCALL_DEFINE2(pivot_root)], fs/namespace.c:4556-4638, and
+      [chroot_fs_refs], fs/fs_struct.c:55-81;
     - [SYSCALL_DEFINE5(mount_setattr)], [wants_mount_setattr],
       [build_mount_kattr], [do_mount_setattr], [mount_setattr_prepare], and
-      [mnt_hold_writers], fs/namespace.c:596-655, 4705-4739, 4776-4829,
-      4896-5030. *)
+      [mnt_hold_writers], fs/namespace.c:613-642, 4710-4743, 4781-4838,
+      4901-5038. *)
 
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount NewMount Userns Walk Arm Task Files.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Propagation NewMount Userns Walk Arm Task Files.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -191,9 +197,20 @@ Definition one_propagation (flags : Z) : bool :=
   || (slave && negb shared && negb private && negb unbindable)
   || (unbindable && negb shared && negb private && negb slave).
 
+(** A flag of the low 32 bits other than the four propagation types,
+    MS_REC and MS_SILENT: [do_change_type] takes [int ms_flags]
+    (fs/namespace.c:2856), so bits 32 to 63 never reach
+    [flags_to_propagation_type] (fs/namespace.c:2840-2851). *)
 Definition propagation_extra (flags : Z) : bool :=
-  negb (Z.eqb (Z.land flags
+  negb (Z.eqb (Z.land (Z.land flags 4294967295)
     (Z.lnot (MS_SHARED + MS_PRIVATE + MS_SLAVE + MS_UNBINDABLE + MS_REC + MS_SILENT))) 0).
+
+(** The type of a flag word that [one_propagation] accepts. *)
+Definition propagation_type (flags : Z) : PropType :=
+  if has flags MS_SHARED then PShared
+  else if has flags MS_SLAVE then PSlave
+  else if has flags MS_PRIVATE then PPrivate
+  else PUnbindable.
 
 Definition follow_walk_flags : WalkFlags := mkWalkFlags true false false false false.
 Definition directory_walk_flags : WalkFlags := mkWalkFlags true true false false false.
@@ -203,7 +220,14 @@ Definition directory_walk_flags : WalkFlags := mkWalkFlags true true false false
    ========================================================================= *)
 
 (** [do_loopback] (fs/namespace.c:2976-3007), after both LOOKUP_FOLLOW
-    walks and [path_mount]'s capability check. *)
+    walks and [path_mount]'s capability check.  Onto a mount that is not
+    shared, [Mount.bind_mount]'s answer, and the copies' links in the
+    order data ([Propagation.bind_links]); onto a shared mount, the bind
+    that propagates ([Propagation.bind_mount_shared]: [attach_recursive_mnt],
+    fs/namespace.c:2594-2651).  A caller whose mount namespace holds a mount
+    that can receive an event from an open group gets no answer: the host
+    can change the mounts the bind copies and the count [count_mounts]
+    reads ([Propagation.ns_open]). *)
 Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
     (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (tgt td : positive) (flags : Z) : ext_outcome :=
@@ -218,17 +242,43 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
           match bind_paths st src sd tgt td with
           | None => EUnmodeled
           | Some bp =>
-              match bind_mount (ns_mounts st) (cx_mount ctx) (env_mount_max (ns_env st)) src bp
-                               (has flags MS_REC) tgt td with
-              | Some r => mount_mresult reads r m ctx st
-              | None => EUnmodeled
-              end
+              if ns_open st (cx_mount ctx) then EUnmodeled
+              else
+                match bind_mount (ns_mounts st) (cx_mount ctx) (env_mount_max (ns_env st)) src bp
+                                 (has flags MS_REC) tgt td with
+                | Some (MOk ms) =>
+                    mount_ok reads m ctx
+                      (with_ns_prop (with_mounts st ms) (bind_links st src bp (has flags MS_REC)))
+                | Some (MErr e) => err reads e m ctx st
+                | None =>
+                    match find_mntns st (cx_mount ctx) with
+                    | Some mntns =>
+                        match bind_mount_shared st (cx_mount ctx) (mntns_owner mntns) (dentry_below st)
+                                                src bp (has flags MS_REC) tgt td with
+                        | ADone st' => mount_ok reads m ctx st'
+                        | AErr e => err reads e m ctx st
+                        | AOver => EUnmodeled
+                        end
+                    | None => EUnmodeled
+                    end
+                end
           end
       end
   end.
 
-(** [do_change_type] (fs/namespace.c:2856-2881).  Shared and unbindable
-    propagation need group allocation or state the present mount tree omits. *)
+(** [do_change_type] (fs/namespace.c:2856-2887), in its order: the path is
+    not the root of its mount (EINVAL); a flag word that is not one
+    propagation type with MS_REC and MS_SILENT at most (EINVAL,
+    [flags_to_propagation_type]); no CAP_SYS_ADMIN over the owner of the
+    mount's namespace (EPERM, [may_change_propagation], 2823-2834); then
+    the change of every mount it reaches ([Propagation.change_type]).
+    MS_SHARED's new groups take numbers the allocator may refuse (ENOMEM,
+    ENOSPC): environment refusals of [mount40_injected].  No answer when
+    a mount the change reads can receive an event from an open group
+    ([Propagation.targets_open]): a mount it changes (the target, which
+    the walk does not test when the path is "/" or ".", and with MS_REC
+    its subtree), a slave it hands over ([transfer_propagation],
+    fs/pnode.c:74-88), or a mount whose slave list it changes. *)
 Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m : Model)
     (ctx : NsCtx) (st : NsState) (target td : positive) (flags : Z) : ext_outcome :=
   match find_mount (ns_mounts st) target with
@@ -238,19 +288,15 @@ Definition mount_change_type (reads : list (word * nat)) (i : SyscallInput) (m :
       | Some false => err reads EINVAL m ctx st
       | None => EUnmodeled
       | Some true =>
-          if negb (one_propagation flags) then err reads EINVAL m ctx st
-          else if propagation_extra flags then EUnmodeled
+          if negb (one_propagation flags) || propagation_extra flags then err reads EINVAL m ctx st
           else match mount_may_change m ctx st mt with
                | None => EUnmodeled
                | Some false => err reads EPERM m ctx st
                | Some true =>
-                   if has flags MS_SLAVE
-                   then mount_mresult reads
-                          (change_propagation (ns_mounts st) target (has flags MS_REC) PropSlave) m ctx st
-                   else if has flags MS_PRIVATE
-                   then mount_mresult reads
-                          (change_propagation (ns_mounts st) target (has flags MS_REC) PropPrivate) m ctx st
-                   else EUnmodeled
+                   if targets_open st (Some (propagation_type flags)) target (has flags MS_REC)
+                   then EUnmodeled
+                   else mount_ok reads m ctx
+                          (change_type (propagation_type flags) st target (has flags MS_REC))
                end
       end
   end.
@@ -270,7 +316,8 @@ Definition new_mount_flags (flags : Z) : MountFlags :=
                (has flags MS_NODEV) (has flags MS_NOEXEC).
 
 (** [do_new_mount], [mount_capable], [mount_too_revealing], [do_add_mount]
-    and [graft_tree], supplied by [Ns.NewMount].  One returned lock gives
+    and [graft_tree], supplied by [Ns.NewMount]; onto a shared target, with
+    its propagation ([NewMount.new_mount_shared]).  One returned lock gives
     this evaluator's representative successful outcome. *)
 Definition mount_new_instance (reads : list (word * nat)) (fstype : option (list byte))
     (data : option (list byte)) (m : Model) (ctx : NsCtx) (st : NsState)
@@ -283,8 +330,8 @@ Definition mount_new_instance (reads : list (word * nat)) (fstype : option (list
            | Some fs, Some mntns =>
                let fsuid := bv_unsigned (cr_euid (m_creds m)) in
                let fsgid := bv_unsigned (cr_egid (m_creds m)) in
-               match new_mount st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
-                               (mntns_owner mntns) target td with
+               match new_mount_shared st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
+                                      (mntns_owner mntns) target td (dentry_below st) with
                | NMErr e => err reads e m ctx st
                | NMOver => EUnmodeled
                | NMOk locks mk =>
@@ -355,9 +402,10 @@ Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
       end
   end.
 
-(** The other [NMOk] choices of [new_mount] (fs/namespace.c:3681-3731):
-    the visibility walk may pass either read-only lock that its table
-    permits. *)
+(** The other [NMOk] choices of [new_mount] and [new_mount_shared]
+    ([do_new_mount], fs/namespace.c:3681-3732): the visibility walk
+    ([mnt_already_visible], 6135-6193, from [mount_too_revealing],
+    6195-6216) may pass either read-only lock that its table permits. *)
 Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (o : ext_outcome) : Prop :=
   let devp := in_arg i 0 in
@@ -389,8 +437,8 @@ Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : 
                       | Some fs, Some mntns =>
                           let fsuid := bv_unsigned (cr_euid (m_creds m)) in
                           let fsgid := bv_unsigned (cr_egid (m_creds m)) in
-                          match new_mount st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
-                                          (mntns_owner mntns) target td with
+                          match new_mount_shared st ctx (task_cred m ctx) fsuid fsgid fs (new_mount_flags flags)
+                                                 (mntns_owner mntns) target td (dentry_below st) with
                           | NMOk locks mk => exists lk, In lk locks /\ o = mount_ok reads m ctx (mk lk)
                           | _ => False
                           end
@@ -421,8 +469,21 @@ Definition mount_arm : NsArm := fun i m ctx st o =>
 Definition umount_valid (flags : Z) : bool :=
   Z.eqb (Z.land flags (Z.lnot (MNT_FORCE + MNT_DETACH + MNT_EXPIRE + UMOUNT_NOFOLLOW))) 0.
 
-(** [can_umount] and [path_umount] (fs/namespace.c:2016-2045).  The
-    MNT_DETACH tree operation itself is [Mount.umount_detach]. *)
+(** [can_umount] and [path_umount] (fs/namespace.c:2016-2048), then
+    [do_umount]'s checks (fs/namespace.c:1937-1945).  Every MNT_DETACH runs
+    [umount_tree] with UMOUNT_PROPAGATE (fs/namespace.c:1948-1950), so
+    [propagate_umount] gathers its candidates on the receivers of every
+    parent in the subtree (fs/namespace.c:1793-1794; fs/pnode.c:505-531)
+    and [bulk_make_private] moves the slaves of the removed mounts
+    (fs/namespace.c:1796): [Propagation.umount_detach_prop].  A parent that
+    is neither shared nor a slave does not stop it: a shared mount inside
+    the subtree has receivers too.  No answer when a mount the unmount
+    reads can receive an event from an open group.  No answer either when
+    the parent of the mount is not in the tables: [propagate_umount]
+    gathers candidates on that parent's peers and slaves, which the
+    tables do not hold, and the arm had no answer there before the
+    unmount propagated ([Mount.umount_propagates] is true for such a
+    parent). *)
 Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let pathp := in_arg i 0 in
   let flags := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
@@ -450,8 +511,18 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
                        | Some mount, Some true =>
                            if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
                            else if mnt_locked mount then err reads EINVAL m ctx st
-                           else if umount_propagates (ns_mounts st) mount then EUnmodeled
-                           else mount_mresult reads (umount_detach (ns_mounts st) top) m ctx st
+                           else match mnt_parent mount with
+                                | None => err reads EINVAL m ctx st
+                                | Some p =>
+                                    match find_mount (ns_mounts st) p with
+                                    | None => EUnmodeled
+                                    | Some _ =>
+                                        match umount_detach_prop st top with
+                                        | Some st' => mount_ok reads m ctx st'
+                                        | None => EUnmodeled
+                                        end
+                                    end
+                                end
                        | Some _, Some false => err reads EINVAL m ctx st
                        | _, _ => EUnmodeled
                        end
@@ -486,9 +557,13 @@ Definition pivot_paths (st : NsState) (rt rd nr nd : positive) : option PivotPat
   | _, _, _ => None
   end.
 
-(** [pivot_root] (fs/namespace.c:4551-4633): [may_mount] precedes the two
+(** [pivot_root] (fs/namespace.c:4556-4638): [may_mount] precedes the two
     LOOKUP_FOLLOW|LOOKUP_DIRECTORY walks; [LOCK_MOUNT] supplies the top
-    mount at put_old. *)
+    mount at put_old.  Its tests read the caller's namespace's topology
+    (the new root, the old root and put_old's mounts and their parents,
+    4584-4618), which an outside task can change when that namespace is
+    open ([ns_open]): the call then declines after the walks, as
+    [bind_mount]'s does. *)
 Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   match mount_may_mount m ctx st with
   | None => EUnmodeled
@@ -519,6 +594,7 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
                       match pivot_paths st rt rd nr nd with
                       | None => EUnmodeled
                       | Some pp =>
+                          if ns_open st (cx_mount ctx) then EUnmodeled else
                           match pivot_root (ns_mounts st) (cx_mount ctx) rt nr old od pp with
                           | MErr e => err reads e m ctx st
                           | MOk ms =>
@@ -583,7 +659,11 @@ Definition copy_mount_attr (i : SyscallInput) (p : word) (usize : Z) : AttrCopy 
        end
   end.
 
-Inductive AttrBuild := ABok (change : AttrChange) | ABerr (e : Z) | ABover.
+(** A built attribute change: the flags, and the propagation type when
+    [attr.propagation] is not 0 ([kattr->propagation]).  (The type is not a
+    field of [Mount.AttrChange]: [Propagation.PropType] is defined after
+    [Ns.Mount].) *)
+Inductive AttrBuild := ABok (change : AttrChange) (prop : option PropType) | ABerr (e : Z) | ABover.
 
 Definition mount_attr_valid : Z :=
   MOUNT_ATTR_RDONLY + MOUNT_ATTR_NOSUID + MOUNT_ATTR_NODEV + MOUNT_ATTR_NOEXEC
@@ -599,16 +679,16 @@ Definition attr_atime_valid (a : MountAttr) : bool :=
        then (Z.eqb set 0 || Z.eqb set MOUNT_ATTR_NOATIME || Z.eqb set MOUNT_ATTR_STRICTATIME)
        else false.
 
-(** [build_mount_kattr] (fs/namespace.c:4896-4942).  The four basic flags
-    are the handled subset; atime, idmap and no-symlink flags decline only
-    after their kernel validity checks have succeeded. *)
+(** [build_mount_kattr] (fs/namespace.c:4901-4952).  The four basic flags
+    and the four propagation types are the handled subset; atime, idmap and
+    no-symlink flags decline only after their kernel validity checks have
+    succeeded. *)
 Definition build_mount_attr (a : MountAttr) : AttrBuild :=
   if negb (Z.eqb (Z.land (ma_propagation a) (Z.lnot mount_attr_prop_valid)) 0) then ABerr EINVAL
   else if negb (one_propagation (ma_propagation a) || Z.eqb (ma_propagation a) 0) then ABerr EINVAL
   else if negb (Z.eqb (Z.land (Z.lor (ma_set a) (ma_clr a)) (Z.lnot mount_attr_valid)) 0) then ABerr EINVAL
   else if negb (attr_atime_valid a) then ABerr EINVAL
   else if has (ma_clr a) MOUNT_ATTR_IDMAP then ABerr EINVAL
-  else if negb (Z.eqb (ma_propagation a) 0) then ABover
   else if negb (Z.eqb (ma_clr a) 0) then ABover
   else if negb (Z.eqb (ma_userns_fd a) 0) then ABover
   else if negb (Z.eqb (Z.land (ma_set a)
@@ -617,7 +697,8 @@ Definition build_mount_attr (a : MountAttr) : AttrBuild :=
        else ABok (mkAttr
          (mkMountFlags (has (ma_set a) MOUNT_ATTR_RDONLY) (has (ma_set a) MOUNT_ATTR_NOSUID)
                        (has (ma_set a) MOUNT_ATTR_NODEV) (has (ma_set a) MOUNT_ATTR_NOEXEC))
-         (mkMountFlags false false false false)).
+         (mkMountFlags false false false false))
+         (if Z.eqb (ma_propagation a) 0 then None else Some (propagation_type (ma_propagation a))).
 
 Definition mount_setattr_flags_valid (flags : Z) : bool :=
   Z.eqb (Z.land flags (Z.lnot (AT_EMPTY_PATH + AT_RECURSIVE + AT_SYMLINK_NOFOLLOW + AT_NO_AUTOMOUNT))) 0.
@@ -646,17 +727,52 @@ Definition setattr_writer_busy (st : NsState) (targets : list positive) : bool :
         else false
     end) (ns_files st).
 
-(** [do_mount_setattr] (fs/namespace.c:4776-4829): the target must name a
+(** [do_mount_setattr] (fs/namespace.c:4781-4838): the target must name a
     mount root in the caller's namespace before [Mount.mount_setattr]
-    changes the selected tree. *)
-Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange) (recursive : bool)
+    changes the flags of the selected tree; then each mount of it changes
+    its propagation ([mount_setattr_commit], 4763-4777: per mount, the flags
+    and then [change_mnt_propagation]; neither reads what the other
+    writes, so all flags and then all propagation changes is the same).
+    MS_SHARED's new groups ([invent_group_ids], 4804-4810) take numbers the
+    allocator may refuse: ENOMEM and ENOSPC, environment refusals of
+    [mount442_injected].  A refused call leaves the groups as they were
+    ([cleanup_group_ids], 4831-4833).  No answer, after the namespace
+    check, when a mount the call reads can receive an event from an open
+    group ([Propagation.targets_open]; the rule of open groups,
+    [Tables.env_open_groups]).  The EPERM and EBUSY checks of
+    [mount_setattr_prepare] (4710-4743) read the selected tree alone, so
+    the test of that tree ([targets_open] with [None]) comes before them.
+    With AT_RECURSIVE the host can also add mounts to the tree, whose
+    flags and writers those checks would read.  Without it the checks read
+    only the target (the loop returns after the first mount, 4733-4734),
+    which no host event changes: an open target still has no answer, even
+    where Linux decides EPERM or EBUSY from it alone, and only a launch
+    that names an open group reaches that case
+    ([Propagation.targets_open_closed]).  A propagation type also reads a
+    slave the change hands over and a mount whose slave list it changes;
+    only [mount_setattr_commit] reads them, once those checks pass
+    (4824-4826), so their test ([targets_open] with the type) comes after
+    the checks, before [change_type].  The flags do not change a mount's
+    group or master, so both tests read [st]. *)
+Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
+    (prop : option PropType) (recursive : bool)
     (m : Model) (ctx : NsCtx) (st : NsState) (mt d : positive) : ext_outcome :=
   match find_mount (ns_mounts st) mt, path_mounted st mt d with
   | Some mount, Some true =>
       if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
+      else if targets_open st None mt recursive then EUnmodeled
       else if mf_ro (at_set change) && setattr_writer_busy st (setattr_targets (ns_mounts st) mt recursive)
       then err reads EBUSY m ctx st
-      else mount_mresult reads (mount_setattr (ns_mounts st) mt recursive change) m ctx st
+      else match mount_setattr (ns_mounts st) mt recursive change with
+           | MErr e => err reads e m ctx st
+           | MOk ms =>
+               match prop with
+               | Some k =>
+                   if targets_open st (Some k) mt recursive then EUnmodeled
+                   else mount_ok reads m ctx (change_type k (with_mounts st ms) mt recursive)
+               | None => mount_ok reads m ctx (with_mounts st ms)
+               end
+           end
   | Some _, Some false => err reads EINVAL m ctx st
   | _, _ => EUnmodeled
   end.
@@ -665,7 +781,8 @@ Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
     [wants_mount_setattr] (4965-4996): flag validation, then the size tests
     (E2BIG, EINVAL), then [may_mount] (EPERM), then the struct copy, then
     path resolution and [do_mount_setattr].  Kind: exact for the stated
-    basic attribute subset; all other accepted ABI forms decline. *)
+    basic attribute subset with any propagation type; all other accepted
+    ABI forms decline. *)
 Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     : ext_outcome :=
   let dfd := in_arg i 0 in
@@ -689,7 +806,7 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                match build_mount_attr attr with
                | ABerr e => err attr_reads e m ctx st
                | ABover => EUnmodeled
-               | ABok change =>
+               | ABok change prop =>
                    if Z.eqb (ma_set attr) 0 && Z.eqb (ma_clr attr) 0 && Z.eqb (ma_propagation attr) 0
                    then mount_ok attr_reads m ctx st
                    else
@@ -703,7 +820,7 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                          | WErr e => err reads e m ctx st
                          | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                          | WOk (LDentry mt d) =>
-                             mount_setattr_apply reads change (has flags AT_RECURSIVE) m ctx st mt d
+                             mount_setattr_apply reads change prop (has flags AT_RECURSIVE) m ctx st mt d
                          end
                      end
                end
@@ -714,15 +831,21 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
 Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn i m ctx st.
 
 (** The environment's refusals of the mount namespace calls, Linux
-    6.18.44; each arm admits its row's errnos after any answer
+    v6.18.46; each arm admits its row's errnos after any answer
     ([Arm.with_injected]).  No security module but the capability one runs
     (SCOPE.md), so [security_sb_mount], [security_sb_umount] and
     [security_sb_pivotroot] refuse nothing.
-    - [umount2] (39), [pivot_root] (41), [mount_setattr] (442): the walks'
-      ([Arm.walk_pairs]); [pivot_root]'s ENOMEM also from [lock_mount]'s
-      [get_mountpoint] (fs/namespace.c).
+    - [umount2] (39), [pivot_root] (41): the walks' ([Arm.walk_pairs]);
+      [pivot_root]'s ENOMEM also from [do_lock_mount]'s [get_mountpoint]
+      (fs/namespace.c:4584, 2764; [get_mountpoint], 898-900).
+    - [mount_setattr] (442): the walks'; with MS_SHARED, ENOMEM and ENOSPC
+      from the group-id allocator ([mnt_alloc_group_id],
+      fs/namespace.c:239-247, through [invent_group_ids], 4804-4808;
+      [ida_alloc_range], lib/idr.c:470, 477), an allocation, so
+      FamAlloc.  The tables never answer ENOSPC for 442, so [ni_forced]
+      stays empty.
     - [mount] (40): the walks'; ENOMEM also from [copy_mount_string] and
-      [copy_mount_options], from [lock_mount]'s [get_mountpoint] and
+      [copy_mount_options], from [do_lock_mount]'s [get_mountpoint] and
       [clone_mnt]'s [alloc_vfsmnt] (fs/namespace.c), and from a new
       instance's [fs_context_for_mount] (fs/fs_context.c), [sget_fc]
       (fs/super.c) and fill_super; a new tmpfs's root inode, ENOSPC when
@@ -734,7 +857,21 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       [shmem_fill_super] gives the new instance room for at least one
       inode (mm/shmem.c:5092-5093).  The tables also answer ENOSPC, at the
       mount limit ([Mount.bind_mount], [NewMount.new_mount]:
-      [count_mounts]), so ENOSPC is in [ni_forced].
+      [count_mounts]), and at the limit of a namespace of the tables that
+      gets secondaries ([Propagation.attach_check]: [count_mounts] from
+      [propagate_mnt], fs/pnode.c:351), so ENOSPC is in [ni_forced].  With
+      MS_SHARED ([do_change_type], fs/namespace.c:2877-2881), and for a
+      bind or new mount onto a shared mount ([invent_group_ids] from
+      [attach_recursive_mnt], fs/namespace.c:2594-2597; [clone_mnt] with
+      CL_MAKE_SHARED for a secondary, fs/namespace.c:1264-1268), ENOMEM and
+      ENOSPC also from the group-id allocator ([mnt_alloc_group_id],
+      fs/namespace.c:239-247; [ida_alloc_range], lib/idr.c:391, 470, 477), an
+      allocation, so FamAlloc; ENOMEM from [clone_mnt]'s [alloc_vfsmnt]
+      for each secondary (fs/namespace.c:1252-1254).  ENOSPC also from
+      [count_mounts] of a namespace outside the tables that gets a
+      secondary (fs/pnode.c:351; fs/namespace.c:2472-2483): a limit on the
+      number of mounts, not an allocation, and FamAlloc as the row's other
+      ENOSPC.
     Each row also lists the errnos its arm answers from the tables
     ([Arm.ni_answers]): the path copies, the walks and the call's own
     checks. *)
@@ -743,17 +880,20 @@ Definition mount40_injected : NsInjected :=
                [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EPERM; ENOSPC]
                [ENOSPC].
 
+Definition mount442_injected : NsInjected :=
+  mkNsInjected 442 (walk_pairs ++ [(errno_in [ENOSPC], FamAlloc)])
+    [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] [].
+
 Definition mount_injected : list NsInjected :=
   [mount40_injected;
    mkNsInjected 39 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EPERM] [];
    mkNsInjected 41 walk_pairs
      [EPERM; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EBUSY] [];
-   mkNsInjected 442 walk_pairs
-     [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] []].
+   mount442_injected].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=
   [(39, with_injected (pairs_errno walk_pairs) umount2_arm);
    (40, with_injected (ni_errno mount40_injected) mount_arm);
    (41, with_injected (pairs_errno walk_pairs) pivot_root_arm);
-   (442, with_injected (pairs_errno walk_pairs) mount_setattr_arm)].
+   (442, with_injected (ni_errno mount442_injected) mount_setattr_arm)].
