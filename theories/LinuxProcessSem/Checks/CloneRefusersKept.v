@@ -120,3 +120,6 @@ Proof.
   rewrite (star_clone_refusers_kept _ _ _ _ Hs), init_config_clone_refusers.
   exact (valid_input_no_clone_refusers inp Hv).
 Qed.
+
+Print Assumptions star_clone_refusers_kept.
+Print Assumptions star_valid_input_no_clone_refusers.
