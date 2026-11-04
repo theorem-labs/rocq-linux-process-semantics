@@ -1902,9 +1902,9 @@ Definition ppoll_env_ready (cs : list (Z * list (Z * PpollTag))) : bool :=
                       | _ => false
                       end) (snd c)) cs.
 
-(** A real deadline with such an entry, which [ppoll_plan] declines: a
-    real deadline with an eventfd or signalfd entry is not modeled in
-    this PR. *)
+(** [ppoll_plan] declines a real deadline when an eventfd or signalfd
+    entry can be ready ([ppoll_env_ready]).  An all-zero signalfd entry
+    does not cause this decline. *)
 Definition ppoll_env_deadline (tmo : PselectTimeout)
     (cs : list (Z * list (Z * PpollTag))) : bool :=
   match tmo with

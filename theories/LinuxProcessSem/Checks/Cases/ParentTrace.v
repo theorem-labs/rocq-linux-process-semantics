@@ -445,7 +445,9 @@ Proof. vm_compute. reflexivity. Qed.
     counters ([State.FdEventfd]: 0x80800 is non-blocking, 0x80000 is
     not); after it they are the shared kind ([State.OEventFd]), with w
     the O_NONBLOCK bit and 0: read and write on them answer from the
-    environment's counter, and readiness and F_GETFD decline. *)
+    environment's counter.  Select, epoll and F_GETFD decline; a ppoll
+    entry for POLLIN admits a choice of readiness
+    ([Select.ppoll_opaque_revents]). *)
 Example parent_trace_clone_descriptors :
   fd_lookup (m_fds parent_trace_s34) 3 = Some (FdOpaque (OProcPath s_proc))
   /\ fd_lookup (m_fds parent_trace_s34) 4

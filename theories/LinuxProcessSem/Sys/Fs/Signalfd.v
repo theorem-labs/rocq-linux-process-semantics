@@ -100,9 +100,13 @@ Definition sigset_has (w : word) (sig : Z) : bool :=
 
     Under SCOPE.md's assumption that nothing outside the process makes a
     signal pending for it, a SIGCHLD comes only from the process's own
-    child, so the process must have one ([State.m_has_children]).  The
-    signal must be BLOCKED ([State.m_sigmask]) to stay pending: SIG_DFL
-    is the only SIGCHLD disposition the model admits
+    child, so the process must have had one ([State.m_has_children]).
+    This bit is never cleared: it records that the process has ever had
+    a child, not that a child is still present.  A pending SIGCHLD can
+    survive a reap.  Any wait4 arm that reaps a child must preserve this
+    history or separately record that pending signal.
+    The signal must be BLOCKED ([State.m_sigmask]) to stay pending:
+    SIG_DFL is the only SIGCHLD disposition the model admits
     ([Kernel.Signal.sigchld_dfl_install]), and at SIG_DFL an unblocked
     SIGCHLD is discarded when it is generated ([sig_ignored] returns
     false for a blocked signal only).  And the descriptor's mask must

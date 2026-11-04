@@ -107,10 +107,11 @@ Open Scope sys_scope.
     into [State.FdOpaque (State.OEventFd w)] ([Kernel.Fork.share_eventfds]):
     after the clone the description is shared by two tasks, so no call
     answers from a stored counter value: read and write answer from the
-    environment's counter (Sys/Fs/ReadWrite.v), and readiness (select,
-    poll, epoll) and F_GETFD decline; a decline is never a
-    wrong answer.  bubblewrap's parent holds two eventfds at its
-    namespace [clone] ([Checks.Cases.ParentTrace]).
+    environment's counter (Sys/Fs/ReadWrite.v).  Select, epoll and
+    F_GETFD decline; a ppoll entry for POLLIN admits a choice of
+    readiness ([Select.ppoll_opaque_revents]).  bubblewrap's parent
+    holds two eventfds at its namespace [clone]
+    ([Checks.Cases.ParentTrace]).
 
     THE GATE IS ONE [if], AND IT IS THE FIRST THING [do_eventfd] DOES
     that can fail.  Linux writes
