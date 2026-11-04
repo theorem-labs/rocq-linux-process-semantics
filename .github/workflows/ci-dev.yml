@@ -1,0 +1,104 @@
+name: ci-dev
+# Iteration builds. This file lives only on the throwaway branches
+# ci-dev/<slot> that a helper script pushes (never on a PR branch, never on
+# main). It builds the dune targets listed in .ci-dev/targets, or everything
+# plus the gen_checker and assumption checks when that file is empty, with
+# Rocq 9.2 as CI's Rocq 9.2 job does, and keeps _build in the Actions cache per
+# slot so a rebuild is incremental.
+on:
+  push:
+    branches: ['ci-dev/**']
+
+concurrency:
+  group: ci-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ci-dev build
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore _build
+        uses: actions/cache/restore@v4
+        with:
+          path: _build
+          key: ci-dev-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ci-dev-${{ github.ref_name }}-
+            ci-dev-
+
+      - name: Add swap (a memory peak slows the build instead of killing a compile)
+        run: |
+          sudo fallocate -l 16G /mnt/ci-dev-swap
+          sudo chmod 600 /mnt/ci-dev-swap
+          sudo mkswap /mnt/ci-dev-swap
+          sudo swapon /mnt/ci-dev-swap
+          free -h
+
+      - uses: rocq-prover/docker-opam-action@master
+        with:
+          coq_version: '9.2'
+          before_install: |
+            startGroup "Fix workspace permissions"
+              sudo chown -R $(id -u):$(id -g) .
+              git config --global --add safe.directory /github/workspace
+            endGroup
+            startGroup "Install Python 3"
+              sudo apt-get update -y -q
+              sudo apt-get install -y -q --no-install-recommends python3 time
+            endGroup
+          install: |
+            startGroup "Install dependencies"
+              opam update -y
+              opam pin add -k version -y dune 3.23.1
+              opam install -y -j 2 --deps-only .
+            endGroup
+          script: |
+            targets=$(grep -v '^[[:space:]]*$' .ci-dev/targets || true)
+            echo "CI_DEV_TARGETS=[$targets]"
+            # Memory sampler: every 10 s, the RSS (kB) of each running rocq compile and its .v file.
+            ( while :; do
+                for p in /proc/[0-9]*; do
+                  cmd=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
+                  case "$cmd" in
+                    *rocq*.v*|*coqc*.v*)
+                      rss=$(awk '/^VmRSS/ {print $2}' "$p/status" 2>/dev/null)
+                      f=$(printf '%s\n' $cmd | grep '\.v$' | tail -1)
+                      [ -n "$rss" ] && [ -n "$f" ] && echo "$rss $f" >> /tmp/rss.samples ;;
+                  esac
+                done
+                sleep 10
+              done ) &
+            SAMPLER=$!
+            if [ -n "$targets" ]; then
+              if /usr/bin/time -v opam exec -- dune build -j 2 --display short $targets 2>&1; then rc=0; else rc=$?; fi
+            else
+              if /usr/bin/time -v opam exec -- dune build -j 2 --display short 2>&1; then rc=0; else rc=$?; fi
+              if [ "$rc" = 0 ]; then
+                if python3 tools/gen_checker.py --check && python3 tools/gen_checker.py --verify; then :; else rc=$?; echo "GEN_CHECKER_FAILED=$rc"; fi
+              fi
+              if [ "$rc" = 0 ]; then
+                if opam exec -- python3 .github/check_assumptions.py; then :; else rc=$?; echo "CHECK_ASSUMPTIONS_FAILED=$rc"; fi
+              fi
+            fi
+            kill $SAMPLER 2>/dev/null || true
+            # dune's lock is created 0600 in the container, which the cache
+            # save (run as the runner user) cannot read: drop it, dune has exited.
+            rm -f _build/.lock
+            echo "RSS_PEAKS (kB, file; top 15):"
+            awk '{ if ($1 > m[$2]) m[$2] = $1 } END { for (f in m) print m[f], f }' /tmp/rss.samples 2>/dev/null | sort -rn | head -15 | sed 's/^/RSS_PEAK /'
+            echo "BUILD=$rc"
+          uninstall: ''
+
+      - name: Save _build
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: _build
+          key: ci-dev-${{ github.ref_name }}-${{ github.sha }}

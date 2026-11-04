@@ -300,6 +300,31 @@ Example symlinkat_devpts_trailing_name_at_namemax_is_enoent :
     base_model base_ctx (devpts_state ro_flags 511)) = Some (-2).
 Proof. vm_compute. reflexivity. Qed.
 
+(** An unlisted host name is not known absent: the filesystem lookup
+    may fail, or its positive dentry may give EEXIST before the deferred
+    write error (Linux v6.18.46, fs/namei.c:1705-1721, 4228-4237). *)
+Definition host_state : NsState :=
+  with_sbs base_state [FilesCases.sb 1 1 SbHost 61267].
+
+Example symlinkat_host_trailing_unknown_declines :
+  symlinkat_fn trailing_symlink_in base_model base_ctx host_state = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_host_trailing_unknown_declines :
+  mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx host_state = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_host_trailing_existing_before_readonly :
+  ret_of (symlinkat_fn (symlink_to (s_exists ++ [47])) base_model base_ctx
+    (with_sbs existing_ro_state [FilesCases.sb 1 1 SbHost 61267])) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions symlinkat_host_trailing_unknown_declines.
+Print Assumptions mkdirat_host_trailing_unknown_declines.
+Print Assumptions symlinkat_host_trailing_existing_before_readonly.
+
 Example symlinkat_devpts_unmapped_before_write_permission :
   ret_of (symlinkat_fn symlink_in base_model (with_user_ns base_ctx 2)
     (devpts_unmapped_state no_flags 365)) = Some (-75).
