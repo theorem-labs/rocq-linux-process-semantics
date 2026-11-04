@@ -8,6 +8,7 @@
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics State Run Procs.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ExecutableSpecs ProcsChildPids ProcsPrivateFrame ProcsSharedFrame ProcsSyncOnce.
