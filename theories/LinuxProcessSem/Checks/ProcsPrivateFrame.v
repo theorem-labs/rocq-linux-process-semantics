@@ -386,8 +386,10 @@ Lemma check_socketpair_sh : forall i family type protocol sv eff m m' evs,
 Proof.
   intros i family type protocol sv eff m m' evs H.
   unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted in H. sh_frame2 H.
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  sh_frame2 H.
 Qed.
+Print Assumptions check_socketpair_sh.
 
 Lemma check_bind_sh : forall i fd addrp addrlen eff m m' evs,
   check_bind i fd addrp addrlen eff m = CheckOk m' evs ->

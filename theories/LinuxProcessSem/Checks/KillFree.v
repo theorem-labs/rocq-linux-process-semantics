@@ -1314,9 +1314,10 @@ Lemma check_socketpair_kf : forall i family type protocol sv eff m m' evs,
 Proof.
   intros i family type protocol sv eff m m' evs H Hoff Hk.
   unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted in H.
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
   kf_frame H m Hoff Hk.
 Qed.
+Print Assumptions check_socketpair_kf.
 
 Lemma check_recvfrom_kf : forall i fd buf size eff m m' evs,
   check_recvfrom i fd buf size eff m = CheckOk m' evs -> kill_post m m' evs.

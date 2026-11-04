@@ -901,8 +901,10 @@ Lemma check_socketpair_cp : forall i family type protocol sv eff m m' evs,
 Proof.
   intros i family type protocol sv eff m m' evs H.
   unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted in H. cp_frame2 H.
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  cp_frame2 H.
 Qed.
+Print Assumptions check_socketpair_cp.
 
 Lemma check_recvfrom_cp : forall i fd buf size eff m m' evs,
   check_recvfrom i fd buf size eff m = CheckOk m' evs ->

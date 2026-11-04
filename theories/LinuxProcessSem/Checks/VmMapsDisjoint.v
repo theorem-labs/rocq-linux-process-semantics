@@ -2974,8 +2974,10 @@ Lemma check_socketpair_frame : forall i family type protocol sv eff m m' evs,
 Proof.
   intros i family type protocol sv eff m m' evs H.
   unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted in H. vm_frame2 H.
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  vm_frame2 H.
 Qed.
+Print Assumptions check_socketpair_frame.
 
 
 Lemma check_recvfrom_frame : forall i fd buf size eff m m' evs,
