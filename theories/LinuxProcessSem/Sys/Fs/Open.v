@@ -1619,13 +1619,15 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     A PIPE CANNOT GAIN A READER OR A WRITER HERE, although
     "/proc/self/fd/N" can name one: see [State.pipe_end_live].
 
-    NOR CAN AN ALIAS'S DESCRIPTION BE REOPENED: a name whose last two
-    components are "fd" and the number of an alias ([State.OAlias],
+    The alias gate matches raw components: a name whose last two are
+    "fd" and the decimal number of an alias ([State.OAlias],
     [proc_fd_alias_b]) is declined for every flag word.  Linux follows
     that magic link to the description the alias holds
     ([proc_fd_link], fs/proc/fd.c, read at v6.18.44; identical at
-    v6.18.46), which the alias's own entry does not carry and which, once
-    the alias dangles, no other entry carries either. *)
+    v6.18.46).  Empty and "." components are not normalized by this
+    gate, so "/proc/self/fd//N" and "/proc/self/fd/N/" may still answer
+    an O_PATH open with [OProcPath].  That answer is opaque, as above;
+    no operation on it reads the aliased description's state. *)
 Definition openat_proc_spec (c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in

@@ -464,6 +464,13 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
       ([State.with_ppid_answered]), so the parent never moves back and a
       second move needs a new window.
 
+    This assumes at most one reparenting per window.  The model does not
+    check that assumption: Linux can reparent again when a subreaper dies,
+    which this arm does not cover in the same window.  [Run.run] and
+    [Run.run_pcfg] use this arm; statements over those runs, including
+    [Equivalence.strong_equiv] and [Equivalence.strong_universal_T], inherit
+    the limit.  SCOPE.md lists it among unchecked environment assumptions.
+
     The parent's death at ANY moment, and the kill its signal then sends,
     are not this arm's: they are steps of the configured run
     [Run.sstep_pcfg] under the named environment [Run.parent_may_die],

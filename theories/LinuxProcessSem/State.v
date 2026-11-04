@@ -2839,17 +2839,20 @@ Definition PipeBuf : Type := list byte * Z.
       [struct file], which fs/read_write.c reads and moves through
       [file_ppos]), is carried by [partner]'s entry ALONE, and the model
       answers through that one descriptor: [close], [close_range],
-      [F_SETFD] and [F_GETFD] answer on the alias, and so does the
-      -ENOTSOCK of the socket calls ([Net.Socket.sock_fd]), which reads
-      the kind and not the description; every other arm declines it.
+      [F_SETFD] and [F_GETFD] answer on the alias.  The socket calls
+      answer -ENOTSOCK ([Net.Socket.sock_fd]), and [setns] answers
+      -EINVAL ([Kernel.Nsproxy.setns_spec]); neither reads the description.
+      Every other arm on the alias declines it.
       Closing [partner], or a [dup3] onto it, is answered as for any
       descriptor, and the alias then DANGLES: Linux keeps the
       description alive through it alone.  That is exact for what the
       alias answers, none of which reads the description; the arms that
-      could show the live description decline instead ([flock] while any
-      alias exists, [Fs.Locks.path_openers]; an open through
-      "/proc/self/fd/<alias>", [Fs.Open.openat_proc_spec]).  Closing the
-      alias drops one reference, which nothing a program can observe on
+      could show the live description decline instead: [flock] while any
+      alias exists ([Fs.Locks.path_openers]), and an open whose last two
+      raw path components are "fd" and the alias's decimal number
+      ([Fs.Open.proc_fd_alias_b]).  Other O_PATH spellings may return an
+      opaque [OProcPath], which exposes no description state.
+      Closing the alias drops one reference, which nothing a program can observe on
       a regular file depends on.
         fs/file.c [do_dup2], [close_fd], [__range_close], [file_close_fd_locked]: read at v6.18.44; identical at v6.18.46.
         fs/read_write.c [file_ppos]; include/linux/fs.h [struct file] ([f_pos]): read at v6.18.44; identical at v6.18.46.
