@@ -50,6 +50,7 @@ Definition flock_witness (fd cmd : word) (m : Model) : outcome SyscallEffect :=
           | FdDevNull _ _ => Unmodeled
           | FdUrandom => Unmodeled
           | FdOpaque _ => Unmodeled   (* unreachable: declined above *)
+          | FdSeqpacket _ _ _ => Unmodeled
           end
     end.
 
@@ -64,7 +65,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [| eapply bind_step; [apply get_model_ok|];
        cbv beta iota; srw Hfd; apply pure_ok ].
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o].
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st].
   11: { (* the opaque kinds, declined ahead of the unlock *)
         eapply bind_step; [apply get_model_ok|]. cbv beta iota.
         srw Hfd. apply unmodeled_intro. }
@@ -95,6 +96,9 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - (* /dev/urandom: declined *)
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an AF_UNIX SEQPACKET end: declined *)
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
 Qed.

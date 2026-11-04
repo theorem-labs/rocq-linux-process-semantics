@@ -483,6 +483,11 @@ Definition getdents64_spec (fd dirent count : word) : Sys SyscallEffect :=
                                               same regular file, opened O_RDWR *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
+  | Some (FdSeqpacket _ _ _) => err_ret ENOTDIR
+                                           (* the [FdSocket] answer, from
+                                              [socket_file_ops] alone: it has no
+                                              [.iterate_shared] (net/socket.c:156,
+                                              v6.18.46) *)
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)

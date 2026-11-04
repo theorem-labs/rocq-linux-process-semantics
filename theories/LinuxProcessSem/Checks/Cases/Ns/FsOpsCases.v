@@ -23,7 +23,7 @@ Definition root_dir : Inode := mkInode 1 IDir 511 1000 1002 0 [] false.
 Definition one_sb (mf : MountFlags) (s : SuperBlock) (ds : list Dentry) (ins : list Inode) : NsState :=
   let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 mf no_flags false false None None] in
   let st := with_userns st [root_user] in
-  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false] in
   let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [s] in
   with_tree st ds ins.
@@ -172,7 +172,7 @@ Proof. split; vm_compute; reflexivity. Qed.
 Definition sys_state : NsState :=
   let st := with_mounts empty_nsstate [mkMount 2 1 None 1 1 2 no_flags no_flags false false None None] in
   let st := with_userns st [map_root; map_child] in
-  let st := with_mntns st [mkMntNs 1 1 2 false] in
+  let st := with_mntns st [mk_mntns 1 1 2 false] in
   let st := with_sbs st [mkSb 2 (SbProc 1) 1 1 false 40864 true true true] in
   with_tree st
     [mkDentry 1 2 None [] 1;
@@ -358,7 +358,7 @@ Definition s_f_slash : list Z := [47; 102; 47].
 Definition unlink_state (dir_perm fuid fgid : Z) (extra : list Mount) : NsState :=
   let st := with_mounts empty_nsstate (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra) in
   let st := with_userns st [root_user] in
-  let st := with_mntns st [mkMntNs 1 1 1 false; mkMntNs 2 1 1 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false; mk_mntns 2 1 1 false] in
   let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [tmpfs_sb] in
   with_tree st

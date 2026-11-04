@@ -27,6 +27,7 @@ Definition check_ioctl (fd req : word) (eff : SyscallEffect) (m : Model)
       else CheckUnmodeled
   | Some FdUrandom => CheckUnmodeled
   | Some (FdOpaque _) => CheckUnmodeled   (* declined on every request: [Ioctl.ioctl_spec] *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* declined: [Ioctl.ioctl_spec] *)
   end.
 
 Lemma check_ioctl_sound_ok : forall fd req eff m m' evs i,

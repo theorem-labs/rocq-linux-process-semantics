@@ -750,6 +750,18 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _
                                 | OInherited None) => true
                     | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)) => false
+                    (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe
+                       reason: the child's second reference names the
+                       same socket, whose peer and queue both copies
+                       share, and a close in one process does not release
+                       it (the socket's [sock_close], net/socket.c:1454-1458,
+                       runs only when the last reference goes: [fput],
+                       fs/file_table.c:579-583, v6.18.46), so the
+                       peer's end of file would depend on a reference
+                       count the model does not hold.  It is also what
+                       keeps [State.seq_peer] exact: each end has one
+                       descriptor, in this process. *)
+                    | FdSeqpacket _ _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -817,13 +829,13 @@ Definition forfeit_model (m : Model) : Model :=
 
 Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = false.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
 Qed.
 
 Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o] H; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st] H; try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   discriminate H.
 Qed.
@@ -871,7 +883,7 @@ Proof.
   intros fds H. unfold clone_no_shared_file_b in H.
   rewrite forallb_forall in H. apply forallb_forall.
   intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
-  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o];
+  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st];
     try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   cbn in H. discriminate H.

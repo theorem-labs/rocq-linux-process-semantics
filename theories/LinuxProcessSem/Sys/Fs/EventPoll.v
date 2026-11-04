@@ -310,6 +310,13 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          All read at v6.18.44; identical at v6.18.46.  An [ONsFile]'s
          answer depends on an object of unknown type.  None of the six
          answers is written. *)
+  | FdSeqpacket _ _ _ => None
+      (* DECLINED.  The socket file has [.poll = sock_poll]
+         (net/socket.c [socket_file_ops], v6.18.46), so [file_can_poll]
+         holds and Linux, with no modeled epfd an epoll file, answers
+         -EINVAL.  [epoll_ctl_outcome] does consult this target's
+         readiness, and [None] makes it decline there: a decline Linux
+         allows, kept until a case states the -EINVAL. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -337,7 +344,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)

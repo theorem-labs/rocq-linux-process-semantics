@@ -64,6 +64,8 @@ jobs:
       # whole history) and fails on any difference but white space.
       - name: Pre-change copies match their commit
         run: python3 tools/check_pre_copies.py
+      - name: Pre-hook predicate and option bodies match their commit
+        run: python3 -m unittest discover -s tests -p test_bpf_pre_copies.py && python3 tools/check_bpf_pre_copies.py
       - id: route
         env:
           EVENT: ${{ github.event_name }}

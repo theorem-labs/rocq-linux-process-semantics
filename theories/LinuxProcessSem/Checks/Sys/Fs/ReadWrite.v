@@ -1325,6 +1325,7 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
       else check_read_urandom i buf count eff m   (* the declared stream *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [ReadWrite.read_spec] *)
   | Some (FdOpaque o) =>
       match o with
       | OInherited (Some (data, off)) =>
@@ -1635,6 +1636,7 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
           end in
         if w_is0 count then check_access_ok_zero buf count eff m k else k
   | Some FdUrandom => check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [ReadWrite.write_spec] *)
   | Some (FdOpaque o) => check_write_opaque i o buf count eff m
   | Some (FdDevNull _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []
@@ -1690,7 +1692,8 @@ Lemma check_read_sound_ok : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read in H. unfold read_spec.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] *) discriminate H. }
   11:{ (* the opaque kinds: a live inherited file reads through
           [check_read_file_data]; every other kind is [check_read_opaque] *)
        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
@@ -2012,7 +2015,11 @@ Lemma check_read_sound_unmodeled : forall i fd buf count eff m,
 Proof.
   intros i fd buf count eff m H.
   unfold check_read in H. unfold read_spec.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: declined on both sides *)
+       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+       srw Hfd. apply unmodeled_intro. }
   11:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
@@ -2230,7 +2237,8 @@ Proof.
   intros i fd buf count eff m m' evs H.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: the spec declines *) hall Hfd; inv_ok. }
   11:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
        hall Hfd; inv_ok.
@@ -2365,7 +2373,8 @@ Proof.
   intros i fd buf count m eff H.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: declined on both sides *) hall Hfd; reflexivity. }
   11:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
        hall Hfd; inv_ok.
@@ -2465,7 +2474,8 @@ Proof.
   unfold check_write in H.
   unfold write_spec, write_range_gate, write_file_tail, write_fault_keep,
     write_ledger.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] *) discriminate H. }
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
                 cbv beta iota in H;
@@ -2821,7 +2831,11 @@ Proof.
   intros i fd buf count eff m H.
   unfold check_write in H. unfold write_spec, write_range_gate,
     write_file_tail, write_fault_keep, write_ledger.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
+  12:{ (* an AF_UNIX SEQPACKET end: declined on both sides *)
+       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+       srw Hfd. apply unmodeled_intro. }
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
                 eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
@@ -3060,7 +3074,7 @@ Proof.
     write_ledger in H.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
                 cbv beta iota in *;
@@ -3222,8 +3236,12 @@ Proof.
     write_ledger in H.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok;
     try discriminate.
+  (* an AF_UNIX SEQPACKET end: declined on both sides *)
+  all: try (match goal with
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => reflexivity
+            end).
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
                 cbv beta iota in *;
@@ -3373,6 +3391,7 @@ Definition check_pread64 (i : SyscallInput) (fd buf count pos : word)
       then check_ret_only eff (errno_ret EINVAL) m []
       else check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdOpaque _) => CheckUnmodeled
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [ReadWrite.pread64_spec] *)
   | Some FdUrandom =>
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
@@ -3430,6 +3449,7 @@ Definition check_pwrite64 (i : SyscallInput) (fd buf count pos : word)
   | Some (FdFileA _ _) => CheckUnmodeled   (* see [ReadWrite.pwrite64_spec] *)
   | Some FdUrandom => check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
   | Some (FdOpaque _) => CheckUnmodeled
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [ReadWrite.pwrite64_spec] *)
   | Some (FdDevNull _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []
       else if negb (access_okb buf (bv_unsigned count))
@@ -3469,8 +3489,9 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   all: try (match goal with
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => discriminate
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => discriminate
             end).
   - (* channel: no FMODE_PREAD *)
@@ -3625,10 +3646,14 @@ Proof.
   unfold check_pread64 in H. unfold pread64_spec.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ =>
+                eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+                eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                srw Hfd; apply unmodeled_intro
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ =>
                 eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
                 eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                 srw Hfd; apply unmodeled_intro
@@ -3723,7 +3748,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { cbv iota in H. inv_ok. cbn; rewrite bv_eqb_refl; reflexivity. }
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; rewrite bv_eqb_refl; reflexivity).
   - (* readable file *)
@@ -3790,10 +3815,11 @@ Proof.
   unfold pread64_spec in H. unfold check_pread64. sys_unfold.
   destruct (ppos_einvalb pos) eqn:Hpos; [cbv iota in H; inv_ok|].
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => reflexivity
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => reflexivity
             end).
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.
@@ -3853,13 +3879,14 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          eapply bind_ok0; [apply input_ok|]; cbv beta;
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => discriminate
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => discriminate
             end).
   (* Three goals survive that: the write-only file arm and the O_RDWR
      one, which both transfer, and the APPEND arm, whose checker is
@@ -3962,10 +3989,14 @@ Proof.
   unfold check_pwrite64 in H. unfold pwrite64_spec.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ =>
+                eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+                eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                srw Hfd; apply unmodeled_intro
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ =>
                 eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
                 eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                 srw Hfd; apply unmodeled_intro
@@ -4056,7 +4087,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { cbv iota in H. inv_ok. cbn; rewrite bv_eqb_refl; reflexivity. }
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; rewrite bv_eqb_refl; reflexivity).
   (* Two goals survive: the write-only file arm and the O_RDWR one.
@@ -4126,10 +4157,11 @@ Proof.
   unfold pwrite64_spec in H. unfold check_pwrite64. sys_unfold.
   destruct (ppos_einvalb pos) eqn:Hpos; [cbv iota in H; inv_ok|].
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => reflexivity
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => reflexivity
             end).
   (* three goals survive: the write-only file arm, the APPEND arm where
      both sides decline outright, and the O_RDWR arm, which is the
@@ -4438,6 +4470,7 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
         end
   | Some FdUrandom => check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
   | Some (FdOpaque _) => CheckUnmodeled
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [ReadWrite.writev_spec] *)
   | Some (FdDevNull _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []
       else
@@ -4475,9 +4508,10 @@ Proof.
   unfold check_writev in H. unfold writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => discriminate
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => discriminate
             end).
   9:{ (* /dev/null: -EBADF without FMODE_WRITE, else the import's answer *)
       destruct wr.
@@ -4707,9 +4741,13 @@ Proof.
   unfold check_writev in H. unfold writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ =>
+                eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+                eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                srw Hfd; apply unmodeled_intro
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ =>
                 eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
                 eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                 srw Hfd; apply unmodeled_intro
@@ -4871,7 +4909,7 @@ Proof.
   unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok.
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
@@ -5005,10 +5043,11 @@ Proof.
   unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok;
     try discriminate.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ => reflexivity
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ => reflexivity
             end).
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok; try discriminate.
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
@@ -5288,6 +5327,7 @@ Definition check_readv (i : SyscallInput) (fd iov iovcnt : word)
       match readable_fd e with
       | None =>
           if fd_is_opaque e then CheckUnmodeled
+          else if fd_is_seqpacket e then CheckUnmodeled
           else check_ret_only eff (errno_ret EBADF) m []
           (* the read end has a [RdPipe]; only the O_WRONLY write end
              reaches this arm, where -EBADF is the kernel's own answer *)
@@ -5908,10 +5948,11 @@ Proof.
   destruct (readable_fd e) as [r|] eqn:Hr.
   2:{ destruct e; cbv beta iota in H |- *;
         try (now apply check_ret_only_no_unmodeled in H).
-      (* the opaque kinds: the gate's [None] declines on both sides *)
-      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd; srw Hr. apply unmodeled_intro. }
+      (* the opaque kinds and an AF_UNIX SEQPACKET end: the gate's [None]
+         declines on both sides *)
+      all: eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+           eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           srw Hfd; srw Hr; apply unmodeled_intro. }
   destruct (readv_heap_iovecb iovcnt) eqn:Hheap.
   { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
@@ -5999,8 +6040,9 @@ Proof.
   (* the gate's [None] is a real -EBADF for every kind, so the spec
      cannot decline there and that goal closes by [discriminate] *)
   destruct (readable_fd e) as [r|] eqn:Hr; hall Hr; inv_ok; try discriminate.
-  2:{ (* the gate's [None]: the opaque kinds decline on both sides, every
-         other kind is a real -EBADF the spec cannot decline *)
+  2:{ (* the gate's [None]: the opaque kinds and an AF_UNIX SEQPACKET end
+         decline on both sides, every other kind is a real -EBADF the spec
+         cannot decline *)
       destruct e; cbv beta iota in *; inv_ok; first [reflexivity | discriminate]. }
   destruct (readv_heap_iovecb iovcnt) eqn:Hheap.
   { (* the heap-backed band declines whatever the raw count is *)
@@ -6036,6 +6078,7 @@ Definition check_lseek (fd off whence : word) (eff : SyscallEffect) (m : Model)
       | FdDevNull _ _ => check_ret_only eff (Z_to_bv 64 0) m []   (* [null_lseek]: 0 *)
       | FdUrandom => check_ret_only eff (Z_to_bv 64 0) m []   (* [noop_llseek]: the pinned 0 *)
       | FdOpaque _ => CheckUnmodeled   (* declined: see [ReadWrite.lseek_spec] *)
+      | FdSeqpacket _ _ _ => CheckUnmodeled   (* declined: see [ReadWrite.lseek_spec] *)
       | FdDir => CheckUnmodeled   (* unmodeled: see [ReadWrite.lseek_spec] *)
       | FdFile p cur =>
           match fs_lookup (m_fs m) p with
@@ -6111,11 +6154,19 @@ Proof.
   unfold check_lseek in H. unfold lseek_spec.
   (* the whence gate precedes the fd's KIND on both sides, but follows
      the fd lookup: [ksys_lseek]'s order *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ =>
                 destruct ((SEEK_MAX <? bv_unsigned whence)%Z); cbv beta iota in H;
                 discriminate
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ =>
+                (* an AF_UNIX SEQPACKET end: the kind-blind -EINVAL past
+                   SEEK_MAX, else declined *)
+                destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
+                  [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+                    (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
+                    srw Hfd; apply pure_ok
+                  | discriminate ]
             end).
   9:{ (* /dev/null: -EINVAL past SEEK_MAX, else [null_lseek]'s 0 *)
       destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
@@ -6223,12 +6274,17 @@ Lemma check_lseek_sound_unmodeled : forall fd off whence eff m i,
 Proof.
   intros fd off whence eff m i H.
   unfold check_lseek in H. unfold lseek_spec.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque _) |- _ =>
                 eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                 srw Hfd; destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
                 cbv beta iota; apply unmodeled_intro
+            | Hfd : fd_lookup _ _ = Some (FdSeqpacket _ _ _) |- _ =>
+                destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
+                  [ now apply check_ret_only_no_unmodeled in H
+                  | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                    srw Hfd; apply unmodeled_intro ]
             end).
   9:{ destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
         now apply check_ret_only_no_unmodeled in H. }
@@ -6306,7 +6362,7 @@ Proof.
   intros fd off whence eff m m' evs i H.
   unfold lseek_spec in H. unfold check_lseek. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw; hall Hw; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (lseek_base whence cur (len_word data)) as [base|]
@@ -6322,7 +6378,7 @@ Proof.
   intros fd off whence m i eff H.
   unfold lseek_spec in H. unfold check_lseek. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw; hall Hw; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (lseek_base whence cur (len_word data)) as [base|]

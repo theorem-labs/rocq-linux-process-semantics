@@ -1,7 +1,7 @@
 (** * LinuxProcessSem.Ns.NewMount — a new mount of tmpfs, procfs or devpts
 
     What [mount(2)] does after [path_mount] chose [do_new_mount] (Linux
-    6.18.44 fs/namespace.c), for the three file systems a user namespace
+    6.18.46 fs/namespace.c), for the three file systems a user namespace
     may mount (FS_USERNS_MOUNT): the type and options, the new superblock
     and its root, the capability [mount_capable] asks for, the visibility
     check [mount_too_revealing] makes for procfs, and the attach
@@ -32,7 +32,7 @@
 
 From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Userns Walk.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Propagation Userns Walk.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -348,3 +348,69 @@ Proof.
   split; [reflexivity|]. split; [apply in_or_app; right; left; reflexivity|].
   repeat split; reflexivity.
 Qed.
+
+(** The new mount onto a shared target, which [new_mount] leaves undecided
+    after all its checks: [attach_recursive_mnt] propagates it
+    ([Propagation.attach_check], [Propagation.attach_build];
+    fs/namespace.c:2594-2651).  The new mount is [new_mount]'s, a tree of
+    one mount with no group, so [invent_group_ids] gives it one.
+    [below root d] is the [is_subdir] test of [need_secondary].  Any other
+    answer is [new_mount]'s.  A call in a mount namespace that holds a
+    mount which can receive an event from an open group declines: the
+    host can change its mount count ([count_mounts]).  So does a call in
+    a namespace holding a mount whose flags may change outside the model
+    ([flags_open]): [mnt_already_visible] reads a procfs mount's flags and
+    its superblock's read-only state. *)
+Definition new_mount_shared (st : NsState) (ctx : NsCtx) (cred : IdCred) (fsuid fsgid : Z) (fs : NewFs)
+    (mf : MountFlags) (mntns_owner tgt tgt_dentry : positive) (below : positive -> positive -> bool)
+    : NewMountRes :=
+  if ns_open st (cx_mount ctx)
+     || existsb (fun mt => Pos.eqb (mnt_ns mt) (cx_mount ctx) && flags_open st mt) (ns_mounts st)
+  then NMOver
+  else
+    match new_mount st ctx cred fsuid fsgid fs mf mntns_owner tgt tgt_dentry with
+    | NMOver =>
+        match fs_owner st ctx fs, find_mount (ns_mounts st) tgt, dentry_inode st tgt_dentry with
+        | Some owner, Some t, Some _ =>
+            match mnt_peer t with
+            | Some g =>
+                let locks := match revealing_locks st ctx mntns_owner fs (mf_ro mf) with
+                             | None => [false]
+                             | Some l => l
+                             end in
+                let '(s, ds, ins) := new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid in
+                let mid := Pos.succ (max_mount_id (ns_mounts st)) in
+                let newm := fun lk : bool =>
+                  mnt_with_master
+                    (mnt_with_peer
+                       (mnt_with_unbindable
+                          (mnt_with_locked
+                             (mnt_with_lock_flags
+                                (mnt_with_flags
+                                   (mnt_with_sb
+                                      (mnt_with_root
+                                         (mnt_with_place (mnt_with_ns (mnt_with_id t mid) (cx_mount ctx))
+                                                         (Some tgt) tgt_dentry)
+                                         (sb_root s))
+                                      (sb_id s))
+                                   mf)
+                                (mkMountFlags lk false false false))
+                             false)
+                          false)
+                       None)
+                    None in
+                let st0 := with_inodes (with_dentries (with_sbs st (ns_sbs st ++ [s]))
+                                                      (ns_dentries st ++ ds))
+                                       (ns_inodes st ++ ins) in
+                match attach_check st0 below 1%nat (cx_mount ctx) g tgt tgt_dentry with
+                | Some (Some e) => NMErr e
+                | Some None => NMOver
+                | None => NMOk locks (fun lk => attach_build st0 below mntns_owner [] [newm lk] (newm lk)
+                                                             g tgt tgt_dentry)
+                end
+            | None => NMOver
+            end
+        | _, _, _ => NMOver
+        end
+    | r => r
+    end.
