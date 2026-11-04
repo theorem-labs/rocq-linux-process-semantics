@@ -435,7 +435,6 @@ Example ns_file_blocks_unlinkat :
      end.
 Proof. split; vm_compute; reflexivity. Qed.
 
-<<<<<<< HEAD
 (* =========================================================================
    [State.FdSeqpacket]: one end of an AF_UNIX SOCK_SEQPACKET pair.  As for
    [State.ONsFile] above, these examples span the descriptor-level calls,
@@ -509,7 +508,6 @@ Example seqpacket_end_answers_the_socket_errnos :
   /\ check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) seqp_model
      = CheckOk (with_fds (fd_remove (m_fds seqp_model) 3) seqp_model) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
-=======
 (** One AF_UNIX stream pair beside the three channels: id 0, side
     [false] at fd 3 and side [true] at fd 4, both empty, blocking and
     open both ways.  The lowest free fd is 5. *)
@@ -543,4 +541,3 @@ Example dup_of_a_channel_beside_the_pair_answers :
     (mkEffect 5 [] []) dup_pair_model
   = CheckOk (with_fds (fd_insert (m_fds dup_pair_model) 5 (FdChannel 0)) dup_pair_model) [].
 Proof. check_eq. Qed.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492

@@ -167,7 +167,6 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      An [ONsFile] is declined so that no arm of this model mints one.
      None of the exact cases is needed, so none is written. *)
   | FdOpaque _ => false
-<<<<<<< HEAD
   (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe reason.  [dup]'s
      [get_file] and [do_dup2]'s add a second reference to the one socket
      (fs/file.c:1480, :1303, v6.18.46), and the socket is released only
@@ -178,7 +177,6 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      while each end has one descriptor; [dup] is the operation that would
      make it wrong. *)
   | FdSeqpacket _ _ _ => false
-=======
   (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
      own.  [State.stream_peer] finds an end's peer by scanning the fd
      table, and [unix_release_sock] runs at the LAST [fput] of a socket
@@ -208,7 +206,6 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      across entries; it is the offset that has no such keeper.
      [State.FdAnon]'s note relies on this decline. *)
   | FdAnon _ _ => false
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
