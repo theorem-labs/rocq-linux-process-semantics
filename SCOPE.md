@@ -656,10 +656,13 @@ not apply.
   of a device (`EACCES` for nodev, unless the superblock's `SB_I_NODEV`
   decides it), `faccessat` for `W_OK` or for `X_OK` on a regular file
   (unless `SB_I_NOEXEC` decides it), a file, directory, node or link
-  creation after its `ENAMETOOLONG`, `fchmod`, `unlinkat`, and a new mount
+  creation after its `ENAMETOOLONG`, `fchmod`, `unlinkat`, a new mount
   (`mount(2)`) in a namespace that holds such a mount
   (`Ns.NewMount.new_mount_shared`: `mnt_already_visible` reads procfs
-  mounts' flags). `statfs` and `fstatfs` then admit any `f_flags`. The
+  mounts' flags), and a read of `/proc/<pid>/mountinfo` of a namespace
+  that holds such a mount (each line prints its superblock's read-only
+  state, `show_mountinfo`, `fs/proc_namespace.c:182`). `statfs` and
+  `fstatfs` then admit any `f_flags`. The
   path-text check declines a start in an entered namespace even when the
   start is the caller's root, where Linux prints "/" without reading
   topology (`fs/d_path.c:107`): a decline, never a wrong answer.

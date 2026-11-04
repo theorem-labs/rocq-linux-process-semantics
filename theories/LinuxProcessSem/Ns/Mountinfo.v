@@ -232,9 +232,18 @@ Definition mount_line (E : MiEnv) (st : NsState) (root : Loc) (m : Mount) : opti
 
 (** The whole text for mount namespace [ns] seen from [root]; no answer
     when [ns] holds a mount that can receive a mount event from an open
-    group ([Propagation.ns_open]). *)
+    group ([Propagation.ns_open]), or a mount whose superblock's read-only
+    state an outside task may change ([Propagation.flags_open]): each line
+    prints [sb_rdonly] as its super options' " ro" or " rw"
+    ([show_mountinfo], fs/proc_namespace.c:182, Linux v6.18.46), and a
+    remount through a mount of a listed namespace changes it for every
+    mount of the superblock.  The per-mount " ro" or " rw" is the mount's
+    own MNT_READONLY (155), which only a task in the mount's own namespace
+    can change. *)
 Definition mountinfo_text (E : MiEnv) (st : NsState) (ns : positive) (root : Loc) : option (list byte) :=
-  if ns_open st ns then None
+  if ns_open st ns
+     || existsb (fun m => Pos.eqb (mnt_ns m) ns && flags_open st m) (ns_mounts st)
+  then None
   else fold_right (fun m acc => match acc, mount_line E st root m with
                                 | Some rest, Some l => Some (l ++ rest)
                                 | _, _ => None
