@@ -431,11 +431,15 @@ Fixpoint follow_mounts_fuel (fuel : nat) (st : NsState) (l : Loc) : WalkResult :
 Definition follow_mounts (st : NsState) (l : Loc) : WalkResult :=
   follow_mounts_fuel (S (length (ns_mounts st))) st l.
 
-(** [choose_mountpoint_rcu] (fs/namei.c): from mount [m], climb to the
-    parent mounts until a mount point that is not the root of its mount.
-    [Some (Some (mnt, dentry))]: found; [Some None]: none, either because
-    the mount has no parent or because the next mount point is the walk
-    root; [None]: the tables do not decide. *)
+(** [choose_mountpoint_rcu] (fs/namei.c:1382-1399, v6.18.46): from mount
+    [m], climb to the parent mounts until a mount point that is not the
+    root of its mount. [Some (Some (mnt, dentry))]: found; [Some None]:
+    none, either because the mount has no parent or because the next
+    mount point is the walk root; [None]: the tables do not decide, also
+    at an open intermediate parent. A propagated unmount can detach its
+    child ([gather_candidates], fs/pnode.c:500-535, 586-593;
+    [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819), changing
+    the climb even when that parent's mount point is another root. *)
 Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : positive)
     : option (option (positive * positive)) :=
   match fuel with
@@ -447,6 +451,7 @@ Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : po
           match mnt_parent mt with
           | None => Some None
           | Some p =>
+              if open_mount st p then None else
               if loc_eqb root (LDentry p (mnt_mountpoint mt)) then Some None
               else match find_mount (ns_mounts st) p with
                    | None => None

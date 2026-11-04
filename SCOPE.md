@@ -551,7 +551,8 @@ not apply.
   wants the case where such events can happen names a non-empty
   `env_open_groups`. With a non-empty list, a call whose answer reads a
   mount that can receive such an event has no answer: a path walk that
-  enters such a mount (`Ns.Walk.follow_mounts_fuel`,
+  enters such a mount or whose ".." climbs through such a parent mount
+  (`Ns.Walk.follow_mounts_fuel`, `Ns.Walk.choose_mountpoint_fuel`,
   `Ns.Propagation.open_mount`), `getcwd` and the text of a procfs
   cwd/root/fd link whose upward path steps into such a parent mount
   (`Ns.Files.path_open`: a host unmount can detach the child below it,

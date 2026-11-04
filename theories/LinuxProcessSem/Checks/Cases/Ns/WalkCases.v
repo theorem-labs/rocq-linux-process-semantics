@@ -126,6 +126,25 @@ Example walk_dotdot_across_mount :
   = (WOk (LDentry 1 1), false).
 Proof. vm_compute. reflexivity. Qed.
 
+(** Mount 4 covers mount 2's root. An outside unmount received by mount
+    2 can detach mount 4, so ".." must not skip that open intermediate
+    parent merely because its mount point is another mount root. *)
+Definition dotdot_world (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts world
+      (map (fun mt => if Pos.eqb (mnt_id mt) 2 then mnt_with_peer mt (Some 7%positive) else mt)
+           (ns_mounts world) ++ [mnt 4 (Some 2%positive) 20 20 2])) gs.
+Example walk_dotdot_open_intermediate :
+  walk (dotdot_world [7%positive]) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+       (bytes [46; 46]) f_follow = (WOver, false).
+Proof. vm_compute. reflexivity. Qed.
+Example walk_dotdot_closed_intermediate :
+  walk (dotdot_world []) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+       (bytes [46; 46]) f_follow = (WOk (LDentry 1 1), false)
+  /\ walk (dotdot_world [8%positive]) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+          (bytes [46; 46]) f_follow = (WOk (LDentry 1 1), false).
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** ".." at the task's root stays there. *)
 Example walk_dotdot_at_root :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [46; 46]) f_follow
