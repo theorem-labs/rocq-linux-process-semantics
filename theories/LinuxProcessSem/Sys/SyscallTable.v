@@ -86,6 +86,7 @@ Definition spec_table : list SpecArm :=
   (* sched_setscheduler *) mkSpecArm 119%Z (fun i => sched_setscheduler_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i) ::
   (* sched_getaffinity *) mkSpecArm 123%Z (fun i => sched_getaffinity_spec (in_arg i 1) i) ::
   (* sched_yield     *) mkSpecArm 124%Z (fun i => sched_yield_spec i) ::
+  (* kill            *) mkSpecArm 129%Z (fun i => kill_spec (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) i) ::
   (* tkill           *) mkSpecArm 130%Z (fun i => tkill_spec (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) i) ::
   (* tgkill          *) mkSpecArm 131%Z (fun i => tgkill_spec (pid32 (in_arg i 0)) (pid32 (in_arg i 1)) (sig32 (in_arg i 2)) i) ::
   (* sigaltstack     *) mkSpecArm 132%Z (fun i => sigaltstack_spec (in_arg i 0) (in_arg i 1) i) ::
