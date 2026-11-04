@@ -4632,10 +4632,11 @@ Record ProcState := mkProcState {
                                     parent's pinned tid when the parent has
                                     one, otherwise the parent's key in the
                                     process table, which the first root-tid
-                                    pin resolves ([Procs.child_entry],
-                                    [Procs.first_root_pin_children], called
-                                    by [Procs.pin_root], [Procs.absorb] and
-                                    [Procs.absorb_x]); [Procs.child_proc]
+                                    pin resolves ([Procs.child_entry];
+                                    [Procs.pin_root], and [Procs.absorb] and
+                                    [Procs.absorb_x] through
+                                    [Procs.first_root_pin_children], all by
+                                    [Procs.root_children_ppid]); [Procs.child_proc]
                                     installs it.  Kernel citations, read at
                                     v6.18.44 and identical at v6.18.46:
                                     kernel/sys.c [getppid],
