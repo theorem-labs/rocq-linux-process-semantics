@@ -562,8 +562,10 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 Example openat_invalid_dir_owner_not_searchable :
   ret_of (openat_fn (open_in s_d_f 0 0) m3 (c_caps dac_override_caps) (W_owned 4294967295 0))
   = Some (-13)
+  /\ ret_of (openat_fn (open_in s_d_f 0 0) m3 (c_caps dac_override_caps) (W_owned 1000 4294967295))
+     = Some (-13)
   /\ ret_of (openat_fn (open_in s_d_f 0 0) m3 (c_caps dac_override_caps) (W_owned 1000 0)) = Some 3.
-Proof. vm_compute. split; reflexivity. Qed.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** [mode_strip_sgid] (fs/inode.c:2935-2945) keeps S_ISGID on a new file
     in a setgid directory only for a caller in the directory's group or
@@ -679,6 +681,41 @@ Example stat_ids_undecided :
   /\ fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c0
                (o_open (with_overflow (W_owned 4294967295 0) (Some (65536, 0)))) EUnmodeled.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** No answer for an owner id outside 0 to 4294967295 ([kid_in_range]):
+    [kuid_t] and [kgid_t] hold a 32-bit id (include/linux/uidgid_types.h:7-13,
+    include/linux/types.h:37-38), so no inode or task has one, and in the
+    initial namespace no 4 bytes at offset 24 or 28 show one.  "o" owned
+    by 4294967296:0 and by 1000:-1; the caller's own procfs task directory
+    (mount 3, pid 42), owned by the task's euid and egid ([loc_attr]),
+    under an euid of 4294967296.  The same directory under euid 1000 and
+    egid 0 shows st_uid 1000 and st_gid 0. *)
+Definition proc_dir_file : NsFile :=
+  mkNsFile (NfDir (LProcTask 3 42 []) 0) (O_LARGEFILE + O_DIRECTORY) cred0.
+Definition euid_model (u : Z) : Model :=
+  with_creds (mkCreds (Z_to_bv 64 u) (Z_to_bv 64 u) (Z_to_bv 64 u) (Z_to_bv 64 0) (Z_to_bv 64 0)
+                      (Z_to_bv 64 0) [])
+             (model_with [(3, 1%N)]).
+Definition proc_dir_stat : list byte :=
+  Z_to_le_bytes 8 1 ++ Z_to_le_bytes 8 1 ++ Z_to_le_bytes 4 16749 ++ Z_to_le_bytes 4 0
+  ++ Z_to_le_bytes 4 1000 ++ Z_to_le_bytes 4 0 ++ repeat (Z_to_bv 8 0) 96.
+
+Example stat_owner_out_of_range :
+  fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c0
+            (o_open (W_owned 4294967296 0)) EUnmodeled
+  /\ fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (model_with [(3, 1%N)]) c0
+               (o_open (W_owned 1000 (-1))) EUnmodeled
+  /\ fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (euid_model 4294967296) c0
+               (with_open [(1%N, proc_dir_file)]) EUnmodeled
+  /\ fstat_arm (call 80 [3; BUF] (fun _ => None) (wmem 128)) (euid_model 1000) c0
+               (with_open [(1%N, proc_dir_file)])
+               (ans [] (Z_to_bv 64 0) [(Z_to_bv 64 BUF, proc_dir_stat)] (euid_model 1000) c0
+                    (with_open [(1%N, proc_dir_file)])).
+Proof.
+  split; [vm_compute; reflexivity |]. split; [vm_compute; reflexivity |].
+  split; [vm_compute; reflexivity |].
+  vm_compute. exists proc_dir_stat. repeat split; vm_compute; reflexivity.
+Qed.
 
 (** The same two ids under [None] (the host may write the sysctls during
     the run): any value from 0 to 65535 (kernel/sys.c:191-192). *)

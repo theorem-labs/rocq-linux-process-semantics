@@ -1003,8 +1003,9 @@ Fixpoint map_down (exts : list IdExtent) (k : Z) : option Z :=
     sysctl kernel.overflowuid or kernel.overflowgid (472, 539): the launch
     value [env_overflow_ids]'s [u] or [g] under [Some (u, g)], any value
     from 0 to 65535 under [None] (kernel/sys.c:184-202).  A caller whose
-    user namespace the tables do not hold has no value here:
-    [stat_answer] declines that state ([stat_ids_decided]). *)
+    user namespace the tables do not hold has no value here, nor has an
+    owner id outside 0 to 4294967295 in the initial namespace (no 4 bytes
+    show it): [stat_answer] declines those states ([stat_ids_decided]). *)
 Definition munged_ok (st : NsState) (ctx : NsCtx) (gid : bool) (k v : Z) : bool :=
   match find_userns (ns_userns st) (cx_user ctx) with
   | None => false
@@ -1027,14 +1028,22 @@ Definition munged_ok (st : NsState) (ctx : NsCtx) (gid : bool) (k v : Z) : bool 
       end
   end.
 
-(** The tables decide the [st_uid] and [st_gid] a stat shows when they hold
-    the caller's user namespace, and [env_overflow_ids] is [None] or a pair
+(** A kernel id: [kuid_t] and [kgid_t] hold a [uid_t] and a [gid_t], which
+    are 32 bits wide (include/linux/uidgid_types.h:7-13,
+    include/linux/types.h:37-38, include/uapi/asm-generic/posix_types.h:49-50),
+    so each is from 0 to 4294967295. *)
+Definition kid_in_range (k : Z) : bool := (0 <=? k) && (k <=? 4294967295).
+
+(** The tables decide the [st_uid] and [st_gid] a stat of [a] shows when
+    they hold the caller's user namespace, the owner's uid and gid are
+    kernel ids ([kid_in_range]), and [env_overflow_ids] is [None] or a pair
     the sysctls can hold, each from 0 to 65535 (kernel/sys.c:184-202).
-    Linux gives every caller a user namespace with its maps, and no host
-    holds an overflow id outside that range, so in any other state
-    [stat_answer] has no answer. *)
-Definition stat_ids_decided (st : NsState) (ctx : NsCtx) : bool :=
+    Linux gives every caller a user namespace with its maps and every
+    inode and task a 32-bit owner, and no host holds an overflow id outside
+    that range, so in any other state [stat_answer] has no answer. *)
+Definition stat_ids_decided (st : NsState) (ctx : NsCtx) (a : ObjAttr) : bool :=
   match find_userns (ns_userns st) (cx_user ctx) with None => false | Some _ => true end
+  && kid_in_range (oa_uid a) && kid_in_range (oa_gid a)
   && match env_overflow_ids (ns_env st) with
      | Some (ou, og) => (0 <=? ou) && (ou <=? 65535) && (0 <=? og) && (og <=? 65535)
      | None => true
@@ -1065,7 +1074,7 @@ Definition stat_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsStat
       | PutFault => o = err reads EFAULT m ctx st
       | PutPartial => o = EUnmodeled
       | PutOk =>
-          if stat_ids_decided st ctx
+          if stat_ids_decided st ctx a
           then exists bs, fields_match 128 (stat_fields a) bs = true
                           /\ munged_ok st ctx false (oa_uid a) (bytes_le_to_Z (firstn 4 (skipn 24 bs))) = true
                           /\ munged_ok st ctx true (oa_gid a) (bytes_le_to_Z (firstn 4 (skipn 28 bs))) = true

@@ -555,7 +555,9 @@ not apply.
   every value. A named `u` or `g` outside 0 to 65535 is no value a host
   can hold, and a stat under it has no answer
   (`Ns.Files.stat_ids_decided`); so has a stat by a caller whose user
-  namespace the tables do not hold.
+  namespace the tables do not hold, and a stat of an owner whose uid or
+  gid in the tables is outside 0 to 4294967295 (no kernel id is,
+  `include/linux/uidgid_types.h:7-13`).
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when
