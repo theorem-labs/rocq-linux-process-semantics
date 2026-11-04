@@ -13,10 +13,16 @@
     ([create_pid_namespace]) and net/core/net_namespace.c
     ([copy_net_ns]).
 
-    In the namespace world the model answers SIGCHLD alone or with
-    CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID
-    and CLONE_NEWNET, and no other bit.  Child-tid flags decline: the
-    core does not admit them or model their memory effects.  Linux's
+    The clone's input is what the core decodes ([Fork.CloneIn]): the
+    argument record of [clone]'s registers or of a [clone3] struct, or no
+    record.  A record the argument checks of [kernel_clone] and
+    [copy_process] refuse ([Fork.clone_arg_checks]) answers -EINVAL.
+    Otherwise, in the namespace world the model answers SIGCHLD alone or
+    with CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
+    CLONE_NEWPID and CLONE_NEWNET, and no other bit: the mask reads the
+    record's flags and the SIGCHLD test its exit signal.  Child-tid flags
+    decline: the core does not admit them or model their memory effects.
+    Linux's
     [copy_process] stores their pointers (kernel/fork.c:2040,2044);
     [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
     and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
@@ -308,15 +314,22 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
       among them a [clone3] whose own tests refuse its struct, or whose
       struct cannot be copied): the core's own answer, with no namespace
       change;
-    - otherwise the record: the namespace mask reads its flags and the
-      SIGCHLD test its exit signal, then [clone_ns_answer] its flags. *)
+    - otherwise the record.  A record the argument checks refuse
+      ([Fork.clone_arg_checks]) answers -EINVAL with the state
+      unchanged: those checks come before every other step of
+      [copy_process] (kernel/fork.c:1951-1999, and [kernel_clone]'s K0
+      at 2588-2591, Linux v6.18.46), so before [copy_creds] and
+      [copy_namespaces] (2188).  Then the namespace mask reads its flags
+      and the SIGCHLD test its exit signal, then [clone_ns_answer] its
+      flags. *)
 Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     : CloneNs :=
   if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
   else match f with
   | Fork.CiNoArgs => CnOk ctx None st
   | Fork.CiArgs r =>
-      if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0) then CnUnmodeled
+      if Fork.clone_arg_checks r then CnErr EINVAL st
+      else if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0) then CnUnmodeled
       else if negb (Fork.cla_exit_signal r =? Fork.SIGCHLD) then CnUnmodeled
       else clone_ns_answer (Fork.cla_flags r) m ctx st hq
   end.
