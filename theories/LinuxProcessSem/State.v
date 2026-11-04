@@ -3686,10 +3686,12 @@ Definition cache_geometry_word (l : CacheLeaf) : Z :=
     too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
     [m_kernel] reads it.
 
-    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
-    carries no clause about this record and no consumer's destructuring
-    pattern changes.  That is what [vdso_text_pages]'s wrap below is
-    for. *)
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so the model needs no
+    validity clause about this record's fields.  That is what
+    [vdso_text_pages]'s wrap below is for.  [Run.valid_input] pins the
+    whole record to [default_kernel] all the same, for a different
+    reason: the published statements were written about that one build
+    ([Run.valid_input_kernel]). *)
 Record KernelBuild := mkKernelBuild {
   kb_thp : bool
     (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
@@ -7432,10 +7434,14 @@ Record ProcInput := mkProcInput_full {
        copies it into [vmst_kernel], where [m_kernel] reads it, and
        [Sys/Mm/Mmap.linux_place] is its one consumer today.
 
-       [Run.valid_input] has NO clause naming it: every value of every
-       field names a build a launch could present.  [Run.valid_entry]
-       reads it too, to decide which stack tops, stack pointers and
-       mmap bases this launch can give *);
+       Every value of every field names a build a launch could present,
+       and the model's functions accept any of them, but
+       [Run.valid_input] and every named launch beside it pin this
+       field to [default_kernel] ([Run.valid_input_kernel]): the
+       published statements were written about one kernel, and a
+       statement about another build is one that names it.
+       [Run.valid_entry] reads it too, to decide which stack tops,
+       stack pointers and mmap bases this launch can give *);
   in_execfn : list byte
     (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
        Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.

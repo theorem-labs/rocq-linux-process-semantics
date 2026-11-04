@@ -4557,6 +4557,11 @@ Ltac valid_urandom_default :=
     [Checks.Cases.Fs.Open.fs_prefix_key_image_is_not_real] is that
     image, refused; [valid_input_image_real] below is the projection a
     proof uses. *)
+
+(** THE LAUNCH IS ON THE KERNEL OF RECORD: the LAST clause pins
+    [State.in_kernel] to [State.default_kernel], here and in every named
+    launch beside this one.  [valid_input_kernel] below is the
+    projection, and the section it opens says why. *)
 Definition valid_input (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4569,7 +4574,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4641,7 +4647,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4663,7 +4670,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4744,7 +4752,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = false
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4763,7 +4772,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4857,7 +4867,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
-  /\ in_sigpipe_terminal inp = true.
+  /\ in_sigpipe_terminal inp = true
+  /\ in_kernel inp = default_kernel.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4872,7 +4883,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp).
+  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
+  /\ in_kernel inp = default_kernel.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5012,7 +5024,8 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = true.
+  /\ in_sigpipe_terminal inp = true
+  /\ in_kernel inp = default_kernel.
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5052,7 +5065,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5066,7 +5080,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5079,7 +5094,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5374,7 +5390,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5388,7 +5405,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5483,7 +5501,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5497,7 +5516,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = default_kernel.
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -5553,6 +5573,145 @@ Lemma valid_input_abort_hwcap_rv64gcv_word : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
 Proof.
   intros inp Hv. unfold valid_input_abort_hwcap_rv64gcv in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** * The kernel build: every named launch is on the kernel of record
+
+    [State.in_kernel] entered [State.ProcInput] after the statements
+    built on this predicate were published, and those statements spoke
+    about ONE kernel: the build [State.default_kernel] names, the one the
+    model's own start-up proofs are made for ([Common.AsanInit]'s
+    [inp_kernel], [rseq_true]).  Leaving the field free here would have
+    widened every one of them to all builds -- without [CONFIG_RSEQ],
+    without ASLR, with any vDSO size or cache topology -- with no
+    statement asking for it.  So every predicate in this family pins it,
+    the way the SIGPIPE and reader declarations are pinned: the plain
+    launch keeps the narrow assumption, and a wider case is something a
+    statement would have to name.  None does yet:
+    [Checks.Cases.KernelPin] is a build without [CONFIG_RSEQ], refused
+    by every predicate here.
+
+    Each pin is read back by an accessor rather than by position, for
+    the reason [valid_input_abort_terminal] gives. *)
+
+Lemma valid_input_kernel : forall inp,
+  valid_input inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_abort_kernel : forall inp,
+  valid_input_abort inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_either_kernel : forall inp,
+  valid_input_either inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sigpipe_ignored_kernel : forall inp,
+  valid_input_sigpipe_ignored inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sigpipe_either_kernel : forall inp,
+  valid_input_sigpipe_either inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_channel_closed_kernel : forall inp,
+  valid_input_channel_closed inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_channel_either_kernel : forall inp,
+  valid_input_channel_either inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sigpipe_kills_kernel : forall inp,
+  valid_input_sigpipe_kills inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sv39_kernel : forall inp,
+  valid_input_sv39 inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sv57_kernel : forall inp,
+  valid_input_sv57 inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_va_any_kernel : forall inp,
+  valid_input_va_any inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_hwcap_rv64gc_kernel : forall inp,
+  valid_input_hwcap_rv64gc inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_hwcap_rv64gcv_kernel : forall inp,
+  valid_input_hwcap_rv64gcv inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_kernel : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_kernel : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> in_kernel inp = default_kernel.
+Proof.
+  intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.

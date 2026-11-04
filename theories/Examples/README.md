@@ -327,7 +327,10 @@ every other one sits in the context where `assumption` finds it. Where
 only one clause is wanted, take it from its accessor lemma —
 `Run.valid_input_va_size`, `Run.valid_input_abort_terminal`,
 `Run.valid_input_image_real`, `Run.valid_input_urandom`,
-`Run.valid_input_hwcap_rv64gc_word` — which no insertion can move.
+`Run.valid_input_kernel`, `Run.valid_input_hwcap_rv64gc_word` — which no
+insertion can move. `Run.valid_input_kernel` is the one a start-up proof
+wants: it says the build is `State.default_kernel`, so `kb_rseq`,
+`kb_aslr`, the vDSO size and the cache words all compute.
 
 `Run.valid_entry` has five. Its fifth, `Run.entry_launch_ok_va`, is the
 one a per-binary section needs, so a positional pattern over it has five
