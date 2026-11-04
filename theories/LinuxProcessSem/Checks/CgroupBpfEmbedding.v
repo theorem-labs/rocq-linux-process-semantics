@@ -238,12 +238,25 @@ Definition spec_table_pre25 : list SpecArm :=
     (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i) ::
   List.filter (fun a => negb (Z.eqb (sa_no a) 208%Z)) spec_table.
 
+(** Keep table lookups over an abstract table, as [dispatch_no_arm] in
+    SelfkillEmbedding does: the kernel check at Qed of a proof that
+    reduced [lookup_arm] over the unfolded [spec_table_pre25] did not
+    end within 420 s. *)
+Local Lemma lookup_arm_cons_filter_other : forall a t k n,
+  sa_no a = k -> n <> k ->
+  lookup_arm (a :: List.filter (fun x => negb (Z.eqb (sa_no x) k)) t) n
+  = lookup_arm t n.
+Proof.
+  intros a t k n Ha Hn. cbn [lookup_arm]. rewrite Ha.
+  assert (E : Z.eqb k n = false) by (apply Z.eqb_neq; congruence).
+  rewrite E. apply lookup_arm_filter_other. exact Hn.
+Qed.
+
 Lemma lookup_arm_pre25_other : forall n, n <> 208%Z ->
   lookup_arm spec_table_pre25 n = lookup_arm spec_table n.
 Proof.
-  intros n Hn. unfold spec_table_pre25. cbn [lookup_arm sa_no].
-  assert (E : Z.eqb 208 n = false) by (apply Z.eqb_neq; congruence).
-  rewrite E. apply lookup_arm_filter_other. exact Hn.
+  intros n Hn. unfold spec_table_pre25.
+  apply lookup_arm_cons_filter_other; [reflexivity | exact Hn].
 Qed.
 
 Lemma syscall_spec_bpf_off_pre25 : forall i m o,
@@ -252,12 +265,23 @@ Lemma syscall_spec_bpf_off_pre25 : forall i m o,
 Proof.
   intros i m o Hoff.
   destruct (Z.eq_dec (bv_unsigned (in_sysno i)) 208%Z) as [Hn | Hn].
-  - unfold syscall_spec, dispatch. rewrite Hn.
-    change (setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1))
-              (int32 (in_arg i 4)) i m o <->
-            setsockopt_no_cgroup_bpf_spec (fd32 (in_arg i 0))
-              (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o).
-    exact (setsockopt_no_cgroup_bpf _ _ _ _ _ _ Hoff).
+  - assert (Ha : exists a, lookup_arm spec_table 208%Z = Some a /\
+      (sa_spec a i m o <-> setsockopt_spec (fd32 (in_arg i 0))
+         (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o)).
+    { eexists. split; [reflexivity |]. reflexivity. }
+    assert (Hb : exists b, lookup_arm spec_table_pre25 208%Z = Some b /\
+      (sa_spec b i m o <-> setsockopt_no_cgroup_bpf_spec (fd32 (in_arg i 0))
+         (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o)).
+    { eexists. split; [reflexivity |]. reflexivity. }
+    destruct Ha as (a & Hla & Hsa). destruct Hb as (b & Hlb & Hsb).
+    rewrite <- Hn in Hla, Hlb.
+    pose proof (dispatch_arm spec_table i m o a Hla) as Hda.
+    pose proof (dispatch_arm spec_table_pre25 i m o b Hlb) as Hdb.
+    pose proof (setsockopt_no_cgroup_bpf (fd32 (in_arg i 0)) (int32 (in_arg i 1))
+                  (int32 (in_arg i 4)) i m o Hoff) as Hs.
+    unfold syscall_spec. split.
+    + intros H. exact (proj2 Hdb (proj2 Hsb (proj1 Hs (proj1 Hsa (proj1 Hda H))))).
+    + intros H. exact (proj2 Hda (proj2 Hsa (proj2 Hs (proj1 Hsb (proj1 Hdb H))))).
   - unfold syscall_spec, dispatch. rewrite (lookup_arm_pre25_other _ Hn).
     reflexivity.
 Qed.
