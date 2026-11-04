@@ -4,7 +4,7 @@ Read this document before you use a proof as evidence about a real program.
 It tells you which system the model describes, where the model is narrower
 than that system, which assumptions it does not check, where it is less
 precise, and where a run under QEMU user mode is not a Linux run. It also
-records which parts of a separate Lean translation lag this Rocq model.
+records known gaps from the namespace work in a separate Lean translation.
 The design priorities in [README.md](README.md#design-priorities) refer to
 this document.
 
@@ -26,15 +26,17 @@ Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
 `-EINVAL` for a refused flag word and never `-ENOSYS`.
 
-## Lean translations behind the Rocq model
+## Known Lean translation gaps from namespace work
 
 The Lean translation of this Rocq model is maintained separately; its
 source is not included in this repository.
 
 - The namespace layer's Lean translation is pending.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
+- The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
-A list of definitions to translate is not Lean code or evidence that the two models agree.
+The bullets record pending translation work, not Lean code or evidence that
+the two models agree.
 
 ## Where QEMU user mode differs
 
