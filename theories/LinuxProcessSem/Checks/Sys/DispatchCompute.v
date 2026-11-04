@@ -670,12 +670,12 @@ Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_recvmsg : forall i eff m,
   bv_unsigned (in_sysno i) = 212%Z ->
-  check_syscall i eff m = check_recvmsg (fd32 (in_arg i 0)) (in_arg i 2) eff m.
+  check_syscall i eff m = check_recvmsg i (fd32 (in_arg i 0)) (in_arg i 2) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_recvmsg : forall i m,
   bv_unsigned (in_sysno i) = 212%Z ->
-  syscall_spec_witness i m = recvmsg_witness (fd32 (in_arg i 0)) (in_arg i 2) m.
+  syscall_spec_witness i m = recvmsg_witness i (fd32 (in_arg i 0)) (in_arg i 2) m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_accept4 : forall i eff m,
