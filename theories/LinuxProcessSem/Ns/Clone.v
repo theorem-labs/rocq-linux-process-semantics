@@ -60,7 +60,7 @@
 
 From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Propagation Userns Walk Arm UserArms Net.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Fork.
 Import ListNotations.
 Local Open Scope Z_scope.
@@ -156,7 +156,13 @@ Definition new_utsns (st : NsState) (ctx : NsCtx) (nid owner : positive) : UtsNs
 
 (** The child's capability sets and securebits, and its user namespace:
     with CLONE_NEWUSER a new namespace in which it holds every capability
-    ([set_cred_user_ns]); else the caller's. *)
+    ([set_cred_user_ns]); else the caller's. With CLONE_NEWUSER the level
+    and count ENOSPC checks come before the chroot test
+    (kernel/user_namespace.c:91-107, v6.18.46). No answer ([NsErr 0])
+    when the tables lack the caller's user namespace, or, after those
+    checks pass, do not decide whether it is chrooted
+    ([UserArms.current_chrooted]: absent mount namespace/root, or an open
+    mount of the root stack). *)
 Record CloneCreds := mkCloneCreds { cc_user : positive; cc_caps : CapSets; cc_secure : Z;
                                     cc_users : list UserNs }.
 
@@ -166,23 +172,27 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
   else
     let euid := bv_unsigned (cr_euid (m_creds m)) in
     let egid := bv_unsigned (cr_egid (m_creds m)) in
-    match find_userns (ns_userns st) (cx_user ctx), current_chrooted st ctx with
-    | Some p, Some chrooted =>
+    match find_userns (ns_userns st) (cx_user ctx) with
+    | Some p =>
         if Nat.ltb 32 (uns_level p) then NsErr ENOSPC
         else match ucount_check (ns_userns st) (cx_user ctx) p euid with
              | ChargeFull => NsErr ENOSPC
              | _ =>
-                 if chrooted then NsErr EPERM
-                 else if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
-                 then NsErr EPERM
-                 else match create_user_ns (ns_userns st) (cx_user ctx) euid
-                                           (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
-                      | NsOk (n, U') =>
-                          NsOk (mkCloneCreds n (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 U')
-                      | NsErr e => NsErr e
-                      end
+                 match current_chrooted st ctx with
+                 | None => NsErr 0
+                 | Some true => NsErr EPERM
+                 | Some false =>
+                     if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
+                     then NsErr EPERM
+                     else match create_user_ns (ns_userns st) (cx_user ctx) euid
+                                               (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
+                          | NsOk (n, U') =>
+                              NsOk (mkCloneCreds n (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 U')
+                          | NsErr e => NsErr e
+                          end
+                 end
              end
-    | _, _ => NsErr 0
+    | None => NsErr 0
     end.
 
 (** A clone that takes a task out of the released world (a flat caller,
@@ -220,21 +230,23 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                              (bv_unsigned (cr_egid (m_creds m))) (cap_effective (cc_caps cc)) in
         if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM st
         else
-          (* the mount namespace *)
+          (* the mount namespace, and the order data of its copies
+             ([Propagation.copy_ns_links]) *)
           let mnt_part :=
             if has_flag f CLONE_NEWNS then
               match find_mntns st (cx_mount ctx) with
               | Some old =>
                   let nid := Pos.succ (max_mntns_id st) in
-                  let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid
-                                                   (negb (Pos.eqb (cc_user cc) (mntns_owner old))) in
-                  Some (nid, T', [mkMntNs nid (cc_user cc) (where_ (mntns_root old)) false], where_)
+                  let other := negb (Pos.eqb (cc_user cc) (mntns_owner old)) in
+                  let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid other in
+                  Some (nid, T', [mk_mntns nid (cc_user cc) (where_ (mntns_root old)) false], where_,
+                        copy_ns_links st (mntns_root old) other)
               | None => None
               end
-            else Some (cx_mount ctx, ns_mounts st, [], fun i => i) in
+            else Some (cx_mount ctx, ns_mounts st, [], fun i => i, ns_prop st) in
           match mnt_part with
           | None => CnUnmodeled
-          | Some (mntns, T', new_mntns, where_) =>
+          | Some (mntns, T', new_mntns, where_, links) =>
               (* the pid namespace *)
               let active := cx_pidns ctx in
               let children := pidns_children ctx in
@@ -306,9 +318,22 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let child := with_cwd child (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx)) in
                         let child := with_caps child (cc_caps cc) in
                         let child := with_securebits child (cc_secure cc) in
-                        let st' := with_mounts st T' in
+                        let st' := with_ns_prop (with_mounts st T') links in
                         let st' := with_userns st' U in
                         let st' := with_mntns st' (ns_mntns st ++ new_mntns) in
+                        (* A copy of a listed real namespace is exposed too. *)
+                        let st' :=
+                          if has_flag f CLONE_NEWNS then
+                            match find_mntns st (cx_mount ctx) with
+                            | Some old =>
+                                if negb (mntns_anon old) &&
+                                   mem (cx_mount ctx) (env_entered_mntns (ns_env st))
+                                then with_entered_mntns st'
+                                       (mntns :: env_entered_mntns (ns_env st))
+                                else st'
+                            | None => st'
+                            end
+                          else st' in
                         let st' := with_pidns st' pidns' in
                         let st' := with_netns st' (ns_netns st ++ new_net) in
                         let st' := with_utsns st' (ns_utsns st ++ new_uts) in
@@ -407,7 +432,8 @@ Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
   let bumped := flat_map bump_pid_cursor chain in
   pid_reset_empty (with_pidns st (fold_left replace_pidns bumped (ns_pidns st))) active.
 
-(** Earlier table errors stop before alloc_pid.  In a closed namespace,
+(** Earlier table errors, from copy_creds or copy_namespaces, stop before
+    alloc_pid (kernel/fork.c:2054-2056, 2188-2208).  In a closed namespace,
     cursor-moving failures are only the allocator's ENOMEM or EAGAIN;
     its final ENOMEM prevents later failure sites (kernel/pid.c:238-303,
     Linux v6.18.46). *)

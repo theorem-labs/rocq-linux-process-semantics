@@ -23,7 +23,7 @@ Definition full : list IdExtent := [mkExtent 0 0 4294967295].
 Definition tables (ms : list Mount) (us : list UserNs) (ps : list PidNs) : NsState :=
   let st := with_mounts empty_nsstate ms in
   let st := with_userns st us in
-  let st := with_mntns st [mkMntNs 1 1 1 true] in
+  let st := with_mntns st [mk_mntns 1 1 1 true] in
   let st := with_pidns st ps in
   with_netns st [mkNetNs 1 1 [] false].
 
@@ -92,6 +92,57 @@ Example clone_root_mount_has_parent : forall m,
   | _ => False
   end.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** "/" (mount 2) in peer group 7, which has a member outside the tables
+    ([env_open_groups]): the host can mount on "/"'s root without a call of
+    the model, so the tables do not decide whether the caller is chrooted
+    ([UserArms.current_chrooted] answers [None]) and a clone with
+    CLONE_NEWUSER has no answer.  With no open group the clone makes the
+    child it makes from [host_rootfs]. *)
+Definition host_rootfs_peer7 (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts host_rootfs [mkMount 1 1 None 1 1 1 nf nf false false None None;
+                              mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false (Some 7%positive) None])
+    gs.
+
+Example clone_newuser_open_root_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                 (host_rootfs_peer7 [7%positive]) 138 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example clone_newuser_closed_root_answers : forall m,
+  child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                           (host_rootfs_peer7 []) 138)
+  = child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                             host_rootfs 138)
+  /\ child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                              host_rootfs 138) <> None.
+Proof. intros m. vm_compute. split; [reflexivity | intros H; discriminate H]. Qed.
+
+(** Level and count ENOSPC precede the chroot test, even if its root
+    stack is open or its namespace/root record is absent. *)
+Definition user_limit (level : nat) (limit : Z) : UserNs :=
+  mkUserNs 1 None level 0 (Some full) (Some full) true true limit true.
+Definition enospc_states (p : UserNs) : list NsState :=
+  [with_userns (host_rootfs_peer7 [7%positive]) [p];
+   with_mntns (with_userns host_rootfs [p]) [];
+   with_mounts (with_userns host_rootfs [p]) []].
+Example clone_user_level_before_chroot : forall m st,
+  In st (enospc_states (user_limit 33 100)) ->
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+    = CnErr 28 st.
+Proof.
+  intros m st H. cbn [enospc_states] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; reflexivity.
+Qed.
+Example clone_user_count_before_chroot : forall m st,
+  In st (enospc_states (user_limit 0 0)) ->
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+    = CnErr 28 st.
+Proof.
+  intros m st H. cbn [enospc_states] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; reflexivity.
+Qed.
 
 (** The new user namespace: a child of 1 owned by kuid 65534 with no maps;
     the new pid namespace's last pid is 1; the copy of the root mount is a

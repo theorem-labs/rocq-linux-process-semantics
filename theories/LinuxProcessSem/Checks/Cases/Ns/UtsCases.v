@@ -35,7 +35,7 @@ Definition fullcaps : CapSets := mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1)
 Definition host : NsState :=
   let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None] in
   let st := with_userns st [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false] in
-  let st := with_mntns st [mkMntNs 1 1 1 true] in
+  let st := with_mntns st [mk_mntns 1 1 1 true] in
   let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   with_netns st [mkNetNs 1 1 [] false].
 
@@ -183,7 +183,7 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     of the initial user namespace outside the released world through its
     mount namespace) the call declines: a write would change the host's
     name, the environment's pin. *)
-Definition two_mntns : NsState := with_mntns host [mkMntNs 1 1 1 true; mkMntNs 2 1 1 false].
+Definition two_mntns : NsState := with_mntns host [mk_mntns 1 1 1 true; mk_mntns 2 1 1 false].
 Definition host_admin : NsCtx := with_caps (with_mount_ns init_nsctx 2) fullcaps.
 
 Example sethostname_host_ns_declines :

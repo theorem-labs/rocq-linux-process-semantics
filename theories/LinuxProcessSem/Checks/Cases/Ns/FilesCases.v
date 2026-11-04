@@ -49,7 +49,7 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
      mnt 3 (Some 1%positive) 9 30 3 no_flags; mnt 4 (Some 1%positive) 5 40 4 ro_nosuid_nodev;
      mnt 5 (Some 1%positive) 10 50 5 noexec_flags] in
   let st := with_userns st users in
-  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false] in
   let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st
     [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
@@ -647,6 +647,17 @@ Proof. vm_compute. reflexivity. Qed.
 Example faccessat_bad_mode : ret_of (faccessat_fn (access_in s_file 8) m3 c0 W) = Some (-22).
 Proof. vm_compute. reflexivity. Qed.
 
+(** W_OK at "." from a cwd on the read-only mount: EROFS from the tables.
+    Once mount namespace 1 is entered from outside, an outside task may
+    change that mount's flags ([do_mount_setattr], fs/namespace.c:4781-4838,
+    v6.18.46), so the same call has no answer ([flags_open]). *)
+Definition c_ro_cwd : NsCtx := ctx_at 1 no_caps (1%positive, 1%positive) (4%positive, 40%positive).
+
+Example faccessat_dot_readonly_cwd :
+  ret_of (faccessat_fn (access_in [46] 2) m3 c_ro_cwd W) = Some (-30)
+  /\ faccessat_fn (access_in [46] 2) m3 c_ro_cwd (with_entered_mntns W [1%positive]) = EUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** Access to a 0700 directory owned by another uid: EACCES. *)
 Example faccessat_denied : ret_of (faccessat_fn (access_in s_secret 4) m3 c0 W) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.
@@ -994,6 +1005,146 @@ Example getcwd_unreachable :
                        (ctx_at 1 no_caps (2%positive, 20%positive) (1%positive, 2%positive)) W)
   = Some [(BUF, [40; 117; 110; 114; 101; 97; 99; 104; 97; 98; 108; 101; 41] ++ s_home ++ [0])].
 Proof. vm_compute. reflexivity. Qed.
+
+(** Mount 6 covers mount 2's root. An event received by mount 2 can
+    detach mount 6, changing the upward path without touching the procfs
+    walk used to read /proc/self/cwd. *)
+Definition path_world (parent_peer start_peer : option positive) (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts W
+      (map (fun mt => if Pos.eqb (mnt_id mt) 2 then mnt_with_peer mt parent_peer else mt)
+           (ns_mounts W) ++
+       [mnt_with_peer (mnt 6 (Some 2%positive) 20 20 2 no_flags) start_peer])) gs.
+Definition path_ctx : NsCtx := with_cwd c0 (6%positive, 22%positive).
+Definition path_getcwd : SyscallInput := call 17 [BUF; 64] (fun _ => None) (wmem 64).
+Definition s_locked : list Z := [47; 116; 109; 112; 47; 108; 111; 99; 107; 101; 100].
+Definition s_cwd : list Z := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 99; 119; 100].
+
+Definition proc_path_world (gs : list positive) : NsState :=
+  let st := path_world (Some 7%positive) None gs in
+  with_mounts st
+    (map (fun mt => if Pos.eqb (mnt_id mt) 3 then mnt_with_place mt (Some 2%positive) 20 else mt)
+         (ns_mounts st)).
+
+Example d_path_proc_open_parent_declines :
+  d_path (proc_path_world [7%positive]) c0 (LProcTask 3 42 []) = None
+  /\ d_path (proc_path_world []) c0 (LProcTask 3 42 []) = Some (bytes [47; 116; 109; 112; 47; 52; 50]).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example getcwd_open_parent_declines :
+  getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None [7%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+Example readlinkat_cwd_open_parent_declines :
+  readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+               (path_world (Some 7%positive) None [7%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A closed chain, an unrelated open group, and a start mount open only
+    to peer events keep the path: an event received at the start alone
+    changes no upward step. Outside entry is a separate uncertainty. *)
+Example getcwd_closed_chain_answers :
+  writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None []))
+    = Some [(BUF, s_locked ++ [0])]
+  /\ writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None [8%positive]))
+    = Some [(BUF, s_locked ++ [0])]
+  /\ writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world None (Some 7%positive) [7%positive]))
+    = Some [(BUF, s_locked ++ [0])].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+Example readlinkat_cwd_closed_chain_answers :
+  writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                          (path_world (Some 7%positive) None [])) = Some [(BUF, s_locked)]
+  /\ writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                            (path_world (Some 7%positive) None [8%positive])) = Some [(BUF, s_locked)]
+  /\ writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                            (path_world None (Some 7%positive) [7%positive])) = Some [(BUF, s_locked)].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** A private cwd mount can be moved by an outside task. The old parent
+    edges may still say /a while Linux prints /b; neither is decided. *)
+Definition entered_path_world : NsState :=
+  with_entered_mntns (path_world None None []) [1%positive].
+
+Example entered_private_cwd_declines :
+  getcwd_fn path_getcwd m3 path_ctx entered_path_world = EUnmodeled
+  /\ d_path entered_path_world path_ctx (LDentry 6 22) = None
+  /\ d_path entered_path_world c0 (LProcTask 3 42 []) = None.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example entered_root_cwd_fd_path_readlink_declines :
+  readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx entered_path_world = EUnmodeled
+  /\ d_path entered_path_world (with_root path_ctx (6%positive, 22%positive))
+            (LDentry 6 22) = None
+  /\ readlinkat_fn (readlink_in CWD (s_self ++ [47; 114; 111; 111; 116]) 64)
+       m3 path_ctx entered_path_world = EUnmodeled
+  /\ readlinkat_fn (readlink_in CWD s_fd3 64) (model_with [(3, 1%N)]) path_ctx
+       (with_files entered_path_world [(1%N, mkNsFile (NfPath (LDentry 6 22)) O_PATH cred0)])
+       = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** A table-level guard control, not a Linux-reachable topology: even an
+    inconsistent cross-namespace parent edge must not bypass the climb's
+    uncertainty check. Checking only the start namespace would miss it. *)
+Definition entered_parent_world : NsState :=
+  with_entered_mntns
+    (with_mounts (path_world None None [])
+      (map (fun mt => if Pos.eqb (mnt_id mt) 6 then mnt_with_ns mt 2 else mt)
+           (ns_mounts (path_world None None [])))) [1%positive].
+
+Example entered_parent_path_declines :
+  d_path entered_parent_world path_ctx (LDentry 6 22) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions entered_private_cwd_declines.
+
+(** Empty-path descriptors to the procfs links bypass pathname traversal,
+    so each case reaches link_text and then the guarded d_path. *)
+Definition link_fd_world (name : list (list byte)) : NsState :=
+  with_files entered_path_world
+    [(1%N, mkNsFile (NfPath (LProcTask 3 42 name)) O_PATH cred0);
+     (2%N, mkNsFile (NfPath (LDentry 6 22)) O_PATH cred0)].
+Definition link_fd_model : Model := model_with [(3, 1%N); (4, 2%N)].
+
+Example entered_empty_path_proc_links_decline :
+  readlinkat_fn (readlink_in 3 [] 64) link_fd_model path_ctx
+    (link_fd_world [proc_cwd_name]) = EUnmodeled
+  /\ readlinkat_fn (readlink_in 3 [] 64) link_fd_model path_ctx
+    (link_fd_world [proc_root_name]) = EUnmodeled
+  /\ readlinkat_fn (readlink_in 3 [] 64) link_fd_model path_ctx
+    (link_fd_world [proc_fd_name; bytes [52]]) = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** Two concrete host-move outcomes for the same private cwd mount. *)
+Definition moved_private_world (at_b : bool) : NsState :=
+  let st := path_world None None [] in
+  let st := with_dentries st (ns_dentries st ++
+    [dent 90 1 (Some 1%positive) (bytes [97]) 90;
+     dent 91 1 (Some 1%positive) (bytes [98]) 91]) in
+  with_mounts st (map (fun mt => if Pos.eqb (mnt_id mt) 6
+                     then mnt_with_place mt (Some 1%positive) (if at_b then 91 else 90) else mt)
+                     (ns_mounts st)).
+
+Definition moved_private_ctx : NsCtx := with_cwd c0 (6%positive, 20%positive).
+
+Example moved_private_exact_controls :
+  d_path (moved_private_world false) moved_private_ctx (LDentry 6 20) = Some (bytes [47; 97])
+  /\ d_path (moved_private_world true) moved_private_ctx (LDentry 6 20) = Some (bytes [47; 98]).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example moved_private_uncertainty_declines : forall at_b,
+  getcwd_fn path_getcwd m3 moved_private_ctx
+    (with_entered_mntns (moved_private_world at_b) [1%positive]) = EUnmodeled
+  /\ d_path (with_entered_mntns (moved_private_world at_b) [1%positive])
+            moved_private_ctx (LDentry 6 20) = None
+  /\ d_path (with_entered_mntns (moved_private_world at_b) [1%positive])
+            moved_private_ctx (LProcTask 3 42 []) = None.
+Proof. intros []; repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions path_open_closed.
+Print Assumptions entered_root_cwd_fd_path_readlink_declines.
+Print Assumptions entered_parent_path_declines.
+Print Assumptions entered_empty_path_proc_links_decline.
+Print Assumptions moved_private_exact_controls.
+Print Assumptions moved_private_uncertainty_declines.
 
 (* ---- chdir, fchdir ----------------------------------------------------- *)
 

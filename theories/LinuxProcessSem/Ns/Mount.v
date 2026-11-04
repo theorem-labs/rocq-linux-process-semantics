@@ -5,7 +5,7 @@
     system call adds what the rest of the system decides (open writers for
     EBUSY, the caller's capabilities for EPERM, path lookup for the target).
 
-    Linux 6.18.44 sources:
+    Linux v6.18.46 sources:
     - the subtree a recursive operation reaches: [copy_tree] and
       [mount_setattr_prepare] walk [next_mnt] over the subtree,
       fs/namespace.c;
@@ -26,7 +26,9 @@
       submount has it; no copy is unbindable.  A source outside the
       caller's namespace and a shared target are left undecided;
     - a detaching unmount: [can_umount] refuses a mount that is MNT_LOCKED
-      with EINVAL; [umount_tree] removes the subtree;
+      with EINVAL; [umount_tree] removes the subtree (the mounts it removes
+      by propagation and the slaves it moves are
+      [Propagation.umount_detach_prop]'s);
     - a propagation change with or without MS_REC: [do_change_type] over the
       subtree in pre-order, [change_mnt_propagation] and [do_make_slave] on
       each mount (fs/pnode.c): MS_PRIVATE leaves peer group and master;
@@ -105,10 +107,7 @@ Definition clears_locked (ch : AttrChange) (m : Mount) : bool :=
   || (mf_nodev (mnt_lock_flags m) && mf_nodev (at_clr ch))
   || (mf_noexec (mnt_lock_flags m) && mf_noexec (at_clr ch)).
 
-Definition with_flags (m : Mount) (f : MountFlags) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) f (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
-          (mnt_peer m) (mnt_master m).
+Definition with_flags (m : Mount) (f : MountFlags) : Mount := mnt_with_flags m f.
 
 Definition setattr_targets (T : list Mount) (r : positive) (recursive : bool) : list positive :=
   if recursive then subtree T r else [r].
@@ -374,9 +373,10 @@ Definition umount_detach (T : list Mount) (i : positive) : MResult :=
       end
   end.
 
-(** [umount_tree(..., UMOUNT_PROPAGATE)] reaches peers and slaves of a
-    parent.  The tree update models only the local subtree, so its caller
-    declines such a parent rather than silently omit the propagated copies. *)
+(** [umount_tree(..., UMOUNT_PROPAGATE)] reaches the peers and slaves of a
+    parent that is shared or a slave.  [umount_detach] models only the local
+    subtree; the MNT_DETACH arm runs [Propagation.umount_detach_prop], which
+    propagates for every parent, and no arm reads this test. *)
 Definition umount_propagates (T : list Mount) (m : Mount) : bool :=
   match mnt_parent m with
   | None => false
@@ -412,20 +412,19 @@ Qed.
    a slave's master is the peer group it receives from.  The kernel's
    [mnt_master] names one member of that group, and [transfer_propagation]
    moves a slave to another member whenever its master leaves the group, so
-   the group is what a slave receives from.  MS_SHARED and MS_UNBINDABLE
-   are not modelled here. *)
+   the group is what a slave receives from.  This is the group level of
+   MS_SLAVE and MS_PRIVATE; [Propagation.change_type] adds MS_SHARED,
+   MS_UNBINDABLE and the order of rings and slave lists, and on the table
+   gives what [change_propagation] gives ([change_type_group_level]). *)
 
 Inductive PropChange := PropPrivate | PropSlave.
 
 Definition with_prop (m : Mount) (peer master : option positive) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) (mnt_unbindable m)
-          peer master.
+  mnt_with_master (mnt_with_peer m peer) master.
 
 (** MS_PRIVATE: no peer group, no master, and the unbindable mark cleared. *)
 Definition made_private (m : Mount) : Mount :=
-  mkMount (mnt_id m) (mnt_ns m) (mnt_parent m) (mnt_mountpoint m) (mnt_root m)
-          (mnt_sb m) (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) false None None.
+  mnt_with_unbindable (with_prop m None None) false.
 
 (** Another mount of the table is in peer group [g]. *)
 Definition has_other_peer (t : list Mount) (m : Mount) (g : positive) : bool :=
