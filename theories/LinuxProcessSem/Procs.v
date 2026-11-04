@@ -2730,8 +2730,10 @@ Qed.
     match the extension's answer.  Today no [CnErr] errno of
     [clone_ns_exact] (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], and
     where [clone_ns_exact] is [CnUnmodeled], [Ns.Spec.ns_ext]'s clone admits
-    no failure; so under [ns_ext] the filter below admits exactly the
-    failures the released one admits.
+    no failure; so under [ns_ext] the premise of [px_clone_fail] is the
+    released step for every failure [ns_ext] admits
+    ([NsProcs.ns_clone_fail_step_released], over
+    [NsProcs.clone_ns_exact_errno]).
 
     So for a caller in the namespace world, under an extension other than
     [no_ext], the failure is the released step with the clone's family
@@ -2757,7 +2759,13 @@ Qed.
     condition ([NsProcs.ns_clone_table_kept]).  A test of the extension's
     identity would not do: [ExtSpec] has no decidable equality, and
     [pstep_x_at_agree_iff] holds for every extension whose clone is
-    [released_clone] at the caller, in the namespace world too. *)
+    [released_clone] at the caller, in the namespace world too.
+
+    So the condition is decided per extension.  It equals the design's
+    wording under [ns_ext] ([NsProcs.ns_clone_table_kept]) and today's
+    filter under [no_ext] ([clone_fail_step_unchanged]), and those are the
+    only extensions today.  A future [ExtSpec] must re-prove that equality
+    for itself, or state how it differs. *)
 Definition clone_table_kept (ext : ExtSpec) (f : Z) (m : Model) (ctx : NsCtx)
     (st : NsState) (hq en : Z) : Prop :=
   (forall child ret st', ~ ext_clone ext f m ctx st hq (CnOk child ret st'))
@@ -2810,6 +2818,147 @@ Proof.
   intros o. destruct H as [-> | (Hf & Hb)].
   - apply no_ext_clone.
   - apply ext_clone_coherent; assumption.
+Qed.
+
+Lemma bvmap_get_set_eq {n A} (k k' : bv n) (x : A) mp :
+  k = k' -> bvmap_get k' (bvmap_set k x mp) = Some x.
+Proof. intros ->. apply LinuxProcessSemantics.Riscv.Prelude.bvmap_get_set_same. Qed.
+
+(** a0 after a syscall step holds the effect's return value. *)
+Lemma a0_after_effect : forall ms eff,
+  ms_gpr (advance_past_svc (apply_effect ms eff)) 0 = eff_ret eff.
+Proof.
+  intros ms eff. unfold ms_gpr, advance_past_svc, apply_effect, set_reg, reg_get. simpl.
+  erewrite bvmap_get_set_eq by (apply bv_eq; reflexivity). reflexivity.
+Qed.
+
+(** THE FILTER, OUTCOME BY OUTCOME, for one syscall outcome [eff] of a
+    pending clone and an errno [en]; [px_clone_fail] ties the two (a0
+    after the step holds [errno_ret en]), and the cases pass
+    [SpuriousCfg.errno_eff en].  [clone_kept]: the released filter
+    keeps it ([Run.spurious_refusal_cfg]), or the namespace tables decide
+    it ([clone_table_kept]); such an outcome is a step of
+    [clone_fail_step] ([clone_fail_step_kept]).  [clone_removed]: the
+    released filter removes it and the tables do not decide it; such an
+    outcome is not a step ([clone_fail_step_removed]).  The two exclude
+    each other ([clone_kept_not_removed]); that one of them holds is the
+    excluded middle on [Run.spurious_refusal_cfg] and [clone_table_kept],
+    which are not decidable in general, so each case states the one it
+    proves. *)
+Definition clone_kept (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
+    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+  ~ spurious_refusal_cfg cfg i m eff \/ clone_table_kept ext f m ctx st hq en.
+
+Definition clone_removed (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
+    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+  spurious_refusal_cfg cfg i m eff /\ ~ clone_table_kept ext f m ctx st hq en.
+
+Lemma clone_kept_not_removed : forall ext cfg i m f ctx st hq en eff,
+  clone_kept ext cfg i m f ctx st hq en eff -> ~ clone_removed ext cfg i m f ctx st hq en eff.
+Proof.
+  intros ext cfg i m f ctx st hq en eff [Hn | Hk] (Hs & Hnk); [exact (Hn Hs) | exact (Hnk Hk)].
+Qed.
+
+Lemma clone_fail_step_kept : forall ext segs cfg ms model x8 eff model' model'' evs
+                                    ctx st hq en,
+  m_halted model = None ->
+  ms_svc_pending ms = Some x8 ->
+  syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+  m_halted model' = None ->
+  materialize_model_accesses model' (syscall_effect_accesses eff) = Some model'' ->
+  clone_kept ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+    ctx st hq en eff ->
+  clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
+    (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
+Proof.
+  intros ext segs cfg ms model x8 eff model' model'' evs ctx st hq en
+    Hh Hx8 Hsp Hh' Hmat [Hn | Hk].
+  - left. eapply sstep_cfg_syscall; eassumption.
+  - right. split; [|exact Hk].
+    eapply sstep_cfg_syscall; try eassumption. apply spurious_refusal_may_fail.
+Qed.
+
+Lemma clone_fail_step_removed : forall ext segs cfg ms model x8 eff evs model''
+                                       ctx st hq en,
+  ms_svc_pending ms = Some x8 ->
+  clone_removed ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+    ctx st hq en eff ->
+  ~ clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
+      (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
+Proof.
+  intros ext segs cfg ms model x8 eff evs model'' ctx st hq en Hx8 (Hsp & Hnk) Hstep.
+  destruct Hstep as [H | (_ & Hk)]; [|exact (Hnk Hk)].
+  assert (Hadv : ms_svc_pending (advance_past_svc (apply_effect ms eff)) = None)
+    by reflexivity.
+  remember (mkCfg ms model) as c0 eqn:Ec.
+  remember (SNext (mkCfg (advance_past_svc (apply_effect ms eff)) model'')) as r0 eqn:Er.
+  destruct H; injection Ec as Ems Emd; subst; try discriminate Er; try congruence;
+    pose proof (f_equal (fun r => match r with
+                                  | SNext c => ms_svc_pending (cfg_ms c)
+                                  | SError => None
+                                  end) Er) as Ep;
+    pose proof (f_equal (fun r => match r with
+                                  | SNext c => Some (ms_gpr (cfg_ms c) 0)
+                                  | SError => None
+                                  end) Er) as Ea;
+    cbn [cfg_ms] in Ep, Ea; try congruence.
+  (* the syscall arm: the same return value, so the same filter *)
+  rewrite !a0_after_effect in Ea. injection Ea as Hret.
+  match goal with
+  | Hn : ~ spurious_refusal_cfg _ (sys_input _ _ ?y) _ _ |- _ =>
+      assert (Hy : y = x8) by congruence; rewrite Hy in Hn;
+      apply Hn; destruct Hsp as (Hoff & Hr & Hex);
+      split; [exact Hoff | split; [rewrite Hret; exact Hr | exact Hex]]
+  end.
+Qed.
+
+(** When every family may fail ([may_fail_cfg]), every outcome is kept. *)
+Lemma clone_kept_may_fail : forall ext i m f ctx st hq en eff,
+  clone_kept ext may_fail_cfg i m f ctx st hq en eff.
+Proof. intros. left. apply spurious_refusal_may_fail. Qed.
+
+(** ... and the step is the released one. *)
+Lemma clone_fail_step_may_fail : forall ext segs c ctx st hq en evs c',
+  clone_fail_step ext segs may_fail_cfg c ctx st hq en evs c'
+  <-> sstep_cfg segs may_fail_cfg c evs (SNext c').
+Proof.
+  intros. split; [intros [H | (H & _)]; exact H | intros H; left; exact H].
+Qed.
+
+(** An answer that is not a refusal is always kept. *)
+Lemma clone_kept_not_refusal : forall ext cfg i m f ctx st hq en eff,
+  refusal_b i m (eff_ret eff) = false -> clone_kept ext cfg i m f ctx st hq en eff.
+Proof. intros ext cfg i m f ctx st hq en eff Hr. left. exact (spurious_refusal_not_refusal _ _ _ _ Hr). Qed.
+
+(** Under [no_ext], and for a caller in the released world whose word
+    has no namespace bit, the extension's clone admits a success, so the
+    tables keep nothing and both decisions are the released filter's. *)
+Lemma clone_success_unchanged : forall ext f m ctx st hq,
+  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext_clone ext f m ctx st hq (CnOk ctx None st).
+Proof.
+  intros ext f m ctx st hq H.
+  destruct H as [-> | (Hf & Hb)];
+    [apply (proj2 (no_ext_clone _ _ _ _ _ _)) | apply (proj2 (ext_clone_coherent ext _ _ _ _ _ _ Hf Hb))];
+    unfold released_clone; left; reflexivity.
+Qed.
+
+Lemma clone_kept_unchanged : forall ext cfg i m f ctx st hq en eff,
+  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  (clone_kept ext cfg i m f ctx st hq en eff <-> ~ spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros ext cfg i m f ctx st hq en eff H. split; [|intros Hn; left; exact Hn].
+  intros [Hn | (Hno & _)]; [exact Hn|].
+  exfalso. exact (Hno ctx None st (clone_success_unchanged ext f m ctx st hq H)).
+Qed.
+
+Lemma clone_removed_unchanged : forall ext cfg i m f ctx st hq en eff,
+  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  (clone_removed ext cfg i m f ctx st hq en eff <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros ext cfg i m f ctx st hq en eff H. split; [intros (Hs & _); exact Hs|].
+  intros Hs. split; [exact Hs|]. intros (Hno & _).
+  exact (Hno ctx None st (clone_success_unchanged ext f m ctx st hq H)).
 Qed.
 
 (** ONE TRANSITION OF THE SYSTEM UNDER AN EXTENSION, indexed by the pid
