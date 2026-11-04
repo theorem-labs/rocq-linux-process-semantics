@@ -1045,53 +1045,18 @@ Proof.
     + exfalso. sys_unfold; inv_ok; hall Hfs; hall Ha; hall Hw; hall Hp; inv_ok.
 Qed.
 
-<<<<<<< HEAD
 (** [Stat.fstat_procfd_dir_spec] as an acceptor: [access_ok]'s -EFAULT,
     the partial-destination decline, and then ONE 128-byte write at
     [statbuf] returning 0, accepted by the two predicates the spec chooses
     under.  No pin is read or written: the spec keeps none. *)
 Definition check_fstat_procfd_dir (i : SyscallInput) (statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-=======
-(** What an unnamed file's [struct stat] must carry beside
-    [Uapi.stat_buf_wf], in [Stat.fstat_anon_spec]'s [choose] order:
-    S_IFREG, [st_nlink] 0 and the contents' length [n]. *)
-Definition stat_anon_ok (n : nat) (bs : list byte) : bool :=
-  (stat_is_reg bs && stat_nlink_zero bs && stat_size_ok n bs)%bool.
-
-(** The delivering half of [Stat.fstat_anon_spec]: [check_fstat_deliver_by]'s
-    shape under [stat_anon_ok], with the pin installed in EVERY
-    descriptor of the file [id] ([State.anon_update]) on the branch that
-    had none, since the pin is the inode's. *)
-Definition check_fstat_anon_deliver (statbuf id : word) (n : nat)
-    (pin : option (list byte)) (eff : SyscallEffect) (m : Model)
-    : check_result :=
-  match eff with
-  | mkEffectU r [(a, bs)] [] [] [] [] =>
-      if negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf)%bool then CheckReject
-      else if negb (stat_buf_wf bs && stat_anon_ok n bs)%bool then CheckReject
-      else match pin with
-           | Some b0 => if stat_stable_eqb bs b0 then CheckOk m [] else CheckReject
-           | None =>
-               CheckOk (with_fds (anon_update (m_fds m) id (fun a => af_set_pin a bs)) m) []
-           end
-  | _ => CheckReject
-  end.
-
-(** The unnamed-file arm of [Stat.fstat_spec], branch for branch with
-    [Stat.fstat_anon_spec]: [access_ok]'s -EFAULT, the partial
-    [copy_to_user] decline, a pin no S_IFREG link-count-0 delivery can
-    repeat declined, and the delivery above. *)
-Definition check_fstat_anon (i : SyscallInput) (id : word) (af : AnonFile)
-    (statbuf : word) (eff : SyscallEffect) (m : Model) : check_result :=
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   if negb (access_okb statbuf STAT_SIZE)
   then check_ret_only eff (errno_ret EFAULT) m []
   else
     match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
     | None => CheckUnmodeled
     | Some _ =>
-<<<<<<< HEAD
         match eff with
         | mkEffectU r [(a, bs)] [] [] [] [] =>
             if bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf
@@ -1152,7 +1117,126 @@ Lemma check_fstat_procfd_dir_complete_ok : forall i statbuf eff m m' evs,
 Proof.
   intros i statbuf eff m m' evs H.
   unfold fstat_procfd_dir_spec in H. unfold check_fstat_procfd_dir.
-=======
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - sys_unfold; inv_ok; hall Ha; inv_ok.
+    apply check_ret_only_ok_iff. now repeat split.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
+    sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
+    rewrite !bv_eqb_refl; cbn [andb].
+    match goal with
+    | H1 : stat_buf_wf ?b = true, H2 : stat_procfd_dir_ok ?b = true |- _ =>
+        rewrite H1, H2
+    end.
+    reflexivity.
+Qed.
+
+Lemma check_fstat_procfd_dir_complete_unmodeled : forall i statbuf m eff,
+  fstat_procfd_dir_spec statbuf i m Unmodeled ->
+  check_fstat_procfd_dir i statbuf eff m = CheckUnmodeled.
+Proof.
+  intros i statbuf m eff H.
+  unfold fstat_procfd_dir_spec in H. unfold check_fstat_procfd_dir.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - exfalso. sys_unfold; inv_ok; hall Ha; inv_ok.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|reflexivity].
+    exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
+Qed.
+
+(** [Stat.fstat_opaque_spec] as an acceptor: the /proc/self/fd
+    directory's arm above, and the decline on the other six objects. *)
+Definition check_fstat_opaque (i : SyscallInput) (o : OpaqueFd) (statbuf : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match o with
+  | OProcFdDir _ _ => check_fstat_procfd_dir i statbuf eff m
+  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
+  | OInherited _ => CheckUnmodeled
+  end.
+
+Lemma check_fstat_opaque_sound_ok : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs ->
+  fstat_opaque_spec o statbuf i m (Ok eff m' evs).
+Proof.
+  intros i o statbuf eff m m' evs H.
+  unfold check_fstat_opaque in H. unfold fstat_opaque_spec.
+  destruct o; cbv beta iota in H |- *; try discriminate.
+  now apply check_fstat_procfd_dir_sound_ok.
+Qed.
+
+Lemma check_fstat_opaque_sound_unmodeled : forall i o statbuf eff m,
+  check_fstat_opaque i o statbuf eff m = CheckUnmodeled ->
+  fstat_opaque_spec o statbuf i m Unmodeled.
+Proof.
+  intros i o statbuf eff m H.
+  unfold check_fstat_opaque in H. unfold fstat_opaque_spec.
+  destruct o; cbv beta iota in H |- *;
+    [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro
+    | eapply check_fstat_procfd_dir_sound_unmodeled; exact H
+    | apply unmodeled_intro | apply unmodeled_intro].
+Qed.
+
+Lemma check_fstat_opaque_complete_ok : forall i o statbuf eff m m' evs,
+  fstat_opaque_spec o statbuf i m (Ok eff m' evs) ->
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs.
+Proof.
+  intros i o statbuf eff m m' evs H.
+  unfold fstat_opaque_spec in H. unfold check_fstat_opaque.
+  destruct o; cbv beta iota in H |- *;
+    try (unfold unmodeled in H; discriminate H).
+  now apply check_fstat_procfd_dir_complete_ok.
+Qed.
+
+Lemma check_fstat_opaque_complete_unmodeled : forall i o statbuf m eff,
+  fstat_opaque_spec o statbuf i m Unmodeled ->
+  check_fstat_opaque i o statbuf eff m = CheckUnmodeled.
+Proof.
+  intros i o statbuf m eff H.
+  unfold fstat_opaque_spec in H. unfold check_fstat_opaque.
+  destruct o; cbv beta iota in H |- *;
+    [reflexivity | reflexivity | reflexivity | reflexivity
+    | now apply check_fstat_procfd_dir_complete_unmodeled
+    | reflexivity | reflexivity].
+Qed.
+
+(** What an unnamed file's [struct stat] must carry beside
+    [Uapi.stat_buf_wf], in [Stat.fstat_anon_spec]'s [choose] order:
+    S_IFREG, [st_nlink] 0 and the contents' length [n]. *)
+Definition stat_anon_ok (n : nat) (bs : list byte) : bool :=
+  (stat_is_reg bs && stat_nlink_zero bs && stat_size_ok n bs)%bool.
+
+(** The delivering half of [Stat.fstat_anon_spec]: [check_fstat_deliver_by]'s
+    shape under [stat_anon_ok], with the pin installed in EVERY
+    descriptor of the file [id] ([State.anon_update]) on the branch that
+    had none, since the pin is the inode's. *)
+Definition check_fstat_anon_deliver (statbuf id : word) (n : nat)
+    (pin : option (list byte)) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  match eff with
+  | mkEffectU r [(a, bs)] [] [] [] [] =>
+      if negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf)%bool then CheckReject
+      else if negb (stat_buf_wf bs && stat_anon_ok n bs)%bool then CheckReject
+      else match pin with
+           | Some b0 => if stat_stable_eqb bs b0 then CheckOk m [] else CheckReject
+           | None =>
+               CheckOk (with_fds (anon_update (m_fds m) id (fun a => af_set_pin a bs)) m) []
+           end
+  | _ => CheckReject
+  end.
+
+(** The unnamed-file arm of [Stat.fstat_spec], branch for branch with
+    [Stat.fstat_anon_spec]: [access_ok]'s -EFAULT, the partial
+    [copy_to_user] decline, a pin no S_IFREG link-count-0 delivery can
+    repeat declined, and the delivery above. *)
+Definition check_fstat_anon (i : SyscallInput) (id : word) (af : AnonFile)
+    (statbuf : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (access_okb statbuf STAT_SIZE)
+  then check_ret_only eff (errno_ret EFAULT) m []
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => CheckUnmodeled
+    | Some _ =>
         match af_pin af with
         | Some b0 =>
             if negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool
@@ -1275,29 +1359,11 @@ Lemma check_fstat_anon_complete_ok : forall i id af statbuf eff m m' evs,
 Proof.
   intros i id af statbuf eff m m' evs H.
   unfold fstat_anon_spec in H. unfold check_fstat_anon.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
   - sys_unfold; inv_ok; hall Ha; inv_ok.
     apply check_ret_only_ok_iff. now repeat split.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
-<<<<<<< HEAD
-    sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
-    rewrite !bv_eqb_refl; cbn [andb].
-    match goal with
-    | H1 : stat_buf_wf ?b = true, H2 : stat_procfd_dir_ok ?b = true |- _ =>
-        rewrite H1, H2
-    end.
-    reflexivity.
-Qed.
-
-Lemma check_fstat_procfd_dir_complete_unmodeled : forall i statbuf m eff,
-  fstat_procfd_dir_spec statbuf i m Unmodeled ->
-  check_fstat_procfd_dir i statbuf eff m = CheckUnmodeled.
-Proof.
-  intros i statbuf m eff H.
-  unfold fstat_procfd_dir_spec in H. unfold check_fstat_procfd_dir.
-=======
     destruct (af_pin af) as [b0|] eqn:Hp.
     + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
         eqn:Hb0;
@@ -1329,88 +1395,23 @@ Lemma check_fstat_anon_complete_unmodeled : forall i id af statbuf m eff,
 Proof.
   intros i id af statbuf m eff H.
   unfold fstat_anon_spec in H. unfold check_fstat_anon.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
   - exfalso. sys_unfold; inv_ok; hall Ha; inv_ok.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|reflexivity].
-<<<<<<< HEAD
-    exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
-Qed.
-
-(** [Stat.fstat_opaque_spec] as an acceptor: the /proc/self/fd
-    directory's arm above, and the decline on the other six objects. *)
-Definition check_fstat_opaque (i : SyscallInput) (o : OpaqueFd) (statbuf : word)
-    (eff : SyscallEffect) (m : Model) : check_result :=
-  match o with
-  | OProcFdDir _ _ => check_fstat_procfd_dir i statbuf eff m
-  | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => CheckUnmodeled
-  end.
-
-Lemma check_fstat_opaque_sound_ok : forall i o statbuf eff m m' evs,
-  check_fstat_opaque i o statbuf eff m = CheckOk m' evs ->
-  fstat_opaque_spec o statbuf i m (Ok eff m' evs).
-Proof.
-  intros i o statbuf eff m m' evs H.
-  unfold check_fstat_opaque in H. unfold fstat_opaque_spec.
-  destruct o; cbv beta iota in H |- *; try discriminate.
-  now apply check_fstat_procfd_dir_sound_ok.
-Qed.
-
-Lemma check_fstat_opaque_sound_unmodeled : forall i o statbuf eff m,
-  check_fstat_opaque i o statbuf eff m = CheckUnmodeled ->
-  fstat_opaque_spec o statbuf i m Unmodeled.
-Proof.
-  intros i o statbuf eff m H.
-  unfold check_fstat_opaque in H. unfold fstat_opaque_spec.
-  destruct o; cbv beta iota in H |- *;
-    [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
-    | apply unmodeled_intro
-    | eapply check_fstat_procfd_dir_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro].
-Qed.
-
-Lemma check_fstat_opaque_complete_ok : forall i o statbuf eff m m' evs,
-  fstat_opaque_spec o statbuf i m (Ok eff m' evs) ->
-  check_fstat_opaque i o statbuf eff m = CheckOk m' evs.
-Proof.
-  intros i o statbuf eff m m' evs H.
-  unfold fstat_opaque_spec in H. unfold check_fstat_opaque.
-  destruct o; cbv beta iota in H |- *;
-    try (unfold unmodeled in H; discriminate H).
-  now apply check_fstat_procfd_dir_complete_ok.
-Qed.
-
-Lemma check_fstat_opaque_complete_unmodeled : forall i o statbuf m eff,
-  fstat_opaque_spec o statbuf i m Unmodeled ->
-  check_fstat_opaque i o statbuf eff m = CheckUnmodeled.
-Proof.
-  intros i o statbuf m eff H.
-  unfold fstat_opaque_spec in H. unfold check_fstat_opaque.
-  destruct o; cbv beta iota in H |- *;
-    [reflexivity | reflexivity | reflexivity | reflexivity
-    | now apply check_fstat_procfd_dir_complete_unmodeled
-    | reflexivity | reflexivity].
-=======
     destruct (af_pin af) as [b0|] eqn:Hp.
     + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
         eqn:Hb0; [reflexivity|].
       exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
     + exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 (** fstat: total over [FdEntry], answering on the closed descriptor's
     -EBADF, the four file kinds, which share one inode and so one
-<<<<<<< HEAD
-    answer, /dev/null, /dev/urandom and the /proc/self/fd directory.
-    The rest decline as a body; see [Stat.fstat_spec] for which of
-=======
-    answer, /dev/null, /dev/urandom and the unnamed file, the last only
-    when its file's descriptors agree ([State.anon_agree]).  The other
-    eight decline as a body; see [Stat.fstat_spec] for which of
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    answer, /dev/null, /dev/urandom, the /proc/self/fd directory and the
+    unnamed file, the last only when its file's descriptors agree
+    ([State.anon_agree]).  The rest decline as a body; see
+    [Stat.fstat_spec] for which of
     [struct stat]'s twenty members each would have to invent, and for
     why the match carries no wildcard. *)
 Definition check_fstat (i : SyscallInput) (fd statbuf : word)
@@ -1424,13 +1425,7 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdFileRW p _) => check_fstat_file i p statbuf eff m
   | Some FdDir         => CheckUnmodeled
   | Some (FdSocket _)  => CheckUnmodeled
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => CheckUnmodeled
-  | Some (FdPipe _ _)  => CheckUnmodeled
-  | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
-  | Some FdUrandom => check_fstat_urandom i statbuf eff m
-  | Some (FdOpaque o) => check_fstat_opaque i o statbuf eff m
-=======
   | Some (FdStream _ _ _) => CheckUnmodeled
   | Some (FdDgram _)   => CheckUnmodeled
   | Some (FdEventfd _) => CheckUnmodeled
@@ -1440,8 +1435,7 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdAnon id af) =>
       if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
       else check_fstat_anon i id af statbuf eff m
-  | Some (FdOpaque _) => CheckUnmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  | Some (FdOpaque o) => check_fstat_opaque i o statbuf eff m
   end.
 
 Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
@@ -1451,18 +1445,9 @@ Proof.
   intros i fd statbuf eff m m' evs H.
   unfold check_fstat in H. unfold fstat_spec.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota;
-    [destruct e; try discriminate;
-     first [now apply check_fstat_file_sound_ok
-           |now apply check_fstat_devnull_sound_ok
-           |now apply check_fstat_urandom_sound_ok
-           |now apply check_fstat_opaque_sound_ok]|].
-  apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
-=======
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
   2: { apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok. }
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0];
     cbv iota in H |- *; try discriminate.
   (* the unnamed file: the agreement test first *)
   all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
@@ -1470,8 +1455,8 @@ Proof.
   all: first [now apply check_fstat_file_sound_ok
              |now apply check_fstat_devnull_sound_ok
              |now apply check_fstat_urandom_sound_ok
+             |now apply check_fstat_opaque_sound_ok
              |now apply check_fstat_anon_sound_ok].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_fstat_sound_unmodeled : forall i fd statbuf eff m,
@@ -1483,22 +1468,15 @@ Proof.
   eapply bind_unmodeled2; [apply get_model_ok|].
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv beta iota in H |- *;
     [|now apply check_ret_only_no_unmodeled in H].
-<<<<<<< HEAD
-  destruct e; try apply unmodeled_intro;
-    first [eapply check_fstat_file_sound_unmodeled; exact H
-          |eapply check_fstat_devnull_sound_unmodeled; exact H
-          |eapply check_fstat_urandom_sound_unmodeled; exact H
-          |eapply check_fstat_opaque_sound_unmodeled; exact H].
-=======
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0];
     cbv iota in H |- *; try apply unmodeled_intro.
   all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
             [apply unmodeled_intro|]).
   all: first [eapply check_fstat_file_sound_unmodeled; exact H
              |eapply check_fstat_devnull_sound_unmodeled; exact H
              |eapply check_fstat_urandom_sound_unmodeled; exact H
+             |eapply check_fstat_opaque_sound_unmodeled; exact H
              |eapply check_fstat_anon_sound_unmodeled; exact H].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_fstat_complete_ok : forall i fd statbuf eff m m' evs,
@@ -1508,29 +1486,19 @@ Proof.
   intros i fd statbuf eff m m' evs H.
   unfold fstat_spec in H. unfold check_fstat.
   apply bind_get_model_ok_inv in H. cbv beta in H.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H;
-    [destruct e; try (now apply check_fstat_file_complete_ok);
-       try (now apply check_fstat_devnull_complete_ok);
-       try (now apply check_fstat_urandom_complete_ok);
-       try (now apply check_fstat_opaque_complete_ok);
-       unfold unmodeled in H; discriminate|].
-  unfold pure in H. inversion H; clear H; subst.
-  apply check_ret_only_ok_iff. now repeat split.
-=======
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
   2: { unfold pure in H. inversion H; clear H; subst.
        apply check_ret_only_ok_iff. now repeat split. }
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0];
     cbv iota in H |- *.
   all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
             [unfold unmodeled in H; discriminate|]).
   all: first [now apply check_fstat_file_complete_ok
              |now apply check_fstat_devnull_complete_ok
              |now apply check_fstat_urandom_complete_ok
+             |now apply check_fstat_opaque_complete_ok
              |now apply check_fstat_anon_complete_ok
              |unfold unmodeled in H; discriminate].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_fstat_complete_unmodeled : forall i fd statbuf m eff,
@@ -1542,17 +1510,13 @@ Proof.
   apply bind_get_model_unmodeled_inv in H. cbv beta in H.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
   2: { unfold pure in H. discriminate. }
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0];
     cbv iota in H |- *; try reflexivity.
   all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
             [reflexivity|]).
   all: first [eapply check_fstat_file_complete_unmodeled; exact H
              |eapply check_fstat_devnull_complete_unmodeled; exact H
              |eapply check_fstat_urandom_complete_unmodeled; exact H
-<<<<<<< HEAD
-             |eapply check_fstat_opaque_complete_unmodeled; exact H]|].
-  unfold pure in H. discriminate.
-=======
+             |eapply check_fstat_opaque_complete_unmodeled; exact H
              |eapply check_fstat_anon_complete_unmodeled; exact H].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.

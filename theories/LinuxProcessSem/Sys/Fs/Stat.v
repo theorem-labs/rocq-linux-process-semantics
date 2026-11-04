@@ -963,10 +963,8 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                         fs/stat.c, v6.18.46, 1f99e9ab748f) *)
   | Some FdDir         => unmodeled  (* S_IFDIR is known; a directory's size and blocks are not *)
   | Some (FdSocket _)  => unmodeled  (* mode/uid/gid are known; ino, dev and the timestamps are not *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => unmodeled  (* the [FdSocket] reason: ino, dev and the
                                              timestamps are not known *)
-=======
   | Some (FdStream _ _ _) => unmodeled  (* the [FdSocket] case: S_IFSOCK is known; the sockfs
                                         inode number and the timestamps are not *)
   | Some (FdDgram _)   => unmodeled  (* the [FdSocket] case again: another sockfs inode *)
@@ -974,7 +972,6 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                         (fs/libfs.c, v6.18.46) gives it mode 0600 with no
                                         type bits, but its inode number and timestamps are
                                         the boot's, not the model's *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _)  => unmodeled  (* S_IFIFO is known; a pipe's [st_size]/[st_blocks] are
                                         not even the queue's length, so nothing plays the
                                         role the file contents play above *)
@@ -986,17 +983,10 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned once
                                         under [Uapi.urandom_path] *)
-<<<<<<< HEAD
   | Some (FdOpaque o) => fstat_opaque_spec o statbuf
                                      (* the /proc/self/fd directory answers, S_IFDIR with
                                         0500 and the rest the environment's; the other
                                         six objects decline (see [fstat_opaque_spec]) *)
-=======
-  | Some (FdOpaque _) => unmodeled
-                                     (* DECLINED: [vfs_fstat]'s [CLASS(fd_raw, f)] accepts
-                                        an O_PATH file, so all four objects reach
-                                        [cp_new_stat], with metadata the model does not
-                                        hold (fs/stat.c, read at v6.18.44; identical at v6.18.46) *)
   | Some (FdAnon id af) =>
       if negb (anon_agree (m_fds m) id af) then unmodeled
         (* the replicas of this file disagree: [State.anon_agree] *)
@@ -1004,6 +994,5 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* an unnamed file: S_IFREG, [st_nlink] 0 and the
                                         contents' length asserted, the rest pinned once
                                         for the file in every descriptor's [af_pin] *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
