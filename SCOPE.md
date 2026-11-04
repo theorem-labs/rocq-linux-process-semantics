@@ -348,6 +348,24 @@ input, so both binaries of a pair are launched on one machine by one
 launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
 the model (`State.skb_head_bytes`).
 
+`Run.valid_input`, and every named launch beside it, leaves five of
+those facts free and fixes the other eight (`Run.recorded_kernel`).
+Free: whether the launch randomises, the guard gap, `vm.mmap_rnd_bits`,
+transparent huge pages and `CONFIG_RSEQ`. The published statements
+covered a range of each, and a fixed value would narrow them: a kernel
+built without `CONFIG_RSEQ` has a 27-pair auxiliary vector instead of
+29, so its entry stack pointer sits 32 bytes higher, and the released
+entry-stack window admitted both. Fixed at `State.default_kernel`'s
+values: vDSO image 1, `kb_vlenb` 0, no cache leaves, a 224-byte
+`struct sk_buff` and the default socket sysctls. The published
+statements had one answer for each of these. (`kb_vlenb` 0 is the
+smallest vector unit, VLENB = 16, on a hart whose `AT_HWCAP` carries
+V, and no vector unit otherwise: `State.launch_vlenb`.) The model's
+functions accept any build, so a statement about another value of a
+fixed field is one that names it; none does yet. Each fixed field has
+an accessor per predicate (`Run.valid_input_vdso`,
+`Run.valid_input_vlenb`, `Run.valid_input_cache_words` and the like).
+
 These cases stay outside the model:
 
 - QEMU user mode. It builds another entry block entirely; "Where QEMU
@@ -495,8 +513,8 @@ not apply.
   in Linux, is declined on a pair end.
 - The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
   `rmem_max` do not change while the program runs. The model reads them
-  from `State.KernelBuild`, which a launch states once; statements
-  quantify over every value. Another process that writes
+  from `State.KernelBuild`, which a launch states once; `Run.valid_input`
+  fixes them at `State.default_kernel`'s values. Another process that writes
   `/proc/sys/net/core/*` during the run makes this assumption false.
 - A send on a stream-pair end never fails with `-ENOBUFS`. Linux's
   `sock_alloc_send_pskb` returns it when the kernel cannot allocate an
@@ -600,7 +618,12 @@ not apply.
   `update_mmap_min_addr`). That option depends on SELinux and its default
   is 65536 (`security/Kconfig`, `LSM_MMAP_MIN_ADDR`). A kernel built with
   SELinux, which the riscv64 defconfig is, therefore has
-  `mmap_min_addr` = 65536 and is outside this assumption.
+  `mmap_min_addr` = 65536 and is outside this assumption. The same
+  setting moves one length bound: a `MAP_FIXED` call at an error-valued
+  address (`2^64-4095` and up) returns that address unless the rounded
+  length exceeds `TASK_SIZE - mmap_min_addr` (`mm/mmap.c`,
+  `generic_get_unmapped_area`), so with a larger setting Linux answers
+  `-ENOMEM` for some lengths where the model returns the address.
 - The vDSO and the vvar mapping are the first pair that the kernel places
   below the mmap base, with the vvar part lower. Linux installs them at
   `execve` after it maps the segments: `load_elf_binary` calls
@@ -735,6 +758,8 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
+  `Run.valid_input` fixes the vector unit, the caches, the vDSO image and
+  the socket numbers, and leaves the other five free.
 - **Errors of a namespace `clone`.** For the namespace flag word
   (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
   4095 but `-EINTR`. The failures run through `create_user_ns`,

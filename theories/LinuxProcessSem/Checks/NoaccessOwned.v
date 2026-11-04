@@ -678,7 +678,7 @@ Proof.
       [exact Halign | rewrite u64 by lia; exact Hnal | rewrite u64 by lia; exact HnZ
       | rewrite u64 by lia; unfold two_pow_64; lia | exact Hna]. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
-  { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hna|].
+  { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hna|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
     difn H Epos; [discriminate|].
@@ -737,7 +737,7 @@ Proof.
   destruct (mmap_fixed_rw_b prot flags off) eqn:Efixrw.
   2: {
     destruct (mmap_noreplace_noaccess_b prot flags off) eqn:Enrn.
-    { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hna|].
+    { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hna|].
       difn H Eceil; [discriminate|].
       difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
       difn H Epos; [discriminate|].
@@ -757,7 +757,7 @@ Proof.
       - destruct ws, zs, us, cs, ci; try discriminate.
         difn H Eerr; [|discriminate]. injection H as <- <-. exact Hna. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
-    difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hna|].
+    difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hna|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
     difn H Epos; [discriminate|].
@@ -771,7 +771,7 @@ Proof.
         apply na_inv_cons_maps. exact Hna.
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact Hna. }
-  difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hna|].
+  difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hna|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Epos; [discriminate|].

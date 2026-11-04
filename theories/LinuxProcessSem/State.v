@@ -603,6 +603,7 @@ Definition EBUSY  : Z := 16%Z.
 Definition ENFILE : Z := 23%Z.
 Definition EMFILE : Z := 24%Z.
 Definition EROFS  : Z := 30%Z.
+Definition EOVERFLOW : Z := 75%Z.
 
 (** Other Errno values *)
 (* Injected on exactly one shape: a credential setter that moves the REAL
@@ -3779,10 +3780,14 @@ Definition cache_geometry_word (l : CacheLeaf) : Z :=
     too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
     [m_kernel] reads it.
 
-    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
-    carries no clause about this record and no consumer's destructuring
-    pattern changes.  That is what [vdso_text_pages]'s wrap below is
-    for. *)
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so the model needs no
+    validity clause about this record's fields.  That is what
+    [vdso_text_pages]'s wrap below is for.  [Run.valid_input] fixes eight
+    of the fields at [default_kernel]'s values all the same, for a
+    different reason: the published statements had one answer for each
+    of them.  It leaves [kb_thp], [kb_aslr], [kb_guard], [kb_rnd_bits]
+    and [kb_rseq] free, because they covered a range of each
+    ([Run.recorded_kernel]). *)
 Record KernelBuild := mkKernelBuild {
   kb_thp : bool
     (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
@@ -4482,30 +4487,39 @@ Record ProcState := mkProcState {
        [uname] (160) copies out -- [struct new_utsname], six 65-byte
        C-string fields (include/uapi/linux/utsname.h, Linux v6.18.46,
        commit 1f99e9ab748f) -- pinned the first time a [uname] READS
-       it, exactly as [LimState.limst_core] pins RLIMIT_CORE and
-       [procst_tid] pins the tid.  [None] means no [uname] has
-       observed it yet.
+       it, as [LimState.limst_core] pins RLIMIT_CORE and [procst_tid]
+       pins the tid, except that only part of this pin binds later
+       calls: their [release] and [version] must be the pin's, and their
+       [nodename] and [domainname] are chosen again (below).  [None]
+       means no [uname] has observed it yet.
 
-       WHY IT IS PINNED RATHER THAN CHOSEN AFRESH.  Three of the six
-       fields -- [nodename], [release] and [version] -- are settled by
-       the kernel BUILD and by the boot-time hostname, not by anything
-       in kernel/sys.c, so the model cannot know them; but they do not
-       change under a process either.  Nothing in
-       [Specs.modeled_sysnos] writes one: [sethostname] (161) and
-       [setdomainname] (162) have no dispatcher arm.  A [choose]
-       resolved afresh at each call would therefore admit a trace in
-       which two [uname] calls disagree about which kernel is running,
-       which no Linux machine produces -- the same argument
+       WHAT THE PIN HOLDS FIXED, AND WHAT IT DOES NOT.  [release] and
+       [version] are settled by the kernel BUILD, not by anything in
+       kernel/sys.c, so the model cannot know them; but no call changes
+       them under a running kernel.  A [choose] resolved afresh for them
+       at each call would admit a trace in which two [uname] calls
+       disagree about which kernel is running, which no Linux machine
+       produces -- the same argument
        [Sys.Kernel.Sched.Syscalls.sched_getaffinity_spec] makes for the
        CPU set it declines to answer for, and the note above [Record
-       Model] is where the three mechanisms are compared.
+       Model] is where the three mechanisms are compared.  [nodename]
+       and [domainname] are NOT held fixed by the pin: another process
+       that shares this process's UTS namespace may change them between
+       two calls of this one, by [sethostname] (161), [setdomainname]
+       (162) or a write under /proc/sys/kernel, so [Kernel.Sys.uname_spec] chooses
+       them again at every call ([Kernel.Sys.uts_repeat_ok]).  The pin
+       still stores all 390 bytes of the first answer; only its [release]
+       and [version] constrain later calls.
 
        WHY IT IS PROCESS STATE.  Linux keeps it in the UTS NAMESPACE
        ([current->nsproxy->uts_ns->name], include/linux/utsname.h's
-       [utsname]), not in [task_struct].  This model has exactly one
-       process in exactly one namespace, so the distinction has nothing
-       to bite on here; if a second namespace ever becomes reachable
-       this field moves rather than gains a case.
+       [utsname]), not in [task_struct].  The model keeps one copy per
+       process, which is enough because it never changes a member here:
+       [release] and [version] are the build's, and the re-choice of
+       [nodename] and [domainname] at each call (above) already admits
+       every write another process in the same namespace can make.  If
+       a second namespace ever becomes reachable this field moves rather
+       than gains a case.
 
        BYTES, NOT SIX DECODED STRINGS, for [limst_core]'s reason: the
        model only ever COPIES this field out, so storing it decoded
@@ -4984,7 +4998,9 @@ Record TimeState := mkTimeState {
       [procst_utsname], each
       of which names its own trigger.  The environment chooses, the
       model records what it revealed, and every later query must answer
-      the same.  Right when the value is NOT settled in the input —
+      the same, or, for [procst_utsname], the same [release] and
+      [version] (its own note says why [nodename] and [domainname] are
+      chosen again).  Right when the value is NOT settled in the input —
       because nothing constructing a run would know to supply it — but
       must be self-consistent once seen.
     - CARRIED AND ADVANCED.  [timest_clock], whose own comment gives the
@@ -5298,13 +5314,15 @@ Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
 (** Record the UTS name the environment revealed.
     [Kernel.Sys.uname_spec] is the only caller and it calls this only
     on the branch where [m_utsname] was [None], so the pin is written
-    once and never overwritten: [uname] (160) is a pure read, and the two
-    syscalls that WRITE a utsname field -- [sethostname] (161) and
-    [setdomainname] (162) -- have no arm in
-    [Sys.SyscallTable.spec_table].  That is what makes the repeat check
-    in [Checks.Sys.Kernel.Sys]'s [check_uname_copy] an equality rather than a
-    relation, and adding either syscall means giving this a second writer
-    in the same commit. *)
+    once and never overwritten.  A later [uname] reads the pin's
+    [release] and [version] and chooses [nodename] and [domainname]
+    again ([Kernel.Sys.uts_repeat_ok]), because another process that
+    shares this process's UTS namespace may change those two between
+    calls; so [Checks.Sys.Kernel.Sys]'s
+    [check_uname_copy] tests a relation ([uts_repeat_okb]), not an
+    equality.  An arm for [sethostname] (161) or [setdomainname] (162)
+    in this process writes nothing here: the pin does not hold the two
+    members those calls change. *)
 Definition with_utsname (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -7625,10 +7643,15 @@ Record ProcInput := mkProcInput_full {
        copies it into [vmst_kernel], where [m_kernel] reads it, and
        [Sys/Mm/Mmap.linux_place] is its one consumer today.
 
-       [Run.valid_input] has NO clause naming it: every value of every
-       field names a build a launch could present.  [Run.valid_entry]
-       reads it too, to decide which stack tops, stack pointers and
-       mmap bases this launch can give *);
+       Every value of every field names a build a launch could present,
+       and the model's functions accept any of them, but
+       [Run.valid_input] and every named launch beside it fix eight of its
+       fields at [default_kernel]'s values and leave the five launch
+       facts free ([Run.recorded_kernel], [Run.valid_input_vdso] and the
+       other accessors): the published statements had one answer for
+       the eight and covered a range of the five.
+       [Run.valid_entry] reads it too, to decide which stack tops,
+       stack pointers and mmap bases this launch can give *);
   in_execfn : list byte
     (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
        Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.
@@ -7669,7 +7692,7 @@ Record ProcInput := mkProcInput_full {
        model used to answer a byte count and let the program run on.
 
        A LAUNCH FACT AND NOT A PER-CALL CHOICE, for the reason
-       [procst_utsname] is pinned rather than chosen afresh: a [choose]
+       [procst_utsname]'s [release] and [version] are pinned rather than chosen afresh: a [choose]
        at each write would admit a trace in which one write to stdout
        finds a reader and the next does not with no close in between,
        which no launch produces.  One run has one answer.

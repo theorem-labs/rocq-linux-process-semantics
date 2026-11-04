@@ -1470,7 +1470,7 @@ Proof.
      address space (which it grants, exactly where [region_free]
      accepted). *)
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
-  { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     difn H Epos; [discriminate|].
@@ -1522,7 +1522,7 @@ Proof.
        where [region_free] accepted, an occupied one is refused with
        [vm_maps] untouched. *)
     destruct (mmap_noreplace_noaccess_b prot flags off) eqn:Enrn.
-    { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+    { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
       difn H Eceil; [discriminate|].
       difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
       difn H Epos; [discriminate|].
@@ -1540,7 +1540,7 @@ Proof.
       - destruct ws, zs, us, cs, ci; try discriminate.
         difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
-    difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+    difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     difn H Epos; [discriminate|].
@@ -1557,7 +1557,7 @@ Proof.
         * exact (region_free_app_r _ _ _ _ Efree).
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
-  difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Epos; [discriminate|].
@@ -2621,8 +2621,8 @@ Lemma check_unlinkat_frame : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result,
-    Namei.check_unlink_open_tmp, check_unlink_open_result in H.
+    Namei.check_unlink_found, check_unlink_result, Namei.check_unlink_open_tmp,
+    check_unlink_open_result, check_unlink_type_result in H.
   vm_frame2 H.
 Qed.
 

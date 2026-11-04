@@ -1334,6 +1334,34 @@ Definition utsname_wf (bs : list byte) : bool :=
    && bv_eqb (nth 64 (uts_field 3 bs) uts_nul) uts_nul
    && bv_eqb (nth 64 (uts_field 5 bs) uts_nul) uts_nul)%bool.
 
+(** WHAT A LATER [uname] MUST REPEAT, given the name [b0] the first one
+    pinned: [release] (member 2) and [version] (member 3), byte for
+    byte.  [sysname] and [machine] need no comparison, since
+    [utsname_wf] already fixes both to their literals.  [nodename]
+    (member 1) and [domainname] (member 5) are NOT repeated: another
+    process that shares this process's UTS namespace (the host's, or a
+    sandbox's) may change them at any time during the run, by
+    [sethostname] (161) or [setdomainname] (162) when it holds
+    CAP_SYS_ADMIN over the user namespace that owns that UTS namespace
+    ([ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN)],
+    kernel/sys.c:1419-1443, 1424, 1473-1497, 1478, Linux v6.18.46), or by
+    a write to /proc/sys/kernel/hostname or /proc/sys/kernel/domainname
+    (mode 0644, kernel/utsname_sysctl.c:107-122).  The next [uname] of
+    this process copies the new member out.  That is an event of the
+    environment, which the model may not assume away. *)
+Definition uts_kernel_agree (b0 bs : list byte) : bool :=
+  (uts_eqb (uts_field 2 bs) (uts_field 2 b0)
+   && uts_eqb (uts_field 3 bs) (uts_field 3 b0))%bool.
+
+(** The names a [uname] may deliver once [b0] is pinned: a name inside
+    [utsname_wf] whose kernel members agree with [b0]'s.  A pin outside
+    [utsname_wf] is never written by [uname_spec] (it pins only a name
+    [utsname_wf] admits); a model built with one by hand keeps the old
+    exact repeat, so that this predicate is never empty. *)
+Definition uts_repeat_ok (b0 bs : list byte) : Prop :=
+  if utsname_wf b0 then utsname_wf bs = true /\ uts_kernel_agree b0 bs = true
+  else bs = b0.
+
 (** [uname name] — syscall 160, which riscv64 routes to [sys_newuname]
     (include/uapi/asm-generic/unistd.h, [__NR_uname 160],
     [__SYSCALL(__NR_uname, sys_newuname)], Linux v6.18.46, commit
@@ -1388,14 +1416,18 @@ Definition utsname_wf (bs : list byte) : bool :=
       for the same reason, and this one is worse, because the prefix may
       end anywhere in 390 bytes rather than at one of two fields.
 
-    WHICH UTSNAME: the environment's, recorded once.  On the first
-    [uname] of a run the model CHOOSES any buffer [utsname_wf] admits and
-    pins it in [State.procst_utsname]; every later [uname] must deliver
-    exactly those bytes.  That pin is the whole reason this spec is not a
-    per-call [choose]: two calls that disagreed about the running kernel
-    would be a trace no Linux machine produces.  [State.procst_utsname]
-    argues the mechanism and the note above [State.Model] compares it
-    against the two alternatives.
+    WHICH UTSNAME: the environment's.  On the first [uname] of a run the
+    model CHOOSES any buffer [utsname_wf] admits and pins it in
+    [State.procst_utsname].  Every later [uname] delivers a name inside
+    [utsname_wf] whose [release] and [version] are the pin's
+    ([uts_repeat_ok]): those two, with [sysname] and [machine], are the
+    running kernel's and no call changes them, so two calls that
+    disagreed about them would be a trace no Linux machine produces.
+    [nodename] and [domainname] are CHOSEN AGAIN at each call: another
+    process that shares this process's UTS namespace may change them
+    between two calls of this one ([uts_kernel_agree]'s note).  [State.procst_utsname] argues the
+    mechanism and the note above [State.Model] compares it against the
+    two alternatives.
 
     WHAT IS NOT MODELED, and it is one thing rather than a list: a
     program that DEPENDS ON THE CONTENT of [nodename], [release],
@@ -1415,7 +1447,9 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     | None => unmodeled       (* a partial [copy_to_user] then -EFAULT *)
     | Some _ =>
         match m_utsname m with
-        | Some bs => pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
+        | Some b0 =>
+            bs <- choose (uts_repeat_ok b0) ;;
+            pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
         | None =>
             bs <- choose (fun bs : list byte => utsname_wf bs = true) ;;
             set_utsname bs ;;

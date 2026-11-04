@@ -447,6 +447,9 @@ Proof.
   destruct (two_pow_64 <=? bv_unsigned (in_arg mmap_overflow_i 0)
               + page_round_up_Z (bv_unsigned (in_arg mmap_overflow_i 1)))%Z eqn:E5;
     [| vm_compute in E5; discriminate E5].
+  unfold mmap_fixed_overflow.
+  destruct (mmap_fixed_err_addr_b _ _) eqn:E6;
+    [vm_compute in E6; discriminate E6 |].
   intros Hspec.
   unfold err_ret, ret_only, pure in Hspec. sys_destruct.
   vm_compute in Hnr. discriminate Hnr.

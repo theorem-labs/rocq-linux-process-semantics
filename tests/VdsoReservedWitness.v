@@ -64,7 +64,7 @@ Definition LIMITX : Z := 2 ^ 40.
 
 (** the extra reservation: twenty pages based at the lowest address a launch
     can put them, [MBASE_MIN - resx_bytes AX], which is the initial
-    [a_ylo] of [init_acs_of AX GAP_CEIL] *)
+    [a_ylo] of [init_acs_of 1 AX GAP_CEIL] *)
 Definition RXBASE : Z := MBASE_MIN - resx_bytes AX.
 Definition RX : list (word * word) := [(Z_to_bv 64 RXBASE, Z_to_bv 64 (resx_bytes AX))].
 
@@ -126,9 +126,10 @@ Definition YLO : Z := KHI - 3 * 4096.
     real run.  This fixture carries no model, so it uses [GAP_CEIL],
     the constant [AsanCeil.alloc_ceiling], which is the lower end of
     the band [ceil_ok] admits and is therefore a ceiling some launch
-    really has. *)
+    really has.  Its [1] is the CONFIG_RSEQ layout ([APC.AUXSZ 1]), the
+    default build's; the mmap node this file is about does not read it. *)
 Definition csX (addr len : Z) : acs :=
-  with_ylo (set_reg (set_reg (init_acs_of AX GAP_CEIL) 10 (ELit addr)) 11 (ELit len)) YLO.
+  with_ylo (set_reg (set_reg (init_acs_of 1 AX GAP_CEIL) 10 (ELit addr)) 11 (ELit len)) YLO.
 
 (** REFUSED: the request ends one page ABOVE the floor, so the checker cannot
     place it below the launch's extra reservations.  An undecided case

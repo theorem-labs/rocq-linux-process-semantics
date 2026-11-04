@@ -1753,6 +1753,59 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
   Z.eqb (bv_unsigned prot) PROT_NONE
   && mmap_noreplace_flags_b flags && w_is0 off.
 
+(** THE ERROR-VALUED MAP_FIXED ADDRESS.  [__get_unmapped_area]
+    (mm/mmap.c:812-864, Linux v6.18.46) hands a MAP_FIXED request's
+    [addr] back unchanged from its [get_area] — the generic searches at
+    their [if (flags & MAP_FIXED) return addr;] (mm/mmap.c:700-701 and
+    750-751), [shmem_get_unmapped_area] through the same
+    [mm_get_unmapped_area] (mm/shmem.c:2801-2807) — and then tests
+
+      if (IS_ERR_VALUE(addr))          mm/mmap.c:854-855
+              return addr;
+      if (addr > TASK_SIZE - len)      mm/mmap.c:857-858
+              return -ENOMEM;
+
+    in that order.  [IS_ERR_VALUE(x)] is [x >= (unsigned long)-MAX_ERRNO]
+    with [MAX_ERRNO] = 4095 (include/linux/err.h:18,28), which is
+    [State.addr_is_error_b].  [do_mmap] passes such a value on at its own
+    [if (IS_ERR_VALUE(addr)) return addr;] (mm/mmap.c:406-408), before
+    the MAP_FIXED_NOREPLACE -EEXIST and before anything else that reads
+    the mapping type, and [vm_mmap_pgoff] returns it (mm/util.c:581-588)
+    to the syscall handler, which stores it in a0
+    (arch/riscv/include/asm/syscall.h:112).  So a MAP_FIXED [addr] in
+    [[2^64-4095, 2^64-1]] comes back AS ITSELF, which a C library reads
+    as the errno [2^64 - addr], and the -ENOMEM range test never runs.
+
+    What still answers first is length-only, every test -ENOMEM:
+    [do_mmap]'s [len = PAGE_ALIGN(len); if (!len)] and its map-count
+    test (mm/mmap.c:368-378), [__get_unmapped_area]'s [len > TASK_SIZE]
+    (mm/mmap.c:824), and the generic search's
+    [len > mmap_end - mmap_min_addr] (mm/mmap.c:697 and 747), which on
+    riscv64 reads [mmap_end = STACK_TOP_MAX = TASK_SIZE_64]
+    (arch/riscv/include/asm/processor.h:20-23,32) and so subsumes the
+    [len > TASK_SIZE] one.  The length is zero-checked before any shape
+    is matched, the offset is 0 in every MAP_FIXED shape so [do_mmap]'s
+    -EOVERFLOW cannot fire, and [arch_mmap_check] is the generic 0 on
+    riscv (mm/mmap.c:62-63).  With SCOPE.md's [mmap_min_addr] = 4096 and
+    the Sv48 [State.TASK_SIZE], the rounded length decides it:
+    [nZ > TASK_SIZE - 4096] is -ENOMEM (a wrapped [PAGE_ALIGN] is
+    [nZ = 2^64], inside that), anything else returns [addr], beside the
+    map-count -ENOMEM every arm admits through [mmap_errnos].
+
+    Every page-rounded length is at least one page, so such an [addr]
+    always has [addr + nZ >= 2^64]: the MAP_FIXED arms reach this test
+    only inside their overflow branch, and for every other address that
+    branch is the -ENOMEM it was. *)
+Definition mmap_min_addr : Z := 4096%Z.
+
+Definition mmap_fixed_err_addr_b (addr : word) (nZ : Z) : bool :=
+  addr_is_error_b addr && (nZ <=? TASK_SIZE - mmap_min_addr)%Z.
+
+Definition mmap_fixed_overflow (addr : word) (nZ : Z) : Sys SyscallEffect :=
+  if mmap_fixed_err_addr_b addr nZ
+  then alt (e <- errno_from mmap_errnos ;; err_ret e) (ret_only addr)
+  else err_ret ENOMEM.
+
 (** [mmap addr len prot flags fd off].  Three things are decided before
     any shape is matched, in the kernel's own order.
 
@@ -1935,11 +1988,16 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        1f99e9ab748f).  [do_mmap] rounds
        the length and runs its bounds — all -ENOMEM — before any address
        is looked at, and [__get_unmapped_area] runs two more -ENOMEM
-       bounds BEFORE the alignment -EINVAL — all five in mm/mmap.c:
+       bounds, then hands an error-valued address back as is, and only
+       then runs the address bound and the alignment -EINVAL — all in
+       mm/mmap.c:
 
          [do_mmap]              len = PAGE_ALIGN(len); if (!len)  -ENOMEM
          [do_mmap]              map_count > sysctl_max_map_count  -ENOMEM
          [__get_unmapped_area]  len > TASK_SIZE                   -ENOMEM
+         [generic_get_unmapped_area]
+                                len > mmap_end - mmap_min_addr    -ENOMEM
+         [__get_unmapped_area]  IS_ERR_VALUE(addr)                addr
          [__get_unmapped_area]  addr > TASK_SIZE - len            -ENOMEM
          [__get_unmapped_area]  offset_in_page(addr)              -EINVAL
 
@@ -1962,9 +2020,14 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        [len <= TASK_SIZE] there, so the bound reads [addr + len > TASK_SIZE]
        — which [addr + len >= 2^64] implies for every
        [TASK_SIZE < 2^64], with no knowledge of the actual TASK_SIZE
-       needed.  -ENOMEM, deterministically.
-       [mmap(0x1001, (size_t)-1, PROT_NONE,
-       MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0)] is that case.
+       needed.  -ENOMEM, deterministically, for every [addr] below
+       [2^64 - 4095].  [mmap(0x1001, (size_t)-1, PROT_NONE,
+       MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0)] is that case.  An
+       [addr] at or above [2^64 - 4095] always lands in this branch too
+       (its rounded length is at least a page), and there the
+       [IS_ERR_VALUE] test comes first: [mmap_fixed_overflow] says which
+       lengths still answer -ENOMEM and that every other one returns
+       [addr] itself.
 
        This also removes a disagreement between the three branches: an
        overflowing length already yields -ENOMEM in the two fresh-grant
@@ -2000,7 +2063,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        gate below declines it — for BOTH MAP_FIXED shapes and BOTH of
        each shape's sub-cases, so no sub-case has to re-derive it. *)
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then err_ret ENOMEM
+    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then mmap_fixed_overflow addr nZ
     else
       m <- get_model ;;
       let h := m_vmmaps m in
@@ -2233,7 +2296,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        answered a different errno for the same [addr]/[len] would be
        claiming Linux branches on a register none of these gates reads. *)
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then err_ret ENOMEM
+    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then mmap_fixed_overflow addr nZ
     else
       m <- get_model ;;
       let h := m_vmmaps m in
@@ -2412,7 +2475,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        grant, or the image's LOAD reservations — is -EEXIST with nothing
        changed, beside the environment -ENOMEM every arm admits. *)
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then err_ret ENOMEM
+    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then mmap_fixed_overflow addr nZ
     else
       m <- get_model ;;
       let h := m_vmmaps m in
@@ -2441,7 +2504,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        resolution, so that over budget the [alt] collapses onto -ENOMEM
        rather than declining (the argument is on that arm). *)
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then err_ret ENOMEM
+    if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then mmap_fixed_overflow addr nZ
     else
       m <- get_model ;;
       let h := m_vmmaps m in
