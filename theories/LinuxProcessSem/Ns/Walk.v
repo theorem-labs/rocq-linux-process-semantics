@@ -163,6 +163,38 @@ Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
 Definition ns_top (st : NsState) (r : Mount) : Mount :=
   topmost_fuel (length (ns_mounts st)) st r.
 
+(** A mount of the stack that [topmost_fuel] climbs from [m], [m] and the
+    top included, can receive a mount or unmount event from a peer group
+    with a member outside the tables ([Propagation.open_mount]): the host
+    can mount on its root dentry, or unmount the mount that covers it,
+    without a call of the model, so the top is not the tables'. *)
+Fixpoint topmost_open_fuel (fuel : nat) (st : NsState) (m : Mount) : bool :=
+  open_mount st (mnt_id m) ||
+  match fuel with
+  | O => false
+  | S f => match mount_on st (mnt_id m) (mnt_root m) with
+           | Some m' => topmost_open_fuel f st m'
+           | None => false
+           end
+  end.
+
+(** A mount of the stack [ns_top] climbs from [r] can receive such an
+    event.  Computed only when the launch names an open group, as
+    [Propagation.open_mount]. *)
+Definition ns_top_open (st : NsState) (r : Mount) : bool :=
+  match env_open_groups (ns_env st) with
+  | [] => false
+  | _ => topmost_open_fuel (length (ns_mounts st)) st r
+  end.
+
+(** With no open group, the default launch, no mount of the stack is open:
+    [ns_top] is the top. *)
+Theorem ns_top_open_closed : forall st r,
+  env_open_groups (ns_env st) = [] -> ns_top_open st r = false.
+Proof.
+  intros st r H. unfold ns_top_open. rewrite H. reflexivity.
+Qed.
+
 (* =========================================================================
    Path text
    ========================================================================= *)

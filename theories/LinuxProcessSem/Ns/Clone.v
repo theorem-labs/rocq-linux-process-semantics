@@ -144,7 +144,12 @@ Definition new_utsns (st : NsState) (ctx : NsCtx) (nid owner : positive) : UtsNs
 
 (** The child's capability sets and securebits, and its user namespace:
     with CLONE_NEWUSER a new namespace in which it holds every capability
-    ([set_cred_user_ns]); else the caller's. *)
+    ([set_cred_user_ns]); else the caller's.  No answer ([NsErr 0]) when
+    the tables do not hold the caller's user namespace, or do not decide
+    whether it is chrooted ([UserArms.current_chrooted] answers [None]:
+    its mount namespace is not in the tables, or a mount of the stack
+    from that namespace's root mount to its top can receive a mount or
+    unmount event from an open group). *)
 Record CloneCreds := mkCloneCreds { cc_user : positive; cc_caps : CapSets; cc_secure : Z;
                                     cc_users : list UserNs }.
 

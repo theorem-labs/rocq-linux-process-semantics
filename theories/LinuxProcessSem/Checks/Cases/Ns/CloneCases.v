@@ -93,6 +93,32 @@ Example clone_root_mount_has_parent : forall m,
   end.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** "/" (mount 2) in peer group 7, which has a member outside the tables
+    ([env_open_groups]): the host can mount on "/"'s root without a call of
+    the model, so the tables do not decide whether the caller is chrooted
+    ([UserArms.current_chrooted] answers [None]) and a clone with
+    CLONE_NEWUSER has no answer.  With no open group the clone makes the
+    child it makes from [host_rootfs]. *)
+Definition host_rootfs_peer7 (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts host_rootfs [mkMount 1 1 None 1 1 1 nf nf false false None None;
+                              mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false (Some 7%positive) None])
+    gs.
+
+Example clone_newuser_open_root_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                 (host_rootfs_peer7 [7%positive]) 138 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example clone_newuser_closed_root_answers : forall m,
+  child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                           (host_rootfs_peer7 []) 138)
+  = child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                             host_rootfs 138)
+  /\ child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+                              host_rootfs 138) <> None.
+Proof. intros m. vm_compute. split; [reflexivity | intros H; discriminate H]. Qed.
+
 (** The new user namespace: a child of 1 owned by kuid 65534 with no maps;
     the new pid namespace's last pid is 1; the copy of the root mount is a
     mount of the new mount namespace; the new network namespace is

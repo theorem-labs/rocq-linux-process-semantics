@@ -255,6 +255,42 @@ Example top_root_not_chrooted :
   UserArms.current_chrooted rootfs_world
     (with_cwd (with_root init_nsctx (2%positive, 2%positive)) (2%positive, 2%positive)) = Some false := eq_refl.
 
+(** "/" (mount 2), or rootfs (mount 1), in peer group 7, which has a
+    member outside the tables ([env_open_groups]): the host can mount on
+    the root of either, or unmount "/", without a call of the model, so the
+    topmost mount on the namespace's root mount is not the tables'
+    ([Walk.ns_top_open]).  A released path does not resolve, and whether a
+    task is chrooted is not decided ([current_chrooted],
+    fs/namespace.c:6118-6132).  With no open group, or with one that
+    reaches no mount of the stack, both answer as in [rootfs_world]. *)
+Definition rootfs_peers (p1 p2 : option positive) (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts rootfs_world [mkMount 1 1 None 1 1 1 nf nf false false p1 None;
+                               mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false p2 None])
+    gs.
+
+Definition top_task : NsCtx :=
+  with_cwd (with_root init_nsctx (2%positive, 2%positive)) (2%positive, 2%positive).
+
+Example open_top_undecided :
+  host_loc (rootfs_peers None (Some 7%positive) [7%positive]) slash = None
+  /\ UserArms.current_chrooted (rootfs_peers None (Some 7%positive) [7%positive]) top_task = None.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example open_rootfs_undecided :
+  host_loc (rootfs_peers (Some 7%positive) None [7%positive]) slash = None
+  /\ UserArms.current_chrooted (rootfs_peers (Some 7%positive) None [7%positive]) top_task = None.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example closed_stack_decided :
+  host_loc (rootfs_peers (Some 7%positive) (Some 7%positive) []) slash = Some (LDentry 2 2)
+  /\ host_loc (rootfs_peers (Some 7%positive) (Some 7%positive) [8%positive]) slash = Some (LDentry 2 2)
+  /\ UserArms.current_chrooted (rootfs_peers (Some 7%positive) (Some 7%positive) []) top_task
+     = Some false
+  /\ UserArms.current_chrooted (rootfs_peers (Some 7%positive) (Some 7%positive) [8%positive]) top_task
+     = Some false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** A pass-through call outside the released world gets the released
     forced-only filter ([Spec.ns_refusal_eff_pass]): an anonymous [mmap] of a
     task in [one_mount] within the budget has its injected ENOMEM removed,

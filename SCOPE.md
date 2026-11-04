@@ -552,7 +552,15 @@ not apply.
   `env_open_groups`. With a non-empty list, a call whose answer reads a
   mount that can receive such an event has no answer: a path walk that
   enters such a mount (`Ns.Walk.follow_mounts_fuel`,
-  `Ns.Propagation.open_mount`), a bind or a new mount (`mount(2)`)
+  `Ns.Propagation.open_mount`), a `clone` or `unshare` with
+  `CLONE_NEWUSER`, which reads the topmost mount on the caller's mount
+  namespace's root mount to decide whether the caller is chrooted
+  (`Ns.UserArms.current_chrooted`; `current_chrooted`,
+  `fs/namespace.c:6118-6132`), and a `/proc/<pid>/fd` link to a
+  descriptor the released model opened, whose path resolves from the
+  topmost mount on the host's root mount (`Ns.Arm.host_loc`), when a
+  mount of the stack from that root mount to its top is such a mount
+  (`Ns.Walk.ns_top_open`), a bind or a new mount (`mount(2)`)
   in a mount namespace that holds such a mount, or onto a shared mount
   whose propagation tree holds one or reaches a namespace that holds one
   (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), a

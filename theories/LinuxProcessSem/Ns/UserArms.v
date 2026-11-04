@@ -24,8 +24,12 @@
     mode: the new namespace is a child of the old one owned by the task's
     euid, so [cred_cap_issubset] holds.
 
-    Any other flag set declines.  Kind: exact inside the tree; over at a
-    namespace that is not sealed and for the environment's refusals. *)
+    Any other flag set declines, and so does CLONE_NEWUSER when a mount of
+    the stack from the mount namespace's root mount to its top can receive
+    a mount or unmount event from an open group ([current_chrooted]
+    answers [None]; [Tables.env_open_groups]).  Kind: exact inside the
+    tree; over at a namespace that is not sealed and for the environment's
+    refusals. *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -56,9 +60,14 @@ Definition unshare_valid : Z :=
 
 Definition CAP_FULL_SET : Z := 2 ^ 41 - 1.
 
-(** [current_chrooted]: the task's root is not the root dentry of the
-    topmost mount on its mount namespace's root mount.  [None] when the
-    tables do not list that namespace or mount. *)
+(** [current_chrooted] (fs/namespace.c:6118-6132): the task's root is not
+    the root dentry of the topmost mount on its mount namespace's root
+    mount ([topmost_overmount], fs/mount.h:243-248).  [None] when the
+    tables do not list that namespace or mount, and when a mount of the
+    stack from the root mount to the top can receive a mount or unmount
+    event from an open group ([Walk.ns_top_open]): the host can change
+    the top without a call of the model, so the tables do not decide it.
+    With no open group the test is false ([Walk.ns_top_open_closed]). *)
 Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
   match find (fun n => Pos.eqb (mntns_id n) (cx_mount ctx)) (ns_mntns st) with
   | None => None
@@ -66,8 +75,10 @@ Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
       match find_mount (ns_mounts st) (mntns_root n) with
       | None => None
       | Some r =>
-          let top := ns_top st r in
-          Some (negb (Pos.eqb (fst (cx_root ctx)) (mnt_id top) && Pos.eqb (snd (cx_root ctx)) (mnt_root top)))
+          if ns_top_open st r then None
+          else
+            let top := ns_top st r in
+            Some (negb (Pos.eqb (fst (cx_root ctx)) (mnt_id top) && Pos.eqb (snd (cx_root ctx)) (mnt_root top)))
       end
   end.
 

@@ -86,6 +86,29 @@ Proof.
   destruct H as [H|H]; [left; vm_compute in H; exact H | right; exact H].
 Qed.
 
+(** Mount 1, the root of mount namespace 1, in peer group 7, which has a
+    member outside the tables ([env_open_groups]): the host can mount on
+    its root without a call of the model, so the tables do not decide
+    whether the task is chrooted ([current_chrooted] answers [None]) and
+    the arm has no answer.  With no open group the arm answers from the
+    tables, the task not chrooted. *)
+Definition world_peer7 (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts (world [init_uns 100 true])
+                 [mkMount 1 1 None 1 1 1 no_flags no_flags false false (Some 7%positive) None])
+    gs.
+
+Example unshare_open_root_declines : forall m o,
+  unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 [7%positive]) o
+  <-> o = EUnmodeled.
+Proof. intros m o. vm_compute. tauto. Qed.
+
+Example unshare_closed_root_answers : forall m o,
+  unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
+  <-> unshare_exact (init_uns 100 true) false m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
+      \/ env_refusal o m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []).
+Proof. intros m o. apply unshare_arm_newuser; reflexivity. Qed.
+
 (** The owner unmapped in the parent: from namespace 2, whose maps are not
     written, EPERM. *)
 Definition ns2 : UserNs := mkUserNs 2 (Some 1%positive) 1 1000 None None true false INT_MAX true.
