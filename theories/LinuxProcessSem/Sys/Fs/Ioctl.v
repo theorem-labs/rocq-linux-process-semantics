@@ -252,4 +252,9 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          has not read for the eight requests, and an [ONsFile]'s object
          is of unknown type (fs/ioctl.c and fs/file.c, read at v6.18.44;
          identical at v6.18.46). *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED, on every request: an AF_UNIX socket's
+         [.unlocked_ioctl] is [sock_ioctl] (net/socket.c), which hands
+         the request to [unix_ioctl] (net/unix/af_unix.c); that path is
+         not written *)
   end.

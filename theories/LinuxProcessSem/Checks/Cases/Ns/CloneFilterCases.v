@@ -1,6 +1,6 @@
 (** * LinuxProcessSem.Checks.Cases.Ns.CloneFilterCases — the forced-only filter of a failed clone
 
-    The check cases of P11 (b): which errno answers of a clone the filter
+    These check cases show which errno answers of a clone the filter
     keeps ([Procs.clone_kept]) and which it removes
     ([Procs.clone_removed]), under [Ns.Spec.ns_ext] and under
     [Ns.Ext.no_ext], for callers in the namespace world or words with a
@@ -9,11 +9,11 @@
     ([Procs.clone_fail_step_removed]).  Three examples at the end take
     cases (1) and (2) to a step, from a machine state at a clone ecall.
 
-    Two cases of the design wait for later steps: a clone into a closed
-    children's pid namespace, whose ENOMEM the tables decide, needs N3's
-    namespace side, and a thread word whose EINVAL the tables decide needs
-    S7.  Today no errno [Ns.Clone.clone_ns_exact] answers (EPERM, EINVAL,
-    ENOSPC) is in [Fork.clone_errnos], so every case below keeps and
+    These cases do not cover a clone into a closed children's pid
+    namespace whose ENOMEM the tables decide, or a thread clone form whose
+    EINVAL the tables decide; they require the closed-namespace and
+    thread-form rules. None of the errnos [Ns.Clone.clone_ns_exact] answers
+    (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], so every case below keeps and
     removes what the released filter keeps and removes: under [ns_ext] by
     [NsProcs.ns_clone_filter_released], under [no_ext] by
     [Procs.clone_kept_unchanged] and [Procs.clone_removed_unchanged]. *)
