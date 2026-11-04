@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135) and sigaltstack (132) checkers, and their proofs
+(** * LinuxProcessSem.Checks.Sys.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), kill (129), tkill (130) and tgkill (131) checkers, and their proofs
 
     Mirrors [Sys/Kernel/Signal.v], which answers to Linux
     [kernel/signal.c]: this file holds the checkers for the syscalls
@@ -1096,4 +1096,176 @@ Proof.
     try (apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _);
          reflexivity);
     inversion H; subst; autorewrite with model; reflexivity.
+Qed.
+
+(* =========================================================================
+   kill (129)
+   ========================================================================= *)
+
+(** The acceptor mirrors [Kernel.Signal.kill_spec]'s branches.  As for
+    [tkill], every branch has the empty effect shape, so a claimed write
+    is a reject, and the fatal branch claims the 0 that
+    [Run.sstep_killed] discards. *)
+Definition check_kill_self (pid sig : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  match m_tid m with
+  | None => CheckUnmodeled
+  | Some t =>
+      if negb (bv_eqb pid t) then CheckUnmodeled
+      else if negb (tkill_sig_valid sig)
+      then check_ret_only eff (errno_ret EINVAL) m []
+      else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
+        (if sigkill_blocked (m_sigmask m) then CheckUnmodeled
+         else check_ret_only eff (Z_to_bv 64 0)
+                (with_killed (Z_to_bv 64 SIGKILL) m) [])
+      else CheckUnmodeled
+  end.
+
+Definition check_kill (pid sig : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (m_selfkill_terminal m) then CheckUnmodeled
+  else if pid_positive pid then check_kill_self pid sig eff m
+  else if pid_int_min pid then check_ret_only eff (errno_ret ESRCH) m []
+  else CheckUnmodeled.
+
+Lemma check_kill_self_sound_ok : forall pid sig eff m m' evs i,
+  check_kill_self pid sig eff m = CheckOk m' evs ->
+  kill_self pid sig i m (Ok eff m' evs).
+Proof.
+  intros pid sig eff m m' evs i H.
+  unfold check_kill_self in H. unfold kill_self. rewrite bind_get_model.
+  destruct (m_tid m) as [t|]; cbv beta iota in *; [|discriminate].
+  destruct (negb (bv_eqb pid t)); cbv beta iota in *; [discriminate|].
+  destruct (negb (tkill_sig_valid sig)); cbv beta iota in *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    unfold err_ret, ret_only. apply pure_ok. }
+  destruct (bv_eqb sig (Z_to_bv 64 SIGKILL)); cbv beta iota in *;
+    [| discriminate].
+  destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
+    [discriminate|].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  eapply bind_ok0;
+    [ unfold set_killed; apply modify_ok
+    | unfold ret_only; apply pure_ok ].
+Qed.
+
+Lemma check_kill_self_sound_unmodeled : forall pid sig eff m i,
+  check_kill_self pid sig eff m = CheckUnmodeled ->
+  kill_self pid sig i m Unmodeled.
+Proof.
+  intros pid sig eff m i H.
+  unfold check_kill_self in H. unfold kill_self. rewrite bind_get_model.
+  destruct (m_tid m) as [t|]; cbv beta iota in *; [|apply unmodeled_intro].
+  destruct (negb (bv_eqb pid t)); cbv beta iota in *; [apply unmodeled_intro|].
+  destruct (negb (tkill_sig_valid sig)); cbv beta iota in *.
+  { exfalso. eapply check_ret_only_no_unmodeled. exact H. }
+  destruct (bv_eqb sig (Z_to_bv 64 SIGKILL)); cbv beta iota in *;
+    [| apply unmodeled_intro].
+  destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
+    [apply unmodeled_intro|].
+  exfalso. eapply check_ret_only_no_unmodeled. exact H.
+Qed.
+
+Lemma check_kill_self_complete_ok : forall pid sig eff m m' evs i,
+  kill_self pid sig i m (Ok eff m' evs) ->
+  check_kill_self pid sig eff m = CheckOk m' evs.
+Proof.
+  intros pid sig eff m m' evs i H.
+  unfold kill_self in H. rewrite bind_get_model in H.
+  unfold check_kill_self.
+  destruct (m_tid m) as [t|]; cbv beta iota in *; [|sys_unfold; inv_ok].
+  destruct (negb (bv_eqb pid t)); cbv beta iota in *; [sys_unfold; inv_ok|].
+  destruct (negb (tkill_sig_valid sig)); cbv beta iota in *.
+  { sys_unfold; inv_ok. apply check_ret_only_ok_iff. now repeat split. }
+  destruct (bv_eqb sig (Z_to_bv 64 SIGKILL)); cbv beta iota in *;
+    [| sys_unfold; inv_ok].
+  destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
+    [sys_unfold; inv_ok|].
+  sys_unfold; inv_ok. apply check_ret_only_ok_iff. now repeat split.
+Qed.
+
+Lemma check_kill_self_complete_unmodeled : forall pid sig m i eff,
+  kill_self pid sig i m Unmodeled ->
+  check_kill_self pid sig eff m = CheckUnmodeled.
+Proof.
+  intros pid sig m i eff H.
+  unfold kill_self in H. rewrite bind_get_model in H.
+  unfold check_kill_self.
+  destruct (m_tid m) as [t|]; cbv beta iota in *; [|reflexivity].
+  destruct (negb (bv_eqb pid t)); cbv beta iota in *; [reflexivity|].
+  destruct (negb (tkill_sig_valid sig)); cbv beta iota in *.
+  { exfalso. sys_unfold; inv_ok. }
+  destruct (bv_eqb sig (Z_to_bv 64 SIGKILL)); cbv beta iota in *;
+    [| reflexivity].
+  destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
+    [reflexivity|].
+  exfalso. sys_unfold; inv_ok.
+Qed.
+
+Lemma check_kill_sound_ok : forall pid sig eff m m' evs i,
+  check_kill pid sig eff m = CheckOk m' evs -> kill_spec pid sig i m (Ok eff m' evs).
+Proof.
+  intros pid sig eff m m' evs i H.
+  unfold check_kill in H. unfold kill_spec. rewrite bind_get_model.
+  destruct (negb (m_selfkill_terminal m)); cbv beta iota in *; [discriminate|].
+  destruct (pid_positive pid); cbv beta iota in *.
+  { exact (check_kill_self_sound_ok _ _ _ _ _ _ i H). }
+  destruct (pid_int_min pid); cbv beta iota in *; [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Lemma check_kill_sound_unmodeled : forall pid sig eff m i,
+  check_kill pid sig eff m = CheckUnmodeled -> kill_spec pid sig i m Unmodeled.
+Proof.
+  intros pid sig eff m i H.
+  unfold check_kill in H. unfold kill_spec. rewrite bind_get_model.
+  destruct (negb (m_selfkill_terminal m)); cbv beta iota in *;
+    [apply unmodeled_intro|].
+  destruct (pid_positive pid); cbv beta iota in *.
+  { exact (check_kill_self_sound_unmodeled _ _ _ _ i H). }
+  destruct (pid_int_min pid); cbv beta iota in *; [|apply unmodeled_intro].
+  exfalso. eapply check_ret_only_no_unmodeled. exact H.
+Qed.
+
+Lemma check_kill_complete_ok : forall pid sig eff m m' evs i,
+  kill_spec pid sig i m (Ok eff m' evs) -> check_kill pid sig eff m = CheckOk m' evs.
+Proof.
+  intros pid sig eff m m' evs i H.
+  unfold kill_spec in H. rewrite bind_get_model in H. unfold check_kill.
+  destruct (negb (m_selfkill_terminal m)); cbv beta iota in *;
+    [sys_unfold; inv_ok|].
+  destruct (pid_positive pid); cbv beta iota in *.
+  { exact (check_kill_self_complete_ok _ _ _ _ _ _ i H). }
+  destruct (pid_int_min pid); cbv beta iota in *; [|sys_unfold; inv_ok].
+  sys_unfold; inv_ok. apply check_ret_only_ok_iff. now repeat split.
+Qed.
+
+Lemma check_kill_complete_unmodeled : forall pid sig m i eff,
+  kill_spec pid sig i m Unmodeled -> check_kill pid sig eff m = CheckUnmodeled.
+Proof.
+  intros pid sig m i eff H.
+  unfold kill_spec in H. rewrite bind_get_model in H. unfold check_kill.
+  destruct (negb (m_selfkill_terminal m)); cbv beta iota in *; [reflexivity|].
+  destruct (pid_positive pid); cbv beta iota in *.
+  { exact (check_kill_self_complete_unmodeled _ _ _ i eff H). }
+  destruct (pid_int_min pid); cbv beta iota in *; [|reflexivity].
+  exfalso. sys_unfold; inv_ok.
+Qed.
+
+(** The framing statement [Checks.VmMapsDisjoint]'s cascade consumes:
+    the one branch that changes the model is the kill, and
+    [State.with_killed] rebuilds [ProcState] alone. *)
+Lemma check_kill_frame : forall pid sig eff m m' evs,
+  check_kill pid sig eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros pid sig eff m m' evs H.
+  unfold check_kill, check_kill_self in H.
+  repeat match type of H with
+         | (if ?b then _ else _) = _ => destruct b; cbv beta iota in H
+         | match ?x with _ => _ end = _ => destruct x; cbv beta iota in H
+         end;
+    try discriminate;
+    apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _);
+    autorewrite with model; reflexivity.
 Qed.

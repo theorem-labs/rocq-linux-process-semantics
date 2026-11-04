@@ -37,19 +37,22 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
     rt_sigreturn restores every register — pc and sp included — from
     whatever the stack happens to hold, so the process does not survive
     the call.  Reaching
-    139 the natural way, through a delivered signal, needs [kill] or
-    [tgkill] first — themselves unmodeled — so the verdict would fix at
-    THAT call. *)
+    139 the natural way, through a delivered signal with a handler,
+    needs a signal the model never delivers to a handler: [kill],
+    [tkill] and [tgkill] send only SIGKILL or SIGABRT, each at SIG_DFL,
+    and decline every other signal, so the verdict would fix at THAT
+    call. *)
 Example rt_sigreturn_unmodeled :
   check_syscall (mkInput 139 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** kill (129) likewise.  This example is the
-    universally quantified claim no finite set of traces can give: the
-    decline at the NUMBER, with no argument and no return value in the
-    picture at all. *)
+(** kill (129) on the plain launch: the self-kill declaration is clear
+    ([Run.valid_input] pins it off), so the arm declines every shape,
+    here the one with no argument at all, exactly as the number did when
+    it had no arm.  The answering shape against a model with the
+    declaration clear is [kill_off_declined] below. *)
 Example kill_unmodeled :
   check_syscall (mkInput 129 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
@@ -811,11 +814,14 @@ Proof. vm_compute. reflexivity. Qed.
     [sigaltstack_leaves_the_mask_alone] below — the same treatment the
     header gives the raising specs it excepts, and 130 and 131
     get [tkill_reads_the_mask_and_writes_none] and [tkill_off_declined]
-    for the same reason.  The numbers are named and not counted: when
-    this group grows, a count is the part that goes stale. *)
+    for the same reason.  129 left the list when [kill] got its arm: the
+    arm sends only SIGKILL and only to the caller, reads the mask only to
+    decline when it covers SIGKILL, and writes none, which
+    [kill_self_sigkill_kills], [kill_sigkill_blocked_declined] and
+    [kill_off_declined] check.  The numbers are named and not counted:
+    when this group grows, a count is the part that goes stale. *)
 Definition sig_mask_windows : list Z :=
   ([ 117  (* ptrace            *)
-   ; 129  (* kill              *)
    ; 133  (* rt_sigsuspend     *)
    ; 136  (* rt_sigpending     *) ; 137 (* rt_sigtimedwait   *)
    ; 138  (* rt_sigqueueinfo   *) ; 139 (* rt_sigreturn      *)
@@ -1503,6 +1509,141 @@ Proof.
   split; [reflexivity | split; [reflexivity |]].
   vm_compute. discriminate.
 Qed.
+
+(* =========================================================================
+   kill (129): the self-kill declaration
+   ========================================================================= *)
+
+(** The models the kill cases run against.  [selfkill_model] DECLARES the
+    self-kill path ([State.in_selfkill_terminal], set here on the model
+    with [State.with_selfkill_terminal]) and pins the tid 4242, as
+    [abort_model_undeclared] does; that model, with the declaration
+    clear, is the control.  The abort declaration is clear in both, so
+    no tkill answer is in reach. *)
+Definition selfkill_model : Model :=
+  with_selfkill_terminal true abort_model_undeclared.
+
+(** The declaration set and no tid pinned yet. *)
+Definition selfkill_model_unpinned : Model :=
+  with_selfkill_terminal true
+    (init_model [] 0 0 demo_sp demo_limit
+       (mkProcInput [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+          default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
+
+(** K1, POSITIVE: [kill(tid, SIGKILL)] under the declaration ends the
+    process.  SIGKILL takes [complete_signal]'s fatal path
+    (kernel/signal.c:1003-1018, Linux v6.18.46), so the post-model is
+    [State.with_killed] of signal 9, which [Run.sstep_killed] reads. *)
+Example kill_self_sigkill_kills :
+  check_syscall (mkInput 129 [4242; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model
+  = CheckOk (with_killed (Z_to_bv 64 9) selfkill_model) [].
+Proof. check_eq. Qed.
+
+Example kill_self_sigkill_records_signal_9 :
+  m_killed (with_killed (Z_to_bv 64 9) selfkill_model) = Some (Z_to_bv 64 9).
+Proof. vm_compute. reflexivity. Qed.
+
+(** K1's control: the same call with the declaration clear declines
+    ([Kernel.Signal.kill_spec_off_unmodeled]). *)
+Example kill_off_declined :
+  check_syscall (mkInput 129 [4242; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) abort_model_undeclared
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** K2: a signal above [_NSIG] fails [valid_signal]
+    (include/linux/signal.h:272-274) in [check_kill_permission]
+    (kernel/signal.c:805-806), after the task lookup found the caller:
+    -EINVAL, for 65 and for -1, which [Syscall.sig32] narrows to
+    2^32 - 1. *)
+Example kill_sig_out_of_range_einval :
+  check_syscall (mkInput 129 [4242; 65; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) selfkill_model
+  = CheckOk selfkill_model []
+  /\ check_syscall (mkInput 129 [4242; 4294967295; 0; 0; 0; 0] (fun _ => None)
+                      (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) selfkill_model
+     = CheckOk selfkill_model [].
+Proof. split; check_eq. Qed.
+
+(** K2's control: 64 is a valid signal, and the model holds no
+    disposition for it, so the arm declines. *)
+Example kill_sig_64_declined :
+  check_syscall (mkInput 129 [4242; 64; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** K3: pid INT_MIN is -ESRCH before any signal check
+    (kernel/signal.c:1589-1590), so even signal 65 gets it. *)
+Example kill_int_min_esrch :
+  check_syscall (mkInput 129 [2147483648; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect (errno_ret ESRCH) [] []) selfkill_model
+  = CheckOk selfkill_model []
+  /\ check_syscall (mkInput 129 [2147483648; 65; 0; 0; 0; 0] (fun _ => None)
+                      (fun _ => None))
+       (mkEffect (errno_ret ESRCH) [] []) selfkill_model
+     = CheckOk selfkill_model [].
+Proof. split; check_eq. Qed.
+
+(** K3's control: -2147483647 names a process group
+    (kernel/signal.c:1592-1611), which the arm declines. *)
+Example kill_process_group_declined :
+  check_syscall (mkInput 129 [2147483649; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect (errno_ret ESRCH) [] []) selfkill_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** K4: another pid is another process, which the arm declines; K1 is
+    the control. *)
+Example kill_other_pid_declined :
+  check_syscall (mkInput 129 [4243; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** K5: with no tid pinned the arm has nothing to compare [pid] with and
+    declines. *)
+Example kill_unpinned_declined :
+  check_syscall (mkInput 129 [4242; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model_unpinned
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** K5's control: [getpid] pins the tid at its answer, and [kill] of
+    that answer is the death. *)
+Example kill_after_getpid_kills :
+  check_syscall (mkInput 172 [0; 0; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 4242 [] []) selfkill_model_unpinned
+  = CheckOk (with_tid 4242 selfkill_model_unpinned) []
+  /\ check_syscall (mkInput 129 [4242; 9; 0; 0; 0; 0] (fun _ => None)
+                      (fun _ => None))
+       (mkEffect 0 [] []) (with_tid 4242 selfkill_model_unpinned)
+     = CheckOk (with_killed (Z_to_bv 64 9)
+                  (with_tid 4242 selfkill_model_unpinned)) [].
+Proof. split; check_eq. Qed.
+
+(** K6: a mask with bit 8 set covers SIGKILL.  No user mask can
+    ([State.sigmask_strip]), and the arm declines rather than resting on
+    that; K1 is the control.  The fatal branch writes no mask. *)
+Example kill_sigkill_blocked_declined :
+  check_syscall (mkInput 129 [4242; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) (with_sigmask (Z_to_bv 64 256) selfkill_model)
+  = CheckUnmodeled
+  /\ m_sigmask (with_killed (Z_to_bv 64 9) selfkill_model)
+     = m_sigmask selfkill_model.
+Proof. split; [vm_compute; reflexivity | reflexivity]. Qed.
 
 (* =========================================================================
    The one-sided frame, refuted

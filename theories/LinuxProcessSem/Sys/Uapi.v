@@ -879,6 +879,14 @@ Definition sig_kernel_only_mask : Z := 262400%Z.
 Definition SIGABRT : Z := 6%Z.
 Definition sigabrt_mask : Z := 32%Z.
 
+(** SIGKILL, 9 (include/uapi/asm-generic/signal.h:20, Linux v6.18.46).
+    Its default disposition is SIG_TERM with no core dump, and no
+    process can catch, ignore or block it: [sig_kernel_only] covers it,
+    so [Kernel.Signal.sigmask_strip] drops it from every installed mask.
+    The one call that raises it in this model is [Kernel.Signal.kill_spec],
+    for a process that names itself. *)
+Definition SIGKILL : Z := 9%Z.
+
 (** SIGPIPE, the bit it occupies in a [sigset_t], and the test for a
     mask that blocks it.  13 (include/uapi/asm-generic/signal.h), so
     [sigmask(SIGPIPE)] is [1 << 12] = 4096 (include/linux/signal.h, the

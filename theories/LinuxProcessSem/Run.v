@@ -776,7 +776,9 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     THE DECLARATION IS NOT A PREMISE HERE.  For SIGABRT it is one
     inside [Kernel.Signal.tkill_spec]; for SIGPIPE it is one inside
     [Sys.Fs.ReadWrite.sigpipe_write], which declines the write while
-    [State.m_sigpipe_terminal] is clear.  Putting a declaration here as
+    [State.m_sigpipe_terminal] is clear; for SIGKILL it is one inside
+    [Kernel.Signal.kill_spec], which declines every call while
+    [State.m_selfkill_terminal] is clear.  Putting a declaration here as
     well would make this rule unable to fire on an outcome the spec
     layer produced -- which is a STUCK configuration, not a decline,
     and [sstep_cfg_progress] below would be false.  What carries the
@@ -844,10 +846,10 @@ Qed.
    No kill while every kill gate is closed: the frame and its consequences
    ========================================================================= *)
 
-(** THE FOUR GATES, all closed.  A [State.KillEv] enters a trace only
+(** THE FIVE GATES, all closed.  A [State.KillEv] enters a trace only
     through [sstep_killed], which needs a spec outcome whose model has
     [State.m_killed] set, and [State.with_killed] is called from exactly
-    four places in the spec layer, each behind one of these fields:
+    five places in the spec layer, each behind one of these fields:
 
     - [Sys.Fs.ReadWrite.raise_sigpipe] (signal 13), reached only through
       [Sys.Fs.ReadWrite.sigpipe_write], which declines at SIG_DFL while
@@ -860,24 +862,30 @@ Qed.
       by [Kernel.Signal.send_sigabrt];
     - [Kernel.Signal.send_sigabrt] itself, reached only through
       [tkill]/[tgkill], which decline while [State.m_abort_terminal] is
-      clear.
+      clear;
+    - [Kernel.Signal.kill_self]'s SIGKILL branch, reached only through
+      [Kernel.Signal.kill_spec], which declines every call while
+      [State.m_selfkill_terminal] is clear.
 
-    The two declarations are written only by [State.init_model], and the
-    two pending bits only behind the declarations, so the four together
-    are an invariant.  NEITHER PAIR ALONE IS ONE: a pending bit set with
-    its declaration clear is directly constructible, and the
+    The three declarations are written only by [State.init_model], and
+    the two pending bits only behind the declarations, so the five
+    together are an invariant.  NEITHER PAIR ALONE IS ONE: a pending bit
+    set with its declaration clear is directly constructible, and the
     [rt_sigprocmask] that uncovers it kills
-    ([Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted]). *)
+    ([Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted]).
+    The SIGKILL declaration has no pending bit to pair with: no mask
+    holds SIGKILL. *)
 Definition kill_off (m : Model) : Prop :=
   m_abort_terminal m = false /\ m_sigabrt_pending m = false
-  /\ m_sigpipe_terminal m = false /\ m_sigpipe_pending m = false.
+  /\ m_sigpipe_terminal m = false /\ m_sigpipe_pending m = false
+  /\ m_selfkill_terminal m = false.
 
 (** A list of events carries no death by a signal. *)
 Definition no_kill (evs : list event) : Prop :=
   forall sig fs, ~ In (KillEv sig fs) evs.
 
 (** THE FRAME, over every arm of the spec table: from a RUNNING model
-    with all four gates closed, an outcome keeps them closed, records no
+    with all five gates closed, an outcome keeps them closed, records no
     kill and emits no [State.KillEv].
 
     IT IS PROVED, NOT ASSUMED: [Checks.KillFree.kill_frame_holds] proves
@@ -915,14 +923,14 @@ Definition decl_off_frame_one_sided : Prop :=
     /\ m_killed m' = None
     /\ (forall sig fs, ~ In (KillEv sig fs) evs).
 
-(** The four gates are fields of [State.ProcState], so a step that keeps
+(** The five gates are fields of [State.ProcState], so a step that keeps
     [State.m_proc] keeps them. *)
 Lemma kill_off_proc : forall m1 m2,
   m_proc m1 = m_proc m2 -> kill_off m2 -> kill_off m1.
 Proof.
   intros m1 m2 H.
   unfold kill_off, m_abort_terminal, m_sigabrt_pending, m_sigpipe_terminal,
-    m_sigpipe_pending.
+    m_sigpipe_pending, m_selfkill_terminal.
   rewrite H. exact (fun x => x).
 Qed.
 
@@ -1052,12 +1060,13 @@ Definition reaches_error (c0 : config) : Prop :=
     holds only while no fault signal can have a handler, which is why
     [Signal.sigaction_accepted] refuses an [rt_sigaction] install for
     SIGSEGV, SIGBUS, SIGILL and SIGTRAP, and why no modeled syscall can
-    SEND one of the four.  [Specs.modeled_sysnos] contains no [kill]
-    (129) and no [rt_sigreturn] (139); it does contain [tkill] (130) and
-    [tgkill] (131), and what stands in for their absence is
-    [Kernel.Signal.tkill_self]'s envelope, which sends SIGABRT and
-    declines every other signal — so no fault signal is reachable
-    through them either, and a widening there is a widening HERE.
+    SEND one of the four.  [Specs.modeled_sysnos] contains no
+    [rt_sigreturn] (139); it does contain [kill] (129), [tkill] (130)
+    and [tgkill] (131), and what stands in for a general sender is their
+    envelopes: [Kernel.Signal.tkill_self] sends SIGABRT and
+    [Kernel.Signal.kill_self] sends SIGKILL, each only to the caller
+    itself, and both decline every other signal — so no fault signal is
+    reachable through them either, and a widening there is a widening HERE.
     Widening any of those without also routing [MachineFault] to
     [unmodeled_at] makes
     this premise false, and the cost is not a wrong answer but a silent
@@ -1121,6 +1130,12 @@ Definition reaches_error (c0 : config) : Prop :=
     is outside the model.  The premise is only reachable at all under
     [valid_input_abort]: with the declaration clear, [tkill_self]
     declines and no disposition can matter.
+
+    [Kernel.Signal.kill_self] delivers SIGKILL, and adds nothing to this
+    premise: no process, the launcher included, can change SIGKILL's
+    disposition, because [do_sigaction] answers -EINVAL for an install on
+    a [sig_kernel_only] signal (kernel/signal.c:4317-4318, Linux
+    v6.18.46), so SIGKILL is at SIG_DFL in every process.
 
     [Kernel.Signal.rt_sigprocmask_spec] (135) rests on the same premise
     and leans on it hardest, being the only modeled syscall that both
@@ -1689,28 +1704,30 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
        bh_unmodeled := reaches_unmodeled vsegs c0 |}
   end.
 
-(** A run whose launch leaves both kill declarations clear never dies by
-    a signal, given [kill_frame]: [State.init_model] reads the two
-    declarations off the input and starts both pending bits clear, and
-    [obs_trace_kill_off] carries that through every observed prefix.
+(** A run whose launch leaves all three kill declarations clear never
+    dies by a signal, given [kill_frame]: [State.init_model] reads the
+    three declarations off the input and starts both pending bits clear,
+    and [obs_trace_kill_off] carries that through every observed prefix.
     [Checks.KillFree] discharges the frame, and states the result for
     [valid_input] and its siblings without it. *)
 Lemma run_kill_off : kill_frame ->
   forall img lim en inp tr,
     in_abort_terminal inp = false ->
     in_sigpipe_terminal inp = false ->
+    in_selfkill_terminal inp = false ->
     bh_traces (run img lim en inp) tr ->
     no_kill tr.
 Proof.
-  intros Hframe [segs pc ph] lim [sp brk0 mbase rnd] inp tr Ha Hs H.
+  intros Hframe [segs pc ph] lim [sp brk0 mbase rnd] inp tr Ha Hs Hk H.
   cbn [run bh_traces] in H.
   eapply obs_trace_kill_off; [exact Hframe | | exact H].
   unfold init_config. cbn [cfg_model]. unfold kill_off.
-  split; [| split; [| split]].
+  split; [| split; [| split; [| split]]].
   - transitivity (in_abort_terminal inp); [reflexivity | exact Ha].
   - reflexivity.
   - transitivity (in_sigpipe_terminal inp); [reflexivity | exact Hs].
   - reflexivity.
+  - transitivity (in_selfkill_terminal inp); [reflexivity | exact Hk].
 Qed.
 
 (* =========================================================================
@@ -4671,7 +4688,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4695,8 +4713,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
     [valid_input], and pinning the field there is what keeps those
     statements saying what they said: with the declaration off,
     [Kernel.Signal.tkill_spec] declines every call, and together with
-    the SIGPIPE declaration below no [State.KillEv] can appear in any
-    trace of a run under this predicate
+    the SIGPIPE and self-kill declarations below no [State.KillEv] can
+    appear in any trace of a run under this predicate
     ([Checks.KillFree.valid_input_no_kill], a closed theorem).
 
     THE SIGPIPE DECLARATIONS ARE PINNED HERE TOO, and they are
@@ -4741,7 +4759,18 @@ Definition valid_input (inp : ProcInput) : Prop :=
     (a first [openat] answering 3, by [State.alloc_fd]'s lowest-free
     rule) stays true.  The launch that has inherited descriptors is
     named, [valid_input_inherited] below, and it alone carries the
-    assumption about their other holders. *)
+    assumption about their other holders.
+
+    THE SELF-KILL DECLARATION IS PINNED HERE TOO, at [false], in this
+    predicate and in every sibling below.  [State.in_selfkill_terminal]
+    says whether the model answers [kill] (129) at all: with it on, a
+    [kill] of signal 9 that names the caller's own process id ends the
+    process; with it off [Kernel.Signal.kill_spec] declines every call
+    ([Kernel.Signal.kill_spec_off_unmodeled]), exactly as before [kill]
+    had an arm, so every statement written before the field keeps its
+    meaning and [Checks.KillFree.valid_input_no_kill] stays a closed
+    theorem with an unchanged statement.  No sibling turns it on; only
+    [valid_input_inherited] leaves it free. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4755,7 +4784,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4778,7 +4808,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4854,7 +4885,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = false
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4874,7 +4906,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4969,7 +5002,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
   /\ in_sigpipe_terminal inp = true
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4985,7 +5019,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5079,7 +5114,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -5142,6 +5178,17 @@ Proof.
   assumption.
 Qed.
 
+(** THE SELF-KILL DECLARATION, as an accessor for the same reason:
+    with it [false], [Kernel.Signal.kill_spec] declines every call
+    ([Kernel.Signal.kill_spec_off_unmodeled]). *)
+Lemma valid_input_selfkill_terminal : forall inp,
+  valid_input inp -> in_selfkill_terminal inp = false.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
 (** * THE SIGPIPE-DEATH DECLARATION: the launch that follows the death
 
     [State.in_sigpipe_terminal] says whether the model follows a SIGPIPE
@@ -5181,7 +5228,8 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = true
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5222,7 +5270,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5237,7 +5286,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5251,7 +5301,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5364,8 +5415,9 @@ Qed.
 (** THE ABORT DECLARATION, as an accessor rather than as a position.
     [valid_input] pins [State.in_abort_terminal] to [false] — that is
     what makes [Kernel.Signal.tkill_spec] decline every call under it.
-    With the SIGPIPE declaration ([valid_input_sigpipe_terminal]),
-    it is what makes a [State.KillEv] unreachable for every statement
+    With the SIGPIPE declaration ([valid_input_sigpipe_terminal]) and
+    the self-kill declaration ([valid_input_selfkill_terminal]), it is
+    what makes a [State.KillEv] unreachable for every statement
     quantified over this predicate ([Checks.KillFree.valid_input_no_kill]).
     Consumers want that one clause and nothing else.
 
@@ -5547,7 +5599,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5562,7 +5615,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5658,7 +5712,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5673,7 +5728,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_inherited_fds inp = [].
+  /\ in_inherited_fds inp = []
+  /\ in_selfkill_terminal inp = false.
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -5745,8 +5801,11 @@ Qed.
     [valid_input_abort] names the aborting launch: every clause of
     [valid_input] with the pin replaced by [inherited_fds_ok] (numbers
     strictly increasing from 3 and below [nr_open_max], each file at most
-    [MAX_LFS_FILESIZE] bytes).  It is NOT the safer predicate: it admits
-    more launches than [valid_input] does
+    [MAX_LFS_FILESIZE] bytes).  It also leaves the self-kill declaration
+    [State.in_selfkill_terminal] free, where [valid_input] pins it
+    [false], so a statement over it covers launches of either stance and
+    may pin the field itself.  It is NOT the safer
+    predicate: it admits more launches than [valid_input] does
     ([valid_input_inherited_of_valid_input]), and a statement over it is
     a claim about every one of them.
 
@@ -5807,13 +5866,16 @@ Proof.
               rewrite Hn; reflexivity end ].
 Qed.
 
-(** ...and exactly the ones whose list is empty: so a statement over
-    [valid_input_inherited] with the premise [in_inherited_fds inp = []]
-    is a statement over [valid_input]. *)
+(** ...and exactly the ones whose list is empty and whose self-kill
+    declaration is clear: so a statement over [valid_input_inherited]
+    with the premises [in_inherited_fds inp = []] and
+    [in_selfkill_terminal inp = false] is a statement over
+    [valid_input]. *)
 Lemma valid_input_of_valid_input_inherited : forall inp,
-  valid_input_inherited inp -> in_inherited_fds inp = [] -> valid_input inp.
+  valid_input_inherited inp -> in_inherited_fds inp = [] ->
+  in_selfkill_terminal inp = false -> valid_input inp.
 Proof.
-  intros inp H Hn. red in H |- *.
+  intros inp H Hn Hs. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.

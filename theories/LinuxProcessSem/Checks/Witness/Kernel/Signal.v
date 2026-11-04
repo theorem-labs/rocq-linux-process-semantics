@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135) and sigaltstack (132) witnesses, and their proofs
+(** * LinuxProcessSem.Checks.Witness.Kernel.Signal — the rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), kill (129), tkill (130) and tgkill (131) witnesses, and their proofs
 
     Mirrors [Sys/Kernel/Signal.v], which answers to Linux
     [kernel/signal.c]: this file holds the witnesses for the syscalls
@@ -291,4 +291,60 @@ Proof.
   destruct (negb (bv_eqb tgid t)); cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   apply tkill_self_witness_ok.
+Qed.
+
+(* =========================================================================
+   kill (129)
+   ========================================================================= *)
+
+(** The witness follows [Kernel.Signal.kill_spec]'s branches, the
+    declaration gate included. *)
+Definition kill_self_witness (pid sig : word) (m : Model)
+    : outcome SyscallEffect :=
+  match m_tid m with
+  | None => Unmodeled
+  | Some t =>
+      if negb (bv_eqb pid t) then Unmodeled
+      else if negb (tkill_sig_valid sig) then ret_outcome (errno_ret EINVAL) m
+      else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
+        (if sigkill_blocked (m_sigmask m) then Unmodeled
+         else ret_outcome (Z_to_bv 64 0) (with_killed (Z_to_bv 64 SIGKILL) m))
+      else Unmodeled
+  end.
+
+Lemma kill_self_witness_ok : forall pid sig i m,
+  kill_self pid sig i m (kill_self_witness pid sig m).
+Proof.
+  intros pid sig i m. unfold kill_self, kill_self_witness.
+  rewrite bind_get_model.
+  destruct (m_tid m) as [t|]; cbv beta iota; [|apply unmodeled_intro].
+  destruct (negb (bv_eqb pid t)); cbv beta iota; [apply unmodeled_intro|].
+  destruct (negb (tkill_sig_valid sig)); cbv beta iota.
+  { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  destruct (bv_eqb sig (Z_to_bv 64 SIGKILL)); cbv beta iota;
+    [|apply unmodeled_intro].
+  destruct (sigkill_blocked (m_sigmask m)); cbv beta iota;
+    [apply unmodeled_intro|].
+  eapply bind_step;
+    [ unfold set_killed; apply modify_ok
+    | cbv beta; unfold ret_only, ret_outcome; apply pure_ok ].
+Qed.
+
+Definition kill_witness (pid sig : word) (m : Model)
+    : outcome SyscallEffect :=
+  if negb (m_selfkill_terminal m) then Unmodeled
+  else if pid_positive pid then kill_self_witness pid sig m
+  else if pid_int_min pid then ret_outcome (errno_ret ESRCH) m
+  else Unmodeled.
+
+Lemma kill_witness_ok : forall pid sig i m,
+  kill_spec pid sig i m (kill_witness pid sig m).
+Proof.
+  intros pid sig i m. unfold kill_spec, kill_witness.
+  rewrite bind_get_model.
+  destruct (negb (m_selfkill_terminal m)); cbv beta iota;
+    [apply unmodeled_intro|].
+  destruct (pid_positive pid); cbv beta iota; [apply kill_self_witness_ok|].
+  destruct (pid_int_min pid); cbv beta iota; [|apply unmodeled_intro].
+  unfold err_ret, ret_only, ret_outcome. apply pure_ok.
 Qed.
