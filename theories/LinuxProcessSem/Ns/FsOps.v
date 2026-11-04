@@ -207,10 +207,11 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
   | None => OROver
   end.
 
-(** [filename_create] performs the parent walk, gives a non-normal last
-    component EEXIST, preserves a positive lookup's EEXIST ahead of its
-    deferred read-only error, and gives ENOENT for a missing trailing name.
-    Linux 6.18.44: fs/namei.c [filename_create], [lookup_one_qstr_excl]. *)
+(** [filename_create] preserves a positive lookup's EEXIST ahead of its
+    deferred read-only error. A missing trailing name suppresses creation
+    only without a directory request, after the filesystem lookup's errors
+    (Linux v6.18.46, fs/namei.c:1705-1719, 4228-4237). [do_mkdirat] requests
+    LOOKUP_DIRECTORY (4479); [do_symlinkat] uses zero lookup flags. *)
 Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (dfd pathp : word) (mode : Z) (ck : CreatedKind) (reads : list (word * nat)) : ext_outcome :=
   match path_arg i pathp with
@@ -227,7 +228,11 @@ Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
               match child_exists st parent name with
               | Some true => err reads EEXIST m ctx st
               | Some false =>
-                  if path_trailing_slash p then err reads ENOENT m ctx st
+                  if match ck with CDir => false | CLink _ => path_trailing_slash p end
+                  then match lookup_child st ctx (fd_loc_of m st) parent name with
+                       | LIError e => err reads e m ctx st
+                       | _ => err reads ENOENT m ctx st
+                       end
                   else match create_tmpfs m ctx st (walk_creds m) parent name mode ck with
                        | ORErr e => err reads e m ctx st
                        | OROver => EUnmodeled
