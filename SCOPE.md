@@ -474,6 +474,47 @@ not apply.
   can meet without one (`do_eventfd`, `fs/eventfd.c`, and
   `alloc_empty_file`, `fs/file_table.c`, v6.18.44); such a program could
   return any errno.
+- The host's clone refusers are launch values, not assumptions of the
+  model: `State.ProcInput.in_clone_refusers` (`State.CloneRefusers`),
+  copied into the model and into each child, with three fields.
+  `Run.valid_input` and every sibling launch predicate pin all three to
+  their default, `State.no_clone_refusers`, so the ordinary statements
+  rest on that default; under it `clone` and `clone3` admit exactly the
+  model's lists (`Kernel.Fork.clone_spec_default_iff`,
+  `Kernel.Fork.clone3_spec_default_iff`). With any field `true`, both
+  calls admit every errno from 1 to 4095, with the caller's model
+  unchanged, for every flag word they answer
+  (`Kernel.Fork.clone_refusable`). Under a forced-only configuration the
+  run's filter (`Run.spurious_refusal_cfg`) still removes a refuser's
+  `-EAGAIN`, `-ENOMEM`, `-EMFILE` or `-EACCES` where a child is admissible,
+  as it removes those errnos from every clone. A statement about such a
+  host drops the pin and states the field.
+  - `cr_perf_inherit`, default `false`: **the launched process holds no
+    inheritable perf event.** `perf_event_init_task` walks the ones it
+    holds at each clone, and its `inherit_group` answers `-EINVAL` of its
+    own or what a PMU's `event_init` returns (`copy_process`,
+    `kernel/fork.c:2155-2169`, v6.18.46). No modeled call creates one
+    (`perf_event_open` is not modeled), but a launcher can pass one down,
+    and a process outside the model can attach one to the running task
+    (`perf_event_open` with its pid, for a caller `perf_check_permission`
+    admits, `kernel/events/core.c`), so the default also says **no process
+    attaches one during the run.**
+  - `cr_bpf_task_alloc`, default `false`: **no BPF LSM program is
+    attached to `task_alloc` at any clone of the run.** Such a program
+    can return any errno from `security_task_alloc`
+    (`kernel/fork.c:2155-2169`).
+  - `cr_sched_ext`, default `false`: **no sched_ext scheduler is loaded
+    at any clone of the run, and the host does not attach one during
+    it.** `sched_cgroup_fork` returns `scx_fork`'s result
+    (`kernel/fork.c:2299-2301`; `kernel/sched/core.c:4783`), the
+    scheduler's own task init, any value in `[-MAX_ERRNO, -1]`
+    (`kernel/sched/ext.c:2971-2979`). The host can load a scheduler at
+    any moment (`bpf_scx_reg`, `kernel/sched/ext.c:5087-5089`, reaches
+    `scx_enable`, which queues `scx_root_enable_workfn` and waits for it,
+    4954-4958; that work function, from 4671, sets
+    `scx_init_task_enabled`, 4790-4793),
+    and `scx_fork` reads that setting at each fork (2975-2978), so
+    absence at the launch is not enough.
 - The working directory is not `/`. The flat file model has no directory
   tree or symlinks, so this makes a slash-free relative `proc` name
   unable to reach the procfs mount; a relative path with a separator or
@@ -916,7 +957,8 @@ equivalence) can be true of the model and false of Linux.
   on the bit has both branches admitted.
 - **Errors of a namespace `clone`.** For the namespace flag word
   (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
-  4095 but `-EINTR`. The failures run through `create_user_ns`,
+  4095 but `-EINTR`, at the default of the host's clone refusers
+  (`State.no_clone_refusers`; with one present, `-EINTR` too). The failures run through `create_user_ns`,
   `copy_namespaces` and every per-namespace init function, including
   each network namespace's pernet init, and they cannot be listed with
   confidence. Linux gives only some of them. `kernel/fork.c`'s

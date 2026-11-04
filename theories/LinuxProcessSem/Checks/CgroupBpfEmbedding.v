@@ -3,8 +3,10 @@
     Not part of the trusted specification: theorems ABOUT it.
 
     [ProcInput24] has exactly fields 1-24 of the process input before
-    the cgroup-BPF setsockopt field. [embed24] appends false; [forget24]
-    drops only field 25. No self-kill stance is lost: true and false
+    the cgroup-BPF setsockopt field. [embed24] appends false, and the
+    host's clone refusers (field 26) at [State.no_clone_refusers];
+    [forget24] drops fields 25 and 26, and [embeds24] carries field 26's
+    pin after field 25's. No self-kill stance is lost: true and false
     both embed. Ordinary input predicates additionally pin self-kill
     false, as they did before field 25. [SelfkillEmbedding] composes
     both pins against its mechanically checked 604b5c371ed0 copies.
@@ -74,7 +76,8 @@ Definition embed24 (o : ProcInput24) : ProcInput :=
      in_ppid := p24_ppid o; in_cap_inheritable := p24_cap_inheritable o;
      in_inherited_fds := p24_inherited_fds o;
      in_selfkill_terminal := p24_selfkill_terminal o;
-     in_cgroup_bpf_setsockopt := false |}.
+     in_cgroup_bpf_setsockopt := false;
+     in_clone_refusers := no_clone_refusers |}.
 
 Definition forget24 (inp : ProcInput) : ProcInput24 :=
   {| p24_argv := in_argv inp; p24_envp := in_envp inp;
@@ -98,10 +101,12 @@ Lemma forget24_embed24 : forall o, forget24 (embed24 o) = o.
 Proof. intros []. reflexivity. Qed.
 
 Lemma embed24_forget24 : forall inp,
-  in_cgroup_bpf_setsockopt inp = false -> embed24 (forget24 inp) = inp.
+  in_cgroup_bpf_setsockopt inp = false ->
+  in_clone_refusers inp = no_clone_refusers -> embed24 (forget24 inp) = inp.
 Proof.
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp] H.
-  cbn [in_cgroup_bpf_setsockopt] in H. subst bp. reflexivity.
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf] H Hc.
+  cbn [in_cgroup_bpf_setsockopt] in H. cbn [in_clone_refusers] in Hc.
+  subst bp crf. reflexivity.
 Qed.
 
 Lemma embed24_selfkill : forall o,
@@ -110,15 +115,19 @@ Proof. reflexivity. Qed.
 
 Lemma image_observations24 : forall (A : Type) (observe : ProcInput -> A) inp,
   in_cgroup_bpf_setsockopt inp = false ->
+  in_clone_refusers inp = no_clone_refusers ->
   observe (embed24 (forget24 inp)) = observe inp.
-Proof. intros A observe inp H. rewrite (embed24_forget24 inp H). reflexivity. Qed.
+Proof.
+  intros A observe inp H Hc. rewrite (embed24_forget24 inp H Hc). reflexivity.
+Qed.
 
 Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
   V_pre inp /\ in_selfkill_terminal inp = false.
 
 Definition embeds24 (V V24 : ProcInput -> Prop) : Prop :=
   (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
-  /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false).
+  /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
+                            /\ in_clone_refusers inp = no_clone_refusers).
 
 Lemma embeds24_of_embeds : forall V V_pre,
   embeds V V_pre -> embeds24 V (pre24 V_pre).
@@ -131,8 +140,10 @@ Proof.
     + exact Hsk.
   - intros inp. unfold pre24. rewrite HV.
     split; intros H.
-    + destruct H as [Hp [Hsk Hbp]]. exact (conj (conj Hp Hsk) Hbp).
-    + destruct H as [[Hp Hsk] Hbp]. exact (conj Hp (conj Hsk Hbp)).
+    + destruct H as [Hp [Hsk [Hbp Hcrf]]].
+      exact (conj (conj Hp Hsk) (conj Hbp Hcrf)).
+    + destruct H as [[Hp Hsk] [Hbp Hcrf]].
+      exact (conj Hp (conj Hsk (conj Hbp Hcrf))).
 Qed.
 
 Corollary valid_input_embeds24 : embeds24 valid_input (pre24 valid_input_pre).
@@ -212,21 +223,23 @@ Corollary embeds24_image : forall V V24, embeds24 V V24 ->
 Proof.
   intros V V24 [_ HV] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
-  - intros H. apply (proj2 (HV (embed24 o))). split; [exact H | reflexivity].
+  - intros H. apply (proj2 (HV (embed24 o))).
+    split; [exact H | split; reflexivity].
 Qed.
 
 Corollary embeds24_excludes : forall V V24, embeds24 V V24 ->
   forall inp, in_cgroup_bpf_setsockopt inp = true -> ~ V inp.
 Proof.
   intros V V24 [_ HV] inp Ht Hv.
-  destruct (proj1 (HV inp) Hv) as [_ Hf]. rewrite Ht in Hf. discriminate Hf.
+  destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
 Corollary embeds24_covers_images : forall V V24, embeds24 V V24 ->
   forall inp, V inp -> inp = embed24 (forget24 inp).
 Proof.
   intros V V24 [_ HV] inp Hv.
-  destruct (proj1 (HV inp) Hv) as [_ Hf]. symmetry. exact (embed24_forget24 inp Hf).
+  destruct (proj1 (HV inp) Hv) as [_ [Hf Hc]].
+  symmetry. exact (embed24_forget24 inp Hf Hc).
 Qed.
 
 Lemma finite_input_bpf_default : forall f,
