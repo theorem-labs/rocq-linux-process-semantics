@@ -1308,6 +1308,21 @@ Proof.
     inversion H; subst; fr_leaf.
 Qed.
 
+(** [kill] of the caller's own pid: an errno, a 0 with no change, or the
+    death by SIGKILL ([State.with_killed]), each keeping [State.m_fd]. *)
+Lemma check_kill_fr : forall pid sig eff m m' evs,
+  check_kill pid sig eff m = CheckOk m' evs -> fd_rel m m'.
+Proof.
+  intros pid sig eff m m' evs H.
+  unfold check_kill, check_kill_self in H.
+  repeat match type of H with
+         | (if ?b then _ else _) = _ => destruct b; cbv beta iota in H
+         | match ?x with _ => _ end = _ => destruct x; cbv beta iota in H
+         end;
+    try discriminate;
+    apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _); fr_leaf.
+Qed.
+
 (** The released setns arm answers errnos without changing the model. *)
 Lemma check_setns_fr : forall fd eff m m' evs,
   check_setns fd eff m = CheckOk m' evs -> fd_rel m m'.
@@ -1518,6 +1533,7 @@ Proof.
         | eapply check_rt_sigprocmask_fr; eassumption
         | eapply check_tkill_fr; eassumption
         | eapply check_tgkill_fr; eassumption
+        | eapply check_kill_fr; eassumption
         | eapply check_wait4_fr; eassumption
         | eapply check_clone_fr; eassumption
         | eapply check_clone3_fr; eassumption
