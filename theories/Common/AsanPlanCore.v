@@ -3983,7 +3983,7 @@ Definition ASAN : atable :=
 (** the decoded-instruction table range of the asan text *)
 Definition ASAN_TEXT_LO : Z := 0x4ba64.
 Definition ASAN_TEXT_N : nat := 252263.
-Definition asan_init (CEIL : Z) : acs := init_acs_of ASAN CEIL.
+Definition asan_init (r CEIL : Z) : acs := init_acs_of r ASAN CEIL.
 
 (** target_fuzz_sniff_header_both: code = asan - 0x10
     for everything below pni_sniff_header (0x1414dc); same segment layout
@@ -3998,6 +3998,6 @@ Definition BOTH : atable :=
      stops_more := [0x506d4; 0x51cf8; 0xddd78; 0xee060; 0xee1f0] |}.
 Definition BOTH_TEXT_LO : Z := 0x4ba54.
 Definition BOTH_TEXT_N : nat := 252267.
-Definition both_init (CEIL : Z) : acs := init_acs_of BOTH CEIL.
+Definition both_init (r CEIL : Z) : acs := init_acs_of r BOTH CEIL.
 
 End APC.
