@@ -6,14 +6,16 @@
     [Checks.ProcsChildPids].
 
     - [syscall_spec_cps]: every [Ok] answer of the released spec keeps
-      the list and the self-kill declaration (the pair [cps_of]), except
+      the list, the self-kill declaration, the cgroup-BPF setsockopt
+      value and the host's clone refusers ([cps_of]), except
       a clone's, which leaves the model alone with an errno or is
       [State.with_child] of the pid it returns.  A [Forall] over
       [checked_table], one checker lemma per arm, so a new arm that
       writes either fails the build by name.
-    - [syscall_spec_child_pids] and [syscall_spec_selfkill_kept]: its
-      two halves, the second for every answer, a clone's included
-      ([Checks.SelfkillEmbedding] carries it to the step).
+    - [syscall_spec_child_pids], [syscall_spec_selfkill_kept] and
+      [syscall_spec_clone_refusers_kept]: its parts, the last two for every
+      answer, a clone's included ([Checks.SelfkillEmbedding] and
+      [Checks.CloneRefusersKept] carry them to the step).
     - [sstep_child_pids_kept], [sstep_child_pids_clone]: so a released step
       that is not a successful clone keeps the list, and a successful clone
       ([Procs.clone_success_b]) appends the pid it returned. *)
@@ -35,11 +37,13 @@ Local Open Scope bool_scope.
 
 Definition cp_of (m : Model) : list word := m_child_pids m.
 
-(** Every non-clone answer retains the child list and both launch
-    values: self-kill and cgroup-BPF setsockopt. Only [init_model] seeds
-    the launch values; every transition setter carries them across. *)
-Definition cps_of (m : Model) : list word * (bool * bool) :=
-  (m_child_pids m, (m_selfkill_terminal m, m_cgroup_bpf_setsockopt m)).
+(** Every non-clone answer retains the child list and the three launch
+    values: self-kill, cgroup-BPF setsockopt and the host's clone refusers
+    ([State.m_clone_refusers]). Only [init_model] seeds the launch values;
+    every transition setter carries them across. *)
+Definition cps_of (m : Model) : list word * (bool * (bool * CloneRefusers)) :=
+  (m_child_pids m, (m_selfkill_terminal m,
+                    (m_cgroup_bpf_setsockopt m, m_clone_refusers m))).
 
 Ltac cp_frame H := repeat vm_step H; reflexivity.
 
@@ -1189,7 +1193,9 @@ Lemma check_clone_cp : forall flags eff m m' evs,
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros flags [ret ws zs us cs ci] m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
+  apply check_clone_cases in H as [(-> & _ & Hr) | H];
+    [left; split; [reflexivity | exact Hr]|].
+  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
     check_clone_ns_resolve, check_clone_ns_answer in H.
   repeat vm_step H.
   all: clone_leaf.
@@ -1202,7 +1208,9 @@ Lemma check_clone3_cp : forall i uargs size eff m m' evs,
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
+  apply check_clone3_cases in H as [(-> & _ & Hr) | H];
+    [left; split; [reflexivity | exact Hr]|].
+  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer in H.
   repeat (lazymatch type of H with
           | check_ret_only _ _ _ _ = CheckOk _ _ =>
               apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->)
@@ -1386,6 +1394,21 @@ Proof.
   - reflexivity.
 Qed.
 
+(** The host's clone refusers, for EVERY answer, the same way: only the
+    launch writes them ([State.init_model]), and a clone's answer carries
+    them across too. *)
+Theorem syscall_spec_clone_refusers_kept : forall i m eff m' evs,
+  syscall_spec i m (Ok eff m' evs) ->
+  m_clone_refusers m' = m_clone_refusers m.
+Proof.
+  intros i m eff m' evs H.
+  destruct (syscall_spec_cps _ _ _ _ _ H)
+    as [(_ & E) | (_ & [(-> & _) | (-> & _)])].
+  - exact (f_equal (fun p => snd (snd (snd p))) E).
+  - reflexivity.
+  - reflexivity.
+Qed.
+
 Theorem syscall_spec_cgroup_bpf_setsockopt_kept : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   m_cgroup_bpf_setsockopt m' = m_cgroup_bpf_setsockopt m.
@@ -1393,7 +1416,7 @@ Proof.
   intros i m eff m' evs H.
   destruct (syscall_spec_cps _ _ _ _ _ H)
     as [(_ & E) | (_ & [(-> & _) | (-> & _)])].
-  - exact (f_equal (fun p => snd (snd p)) E).
+  - exact (f_equal (fun p => fst (snd (snd p))) E).
   - reflexivity.
   - reflexivity.
 Qed.
