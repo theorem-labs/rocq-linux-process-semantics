@@ -1,0 +1,7 @@
+theories/LinuxProcessSem/Checks/Cases/Ns/CloneCases.vo
+theories/LinuxProcessSem/Ns/Clone.vo
+theories/LinuxProcessSem/Ns/Pass.vo
+theories/EquivalenceDefinition/NsProcs.vo
+theories/LinuxProcessSem/Checks/Cases/Ns/CloneFilterCases.vo
+theories/LinuxProcessSem/Checks/Cases/Ns/UtsCases.vo
+theories/LinuxProcessSem/Checks/Cases/Ns/SpecCases.vo
