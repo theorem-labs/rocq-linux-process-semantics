@@ -276,6 +276,27 @@ Print Assumptions fork_released_failure_state_unchanged.
 Print Assumptions pid_partial_flat.
 Print Assumptions clone_ns_coherent.
 
+(** copy_namespaces fails before alloc_pid (kernel/fork.c:2188-2208,
+    Linux v6.18.46): no environment refusal can move a pid cursor there. *)
+Example early_newns_error_keeps_pid_state : forall m e st',
+  clone_ns (Z.lor CLONE_NEWNS SIGCHLD) m (with_caps nested_shell nocaps) nested_pids 140
+    (CnErr e st') <-> 1 <= e <= 4095 /\ st' = nested_pids.
+Proof.
+  intros m e st'.
+  assert (Htable : clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) m
+      (with_caps nested_shell nocaps) nested_pids 140 = CnErr EPERM nested_pids)
+    by (vm_compute; reflexivity).
+  unfold clone_ns. rewrite Htable. cbn. split.
+  - intros [Ho | (_ & en & s & He & Hstate & Ho)].
+    + injection Ho as -> ->. split; [unfold EPERM; lia|reflexivity].
+    + injection Ho as -> ->. split; [exact He|].
+      destruct Hstate as [H | [Halloc _]]; [exact H|discriminate Halloc].
+  - intros [He ->]. right. split; [discriminate|].
+    exists e, nested_pids. split; [exact He|]. split; [left; reflexivity|reflexivity].
+Qed.
+
+Print Assumptions early_newns_error_keeps_pid_state.
+
 (** A pid namespace at level 32 can have no child: ENOSPC. *)
 Definition deep : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]

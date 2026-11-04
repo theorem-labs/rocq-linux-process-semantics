@@ -384,7 +384,8 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     [m_io] and [m_time] as it found them; and no answer it gives depends on
     another process.  So the step changes no other entry's view, and the
     only write it makes to another entry's record is the orphaning [absorb]
-    does when the call kills the caller (tkill, tgkill, rt_sigprocmask), as
+    does when the call kills the caller (kill, tkill, tgkill,
+    rt_sigprocmask), as
     at exit.  [Checks.ProcsPrivateFrame] proves this for every number below.
     Every descriptor kind a live peer can hold a copy of ([FdChannel],
     [FdDir], [FdDevNull], [FdUrandom], [FdOpaque]) is one
@@ -519,8 +520,8 @@ Definition multiproc_owned_sysnos : list Z :=
 
 Definition multiproc_private_sysnos : list Z :=
   [ 17;  19;  20;  21;  22;  23;  24;  25;  29;  32;  57;  59;  61;  72;
-    73;  74;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 130; 131;
-   132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
+    73;  74;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 129; 130;
+   131; 132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
    175; 176; 177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209;
    210; 211; 212; 214; 215; 216; 222; 226; 233; 268; 278; 436]%Z.
 
@@ -756,8 +757,8 @@ Definition child_ms (c c' : config) : machine_state :=
     - [procst_reparent_moved] is false: the child's parent pid is its
       parent's key, given below, so it has not moved.
 
-    The three launch facts ([procst_channel_reader], [procst_sigpipe_default],
-    [procst_sigpipe_terminal]) are copied, and so are the no-new-privs bit
+    The four launch facts ([procst_channel_reader], [procst_sigpipe_default],
+    [procst_sigpipe_terminal], [procst_selfkill_terminal]) are copied, and so are the no-new-privs bit
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
@@ -787,7 +788,8 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               [] (procst_no_new_privs ps) (procst_dumpable ps)
               ppid
               (procst_cap_inheritable ps)
-              false false.
+              false false
+              (procst_selfkill_terminal ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

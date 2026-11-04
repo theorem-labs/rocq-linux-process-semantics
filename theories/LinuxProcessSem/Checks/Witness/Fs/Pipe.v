@@ -20,7 +20,8 @@ Definition pipe2_witness (fildes flags : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_flags_mask) 0)
   then ret_outcome (errno_ret EINVAL) m
-  else if negb (w_is0 flags) then Unmodeled
+  else if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags) 0)
+  then Unmodeled
   else
   match pipe_lookup (m_pipes m) (pipe_new_id (m_pipes m)) with
   | Some _ => Unmodeled
@@ -49,7 +50,8 @@ Proof.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
     rewrite ?Hbad; cbv beta iota zeta. apply pure_ok. }
-  destruct (negb (w_is0 flags)) eqn:Hnz.
+  destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags =? 0)%Z)
+    eqn:Hnz.
   { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|].
     rewrite ?Hbad, ?Hnz; cbv beta iota zeta. apply unmodeled_intro. }
