@@ -169,8 +169,11 @@ Local Lemma check_unlinkat_tid : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result, check_efault_or in H.
-  repeat vm_step H; reflexivity.
+    Namei.check_unlink_found, check_unlink_result in H.
+  repeat vm_step H; first
+    [ reflexivity
+    | pose proof (check_efault_or_sh _ _ _ _ _ H) as Hsh;
+      exact (f_equal (fun x => snd (snd x)) Hsh) ].
 Qed.
 
 Local Lemma syscall_spec_unlinkat_tid : forall i m eff m' evs,
