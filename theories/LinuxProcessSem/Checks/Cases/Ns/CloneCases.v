@@ -491,6 +491,35 @@ Example closed_children_enomem : forall m,
   option_map pidns_alloc (find_pidns (pid_advanced st 3) 3) = Some PaClosed.
 Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
 
+(** A children's namespace that is not the active namespace or below it
+    declines.  Linux never reaches that state: [pidns_install] refuses a
+    namespace that is not the active one or a descendant
+    (kernel/pid_namespace.c:419-420), and [copy_pid_ns] makes a child of
+    the active namespace (kernel/pid_namespace.c:175-183), Linux v6.18.46.
+    Here A (2) is active and the children's namespace is its sibling D
+    (4), empty or closed: without the decline the clone would allocate in
+    D's chain, which does not hold A, so the parent would get no pid. *)
+Definition sibling_children_state (a : PidAlloc) (last : Z) : NsState :=
+  with_pidns launch_children_state (ns_pidns launch_children_state ++
+    [pidns_with_alloc (mk_pidns 4 (Some 1%positive) 1 1 last) a]).
+
+Example sibling_children_declines : forall m,
+  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+    (sibling_children_state PaEmpty 0) 140 = CnUnmodeled /\
+  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+    (sibling_children_state PaClosed 1) 140 = CnUnmodeled.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+(** The control: in the same tables the descendant B (3) keeps its
+    answer ([clone_into_empty_children]). *)
+Example descendant_children_beside_sibling_answers : forall m,
+  let o := clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
+             (sibling_children_state PaEmpty 0) 140 in
+  option_map cx_pids (child_of o) = Some [(3%positive, 1); (2%positive, 8); (1%positive, 140)] /\
+  ret_of o = Some (Some 8) /\
+  option_map (fun st => option_map pidns_alloc (find_pidns st 3)) (st_of o) = Some (Some PaInit).
+Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
+
 Print Assumptions flat_view_empty.
 Print Assumptions flat_view_pidns_children.
 Print Assumptions pid_advanced_flat.
