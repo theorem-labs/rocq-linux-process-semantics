@@ -690,10 +690,6 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
    fchmod and unlinkat
    ========================================================================= *)
 
-(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h): the
-    id no namespace maps, which [vfsuid_valid] refuses. *)
-Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
-
 (** [inode_owner_or_capable] (fs/inode.c:2623-2637, Linux v6.18.46): the
     fsuid owns the inode, or the inode's uid maps into the caller's user
     namespace and the task has CAP_FOWNER there (2633-2635).  Only the uid
