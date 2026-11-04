@@ -1105,17 +1105,18 @@ Qed.
     What every row needs first is that the entry that did NOT step is
     unchanged, which is the pair of frame lemmas below. *)
 
-(** The other entry's RECORD survives, from the table lemmas -- unless the
-    step ended the stepping entry and the other is its child, whose parent
-    the exit clears ([Procs.orphan_at_exit]). *)
-Lemma fw_two_other_record : forall P e c' q eq,
+(** The other entry's record survives a tid-stable step, except when an
+    exit clears its parent. A first root pin instead aligns parent pids;
+    the instruction frame below proves that it cannot occur here. *)
+Lemma fw_two_other_record_tid_stable : forall P e c' q eq,
   bv_eqb (pe_pid e) q = false ->
   look P q = Some eq ->
   (m_halted (cfg_model c') = None \/ pe_parent eq <> Some (pe_pid e)) ->
+  m_tid (cfg_model c') = m_tid (pe_model e) ->
   look (absorb P e c') q = Some eq.
 Proof.
-  intros P e c' q eq Hne Hl Hcase.
-  rewrite look_absorb_other; [exact Hl | exact Hne |].
+  intros P e c' q eq Hne Hl Hcase Htid.
+  rewrite look_absorb_other_tid_stable; [exact Hl | exact Hne | exact Htid |].
   rewrite Hl. exact Hcase.
 Qed.
 
@@ -3562,7 +3563,7 @@ Qed.
     Inverting [fw_run_child] once gave the first step; inverting the
     remainder repeatedly gives the rest.  Each is an ordinary
     instruction, so each is one [fw_det_link] at the child's entry, with
-    the parent carried across unchanged by [fw_two_other_record] and
+    the parent carried across unchanged by [fw_two_other_record_tid_stable] and
     [fw_two_other_view] -- whose hypotheses [fw_instr_frames_shared]
     discharges, because an accounted instruction step fixes every model
     component.
@@ -3656,7 +3657,7 @@ Qed.
     is the parent.
 
     The frame half is the point: [eo]'s record survives by
-    [fw_two_other_record] and its view by [fw_two_other_view], whose
+    [fw_two_other_record_tid_stable] and its view by [fw_two_other_view], whose
     hypotheses [fw_instr_frames_shared] discharges out of
     [Run.mi_account_step_model_frame].  An instruction step of one entry
     is invisible to the other, which is what makes the interleaving
@@ -3679,13 +3680,15 @@ Lemma fw_two_entry_step : forall segs cfg P e eo qo ms' model',
 Proof.
   intros segs cfg P e eo qo ms' model' Hl Hlo Hne Hh Hs Hm.
   split; [exact (pstep_instr_entry segs cfg P e ms' model' Hl Hh Hs Hm)|].
+  pose proof (mi_account_step_model_frame _ _ _ _ _ Hm)
+    as (_ & _ & _ & _ & _ & Hproc & _).
   assert (Hrun : m_halted (cfg_model (mkCfg ms' model')) = None).
-  { destruct (mi_account_step_model_frame _ _ _ _ _ Hm)
-      as (_ & _ & _ & _ & _ & Hproc & _).
-    cbn [cfg_model]. unfold m_halted in *. rewrite Hproc. exact Hh. }
+  { cbn [cfg_model]. unfold m_halted in *. rewrite Hproc. exact Hh. }
+  assert (Htid : m_tid (cfg_model (mkCfg ms' model')) = m_tid (pe_model e)).
+  { cbn [cfg_model]. unfold m_tid. rewrite Hproc. reflexivity. }
   assert (Hlo' : look (absorb P e (mkCfg ms' model')) qo = Some eo)
-    by exact (fw_two_other_record P e (mkCfg ms' model') qo eo Hne Hlo
-                (or_introl Hrun)).
+    by exact (fw_two_other_record_tid_stable P e (mkCfg ms' model') qo eo Hne Hlo
+                (or_introl Hrun) Htid).
   split; [exact Hlo'|].
   (* the view: an accounted instruction step fixes every model
      component, so the shared file system and I/O are unchanged and

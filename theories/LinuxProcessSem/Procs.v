@@ -1020,11 +1020,72 @@ Proof.
     reflexivity.
 Qed.
 
+Lemma first_root_pin_children_same_tid : forall P e m' ps,
+  m_tid m' = m_tid (pe_model e) -> first_root_pin_children P e m' ps = ps.
+Proof.
+  intros P e m' ps Htid. unfold first_root_pin_children. rewrite Htid.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)), (m_tid (pe_model e)); reflexivity.
+Qed.
+
+Lemma root_child_ppid_one_fst : forall root t kv,
+  fst (root_child_ppid_one root t kv) = fst kv.
+Proof.
+  intros root t [q f]. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    reflexivity.
+Qed.
+
+Lemma root_children_ppid_keys : forall root t ps,
+  List.map fst (root_children_ppid root t ps) = List.map fst ps.
+Proof.
+  intros root t ps. unfold root_children_ppid. rewrite List.map_map.
+  apply List.map_ext. intros kv. apply root_child_ppid_one_fst.
+Qed.
+
+Lemma root_child_ppid_one_fields : forall root t q f,
+  let f' := snd (root_child_ppid_one root t (q, f)) in
+  pe_pid f' = pe_pid f /\ pe_parent f' = pe_parent f /\ pe_ms f' = pe_ms f
+  /\ pe_ofd f' = pe_ofd f /\ pe_nsctx f' = pe_nsctx f
+  /\ m_halted (pe_model f') = m_halted (pe_model f)
+  /\ m_child_pids (pe_model f') = m_child_pids (pe_model f).
+Proof.
+  intros root t q f. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    repeat split; reflexivity.
+Qed.
+
+Lemma root_child_ppid_one_model : forall root t q f,
+  pe_model (snd (root_child_ppid_one root t (q, f))) = pe_model f
+  \/ pe_model (snd (root_child_ppid_one root t (q, f))) = with_ppid t (pe_model f).
+Proof.
+  intros root t q f. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    [right|left]; reflexivity.
+Qed.
+
+Lemma look_in_first_root_pin_children_self : forall P e m' ps f,
+  look_in ps (pe_pid e) = Some f ->
+  look_in (first_root_pin_children P e m' ps) (pe_pid e) = Some f.
+Proof.
+  intros P e m' ps f Hl. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:E; [|exact Hl].
+  destruct (m_tid (pe_model e)); [exact Hl|].
+  destruct (m_tid m'); [|exact Hl].
+  rewrite look_in_root_children_ppid, Hl. cbn [option_map].
+  unfold root_child_ppid_one. cbn [fst snd]. rewrite E. reflexivity.
+Qed.
+
 
 Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (first_root_pin_children P e (cfg_model c')
-              (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c'))))
+            (replace_in (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+              (pe_pid e) (pe_absorb e c')))
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
 
@@ -1382,13 +1443,13 @@ Definition root_pin_pending_b (P : pconfig) (e : ProcessEntry) : bool :=
 
 (** The table with the root's tid pinned to [t]. *)
 Definition pin_root (P : pconfig) (r : ProcessEntry) (t : word) : pconfig :=
-  let ps := replace_in (pcfg_procs P) (pcfg_root P)
-              (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
-                       (pe_ofd r) (pe_nsctx r)) in
-  mkPCfg (match m_tid (pe_model r) with
-          | None => root_children_ppid (pcfg_root P) t ps
-          | Some _ => ps
-          end)
+  let ps := match m_tid (pe_model r) with
+            | None => root_children_ppid (pcfg_root P) t (pcfg_procs P)
+            | Some _ => pcfg_procs P
+            end in
+  mkPCfg (replace_in ps (pcfg_root P)
+            (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
+                     (pe_ofd r) (pe_nsctx r)))
          (pcfg_root P) (pcfg_shared P).
 
 (** [p] was a path of [old] and is not one of [new]. *)
@@ -1971,13 +2032,13 @@ Qed.
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
-  intros c c'. unfold absorb.
+  intros c c'. unfold absorb. rewrite first_root_pin_children_single.
   replace (replace_in (pcfg_procs (one_proc c)) (pe_pid (one_entry c))
              (pe_absorb (one_entry c) c'))
     with [(one_pid, pe_absorb (one_entry c) c')]
     by (cbn; rewrite bv_eqb_same; reflexivity).
   change (pe_pid (one_entry c)) with one_pid.
-  rewrite first_root_pin_children_single, orphan_at_exit_single.
+  rewrite orphan_at_exit_single.
   unfold one_proc, one_entry. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
@@ -2721,8 +2782,8 @@ Definition with_nsctx (e : ProcessEntry) (ctx : NsCtx) : ProcessEntry :=
 Definition absorb_x (P : pconfig) (e : ProcessEntry) (c' : config) (ctx' : NsCtx)
     (st' : NsState) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (first_root_pin_children P e (cfg_model c')
-              (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx'))))
+            (replace_in (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+              (pe_pid e) (with_nsctx (pe_absorb e c') ctx')))
          (pcfg_root P)
          (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
 

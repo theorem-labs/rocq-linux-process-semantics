@@ -280,6 +280,43 @@ Definition tbl_wf (ps : list (Pid * ProcessEntry)) : Prop :=
 Definition root_ok (ps : list (Pid * ProcessEntry)) (r : Pid) : Prop :=
   exists e, List.In (r, e) ps /\ pe_parent e = None.
 
+
+Lemma tbl_root_children_ppid : forall ps root t,
+  tbl_wf ps -> root_ok ps root ->
+  tbl_wf (root_children_ppid root t ps)
+  /\ root_ok (root_children_ppid root t ps) root.
+Proof.
+  intros ps root t (Hkey & Hpar & Hnd) (er & Hr & Her).
+  unfold root_children_ppid.
+  assert (Hkeys : List.map fst (List.map (root_child_ppid_one root t) ps) =
+                   List.map fst ps) by apply root_children_ppid_keys.
+  split.
+  - split.
+    + intros kv Hkv. apply List.in_map_iff in Hkv as ([k f] & <- & Hin).
+      rewrite root_child_ppid_one_fst.
+      pose proof (root_child_ppid_one_fields root t k f) as (Hpid & _).
+      rewrite Hpid. exact (Hkey (k, f) Hin).
+    + split.
+      * intros kv q Hkv Hq. apply List.in_map_iff in Hkv as ([k f] & <- & Hin).
+        pose proof (root_child_ppid_one_fields root t k f) as (_ & Hp & _).
+        rewrite Hp in Hq. destruct (Hpar (k, f) q Hin Hq) as (Hne & g & Hg & Hgh).
+        split; [rewrite root_child_ppid_one_fst; exact Hne|].
+        exists (snd (root_child_ppid_one root t (q, g))). split.
+        -- apply List.in_map_iff. exists (q, g). split; [|exact Hg].
+           unfold root_child_ppid_one. cbn [fst snd].
+           destruct (negb (bv_eqb q root)
+             && match pe_parent g with Some p => bv_eqb p root | None => false end
+             && match m_halted (pe_model g) with None => true | Some _ => false end);
+             reflexivity.
+        -- pose proof (root_child_ppid_one_fields root t q g)
+             as (_ & _ & _ & _ & _ & Hhalt & _).
+           rewrite Hhalt. exact Hgh.
+      * rewrite Hkeys. exact Hnd.
+  - exists er. split; [|exact Her].
+    apply List.in_map_iff. exists (root, er). split; [|exact Hr].
+    unfold root_child_ppid_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
 Lemma wf_iff : forall P,
   pconfig_wf P <-> tbl_wf (pcfg_procs P) /\ root_ok (pcfg_procs P) (pcfg_root P).
 Proof.
@@ -609,11 +646,21 @@ Lemma tbl_root_absorb : forall P e c',
   look P (pe_pid e) = Some e ->
   tbl_wf (pcfg_procs (absorb P e c')) /\ root_ok (pcfg_procs (absorb P e c')) (pcfg_root (absorb P e c')).
 Proof.
-  intros P e c' Htbl Hroot Hl. pose proof (look_in_In _ _ _ Hl) as He.
-  pose proof Htbl as (_ & _ & Hnd).
+  intros P e c' Htbl Hroot Hl.
+  assert (Hfirst : tbl_wf (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+    /\ root_ok (first_root_pin_children P e (cfg_model c') (pcfg_procs P)) (pcfg_root P)).
+  { unfold first_root_pin_children.
+    destruct (bv_eqb (pe_pid e) (pcfg_root P)); [|split; assumption].
+    destruct (m_tid (pe_model e)); [split; assumption|].
+    destruct (m_tid (cfg_model c')); [apply tbl_root_children_ppid; assumption|split; assumption]. }
+  destruct Hfirst as (Htbl' & Hroot').
+  pose proof (look_in_first_root_pin_children_self P e (cfg_model c')
+    (pcfg_procs P) e Hl) as Hl'.
+  pose proof (look_in_In _ _ _ Hl') as He'.
+  pose proof Htbl' as (_ & _ & Hnd').
   unfold absorb. cbn [pcfg_procs pcfg_root]. split.
-  - apply (tbl_absorb _ _ e); [exact Htbl | exact He | reflexivity | reflexivity | reflexivity].
-  - apply root_orphan. apply (root_replace _ _ e); [exact Hnd | exact He | reflexivity | exact Hroot].
+  - apply (tbl_absorb _ _ e); [exact Htbl' | exact He' | reflexivity | reflexivity | reflexivity].
+  - apply root_orphan. apply (root_replace _ _ e); [exact Hnd' | exact He' | reflexivity | exact Hroot'].
 Qed.
 
 (** The clock sync replaces one entry by one with the same pid, parent and
@@ -656,15 +703,28 @@ Proof.
   destruct (Hpar _ _ He Hpe') as (_ & f & Hf & Hfrun).
   rewrite (In_unique _ _ _ _ Hnd Hf Hr) in Hfrun.
   pose proof (Hkey _ Hr) as Hkr. cbn [fst snd] in Hkr.
-  unfold pin_root. cbn [pcfg_procs pcfg_root]. split.
+  set (ps := match m_tid (pe_model r) with
+             | None => root_children_ppid (pcfg_root P) t (pcfg_procs P)
+             | Some _ => pcfg_procs P end).
+  assert (Hfirst : tbl_wf ps /\ root_ok ps (pcfg_root P)).
+  { unfold ps. destruct (m_tid (pe_model r));
+      [split; assumption|apply tbl_root_children_ppid; assumption]. }
+  destruct Hfirst as (Htbl' & Hroot').
+  pose proof Htbl' as (_ & _ & Hnd').
+  assert (Hr' : List.In (pcfg_root P, r) ps).
+  { unfold ps. destruct (m_tid (pe_model r)); [exact Hr|].
+    unfold root_children_ppid. apply List.in_map_iff.
+    exists (pcfg_root P, r). split; [|exact Hr].
+    unfold root_child_ppid_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity. }
+  unfold pin_root. cbn [pcfg_procs pcfg_root]. fold ps. split.
   - rewrite <- (orphan_at_exit_running (with_tid t (pe_model r)) (pcfg_root P)
-                  (replace_in (pcfg_procs P) (pcfg_root P)
+                  (replace_in ps (pcfg_root P)
                      (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
                               (pe_ofd r) (pe_nsctx r))))
       by exact Hfrun.
     apply (tbl_absorb _ _ r);
-      [exact Htbl | exact Hr | cbn [pe_pid]; symmetry; exact Hkr | reflexivity | reflexivity].
-  - apply (root_replace _ _ r); [exact Hnd | exact Hr | reflexivity | exact Hroot].
+      [exact Htbl' | exact Hr' | cbn [pe_pid]; symmetry; exact Hkr | reflexivity | reflexivity].
+  - apply (root_replace _ _ r); [exact Hnd' | exact Hr' | reflexivity | exact Hroot'].
 Qed.
 
 Lemma tbl_root_reap : forall P e q ez eff model'',
