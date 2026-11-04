@@ -1,0 +1,3 @@
+theories/LinuxProcessSem/Checks/Cases/Ns/FsOpsCases.vo
+theories/LinuxProcessSem/Checks/Cases/Ns/SpecCases.vo
+theories/LinuxProcessSem/Checks/Cases/Fs/Pipe.vo
