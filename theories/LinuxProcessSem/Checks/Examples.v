@@ -50,7 +50,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Fs.EventPoll Fs.Signalfd Fs.OpaqueAnswers
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
   Kernel.Capability
-  Kernel.Fork Kernel.Futex.Syscalls
+  Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls
   Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys Kernel.Nsproxy
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -377,14 +377,13 @@ Qed.
    it can never establish any of them.
    ========================================================================= *)
 
-(** ** [wait4] must stop answering once something can create a child
+(** ** [wait4] must stop answering -ECHILD once something can create a child
 
-    [Kernel.Exit.wait4_spec] answers -ECHILD, and that answer is only
-    correct for a caller that has nothing to reap.  Something can create
-    a child, so
-    these are not vacuous: [Kernel.Fork.clone_resolve]'s success
-    branch applies [State.with_child], so a [clone] or [clone3] that
-    returns a pid lands in a model with [State.m_has_children] set, and
+    [Kernel.Exit.wait4_spec] answers -ECHILD only for a caller that has
+    nothing to reap.  Something can create a child, so these are not
+    vacuous: [Kernel.Fork.clone_resolve]'s success branch applies
+    [State.with_child], so a [clone] or [clone3] that returns a pid lands
+    in a model with [State.m_has_children] set and the pid recorded, and
     the two lemmas below constrain a state a modeled trace really reaches
     rather than quantifying over an empty one.  [Kernel.Fork] pays for
     that here, by setting the field.  Every other arm owes the same — a
@@ -407,39 +406,97 @@ Qed.
     requires touching this file.
 
     Which of the four reasons at the top of this file: the THIRD, it pins
-    model-internal state ([State.m_has_children]) that no observation of
-    a real execution reveals — one run reaches the set state
-    for one model and one pid, never for every
-    model — and the FIRST, a [forall] over every model and every
-    argument shape. *)
-Lemma wait4_with_a_child_is_unmodeled : forall i eff m,
+    model-internal state ([State.m_has_children], [State.m_child_pids])
+    that no observation of a real execution reveals — one run reaches the
+    set state for one model and one pid, never for every model — and the
+    FIRST, a [forall] over every model and every argument shape.
+
+    These two RESTATE the earlier [wait4_with_a_child_is_unmodeled] and
+    [wait4_with_a_child_admits_no_answer], which said a caller with a
+    child got no answer at all.  That stopped being true when a caller
+    with a RECORDED child became answered (0, or a reap of a recorded
+    pid).  The first keeps the decline where it still holds, a set bit
+    with no recorded pid; the second keeps the claim the guard exists
+    for, that such a caller never gets the childless answer. *)
+Lemma wait4_with_no_recorded_child_is_unmodeled : forall i eff m,
   bv_unsigned (in_sysno i) = 260%Z ->
   m_has_children m = true ->
+  m_child_pids m = [] ->
   check_syscall i eff m = CheckUnmodeled.
 Proof.
-  intros i eff m Hno Hch.
+  intros i eff m Hno Hch Hl.
   rewrite (check_syscall_wait4 i _ m Hno). unfold check_wait4.
   destruct (negb (Z.eqb (bv_unsigned (pid32 (in_arg i 0))) WAIT_ANY32));
     [reflexivity|].
   destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
     [reflexivity|].
   destruct (negb (w_is0 (in_arg i 3))); [reflexivity|].
-  rewrite Hch. reflexivity.
+  rewrite Hch, Hl. reflexivity.
 Qed.
 
-(** ...and the half that names the wrong answer directly: with a child,
-    -ECHILD is not merely undecided, it is not admitted at all.  This is
-    the one that fails loudly if [wait4_spec]'s gate is dropped while
-    something still sets the field. *)
-Lemma wait4_with_a_child_admits_no_answer : forall i m eff m' evs,
+(** A caller with child history in a process that has NOT installed
+    SIG_DFL for SIGCHLD is declined, whatever its list holds and
+    whatever the arguments.  Linux leaves a child for [wait4] only when
+    the parent's SIGCHLD is not SIG_IGN and SA_NOCLDWAIT is clear, and
+    the disposition a process starts with is its launcher's, so the
+    model answers a recorded child only after the process's own install
+    ([Kernel.Exit.wait4_spec], THE SIGCHLD DISPOSITION).  This is the
+    universal half of the paired case
+    [Checks.Cases.Kernel.Exit.wait4_no_sigchld_install_unmodeled]. *)
+Lemma wait4_without_sigchld_install_is_unmodeled : forall i eff m,
   bv_unsigned (in_sysno i) = 260%Z ->
   m_has_children m = true ->
+  m_sigchld_dfl m = false ->
+  check_syscall i eff m = CheckUnmodeled.
+Proof.
+  intros i eff m Hno Hch Hd.
+  rewrite (check_syscall_wait4 i _ m Hno). unfold check_wait4.
+  destruct (negb (Z.eqb (bv_unsigned (pid32 (in_arg i 0))) WAIT_ANY32));
+    [reflexivity|].
+  destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
+    [reflexivity|].
+  destruct (negb (w_is0 (in_arg i 3))); [reflexivity|].
+  rewrite Hch. cbv iota.
+  destruct (m_child_pids m); [reflexivity|].
+  rewrite Hd. reflexivity.
+Qed.
+
+(** A caller with child history admits no -ECHILD return, regardless of
+    the effect's stores or the post-model.  The reap's own pid bound
+    excludes errno words even when a raw model records one as a pid. *)
+Lemma wait4_with_a_child_admits_no_echild : forall i eff m m' evs,
+  bv_unsigned (in_sysno i) = 260%Z ->
+  m_has_children m = true ->
+  eff_ret eff = errno_ret ECHILD ->
   ~ syscall_spec i m (Ok eff m' evs).
 Proof.
-  intros i m eff m' evs Hno Hch H.
+  intros i [r ws zs us cs ins] m m' evs Hno Hch Hr H.
+  cbn [eff_ret] in Hr. subst r.
   apply check_syscall_complete_ok in H.
-  rewrite (wait4_with_a_child_is_unmodeled i eff m Hno Hch) in H.
-  discriminate.
+  rewrite (check_syscall_wait4 i _ m Hno) in H.
+  unfold check_wait4 in H.
+  destruct (negb (Z.eqb (bv_unsigned (pid32 (in_arg i 0))) WAIT_ANY32));
+    [discriminate|].
+  destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
+    [discriminate|].
+  destruct (negb (w_is0 (in_arg i 3))); [discriminate|].
+  rewrite Hch in H. cbv iota in H.
+  destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H; [discriminate|].
+  destruct (negb (m_sigchld_dfl m)); cbv iota in H; [discriminate|].
+  destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
+    [discriminate|].
+  destruct zs as [|? ?]; [|discriminate].
+  destruct us as [|? ?]; [|discriminate].
+  destruct cs as [|? ?]; [|discriminate].
+  destruct ins as [|? ?]; [|discriminate].
+  cbv iota in H.
+  assert (Hz : w_is0 (errno_ret ECHILD) = false) by (vm_compute; reflexivity).
+  assert (Hp : clone_pid_ok_b m (errno_ret ECHILD) = false)
+    by (unfold clone_pid_ok_b; vm_compute; reflexivity).
+  rewrite Hz, Hp in H.
+  repeat rewrite andb_false_l in H.
+  repeat rewrite andb_false_r in H.
+  discriminate H.
 Qed.
 
 (** On the first [set_tid_address] call, EVERY environment choice is a

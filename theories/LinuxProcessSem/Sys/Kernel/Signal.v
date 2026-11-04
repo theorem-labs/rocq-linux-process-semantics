@@ -481,8 +481,15 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
     and with [oact] NULL so does the syscall.
 
-    WHY NO STATE.  After the call SIGCHLD's disposition is SIG_DFL, and a
-    SIG_DFL SIGCHLD is the disposition every SIGCHLD argument in this
+    WHAT IT STORES: ONE BIT, [State.procst_sigchld_dfl], set to [true]
+    ([State.with_sigchld_dfl]).  [Exit.wait4_spec] reads it: a caller
+    with a recorded child is answered only after this install, because
+    under the launch's disposition -- SIG_DFL, or a SIG_IGN [execve]
+    kept -- [do_notify_parent] may already have reaped the child.  The
+    bit is never cleared: no answered call leaves SIGCHLD anything but
+    SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT STAYS DECLINED).
+    Nothing else about the disposition is stored, because a SIG_DFL
+    SIGCHLD is the disposition every other SIGCHLD argument in this
     model is written against, so the install moves the process TOWARDS
     the model's assumption rather than away from it:
     - [Fork.clone_spec]'s header argues that the SIGCHLD a child's exit
@@ -520,11 +527,14 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     [do_notify_parent] reads the bit: [psig->action[SIGCHLD-1].sa.sa_flags
     & SA_NOCLDWAIT] sets [autoreap], so a child that exits under it is
     reaped at once instead of being left a zombie, and a later [wait4]
-    finds a different state.  Admitting it would be sound today only
-    because [Exit.wait4_spec] declines once [State.m_has_children] is
-    set: this arm's soundness would rest on a fact about another arm,
-    and a later [wait4] arm for a live child would make it unsound with
-    no failing proof.  Nothing in scope needs it: bwrap 0.13.1 and musl
+    finds a different state: Linux answers 0 and then -ECHILD, never the
+    pid, while [Exit.wait4_spec] admits a reap of every child the model
+    recorded once this arm has set [State.procst_sigchld_dfl].  Admitting
+    the install would make that arm unsound with no failing proof; the
+    decline here is what keeps it sound, and the launch's own SIG_IGN
+    is covered by the bit: before this install the bit is clear and
+    [Exit.wait4_spec] declines a caller with a recorded child.  Nothing in
+    scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are
     [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a
     handler) and
@@ -586,8 +596,9 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
          disposition; then 0 for SIGCHLD with the handler SIG_DFL and
-         SA_NOCLDWAIT clear ([sigchld_dfl_install]), storing no
-         disposition; and UNMODELED for every other signal, handler and
+         SA_NOCLDWAIT clear ([sigchld_dfl_install]), recording the
+         install in [State.procst_sigchld_dfl]; and UNMODELED for every
+         other signal, handler and
          SIGCHLD flag word.
          Every answer after the copy records the 24
          bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
@@ -628,7 +639,8 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if negb (sa_flags_ok fl) then unmodeled
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
-         else if sigchld_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else if sigchld_dfl_install sig (in_mem i) act
+         then (modify (with_sigchld_dfl true) ;; ret_only (Z_to_bv 64 0))
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
