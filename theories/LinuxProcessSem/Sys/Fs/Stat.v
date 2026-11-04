@@ -897,6 +897,8 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                         fs/stat.c, v6.18.46, 1f99e9ab748f) *)
   | Some FdDir         => unmodeled  (* S_IFDIR is known; a directory's size and blocks are not *)
   | Some (FdSocket _)  => unmodeled  (* mode/uid/gid are known; ino, dev and the timestamps are not *)
+  | Some (FdSeqpacket _ _ _) => unmodeled  (* the [FdSocket] reason: ino, dev and the
+                                             timestamps are not known *)
   | Some (FdPipe _ _)  => unmodeled  (* S_IFIFO is known; a pipe's [st_size]/[st_blocks] are
                                         not even the queue's length, so nothing plays the
                                         role the file contents play above *)

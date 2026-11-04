@@ -1,60 +1,27 @@
-(** * LinuxProcessSem.Checks.SelfkillEmbedding — the self-kill declaration changes no earlier statement
+(** * LinuxProcessSem.Checks.SelfkillEmbedding — earlier launch statements embed unchanged
 
     Not part of the trusted specification: a theorem ABOUT it.
 
-    [State.ProcInput] gained a 24th field, [State.in_selfkill_terminal]:
-    the task's declaration that the model covers a SIGKILL the process
-    sends itself ([Kernel.Signal.kill_spec], number 129).  [State.ProcState]
-    gained the field it seeds, [State.procst_selfkill_terminal].  This
-    file shows that every statement written over the launch inputs before
-    the field existed says the same thing now, about the same inputs, and
-    that the inputs the field adds (field 24 [true]) are excluded.  It is
-    an EMBEDDING, in three parts.
+    [ProcInput23] has fields 1-23 of commit 604b5c371ed0. [embed]
+    supplies false for both the self-kill declaration (field 24) and
+    the cgroup-BPF setsockopt launch value (field 25). The images are
+    exactly the inputs with both fields false. [CgroupBpfEmbedding]
+    separately states the 24-to-25 layer, including inputs whose
+    self-kill declaration is true.
 
-    (0) [ProcInput23] is an input of the old shape: fields 1-23 of
-        [State.ProcInput] at commit 604b5c371ed0, same names in the same
-        order.  [embed] makes it a new input with field 24 [false];
-        [forget] drops field 24.  [forget_embed] and [embed_forget]: the
-        images are exactly the inputs with field 24 [false].
-        [mkProcInput_embed] and [to_proc_input_embed]: every
-        thirteen-place [State.mkProcInput] literal and every finite input
-        ([FinInput.to_proc_input]) has field 24 [false], so is an image.
+    Each [V_pre] body below is copied word for word from 604b5c371ed0;
+    [tools/check_pre_copies.py] checks those copies and the table-number
+    list against that immutable source. [embeds] composes both layers:
+    V inp iff V_pre inp /\ selfkill=false /\ cgroup_bpf=false.
+    No copied body or mechanical comparison is changed by composition.
 
-    (i) The input predicates.  For each one the change touched, [V_pre]
-        below is its body at commit 604b5c371ed0, copied word for word;
-        the comment above each names the lines it was copied from, and
-        [tools/check_pre_copies.py] compares every copy with
-        [git show 604b5c3:<file>] in CI and fails on any difference.
-        [embeds V V_pre] says that the old predicate does not read field
-        24 and that the new one is the old one plus
-        [in_selfkill_terminal inp = false].  Its corollaries:
-        [embeds_image] (on an image the new predicate holds iff the old
-        one does), [embeds_excludes] (no input with field 24 [true]
-        satisfies the new one) and [embeds_covers_images] (every input the
-        new one admits is an image).  [Run.valid_input_inherited] is not
-        changed and leaves field 24 free.
-
-    (ii) The run relations.  [spec_table_pre] is the table without row
-        129, and [spec_table_pre_numbers] lists it, number for number, as
-        commit 604b5c371ed0's table (the same script checks that list).
-        [syscall_spec_other_pre]: every other number answers as that table
-        does, at every model.  [syscall_spec_off_pre]: with the declaration
-        off, every number does, 129 included, which then declines.
-        [init_config_selfkill]: [Run.run] and [Run.run_scfg] start with
-        the declaration the input states.  [sstep_selfkill_kept],
-        [sstep_cfg_selfkill_kept] and their [star] forms: no step writes
-        it, under every launch, the abort and SIGPIPE ones included
-        ([Checks.ProcsChildPidsFrame.syscall_spec_selfkill_kept], one
-        lemma per arm).  [sstep_kill_off_unmodeled] and its [sstep_cfg]
-        twin: at a 129 call with the declaration off, the one step is the
-        fail-closed one that a number with no arm took before.
-
-    WHAT IS NOT A LEMMA HERE.  [Run.sstep], [Run.sstep_cfg], [Run.star],
-    [Run.run], [Run.run_scfg] and the must-exit predicates read the table
-    only through [Specs.syscall_spec], and the change leaves their text
-    as it was; that no arm but 129's READS the new field is shown by the
-    change's diff, in which every other occurrence of the field copies
-    it. *)
+    [spec_table_pre] removes row 129 from the current table. The run
+    lemmas below establish that the self-kill declaration is initialized
+    from the input and retained by every successful step, and that 129
+    with it off declines just as an absent row did. This table is not
+    a snapshot of later socket features: [CgroupBpfEmbedding] gives the
+    separate false-field setsockopt table equivalence. The step and run
+    relations continue to consult the table through [Specs.syscall_spec]. *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -95,7 +62,7 @@ Record ProcInput23 := mkProcInput23 {
   p23_inherited_fds : list (word * list byte)
 }.
 
-(** An old input as a new one: field 24 is [false]. *)
+(** An old input as a new one: fields 24 and 25 are [false]. *)
 Definition embed (o : ProcInput23) : ProcInput :=
   {| in_argv := p23_argv o; in_envp := p23_envp o;
      in_image_fs := p23_image_fs o; in_stdin := p23_stdin o;
@@ -111,9 +78,9 @@ Definition embed (o : ProcInput23) : ProcInput :=
      in_sigpipe_terminal := p23_sigpipe_terminal o;
      in_ppid := p23_ppid o; in_cap_inheritable := p23_cap_inheritable o;
      in_inherited_fds := p23_inherited_fds o;
-     in_selfkill_terminal := false |}.
+     in_selfkill_terminal := false; in_cgroup_bpf_setsockopt := false |}.
 
-(** A new input with field 24 dropped. *)
+(** A new input with fields 24 and 25 dropped. *)
 Definition forget (inp : ProcInput) : ProcInput23 :=
   {| p23_argv := in_argv inp; p23_envp := in_envp inp;
      p23_image_fs := in_image_fs inp; p23_stdin := in_stdin inp;
@@ -150,24 +117,28 @@ Definition input_with_selfkill_terminal (b : bool) (inp : ProcInput)
      in_sigpipe_terminal := in_sigpipe_terminal inp;
      in_ppid := in_ppid inp; in_cap_inheritable := in_cap_inheritable inp;
      in_inherited_fds := in_inherited_fds inp;
-     in_selfkill_terminal := b |}.
+     in_selfkill_terminal := b;
+     in_cgroup_bpf_setsockopt := in_cgroup_bpf_setsockopt inp |}.
 
 (** Embedding loses nothing. *)
 Lemma forget_embed : forall o, forget (embed o) = o.
 Proof. intros []. reflexivity. Qed.
 
-(** Every new input with field 24 off is the image of exactly one old
-    input ([forget_embed] gives the uniqueness). *)
+(** Every new input with both later fields off is the image of exactly
+    one old input ([forget_embed] gives uniqueness). *)
 Lemma embed_forget : forall inp,
-  in_selfkill_terminal inp = false -> embed (forget inp) = inp.
+  in_selfkill_terminal inp = false ->
+  in_cgroup_bpf_setsockopt inp = false -> embed (forget inp) = inp.
 Proof.
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk] H.
-  cbn [in_selfkill_terminal] in H. subst sk. reflexivity.
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp] Hsk Hbp.
+  cbn [in_selfkill_terminal] in Hsk.
+  cbn [in_cgroup_bpf_setsockopt] in Hbp. subst sk bp. reflexivity.
 Qed.
 
-(** Every thirteen-place literal has field 24 off, so is an image
-    ([embed_forget]); [State.mkProcInput_selfkill_terminal] is the same
-    fact. *)
+(** Every thirteen-place literal has field 24 off
+    ([State.mkProcInput_selfkill_terminal] is the same fact) and field 25
+    off ([State.mkProcInput_cgroup_bpf_setsockopt]), so is an image
+    ([embed_forget] needs both). *)
 Lemma mkProcInput_embed :
   forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
          abort_terminal va_size,
@@ -176,7 +147,9 @@ Lemma mkProcInput_embed :
        hwcap abort_terminal va_size) = false.
 Proof. intros. reflexivity. Qed.
 
-(** Every finite input has field 24 off, so is an image. *)
+(** Every finite input has field 24 off, and field 25 off
+    ([Checks.CgroupBpfEmbedding.finite_input_bpf_default]), so is an
+    image. *)
 Lemma to_proc_input_embed : forall f, in_selfkill_terminal (to_proc_input f) = false.
 Proof. intros f. reflexivity. Qed.
 
@@ -447,11 +420,12 @@ Definition finite_input_pre (inp : ProcInput) : Prop :=
   finite_stream (in_stdin inp) /\ padded_urandom (in_urandom inp)
   /\ in_inherited_fds inp = [].
 
-(** [V_pre] reads fields 1-23 only, so it is a predicate on old inputs;
-    [V] is [V_pre] with field 24 pinned off. *)
+(** [V_pre] reads fields 1-23 only. [V] adds both later default pins. *)
 Definition embeds (V V_pre : ProcInput -> Prop) : Prop :=
   (forall inp b, V_pre (input_with_selfkill_terminal b inp) <-> V_pre inp)
-  /\ (forall inp, V inp <-> V_pre inp /\ in_selfkill_terminal inp = false).
+  /\ (forall inp b, V_pre (input_with_cgroup_bpf_setsockopt b inp) <-> V_pre inp)
+  /\ (forall inp, V inp <-> V_pre inp /\ in_selfkill_terminal inp = false
+                                      /\ in_cgroup_bpf_setsockopt inp = false).
 
 (** The second half, once both bodies are unfolded: the same conjuncts,
     the pin last.  Destruct and split GUARDED, as [Run]'s own proofs do:
@@ -471,26 +445,26 @@ Ltac embeds_frame :=
 
 Lemma valid_input_embeds : embeds valid_input valid_input_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input, valid_input_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_abort_embeds : embeds valid_input_abort valid_input_abort_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_abort, valid_input_abort_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_either_embeds : embeds valid_input_either valid_input_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_either, valid_input_either_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sigpipe_ignored_embeds :
   embeds valid_input_sigpipe_ignored valid_input_sigpipe_ignored_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_ignored, valid_input_sigpipe_ignored_pre.
   embeds_conj.
 Qed.
@@ -498,7 +472,7 @@ Qed.
 Lemma valid_input_sigpipe_either_embeds :
   embeds valid_input_sigpipe_either valid_input_sigpipe_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_either, valid_input_sigpipe_either_pre.
   embeds_conj.
 Qed.
@@ -506,7 +480,7 @@ Qed.
 Lemma valid_input_channel_closed_embeds :
   embeds valid_input_channel_closed valid_input_channel_closed_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_channel_closed, valid_input_channel_closed_pre.
   embeds_conj.
 Qed.
@@ -514,47 +488,47 @@ Qed.
 Lemma valid_input_channel_either_embeds :
   embeds valid_input_channel_either valid_input_channel_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_channel_either, valid_input_channel_either_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_paths_embeds : embeds valid_input_paths valid_input_paths_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_paths, valid_input_paths_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sigpipe_kills_embeds :
   embeds valid_input_sigpipe_kills valid_input_sigpipe_kills_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_kills, valid_input_sigpipe_kills_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_sv39_embeds : embeds valid_input_sv39 valid_input_sv39_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_sv39, valid_input_sv39_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sv57_embeds : embeds valid_input_sv57 valid_input_sv57_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_sv57, valid_input_sv57_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_va_any_embeds : embeds valid_input_va_any valid_input_va_any_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_va_any, valid_input_va_any_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_hwcap_rv64gc_embeds :
   embeds valid_input_hwcap_rv64gc valid_input_hwcap_rv64gc_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gc, valid_input_hwcap_rv64gc_pre.
   embeds_conj.
 Qed.
@@ -562,7 +536,7 @@ Qed.
 Lemma valid_input_hwcap_rv64gcv_embeds :
   embeds valid_input_hwcap_rv64gcv valid_input_hwcap_rv64gcv_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gcv, valid_input_hwcap_rv64gcv_pre.
   embeds_conj.
 Qed.
@@ -570,7 +544,7 @@ Qed.
 Lemma valid_input_abort_hwcap_rv64gc_embeds :
   embeds valid_input_abort_hwcap_rv64gc valid_input_abort_hwcap_rv64gc_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gc, valid_input_abort_hwcap_rv64gc_pre.
   embeds_conj.
@@ -579,7 +553,7 @@ Qed.
 Lemma valid_input_abort_hwcap_rv64gcv_embeds :
   embeds valid_input_abort_hwcap_rv64gcv valid_input_abort_hwcap_rv64gcv_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gcv, valid_input_abort_hwcap_rv64gcv_pre.
   embeds_conj.
@@ -587,7 +561,7 @@ Qed.
 
 Lemma finite_input_embeds : embeds finite_input finite_input_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |].
+  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
   intros inp. unfold finite_input, finite_input_pre. embeds_conj.
 Qed.
 
@@ -595,26 +569,26 @@ Qed.
 Corollary embeds_image : forall V V_pre, embeds V V_pre ->
   forall o, V (embed o) <-> V_pre (embed o).
 Proof.
-  intros V V_pre [_ HV] o. split.
+  intros V V_pre [_ [_ HV]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed o)) H)).
-  - intros H. apply (proj2 (HV (embed o))). split; [exact H | reflexivity].
+  - intros H. apply (proj2 (HV (embed o))). split; [exact H | split; reflexivity].
 Qed.
 
 (** Every input the field adds is excluded. *)
 Corollary embeds_excludes : forall V V_pre, embeds V V_pre ->
   forall inp, in_selfkill_terminal inp = true -> ~ V inp.
 Proof.
-  intros V V_pre [_ HV] inp Ht Hv.
-  destruct (proj1 (HV inp) Hv) as [_ Hf]. rewrite Ht in Hf. discriminate Hf.
+  intros V V_pre [_ [_ HV]] inp Ht Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
 (** Every input the new predicate admits is an old input's image. *)
 Corollary embeds_covers_images : forall V V_pre, embeds V V_pre ->
   forall inp, V inp -> inp = embed (forget inp).
 Proof.
-  intros V V_pre [_ HV] inp Hv.
-  destruct (proj1 (HV inp) Hv) as [_ Hf].
-  symmetry. exact (embed_forget inp Hf).
+  intros V V_pre [_ [_ HV]] inp Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [Hsk Hbp]].
+  symmetry. exact (embed_forget inp Hsk Hbp).
 Qed.
 
 (* =========================================================================
