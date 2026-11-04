@@ -1403,17 +1403,6 @@ Print Assumptions syscall_spec_cgroup_bpf_setsockopt_kept.
    The released step
    ========================================================================= *)
 
-Lemma cp_bvmap_get_set_same {n A} (k k' : bv n) (x : A) m :
-  k = k' -> bvmap_get k' (bvmap_set k x m) = Some x.
-Proof. intros ->. apply bvmap_get_set_same. Qed.
-
-Lemma cp_a0_after_effect : forall ms eff,
-  ms_gpr (advance_past_svc (apply_effect ms eff)) 0 = eff_ret eff.
-Proof.
-  intros ms eff. unfold ms_gpr, advance_past_svc, apply_effect, set_reg, reg_get. simpl.
-  erewrite cp_bvmap_get_set_same by (apply bv_eq; reflexivity). reflexivity.
-Qed.
-
 Lemma clone_pid_not_error : forall m r,
   clone_pid_ok_b m r = true -> addr_is_error_b r = false.
 Proof.
@@ -1493,7 +1482,7 @@ Proof.
           as [(_ & E) | (Hc & [(-> & _) | (-> & Hok)])];
         [ exact E | reflexivity | exfalso ];
         unfold clone_success_b in Hcs; cbn [cfg_ms] in Hcs; rewrite Hs in Hcs;
-        cbn [in_sysno sys_input] in Hc; rewrite Hc, cp_a0_after_effect,
+        cbn [in_sysno sys_input] in Hc; rewrite Hc, a0_after_effect,
           (clone_pid_not_error _ _ Hok) in Hcs; discriminate Hcs
     end.
   - (* an exit: a clone's answer would not halt *)
@@ -1535,9 +1524,9 @@ Proof.
     | Hsp : syscall_spec (sys_input _ _ ?x8) _ (Ok ?eff _ _),
       Hs : ms_svc_pending _ = Some ?x8,
       Hm : materialize_model_accesses _ _ = Some _ |- _ =>
-        rewrite (cp_materialize _ _ _ Hm), cp_a0_after_effect;
+        rewrite (cp_materialize _ _ _ Hm), a0_after_effect;
         unfold clone_success_b in Hcs; cbn [cfg_ms] in Hcs; rewrite Hs in Hcs;
-        rewrite cp_a0_after_effect in Hcs;
+        rewrite a0_after_effect in Hcs;
         apply andb_true_iff in Hcs as [Hc Hne];
         destruct (syscall_spec_child_pids _ _ _ _ _ Hsp)
           as [(Hc' & _) | (_ & [(_ & He) | (-> & _)])];
