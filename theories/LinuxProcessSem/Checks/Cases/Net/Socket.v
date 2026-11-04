@@ -2906,9 +2906,10 @@ Definition seqp_reads : list (word * nat) := [(8192, 56%nat); (8320, 16%nat)].
 
 (** R1.  END OF FILE once the peer has closed: 0, then [msg_flags] (4 zero
     bytes at offset 48) and [msg_controllen] (8 zero bytes at offset 40)
-    written back, in that order (net/socket.c:2864-2875, v6.18.46;
-    net/unix/af_unix.c:2625-2630).  THE CONTROLS: 1, and 0 without the
-    write-back. *)
+    written back, in that order (net/socket.c:2864-2875, v6.18.46; a
+    blocking end's 0 comes from net/core/datagram.c:106-108,132-135 and
+    leaves through net/unix/af_unix.c:2625-2630).  THE CONTROLS: 1, and 0
+    without the write-back. *)
 Example seqpacket_recvmsg_end_of_file :
   check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
     (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] []

@@ -1610,7 +1610,7 @@ Definition shutdown_core_spec (fd how : word) : Sys SyscallEffect :=
     [sk_may_scm_recv] holds for AF_UNIX, include/net/sock.h:2917-2922)
     and answers 0.  Every option but [SO_PASSCRED] is declined, ahead of
     the length test, so the order of the answered tests is Linux's.  The
-    LSM and BPF hooks between (:2338-2351) are the [sock_fd] note's
+    LSM and BPF hooks between (net/socket.c:2338-2351) are the [sock_fd] note's
     assumption: no active policy denies.
 
     [optname] and [optval] are read off the input (arguments 2 and 3);
@@ -2712,7 +2712,7 @@ Qed.
     reads, as [socket_spec] argues.  SOCK_NONBLOCK declines: an end carries
     no O_NONBLOCK ([State.SeqEnd]).  The model assumes CONFIG_UNIX=y
     (SCOPE.md): AF_UNIX is registered, so [__sock_create] never answers
-    -EAFNOSUPPORT for it (net/socket.c:1586-1593). *)
+    -EAFNOSUPPORT for it (net/socket.c:1586-1594). *)
 Definition socketpair_seqpacket_b (family type protocol : word) : bool :=
   (Z.eqb (bv_unsigned (abi_low32 family)) AF_UNIX
    && Z.eqb (socketpair_base_type type) SOCK_SEQPACKET
