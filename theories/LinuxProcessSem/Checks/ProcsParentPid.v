@@ -10,7 +10,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics State Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  ExecutableSpecs ProcsChildPids ProcsSharedFrame ProcsSyncOnce.
+  ExecutableSpecs ProcsChildPids ProcsPrivateFrame ProcsSharedFrame ProcsSyncOnce.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -62,6 +62,8 @@ Check ProcsSharedFrame.pstep_at_shared_frame.
 Print Assumptions ProcsSharedFrame.pstep_at_shared_frame.
 Check ProcsSyncOnce.other_step_keeps_entry.
 Print Assumptions ProcsSyncOnce.other_step_keeps_entry.
+Check ProcsPeerGates.unlink_keeps_peer_names.
+Print Assumptions ProcsPeerGates.unlink_keeps_peer_names.
 Goal True. idtac "ROOT_PARENT_CLOSURE_END". exact I. Qed.
 
 Definition pp_launch : Model :=
