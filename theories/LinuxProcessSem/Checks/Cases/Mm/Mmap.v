@@ -1730,9 +1730,12 @@ Example mmap_fixed_err_addr_longest_len_returns_addr :
 Proof. check_eq. Qed.
 
 (** Without MAP_FIXED the same address is a hint, and nothing changes:
-    [generic_get_unmapped_area] page-aligns it ([PAGE_ALIGN(addr)] wraps
-    to 0, mm/mmap.c:704), the hint fails its tests, and the search
-    places the mapping.  The address itself is never the answer. *)
+    [do_mmap] first masks the hint down to its page with
+    [round_hint_to_min] (mm/mmap.c:219-226, 364-365), giving
+    2^64 - 4096; [generic_get_unmapped_area]'s [PAGE_ALIGN(addr)]
+    (mm/mmap.c:704) leaves that value unchanged, the hint then fails
+    [mmap_end - len >= addr] (:706), and the search places the mapping.
+    The address itself is never the answer. *)
 Example mmap_hint_err_addr_never_returns_addr :
   check_syscall
     (mkInput 222 [Z_to_bv 64 (two_pow_64 - 4095); 4096; 3; 34; mmap_fd_none; 0]
