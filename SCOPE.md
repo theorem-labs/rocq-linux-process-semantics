@@ -5,8 +5,8 @@ It tells you which system the model describes, where the model is narrower
 than that system, which assumptions it does not check, where it is less
 precise, and where a run under QEMU user mode is not a Linux run. It also
 records which parts of a separate Lean translation lag this Rocq model.
-The design priorities in [README.md](README.md#design-priorities) refer
-to this document.
+The design priorities in [README.md](README.md#design-priorities) refer to
+this document.
 
 ## Supported systems
 
@@ -38,9 +38,9 @@ source is not included in this repository.
   fields and builders, the entered-namespace and superblock-group closures,
   clone inheritance, the five closed-launch fast paths, path printing and
   the corresponding cases. Agreement of these additions has not been checked.
+- The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
-A list of definitions to translate is not Lean code or evidence that
-the two models agree.
+A list of definitions to translate is not Lean code or evidence that the two models agree.
 
 ## Where QEMU user mode differs
 

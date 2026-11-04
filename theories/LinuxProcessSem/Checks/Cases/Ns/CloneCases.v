@@ -220,13 +220,26 @@ Example fork_inside_advances_last : forall m,
   = Some [0; 2].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** A C library's [fork] (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID |
-    SIGCHLD) inside the new pid namespace gives the same child. *)
+(** The child-tid form used by some C libraries is not a word the core
+    admits, so the namespace layer declines it too. *)
 Example libc_fork_inside_pid_2 : forall m,
-  option_map cx_pids
-    (child_of (clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 140))
-  = Some [(2%positive, 2); (1%positive, 140)].
+  clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 140
+  = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Namespace answers do not bypass the released core's flag gate. *)
+Example clone_child_tid_inside_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_CHILD_SETTID SIGCHLD) m shell inside 140 = CnUnmodeled /\
+  clone_ns_exact (Z.lor CLONE_CHILD_CLEARTID SIGCHLD) m shell inside 140 = CnUnmodeled.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+Example clone_newns_non_sigchld_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWNS 10) m shell inside 140 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** The gate theorem itself is checked without adding an axiom. *)
+Print Assumptions clone_ns_mask_core_gate.
+Print Assumptions clone_ns_exact_core_gate.
 
 (** Outside the released world a flag the model does not hold (CLONE_VM)
     declines. *)
