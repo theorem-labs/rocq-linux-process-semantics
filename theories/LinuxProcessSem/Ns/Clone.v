@@ -302,15 +302,18 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
     end.
 
 
+Definition bump_pid_cursor (x : PidNs) : list PidNs :=
+  match pidns_parent x with
+  | Some _ => [pidns_with_last x (pidns_last x + 1)]
+  | None => []
+  end.
+
 (** The model-held pid namespaces, from [active] outwards, with cursors
     advanced and allocation states unchanged.  This is the cursor effect
     alone; freeing a completed first allocation uses [pid_failed]. *)
 Definition pid_advanced (st : NsState) (active : positive) : NsState :=
   let chain := pidns_chain (length (ns_pidns st)) st active in
-  let bumped := flat_map (fun x => match pidns_parent x with
-                                   | Some _ => [pidns_with_last x (pidns_last x + 1)]
-                                   | None => []
-                                   end) chain in
+  let bumped := flat_map bump_pid_cursor chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
 (** After successful alloc_pid, freeing a first pid closes that namespace
@@ -338,23 +341,37 @@ Definition pid_reset_empty (st : NsState) (active : positive) : NsState :=
 
 Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
   let chain := firstn k (pidns_chain (length (ns_pidns st)) st active) in
-  let bumped := flat_map (fun p => match pidns_parent p with
-    | Some _ => [pidns_with_last p (pidns_last p + 1)] | None => [] end) chain in
+  let bumped := flat_map bump_pid_cursor chain in
   pid_reset_empty (with_pidns st (fold_left replace_pidns bumped (ns_pidns st))) active.
+
+(** Earlier table errors stop before alloc_pid.  In a closed namespace,
+    cursor-moving failures are only the allocator's ENOMEM or EAGAIN;
+    its final ENOMEM prevents later failure sites (kernel/pid.c:238-303,
+    Linux v6.18.46). *)
+Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
+  match o with
+  | CnOk _ _ _ => true
+  | CnErr e _ => (e =? ENOMEM) && ((en =? ENOMEM) || (en =? EAGAIN))
+  | CnUnmodeled => false
+  end.
 
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
-    a namespace's init function).  Before allocation the state is unchanged;
-    a partial allocation resets an empty innermost namespace's cursor;
-    freeing a completed first allocation closes it. *)
+    a namespace's init function).  Cursor movement requires that the
+    tables reach pid allocation.  For a closed namespace only an
+    allocation's ENOMEM or EAGAIN can have moved cursors; its final
+    ENOMEM prevents reaching later failure sites (kernel/pid.c:238-303,
+    Linux v6.18.46).  A partial allocation resets an empty innermost
+    namespace's cursor; freeing a completed first allocation closes it. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st hq
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
       /\ exists e st', 1 <= e <= 4095
-          /\ (st' = st \/ st' = pid_failed st (pidns_children ctx)
-              \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (pidns_children ctx)))%nat
-                    /\ st' = pid_partial st (pidns_children ctx) k)
+          /\ (st' = st \/ (clone_pid_failure_can_move (clone_ns_exact f m ctx st hq) e = true
+              /\ (st' = pid_failed st (pidns_children ctx)
+                  \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (pidns_children ctx)))%nat
+                        /\ st' = pid_partial st (pidns_children ctx) k)))
                        /\ o = CnErr e st').
 
 (** A task in the released world has no pid namespace the model made
@@ -366,12 +383,9 @@ Proof.
   apply andb_true_iff in H as [H _].
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
   unfold pid_advanced.
-  assert (Hb : flat_map (fun x => match pidns_parent x with
-                                  | Some _ => [pidns_with_last x (pidns_last x + 1)]
-                                  | None => []
-                                  end)
-                        (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).
-  { destruct (length (ns_pidns st)) as [|n]; [reflexivity|].
+  assert (Hb : flat_map bump_pid_cursor
+      (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).
+  { unfold bump_pid_cursor. destruct (length (ns_pidns st)) as [|n]; [reflexivity|].
     cbn [pidns_chain]. unfold find_pidns.
     destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef;
       [|reflexivity].
@@ -435,7 +449,7 @@ Lemma pid_partial_flat : forall ctx st k,
   flat_view ctx st = true -> pid_partial st (cx_pidns ctx) k = st.
 Proof.
   intros ctx st k H.
-  unfold pid_partial. cbv zeta.
+  unfold pid_partial, bump_pid_cursor. cbv zeta.
   rewrite (flat_model_pidns_updates ctx st (fun p => pidns_with_last p (pidns_last p + 1)) k H).
   now apply pid_reset_empty_flat.
 Qed.
@@ -474,7 +488,7 @@ Proof.
   split.
   - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
     right. exists e. split; [exact He|].
-    destruct Hst as [-> | [-> | (k & _ & ->)]]; try exact Ho.
+    destruct Hst as [-> | [_ [-> | (k & _ & ->)]]]; try exact Ho.
     rewrite (pid_partial_children_flat ctx st k Hf) in Ho. exact Ho.
   - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
     right. split; [intros Hc; discriminate Hc|].

@@ -302,3 +302,18 @@ Print Assumptions closed_children_forced_enomem_process_step.
 Print Assumptions clone_ns_exact_errno.
 Print Assumptions ns_clone_filter_released.
 Print Assumptions ns_clone_fail_step_released.
+
+(** The closed-namespace ENOMEM prevents later hooks from running.
+    An environment EPERM can occur earlier, but cannot move pid cursors. *)
+Example closed_children_early_eperm_keeps_state : forall st',
+  clone_ns 17 closed_children_model launch_children_ctx closed_children_state 141
+    (CnErr EPERM st') -> st' = closed_children_state.
+Proof.
+  intros st' H. unfold clone_ns in H. rewrite closed_children_table in H.
+  destruct H as [Ho | (_ & en & s & _ & Hstate & Ho)]; [discriminate Ho|].
+  injection Ho as Hs Hen. subst en st'.
+  destruct Hstate as [H | [Hmove _]]; [exact H|].
+  vm_compute in Hmove. discriminate Hmove.
+Qed.
+
+Print Assumptions closed_children_early_eperm_keeps_state.
