@@ -338,11 +338,12 @@ Definition closed_then_eventfd : check_result :=
     there), [close(4)] forgets that key, and [eventfd2] with EFD_CLOEXEC
     at 4 then admits FD_CLOEXEC, as Linux answers.  Had the key survived,
     the model would answer 0 alone, which Linux does not.  [pipe2] with
-    O_CLOEXEC declines, so it claims no bit at all.
+    O_CLOEXEC installs the same pair as [pipe2] with flags 0
+    ([one_pipe_model]), so it records no bit either, and F_GETFD on
+    either end admits FD_CLOEXEC, which Linux answers there.
 
     THE CONTROLS, answered alike before: F_GETFD admits FD_CLOEXEC on the
-    eventfd and on both ends of a [pipe2] with flags 0, and [pipe2] with
-    O_CLOEXEC declines. *)
+    eventfd and on both ends of a [pipe2] with flags 0. *)
 Example creators_with_cloexec_are_never_known_clear :
   check_syscall (getfd_in 4) (mkEffect FD_CLOEXEC [] []) cl_known = CheckReject
   /\ answered closed_then_eventfd = true
@@ -350,13 +351,14 @@ Example creators_with_cloexec_are_never_known_clear :
   /\ answered (then_call closed_then_eventfd (getfd_in 4) (mkEffect 0 [] [])) = true
   (* beside a pipe's two ends, the launch's descriptor 0 is still known clear *)
   /\ check_syscall (getfd_in 0) (mkEffect FD_CLOEXEC [] []) one_pipe_model = CheckReject
-  (* the controls *)
+  (* pipe2 with O_CLOEXEC: the same model as with flags 0, no bit recorded *)
   /\ check_syscall
        (mkInput 59 [pipe2_flat_fildes; Z_to_bv 64 O_CLOEXEC; 0; 0; 0; 0]
           (fun _ => None) pipe2_flat_mem)
        (mkEffect (Z_to_bv 64 0) [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [])
        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckUnmodeled
+     = CheckOk one_pipe_model []
+  (* the controls *)
   /\ answered (check_syscall (getfd_in 3) (mkEffect FD_CLOEXEC [] []) one_pipe_model) = true
   /\ answered (check_syscall (getfd_in 4) (mkEffect FD_CLOEXEC [] []) one_pipe_model) = true.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

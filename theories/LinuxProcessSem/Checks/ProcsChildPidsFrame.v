@@ -342,7 +342,7 @@ Local Ltac openat_sub_cp_top H :=
 
 Lemma check_openat_table_cp : forall i dirfd pathp flags eff m m' evs,
   check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
-  cp_of m' = cp_of m.
+  cps_of m' = cps_of m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_openat_table in H. cbv zeta in H.

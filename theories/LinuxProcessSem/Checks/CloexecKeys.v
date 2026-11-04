@@ -1096,11 +1096,15 @@ Proof.
   fr_frame2 H.
 Qed.
 
-Lemma check_setsockopt_fr : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs -> fd_rel m m'.
+(** [setsockopt]: the SO_PASSCRED store on an AF_UNIX SEQPACKET end
+    rewrites that end's entry in place; every other answer keeps the
+    fd state. *)
+Lemma check_setsockopt_fr : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core in H. fr_frame2 H.
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core in H.
+  fr_frame2 H.
 Qed.
 
 Lemma check_getsockopt_fr : forall i fd level optlenp eff m m' evs,
@@ -1131,12 +1135,15 @@ Proof.
   intros fds fd eff m m' evs H. unfold check_recv_fd_answer in H. fr_frame2 H.
 Qed.
 
+(** [socketpair]: an AF_UNIX SEQPACKET pair inserts its two ends; every
+    other answer keeps the fd state. *)
 Lemma check_socketpair_fr : forall i family type protocol sv eff m m' evs,
   check_socketpair i family type protocol sv eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted
-    in H. fr_frame2 H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  fr_frame2 H.
 Qed.
 
 Lemma check_recvfrom_fr : forall i fd buf size eff m m' evs,
@@ -1147,11 +1154,13 @@ Proof.
   fr_frame2 H.
 Qed.
 
-Lemma check_recvmsg_fr : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs -> fd_rel m m'.
+Lemma check_recvmsg_fr : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros fd flags eff m m' evs H.
-  unfold check_recvmsg, check_recv_fd_answer in H. fr_frame2 H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H.
+  fr_frame2 H.
 Qed.
 
 Lemma check_sendto_fr : forall i fd buf count flags addrp eff m m' evs,
