@@ -871,11 +871,13 @@ Definition clone_flags_of (c : config) : Z :=
       then [State.copy_bytes_map] over the pre-syscall memory, which
       [Run.sys_input] gives as [ms_read_byte] whatever the segments,
       [clone_in_of_input]), and only for a record whose call
-      [Fork.clone3_spec] answers: the fork image, which it answers off
-      the raw struct ([Fork.clone3_fork_args_b]), or a record the
-      argument checks refuse.  A struct its own tests refuse or
-      decline, a size or a copy it declines or refuses, and a record it
-      declines give none.
+      [Fork.clone3_spec] takes further: the fork image, which it takes
+      to [Fork.clone3_resolve] off the raw struct
+      ([Fork.clone3_fork_args_b]), whether or not that resolution then
+      declines, or a record the argument checks refuse, which it
+      answers -EINVAL.  A struct its own tests refuse or decline, a
+      size or a copy it declines or refuses, and any other record give
+      none.
     - Any other call, and no pending call: none.
     No rule of the core reads it yet. *)
 Definition clone_in_of (c : config) : CloneIn :=
