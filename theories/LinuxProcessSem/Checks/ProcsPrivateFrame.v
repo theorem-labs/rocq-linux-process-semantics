@@ -20,7 +20,7 @@
       class-(A) call pending leaves [pcfg_shared] and [pcfg_root] equal, and
       every other entry equal, except that a child of [p] loses its parent
       when the step halted [p] (the orphaning [Procs.absorb] does at exit;
-      tkill, tgkill and rt_sigprocmask can kill the caller).
+      kill, tkill, tgkill and rt_sigprocmask can kill the caller).
       [pstep_at_private_views]: so every other entry's VIEW ([pe_cfg]) is
       unchanged.  [pstep_at_private_wf]: the step keeps [pconfig_wf]
       ([Checks.ProcsWellFormed.pstep_at_preserves_wf]).
@@ -655,6 +655,20 @@ Proof.
   inversion H; subst. now rewrite sh_of_sigmask_deliver_model.
 Qed.
 
+Lemma check_kill_sh : forall pid sig eff m m' evs,
+  check_kill pid sig eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros pid sig eff m m' evs H.
+  unfold check_kill, check_kill_self in H.
+  repeat match type of H with
+         | (if ?b then _ else _) = _ => destruct b; cbv beta iota in H
+         | match ?x with _ => _ end = _ => destruct x; cbv beta iota in H
+         end;
+    try discriminate;
+    apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _);
+    autorewrite with model; reflexivity.
+Qed.
+
 Lemma check_tkill_sh : forall pid sig eff m m' evs,
   check_tkill pid sig eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
@@ -738,6 +752,7 @@ Proof.
       | eapply check_sched_setscheduler_sh; eassumption
       | eapply check_sched_getaffinity_sh; eassumption
       | eapply check_sched_yield_sh; eassumption
+      | eapply check_kill_sh; eassumption
       | eapply check_tkill_sh; eassumption
       | eapply check_tgkill_sh; eassumption
       | eapply check_sigaltstack_sh; eassumption

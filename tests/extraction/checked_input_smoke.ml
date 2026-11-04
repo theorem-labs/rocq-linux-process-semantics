@@ -74,7 +74,8 @@ let seed : M.rawProcInput = {
   rpi_kernel = kernel_default; rpi_execfn = execfn_default;
   rpi_channel_reader = true; rpi_sigpipe_default = true;
   rpi_sigpipe_terminal = false; rpi_ppid = z "0";
-  rpi_cap_inheritable = z "0"; rpi_inherited_fds = [] }
+  rpi_cap_inheritable = z "0"; rpi_inherited_fds = [];
+  rpi_selfkill_terminal = false }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -252,7 +253,8 @@ let () =
               rpi_execfn = [z "47"; z "97"];
               rpi_channel_reader = true; rpi_sigpipe_default = true;
               rpi_sigpipe_terminal = false; rpi_ppid = z "0";
-              rpi_cap_inheritable = z "0"; rpi_inherited_fds = [] }))
+              rpi_cap_inheritable = z "0"; rpi_inherited_fds = [];
+              rpi_selfkill_terminal = false }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

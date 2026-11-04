@@ -659,9 +659,12 @@ Record RawProcInput := mkRawProcInput {
                                              ([State.in_sigpipe_terminal]); a bool *)
   rpi_ppid : Z;                           (* the launch parent pid *)
   rpi_cap_inheritable : Z;                (* the launch inheritable capability set *)
-  rpi_inherited_fds : list (Z * list Z)   (* the descriptors above 2 the launch
+  rpi_inherited_fds : list (Z * list Z);  (* the descriptors above 2 the launch
                                              inherits, each with its file's bytes
                                              ([State.in_inherited_fds]) *)
+  rpi_selfkill_terminal : bool            (* the launch declares the self-kill
+                                             death ([State.in_selfkill_terminal]);
+                                             a bool *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -994,8 +997,10 @@ Qed.
     set are words, so [rpi_ppid] and [rpi_cap_inheritable] are checked by
     [word_of_Z].  The inherited descriptors are a list of numbers and
     file bytes with a launch clause, so [rpi_inherited_fds] is checked
-    by [inherited_fds_of_raw], which asks both.  The repair is a raw
-    field and its check, never [mkProcInput] and never a default. *)
+    by [inherited_fds_of_raw], which asks both.  [in_selfkill_terminal]
+    bought [rpi_selfkill_terminal], a bool like the SIGPIPE three.  The
+    repair is a raw field and its check, never [mkProcInput] and never a
+    default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
         image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
@@ -1017,7 +1022,8 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
                   (rpi_abort_terminal r) (rpi_va_size r)
                   (urandom_of_bytes urandom) tmp kernel execfn
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
-                  (rpi_sigpipe_terminal r) ppid cap_inheritable inherited)
+                  (rpi_sigpipe_terminal r) ppid cap_inheritable inherited
+                  (rpi_selfkill_terminal r))
       | _, _, _, _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
