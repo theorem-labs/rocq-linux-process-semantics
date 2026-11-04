@@ -98,10 +98,14 @@ Definition world_peer7 (gs : list positive) : NsState :=
                  [mkMount 1 1 None 1 1 1 no_flags no_flags false false (Some 7%positive) None])
     gs.
 
+(** Keep [env_refusal] folded in these symbolic outcome comparisons:
+    conversion decides the table checks without normalizing the errno
+    arithmetic under its existential. *)
+
 Example unshare_open_root_declines : forall m o,
   unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 [7%positive]) o
   <-> o = EUnmodeled \/ env_refusal o m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 [7%positive]).
-Proof. intros m o. vm_compute. tauto. Qed.
+Proof. intros m o. reflexivity. Qed.
 
 Example unshare_closed_root_answers : forall m o,
   unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
@@ -217,7 +221,7 @@ Example unshare_level_before_chroot : forall m o st,
       \/ env_refusal o (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st.
 Proof.
   intros m o st H. cbn [enospc_worlds] in H.
-  destruct H as [<- | [<- | [<- | []]]]; vm_compute; tauto.
+  destruct H as [<- | [<- | [<- | []]]]; reflexivity.
 Qed.
 Example unshare_count_before_chroot : forall m o st,
   In st (enospc_worlds (init_uns 0 true)) ->
@@ -227,7 +231,7 @@ Example unshare_count_before_chroot : forall m o st,
       \/ env_refusal o (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st.
 Proof.
   intros m o st H. cbn [enospc_worlds] in H.
-  destruct H as [<- | [<- | [<- | []]]]; vm_compute; tauto.
+  destruct H as [<- | [<- | [<- | []]]]; reflexivity.
 Qed.
 
 (** The environment's refusals are listed for the forced-only filter:
