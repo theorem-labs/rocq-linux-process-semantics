@@ -385,8 +385,8 @@ Lemma check_socketpair_sh : forall i family type protocol sv eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted
-    in H. sh_frame2 H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted in H. sh_frame2 H.
 Qed.
 
 Lemma check_bind_sh : forall i fd addrp addrlen eff m m' evs,
@@ -464,12 +464,13 @@ Proof.
   sh_frame2 H.
 Qed.
 
-Lemma check_setsockopt_sh : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs ->
+Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core in H. sh_frame2 H.
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
+    in H. sh_frame2 H.
 Qed.
 
 Lemma check_getsockopt_sh : forall i fd level optlenp eff m m' evs,
@@ -496,12 +497,13 @@ Proof.
   unfold check_sendmsg, check_send_on_socket in H. sh_frame2 H.
 Qed.
 
-Lemma check_recvmsg_sh : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs ->
+Lemma check_recvmsg_sh : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd flags eff m m' evs H.
-  unfold check_recvmsg, check_recv_fd_answer in H. sh_frame2 H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H. sh_frame2 H.
 Qed.
 
 Lemma check_getrandom_sh : forall i buf cap flags eff m m' evs,

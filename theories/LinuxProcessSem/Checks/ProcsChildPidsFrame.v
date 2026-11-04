@@ -853,12 +853,13 @@ Proof.
   unfold check_getpeername, check_getpeername_core in H. cp_frame2 H.
 Qed.
 
-Lemma check_setsockopt_cp : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs ->
+Lemma check_setsockopt_cp : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   cp_of m' = cp_of m.
 Proof.
-  intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core in H. cp_frame2 H.
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
+    in H. cp_frame2 H.
 Qed.
 
 Lemma check_getsockopt_cp : forall i fd level optlenp eff m m' evs,
@@ -899,8 +900,8 @@ Lemma check_socketpair_cp : forall i family type protocol sv eff m m' evs,
   cp_of m' = cp_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted
-    in H. cp_frame2 H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted in H. cp_frame2 H.
 Qed.
 
 Lemma check_recvfrom_cp : forall i fd buf size eff m m' evs,
@@ -912,12 +913,13 @@ Proof.
   cp_frame2 H.
 Qed.
 
-Lemma check_recvmsg_cp : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs ->
+Lemma check_recvmsg_cp : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs ->
   cp_of m' = cp_of m.
 Proof.
-  intros fd flags eff m m' evs H.
-  unfold check_recvmsg, check_recv_fd_answer in H. cp_frame2 H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H. cp_frame2 H.
 Qed.
 
 Lemma check_sendto_cp : forall i fd buf count flags addrp eff m m' evs,

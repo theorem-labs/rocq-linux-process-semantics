@@ -993,8 +993,8 @@ Defined.
 Definition arm_setsockopt : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 208%Z (fun i => setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i))
-                       (fun i eff m => check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
-                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m)
+                       (fun i eff m => check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
+                       (fun i m => setsockopt_witness i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setsockopt_sound_ok, check_setsockopt_sound_unmodeled, check_setsockopt_complete_ok, check_setsockopt_complete_unmodeled, setsockopt_witness_ok.
@@ -1114,8 +1114,8 @@ Defined.
 Definition arm_recvmsg : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 212%Z (fun i => recvmsg_spec (fd32 (in_arg i 0)) (in_arg i 2) i))
-                       (fun i eff m => check_recvmsg (fd32 (in_arg i 0)) (in_arg i 2) eff m)
-                       (fun i m => recvmsg_witness (fd32 (in_arg i 0)) (in_arg i 2) m)
+                       (fun i eff m => check_recvmsg i (fd32 (in_arg i 0)) (in_arg i 2) eff m)
+                       (fun i m => recvmsg_witness i (fd32 (in_arg i 0)) (in_arg i 2) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_recvmsg_sound_ok, check_recvmsg_sound_unmodeled, check_recvmsg_complete_ok, check_recvmsg_complete_unmodeled, recvmsg_witness_ok.
@@ -2158,10 +2158,10 @@ Lemma sa_spec_arm_recvfrom : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setsockopt : forall i eff m,
-  ca_check arm_setsockopt i eff m = check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
+  ca_check arm_setsockopt i eff m = check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_setsockopt : forall i m,
-  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m.
+  ca_witness arm_setsockopt i m = setsockopt_witness i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setsockopt : forall i m o,
   sa_spec (ca_arm arm_setsockopt) i m o = setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o.
@@ -2268,10 +2268,10 @@ Lemma sa_spec_arm_madvise : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_recvmsg : forall i eff m,
-  ca_check arm_recvmsg i eff m = check_recvmsg (fd32 (in_arg i 0)) (in_arg i 2) eff m.
+  ca_check arm_recvmsg i eff m = check_recvmsg i (fd32 (in_arg i 0)) (in_arg i 2) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_recvmsg : forall i m,
-  ca_witness arm_recvmsg i m = recvmsg_witness (fd32 (in_arg i 0)) (in_arg i 2) m.
+  ca_witness arm_recvmsg i m = recvmsg_witness i (fd32 (in_arg i 0)) (in_arg i 2) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_recvmsg : forall i m o,
   sa_spec (ca_arm arm_recvmsg) i m o = recvmsg_spec (fd32 (in_arg i 0)) (in_arg i 2) i m o.

@@ -276,6 +276,7 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
               end
       end
   | Some (FdOpaque _) => CheckUnmodeled   (* [fdget] refuses an O_PATH file: see [Net.Socket.bind_spec] *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* an AF_UNIX end is a socket: see [Net.Socket.bind_spec] *)
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -303,6 +304,7 @@ Definition check_listen (fd backlog : word) (eff : SyscallEffect) (m : Model)
             (Z_to_bv 64 0) eff m
       end
   | Some (FdOpaque _) => CheckUnmodeled   (* as [check_bind]'s *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* as [check_bind]'s *)
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -343,6 +345,7 @@ Definition check_accept4 (fd addrp addrlenp flags : word)
                                                (nq_script (m_net m))))) m)
           | _ => check_errno_or_list EINVAL accept_notlisten_errnos eff m
           end
+      | FdSeqpacket _ _ _ => CheckUnmodeled   (* see [Net.Socket.accept4_spec] *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then CheckUnmodeled
              else check_errno_or_list ENOTSOCK accept_notsock_errnos eff m
@@ -392,6 +395,7 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
                     then check_ret_only_copyins copied eff (errno_ret EAFNOSUPPORT) m []
                     else CheckUnmodeled
                 end
+          | FdSeqpacket _ _ _ => CheckUnmodeled   (* see [Net.Socket.connect_spec] *)
           | _ => check_ret_only_copyins copied eff (errno_ret ENOTSOCK) m []
           end
       end
@@ -719,9 +723,9 @@ Proof.
   unfold check_bind in H. unfold bind_spec. cbv zeta in H.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
-    (* the opaque kinds: [CheckUnmodeled] *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
@@ -775,10 +779,10 @@ Proof.
   unfold check_bind in H. unfold bind_spec. cbv zeta in H.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try apply unmodeled_intro.
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
@@ -823,7 +827,7 @@ Proof.
   intros i fd addrp addrlen eff m m' evs H.
   unfold bind_spec in H. unfold check_bind. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct (orb (Z.ltb (sint32 addrlen) 0)
@@ -875,9 +879,9 @@ Proof.
   intros i fd addrp addrlen m eff H.
   unfold bind_spec in H. unfold check_bind. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
@@ -914,7 +918,7 @@ Proof.
   intros fd backlog eff m m' evs i H.
   unfold check_listen in H. unfold listen_spec. cbv zeta in H.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try discriminate;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
@@ -937,10 +941,10 @@ Lemma check_listen_sound_unmodeled : forall fd backlog eff m i,
 Proof.
   intros fd backlog eff m i H.
   unfold check_listen in H. cbv zeta in H.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H;
     try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try (unfold listen_spec; eapply bind_unmodeled2; [apply get_model_ok|];
          cbv beta zeta; srw Hfd; apply unmodeled_intro).
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H;
@@ -955,7 +959,7 @@ Proof.
   intros fd backlog eff m m' evs i H.
   unfold listen_spec in H. unfold check_listen. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *.
@@ -971,7 +975,7 @@ Proof.
   intros fd backlog m i eff H.
   unfold listen_spec in H. unfold check_listen. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
     try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *.
@@ -1000,7 +1004,9 @@ Proof.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 SOCK_NONBLOCK) 0)) eqn:E2;
     cbv beta iota zeta in H |- *; [discriminate|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]; cbv beta iota zeta in H |- *;
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in H |- *;
+    (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
+    try discriminate;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
          [discriminate | now apply check_errno_or_list_sound_ok]).
   destruct (negb (w_is0 addrp)) eqn:E3; cbv beta iota zeta in H |- *;
@@ -1048,10 +1054,12 @@ Proof.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 SOCK_NONBLOCK) 0)) eqn:E2;
     cbv beta iota zeta in H |- *; [apply unmodeled_intro|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]; cbv beta iota zeta in H |- *;
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in H |- *;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
            eqn:Ecap;
          [apply unmodeled_intro | now apply check_errno_or_list_no_unmodeled in H]).
+  (* an AF_UNIX SEQPACKET end: declined on both sides *)
+  all: try (match goal with |- unmodeled _ _ _ => apply unmodeled_intro end).
   destruct (negb (w_is0 addrp)) eqn:E3; cbv beta iota zeta in H |- *;
     [apply unmodeled_intro|].
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H |- *;
@@ -1080,10 +1088,11 @@ Proof.
   (* [cbn] must not reach the listening arm: that goal carries
      [alloc_fd]'s 4096-step fuel and [with_accepted], and normalising it
      costs gigabytes.  Select the arms that need it instead. *)
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]; cbv beta iota zeta in *; inv_ok.
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in *; inv_ok.
   (* every non-socket kind, the pipe end (8), /dev/null (9) and the
      opaque kinds (11, which [Eop] says are not here) included, takes
-     -ENOTSOCK.
+     -ENOTSOCK; an AF_UNIX SEQPACKET end (12) declines, so [inv_ok]
+     closed it.
      THE INDICES MOVE WITH [State.FdEntry]: a constructor added ahead of
      [FdSocket] shifts every number here, and a stale selector silently
      addresses a different arm. *)
@@ -1130,7 +1139,7 @@ Proof.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 SOCK_NONBLOCK) 0)) eqn:E2; hall E2; inv_ok;
     try discriminate; [reflexivity|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]; cbv beta iota zeta in *; inv_ok;
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in *; inv_ok;
     try discriminate;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
            eqn:Ecap; hall Ecap; inv_ok; first [reflexivity | discriminate]).
@@ -1158,10 +1167,10 @@ Proof.
   unfold check_connect in H. unfold connect_spec. cbv zeta in H.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     (* the opaque kinds are [CheckUnmodeled], ahead of the copy *)
-    [ | | | | | | | | | | discriminate | connect_ret H ].
+    [ | | | | | | | | | | discriminate | | connect_ret H ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *; [ connect_ret H | ].
@@ -1170,6 +1179,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try connect_ret_c H.
+  (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] past the copy *)
+  all: try discriminate.
   (* the socket arm, both ledger shapes *)
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
        cbv beta iota zeta in H |- *; [ connect_ret_c H | ].
@@ -1193,9 +1204,9 @@ Proof.
   unfold check_connect in H. unfold connect_spec. cbv zeta in H.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
-    [ | | | | | | | | | | apply unmodeled_intro
+    [ | | | | | | | | | | apply unmodeled_intro |
     | now apply check_ret_only_no_unmodeled in H ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
@@ -1207,6 +1218,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try (now apply check_ret_only_copyins_no_unmodeled in H).
+  (* an AF_UNIX SEQPACKET end: declined on both sides past the copy *)
+  all: try (apply record_copyins_unmodeled; apply unmodeled_intro).
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
        cbv beta iota zeta in H |- *;
        [ now apply check_ret_only_copyins_no_unmodeled in H | ].
@@ -1232,10 +1245,19 @@ Proof.
   intros i fd addrp addrlen eff m m' evs H.
   unfold connect_spec in H. unfold check_connect. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     (* the opaque kinds' [unmodeled] admits no [Ok]: [inv_ok] closed them *)
-    [ | | | | | | | | | | cbn; try rewrite bv_eqb_refl; reflexivity ].
+    [ | | | | | | | | | |
+      (* an AF_UNIX SEQPACKET end: past the copy it declines, so only the
+         two errnos ahead of the copy are [Ok]; [inv_ok] closes the rest *)
+      destruct (orb (Z.ltb (sint32 addrlen) 0)
+                    (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+        hall E1; inv_ok;
+        [ | destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
+              as [bs|] eqn:Hrb; hall Hrb; inv_ok ];
+        cbn; try rewrite bv_eqb_refl; reflexivity
+    | cbn; try rewrite bv_eqb_refl; reflexivity ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ].
@@ -1263,7 +1285,7 @@ Proof.
   intros i fd addrp addrlen m eff H.
   unfold connect_spec in H. unfold check_connect. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
     (* the opaque kinds: declined on both sides *)
     try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
@@ -1272,6 +1294,8 @@ Proof.
        hall E1; inv_ok; try discriminate.
   all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
+  (* an AF_UNIX SEQPACKET end: declined on both sides past the copy *)
+  all: try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok;
        try discriminate.
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3; hall E3; inv_ok;
@@ -1663,210 +1687,392 @@ Proof.
     solve [reflexivity | discriminate].
 Qed.
 
-(** The five as the dispatcher sees them: [State.ONsFile] is declined
-    ahead of [sock_fd] ([Net.Socket.fd_is_ns_file]), every other
-    descriptor is the [_core] acceptor above.  The four guard lemmas
-    carry the [_core] lemmas across the [if], once for all five. *)
+(** [Net.Socket.seqpacket_setsockopt] as an acceptor, test for test: the
+    four answered errnos change nothing, and the [SO_PASSCRED] store
+    rewrites the end's entry with the copied [int]'s truth value, past the
+    4-byte copy-in its ledger names. *)
+Definition check_seqpacket_setsockopt (i : SyscallInput) (fd id : word)
+    (side : bool) (level optlen : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if int32_neg optlen then check_ret_only eff (errno_ret EINVAL) m []
+  else if negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET)
+  then check_ret_only eff (errno_ret EOPNOTSUPP) m []
+  else if negb (Z.eqb (bv_unsigned (abi_low32 (in_arg i 2))) SO_PASSCRED)
+  then CheckUnmodeled
+  else if (bv_unsigned optlen <? 4)%Z then check_ret_only eff (errno_ret EINVAL) m []
+  else match copy_bytes_map (in_mem i) (in_arg i 3) 4 with
+       | None => check_ret_only eff (errno_ret EFAULT) m []
+       | Some vbs =>
+           check_ret_only_copyins [(in_arg i 3, 4%nat)] eff (Z_to_bv 64 0)
+             (with_fds (fd_insert (m_fds m) fd
+                (FdSeqpacket id side (mkSeqEnd (negb (w_is0 (le_bytes_to_word vbs)))))) m)
+             []
+       end.
+
+Lemma check_seqpacket_setsockopt_sound_ok :
+  forall i fd id side level optlen eff m m' evs,
+  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckOk m' evs ->
+  seqpacket_setsockopt fd id side level optlen i m (Ok eff m' evs).
+Proof.
+  intros i fd id side level optlen eff m m' evs H.
+  unfold check_seqpacket_setsockopt in H. unfold seqpacket_setsockopt.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  destruct (int32_neg optlen); cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET));
+    cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 (in_arg i 2))) SO_PASSCRED));
+    cbv beta iota in H |- *; [discriminate|].
+  destruct ((bv_unsigned optlen <? 4)%Z); cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (copy_bytes_map (in_mem i) (in_arg i 3) 4) as [vbs|];
+    cbv beta iota in H |- *.
+  - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_seqpacket_setsockopt_sound_unmodeled :
+  forall i fd id side level optlen eff m,
+  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckUnmodeled ->
+  seqpacket_setsockopt fd id side level optlen i m Unmodeled.
+Proof.
+  intros i fd id side level optlen eff m H.
+  unfold check_seqpacket_setsockopt in H. unfold seqpacket_setsockopt.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+  destruct (int32_neg optlen); cbv beta iota in H |- *;
+    [now apply check_ret_only_no_unmodeled in H|].
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET));
+    cbv beta iota in H |- *; [now apply check_ret_only_no_unmodeled in H|].
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 (in_arg i 2))) SO_PASSCRED));
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  destruct ((bv_unsigned optlen <? 4)%Z); cbv beta iota in H |- *;
+    [now apply check_ret_only_no_unmodeled in H|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 3) 4) as [vbs|];
+    cbv beta iota in H |- *.
+  - now apply check_ret_only_copyins_no_unmodeled in H.
+  - now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Lemma check_seqpacket_setsockopt_complete_ok :
+  forall i fd id side level optlen eff m m' evs,
+  seqpacket_setsockopt fd id side level optlen i m (Ok eff m' evs) ->
+  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckOk m' evs.
+Proof.
+  intros i fd id side level optlen eff m m' evs H.
+  unfold seqpacket_setsockopt in H. unfold check_seqpacket_setsockopt.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (int32_neg optlen); cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inv_ok.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET));
+    cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inv_ok.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 (in_arg i 2))) SO_PASSCRED));
+    cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
+  destruct ((bv_unsigned optlen <? 4)%Z); cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inv_ok.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (copy_bytes_map (in_mem i) (in_arg i 3) 4) as [vbs|];
+    cbv beta iota in H |- *.
+  - apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
+    unfold set_fds, modify, ret_only, pure, bind in Hcore. inv_ok.
+    apply check_ret_only_copyins_ok_iff. now repeat split.
+  - unfold err_ret, ret_only, pure in H. inv_ok.
+    apply check_ret_only_ok_iff. now repeat split.
+Qed.
+
+Lemma check_seqpacket_setsockopt_complete_unmodeled :
+  forall i fd id side level optlen m eff,
+  seqpacket_setsockopt fd id side level optlen i m Unmodeled ->
+  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckUnmodeled.
+Proof.
+  intros i fd id side level optlen m eff H.
+  unfold seqpacket_setsockopt in H. unfold check_seqpacket_setsockopt.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (int32_neg optlen); cbv beta iota in H |- *;
+    [unfold err_ret, ret_only, pure in H; discriminate|].
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET));
+    cbv beta iota in H |- *; [unfold err_ret, ret_only, pure in H; discriminate|].
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 (in_arg i 2))) SO_PASSCRED));
+    cbv beta iota in H |- *; [reflexivity|].
+  destruct ((bv_unsigned optlen <? 4)%Z); cbv beta iota in H |- *;
+    [unfold err_ret, ret_only, pure in H; discriminate|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 3) 4) as [vbs|];
+    cbv beta iota in H |- *.
+  - exfalso. apply record_copyins_unmodeled_inv in H.
+    unfold set_fds, modify, ret_only, pure, bind in H. inv_ok.
+  - unfold err_ret, ret_only, pure in H; discriminate.
+Qed.
+
+(** The five as the dispatcher sees them.  Each declines [State.ONsFile]
+    ahead of [sock_fd] ([Net.Socket.fd_is_ns_file]); [setsockopt] then
+    answers an AF_UNIX SEQPACKET end ([check_seqpacket_setsockopt]) and
+    the other four decline one ([Net.Socket.fd_is_seqpacket_end]); every
+    other descriptor is the [_core] acceptor above.  The four guard lemmas
+    carry the [_core] lemmas across the two [if]s, once for those four. *)
 Definition check_getsockname (fd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled
   else check_getsockname_core fd eff m.
 
 Definition check_getpeername (fd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled
   else check_getpeername_core fd eff m.
 
-Definition check_setsockopt (fd level optlen : word) (eff : SyscallEffect)
-    (m : Model) : check_result :=
+Definition check_setsockopt (i : SyscallInput) (fd level optlen : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
-  else check_setsockopt_core fd level optlen eff m.
+  else match fd_lookup (m_fds m) fd with
+       | Some (FdSeqpacket id side _) =>
+           check_seqpacket_setsockopt i fd id side level optlen eff m
+       | _ => check_setsockopt_core fd level optlen eff m
+       end.
 
 Definition check_getsockopt (i : SyscallInput) (fd level optlenp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled
   else check_getsockopt_core i fd level optlenp eff m.
 
 Definition check_shutdown (fd how : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled
   else check_shutdown_core fd how eff m.
 
-Lemma ns_guard_sound_ok : forall fd (core : Sys SyscallEffect) chk i m eff m' evs,
+Lemma sock_guard_sound_ok : forall fd (core : Sys SyscallEffect) chk i m eff m' evs,
   (chk = CheckOk m' evs -> core i m (Ok eff m' evs)) ->
-  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled else chk) = CheckOk m' evs ->
-  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled else core)
+  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+   else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled else chk)
+    = CheckOk m' evs ->
+  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled
+                            else if fd_is_seqpacket_end (m_fds m0) fd then unmodeled
+                            else core)
     i m (Ok eff m' evs).
 Proof.
   intros fd core chk i m eff m' evs Hc H.
   destruct (fd_is_ns_file (m_fds m) fd) eqn:Hns; [discriminate|].
-  eapply bind_ok0; [apply get_model_ok|]. cbv beta. rewrite Hns. exact (Hc H).
+  destruct (fd_is_seqpacket_end (m_fds m) fd) eqn:Hsq; [discriminate|].
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta. rewrite Hns, Hsq. exact (Hc H).
 Qed.
 
-Lemma ns_guard_sound_unmodeled : forall fd (core : Sys SyscallEffect) chk i m,
+Lemma sock_guard_sound_unmodeled : forall fd (core : Sys SyscallEffect) chk i m,
   (chk = CheckUnmodeled -> core i m Unmodeled) ->
-  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled else chk) = CheckUnmodeled ->
-  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled else core)
+  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+   else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled else chk)
+    = CheckUnmodeled ->
+  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled
+                            else if fd_is_seqpacket_end (m_fds m0) fd then unmodeled
+                            else core)
     i m Unmodeled.
 Proof.
   intros fd core chk i m Hc H.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  destruct (fd_is_ns_file (m_fds m) fd); [apply unmodeled_intro|exact (Hc H)].
+  destruct (fd_is_ns_file (m_fds m) fd); [apply unmodeled_intro|].
+  destruct (fd_is_seqpacket_end (m_fds m) fd); [apply unmodeled_intro|exact (Hc H)].
 Qed.
 
-Lemma ns_guard_complete_ok : forall fd (core : Sys SyscallEffect) chk i m eff m' evs,
+Lemma sock_guard_complete_ok : forall fd (core : Sys SyscallEffect) chk i m eff m' evs,
   (core i m (Ok eff m' evs) -> chk = CheckOk m' evs) ->
-  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled else core)
+  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled
+                            else if fd_is_seqpacket_end (m_fds m0) fd then unmodeled
+                            else core)
     i m (Ok eff m' evs) ->
-  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled else chk) = CheckOk m' evs.
+  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+   else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled else chk)
+    = CheckOk m' evs.
 Proof.
   intros fd core chk i m eff m' evs Hc H.
   apply get_model_bind_ok_inv in H. cbv beta in H.
   destruct (fd_is_ns_file (m_fds m) fd); [unfold unmodeled in H; discriminate|].
+  destruct (fd_is_seqpacket_end (m_fds m) fd); [unfold unmodeled in H; discriminate|].
   exact (Hc H).
 Qed.
 
-Lemma ns_guard_complete_unmodeled : forall fd (core : Sys SyscallEffect) chk i m,
+Lemma sock_guard_complete_unmodeled : forall fd (core : Sys SyscallEffect) chk i m,
   (core i m Unmodeled -> chk = CheckUnmodeled) ->
-  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled else core)
+  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled
+                            else if fd_is_seqpacket_end (m_fds m0) fd then unmodeled
+                            else core)
     i m Unmodeled ->
-  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled else chk) = CheckUnmodeled.
+  (if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
+   else if fd_is_seqpacket_end (m_fds m) fd then CheckUnmodeled else chk)
+    = CheckUnmodeled.
 Proof.
   intros fd core chk i m Hc H.
   apply get_model_bind_unmodeled_inv in H. cbv beta in H.
-  destruct (fd_is_ns_file (m_fds m) fd); [reflexivity|exact (Hc H)].
+  destruct (fd_is_ns_file (m_fds m) fd); [reflexivity|].
+  destruct (fd_is_seqpacket_end (m_fds m) fd); [reflexivity|exact (Hc H)].
 Qed.
 
 Lemma check_getsockname_sound_ok : forall fd eff m m' evs i,
   check_getsockname fd eff m = CheckOk m' evs -> getsockname_spec fd i m (Ok eff m' evs).
 Proof.
-  intros. exact (ns_guard_sound_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_sound_ok _ _ _ _ _ _ _ _
                    (check_getsockname_core_sound_ok fd eff m m' evs i) H).
 Qed.
 Lemma check_getsockname_sound_unmodeled : forall fd eff m i,
   check_getsockname fd eff m = CheckUnmodeled -> getsockname_spec fd i m Unmodeled.
 Proof.
-  intros. exact (ns_guard_sound_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_sound_unmodeled _ _ _ _ _
                    (check_getsockname_core_sound_unmodeled fd eff m i) H).
 Qed.
 Lemma check_getsockname_complete_ok : forall fd eff m m' evs i,
   getsockname_spec fd i m (Ok eff m' evs) -> check_getsockname fd eff m = CheckOk m' evs.
 Proof.
-  intros. exact (ns_guard_complete_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_complete_ok _ _ _ _ _ _ _ _
                    (check_getsockname_core_complete_ok fd eff m m' evs i) H).
 Qed.
 Lemma check_getsockname_complete_unmodeled : forall fd m i eff,
   getsockname_spec fd i m Unmodeled -> check_getsockname fd eff m = CheckUnmodeled.
 Proof.
-  intros. exact (ns_guard_complete_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_complete_unmodeled _ _ _ _ _
                    (check_getsockname_core_complete_unmodeled fd m i eff) H).
 Qed.
 
 Lemma check_getpeername_sound_ok : forall fd eff m m' evs i,
   check_getpeername fd eff m = CheckOk m' evs -> getpeername_spec fd i m (Ok eff m' evs).
 Proof.
-  intros. exact (ns_guard_sound_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_sound_ok _ _ _ _ _ _ _ _
                    (check_getpeername_core_sound_ok fd eff m m' evs i) H).
 Qed.
 Lemma check_getpeername_sound_unmodeled : forall fd eff m i,
   check_getpeername fd eff m = CheckUnmodeled -> getpeername_spec fd i m Unmodeled.
 Proof.
-  intros. exact (ns_guard_sound_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_sound_unmodeled _ _ _ _ _
                    (check_getpeername_core_sound_unmodeled fd eff m i) H).
 Qed.
 Lemma check_getpeername_complete_ok : forall fd eff m m' evs i,
   getpeername_spec fd i m (Ok eff m' evs) -> check_getpeername fd eff m = CheckOk m' evs.
 Proof.
-  intros. exact (ns_guard_complete_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_complete_ok _ _ _ _ _ _ _ _
                    (check_getpeername_core_complete_ok fd eff m m' evs i) H).
 Qed.
 Lemma check_getpeername_complete_unmodeled : forall fd m i eff,
   getpeername_spec fd i m Unmodeled -> check_getpeername fd eff m = CheckUnmodeled.
 Proof.
-  intros. exact (ns_guard_complete_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_complete_unmodeled _ _ _ _ _
                    (check_getpeername_core_complete_unmodeled fd m i eff) H).
 Qed.
 
-Lemma check_setsockopt_sound_ok : forall fd level optlen eff m m' evs i,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs ->
+(** setsockopt's four directions: the [State.ONsFile] decline, then the
+    entry's kind picks [check_seqpacket_setsockopt] or the [_core]
+    acceptor, as [Net.Socket.setsockopt_spec] picks its two bodies. *)
+Lemma check_setsockopt_sound_ok : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   setsockopt_spec fd level optlen i m (Ok eff m' evs).
 Proof.
-  intros. exact (ns_guard_sound_ok _ _ _ _ _ _ _ _
-                   (check_setsockopt_core_sound_ok fd level optlen eff m m' evs i) H).
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt in H. unfold setsockopt_spec.
+  destruct (fd_is_ns_file (m_fds m) fd) eqn:Hns; [discriminate|].
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hns.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_setsockopt_sound_ok _ _ _ _ _ _ _ _ _ _ H)
+          | exact (check_setsockopt_core_sound_ok _ _ _ _ _ _ _ _ H) ].
 Qed.
-Lemma check_setsockopt_sound_unmodeled : forall fd level optlen eff m i,
-  check_setsockopt fd level optlen eff m = CheckUnmodeled ->
+Lemma check_setsockopt_sound_unmodeled : forall i fd level optlen eff m,
+  check_setsockopt i fd level optlen eff m = CheckUnmodeled ->
   setsockopt_spec fd level optlen i m Unmodeled.
 Proof.
-  intros. exact (ns_guard_sound_unmodeled _ _ _ _ _
-                   (check_setsockopt_core_sound_unmodeled fd level optlen eff m i) H).
+  intros i fd level optlen eff m H.
+  unfold check_setsockopt in H. unfold setsockopt_spec.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_setsockopt_sound_unmodeled _ _ _ _ _ _ _ _ H)
+          | exact (check_setsockopt_core_sound_unmodeled _ _ _ _ _ _ H) ].
 Qed.
-Lemma check_setsockopt_complete_ok : forall fd level optlen eff m m' evs i,
+Lemma check_setsockopt_complete_ok : forall i fd level optlen eff m m' evs,
   setsockopt_spec fd level optlen i m (Ok eff m' evs) ->
-  check_setsockopt fd level optlen eff m = CheckOk m' evs.
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs.
 Proof.
-  intros. exact (ns_guard_complete_ok _ _ _ _ _ _ _ _
-                   (check_setsockopt_core_complete_ok fd level optlen eff m m' evs i) H).
+  intros i fd level optlen eff m m' evs H.
+  unfold setsockopt_spec in H. unfold check_setsockopt.
+  apply get_model_bind_ok_inv in H. cbv beta in H.
+  destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate|].
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_setsockopt_complete_ok _ _ _ _ _ _ _ _ _ _ H)
+          | exact (check_setsockopt_core_complete_ok _ _ _ _ _ _ _ _ H) ].
 Qed.
-Lemma check_setsockopt_complete_unmodeled : forall fd level optlen m i eff,
+Lemma check_setsockopt_complete_unmodeled : forall i fd level optlen m eff,
   setsockopt_spec fd level optlen i m Unmodeled ->
-  check_setsockopt fd level optlen eff m = CheckUnmodeled.
+  check_setsockopt i fd level optlen eff m = CheckUnmodeled.
 Proof.
-  intros. exact (ns_guard_complete_unmodeled _ _ _ _ _
-                   (check_setsockopt_core_complete_unmodeled fd level optlen m i eff) H).
+  intros i fd level optlen m eff H.
+  unfold setsockopt_spec in H. unfold check_setsockopt.
+  apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+  destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *; [reflexivity|].
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_setsockopt_complete_unmodeled _ _ _ _ _ _ _ _ H)
+          | exact (check_setsockopt_core_complete_unmodeled _ _ _ _ _ _ H) ].
 Qed.
 
 Lemma check_getsockopt_sound_ok : forall i fd level optlenp eff m m' evs,
   check_getsockopt i fd level optlenp eff m = CheckOk m' evs ->
   getsockopt_spec fd level optlenp i m (Ok eff m' evs).
 Proof.
-  intros. exact (ns_guard_sound_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_sound_ok _ _ _ _ _ _ _ _
                    (check_getsockopt_core_sound_ok i fd level optlenp eff m m' evs) H).
 Qed.
 Lemma check_getsockopt_sound_unmodeled : forall i fd level optlenp eff m,
   check_getsockopt i fd level optlenp eff m = CheckUnmodeled ->
   getsockopt_spec fd level optlenp i m Unmodeled.
 Proof.
-  intros. exact (ns_guard_sound_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_sound_unmodeled _ _ _ _ _
                    (check_getsockopt_core_sound_unmodeled i fd level optlenp eff m) H).
 Qed.
 Lemma check_getsockopt_complete_ok : forall i fd level optlenp eff m m' evs,
   getsockopt_spec fd level optlenp i m (Ok eff m' evs) ->
   check_getsockopt i fd level optlenp eff m = CheckOk m' evs.
 Proof.
-  intros. exact (ns_guard_complete_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_complete_ok _ _ _ _ _ _ _ _
                    (check_getsockopt_core_complete_ok i fd level optlenp eff m m' evs) H).
 Qed.
 Lemma check_getsockopt_complete_unmodeled : forall i fd level optlenp m eff,
   getsockopt_spec fd level optlenp i m Unmodeled ->
   check_getsockopt i fd level optlenp eff m = CheckUnmodeled.
 Proof.
-  intros. exact (ns_guard_complete_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_complete_unmodeled _ _ _ _ _
                    (check_getsockopt_core_complete_unmodeled i fd level optlenp m eff) H).
 Qed.
 
 Lemma check_shutdown_sound_ok : forall fd how eff m m' evs i,
   check_shutdown fd how eff m = CheckOk m' evs -> shutdown_spec fd how i m (Ok eff m' evs).
 Proof.
-  intros. exact (ns_guard_sound_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_sound_ok _ _ _ _ _ _ _ _
                    (check_shutdown_core_sound_ok fd how eff m m' evs i) H).
 Qed.
 Lemma check_shutdown_sound_unmodeled : forall fd how eff m i,
   check_shutdown fd how eff m = CheckUnmodeled -> shutdown_spec fd how i m Unmodeled.
 Proof.
-  intros. exact (ns_guard_sound_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_sound_unmodeled _ _ _ _ _
                    (check_shutdown_core_sound_unmodeled fd how eff m i) H).
 Qed.
 Lemma check_shutdown_complete_ok : forall fd how eff m m' evs i,
   shutdown_spec fd how i m (Ok eff m' evs) -> check_shutdown fd how eff m = CheckOk m' evs.
 Proof.
-  intros. exact (ns_guard_complete_ok _ _ _ _ _ _ _ _
+  intros. exact (sock_guard_complete_ok _ _ _ _ _ _ _ _
                    (check_shutdown_core_complete_ok fd how eff m m' evs i) H).
 Qed.
 Lemma check_shutdown_complete_unmodeled : forall fd how m i eff,
   shutdown_spec fd how i m Unmodeled -> check_shutdown fd how eff m = CheckUnmodeled.
 Proof.
-  intros. exact (ns_guard_complete_unmodeled _ _ _ _ _
+  intros. exact (sock_guard_complete_unmodeled _ _ _ _ _
                    (check_shutdown_core_complete_unmodeled fd how m i eff) H).
 Qed.
 
@@ -1942,6 +2148,7 @@ Definition check_sendto (i : SyscallInput) (fd buf count flags addrp : word)
            check_send_on_socket [] (fun n => [(buf, n)]) fd sk count
              (readable_bytes (in_mem i) buf count) eff m
        | Some (FdOpaque _) => CheckUnmodeled   (* as [check_bind]'s *)
+       | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [Net.Socket.sendto_spec] *)
        | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
        end).
 
@@ -1964,6 +2171,7 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
   | Some (FdOpaque _) => CheckUnmodeled
       (* -EBADF for an O_PATH file, -ENOTSOCK for the other two: the
          split is not written, see [Net.Socket.sendmsg_spec] *)
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [Net.Socket.sendmsg_spec] *)
   | Some (FdSocket sk) =>
       match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => check_ret_only eff (errno_ret EFAULT) m []
@@ -2174,9 +2382,9 @@ Proof.
   ok_zero_cases H buf count;
     [ | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
         apply pure_ok ].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
-    (* the opaque kinds: [CheckUnmodeled] *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
@@ -2198,10 +2406,10 @@ Proof.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
   ok_zero_cases H buf count;
     [ | now apply check_ret_only_no_unmodeled in H ].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try apply unmodeled_intro.
   now apply check_send_on_socket_no_unmodeled in H.
 Qed.
@@ -2223,7 +2431,7 @@ Proof.
   sys_unfold. cbv iota zeta in H. inv_ok.
   ok_zero_split buf count.
   2: { cbn; try rewrite bv_eqb_refl; reflexivity. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   eapply check_send_on_socket_complete_ok with (i := i). eassumption.
@@ -2245,9 +2453,9 @@ Proof.
      [inv_ok] has already closed it.  What is left is the range that
      passes, where only the socket arm can decline *)
   ok_zero_split buf count.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
   exfalso. eapply send_on_socket_no_unmodeled with (i := i). eassumption.
 Qed.
@@ -2268,9 +2476,9 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
-    (* the opaque kinds: [CheckUnmodeled] *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
@@ -2313,10 +2521,10 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try apply unmodeled_intro.
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
@@ -2353,7 +2561,7 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf;
     [unfold unmodeled in H; inversion H|].
   sys_unfold. cbv iota zeta in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
@@ -2394,9 +2602,9 @@ Proof.
   unfold sendmsg_spec in H. unfold check_sendmsg.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [reflexivity|].
   sys_unfold. cbv iota zeta in H. inv_ok.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
-    (* the opaque kinds: declined on both sides *)
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok; try discriminate.
@@ -2653,11 +2861,203 @@ Proof.
     discriminate.
 Qed.
 
+(** [Net.Socket.socketpair_unix_written] as an acceptor.  Three shapes:
+    a reservation errno with nothing stored, and, under the two stores, a
+    late AF_UNIX errno with the model unchanged or 0 with both ends
+    installed.  The return value picks between the last two. *)
+Definition check_socketpair_unix_written (sv fd1 fd2 id : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match eff with
+  | mkEffectU r [] [] [] [] [] =>
+      if errno_ret_in socketpair_reserve_errnos r
+      then CheckOk m [] else CheckReject
+  | mkEffectU r ws [] [] [] [] =>
+      if writes_eqb ws (socketpair_writes sv fd1 fd2) then
+        if errno_ret_in socketpair_unix_errnos r then CheckOk m []
+        else if bv_eqb r (Z_to_bv 64 0)
+        then CheckOk
+               (with_fds (fd_insert (fd_insert (m_fds m) fd1 (FdSeqpacket id false seq_fresh))
+                                    fd2 (FdSeqpacket id true seq_fresh)) m) []
+        else CheckReject
+      else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma socketpair_unix_written_no_unmodeled : forall sv fd1 fd2 id i m,
+  ~ socketpair_unix_written sv fd1 fd2 id i m Unmodeled.
+Proof.
+  intros sv fd1 fd2 id i m H.
+  unfold socketpair_unix_written, socketpair_installed in H.
+  unfold alt, errno_from, err_ret, ret_only, bind, choose, pure, get_model,
+    set_fds, modify in H.
+  destruct H as [H|[H|H]]; inv_ok.
+Qed.
+
+Lemma check_socketpair_unix_written_sound_ok :
+  forall sv fd1 fd2 id eff m m' evs i,
+  check_socketpair_unix_written sv fd1 fd2 id eff m = CheckOk m' evs ->
+  socketpair_unix_written sv fd1 fd2 id i m (Ok eff m' evs).
+Proof.
+  intros sv fd1 fd2 id [ret ws zs us cs cis] m m' evs i H.
+  unfold check_socketpair_unix_written in H. unfold socketpair_unix_written.
+  destruct zs as [|z zs]; [|destruct ws; discriminate].
+  destruct us as [|u us]; [|destruct ws; discriminate].
+  destruct cs as [|c cs]; [|destruct ws; discriminate].
+  destruct cis as [|ci cis]; [|destruct ws; discriminate].
+  destruct ws as [|w ws]; cbv beta iota in H.
+  - destruct (errno_ret_in socketpair_reserve_errnos ret) eqn:He; [|discriminate].
+    inversion H; clear H; subst m' evs.
+    apply errno_ret_in_true in He as (e & HIn & ->).
+    apply alt_l. eapply bind_ok0; [apply choose_ok; exact HIn|].
+    cbv beta. apply pure_ok.
+  - destruct (writes_eqb (w :: ws) (socketpair_writes sv fd1 fd2)) eqn:Hws;
+      cbv beta iota in H; [|discriminate].
+    apply writes_eqb_eq in Hws. rewrite Hws.
+    destruct (errno_ret_in socketpair_unix_errnos ret) eqn:He; cbv beta iota in H.
+    + inversion H; clear H; subst m' evs.
+      apply errno_ret_in_true in He as (e & HIn & ->).
+      apply alt_r, alt_l.
+      eapply bind_ok0; [apply choose_ok; exact HIn|]. cbv beta. apply pure_ok.
+    + destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:Hz; cbv beta iota in H; [|discriminate].
+      inversion H; clear H; subst m' evs.
+      apply bv_eqb_eq in Hz; subst ret.
+      apply alt_r, alt_r. unfold socketpair_installed.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_socketpair_unix_written_complete_ok :
+  forall sv fd1 fd2 id eff m m' evs i,
+  socketpair_unix_written sv fd1 fd2 id i m (Ok eff m' evs) ->
+  check_socketpair_unix_written sv fd1 fd2 id eff m = CheckOk m' evs.
+Proof.
+  intros sv fd1 fd2 id eff m m' evs i H.
+  unfold socketpair_unix_written, socketpair_installed in H.
+  unfold alt, errno_from, err_ret, ret_only, bind, choose, pure, get_model,
+    set_fds, modify in H.
+  unfold check_socketpair_unix_written.
+  destruct H as [H|[H|H]]; inv_ok.
+  - cbv beta iota.
+    match goal with
+    | Hin : In _ socketpair_reserve_errnos |- _ =>
+        rewrite (errno_ret_in_intro _ _ Hin)
+    end.
+    reflexivity.
+  - unfold socketpair_writes. cbv beta iota.
+    rewrite (proj2 (writes_eqb_eq _ _) eq_refl).
+    match goal with
+    | Hin : In _ socketpair_unix_errnos |- _ =>
+        rewrite (errno_ret_in_intro _ _ Hin)
+    end.
+    reflexivity.
+  - unfold socketpair_writes. cbv beta iota.
+    rewrite (proj2 (writes_eqb_eq _ _) eq_refl).
+    replace (errno_ret_in socketpair_unix_errnos (Z_to_bv 64 0)) with false
+      by (vm_compute; reflexivity).
+    rewrite bv_eqb_refl. reflexivity.
+Qed.
+
+Lemma check_socketpair_unix_written_no_unmodeled : forall sv fd1 fd2 id eff m,
+  check_socketpair_unix_written sv fd1 fd2 id eff m <> CheckUnmodeled.
+Proof.
+  intros sv fd1 fd2 id [ret ws zs us cs cis] m. unfold check_socketpair_unix_written.
+  destruct ws as [|w ws]; destruct zs; destruct us; destruct cs; destruct cis;
+    cbv beta iota; try discriminate;
+    repeat match goal with |- context [if ?b then _ else _] => destruct b end;
+    discriminate.
+Qed.
+
+(** The AF_UNIX SEQPACKET arm of [check_socketpair]: the
+    [Net.Socket.socketpair_unix_spec] gates, then the AF_INET arm's two
+    destination tests. *)
+Definition check_socketpair_unix (i : SyscallInput) (sv : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match socketpair_fds (m_fds m) with
+  | None => CheckUnmodeled
+  | Some (fd1, fd2) =>
+      if seq_id_live (m_fds m) (seq_new_id (m_fds m)) then CheckUnmodeled
+      else if socketpair_dest_writable (in_wmem i) sv
+      then check_socketpair_unix_written sv fd1 fd2 (seq_new_id (m_fds m)) eff m
+      else if negb (access_okb sv 4) then check_socketpair_faulted eff m
+      else CheckUnmodeled
+  end.
+
+Lemma check_socketpair_unix_sound_ok : forall i sv eff m m' evs,
+  check_socketpair_unix i sv eff m = CheckOk m' evs ->
+  socketpair_unix_spec sv i m (Ok eff m' evs).
+Proof.
+  intros i sv eff m m' evs H.
+  unfold check_socketpair_unix in H. unfold socketpair_unix_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
+    cbv beta iota in H |- *; [|discriminate].
+  destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
+    cbv beta iota in H |- *; [discriminate|].
+  destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
+  - exact (check_socketpair_unix_written_sound_ok _ _ _ _ _ _ _ _ _ H).
+  - destruct (negb (access_okb sv 4)); cbv beta iota in H |- *; [|discriminate].
+    exact (check_socketpair_faulted_sound_ok _ _ _ _ _ H).
+Qed.
+
+Lemma check_socketpair_unix_sound_unmodeled : forall i sv eff m,
+  check_socketpair_unix i sv eff m = CheckUnmodeled ->
+  socketpair_unix_spec sv i m Unmodeled.
+Proof.
+  intros i sv eff m H.
+  unfold check_socketpair_unix in H. unfold socketpair_unix_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+  destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
+    cbv beta iota in H |- *; [|apply unmodeled_intro].
+  destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
+  - now apply check_socketpair_unix_written_no_unmodeled in H.
+  - destruct (negb (access_okb sv 4)); cbv beta iota in H |- *;
+      [now apply check_socketpair_faulted_no_unmodeled in H|apply unmodeled_intro].
+Qed.
+
+Lemma check_socketpair_unix_complete_ok : forall i sv eff m m' evs,
+  socketpair_unix_spec sv i m (Ok eff m' evs) ->
+  check_socketpair_unix i sv eff m = CheckOk m' evs.
+Proof.
+  intros i sv eff m m' evs H.
+  unfold socketpair_unix_spec in H. unfold check_socketpair_unix.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
+    cbv beta iota in H |- *; [|unfold unmodeled in H; discriminate].
+  destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
+    cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
+  destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
+  - exact (check_socketpair_unix_written_complete_ok _ _ _ _ _ _ _ _ _ H).
+  - destruct (negb (access_okb sv 4)); cbv beta iota in H |- *;
+      [|unfold unmodeled in H; discriminate].
+    exact (check_socketpair_faulted_complete_ok _ _ _ _ _ H).
+Qed.
+
+Lemma check_socketpair_unix_complete_unmodeled : forall i sv m eff,
+  socketpair_unix_spec sv i m Unmodeled ->
+  check_socketpair_unix i sv eff m = CheckUnmodeled.
+Proof.
+  intros i sv m eff H.
+  unfold socketpair_unix_spec in H. unfold check_socketpair_unix.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
+    cbv beta iota in H |- *; [|reflexivity].
+  destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
+    cbv beta iota in H |- *; [reflexivity|].
+  destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
+  - exfalso. exact (socketpair_unix_written_no_unmodeled _ _ _ _ _ _ H).
+  - destruct (negb (access_okb sv 4)); cbv beta iota in H |- *; [|reflexivity].
+    exfalso. exact (socketpair_faulted_no_unmodeled _ _ H).
+Qed.
 
 Definition check_socketpair (i : SyscallInput) (family type protocol sv : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (socketpair_flags_ok type)
   then check_ret_only eff (errno_ret EINVAL) m []
+  else if socketpair_seqpacket_b family type protocol then check_socketpair_unix i sv eff m
   else if negb (socketpair_modeled_b family type protocol) then CheckUnmodeled
   else
   match socketpair_fds (m_fds m) with
@@ -2683,6 +3083,9 @@ Proof.
   destruct (negb (socketpair_flags_ok type)) eqn:Hfl; cbv beta iota in H |- *.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
+  destruct (socketpair_seqpacket_b family type protocol) eqn:Hsq;
+    cbv beta iota in H |- *.
+  { exact (check_socketpair_unix_sound_ok _ _ _ _ _ _ H). }
   destruct (negb (socketpair_modeled_b family type protocol)) eqn:Hmo;
     cbv beta iota in H |- *; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
@@ -2703,6 +3106,9 @@ Proof.
   unfold check_socketpair in H. unfold socketpair_spec.
   destruct (negb (socketpair_flags_ok type)) eqn:Hfl; cbv beta iota in H |- *.
   { now apply check_ret_only_no_unmodeled in H. }
+  destruct (socketpair_seqpacket_b family type protocol) eqn:Hsq;
+    cbv beta iota in H |- *.
+  { exact (check_socketpair_unix_sound_unmodeled _ _ _ _ H). }
   destruct (negb (socketpair_modeled_b family type protocol)) eqn:Hmo;
     cbv beta iota in H |- *; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
@@ -2727,6 +3133,9 @@ Proof.
   destruct (negb (socketpair_flags_ok type)) eqn:Hfl; cbv beta iota in H |- *.
   { unfold err_ret, ret_only, pure in H. inv_ok.
     cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (socketpair_seqpacket_b family type protocol) eqn:Hsq;
+    cbv beta iota in H |- *.
+  { exact (check_socketpair_unix_complete_ok _ _ _ _ _ _ H). }
   destruct (negb (socketpair_modeled_b family type protocol)) eqn:Hmo;
     cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
   apply bind_input_model_inv in H.
@@ -2750,6 +3159,9 @@ Proof.
   unfold socketpair_spec in H. unfold check_socketpair.
   destruct (negb (socketpair_flags_ok type)) eqn:Hfl; cbv beta iota in H |- *.
   { unfold err_ret, ret_only, pure in H. discriminate. }
+  destruct (socketpair_seqpacket_b family type protocol) eqn:Hsq;
+    cbv beta iota in H |- *.
+  { exact (check_socketpair_unix_complete_unmodeled _ _ _ _ H). }
   destruct (negb (socketpair_modeled_b family type protocol)) eqn:Hmo;
     cbv beta iota in H |- *; [reflexivity|].
   apply bind_input_model_inv in H.
@@ -2845,67 +3257,449 @@ Qed.
 
 (* -------------------------------------------------------------- recvmsg *)
 
-(** recvmsg: MSG_CMSG_COMPAT is fail-closed (its value is a kernel
-    configuration), and otherwise the descriptor alone decides — the
-    message header is never read.  See [Specs.recvmsg_spec]. *)
-Definition check_recvmsg (fd flags : word) (eff : SyscallEffect) (m : Model)
+(** An effect with return [r], the stores [ws], no zeroing, unmapping or
+    copy, and exactly the copy-in ledger [reads]: the one shape each
+    answered arm of [Net.Socket.seqpacket_recvmsg] takes, a
+    [record_copyins reads] over a [pure] effect. *)
+Definition check_ret_writes_copyins (reads : list (word * nat))
+    (ws : list (word * list byte)) (eff : SyscallEffect) (r : word) (m : Model)
     : check_result :=
+  match eff with
+  | mkEffectU ret ws' [] [] [] cis =>
+      if bv_eqb ret r && writes_eqb ws' ws && access_ranges_eqb cis reads
+      then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma check_ret_writes_copyins_ok_inv : forall reads ws eff r m1 m' evs,
+  check_ret_writes_copyins reads ws eff r m1 = CheckOk m' evs ->
+  eff = with_copyins reads (mkEffect r ws []) /\ m' = m1 /\ evs = [].
+Proof.
+  intros reads ws [ret ws' zs us cs cis] r m1 m' evs H.
+  unfold check_ret_writes_copyins in H.
+  destruct zs; [|discriminate]. destruct us; [|discriminate].
+  destruct cs; [|discriminate].
+  destruct (bv_eqb ret r && writes_eqb ws' ws && access_ranges_eqb cis reads) eqn:Hb;
+    [|discriminate].
+  cbv beta iota in H. injection H as <- <-.
+  apply andb_true_iff in Hb as [Hb Hc]. apply andb_true_iff in Hb as [Ha Hw].
+  apply bv_eqb_eq in Ha. apply writes_eqb_eq in Hw. apply access_ranges_eqb_eq in Hc.
+  subst. split; [reflexivity|split; reflexivity].
+Qed.
+
+Lemma check_ret_writes_copyins_no_unmodeled : forall reads ws eff r m,
+  check_ret_writes_copyins reads ws eff r m <> CheckUnmodeled.
+Proof.
+  intros reads ws [ret ws' zs us cs cis] r m. unfold check_ret_writes_copyins.
+  destruct zs; [|discriminate]. destruct us; [|discriminate].
+  destruct cs; [|discriminate].
+  destruct (bv_eqb ret r && writes_eqb ws' ws && access_ranges_eqb cis reads);
+    discriminate.
+Qed.
+
+Lemma check_ret_writes_copyins_refl : forall reads ws r m,
+  check_ret_writes_copyins reads ws (with_copyins reads (mkEffect r ws [])) r m
+    = CheckOk m [].
+Proof.
+  intros reads ws r m. unfold check_ret_writes_copyins, with_copyins.
+  cbv beta iota delta [eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+  rewrite bv_eqb_refl, (proj2 (writes_eqb_eq ws ws) eq_refl), access_ranges_eqb_refl.
+  reflexivity.
+Qed.
+
+(** The spec side of the same shape: a [record_copyins reads] over a
+    [pure] effect has that one outcome. *)
+Lemma record_copyins_pure_ok_inv : forall reads r ws i m eff m' evs,
+  record_copyins reads (pure (mkEffect r ws [])) i m (Ok eff m' evs) ->
+  eff = with_copyins reads (mkEffect r ws []) /\ m' = m /\ evs = [].
+Proof.
+  intros reads r ws i m eff m' evs H.
+  apply record_copyins_ok_inv in H. destruct H as (core & Hc & ->).
+  unfold pure in Hc. injection Hc as -> -> ->.
+  cbn [eff_copyins]. rewrite app_nil_r.
+  split; [reflexivity|split; reflexivity].
+Qed.
+
+Lemma record_copyins_pure_no_unmodeled : forall reads r ws i m,
+  ~ record_copyins reads (pure (mkEffect r ws [])) i m Unmodeled.
+Proof.
+  intros reads r ws i m H. apply record_copyins_unmodeled_inv in H.
+  unfold pure in H. discriminate H.
+Qed.
+
+(** [Net.Socket.recvmsg_eof_writes] as an acceptor: the two stores of the
+    end of file, store by store, under the copy-in ledger [reads]. *)
+Definition check_recvmsg_eof_writes (i : SyscallInput) (reads : list (word * nat))
+    (msg : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if put_user_lands (in_wmem i) (msg + Z_to_bv 64 48) 4 then
+    if put_user_lands (in_wmem i) (msg + Z_to_bv 64 40) 8
+    then check_ret_writes_copyins reads
+           [(msg + Z_to_bv 64 48, word_le4 (Z_to_bv 64 0));
+            (msg + Z_to_bv 64 40, word_le8 (Z_to_bv 64 0))]
+           eff (Z_to_bv 64 0) m
+    else if bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 40) 8
+    then check_ret_writes_copyins reads
+           [(msg + Z_to_bv 64 48, word_le4 (Z_to_bv 64 0))]
+           eff (errno_ret EFAULT) m
+    else CheckUnmodeled
+  else if bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 48) 4
+  then check_ret_writes_copyins reads [] eff (errno_ret EFAULT) m
+  else CheckUnmodeled.
+
+Lemma check_recvmsg_eof_writes_sound_ok : forall i reads msg eff m m' evs,
+  check_recvmsg_eof_writes i reads msg eff m = CheckOk m' evs ->
+  recvmsg_eof_writes reads msg i m (Ok eff m' evs).
+Proof.
+  intros i reads msg eff m m' evs H.
+  unfold check_recvmsg_eof_writes in H. unfold recvmsg_eof_writes.
+  eapply bind_ok0; [apply input_ok|]. cbv beta zeta.
+  destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 48) 4);
+    cbv beta iota in H |- *.
+  - destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 40) 8);
+      cbv beta iota in H |- *.
+    + apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+      apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+    + destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 40) 8);
+        cbv beta iota in H |- *; [|discriminate].
+      apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+      apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+  - destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 48) 4);
+      cbv beta iota in H |- *; [|discriminate].
+    apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+Qed.
+
+Lemma check_recvmsg_eof_writes_sound_unmodeled : forall i reads msg eff m,
+  check_recvmsg_eof_writes i reads msg eff m = CheckUnmodeled ->
+  recvmsg_eof_writes reads msg i m Unmodeled.
+Proof.
+  intros i reads msg eff m H.
+  unfold check_recvmsg_eof_writes in H. unfold recvmsg_eof_writes.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta zeta.
+  destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 48) 4);
+    cbv beta iota in H |- *.
+  - destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 40) 8);
+      cbv beta iota in H |- *.
+    + now apply check_ret_writes_copyins_no_unmodeled in H.
+    + destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 40) 8);
+        cbv beta iota in H |- *;
+        [now apply check_ret_writes_copyins_no_unmodeled in H|apply unmodeled_intro].
+  - destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 48) 4);
+      cbv beta iota in H |- *;
+      [now apply check_ret_writes_copyins_no_unmodeled in H|apply unmodeled_intro].
+Qed.
+
+Lemma check_recvmsg_eof_writes_complete_ok : forall i reads msg eff m m' evs,
+  recvmsg_eof_writes reads msg i m (Ok eff m' evs) ->
+  check_recvmsg_eof_writes i reads msg eff m = CheckOk m' evs.
+Proof.
+  intros i reads msg eff m m' evs H.
+  unfold recvmsg_eof_writes in H. unfold check_recvmsg_eof_writes.
+  apply input_bind_ok_inv in H. cbv beta zeta in H.
+  destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 48) 4);
+    cbv beta iota in H |- *.
+  - destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 40) 8);
+      cbv beta iota in H |- *.
+    + apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+      apply check_ret_writes_copyins_refl.
+    + destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 40) 8);
+        cbv beta iota in H |- *; [|unfold unmodeled in H; discriminate].
+      apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+      apply check_ret_writes_copyins_refl.
+  - destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 48) 4);
+      cbv beta iota in H |- *; [|unfold unmodeled in H; discriminate].
+    unfold err_ret, ret_only in H.
+    apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_writes_copyins_refl.
+Qed.
+
+Lemma check_recvmsg_eof_writes_complete_unmodeled : forall i reads msg m eff,
+  recvmsg_eof_writes reads msg i m Unmodeled ->
+  check_recvmsg_eof_writes i reads msg eff m = CheckUnmodeled.
+Proof.
+  intros i reads msg m eff H.
+  unfold recvmsg_eof_writes in H. unfold check_recvmsg_eof_writes.
+  apply input_bind_unmodeled_inv in H. cbv beta zeta in H.
+  destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 48) 4);
+    cbv beta iota in H |- *.
+  - destruct (put_user_lands (in_wmem i) (msg + Z_to_bv 64 40) 8);
+      cbv beta iota in H |- *.
+    + exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H).
+    + destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 40) 8);
+        cbv beta iota in H |- *; [|reflexivity].
+      exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H).
+  - destruct (bytes_unwritable (in_wmem i) (msg + Z_to_bv 64 48) 4);
+      cbv beta iota in H |- *; [|reflexivity].
+    unfold err_ret, ret_only in H.
+    exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H).
+Qed.
+
+(** [Net.Socket.seqpacket_recvmsg] as an acceptor, test for test: the
+    flags, the header copy, its three fields, the one-segment import, the
+    peer, then the end-of-file stores.  Every answered arm is one exact
+    effect, so each is [check_ret_writes_copyins] of the ledger the spec
+    records there. *)
+Definition check_seqpacket_recvmsg (i : SyscallInput) (id : word) (side : bool)
+    (flags : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0) then CheckUnmodeled
+  else
+  match copy_bytes_map (in_mem i) (in_arg i 1) MSGHDR_SIZE with
+  | None => check_ret_only eff (errno_ret EFAULT) m []
+  | Some _ =>
+      match read_u64 (in_mem i) (in_arg i 1),
+            read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 16),
+            read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 24) with
+      | Some name, Some iov, Some iovlen =>
+          if negb (w_is0 name) then CheckUnmodeled
+          else if (IOV_MAX <? bv_unsigned iovlen)%Z
+          then check_ret_writes_copyins [(in_arg i 1, Z.to_nat MSGHDR_SIZE)] []
+                 eff (errno_ret EMSGSIZE) m
+          else if negb (bv_eqb iovlen (Z_to_bv 64 1)) then CheckUnmodeled
+          else
+          match import_iovecs (in_mem i) iov iovlen with
+          | ImpFault =>
+              check_ret_writes_copyins
+                ([(in_arg i 1, Z.to_nat MSGHDR_SIZE)]
+                 ++ import_iovecs_accesses (in_mem i) iov iovlen) []
+                eff (errno_ret EFAULT) m
+          | ImpInval =>
+              check_ret_writes_copyins
+                ([(in_arg i 1, Z.to_nat MSGHDR_SIZE)]
+                 ++ import_iovecs_accesses (in_mem i) iov iovlen) []
+                eff (errno_ret EINVAL) m
+          | ImpOk _ =>
+              match seq_peer (m_fds m) id side with
+              | Some _ => CheckUnmodeled
+              | None =>
+                  check_recvmsg_eof_writes i
+                    ([(in_arg i 1, Z.to_nat MSGHDR_SIZE)]
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
+                    (in_arg i 1) eff m
+              end
+          end
+      | _, _, _ =>
+          check_ret_writes_copyins [(in_arg i 1, Z.to_nat MSGHDR_SIZE)] []
+            eff (errno_ret EFAULT) m
+      end
+  end.
+
+Lemma check_seqpacket_recvmsg_sound_ok : forall i id side flags eff m m' evs,
+  check_seqpacket_recvmsg i id side flags eff m = CheckOk m' evs ->
+  seqpacket_recvmsg id side flags i m (Ok eff m' evs).
+Proof.
+  intros i id side flags eff m m' evs H.
+  unfold check_seqpacket_recvmsg in H. unfold seqpacket_recvmsg.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0));
+    cbv beta iota in H |- *; [discriminate|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 1) MSGHDR_SIZE) as [hb|];
+    cbv beta iota in H |- *.
+  2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (read_u64 (in_mem i) (in_arg i 1)) as [name|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 16)) as [iov|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 24)) as [iovlen|];
+    cbv beta iota in H |- *;
+    try (apply check_ret_writes_copyins_ok_inv in H; destruct H as (-> & -> & ->);
+         apply record_copyins_ok_empty; [reflexivity|apply pure_ok]).
+  destruct (negb (w_is0 name)); cbv beta iota in H |- *; [discriminate|].
+  destruct ((IOV_MAX <? bv_unsigned iovlen)%Z); cbv beta iota in H |- *.
+  { apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  destruct (negb (bv_eqb iovlen (Z_to_bv 64 1))); cbv beta iota in H |- *;
+    [discriminate|].
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs| |];
+    cbv beta iota in H |- *.
+  - destruct (seq_peer (m_fds m) id side); cbv beta iota in H |- *; [discriminate|].
+    exact (check_recvmsg_eof_writes_sound_ok _ _ _ _ _ _ _ H).
+  - apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+  - apply check_ret_writes_copyins_ok_inv in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+Qed.
+
+Lemma check_seqpacket_recvmsg_sound_unmodeled : forall i id side flags eff m,
+  check_seqpacket_recvmsg i id side flags eff m = CheckUnmodeled ->
+  seqpacket_recvmsg id side flags i m Unmodeled.
+Proof.
+  intros i id side flags eff m H.
+  unfold check_seqpacket_recvmsg in H. unfold seqpacket_recvmsg.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0));
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 1) MSGHDR_SIZE) as [hb|];
+    cbv beta iota in H |- *; [|now apply check_ret_only_no_unmodeled in H].
+  destruct (read_u64 (in_mem i) (in_arg i 1)) as [name|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 16)) as [iov|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 24)) as [iovlen|];
+    cbv beta iota in H |- *;
+    try (now apply check_ret_writes_copyins_no_unmodeled in H).
+  destruct (negb (w_is0 name)); cbv beta iota in H |- *; [apply unmodeled_intro|].
+  destruct ((IOV_MAX <? bv_unsigned iovlen)%Z); cbv beta iota in H |- *;
+    [now apply check_ret_writes_copyins_no_unmodeled in H|].
+  destruct (negb (bv_eqb iovlen (Z_to_bv 64 1))); cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs| |];
+    cbv beta iota in H |- *;
+    try (now apply check_ret_writes_copyins_no_unmodeled in H).
+  destruct (seq_peer (m_fds m) id side); cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  exact (check_recvmsg_eof_writes_sound_unmodeled _ _ _ _ _ H).
+Qed.
+
+Lemma check_seqpacket_recvmsg_complete_ok : forall i id side flags eff m m' evs,
+  seqpacket_recvmsg id side flags i m (Ok eff m' evs) ->
+  check_seqpacket_recvmsg i id side flags eff m = CheckOk m' evs.
+Proof.
+  intros i id side flags eff m m' evs H.
+  unfold seqpacket_recvmsg in H. unfold check_seqpacket_recvmsg.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0));
+    cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 1) MSGHDR_SIZE) as [hb|];
+    cbv beta iota in H |- *.
+  2: { unfold err_ret, ret_only, pure in H. inv_ok.
+       apply check_ret_only_ok_iff. now repeat split. }
+  destruct (read_u64 (in_mem i) (in_arg i 1)) as [name|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 16)) as [iov|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 24)) as [iovlen|];
+    cbv beta iota in H |- *;
+    try (unfold err_ret, ret_only in H;
+         apply record_copyins_pure_ok_inv in H; destruct H as (-> & -> & ->);
+         apply check_ret_writes_copyins_refl).
+  destruct (negb (w_is0 name)); cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate|].
+  destruct ((IOV_MAX <? bv_unsigned iovlen)%Z); cbv beta iota in H |- *.
+  { unfold err_ret, ret_only in H.
+    apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_writes_copyins_refl. }
+  destruct (negb (bv_eqb iovlen (Z_to_bv 64 1))); cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate|].
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs| |];
+    cbv beta iota in H |- *.
+  - destruct (seq_peer (m_fds m) id side); cbv beta iota in H |- *;
+      [unfold unmodeled in H; discriminate|].
+    exact (check_recvmsg_eof_writes_complete_ok _ _ _ _ _ _ _ H).
+  - unfold err_ret, ret_only in H.
+    apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_writes_copyins_refl.
+  - unfold err_ret, ret_only in H.
+    apply record_copyins_pure_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_writes_copyins_refl.
+Qed.
+
+Lemma check_seqpacket_recvmsg_complete_unmodeled : forall i id side flags m eff,
+  seqpacket_recvmsg id side flags i m Unmodeled ->
+  check_seqpacket_recvmsg i id side flags eff m = CheckUnmodeled.
+Proof.
+  intros i id side flags m eff H.
+  unfold seqpacket_recvmsg in H. unfold check_seqpacket_recvmsg.
+  apply bind_input_model_inv in H. cbv beta zeta in H.
+  destruct (negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0));
+    cbv beta iota in H |- *; [reflexivity|].
+  destruct (copy_bytes_map (in_mem i) (in_arg i 1) MSGHDR_SIZE) as [hb|];
+    cbv beta iota in H |- *.
+  2: { unfold err_ret, ret_only, pure in H. discriminate. }
+  destruct (read_u64 (in_mem i) (in_arg i 1)) as [name|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 16)) as [iov|];
+    destruct (read_u64 (in_mem i) (in_arg i 1 + Z_to_bv 64 24)) as [iovlen|];
+    cbv beta iota in H |- *;
+    try (unfold err_ret, ret_only in H;
+         exfalso; exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H)).
+  destruct (negb (w_is0 name)); cbv beta iota in H |- *; [reflexivity|].
+  destruct ((IOV_MAX <? bv_unsigned iovlen)%Z); cbv beta iota in H |- *.
+  { unfold err_ret, ret_only in H.
+    exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H). }
+  destruct (negb (bv_eqb iovlen (Z_to_bv 64 1))); cbv beta iota in H |- *;
+    [reflexivity|].
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs| |];
+    cbv beta iota in H |- *.
+  - destruct (seq_peer (m_fds m) id side); cbv beta iota in H |- *; [reflexivity|].
+    exact (check_recvmsg_eof_writes_complete_unmodeled _ _ _ _ _ H).
+  - unfold err_ret, ret_only in H.
+    exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H).
+  - unfold err_ret, ret_only in H.
+    exfalso. exact (record_copyins_pure_no_unmodeled _ _ _ _ _ H).
+Qed.
+
+(** recvmsg: MSG_CMSG_COMPAT is fail-closed (its value is a kernel
+    configuration); an AF_UNIX SEQPACKET end is
+    [check_seqpacket_recvmsg]; every other descriptor decides alone, the
+    message header never read.  See [Net.Socket.recvmsg_spec]. *)
+Definition check_recvmsg (i : SyscallInput) (fd flags : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) MSG_CMSG_COMPAT) 0)
   then CheckUnmodeled
-  else check_recv_fd_answer (m_fds m) fd eff m.
+  else match fd_lookup (m_fds m) fd with
+       | Some (FdSeqpacket id side _) => check_seqpacket_recvmsg i id side flags eff m
+       | _ => check_recv_fd_answer (m_fds m) fd eff m
+       end.
 
 
-Lemma check_recvmsg_sound_ok : forall fd flags eff m m' evs i,
-  check_recvmsg fd flags eff m = CheckOk m' evs ->
+Lemma check_recvmsg_sound_ok : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs ->
   recvmsg_spec fd flags i m (Ok eff m' evs).
 Proof.
-  intros fd flags eff m m' evs i H.
+  intros i fd flags eff m m' evs H.
   unfold check_recvmsg in H. unfold recvmsg_spec.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 MSG_CMSG_COMPAT) 0)) eqn:Hf;
     cbv beta iota in H |- *; [discriminate|].
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  now apply check_recv_fd_answer_sound_ok.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_recvmsg_sound_ok _ _ _ _ _ _ _ _ H)
+          | exact (check_recv_fd_answer_sound_ok _ _ _ _ _ _ _ H) ].
 Qed.
 
 
-Lemma check_recvmsg_sound_unmodeled : forall fd flags eff m i,
-  check_recvmsg fd flags eff m = CheckUnmodeled ->
+Lemma check_recvmsg_sound_unmodeled : forall i fd flags eff m,
+  check_recvmsg i fd flags eff m = CheckUnmodeled ->
   recvmsg_spec fd flags i m Unmodeled.
 Proof.
-  intros fd flags eff m i H.
+  intros i fd flags eff m H.
   unfold check_recvmsg in H. unfold recvmsg_spec.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 MSG_CMSG_COMPAT) 0)) eqn:Hf;
     cbv beta iota in H |- *; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  now eapply check_recv_fd_answer_no_ok_unmodeled; exact H.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_recvmsg_sound_unmodeled _ _ _ _ _ _ H)
+          | exact (check_recv_fd_answer_no_ok_unmodeled _ _ _ _ _ H) ].
 Qed.
 
 
-Lemma check_recvmsg_complete_ok : forall fd flags eff m m' evs i,
+Lemma check_recvmsg_complete_ok : forall i fd flags eff m m' evs,
   recvmsg_spec fd flags i m (Ok eff m' evs) ->
-  check_recvmsg fd flags eff m = CheckOk m' evs.
+  check_recvmsg i fd flags eff m = CheckOk m' evs.
 Proof.
-  intros fd flags eff m m' evs i H.
+  intros i fd flags eff m m' evs H.
   unfold recvmsg_spec in H. unfold check_recvmsg.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 MSG_CMSG_COMPAT) 0)) eqn:Hf;
     cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
-  apply bind_model_inv in H.
-  now apply check_recv_fd_answer_complete_ok in H.
+  apply bind_model_inv in H. cbv beta in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_recvmsg_complete_ok _ _ _ _ _ _ _ _ H)
+          | exact (check_recv_fd_answer_complete_ok _ _ _ _ _ _ _ H) ].
 Qed.
 
 
-Lemma check_recvmsg_complete_unmodeled : forall fd flags m eff i,
+Lemma check_recvmsg_complete_unmodeled : forall i fd flags m eff,
   recvmsg_spec fd flags i m Unmodeled ->
-  check_recvmsg fd flags eff m = CheckUnmodeled.
+  check_recvmsg i fd flags eff m = CheckUnmodeled.
 Proof.
-  intros fd flags m eff i H.
+  intros i fd flags m eff H.
   unfold recvmsg_spec in H. unfold check_recvmsg.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 MSG_CMSG_COMPAT) 0)) eqn:Hf;
     cbv beta iota in H |- *; [reflexivity|].
-  apply bind_model_inv in H.
-  now eapply check_recv_fd_answer_complete_unmodeled; exact H.
+  apply bind_model_inv in H. cbv beta in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
+    cbv beta iota in H |- *;
+    first [ exact (check_seqpacket_recvmsg_complete_unmodeled _ _ _ _ _ _ H)
+          | exact (check_recv_fd_answer_complete_unmodeled _ _ _ _ _ H) ].
 Qed.

@@ -2912,12 +2912,13 @@ Proof.
   unfold check_getpeername, check_getpeername_core in H. vm_frame2 H.
 Qed.
 
-Lemma check_setsockopt_frame : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs ->
+Lemma check_setsockopt_frame : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core in H. vm_frame2 H.
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
+    in H. vm_frame2 H.
 Qed.
 
 Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
@@ -2954,8 +2955,10 @@ Qed.
 (** The three socket arms that need no socket.  None of them touches the
     address space: [check_socketpair] answers out of [socketpair_fds] and
     the destination's own range, and both recv entry points answer out of
-    the fd table alone.  Written out per arm rather than folded together
-    because the cascade below applies them by name. *)
+    the fd table and the input memory (a sequenced-packet end's [recvmsg]
+    stores into user memory through the effect, never through the model).
+    Written out per arm rather than folded together because the cascade
+    below applies them by name. *)
 Lemma check_recv_fd_answer_frame : forall fds fd eff m m' evs,
   check_recv_fd_answer fds fd eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
@@ -2970,8 +2973,8 @@ Lemma check_socketpair_frame : forall i family type protocol sv eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted
-    in H. vm_frame2 H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted in H. vm_frame2 H.
 Qed.
 
 
@@ -2985,12 +2988,13 @@ Proof.
 Qed.
 
 
-Lemma check_recvmsg_frame : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs ->
+Lemma check_recvmsg_frame : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd flags eff m m' evs H.
-  unfold check_recvmsg, check_recv_fd_answer in H. vm_frame2 H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H. vm_frame2 H.
 Qed.
 
 Lemma check_sendto_frame : forall i fd buf count flags addrp eff m m' evs,

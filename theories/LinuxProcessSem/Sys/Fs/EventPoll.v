@@ -310,6 +310,11 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          All read at v6.18.44; identical at v6.18.46.  An [ONsFile]'s
          answer depends on an object of unknown type.  None of the six
          answers is written. *)
+  | FdSeqpacket _ _ _ => None
+      (* FAIL-CLOSED.  An AF_UNIX socket's file has [.poll = sock_poll]
+         (net/socket.c [socket_file_ops], v6.18.46), so ADD would go on
+         to the end's readiness ([unix_dgram_poll]), which is not
+         written. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -337,7 +342,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)

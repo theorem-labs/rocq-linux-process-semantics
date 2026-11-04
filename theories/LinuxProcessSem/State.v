@@ -2859,6 +2859,18 @@ Inductive OpaqueFd :=
   | OSignalFd (mask flags : word)
   | OInherited (live : option (list byte * word)).
 
+(** One end's own socket state, for an AF_UNIX SOCK_SEQPACKET end
+    ([FdSeqpacket] below).  One field: [sq_passcred] is the end's
+    [sk_scm_credentials] bit, which [setsockopt (SOL_SOCKET,
+    SO_PASSCRED)] sets ([sk_setsockopt], net/core/sock.c:1551-1556,
+    v6.18.46) and which [scm_recv_unix] reads when a message arrives
+    (net/unix/af_unix.c:2688).  No call the model answers reads it yet:
+    no message ever arrives on an end (see [FdSeqpacket]).  It is stored
+    so that the answer to a later read is not lost.  THE RECORD HAS NO
+    QUEUE.  When a sender is modeled, the queue is APPENDED as a new
+    field, never inserted. *)
+Record SeqEnd := mkSeqEnd { sq_passcred : bool }.
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -3025,7 +3037,27 @@ Inductive OpaqueFd :=
       the reason that it is the same object: [Fs.ReadWrite.read_spec]
       reads a live inherited file as it reads an [FdFile], because the
       object is a read-only regular file; it takes the bytes from the
-      entry instead of from a path. *)
+      entry instead of from a path.
+    - [FdSeqpacket id side st]: ONE END of an AF_UNIX SOCK_SEQPACKET
+      pair that [Net.Socket.socketpair_spec] made, both ends held by
+      this process.  [id] names the pair (both ends carry it), [side]
+      the end ([false] for the first descriptor [socketpair] stores,
+      [true] for the second), and [st] this end's own socket state
+      ([SeqEnd]).  The shape follows the AF_UNIX stream-pair end of the
+      internal tree ([FdStream]): a pair id, a side bit, a per-end
+      record, the peer found through the table ([seq_peer]), and a new
+      id one above the largest live one ([seq_new_id]).  THE RECEIVE
+      QUEUE IS ALWAYS EMPTY: every call that would queue a message on an
+      end ([sendmsg], [sendto], [write]) declines, so the record holds
+      no queue, and the peer's [sk_err] is never set, because
+      [unix_release_sock] sets it only when the closing end's own queue
+      holds a message (net/unix/af_unix.c:699, :708-709, v6.18.46).
+      Reading the peer off the table is exact because [dup], [dup3] and
+      [F_DUPFD] decline the kind ([Fs.File.dup_modeled_entry]) and a
+      [clone] while one is open declines
+      ([Kernel.Fork.clone_no_shared_file_b]): each end has one
+      descriptor, in this process, and closing it is the end's
+      [unix_release_sock]. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -3037,7 +3069,8 @@ Inductive FdEntry :=
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
   | FdUrandom
-  | FdOpaque (o : OpaqueFd).
+  | FdOpaque (o : OpaqueFd)
+  | FdSeqpacket (id : word) (side : bool) (st : SeqEnd).
 
 (** Is [e] one of the seven opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
@@ -3055,6 +3088,18 @@ Inductive FdEntry :=
 Abbreviation fd_is_opaque e :=
   (match e with
    | FdOpaque _ => true
+   | _ => false
+   end).
+
+(** Is [e] an AF_UNIX SEQPACKET end?  The second classifier with a
+    wildcard, correct by construction for [fd_is_opaque]'s reason.  Its
+    one use is [Fs.ReadWrite.readv_spec]'s FMODE_READ gate, where
+    [ReadWrite.readable_fd]'s [None] would otherwise read as -EBADF: an
+    end is open O_RDWR, and [readv] on one declines.  An abbreviation
+    for [fd_is_opaque]'s reason. *)
+Abbreviation fd_is_seqpacket e :=
+  (match e with
+   | FdSeqpacket _ _ _ => true
    | _ => false
    end).
 
@@ -6068,7 +6113,98 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
        track; and the eventfd, the /proc/self/fd directory and the
        signalfd are anonymous or procfs files with no [pipe_inode_info]
        ([eventfd_fops], [proc_fd_operations], [signalfd_fops]) *)
+  | (_, FdSeqpacket _ _ _) :: r => pipe_end_live r id writer
+    (* not an end either: an AF_UNIX socket's file has [socket_file_ops]
+       and no [pipe_inode_info] (net/socket.c [sock_alloc_file]) *)
   end.
+
+(* =========================================================================
+   AF_UNIX SOCK_SEQPACKET pair helpers: the ends of a pair are found
+   through the table, as the internal tree's stream-pair helpers find
+   theirs ([stream_end], [stream_peer], [stream_new_id])
+   ========================================================================= *)
+
+(** The descriptor and state of end [(id, side)], the first entry that
+    names it.  There is never a second: an end is made only by
+    [Net.Socket.socketpair_spec], which takes [id] from [seq_new_id], and
+    no modeled call duplicates one (see [FdSeqpacket]).
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor able to name a pair end must stop the build here.  A
+    missed end would make [seq_peer] answer "closed" for a live peer,
+    and [Net.Socket.recvmsg_spec] would then answer end of file where
+    Linux waits. *)
+Fixpoint seq_end (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * SeqEnd) :=
+  match fds with
+  | [] => None
+  | (fd, FdSeqpacket id' s st) :: r =>
+      if (bv_eqb id' id && Bool.eqb s side)%bool then Some (fd, st)
+      else seq_end r id side
+  | (_, FdChannel _) :: r => seq_end r id side
+  | (_, FdFile _ _) :: r => seq_end r id side
+  | (_, FdFileW _ _) :: r => seq_end r id side
+  | (_, FdFileA _ _) :: r => seq_end r id side
+  | (_, FdFileRW _ _) :: r => seq_end r id side
+  | (_, FdDir) :: r => seq_end r id side
+  | (_, FdSocket _) :: r => seq_end r id side
+    (* an AF_INET socket: no [socketpair] joins one to anything *)
+  | (_, FdPipe _ _) :: r => seq_end r id side
+  | (_, FdDevNull _ _) :: r => seq_end r id side
+  | (_, FdUrandom) :: r => seq_end r id side
+  | (_, FdOpaque _) :: r => seq_end r id side
+    (* none of the seven opaque objects is a socket this model made *)
+  end.
+
+(** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
+    peer's descriptor is still open.  [None] means the peer has closed:
+    [unix_release_sock] ran for it and set this end's RCV_SHUTDOWN
+    (net/unix/af_unix.c:705-707, v6.18.46). *)
+Definition seq_peer (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * SeqEnd) :=
+  seq_end fds id (negb side).
+
+(** The largest pair id a live end carries, or -1 when none does.
+    Enumerated for [seq_end]'s reason. *)
+Fixpoint seq_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, FdSeqpacket id _ _) :: r => Z.max (bv_unsigned id) (seq_max_id r)
+  | (_, FdChannel _) :: r => seq_max_id r
+  | (_, FdFile _ _) :: r => seq_max_id r
+  | (_, FdFileW _ _) :: r => seq_max_id r
+  | (_, FdFileA _ _) :: r => seq_max_id r
+  | (_, FdFileRW _ _) :: r => seq_max_id r
+  | (_, FdDir) :: r => seq_max_id r
+  | (_, FdSocket _) :: r => seq_max_id r
+  | (_, FdPipe _ _) :: r => seq_max_id r
+  | (_, FdDevNull _ _) :: r => seq_max_id r
+  | (_, FdUrandom) :: r => seq_max_id r
+  | (_, FdOpaque _) :: r => seq_max_id r
+  end.
+
+(** The id a new pair gets: one above every LIVE pair's.  Unlike
+    [pipe_new_id] it need not avoid dead pairs, because a pair has no
+    side table for a dead one to haunt.  What it must avoid is a LIVE
+    end, whose [seq_peer] a reused id would confuse, and one above the
+    largest live id does.  [Net.Socket.socketpair_spec] still checks
+    that no live end carries it, so the one way to fail -- a live id of
+    2^64 - 1, where the successor wraps to 0 -- declines rather than
+    aliases. *)
+Definition seq_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (seq_max_id fds + 1).
+
+(** Does some live end carry pair id [id], on either side? *)
+Definition seq_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  match seq_end fds id false, seq_end fds id true with
+  | None, None => false
+  | _, _ => true
+  end.
+
+(** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
+    then connects it: [sk_scm_credentials] clear, because [sk_alloc]
+    zeroes the new socket (net/core/sock.c:2299, v6.18.46). *)
+Definition seq_fresh : SeqEnd := mkSeqEnd false.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
     [copy_to_user] of an [int] lays down. *)
