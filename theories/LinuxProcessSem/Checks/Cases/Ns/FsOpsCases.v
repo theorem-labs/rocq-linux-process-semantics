@@ -106,12 +106,13 @@ Definition newest_link (o : ext_outcome) : option (Z * list Z) :=
   | EUnmodeled => None
   end.
 
-Definition symlink_in : SyscallInput :=
+Definition symlink_to (p : list Z) : SyscallInput :=
   call 36 [PATH; -100; PATH + 128]
        (fun a => match at_ PATH (target_fd0 ++ [0]) a with
-                 | Some b => Some b | None => at_ (PATH + 128) (s_link ++ [0]) a
+                 | Some b => Some b | None => at_ (PATH + 128) (p ++ [0]) a
                  end)
        (fun _ => None).
+Definition symlink_in : SyscallInput := symlink_to s_link.
 
 (** symlinkat stores its target bytes on a new tmpfs symbolic link. *)
 Example symlinkat_tmpfs_target :
@@ -186,31 +187,130 @@ Example symlinkat_devpts_readonly_precedes_missing_operation :
     = Some (-30).
 Proof. vm_compute. reflexivity. Qed.
 
-Definition trailing_symlink_in : SyscallInput :=
-  call 36 [PATH; -100; PATH + 128]
-    (fun a => match at_ PATH (target_fd0 ++ [0]) a with
-              | Some b => Some b
-              | None => at_ (PATH + 128) (s_link ++ [47; 0]) a
-              end) (fun _ => None).
+Definition trailing_symlink_in : SyscallInput := symlink_to (s_link ++ [47]).
 
 Example symlinkat_devpts_trailing_name_keeps_enoent :
   ret_of (symlinkat_fn trailing_symlink_in base_model base_ctx
     (devpts_state ro_flags 511)) = Some (-2).
 Proof. vm_compute. reflexivity. Qed.
 
-Definition devpts_unmapped_state (mf : MountFlags) : NsState :=
-  with_userns (devpts_state mf 511)
+Definition devpts_unmapped_state (mf : MountFlags) (perm : Z) : NsState :=
+  with_userns (devpts_state mf perm)
     [FilesCases.uns 2 None 0 None None;
      FilesCases.uns 1 (Some 2%positive) 1 None None].
 
 Example mkdirat_devpts_unmapped_creator_is_eoverflow :
   ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
-    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags)) = Some (-75).
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 511)) = Some (-75).
 Proof. vm_compute. reflexivity. Qed.
 
 Example mkdirat_devpts_readonly_precedes_unmapped_creator :
   ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
-    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state ro_flags)) = Some (-30).
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state ro_flags 511)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+(** do_mkdirat requests LOOKUP_DIRECTORY, so a trailing slash still
+    creates a directory (fs/namei.c:4228-4229, 4479, Linux v6.18.46). *)
+Example mkdirat_tmpfs_trailing_slash_creates_directory :
+  let o := mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx base_state in
+  ret_of o = Some 0 /\ newest_dir o = Some (2, 493, 1000, 1002)
+  /\ match o with
+     | EOk _ _ _ st _ =>
+         (child_dentry st 1 (bytes [110;101;119]),
+          option_map ino_kind (dentry_inode st 2)) = (Some 2%positive, Some IDir)
+     | EUnmodeled => False
+     end.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 365)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_unmapped_before_permission :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_permission :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_missing_operation :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_unmapped_before_write_permission :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_listed_absent_before_readonly :
+  ret_of (symlinkat_fn (symlink_to [47;108;105;115;116;101;100;47;110;101;119])
+    base_model base_ctx proc_listed_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_missing_fd_is_enoent :
+  ret_of (symlinkat_fn (symlink_to [47;115;101;108;102;47;102;100;47;57])
+    base_model base_ctx proc_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_known_fd_is_eexist :
+  ret_of (symlinkat_fn (symlink_to [47;115;101;108;102;47;102;100;47;48])
+    base_model base_ctx proc_state) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_namemax_precedes_readonly :
+  ret_of (symlinkat_fn (symlink_to (47 :: repeat 120 256))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+(** simple_lookup's NAME_MAX check precedes the negative-dentry ENOENT
+    (fs/libfs.c:71-72; fs/namei.c:1705, 1713-1716, Linux v6.18.46). *)
+Example symlinkat_tmpfs_trailing_namemax_precedes_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 256) ++ [47]))
+    base_model base_ctx (one_sb ro_flags tmpfs_sb [mkDentry 1 1 None [] 1] [root_dir]))
+    = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_trailing_namemax_precedes_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 256) ++ [47]))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_tmpfs_trailing_name_keeps_enoent :
+  ret_of (symlinkat_fn trailing_symlink_in base_model base_ctx base_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_tmpfs_trailing_name_at_namemax_is_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 255) ++ [47]))
+    base_model base_ctx base_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_trailing_name_at_namemax_is_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 255) ++ [47]))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_unmapped_before_write_permission :
+  ret_of (symlinkat_fn symlink_in base_model (with_user_ns base_ctx 2)
+    (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_write_permission_precedes_missing_operation :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_missing_operation_is_eperm :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
 Proof. vm_compute. reflexivity. Qed.
 
 Definition identity_map : list IdExtent := [mkExtent 0 0 4294967296].
