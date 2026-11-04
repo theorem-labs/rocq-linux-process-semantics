@@ -234,15 +234,17 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          [setfl] acts on can be set on the fd already -- for a file
          that is a theorem about [Open.modeled_open_flags].  A pipe end
          has one too, and this arm is a CHOICE rather than a gap:
-         [Fs.Pipe.pipe2_spec] declines every nonzero flag word, so every
-         [FdPipe] the model can build was created with flags 0, and
-         O_NONBLOCK, O_DIRECT and FASYNC are all provably clear on it.
+         [Fs.Pipe.pipe2_spec] creates an [FdPipe] with 0 or O_CLOEXEC,
+         and O_CLOEXEC never reaches [f_flags]
+         (fs/pipe.c:944-946, :956-957, v6.18.46), so O_NONBLOCK,
+         O_DIRECT and FASYNC are all provably clear on it.
          Answering 0 here would be sound today.  It is not done because
          the theorem is a fact about the ONE constructor that exists
          rather than about the fd kind, and it evaporates the moment
-         pipe2 admits a flag: that admission would have to remember to
-         come back here, and nothing makes it.  The remaining text says
-         what would then be wrong.  pipe2 takes all three bits
+         pipe2 admits a flag that reaches [f_flags]: that admission
+         would have to remember to come back here, and nothing makes it.
+         The remaining text says what would then be wrong.  pipe2 takes
+         all three bits
          (fs/pipe.c [__do_pipe_flags] admits
          O_CLOEXEC|O_NONBLOCK|O_DIRECT|O_NOTIFICATION_PIPE, v6.18.46).
          O_DIRECT is the sharp one: it is in neither
@@ -573,9 +575,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          fs/pipe.c [create_pipe_files] builds the write end with
          [O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT))] and the read end
          with [O_RDONLY | (flags & O_NONBLOCK)] (v6.18.46), and
-         [Fs.Pipe.pipe2_spec] answers [unmodeled] for any nonzero flag
-         word — so every [FdPipe] the model can build has [f_flags] of
-         O_WRONLY when [writer] and O_RDONLY otherwise, exactly.
+         [Fs.Pipe.pipe2_spec] answers [unmodeled] for any accepted word
+         with a bit other than O_CLOEXEC — so every [FdPipe] the model
+         can build has [f_flags] of O_WRONLY when [writer] and O_RDONLY
+         otherwise, exactly.
          Answering that would be sound.
 
          WHAT SEPARATES IT FROM THE SOCKET is how likely the premise is
@@ -585,13 +588,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          than this file: the model has no non-blocking mode at all, and
          [State.EAGAIN] records that as a project decision, so admitting
          the bit is not a change anyone makes without noticing.
-         [pipe2_spec]'s decline of every nonzero flag is interim
-         narrowness of a different kind — it declines O_CLOEXEC too,
-         which cannot reach [f_flags] — so the premise here is one a
-         later widening moves casually, and the widening that matters
-         (O_NONBLOCK, O_DIRECT) reaches [f_flags] while the harmless one
-         does not.  A reader of that future change has no reason to come
-         back here.
+         [pipe2_spec] answers O_CLOEXEC, which cannot reach [f_flags],
+         and declines O_NONBLOCK and O_DIRECT, which do.  A later change
+         admitting either of those two moves the premise here.  A
+         reader of that future change has no reason to come back here.
 
          And the arm one screen up declined for the same premise.
          [setfl_noop_on]'s [FdPipe] arm is [false] on an argument that
@@ -700,14 +700,11 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     make it observable either.)  The first is modeled below and admits
     BOTH values, so it holds whichever bit the program set.  The second
     and third are unreachable because execve and execveat are not
-    modeled syscalls.  The fourth is
-    unreachable for a different reason worth stating, because it is not
-    about fcntl: [Open.openat_spec] answers a DETERMINISTIC -ENOENT for a
-    path absent from the model's file-system image, and this assumes the
-    image holds no /proc tree — so a program that reads its own fdinfo is
-    REJECTED at the openat, not silently mis-answered here.  That is a
-    standing limit on the whole file-system model, not a hole this arm
-    opens.
+    modeled syscalls.  The fourth is unreachable because
+    [Open.openat_spec] answers only three procfs shapes and declines
+    every other name or flag word under /proc.  In particular an
+    O_RDONLY open of an fdinfo file declines; an O_PATH descriptor
+    cannot be read.  Thus no modeled read reaches fdinfo.
 
     So no modeled execution is constrained by the difference between
     setting the bit and not: [F_GETFD] admits the same two answers
@@ -724,8 +721,9 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     of the open file description, and one this model does not hold:
     [State.FdEntry] has no field for it, [F_SETFD] above writes nothing,
     and a descriptor minted with O_CLOEXEC ([Open.openat_spec],
-    [File.dup3_spec]) or SOCK_CLOEXEC ([Net.Socket.socket_spec],
-    [Net.Socket.accept4_spec]) is the same entry as one minted without.
+    [File.dup3_spec], [Pipe.pipe2_spec]) or SOCK_CLOEXEC
+    ([Net.Socket.socket_spec], [Net.Socket.accept4_spec]) is the same
+    entry as one minted without.
     So the arm offers both answers as an [alt].  That is sound for every
     program, because Linux's answer is one of the two; what it gives up
     is precision, since a program that BRANCHES on the bit has both
