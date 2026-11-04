@@ -33,15 +33,15 @@ Definition check_unlink_result (p : path) (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
-(** The acceptor for an answer [may_delete] gives on the victim's TYPE,
-    -ENOTDIR or -EISDIR: that errno [e], or one of the refusals Linux
-    reaches before the type test ([Fs.Namei.unlink_before_type_errnos]).
-    Each is a bare return with five empty ledgers and no state change. *)
-Definition check_unlink_type_result (e : Z) (eff : SyscallEffect) (m : Model)
+(** Accepts a type answer [e] or a refusal from [l], chosen for the
+    kernel route: [unlink_before_type_errnos] for [may_delete],
+    [unlink_before_slashes_errnos] for [slashes:].  Each is a bare
+    return with five empty ledgers and no state change. *)
+Definition check_unlink_type_result (l : list Z) (e : Z) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
   | mkEffectU ret [] [] [] [] [] =>
-      if errno_ret_in unlink_before_type_errnos ret then CheckOk m []
+      if errno_ret_in l ret then CheckOk m []
       else if bv_eqb ret (errno_ret e) then CheckOk m []
       else CheckReject
   | _ => CheckReject
@@ -50,9 +50,9 @@ Definition check_unlink_type_result (e : Z) (eff : SyscallEffect) (m : Model)
 (** Mirrors [Fs.Namei.unlink_found_spec], the tail both arms share. *)
 Local Definition check_unlink_found (p c : path) (flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if unlink_rmdir flags then check_unlink_type_result ENOTDIR eff m
+  if unlink_rmdir flags then check_unlink_type_result unlink_before_type_errnos ENOTDIR eff m
   else if path_trailing_slash p
-  then check_ret_only eff (errno_ret ENOTDIR) m []
+  then check_unlink_type_result unlink_before_slashes_errnos ENOTDIR eff m
   else if fd_names_path (m_fds m) c then CheckUnmodeled
   else check_unlink_result c eff m.
 
@@ -89,7 +89,7 @@ Definition check_unlink_open_result (c : path) (data : list byte)
     the acceptor above. *)
 Local Definition check_unlink_open_tmp (p c : path) (data : list byte)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if path_trailing_slash p then check_ret_only eff (errno_ret ENOTDIR) m []
+  if path_trailing_slash p then check_unlink_type_result unlink_before_slashes_errnos ENOTDIR eff m
   else if anon_id_live (m_fds m) (anon_new_id (m_fds m)) then CheckUnmodeled
   else check_unlink_open_result c data eff m.
 
@@ -102,8 +102,8 @@ Local Definition check_unlinkat_tmp (n p c : path) (flags : word)
   if unlink_rmdir flags then CheckUnmodeled
   else if Nat.ltb NAME_MAX (length n) then CheckUnmodeled
   else if fs_under (m_fs m) c then
-    (if path_trailing_slash p then check_ret_only eff (errno_ret EISDIR) m []
-     else check_unlink_type_result EISDIR eff m)
+    (if path_trailing_slash p then check_unlink_type_result unlink_before_slashes_errnos EISDIR eff m
+     else check_unlink_type_result unlink_before_type_errnos EISDIR eff m)
   else
     match fs_lookup (m_fs m) c with
     | None => check_ret_only eff (errno_ret ENOENT) m []
@@ -176,17 +176,17 @@ Ltac ul_open_u :=
 (** [check_unlink_type_result] against the [alt] both type answers
     share, in both directions, and the two facts the wrappers need: it
     never declines, and what it accepts claims no copy-in. *)
-Local Lemma check_unlink_type_result_sound : forall i e eff m m' evs,
-  check_unlink_type_result e eff m = CheckOk m' evs ->
-  alt (bind (errno_from unlink_before_type_errnos) (fun x => err_ret x))
+Local Lemma check_unlink_type_result_sound : forall i l e eff m m' evs,
+  check_unlink_type_result l e eff m = CheckOk m' evs ->
+  alt (bind (errno_from l) (fun x => err_ret x))
       (err_ret e) i m (Ok eff m' evs).
 Proof.
-  intros i e eff m m' evs H.
+  intros i l e eff m m' evs H.
   unfold check_unlink_type_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws as [|w ws'];
     [destruct zs as [|z zs']|]; destruct us as [|? ?];
     destruct cs as [|? ?]; destruct cis as [|? ?]; try discriminate.
-  destruct (errno_ret_in unlink_before_type_errnos ret) eqn:He.
+  destruct (errno_ret_in l ret) eqn:He.
   - inversion H; clear H; subst.
     apply errno_ret_in_true in He. destruct He as (x & HIn & ->).
     apply alt_l. eapply bind_ok0.
@@ -197,40 +197,40 @@ Proof.
     apply alt_r. unfold err_ret, ret_only. apply pure_ok.
 Qed.
 
-Local Lemma check_unlink_type_result_complete : forall i e eff m m' evs,
-  alt (bind (errno_from unlink_before_type_errnos) (fun x => err_ret x))
+Local Lemma check_unlink_type_result_complete : forall i l e eff m m' evs,
+  alt (bind (errno_from l) (fun x => err_ret x))
       (err_ret e) i m (Ok eff m' evs) ->
-  check_unlink_type_result e eff m = CheckOk m' evs.
+  check_unlink_type_result l e eff m = CheckOk m' evs.
 Proof.
-  intros i e eff m m' evs H. sys_unfold. cbv beta iota zeta in H.
+  intros i l e eff m m' evs H. sys_unfold. cbv beta iota zeta in H.
   (* one leaf per side of the [alt]: a listed refusal, whose membership
      is a hypothesis, or the type errno itself *)
   inv_ok; unfold check_unlink_type_result;
     first
     [ match goal with
-      | Hin : In _ unlink_before_type_errnos |- _ =>
+      | Hin : In _ l |- _ =>
           rewrite (errno_ret_in_intro _ _ Hin)
       end; reflexivity
-    | destruct (errno_ret_in unlink_before_type_errnos (errno_ret e));
+    | destruct (errno_ret_in l (errno_ret e));
         [|rewrite bv_eqb_refl]; reflexivity ].
 Qed.
 
-Local Lemma check_unlink_type_result_no_unmodeled : forall e eff m,
-  check_unlink_type_result e eff m <> CheckUnmodeled.
+Local Lemma check_unlink_type_result_no_unmodeled : forall l e eff m,
+  check_unlink_type_result l e eff m <> CheckUnmodeled.
 Proof.
-  intros e eff m H.
+  intros l e eff m H.
   unfold check_unlink_type_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
     destruct us; destruct cs; destruct cis; try discriminate.
-  destruct (errno_ret_in unlink_before_type_errnos ret); [discriminate|].
+  destruct (errno_ret_in l ret); [discriminate|].
   destruct (bv_eqb ret (errno_ret e)); discriminate.
 Qed.
 
-Local Lemma check_unlink_type_result_ok_copyins_nil : forall e eff m m' evs,
-  check_unlink_type_result e eff m = CheckOk m' evs ->
+Local Lemma check_unlink_type_result_ok_copyins_nil : forall l e eff m m' evs,
+  check_unlink_type_result l e eff m = CheckOk m' evs ->
   eff_copyins eff = [].
 Proof.
-  intros e eff m m' evs H.
+  intros l e eff m m' evs H.
   unfold check_unlink_type_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
     destruct us; destruct cs; destruct cis; try discriminate; reflexivity.
@@ -245,8 +245,7 @@ Proof.
   destruct (unlink_rmdir flags).
   { now apply check_unlink_type_result_sound. }
   destruct (path_trailing_slash p).
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { now apply check_unlink_type_result_sound. }
   destruct (fd_names_path (m_fds m) c); [discriminate|].
   unfold check_unlink_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws as [|w ws'];
@@ -272,7 +271,7 @@ Proof.
   destruct (unlink_rmdir flags);
     [now apply check_unlink_type_result_no_unmodeled in H|].
   destruct (path_trailing_slash p);
-    [now apply check_ret_only_no_unmodeled in H|].
+    [now apply check_unlink_type_result_no_unmodeled in H|].
   destruct (fd_names_path (m_fds m) c); [apply unmodeled_intro|].
   exfalso. unfold check_unlink_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
@@ -290,7 +289,7 @@ Proof.
   destruct (unlink_rmdir flags);
     [eapply check_unlink_type_result_ok_copyins_nil; exact H|].
   destruct (path_trailing_slash p);
-    [apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity|].
+    [eapply check_unlink_type_result_ok_copyins_nil; exact H|].
   destruct (fd_names_path (m_fds m) c); [discriminate|].
   unfold check_unlink_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
@@ -304,8 +303,7 @@ Proof.
   intros i p c data eff m m' evs H.
   unfold check_unlink_open_tmp in H. unfold unlink_open_tmp_spec. cbv zeta.
   destruct (path_trailing_slash p).
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  { now apply check_unlink_type_result_sound. }
   destruct (anon_id_live (m_fds m) (anon_new_id (m_fds m))); [discriminate|].
   unfold check_unlink_open_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws as [|w ws'];
@@ -331,7 +329,7 @@ Proof.
   intros i p c data eff m H.
   unfold check_unlink_open_tmp in H. unfold unlink_open_tmp_spec. cbv zeta.
   destruct (path_trailing_slash p);
-    [now apply check_ret_only_no_unmodeled in H|].
+    [now apply check_unlink_type_result_no_unmodeled in H|].
   destruct (anon_id_live (m_fds m) (anon_new_id (m_fds m)));
     [apply unmodeled_intro|].
   exfalso. unfold check_unlink_open_result in H.
@@ -348,7 +346,7 @@ Proof.
   intros p c data eff m m' evs H.
   unfold check_unlink_open_tmp in H.
   destruct (path_trailing_slash p);
-    [apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity|].
+    [eapply check_unlink_type_result_ok_copyins_nil; exact H|].
   destruct (anon_id_live (m_fds m) (anon_new_id (m_fds m))); [discriminate|].
   unfold check_unlink_open_result in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
@@ -364,10 +362,8 @@ Proof.
   destruct (unlink_rmdir flags); [discriminate|].
   destruct (Nat.ltb NAME_MAX (length n)); [discriminate|].
   destruct (fs_under (m_fs m) c).
-  { destruct (path_trailing_slash p).
-    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-      apply pure_ok. }
-    now apply check_unlink_type_result_sound. }
+  { destruct (path_trailing_slash p);
+      now apply check_unlink_type_result_sound. }
   destruct (fs_lookup (m_fs m) c) as [data|].
   2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
        apply pure_ok. }
@@ -386,8 +382,7 @@ Proof.
   destruct (Nat.ltb NAME_MAX (length n)); [apply unmodeled_intro|].
   destruct (fs_under (m_fs m) c).
   { destruct (path_trailing_slash p);
-      [now apply check_ret_only_no_unmodeled in H
-      |now apply check_unlink_type_result_no_unmodeled in H]. }
+      now apply check_unlink_type_result_no_unmodeled in H. }
   destruct (fs_lookup (m_fs m) c) as [data|];
     [|now apply check_ret_only_no_unmodeled in H].
   destruct (fd_names_path (m_fds m) c).
@@ -405,9 +400,7 @@ Proof.
   destruct (Nat.ltb NAME_MAX (length n)); [discriminate|].
   destruct (fs_under (m_fs m) c).
   { destruct (path_trailing_slash p);
-      [apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _);
-       reflexivity
-      |eapply check_unlink_type_result_ok_copyins_nil; exact H]. }
+      eapply check_unlink_type_result_ok_copyins_nil; exact H. }
   destruct (fs_lookup (m_fs m) c) as [data|];
     [|apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _);
       reflexivity].
@@ -507,10 +500,10 @@ Proof.
   unfold unlink_found_spec in H. unfold check_unlink_found.
   destruct (unlink_rmdir flags) eqn:Hrm; hall Hrm.
   { (* -ENOTDIR, or a refusal Linux reaches before the type test *)
-    exact (check_unlink_type_result_complete i ENOTDIR eff m m' evs H). }
+    exact (check_unlink_type_result_complete i unlink_before_type_errnos ENOTDIR eff m m' evs H). }
+  destruct (path_trailing_slash p) eqn:Hts; hall Hts.
+  { exact (check_unlink_type_result_complete i unlink_before_slashes_errnos ENOTDIR eff m m' evs H). }
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (path_trailing_slash p) eqn:Hts; hall Hts; inv_ok;
-    [cbn; try rewrite bv_eqb_refl; reflexivity|].
   destruct (fd_names_path (m_fds m) c) eqn:Hfd; hall Hfd; inv_ok.
   - (* the injectable failure: no state change *)
     unfold check_unlink_result.
@@ -542,10 +535,10 @@ Local Lemma check_unlink_open_tmp_complete_ok : forall i p c data eff m m' evs,
   check_unlink_open_tmp p c data eff m = CheckOk m' evs.
 Proof.
   intros i p c data eff m m' evs H.
-  unfold unlink_open_tmp_spec in H. unfold check_unlink_open_tmp. sys_unfold.
-  cbv iota zeta in H. inv_ok.
-  destruct (path_trailing_slash p) eqn:Hts; hall Hts; inv_ok;
-    [cbn; try rewrite bv_eqb_refl; reflexivity|].
+  unfold unlink_open_tmp_spec in H. unfold check_unlink_open_tmp.
+  destruct (path_trailing_slash p) eqn:Hts; hall Hts.
+  { exact (check_unlink_type_result_complete i unlink_before_slashes_errnos ENOTDIR eff m m' evs H). }
+  sys_unfold. cbv iota zeta in H. inv_ok.
   destruct (anon_id_live (m_fds m) (anon_new_id (m_fds m))) eqn:Hl; hall Hl;
     inv_ok.
   - (* the injectable failure: no state change *)
@@ -583,10 +576,8 @@ Proof.
   destruct (Nat.ltb NAME_MAX (length n)) eqn:Hnm; hall Hnm; inv_ok.
   destruct (fs_under (m_fs m) c) eqn:Hun; hall Hun.
   { destruct (path_trailing_slash p) eqn:Hts; hall Hts.
-    - (* [slashes:]: -EISDIR alone *)
-      inv_ok. cbn; try rewrite bv_eqb_refl; reflexivity.
-    - (* -EISDIR, or a refusal Linux reaches before the type test *)
-      exact (check_unlink_type_result_complete i EISDIR eff m m' evs H). }
+    - exact (check_unlink_type_result_complete i unlink_before_slashes_errnos EISDIR eff m m' evs H).
+    - exact (check_unlink_type_result_complete i unlink_before_type_errnos EISDIR eff m m' evs H). }
   inv_ok.
   destruct (fs_lookup (m_fs m) c) as [data|] eqn:Hfs; hall Hfs; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; reflexivity].

@@ -180,6 +180,21 @@ Example unlinkat_trailing_slash_success_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
+(** [mnt_want_write] and dentry allocation precede [slashes:], but
+    [may_delete] does not run there.  Each admitted refusal preserves
+    the whole model, not just its file map. *)
+Example unlinkat_trailing_slash_admits_earlier_refusals :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [104])] IEof) in
+  let call e := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a_slash (fun _ => None))
+        (with_copyins [(8192, 3%nat)] (mkEffect (errno_ret e) [] [])) m0 in
+  call ENOTDIR = CheckOk m0 []
+  /\ call EROFS = CheckOk m0 []
+  /\ call ENOMEM = CheckOk m0 []
+  /\ call EACCES = CheckReject
+  /\ call EOVERFLOW = CheckReject.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** "/" has no component, so [link_path_walk] leaves the type at its
     initial LAST_ROOT and [do_rmdir]'s [case LAST_ROOT] answers -EBUSY.
     The file system is not consulted, so an EMPTY map gives the same
@@ -420,8 +435,8 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     model as it was, and the -EBUSY of a mount point, which
     [vfs_unlink] raises only after [may_delete] has passed, is refused.
     The trailing-separator spelling reaches its -EISDIR at
-    [do_unlinkat]'s [slashes:] label, where [may_delete] never runs, so
-    there the -EISDIR is admitted and the -EACCES is refused.
+    [do_unlinkat]'s [slashes:] label, after -EROFS and -ENOMEM but
+    without [may_delete], so -EACCES remains refused there.
     (fs/namei.c, Linux v6.18.46.) *)
 Example unlinkat_tmp_directory_admits_earlier_refusals :
   let m0 := init_model [] 0 0 demo_sp demo_limit
@@ -436,6 +451,8 @@ Example unlinkat_tmp_directory_admits_earlier_refusals :
   /\ call dir 7%nat (mkEffect (errno_ret EOVERFLOW) [] []) = CheckOk m0 []
   /\ call dir 7%nat (mkEffect (errno_ret EBUSY) [] []) = CheckReject
   /\ call dir_slash 8%nat (mkEffect (errno_ret EISDIR) [] []) = CheckOk m0 []
+  /\ call dir_slash 8%nat (mkEffect (errno_ret EROFS) [] []) = CheckOk m0 []
+  /\ call dir_slash 8%nat (mkEffect (errno_ret ENOMEM) [] []) = CheckOk m0 []
   /\ call dir_slash 8%nat (mkEffect (errno_ret EACCES) [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -546,3 +563,37 @@ Example unlinkat_absolute_basename_is_enoent :
     (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof))
   = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [(abs_gif_name, [104])] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
+
+(** The open-file /tmp route must make the same distinction at
+    [slashes:], without changing the descriptor or the named file. *)
+Example unlinkat_open_tmp_trailing_slash_admits_earlier_refusals :
+  let p : path := [47; 116; 109; 112; 47; 120] in
+  let m0 := with_fds [(3, FdFileRW p 0)]
+              (init_model [] 0 0 demo_sp demo_limit
+                 (demo_input_tmp [] [([120], [104])] IEof)) in
+  let call e := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0]
+           (bytes_at 8192 (p ++ [47; 0])) (fun _ => None))
+        (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret e) [] [])) m0 in
+  call ENOTDIR = CheckOk m0 []
+  /\ call EROFS = CheckOk m0 []
+  /\ call ENOMEM = CheckOk m0 []
+  /\ call EACCES = CheckReject
+  /\ call EOVERFLOW = CheckReject.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** [may_delete]'s unmapped-id refusal also precedes actual removal,
+    including the /tmp route that would detach an open descriptor. *)
+Example unlinkat_removal_admits_eoverflow :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [104])] IEof) in
+  let p : path := [47; 116; 109; 112; 47; 120] in
+  let mt := init_model [] 0 0 demo_sp demo_limit
+              (demo_input_tmp [] [([120], [104])] IEof) in
+  let mo := with_fds [(3, FdFileRW p 0)] mt in
+  let call mem n m := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect (errno_ret EOVERFLOW) [] [])) m in
+  call mem_name_a 2%nat m0 = CheckOk m0 []
+  /\ call (bytes_at 8192 (p ++ [0])) 7%nat mt = CheckOk mt []
+  /\ call (bytes_at 8192 (p ++ [0])) 7%nat mo = CheckOk mo [].
+Proof. vm_compute. repeat split; reflexivity. Qed.
