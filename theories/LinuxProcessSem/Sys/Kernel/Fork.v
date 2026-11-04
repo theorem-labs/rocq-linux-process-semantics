@@ -1079,8 +1079,13 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
     The flags and the exit signal are two fields, as in Linux: legacy
     [clone] splits [lower_32_bits(clone_flags)] into [.flags] without
     [CSIGNAL] and [.exit_signal] with only [CSIGNAL] (fork.c:2742-2750),
-    and [clone3] copies the two struct fields (fork.c:2802-2813), so no
-    reader of the record sees a flag bit in the signal byte. *)
+    and [clone3] copies the two struct fields (fork.c:2802-2813).  No
+    record of this model has a flag bit in the signal byte, but for
+    [clone3] that takes more than the copy: Linux lets CLONE_NEWTIME
+    (0x80), which lies inside the signal byte, through
+    [clone3_args_valid] (fork.c:2864-2865), and [clone3_pre] refuses
+    every other signal-byte flag and declines that one
+    ([clone3_pre_split]). *)
 Record CloneArgs := mkCloneArgs {
   cla_flags : Z;
   cla_exit_signal : Z;
