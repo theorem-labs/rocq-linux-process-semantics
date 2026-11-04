@@ -4560,16 +4560,16 @@ Ltac valid_urandom_default :=
 
 (** THE LAUNCH IS ON THE KERNEL OF RECORD, in the fields the published
     statements had one answer for.  [recorded_kernel kb] is
-    [State.default_kernel] with [kb]'s four LAUNCH facts -- [kb_thp],
-    [kb_aslr], [kb_guard] and [kb_rnd_bits] -- copied in, so the clause
-    [in_kernel inp = recorded_kernel (in_kernel inp)], the LAST of this
-    predicate and of every named launch beside it, fixes the other nine
-    fields at [default_kernel]'s values and leaves those four free.  The
-    section that [valid_input_recorded_kernel] opens below says why the
-    line falls there. *)
+    [State.default_kernel] with [kb]'s five LAUNCH facts -- [kb_thp],
+    [kb_aslr], [kb_guard], [kb_rnd_bits] and [kb_rseq] -- copied in, so
+    the clause [in_kernel inp = recorded_kernel (in_kernel inp)], the
+    LAST of this predicate and of every named launch beside it, fixes the
+    other eight fields at [default_kernel]'s values and leaves those five
+    free.  The section that [valid_input_recorded_kernel] opens below
+    says why the line falls there. *)
 Definition recorded_kernel (kb : KernelBuild) : KernelBuild :=
   mkKernelBuild (kb_thp kb) (kb_vdso default_kernel) (kb_aslr kb)
-                (kb_guard kb) (kb_rnd_bits kb) (kb_rseq default_kernel)
+                (kb_guard kb) (kb_rnd_bits kb) (kb_rseq kb)
                 (kb_vlenb default_kernel) (kb_cache default_kernel)
                 (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
                 (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
@@ -5598,30 +5598,38 @@ Qed.
     respect, and the line [recorded_kernel] draws follows what it did
     speak about.
 
-    PINNED, because the released model had ONE answer for each: its
-    entry block was laid out for [CONFIG_RSEQ] ([kb_rseq]), and it had
-    no vDSO size ([kb_vdso]), vector unit ([kb_vlenb]), cache leaves
+    PINNED, because the released model had ONE answer for each: it had
+    no vDSO size ([kb_vdso]), vector state ([kb_vlenb]), cache leaves
     ([kb_cache]), [struct sk_buff] size ([kb_skb_head]) or socket sysctls
     ([kb_wmem_default], [kb_rmem_default], [kb_wmem_max],
     [kb_rmem_max]) other than the ones [State.default_kernel] names.
     Leaving them free would have widened every published statement to
-    builds it never described, with no statement asking for it.
+    builds it never described, with no statement asking for it.  (Under
+    [valid_input_hwcap_rv64gcv], [kb_vlenb = 0] is VLENB = 16, the
+    smallest vector unit, by [State.launch_vlenb]'s encoding.)
 
     FREE, because the released model covered a RANGE of each, and
     pinning one value would narrow a published statement:
+    - [kb_rseq]: the released auxv had ten entries and no AT_RSEQ_*, and
+      its entry-stack window ([valid_sp] with [entry_stack_fits])
+      admitted the stack pointers of both layouts.  Without
+      [CONFIG_RSEQ] the auxv has 27 pairs instead of 29, so the entry
+      stack pointer sits 32 bytes higher; pinning the flag on would drop
+      those launches.  [Checks.Cases.KernelPin] is one.
     - [kb_aslr]: the released [State.mmap_base_max] is the base Linux
       computes with randomisation off, so launches without ASLR were in.
     - [kb_guard]: the released mmap-base band admitted the base for any
-      [stack_guard_gap]; [mmap_gap]'s clamp at [mmap_max_gap] keeps
-      every guard's base inside it.
+      [stack_guard_gap].  [State.stack_guard_gap_bytes] wraps the field
+      ([mod 0x4aba6a2ac] pages) under the bound [State.mmap_base_min]'s
+      comment names, so [mmap_gap]'s [mmap_max_gap] clamp never fires
+      under Sv48 and no guard's base leaves the band.
     - [kb_rnd_bits]: the released floor [State.mmap_base_min] is the
-      24-bit base.  More bits admit no base below it, because
-      [valid_entry_va] still carries [valid_mmap_base_va] with that
-      same floor, and [State.stack_guard_gap_bytes] keeps the guard
-      under the bound [State.mmap_base_min]'s comment names, so at 33
-      bits [mmap_base_of] does not go under the floor either.  A bound
-      on the field would remove only kernel records whose bases are
-      already covered at 24 bits or fewer.
+      24-bit base.  [State.mmap_rnd_bits] holds the field to the
+      sysctl's own range ([18, 33] under Sv48, [mmap_rnd_bits_bounds]),
+      and with the guard bounded as above even 33 bits and the largest
+      guard reach exactly that floor; [valid_entry_va] still carries
+      [valid_mmap_base_va] with it.  More bits add only bases already in
+      the band.
     - [kb_thp]: the released placement took any free address, the
       2 MiB-aligned ones a [CONFIG_TRANSPARENT_HUGEPAGE] kernel gives
       included.
@@ -5631,8 +5639,9 @@ Qed.
     field and per predicate, and three more for the quantities a
     start-up proof computes from them ([launch_cache_words],
     [vdso_text_pages], [min_sigframe_size]).  [Checks.Cases.KernelPin]
-    is a build without [CONFIG_RSEQ], refused by every predicate here,
-    and a launch without ASLR, admitted. *)
+    holds a build with a vector unit, refused by every predicate here,
+    a launch that changes all five free fields, admitted, and the
+    rseq-off launch at the stack pointer only that layout gives. *)
 
 Lemma recorded_kernel_default : recorded_kernel default_kernel = default_kernel.
 Proof. reflexivity. Qed.
@@ -5648,10 +5657,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_rseq : forall inp,
-  valid_input inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_vdso : forall inp,
   valid_input inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -5708,10 +5713,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_abort_rseq : forall inp,
-  valid_input_abort inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_abort_vdso : forall inp,
   valid_input_abort inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_recorded_kernel inp Hv)). Qed.
@@ -5766,10 +5767,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_either_rseq : forall inp,
-  valid_input_either inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_either_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_either_vdso : forall inp,
   valid_input_either inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -5826,10 +5823,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_sigpipe_ignored_rseq : forall inp,
-  valid_input_sigpipe_ignored inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_sigpipe_ignored_vdso : forall inp,
   valid_input_sigpipe_ignored inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
@@ -5884,10 +5877,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_sigpipe_either_rseq : forall inp,
-  valid_input_sigpipe_either inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_sigpipe_either_vdso : forall inp,
   valid_input_sigpipe_either inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -5944,10 +5933,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_channel_closed_rseq : forall inp,
-  valid_input_channel_closed inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_channel_closed_vdso : forall inp,
   valid_input_channel_closed inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
@@ -6002,10 +5987,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_channel_either_rseq : forall inp,
-  valid_input_channel_either inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_channel_either_vdso : forall inp,
   valid_input_channel_either inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -6062,10 +6043,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_sigpipe_kills_rseq : forall inp,
-  valid_input_sigpipe_kills inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_sigpipe_kills_vdso : forall inp,
   valid_input_sigpipe_kills inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
@@ -6120,10 +6097,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_sv39_rseq : forall inp,
-  valid_input_sv39 inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sv39_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_sv39_vdso : forall inp,
   valid_input_sv39 inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -6180,10 +6153,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_sv57_rseq : forall inp,
-  valid_input_sv57 inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sv57_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_sv57_vdso : forall inp,
   valid_input_sv57 inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sv57_recorded_kernel inp Hv)). Qed.
@@ -6238,10 +6207,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_va_any_rseq : forall inp,
-  valid_input_va_any inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_va_any_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_va_any_vdso : forall inp,
   valid_input_va_any inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -6298,10 +6263,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_hwcap_rv64gc_rseq : forall inp,
-  valid_input_hwcap_rv64gc inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_hwcap_rv64gc_vdso : forall inp,
   valid_input_hwcap_rv64gc inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
@@ -6356,10 +6317,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_hwcap_rv64gcv_rseq : forall inp,
-  valid_input_hwcap_rv64gcv inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_hwcap_rv64gcv_vdso : forall inp,
   valid_input_hwcap_rv64gcv inp -> kb_vdso (in_kernel inp) = 1%N.
@@ -6416,10 +6373,6 @@ Proof.
   assumption.
 Qed.
 
-Lemma valid_input_abort_hwcap_rv64gc_rseq : forall inp,
-  valid_input_abort_hwcap_rv64gc inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
-
 Lemma valid_input_abort_hwcap_rv64gc_vdso : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
@@ -6474,10 +6427,6 @@ Proof.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
-
-Lemma valid_input_abort_hwcap_rv64gcv_rseq : forall inp,
-  valid_input_abort_hwcap_rv64gcv inp -> kb_rseq (in_kernel inp) = true.
-Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
 
 Lemma valid_input_abort_hwcap_rv64gcv_vdso : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> kb_vdso (in_kernel inp) = 1%N.
