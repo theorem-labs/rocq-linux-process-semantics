@@ -158,6 +158,14 @@ Example mkdirat_procfs_known_fd_is_eexist :
     base_model base_ctx proc_state) = Some (-17).
 Proof. vm_compute. reflexivity. Qed.
 
+(** simple_lookup's NAME_MAX error precedes the deferred EROFS
+    (fs/libfs.c:240-243; fs/namei.c:4231-4237, Linux v6.18.46). *)
+Example mkdirat_devpts_namemax_precedes_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (47 :: repeat 120 256)) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
 Example mkdirat_devpts_readonly_precedes_permission :
   ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
     base_model base_ctx (devpts_state ro_flags 365)) = Some (-30).
