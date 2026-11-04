@@ -1267,9 +1267,9 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
     answer.  That has three consequences, by timeout.  A zero timeout is
     answered for every choice.  A NULL timeout is declined whenever the
     all-not-ready choice exists, because that choice never returns.  A
-    real deadline is declined whenever such an eventfd entry is present,
-    or a signalfd entry that can be ready ([ppoll_env_deadline]): a real
-    deadline with an eventfd or signalfd entry is not modeled in this PR.
+    real deadline is declined whenever such a shared-eventfd entry or a
+    ready-capable signalfd entry is present ([ppoll_env_deadline]).  An
+    all-zero signalfd entry does not cause this decline.
 
     Four things are genuinely new:
 
