@@ -429,7 +429,7 @@ Proof.
   destruct o; cbv iota;
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro | apply fstat_procfd_dir_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a
