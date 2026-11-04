@@ -25,6 +25,13 @@ Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
 `-EINVAL` for a refused flag word and never `-ENOSYS`.
 
+## Lean translations behind the Rocq model
+
+- The namespace layer's Lean translation is pending.
+- Binary decimal rendering and the full uid_map/gid_map regression cases are pending too.
+
+A list of definitions to translate is not Lean code or evidence that the two models agree.
+
 ## Where QEMU user mode differs
 
 QEMU user mode for riscv64 is **not** a supported system. The list below

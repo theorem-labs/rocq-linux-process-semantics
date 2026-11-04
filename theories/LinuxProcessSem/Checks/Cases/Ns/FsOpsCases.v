@@ -270,23 +270,18 @@ Example read_uid_map_through_uid_map :
 Proof. vm_compute. reflexivity. Qed.
 
 (** A lower id the shown namespace's map does not hold is [(gid_t)-1],
-    4294967295 (map_id_range_up, 399; from_kgid, 509-513), which "%10u"
-    prints as "4294967295" (647-650), not 65534.  [map_write] builds no
-    such table for a task's own map (it maps every lower range through the
-    parent's map); this hand-built one checks the branch.  The case states
-    the id that [map_line] prints: rendering it through [decimal_bytes],
-    which counts in unary [nat], is not computable for 4294967295. *)
+    4294967295 (map_id_range_up, 399; from_kgid, 509-513), printed with
+    "%10u" as "4294967295" (647-650), not 65534. [map_write] builds no
+    such table for a task's own map; this hand-built case checks the
+    branch. The whole-line cases below exercise the binary renderer. *)
 Example read_gid_map_unmapped_lower :
   shown_lower [map_root; ns_a; ns_b 300000] 3%positive b_cred GidMap 300000 = Some 4294967295.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The same id from tables Linux does produce: namespace 4 (C), a sibling
-    of A under the initial namespace, maps uid and gid 0 to kernel id
-    300000.  A task of C that opens A's gid_map (fs/proc/base.c:3082-3105
-    binds the target task's namespace, whatever the opener's) is shown its
-    own namespace, C (641-643 take the parent only when the opener's
-    namespace is the file's), and C's gid map does not hold A's lower gid
-    200000: the line shows 4294967295.  As above, the case states the id. *)
+(** The same id from reachable tables: namespace 4 (C), a sibling of A
+    under the initial namespace, maps uid and gid 0 to kernel id 300000.
+    A task of C opening A's gid_map sees it from C (641-643), whose map
+    does not hold A's lower gid 200000, so the line prints 4294967295. *)
 Definition ns_c : UserNs :=
   mkUserNs 4 (Some 1%positive) 1 0 (Some [mkExtent 0 300000 1]) (Some [mkExtent 0 300000 1])
     true false INT_MAX true.
@@ -295,6 +290,22 @@ Definition c_cred : IdCred := mkIdCred 4 300000 300000 0.
 Example read_gid_map_sibling_unmapped :
   shown_lower [map_root; ns_a; ns_c] 2%positive c_cred GidMap 200000 = Some 4294967295.
 Proof. vm_compute. reflexivity. Qed.
+
+Example read_uid_map_sibling_unmapped :
+  shown_lower [map_root; ns_a; ns_c] 2%positive c_cred UidMap 100000 = Some 4294967295.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Both map kinds render the whole line, including the unmapped lower id. *)
+Example map_lines_sibling_unmapped_render :
+  option_map bytes_z (map_lines [map_root; ns_a; ns_c] 2%positive c_cred UidMap
+    [mkExtent 0 100000 65536]) =
+      Some (repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
+        ++ repeat 32 5 ++ [54; 53; 53; 51; 54; 10]) /\
+  option_map bytes_z (map_lines [map_root; ns_a; ns_c] 2%positive c_cred GidMap
+    [mkExtent 0 200000 65536]) =
+      Some (repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
+        ++ repeat 32 5 ++ [54; 53; 53; 51; 54; 10]).
+Proof. vm_compute. split; reflexivity. Qed.
 
 (** A shown namespace the tables do not hold: B's parent A is left out, so
     the namespace a task of B is shown when it reads its own map is absent.

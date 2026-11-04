@@ -16,6 +16,15 @@ Open Scope Z_scope.
 
 Definition bytes (zs : list Z) : list byte := map (Z_to_bv 8) zs.
 
+(** Binary-sized ids render without a unary-sized intermediate. *)
+Example decimal_bytes_boundaries :
+  decimal_bytes (-1) = [] /\ decimal_bytes 0 = bytes [48] /\
+  decimal_bytes 9 = bytes [57] /\ decimal_bytes 10 = bytes [49; 48] /\
+  decimal_bytes 4294967295 = bytes [52; 50; 57; 52; 57; 54; 55; 50; 57; 53] /\
+  decimal_bytes 18446744073709551615 =
+    bytes [49; 56; 52; 52; 54; 55; 52; 52; 48; 55; 51; 55; 48; 57; 53; 53; 49; 54; 49; 53].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 Definition no_flags : MountFlags := mkMountFlags false false false false.
 
 Definition mnt (i : positive) (parent : option positive) (point root sb : positive) : Mount :=

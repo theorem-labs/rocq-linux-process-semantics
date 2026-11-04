@@ -200,20 +200,25 @@ Definition path_absolute (p : list byte) : bool :=
 Definition path_trailing_slash (p : list byte) : bool :=
   match rev p with b :: _ => is_slash b | [] => false end.
 
-(** The decimal text of a pid, as [proc_self_get_link] (fs/proc/self.c)
-    prints it with "%u". *)
-Fixpoint decimal_rev_fuel (fuel n : nat) : list byte :=
+(** Decimal text, as [proc_self_get_link] (fs/proc/self.c) prints a pid
+    with "%u" and the user-namespace map files print ids. Keep division
+    in binary: the value itself must never become a unary [nat]. The
+    number of bits bounds the decimal digit count for a positive value. *)
+Fixpoint decimal_rev_fuel (fuel : nat) (n : Z) : list byte :=
   match fuel with
   | O => []
   | S f =>
-      if Nat.eqb n 0 then []
-      else Z_to_bv 8 (Z.of_nat (n mod 10) + 48) :: decimal_rev_fuel f (n / 10)
+      if n =? 0 then []
+      else let '(q, r) := Z.div_eucl n 10 in
+           Z_to_bv 8 (r + 48) :: decimal_rev_fuel f q
   end.
 
 Definition decimal_bytes (z : Z) : list byte :=
-  if z <? 0 then []
-  else if z =? 0 then ascii [48]
-  else rev (decimal_rev_fuel (S (Z.to_nat z)) (Z.to_nat z)).
+  match z with
+  | Zneg _ => []
+  | Z0 => ascii [48]
+  | Zpos p => rev (decimal_rev_fuel (Pos.size_nat p) z)
+  end.
 
 (** [name_to_int] (fs/proc/util.c): a decimal number with no leading zero
     and below (~0U - 9) / 10 before its last digit; anything else is not a
