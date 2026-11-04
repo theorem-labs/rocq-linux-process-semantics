@@ -314,7 +314,7 @@ Definition efd_fcntl_in (cmd arg : word) : SyscallInput :=
   mkInput 25 [3; cmd; arg; 0; 0; 0] (fun _ => None) (fun _ => None).
 
 Example eventfd_read_answers_before_a_clone_and_declines_after :
-  let shared := clone_child_made efd_live_model in
+  let shared := clone_child_made (Z_to_bv 64 4242) efd_live_model in
   (* before the clone: the counter's value, 5 *)
   match check_syscall efd_read_in efd_read_5 efd_live_model with
   | CheckOk _ [] => true
@@ -353,7 +353,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     still answers 0.  fs/eventfd.c, fs/file.c, fs/fcntl.c: read at
     v6.18.44; identical at v6.18.46. *)
 Example eventfd_getfd_declines_after_a_clone :
-  let shared := clone_child_made efd_live_model in
+  let shared := clone_child_made (Z_to_bv 64 4242) efd_live_model in
   check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect 0 [] []) shared = CheckUnmodeled
   /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect FD_CLOEXEC [] []) shared
      = CheckUnmodeled
