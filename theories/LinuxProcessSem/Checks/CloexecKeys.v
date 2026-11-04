@@ -1308,6 +1308,13 @@ Proof.
     inversion H; subst; fr_leaf.
 Qed.
 
+(** The released setns arm answers errnos without changing the model. *)
+Lemma check_setns_fr : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs -> fd_rel m m'.
+Proof.
+  intros fd eff m m' evs H. unfold check_setns in H. fr_frame2 H.
+Qed.
+
 Lemma check_clone_fr : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
@@ -1506,6 +1513,7 @@ Proof.
         | eapply check_pipe2_fr; eassumption
         | eapply check_futex_fr; eassumption
         | eapply check_set_robust_list_fr; eassumption
+        | eapply check_setns_fr; eassumption
         | eapply check_madvise_fr; eassumption
         | eapply check_rt_sigprocmask_fr; eassumption
         | eapply check_tkill_fr; eassumption
