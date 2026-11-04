@@ -813,11 +813,16 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     [SIGCHLD] for [clone3] (435), the word of the one image it resolves.
 
     KNOWN GAP until the namespace extension takes the decoded argument
-    record ([Fork.CloneArgs]) and answers [CnErr EINVAL] where
-    [Fork.clone_arg_checks] fires.  The released step now answers -EINVAL
-    for a word the argument checks refuse (and, for [clone3], a struct
-    its own tests refuse: [Fork.clone3_einval_b]), while the extension
-    still sees this word, so:
+    record ([Fork.CloneIn]) in place of this word.  Closing it takes two
+    answers of the extension, not one: [CnErr EINVAL] where
+    [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record, AND, for a
+    call whose [clone_in_of] is [Fork.CiNoArgs] while the released step
+    answers, [CnUnmodeled] — a [clone3] struct [Fork.clone3_einval_b]
+    refuses has no record at all ([clone_in_of] gives [Fork.CiNoArgs]),
+    so the first answer alone never reaches it.  The released step now
+    answers -EINVAL for a word the argument checks refuse (and, for
+    [clone3], a struct its own tests refuse: [Fork.clone3_einval_b]),
+    while the extension still sees this word, so:
     - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
       extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
       whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
@@ -917,6 +922,33 @@ Lemma clone_in_of_input : forall segs c x8,
    else CiNoArgs).
 Proof.
   intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
+Qed.
+
+(** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
+    the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
+    [clone3] has no record, whatever the released step answers for it
+    (-EINVAL for [Fork.CdErr], [Fork.clone3_einval_b]).  With
+    [Checks.Cases.Kernel.Fork.clone3_newtime_declines], which gives
+    [Fork.CdDecline] for the CLONE_NEWTIME image, this is the second
+    answer the namespace extension owes: a call the core answers while
+    its [CloneIn] is [Fork.CiNoArgs]. *)
+Lemma clone_in_of_no_record : forall c bs x8,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = 435%Z ->
+  copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE = Some bs ->
+  (forall r, clone3_pre bs <> CdArgs r) ->
+  clone_in_of c = CiNoArgs.
+Proof.
+  intros c bs x8 Hp H435 Hcopy Hno. unfold clone_in_of. cbv zeta. rewrite Hp.
+  cbv iota. rewrite H435.
+  replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
+  replace (Z.eqb 435%Z 435%Z) with true by reflexivity.
+  cbv iota.
+  destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
+    [reflexivity|].
+  rewrite Hcopy.
+  destruct (clone3_pre bs) as [| |r] eqn:Hpre; [reflexivity|reflexivity|].
+  exfalso. exact (Hno r Hpre).
 Qed.
 
 (** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
