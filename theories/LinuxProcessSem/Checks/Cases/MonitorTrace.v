@@ -187,7 +187,8 @@ Lemma monitor_trace_ppoll_plan :
     (in_arg monitor_trace_ppoll_i 0) (unfds32 (in_arg monitor_trace_ppoll_i 1))
     (in_arg monitor_trace_ppoll_i 2) (in_arg monitor_trace_ppoll_i 3)
     (in_arg monitor_trace_ppoll_i 4)
-  = PpPoll PsToNone ([[0; 1]; [0; 1; 9]])%Z.
+  = PpPoll PsToNone
+      [(3, [(0, PpEnv); (1, PpEnv)]); (4, [(0, PpEnv); (1, PpEnv); (9, PpEnv)])]%Z.
 Proof. vm_compute. reflexivity. Qed.
 
 Example monitor_trace_ppoll_steps_under_waits_end : forall cfg,
@@ -209,15 +210,21 @@ Proof.
     split; [reflexivity |]. split; [| reflexivity].
     cbv beta zeta. rewrite monitor_trace_ppoll_wakeable. cbn [negb].
     rewrite monitor_trace_ppoll_plan. cbv iota.
-    exists (Z_to_bv 64 1,
-      ppoll_writeback (in_arg monitor_trace_ppoll_i 0) [0; 1]%Z),
-      monitor_trace_s23, [], [].
-    split; [| split; reflexivity].
-    exists (Z_to_bv 64 1,
-      ppoll_writeback (in_arg monitor_trace_ppoll_i 0) [0; 1]%Z).
-    split; [| reflexivity].
-    exists [0; 1]%Z. split; [vm_compute; reflexivity |].
-    split; [intros Hc; vm_compute in Hc; discriminate Hc | vm_compute; reflexivity].
+    apply (proj2 (bind_choose_iff _ _ _ _ _)).
+    exists ([0; 1]%Z,
+            ps_one (Z_to_bv 64 1,
+                    ppoll_writeback (in_arg monitor_trace_ppoll_i 0) [0; 1]%Z, None)).
+    cbv beta. cbn [fst snd].
+    split.
+    { split; [vm_compute; reflexivity|].
+      split; [intros Hc; vm_compute in Hc; discriminate Hc|].
+      first [ vm_compute; reflexivity
+            | rewrite ppoll_finish_eq; vm_compute; reflexivity ]. }
+    apply (proj2 (pselect_answer_iff _ _ _ _ _ _)).
+    exists 0%Z. eexists.
+    split; [reflexivity|]. split.
+    + unfold pselect_effect, ps_one. cbn [pa_ans]. reflexivity.
+    + cbv beta. rewrite ppoll_rec_und0; [reflexivity | vm_compute; reflexivity].
   - apply spurious_refusal_family_on. apply injected_family_off_ppoll. reflexivity.
   - vm_compute. reflexivity.
   - apply materialize_model_accesses_no_lazy. reflexivity.

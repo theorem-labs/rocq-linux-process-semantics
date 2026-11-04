@@ -16,15 +16,55 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude.
 
-(** pselect6 witness: the single outcome [Select.pselect6_outcome] names,
-    or [Unmodeled] where it declines (fail closed, but never stuck). *)
+(** The remaining time {0,0} is in every range: it is what the clamp
+    writes. *)
+Lemma pselect_remaining_ok_zero : forall sec nsec : word,
+  pselect_remaining_ok sec nsec pselect_timespec_zero = true.
+Proof.
+  intros sec nsec. unfold pselect_remaining_ok.
+  change (Nat.eqb (length pselect_timespec_zero) 16) with true.
+  change (tv_frac_of pselect_timespec_zero <? NSEC_PER_SEC)%Z with true.
+  change (timespec_ns pselect_timespec_zero) with 0%Z.
+  cbn [andb]. apply Z.leb_le.
+  pose proof (bv_unsigned_in_range _ sec). pose proof (bv_unsigned_in_range _ nsec).
+  unfold NSEC_PER_SEC. lia.
+Qed.
+
+(** One answer of [Select.pselect_answer]: the choice 0 -- every
+    undecided pair end reports its smaller mask, and a survivor that
+    has shown nothing records EPOLLERR clear -- and, where a remaining
+    time is chosen, {0,0}. *)
+Definition pselect_answer_witness (reads : list (word * nat)) (pa : PselectAnswers)
+    (rec : Z -> Model -> Model) (m : Model) : outcome SyscallEffect :=
+  match pa_ans pa 0%Z with
+  | (r, ws, None) => Ok (with_copyins reads (mkEffect r ws [])) (rec 0%Z m) []
+  | (r, ws, Some (tsp, _)) =>
+      Ok (with_copyins reads (mkEffect r (ws ++ [(tsp, pselect_timespec_zero)]) []))
+         (rec 0%Z m) []
+  end.
+
+Lemma pselect_answer_witness_ok : forall reads pa rec i m,
+  pselect_answer reads pa rec i m (pselect_answer_witness reads pa rec m).
+Proof.
+  intros reads pa rec i m. unfold pselect_answer, pselect_answer_witness.
+  eapply bind_step; [apply (choose_ok _ 0%Z); apply Z.land_0_r|]. cbv beta.
+  eapply bind_step; [apply modify_ok|]. cbv beta.
+  destruct (pa_ans pa 0%Z) as [[r ws] [[tsp [sec nsec]]|]]; cbv beta iota.
+  - eapply bind_step;
+      [apply (choose_ok _ pselect_timespec_zero); apply pselect_remaining_ok_zero|].
+    cbv beta. apply pure_ok.
+  - apply pure_ok.
+Qed.
+
+(** pselect6 witness: an answer [Select.pselect6_outcome] admits, or
+    [Unmodeled] where it declines (fail closed, but never stuck). *)
 Definition pselect6_witness (i : SyscallInput) (m : Model)
     (n32 inp outp exp tsp sig : word) : outcome SyscallEffect :=
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => Unmodeled
-  | Some (r, ws) =>
-      Ok (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
-            (mkEffect r ws [])) m []
+  | Some pa =>
+      pselect_answer_witness (pselect6_reads i n32 inp outp exp tsp sig) pa
+        (fun _ m0 => m0) m
   end.
 
 Lemma pselect6_witness_ok : forall n32 inp outp exp tsp sig i m,
@@ -33,28 +73,28 @@ Proof.
   intros. unfold pselect6_spec, pselect6_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [[r ws]|];
-    cbv iota; [apply pure_ok | apply unmodeled_intro].
+  destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [pa|];
+    cbv beta iota; [apply pselect_answer_witness_ok | apply unmodeled_intro].
 Qed.
 
-(** ppoll witness: the decided outcome where [Select.ppoll_plan] decides
+(** ppoll witness: the decided answer where [Select.ppoll_plan] decides
     one, and at [do_poll] the LEAST ready choice where every choice is
-    answered; [Unmodeled] where the spec declines (fail closed, but never
-    stuck). *)
+    answered, each through [pselect_answer_witness]; [Unmodeled] where
+    the spec declines (fail closed, but never stuck). *)
 Definition ppoll_witness (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : outcome SyscallEffect :=
   match ppoll_plan i m ufds nfds tsp sig sigsetsize with
   | PpDecided None => Unmodeled
-  | PpDecided (Some (r, ws)) =>
-      Ok (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
-            (mkEffect r ws [])) m []
-  | PpPoll tmo sets =>
-      if negb (ppoll_all_answered i ufds nfds tsp tmo sets) then Unmodeled
+  | PpDecided (Some pa) =>
+      pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
+        (fun _ m0 => m0) m
+  | PpPoll tmo cs =>
+      if negb (ppoll_all_answered i ufds nfds tsp tmo cs) then Unmodeled
       else
-        match ppoll_finish i ufds nfds tsp tmo (ppoll_least sets) with
-        | Some (r, ws) =>
-            Ok (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
-                  (mkEffect r ws [])) m []
+        match ppoll_finish i ufds nfds tsp tmo (ppoll_least cs) with
+        | Some pa =>
+            pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
+              (fun _ => ppoll_rec cs (ppoll_least cs)) m
         | None => Unmodeled
         end
   end.
@@ -66,20 +106,20 @@ Proof.
   intros. unfold ppoll_spec, ppoll_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[[r ws]|]|tmo sets];
-    cbv iota.
-  - apply pure_ok.
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs];
+    cbv beta iota.
+  - apply pselect_answer_witness_ok.
   - apply unmodeled_intro.
-  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo sets)) eqn:Ha;
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs)) eqn:Ha;
       cbv beta iota; [apply unmodeled_intro|].
     apply negb_false_iff in Ha.
     unfold ppoll_all_answered in Ha.
     apply andb_true_iff in Ha as [Ha _]. apply andb_true_iff in Ha as [Ha Hlo].
     apply andb_true_iff in Ha as [Hclo _].
-    destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_least sets)) as [[r ws]|]
+    destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_least cs)) as [pa|]
       eqn:Hf; [|discriminate Hlo].
     eapply bind_step.
-    + apply (choose_ok _ (r, ws)). exists (ppoll_least sets).
+    + apply (choose_ok _ (ppoll_least cs, pa)). cbn [fst snd].
       split; [exact Hclo | exact Hf].
-    + cbv beta. cbn [fst snd]. apply pure_ok.
+    + cbv beta. cbn [fst snd]. apply pselect_answer_witness_ok.
 Qed.

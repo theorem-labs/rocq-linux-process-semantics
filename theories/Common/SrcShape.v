@@ -164,8 +164,10 @@ Lemma fault_not_unmodeled : forall c,
   RiscvSemantics.step segs (cfg_ms c) = MachineFault ->
   ~ unmodeled_at segs c.
 Proof.
-  intros [ms model] Hsvc Hlazy Hf (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *;
-    [rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum|];
+  intros [ms model] Hsvc Hlazy Hf
+    (_ & [(_ & Hum & _) | [(_ & Hum & _) | (x8 & Hsvc' & _)]]); cbn in *;
+    [ rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum
+    | rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum |];
     congruence.
 Qed.
 
@@ -717,10 +719,10 @@ Theorem src_shape_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb (rrnd : EntryDraw) (rlim : Z)
          target_segs apc aph asp abrk amb (arnd : EntryDraw) (alim : Z)
          (T T' : TSet) (inp : ProcInput),
-  srealizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
-  realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T' ->
+  srealizes (run_segments source_segs inp rsp rmb)
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+  realizes (run_segments target_segs inp asp amb)
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T' ->
   t_eq T T' ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -733,8 +735,8 @@ Proof.
     eapply srealizes_modeled; exact Hsource. }
   right. split.
   - intro tr. cbn.
-    rewrite (srealizes_obs_iff source_segs _ T Hsource tr).
-    rewrite (realizes_obs_iff target_segs _ T' Htarget tr).
+    rewrite (srealizes_obs_iff (run_segments source_segs inp rsp rmb) _ T Hsource tr).
+    rewrite (realizes_obs_iff (run_segments target_segs inp asp amb) _ T' Htarget tr).
     apply Heq.
   - cbn. eapply realizes_no_error; exact Htarget.
 Qed.
@@ -744,10 +746,10 @@ Corollary src_shape_strong_equiv_same :
   forall source_segs rpc rph rsp rbrk rmb (rrnd : EntryDraw) (rlim : Z)
          target_segs apc aph asp abrk amb (arnd : EntryDraw) (alim : Z)
          (T : TSet) (inp : ProcInput),
-  srealizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
-  realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T ->
+  srealizes (run_segments source_segs inp rsp rmb)
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+  realizes (run_segments target_segs inp asp amb)
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).

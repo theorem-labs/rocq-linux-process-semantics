@@ -458,8 +458,8 @@ Qed.
     no single model can carry: that every resolution of 220 and 435
     which returns a PID leaves that field set.  [clone_checker_admits_a_pid]
     below pins one model and one pid; this is the [forall], and it is the
-    statement [Kernel.Fork.clone_resolve]'s [modify with_children] exists
-    to make true.
+    statement [Kernel.Fork.clone_resolve]'s [modify clone_child_made]
+    (which applies [State.with_children]) exists to make true.
 
     THE TWO ARMS ARE SEPARATED, NOT MERELY COVERED.  The statement is a
     pair of implications keyed on the observed return rather than a
@@ -1017,7 +1017,7 @@ Lemma unmodeled_at_syscall : forall ms model x8,
   unmodeled_at segs (mkCfg ms model).
 Proof.
   intros ms model x8 Hh Hsvc Hspec.
-  split; [exact Hh|]. right. exists x8. split; assumption.
+  split; [exact Hh|]. right; right. exists x8. split; assumption.
 Qed.
 
 (** …and what that costs a source binary: reaching such a configuration
