@@ -203,6 +203,26 @@ Example fork_after_failure_pid_3 : forall m,
   = Some [(2%positive, 3); (1%positive, 141)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** Allocation visits namespace 3 before 2.  A failure at 2 leaves 3's
+    cursor advanced but 2's unchanged (kernel/pid.c:191-251,294-299). *)
+Definition nested_pids : NsState :=
+  with_pidns inside [mkPidNs 1 None 1 0 0;
+    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 1].
+Definition nested_shell : NsCtx :=
+  with_pids (with_pid_ns shell 3) [(3%positive, 1); (2%positive, 7); (1%positive, 139)].
+Definition inner_cursor_advanced : NsState :=
+  with_pidns nested_pids [mkPidNs 1 None 1 0 0;
+    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 2].
+
+Example fork_partial_allocation_is_answer : forall m,
+  clone_ns SIGCHLD m nested_shell nested_pids 140 (CnErr 12 inner_cursor_advanced).
+Proof.
+  intros m. right. split.
+  - vm_compute. intros H. discriminate H.
+  - exists 12, inner_cursor_advanced. split; [lia|]. split; [|reflexivity].
+    right. right. exists 1%nat. split; [vm_compute; lia|vm_compute; reflexivity].
+Qed.
+
 (** A pid namespace at level 32 can have no child: ENOSPC. *)
 Definition deep : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
