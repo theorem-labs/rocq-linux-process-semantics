@@ -177,6 +177,16 @@ Example libc_fork_inside_pid_2 : forall m,
   = Some [(2%positive, 2); (1%positive, 140)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** Namespace answers do not bypass the released core's flag gate. *)
+Example clone_child_tid_inside_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_CHILD_SETTID SIGCHLD) m shell inside 140 = CnUnmodeled /\
+  clone_ns_exact (Z.lor CLONE_CHILD_CLEARTID SIGCHLD) m shell inside 140 = CnUnmodeled.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+Example clone_newns_non_sigchld_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWNS 10) m shell inside 140 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 (** Outside the released world a flag the model does not hold (CLONE_VM)
     declines. *)
 Example clone_vm_inside_declines : forall m,
