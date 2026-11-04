@@ -48,8 +48,9 @@
     the namespace counts of the host's user namespace, EAGAIN from
     RLIMIT_NPROC or a cgroup controller, EINTR, and the failures of every
     namespace's init function, which cannot be listed with confidence: any
-    errno) are admitted for every clone the model answers; one that
-    comes after [alloc_pid] leaves the pid cursors advanced
+    errno) are admitted for every clone the model answers; one inside
+    [alloc_pid] can leave an inner prefix of the pid cursors advanced
+    ([pid_partial]), and one after it advances every model cursor
     ([pid_advanced]).  A core takes a failed clone's shared state from
     [CnErr] too.  A statement that names [clone_tables_failures] admits
     only the tables' failures for a clone that makes a namespace: that the
@@ -294,15 +295,31 @@ Definition pid_advanced (st : NsState) (active : positive) : NsState :=
                                    end) chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
+(** An [alloc_pid] failure at chain index [k]: the inner [k] namespaces
+    allocated a number; the failing level and the outer levels did not.
+    Removing the reservations does not rewind their cursors (Linux
+    v6.18.46, kernel/pid.c:191-251,294-299; lib/idr.c:127-136,154-157). *)
+Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
+  let chain := firstn k (pidns_chain (length (ns_pidns st)) st active) in
+  let bumped := flat_map (fun x => match pidns_parent x with
+    | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
+        (pidns_level x) (pidns_last x + 1)]
+    | None => []
+    end) chain in
+  with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
+
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
-    a namespace's init function), which leaves the shared state as it was
-    or, when it came after [alloc_pid], with the pid cursors advanced. *)
+    a namespace's init function), which leaves the shared state as it was,
+    with only an inner prefix advanced, or with every model cursor advanced. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st hq
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
-      /\ exists e st', 1 <= e <= 4095 /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx))
+      /\ exists e st', 1 <= e <= 4095
+          /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx)
+              \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)))%nat
+                    /\ st' = pid_partial st (cx_pidns ctx) k)
                        /\ o = CnErr e st').
 
 (** A task in the released world has no pid namespace the model made
@@ -328,6 +345,31 @@ Proof.
     destruct (pidns_parent x) as [q|] eqn:Ep;
       [try rewrite Ep in Hpid; discriminate Hpid|].
     simpl. try rewrite Ep. reflexivity. }
+  cbv zeta. rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
+Qed.
+
+(** A partial allocation in the released world also moves no cursor. *)
+Lemma pid_partial_flat : forall ctx st k,
+  flat_view ctx st = true -> pid_partial st (cx_pidns ctx) k = st.
+Proof.
+  intros ctx st k H. unfold flat_view in H.
+  apply andb_true_iff in H as [H _].
+  apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
+  unfold pid_partial.
+  assert (Hb : flat_map (fun x => match pidns_parent x with
+      | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
+          (pidns_level x) (pidns_last x + 1)]
+      | None => [] end)
+      (firstn k (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx))) = []).
+  { destruct (length (ns_pidns st)) as [|n].
+    - destruct k; reflexivity.
+    - cbn [pidns_chain]. unfold find_pidns.
+      destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef.
+      + try rewrite Ef in Hpid. cbv beta iota in Hpid |- *.
+        destruct (pidns_parent x) as [q|] eqn:Ep;
+          [try rewrite Ep in Hpid; discriminate Hpid|].
+        destruct k; simpl; try rewrite Ep; rewrite ?firstn_nil; reflexivity.
+      + destruct k; reflexivity. }
   cbv zeta. rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
 Qed.
 
@@ -357,7 +399,9 @@ Proof.
   rewrite (clone_ns_exact_flat_fork f m ctx st hq Hf Hb), (pid_advanced_flat ctx st Hf).
   split.
   - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
-    right. exists e. split; [exact He|]. destruct Hst as [-> | ->]; exact Ho.
+    right. exists e. split; [exact He|].
+    destruct Hst as [-> | [-> | (k & _ & ->)]]; try exact Ho.
+    rewrite (pid_partial_flat ctx st k Hf) in Ho. exact Ho.
   - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
     right. split; [intros Hc; discriminate Hc|].
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
