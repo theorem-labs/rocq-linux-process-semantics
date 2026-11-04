@@ -130,13 +130,13 @@ Section GenericInit.
   Proof.
     intros E M HS. apply SINV_SINV0 in HS. destruct HS as [Hev _].
     assert (U1 : uE (E0 sp rdraw brk0 argv envp uid) e_envp = usp + 8 * argc + 16)
-      by (unfold usp, argc; exact (u_e_envp ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
+      by (unfold usp, argc; exact (u_e_envp ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
     assert (U3 : uE (E0 sp rdraw brk0 argv envp uid) e_str0
                  = usp + Z.of_nat (block_head_size rseq argv envp)
                    + Z.of_nat (block_pad_len rseq sp top argv envp execfn))
-      by (unfold usp, rseq, execfn, top; exact (u_e_str0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
+      by (unfold usp, rseq, execfn, top; exact (u_e_str0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
     assert (U2 : uE (E0 sp rdraw brk0 argv envp uid) (EVar V_ENVC) = envc)
-      by (unfold envc; exact (uE0_envc ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
+      by (unfold envc; exact (uE0_envc ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
     assert (Hev7 : forall n, (n < NX0)%nat -> ev E n = ev (E0 sp rdraw brk0 argv envp uid) n)
       by (intros n Hn; apply Hev; exact Hn).
     unfold uE in *.
