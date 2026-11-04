@@ -205,6 +205,7 @@ Definition getdents64_witness (fd dirent count : word) (i : SyscallInput) (m : M
   | Some (FdFileRW _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdPipe _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdSocket _)  => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdSeqpacket _ _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdOpaque o) => getdents64_opaque_witness fd o dirent count i m

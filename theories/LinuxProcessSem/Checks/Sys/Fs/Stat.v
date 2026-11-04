@@ -1217,6 +1217,7 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdFileRW p _) => check_fstat_file i p statbuf eff m
   | Some FdDir         => CheckUnmodeled
   | Some (FdSocket _)  => CheckUnmodeled
+  | Some (FdSeqpacket _ _ _) => CheckUnmodeled
   | Some (FdPipe _ _)  => CheckUnmodeled
   | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
   | Some FdUrandom => check_fstat_urandom i statbuf eff m

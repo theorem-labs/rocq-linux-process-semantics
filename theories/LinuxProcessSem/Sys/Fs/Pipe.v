@@ -104,15 +104,15 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
       the effect is one contiguous range, not two.  A failed copy is
       [-EFAULT] with NOTHING installed: [do_pipe2] [fput]s both files and
       [put_unused_fd]s both reservations (:1041-1045), so the call is
-      atomic — the fd table is exactly as it was.  The model therefore
-      answers [-EFAULT] and changes nothing.
-      A PARTIALLY writable destination is [unmodeled] instead: the kernel
-      copies a prefix before it faults, and how much depends on the
-      architecture's uaccess loop, so the model will not say what is in
-      those bytes.
+      atomic as to installed descriptors: the fd table is exactly as it
+      was. The model answers [-EFAULT] with no stored bytes when
+      [access_ok] refuses the range or byte 0 is unwritable. If byte 0
+      is writable but not all eight are, the model declines instead:
+      [copy_to_user] can leave a prefix whose length depends on the
+      architecture's uaccess loop.
     - ONE INVERSION OF THAT ORDER, named rather than assumed away.  The
       term tests the destination's writability BEFORE it allocates, so on
-      the wholly-unwritable branch it offers [-EFAULT] beside the
+      the byte-0-unwritable branch it offers [-EFAULT] beside the
       injected [pipe2_errnos].  Linux runs [__do_pipe_flags] first, so a
       task with fewer than two free descriptors answers [-EMFILE] and
       never attempts the copy — the model admits an answer that kernel
@@ -229,7 +229,7 @@ Definition pipe2_spec (fildes flags : word) : Sys SyscallEffect :=
       | None =>
           match read_bytes_map (in_wmem i) fildes (Z_to_bv 64 1) with
           | None => alt injected (err_ret EFAULT)
-              (* not one byte of the destination is writable: real -EFAULT,
+              (* byte 0 of the destination is unwritable: real -EFAULT,
                  with no pipe made and no descriptor installed *)
           | Some _ => unmodeled
               (* a writable prefix and an unwritable tail: [copy_to_user]

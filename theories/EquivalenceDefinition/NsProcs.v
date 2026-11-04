@@ -18,7 +18,7 @@
     extended step IS the core's own step, claimed calls included.
 
     [ns_clone_fail_step_released] is the same answer for the forced-only
-    filter of a failed clone (P11 b): under [ns_ext], beside
+    filter of a failed clone: under [ns_ext], beside
     [px_clone_fail]'s other premises, its step premise is the released
     step, so the filter changes no published answer
     ([ns_clone_filter_released], [clone_ns_exact_errno]).
@@ -374,8 +374,7 @@ Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg)
     RLIMIT_NPROC, a security module) is outside it, and the statement's
     header must say so.  The released arm ([Fork.clone_ns_resolve]) cannot
     make that cut itself: without the namespace tables it cannot tell a
-    forced EPERM from a security module's (the LPS owner's decision,
-    2026-11-01).
+    forced EPERM from a security module's.
 
     ON THIS CORE the whole-system form holds for programs whose processes
     in the released world make, while another process lives, only the

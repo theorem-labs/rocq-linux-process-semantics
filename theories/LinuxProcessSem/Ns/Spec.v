@@ -18,7 +18,8 @@
       as the released arm does says so in its header and calls [released]
       for them.
 
-    Every arm's header names the Linux 6.18.44 functions it follows and
+    Every arm's header names the Linux functions it follows, with the
+    version they were read at (6.18.44 or 6.18.46), and
     its kind: exact (every Linux outcome for the accepted shape, and no
     other), over (every Linux outcome, plus outcomes the model does not
     decide), or declines. *)
@@ -398,9 +399,10 @@ Qed.
     bit, per process in the core, and tests whether a live task's process
     group is the caller's pid: in a pid namespace the tables made no
     modelled process makes such a group, a peer's included, because
-    [setpgid] has no arm, and a process outside the model can only after
-    the caller's modelled parent exits, which the launch value
-    [Tables.env_foreign_pgroups] names ([Task.setsid_arm]); in the host's
+    [setpgid] has no arm, and a process outside the model can only when
+    the caller is the namespace's pid 1 and its modelled parent exits,
+    which the launch value [Tables.env_foreign_pgroups] names
+    ([Task.setsid_arm]); in the host's
     pid namespace, or under that value, the arm admits EPERM beside the
     success.  Linux also sets the caller's session and group ids; the
     model records the leader bit only, and no call of a peer the model
