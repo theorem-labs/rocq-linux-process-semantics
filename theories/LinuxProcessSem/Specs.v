@@ -79,7 +79,8 @@
       Sys/Kernel/Fork.v          kernel/fork.c     set_tid_address clone clone3
       Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex set_robust_list
       Sys/Kernel/Signal.v        kernel/signal.c   sigaltstack rt_sigaction
-                                                   rt_sigprocmask
+                                                   rt_sigprocmask kill tkill
+                                                   tgkill
       Sys/Kernel/Groups.v        kernel/groups.c   getgroups setgroups
       Sys/Kernel/Sched/Syscalls.v  kernel/sched/syscalls.c  sched_getaffinity
                                                    sched_setscheduler
