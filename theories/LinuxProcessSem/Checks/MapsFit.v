@@ -277,7 +277,7 @@ Proof.
       as (Halign & Hpos & Hceil & Hfree).
     apply maps_fit_cons; [exact Hfit | fit_bound]. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
-  { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+  { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hfit|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
     difn H Epos; [discriminate|].
@@ -316,7 +316,7 @@ Proof.
   destruct (mmap_fixed_rw_b prot flags off) eqn:Efixrw.
   2: {
     destruct (mmap_noreplace_noaccess_b prot flags off) eqn:Enrn.
-    { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+    { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hfit|].
       difn H Eceil; [discriminate|].
       difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
       difn H Epos; [discriminate|].
@@ -331,7 +331,7 @@ Proof.
       - destruct ws, zs, us, cs, ci; try discriminate.
         difn H Eerr; [|discriminate]. injection H as <- <-. exact Hfit. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
-    difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+    difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hfit|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
     difn H Epos; [discriminate|].
@@ -345,7 +345,7 @@ Proof.
         apply maps_fit_cons; [exact Hfit | fit_bound].
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact Hfit. }
-  difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+  difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hfit|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   difn H Epos; [discriminate|].

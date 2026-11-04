@@ -112,7 +112,7 @@ Lemma check_mmap_mm_frame : forall addr len prot flags fd off eff m m' evs,
   m_halted m' = m_halted m /\ syscall_effect_accesses eff = [].
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only in H. walk H. all: leaf H.
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H. walk H. all: leaf H.
 Qed.
 
 Lemma check_mremap_mm_frame : forall old old_size new_size flags eff m m' evs,

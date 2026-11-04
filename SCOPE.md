@@ -535,7 +535,12 @@ not apply.
   `update_mmap_min_addr`). That option depends on SELinux and its default
   is 65536 (`security/Kconfig`, `LSM_MMAP_MIN_ADDR`). A kernel built with
   SELinux, which the riscv64 defconfig is, therefore has
-  `mmap_min_addr` = 65536 and is outside this assumption.
+  `mmap_min_addr` = 65536 and is outside this assumption. The same
+  setting moves one length bound: a `MAP_FIXED` call at an error-valued
+  address (`2^64-4095` and up) returns that address unless the rounded
+  length exceeds `TASK_SIZE - mmap_min_addr` (`mm/mmap.c`,
+  `generic_get_unmapped_area`), so with a larger setting Linux answers
+  `-ENOMEM` for some lengths where the model returns the address.
 - The vDSO and the vvar mapping are the first pair that the kernel places
   below the mmap base, with the vvar part lower. Linux installs them at
   `execve` after it maps the segments: `load_elf_binary` calls
