@@ -17,7 +17,7 @@
  "mkNsEnv": {
   "theories/LinuxProcessSem/Checks/Cases/Ns/NewMountCases.v": 2,
   "theories/LinuxProcessSem/Checks/Cases/Ns/WalkCases.v": 1,
-  "theories/LinuxProcessSem/Ns/Tables.v": 3
+  "theories/LinuxProcessSem/Ns/Tables.v": 4
  },
  "mkNsState": {
   "theories/LinuxProcessSem/Ns/Tables.v": 13

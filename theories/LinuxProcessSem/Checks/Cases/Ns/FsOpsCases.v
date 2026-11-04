@@ -507,6 +507,22 @@ Example fchmod_fowner_userns_absent :
      = Some (-1).
 Proof. vm_compute. split; reflexivity. Qed.
 
+(** [uid_mapped] in the initial user namespace: every id but INVALID
+    maps (its one extent holds 0 to 4294967294, kernel/user.c:40-55), the
+    rule [uidgid_mapped] follows; before this correction the uid
+    4294967295 mapped.  fchmod reads [uid_mapped] only after its
+    EOVERFLOW for an INVALID uid or gid ([notify_change], fs/attr.c:
+    523-528), so no answer of fchmod changes: a caller with CAP_FOWNER in
+    the initial namespace gets EOVERFLOW on a file owned by 4294967295. *)
+Definition fown_init_ctx : NsCtx := with_caps base_ctx (mkCaps 8 8 0 0 0).
+
+Example uid_mapped_invalid_initial :
+  uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 4294967295 = Some false
+  /\ uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 5000 = Some true
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model fown_init_ctx (unlink_state 511 4294967295 7000 [])
+               chmod_file) = Some (-75).
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not
@@ -683,3 +699,50 @@ Proof.
       | vm_compute; reflexivity].
   - vm_compute. repeat split; reflexivity.
 Qed.
+
+(* ---- a directory whose uid or gid is INVALID ---- *)
+
+(** Code-path checks on a state Linux does not reach.  [file_state] with
+    its tmpfs root directory (mode 0777) owned by [uid]:[gid].
+    [inode_permission] refuses every write to an inode whose uid or gid is
+    INVALID (4294967295) with EACCES, before the mode bits are read
+    ([HAS_UNMAPPED_ID], fs/namei.c:589-590; include/linux/fs.h:2587-2591).
+    A create asks it of the directory with MAY_WRITE|MAY_EXEC
+    ([may_create], fs/namei.c:3318), and so does an unlink ([may_delete],
+    3274, after the victim's own INVALID test, 3267-3270, which "f",
+    owned by 1000:1002, passes).  The mode grants the caller (fsuid 1000,
+    fsgid 1002) the write, so before this test each call answered 0.  The
+    model creates and removes only in tmpfs, and Linux makes no tmpfs
+    inode with an INVALID owner: a tmpfs root takes the uid= and gid=
+    options, which must map (mm/shmem.c:4678, 4690), or the mounter's
+    fsuid and fsgid (5365-5366, 5155-5156); a new inode takes the
+    creator's fsuid and fsgid, or a set-group-ID parent's gid
+    ([inode_init_owner], fs/inode.c:2593-2605); chown refuses an INVALID
+    id (fs/open.c:730-752, 775-778); the model has no idmapped mount.  So
+    on every state Linux makes, these three calls answer as before. *)
+Definition unmapped_dir_state (uid gid : Z) : NsState :=
+  with_tree base_state
+    [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
+    [mkInode 1 IDir 511 uid gid 0 [] false; mkInode 2 IReg 420 1000 1002 0 (bytes [97; 98; 99; 100]) false].
+
+Example mkdirat_unmapped_dir_owner :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+                    base_model base_ctx (unmapped_dir_state 4294967295 1002)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_unmapped_dir_owner :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (unmapped_dir_state 4294967295 1002)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example unlinkat_unmapped_dir_group :
+  ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx (unmapped_dir_state 0 4294967295))
+    = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** With valid owners the same directory grants all three. *)
+Example unmapped_dir_valid_owner_grants :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+                    base_model base_ctx (unmapped_dir_state 0 0)) = Some 0
+  /\ ret_of (symlinkat_fn symlink_in base_model base_ctx (unmapped_dir_state 0 0)) = Some 0
+  /\ ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx (unmapped_dir_state 0 0)) = Some 0.
+Proof. vm_compute. repeat split; reflexivity. Qed.

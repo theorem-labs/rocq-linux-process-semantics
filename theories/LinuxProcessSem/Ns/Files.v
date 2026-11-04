@@ -20,12 +20,12 @@
       kernel needs the path of another kind of descriptor, the arm
       declines;
     - search, read and write permission follow [inode_permission],
-      [sb_permission], [generic_permission] and [acl_permission_check]
-      (fs/namei.c) and [capable_wrt_inode_uidgid] (kernel/capability.c),
-      with no ACL, no idmapped mount and no security module but the
-      capability one; for a /proc/sys/user file, its own [->permission],
-      [proc_sys_permission], in place of [generic_permission]
-      ([inode_or_sysctl_permission]);
+      [sb_permission], [HAS_UNMAPPED_ID], [generic_permission] and
+      [acl_permission_check] (fs/namei.c, include/linux/fs.h) and
+      [capable_wrt_inode_uidgid] (kernel/capability.c), with no ACL, no
+      idmapped mount and no security module but the capability one; for a
+      /proc/sys/user file, its own [->permission], [proc_sys_permission],
+      in place of [generic_permission] ([inode_or_sysctl_permission]);
     - a write to user memory goes through [Arm.put_ok]: EFAULT outside
       [access_ok], and a range that is not wholly writable declines;
     - the environment's refusals (an allocation, the host file system's
@@ -337,13 +337,17 @@ Definition acl_permission_check (cr : WalkCreds) (a : ObjAttr) (mask : Z) : bool
                  then Z.shiftr mode 3 else mode in
     Z.eqb (Z.land m7 (Z.lnot mode')) 0.
 
-(** [privileged_wrt_inode_uidgid] (kernel/capability.c) on ids. *)
+(** [privileged_wrt_inode_uidgid] (kernel/capability.c:455-461) on ids:
+    [vfsuid_has_mapping] and [vfsgid_has_mapping]
+    (include/linux/mnt_idmapping.h:158-162, 196-200), [from_kuid] and
+    [from_kgid] not (uid_t) -1.  The initial namespace maps every id but
+    INVALID (kernel/user.c:40-55). *)
 Definition uidgid_mapped (st : NsState) (ctx : NsCtx) (uid gid : Z) : bool :=
   match find_userns (ns_userns st) (cx_user ctx) with
   | None => false
   | Some u =>
       match uns_parent u with
-      | None => true
+      | None => negb (kid_invalid uid || kid_invalid gid)
       | Some _ =>
           match uns_uid_map u, uns_gid_map u with
           | Some um, Some gm => kid_mapped um uid && kid_mapped gm gid
@@ -355,15 +359,16 @@ Definition uidgid_mapped (st : NsState) (ctx : NsCtx) (uid gid : Z) : bool :=
 (** [vfsuid_has_mapping] (include/linux/mnt_idmapping.h) of an inode's uid
     in the caller's user namespace, alone: the test of
     [inode_owner_or_capable] (fs/inode.c:2633-2635, Linux v6.18.46), which
-    does not look at the gid.  [None] when the tables do not hold the
-    caller's user namespace: every task has one, so the tables do not say
-    whether it maps the uid. *)
+    does not look at the gid.  The initial namespace maps every id but
+    INVALID (kernel/user.c:40-55), as in [uidgid_mapped].  [None] when the
+    tables do not hold the caller's user namespace: every task has one, so
+    the tables do not say whether it maps the uid. *)
 Definition uid_mapped (st : NsState) (ctx : NsCtx) (uid : Z) : option bool :=
   match find_userns (ns_userns st) (cx_user ctx) with
   | None => None
   | Some u =>
       Some (match uns_parent u with
-            | None => true
+            | None => negb (kid_invalid uid)
             | Some _ =>
                 match uns_uid_map u with
                 | Some um => kid_mapped um uid
@@ -380,10 +385,12 @@ Proof.
   intros st ctx uid gid. unfold uidgid_mapped, uid_mapped.
   destruct (find_userns (ns_userns st) (cx_user ctx)) as [u|];
     [|cbv beta iota; intros H; discriminate H].
-  destruct (uns_parent u) as [p|]; [|cbv beta iota; intros _; reflexivity].
-  destruct (uns_uid_map u) as [um|], (uns_gid_map u) as [gm|];
-    cbv beta iota; intros H; try discriminate H.
-  apply andb_prop in H. destruct H as [H _]. rewrite H. reflexivity.
+  destruct (uns_parent u) as [p|].
+  - destruct (uns_uid_map u) as [um|], (uns_gid_map u) as [gm|];
+      cbv beta iota; intros H; try discriminate H.
+    apply andb_prop in H. destruct H as [H _]. rewrite H. reflexivity.
+  - cbv beta iota. intros H.
+    destruct (kid_invalid uid); [simpl in H; discriminate H | reflexivity].
 Qed.
 
 (** [capable_wrt_inode_uidgid] with the effective set [eff]. *)
@@ -405,8 +412,18 @@ Definition generic_permission (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (eff
 Definition proc_fd_dir (l : Loc) : bool :=
   match l with LProcTask _ _ [n] => bytes_eqb n proc_fd_name | _ => false end.
 
-(** [inode_permission] (fs/namei.c): [sb_permission]'s EROFS for a write
-    to a regular file, directory or link of a read-only superblock; then
+(** [HAS_UNMAPPED_ID] (include/linux/fs.h:2587-2591): the inode's uid or
+    gid is INVALID.  The model has no idmapped mount, so the vfsuid and
+    vfsgid are the inode's kernel ids ([make_vfsuid] of [nop_mnt_idmap],
+    fs/mnt_idmapping.c:86-87). *)
+Definition has_unmapped_id (a : ObjAttr) : bool := kid_invalid (oa_uid a) || kid_invalid (oa_gid a).
+
+(** [inode_permission] (fs/namei.c:568-602): [sb_permission]'s EROFS for a
+    write to a regular file, directory or link of a read-only superblock
+    (544-554, 573-575); for a write, EACCES when the inode's uid or gid is
+    INVALID ([HAS_UNMAPPED_ID], 589-590; the tables do not record
+    S_IMMUTABLE, so the EPERM of 581-582 before it is outside the model,
+    SCOPE.md); then
     [generic_permission], or [proc_fd_permission] (fs/proc/fd.c), which
     lets the task's own thread group into its fd directory.  [None]: the
     access is granted. *)
@@ -414,6 +431,7 @@ Definition inode_permission (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (eff :
     (sb : SuperBlock) (a : ObjAttr) (mask : Z) : option Z :=
   if has mask MAY_WRITE && sb_rdonly sb && (kind_is IReg a || kind_is IDir a || kind_is ILnk a)
   then Some EROFS
+  else if has mask MAY_WRITE && has_unmapped_id a then Some EACCES
   else if proc_fd_dir l || generic_permission st ctx cr eff a mask then None
   else Some EACCES.
 
@@ -571,14 +589,20 @@ Definition sysctl_perm_ok (U : list UserNs) (c : IdCred) (owner : positive) (mas
     check uses.  The inode of a /proc/sys/user file has the [->permission]
     [proc_sys_permission] (fs/proc/proc_sysctl.c:792-819), which
     [do_inode_permission] (fs/namei.c:521-534) calls in place of
-    [generic_permission]: after [sb_permission]'s EROFS, EACCES unless
-    [sysctl_perm] grants the access in the set of the caller's user
-    namespace, with no capability override ("sysctl entries that are not
-    writeable, are _NOT_ writeable, capabilities or not"). *)
+    [generic_permission]: after [sb_permission]'s EROFS and, for a write,
+    [HAS_UNMAPPED_ID]'s EACCES (589-590), EACCES unless [sysctl_perm]
+    grants the access in the set of the caller's user namespace, with no
+    capability override ("sysctl entries that are not writeable, are _NOT_
+    writeable, capabilities or not").  Linux's inodes there are root's
+    ([proc_sys_make_inode], fs/proc/proc_sysctl.c:490-493; the set's root,
+    kernel/ucount.c:58-61, has no [set_ownership]), so the
+    [HAS_UNMAPPED_ID] test refuses nothing on tables that hold them as
+    Linux does; it is kept for Linux's order. *)
 Definition inode_or_sysctl_permission (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (eff : Z) (l : Loc) (sb : SuperBlock) (a : ObjAttr) (mask : Z) : option Z :=
   if is_user_sys_file st l && negb (has mask MAY_WRITE && sb_rdonly sb)
-  then (if sysctl_perm_ok (ns_userns st) (task_cred m ctx) (cx_user ctx) mask then None
+  then (if has mask MAY_WRITE && has_unmapped_id a then Some EACCES
+        else if sysctl_perm_ok (ns_userns st) (task_cred m ctx) (cx_user ctx) mask then None
         else Some EACCES)
   else inode_permission st ctx cr eff l sb a mask.
 
@@ -1002,42 +1026,79 @@ Fixpoint map_down (exts : list IdExtent) (k : Z) : option Z :=
               then Some (ext_lower e + (k - ext_first e)) else map_down r k
   end.
 
-(** [from_kuid_munged] / [from_kgid_munged] (kernel/user_namespace.c):
-    the id in the caller's user namespace, or the overflow id 65534
-    (the default of kernel.overflowuid and kernel.overflowgid). *)
-Definition munged (st : NsState) (ctx : NsCtx) (gid : bool) (k : Z) : Z :=
+(** [from_kuid_munged] / [from_kgid_munged] (kernel/user_namespace.c:466-473,
+    533-541, Linux v6.18.46) as a relation: [v] is a value a stat may show
+    for the kernel id [k] (a uid, or a gid when [gid]) to the caller
+    ([cp_new_stat], fs/stat.c:492-493).  When [k] maps into the caller's
+    user namespace ([from_kuid], [from_kgid], 441-445, 509-513: the
+    initial namespace maps every id but INVALID, kernel/user.c:40-55; a
+    child namespace through its map, [map_up]), [v] is that id.  When it
+    does not (an unwritten map maps nothing), [v] is the overflow id, the
+    sysctl kernel.overflowuid or kernel.overflowgid (472, 539): the launch
+    value [env_overflow_ids]'s [u] or [g] under [Some (u, g)], any value
+    from 0 to 65535 under [None] (kernel/sys.c:184-202).  A caller whose
+    user namespace the tables do not hold has no value here, nor has an
+    owner id outside 0 to 4294967295 in the initial namespace (no 4 bytes
+    show it): [stat_answer] declines those states ([stat_ids_decided]). *)
+Definition munged_ok (st : NsState) (ctx : NsCtx) (gid : bool) (k v : Z) : bool :=
   match find_userns (ns_userns st) (cx_user ctx) with
-  | None => 65534
+  | None => false
   | Some u =>
-      match uns_parent u with
-      | None => k
-      | Some _ =>
-          match (if gid then uns_gid_map u else uns_uid_map u) with
-          | Some ex => match map_up ex k with Some v => v | None => 65534 end
-          | None => 65534
-          end
+      let mapped :=
+        match uns_parent u with
+        | None => if kid_invalid k then None else Some k
+        | Some _ =>
+            match (if gid then uns_gid_map u else uns_uid_map u) with
+            | Some ex => map_up ex k
+            | None => None
+            end
+        end in
+      match mapped with
+      | Some x => Z.eqb v x
+      | None => match env_overflow_ids (ns_env st) with
+                | Some (ou, og) => Z.eqb v (if gid then og else ou)
+                | None => (0 <=? v) && (v <=? 65535)
+                end
       end
   end.
 
-(** The fields of the 128-byte riscv64 [struct stat]
-    (include/uapi/asm-generic/stat.h) that [generic_fillattr] and
-    [cp_new_stat] (fs/stat.c) fill from what the tables hold, by byte
-    offset: [st_dev] the superblock's id and [st_ino] the inode's id (the
-    model's names for [s_dev] and [i_ino], equal exactly when the kernel's
-    are), [st_mode] the type and mode bits, [st_uid] and [st_gid] mapped
-    into the caller's namespace. *)
-Definition stat_fields (st : NsState) (ctx : NsCtx) (a : ObjAttr) : list (nat * list byte) :=
-  [(16%nat, Z_to_le_bytes 4 (Z.lor (ifmt (oa_kind a)) (oa_perm a)));
-   (24%nat, Z_to_le_bytes 4 (munged st ctx false (oa_uid a)));
-   (28%nat, Z_to_le_bytes 4 (munged st ctx true (oa_gid a)))].
+(** A kernel id: [kuid_t] and [kgid_t] hold a [uid_t] and a [gid_t], which
+    are 32 bits wide (include/linux/uidgid_types.h:7-13,
+    include/linux/types.h:37-38, include/uapi/asm-generic/posix_types.h:49-50),
+    so each is from 0 to 4294967295. *)
+Definition kid_in_range (k : Z) : bool := (0 <=? k) && (k <=? 4294967295).
+
+(** The tables decide the [st_uid] and [st_gid] a stat of [a] shows when
+    they hold the caller's user namespace, the owner's uid and gid are
+    kernel ids ([kid_in_range]), and [env_overflow_ids] is [None] or a pair
+    the sysctls can hold, each from 0 to 65535 (kernel/sys.c:184-202).
+    Linux gives every caller a user namespace with its maps and every
+    inode and task a 32-bit owner, and no host holds an overflow id outside
+    that range, so in any other state [stat_answer] has no answer. *)
+Definition stat_ids_decided (st : NsState) (ctx : NsCtx) (a : ObjAttr) : bool :=
+  match find_userns (ns_userns st) (cx_user ctx) with None => false | Some _ => true end
+  && kid_in_range (oa_uid a) && kid_in_range (oa_gid a)
+  && match env_overflow_ids (ns_env st) with
+     | Some (ou, og) => (0 <=? ou) && (ou <=? 65535) && (0 <=? og) && (og <=? 65535)
+     | None => true
+     end.
+
+(** The field of the 128-byte riscv64 [struct stat]
+    (include/uapi/asm-generic/stat.h) that [cp_new_stat] (fs/stat.c:488)
+    fills from what the tables fix alone, by byte offset: [st_mode], the
+    type and mode bits.  [st_uid] (offset 24) and [st_gid] (offset 28) are
+    [stat_answer]'s [munged_ok] tests. *)
+Definition stat_fields (a : ObjAttr) : list (nat * list byte) :=
+  [(16%nat, Z_to_le_bytes 4 (Z.lor (ifmt (oa_kind a)) (oa_perm a)))].
 
 Definition fields_match (n : nat) (fs : list (nat * list byte)) (bs : list byte) : bool :=
   Nat.eqb (length bs) n
   && forallb (fun p => bytes_eqb (firstn (length (snd p)) (skipn (fst p) bs)) (snd p)) fs.
 
 (** The answer of a stat of [l] into [buf]: [cp_new_stat]'s
-    [copy_to_user] (EFAULT), the fields of [stat_fields], every other byte
-    the environment's. *)
+    [copy_to_user] (EFAULT), the fields of [stat_fields], an [st_uid] and
+    an [st_gid] that [munged_ok] admits for the owner's ids, every other
+    byte the environment's; no answer where [stat_ids_decided] fails. *)
 Definition stat_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (reads : list (word * nat)) (buf : word) (l : Loc) (o : ext_outcome) : Prop :=
   match loc_attr m ctx st l with
@@ -1046,8 +1107,13 @@ Definition stat_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsStat
       match put_ok i buf 128 with
       | PutFault => o = err reads EFAULT m ctx st
       | PutPartial => o = EUnmodeled
-      | PutOk => exists bs, fields_match 128 (stat_fields st ctx a) bs = true
-                            /\ o = ans reads (Z_to_bv 64 0) [(buf, bs)] m ctx st
+      | PutOk =>
+          if stat_ids_decided st ctx a
+          then exists bs, fields_match 128 (stat_fields a) bs = true
+                          /\ munged_ok st ctx false (oa_uid a) (bytes_le_to_Z (firstn 4 (skipn 24 bs))) = true
+                          /\ munged_ok st ctx true (oa_gid a) (bytes_le_to_Z (firstn 4 (skipn 28 bs))) = true
+                          /\ o = ans reads (Z_to_bv 64 0) [(buf, bs)] m ctx st
+          else o = EUnmodeled
       end
   end.
 
