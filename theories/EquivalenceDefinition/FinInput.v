@@ -500,8 +500,8 @@ Record FinProcInput := mkFinProcInput {
        bools, four [N]s and four cache leaves), so it adds no clause to
        [finite_input].  It is NOT part of [fin_core].  A FIELD RATHER
        THAN A PIN for [fin_channel_reader]'s reason: [Run.valid_input]
-       fixes nine of its fields at [State.default_kernel]'s values
-       ([Run.recorded_kernel]) and leaves the four launch facts free, so
+       fixes eight of its fields at [State.default_kernel]'s values
+       ([Run.recorded_kernel]) and leaves the five launch facts free, so
        [valid_fin_input] does the same, and [finite_input_surjection]
        stays exact because a launch on another build is as finite as one
        on the default *);
@@ -581,8 +581,8 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
     one [getname_flags] or [alloc_bprm] can produce and that the whole
     launch fit under the E2BIG limit [bprm_stack_limits] computes --
     fs/exec.c and fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f),
-    and [fin_kernel] (via [Run.recorded_kernel]: nine fields are
-    [State.default_kernel]'s, the four launch facts are free), and says
+    and [fin_kernel] (via [Run.recorded_kernel]: eight fields are
+    [State.default_kernel]'s, the five launch facts are free), and says
     nothing whatever about
     [fin_stdin] ([valid_fin_input_stdin_irrelevant]), [fin_urandom]
     ([valid_fin_input_urandom_irrelevant]), [fin_groups] or [fin_net].

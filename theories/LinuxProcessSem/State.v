@@ -3688,11 +3688,11 @@ Definition cache_geometry_word (l : CacheLeaf) : Z :=
 
     EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so the model needs no
     validity clause about this record's fields.  That is what
-    [vdso_text_pages]'s wrap below is for.  [Run.valid_input] fixes nine
+    [vdso_text_pages]'s wrap below is for.  [Run.valid_input] fixes eight
     of the fields at [default_kernel]'s values all the same, for a
     different reason: the published statements had one answer for each
-    of them.  It leaves [kb_thp], [kb_aslr], [kb_guard] and
-    [kb_rnd_bits] free, because they covered a range of each
+    of them.  It leaves [kb_thp], [kb_aslr], [kb_guard], [kb_rnd_bits]
+    and [kb_rseq] free, because they covered a range of each
     ([Run.recorded_kernel]). *)
 Record KernelBuild := mkKernelBuild {
   kb_thp : bool
@@ -7438,11 +7438,11 @@ Record ProcInput := mkProcInput_full {
 
        Every value of every field names a build a launch could present,
        and the model's functions accept any of them, but
-       [Run.valid_input] and every named launch beside it fix nine of its
-       fields at [default_kernel]'s values and leave the four launch
-       facts free ([Run.recorded_kernel], [Run.valid_input_rseq] and the
+       [Run.valid_input] and every named launch beside it fix eight of its
+       fields at [default_kernel]'s values and leave the five launch
+       facts free ([Run.recorded_kernel], [Run.valid_input_vdso] and the
        other accessors): the published statements had one answer for
-       the nine and covered a range of the four.
+       the eight and covered a range of the five.
        [Run.valid_entry] reads it too, to decide which stack tops,
        stack pointers and mmap bases this launch can give *);
   in_execfn : list byte

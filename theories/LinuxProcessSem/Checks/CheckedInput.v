@@ -824,7 +824,7 @@ Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
     into the range the kernel admits, and [skb_head_bytes] and the four
     [sysctl_*] accessors do the same for the five socket numbers — so
     the model has no validity condition on the record to decide here.
-    [Run.valid_input] does fix nine of its fields at
+    [Run.valid_input] does fix eight of its fields at
     [State.default_kernel]'s values ([Run.recorded_kernel]), but that is
     a choice of which launch the statements are about, like
     [in_va_size] and the SIGPIPE declarations, and the boundary converts

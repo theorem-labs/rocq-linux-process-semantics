@@ -337,19 +337,23 @@ input, so both binaries of a pair are launched on one machine by one
 launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
 the model (`State.skb_head_bytes`).
 
-`Run.valid_input`, and every named launch beside it, leaves four of
-those facts free and fixes the other nine (`Run.recorded_kernel`).
-Free: whether the launch randomises, the guard gap, `vm.mmap_rnd_bits`
-and transparent huge pages. The published statements covered a range
-of each, and a fixed value would narrow them. Fixed at
-`State.default_kernel`'s values: `CONFIG_RSEQ` on, vDSO image 1, no
-vector unit, no cache leaves, a 224-byte `struct sk_buff` and the
-default socket sysctls. The published statements had one answer for
-each of these. The model's functions accept any build, so a statement
-about another value of a fixed field is one that names it; none does
-yet. Each fixed field has an accessor per predicate
-(`Run.valid_input_rseq`, `Run.valid_input_vdso`,
-`Run.valid_input_cache_words` and the like).
+`Run.valid_input`, and every named launch beside it, leaves five of
+those facts free and fixes the other eight (`Run.recorded_kernel`).
+Free: whether the launch randomises, the guard gap, `vm.mmap_rnd_bits`,
+transparent huge pages and `CONFIG_RSEQ`. The published statements
+covered a range of each, and a fixed value would narrow them: a kernel
+built without `CONFIG_RSEQ` has a 27-pair auxiliary vector instead of
+29, so its entry stack pointer sits 32 bytes higher, and the released
+entry-stack window admitted both. Fixed at `State.default_kernel`'s
+values: vDSO image 1, `kb_vlenb` 0, no cache leaves, a 224-byte
+`struct sk_buff` and the default socket sysctls. The published
+statements had one answer for each of these. (`kb_vlenb` 0 is the
+smallest vector unit, VLENB = 16, on a hart whose `AT_HWCAP` carries
+V, and no vector unit otherwise: `State.launch_vlenb`.) The model's
+functions accept any build, so a statement about another value of a
+fixed field is one that names it; none does yet. Each fixed field has
+an accessor per predicate (`Run.valid_input_vdso`,
+`Run.valid_input_vlenb`, `Run.valid_input_cache_words` and the like).
 
 These cases stay outside the model:
 
@@ -665,8 +669,8 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
-  `Run.valid_input` fixes `CONFIG_RSEQ`, the vector unit, the caches, the
-  vDSO image and the socket numbers, and leaves the other four free.
+  `Run.valid_input` fixes the vector unit, the caches, the vDSO image and
+  the socket numbers, and leaves the other five free.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and
