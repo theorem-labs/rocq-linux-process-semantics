@@ -63,7 +63,7 @@ Definition world : NsState :=
     [mnt 1 None 1 1 1; mnt 2 (Some 1%positive) 3 20 2; mnt 3 (Some 1%positive) 9 30 3]
     [root_user]
     [mkMntNs 1 1 1 false]
-    [mkPidNs 1 None 1 0 0]
+    [mk_pidns 1 None 1 0 0]
     [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 (SbProc 1)]
     [dent 1 1 None [] 1;
      dent 2 1 (Some 1%positive) s_home 2;
@@ -361,7 +361,7 @@ Proof. vm_compute. reflexivity. Qed.
 Definition s_probe : list byte := bytes [112; 114; 111; 98; 101].
 Definition absent_world : NsState :=
   with_env world (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)] false
-                          (Some (65534, 65534))).
+                          (Some (65534, 65534)) false).
 Example walk_host_absent :
   walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
   = (WErr ENOENT, false)

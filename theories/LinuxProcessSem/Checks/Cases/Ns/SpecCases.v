@@ -27,8 +27,10 @@ Example ns_claims_exit_group : ext_claims ns_ext (call 94) = true := eq_refl.
 
 Example no_ext_leaves_openat : ext_claims no_ext (call 56) = false := eq_refl.
 
-(** Every task of [empty_nsstate] is in the released world. *)
-Example empty_is_flat : forall ctx, flat_view ctx empty_nsstate = true := flat_view_empty.
+(** The empty tables are released when the children's pid namespace
+    agrees with the active one, as the default does. *)
+Example empty_is_flat : forall ctx,
+  pidns_children ctx = cx_pidns ctx -> flat_view ctx empty_nsstate = true := flat_view_empty.
 
 (** A task with pid 2 in pid namespace 1, mount namespace 1, user
     namespace [u] and umask [umask]. *)
@@ -80,8 +82,9 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** In the released world the same calls are the released model's. *)
 Example getpid_flat_is_released : forall m ctx o,
-  ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
-Proof. intros m ctx o. apply ns_spec_flat. apply flat_view_empty. Qed.
+  pidns_children ctx = cx_pidns ctx ->
+  (ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o).
+Proof. intros m ctx o H. apply ns_spec_flat. now apply flat_view_empty. Qed.
 
 (** While other processes are live ([Spec.ns_multiproc]): a task in the
     released world gets the core's guard alone.  Outside it, the calls the
@@ -100,8 +103,10 @@ Proof. intros m ctx o. apply ns_spec_flat. apply flat_view_empty. Qed.
     and [clock_gettime] and [unlinkat], which the core admits itself
     ([multiproc_core_admits_unlinkat_and_clock]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
-  ext_multiproc ns_ext i m ctx empty_nsstate = false.
-Proof. intros i m ctx. exact (ns_multiproc_coherent i m ctx empty_nsstate (flat_view_empty ctx)). Qed.
+  pidns_children ctx = cx_pidns ctx -> ext_multiproc ns_ext i m ctx empty_nsstate = false.
+Proof.
+  intros i m ctx H. exact (ns_multiproc_coherent i m ctx empty_nsstate (flat_view_empty ctx H)).
+Qed.
 
 Example multiproc_getpid_inside : forall m,
   ext_multiproc ns_ext (call 172) m (task 2 18) one_mount = true.
