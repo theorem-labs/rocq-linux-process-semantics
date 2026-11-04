@@ -385,15 +385,7 @@ Qed.
     the same launch at the default refuses it. *)
 Example clone_launch_with_perf_refuser_admits_einval :
   let inp := with_inherited_fds [] (demo_input [] IEof) in
-  let inp' := mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
-                (in_stdin inp) (in_uid inp) (in_gid inp) (in_groups inp)
-                (in_net inp) (in_nofile inp) (in_sigmask inp) (in_hwcap inp)
-                (in_abort_terminal inp) (in_va_size inp) (in_urandom inp)
-                (in_tmp inp) (in_kernel inp) (in_execfn inp)
-                (in_channel_reader inp) (in_sigpipe_default inp)
-                (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
-                (in_inherited_fds inp) (in_selfkill_terminal inp)
-                (in_cgroup_bpf_setsockopt inp) perf_refusers in
+  let inp' := input_with_clone_refusers perf_refusers inp in
   let m := init_model [] 0 0 demo_sp demo_limit inp' in
   let m0 := init_model [] 0 0 demo_sp demo_limit inp in
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] []) m
