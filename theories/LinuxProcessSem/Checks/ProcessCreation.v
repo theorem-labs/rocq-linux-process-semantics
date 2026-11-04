@@ -249,7 +249,8 @@ Lemma clone_sharing_flags_unmodeled : forall flags i m,
   (Z.land (bv_unsigned flags) clone_sharing_bits <> 0)%Z ->
   clone_spec flags i m Unmodeled.
 Proof.
-  intros flags i m Hbit. unfold clone_spec.
+  intros flags i m Hbit. unfold clone_spec. apply clone_refusable_lists.
+  unfold clone_spec_lists.
   destruct (clone_fork_flags_b flags) eqn:Hf; cbv iota.
   { exfalso. unfold clone_fork_flags_b in Hf.
     apply bv_eqb_eq in Hf. subst flags. apply Hbit. vm_compute. reflexivity. }
@@ -270,6 +271,7 @@ Lemma clone3_sharing_flags_unmodeled : forall uargs size i m bs,
   clone3_spec uargs size i m Unmodeled.
 Proof.
   intros uargs size i m bs Hread Hbit. unfold clone3_spec.
+  apply clone_refusable_lists. unfold clone3_spec_lists.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
     cbv iota; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
@@ -293,7 +295,7 @@ Lemma clone_open_file_unmodeled : forall flags i m,
   clone_spec flags i m Unmodeled.
 Proof.
   intros flags i m Hfd.
-  unfold clone_spec.
+  unfold clone_spec. apply clone_refusable_lists. unfold clone_spec_lists.
   destruct (clone_fork_flags_b flags); cbv iota.
   { unfold clone_resolve.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
@@ -339,6 +341,15 @@ Lemma clone_never_returns_zero : forall flags i m eff m' evs,
 Proof.
   intros flags i m eff m' evs H.
   unfold clone_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { (* a host refuser's errno, which is never 0 *)
+    apply clone_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret].
+    intro Hc; apply (f_equal bv_unsigned) in Hc;
+    rewrite (errno_ret_unsigned e ltac:(lia) ltac:(lia)) in Hc;
+    change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hc;
+    unfold two_pow_64 in Hc; lia. }
+  unfold clone_spec_lists in H.
   destruct (clone_fork_flags_b flags); cbv iota in H.
   - unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
     destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
@@ -387,6 +398,15 @@ Lemma clone3_never_returns_zero : forall uargs size i m eff m' evs,
 Proof.
   intros uargs size i m eff m' evs H.
   unfold clone3_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { (* a host refuser's errno, which is never 0 *)
+    apply clone3_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret].
+    intro Hc; apply (f_equal bv_unsigned) in Hc;
+    rewrite (errno_ret_unsigned e ltac:(lia) ltac:(lia)) in Hc;
+    change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hc;
+    unfold two_pow_64 in Hc; lia. }
+  unfold clone3_spec_lists in H.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
     cbv iota in H; [unfold unmodeled in H; discriminate|].
   sys_unfold. cbv iota in H. inv_ok.
@@ -402,7 +422,8 @@ Proof.
       apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
   end.
   eapply (clone_never_returns_zero (Z_to_bv 64 SIGCHLD) i m).
-  unfold clone_spec, clone_fork_flags_b. rewrite bv_eqb_refl.
+  unfold clone_spec. apply clone_refusable_lists.
+  unfold clone_spec_lists, clone_fork_flags_b. rewrite bv_eqb_refl.
   unfold clone_resolve. sys_unfold. cbv iota. eassumption.
 Qed.
 
@@ -432,6 +453,35 @@ Proof.
   apply (dispatch_arm spec_table i m o
            (mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i))).
   rewrite H. reflexivity.
+Qed.
+
+(** AT THE DEFAULT, THE DISPATCHER'S ANSWER IS TODAY'S.  With no host
+    clone refuser in the model ([State.no_clone_refusers], which every
+    launch predicate of [Run] pins and every setter carries), 220 and 435
+    admit exactly the answers of the model's lists
+    ([Kernel.Fork.clone_spec_default_iff], [Kernel.Fork.clone3_spec_default_iff]). *)
+Theorem clone_default_iff : forall i m o,
+  bv_unsigned (in_sysno i) = 220%Z ->
+  m_clone_refusers m = no_clone_refusers ->
+  (syscall_spec i m o <-> clone_spec_lists (in_arg i 0) i m o).
+Proof.
+  intros i m o Hno Hd. split; intros X.
+  - apply (proj1 (clone_spec_default_iff _ _ _ _ Hd)).
+    apply (proj1 (clone_is_clone_spec _ _ _ Hno)). exact X.
+  - apply (proj2 (clone_is_clone_spec _ _ _ Hno)).
+    apply (proj2 (clone_spec_default_iff _ _ _ _ Hd)). exact X.
+Qed.
+
+Theorem clone3_default_iff : forall i m o,
+  bv_unsigned (in_sysno i) = 435%Z ->
+  m_clone_refusers m = no_clone_refusers ->
+  (syscall_spec i m o <-> clone3_spec_lists (in_arg i 0) (in_arg i 1) i m o).
+Proof.
+  intros i m o Hno Hd. split; intros X.
+  - apply (proj1 (clone3_spec_default_iff _ _ _ _ _ Hd)).
+    apply (proj1 (clone3_is_clone3_spec _ _ _ Hno)). exact X.
+  - apply (proj2 (clone3_is_clone3_spec _ _ _ Hno)).
+    apply (proj2 (clone3_spec_default_iff _ _ _ _ _ Hd)). exact X.
 Qed.
 
 (** The separation [clone_resolve_declines_or_sets_children] below states,
@@ -611,6 +661,12 @@ Proof.
   intros i m eff m' evs [Hno|Hno] H.
   - apply (clone_is_clone_spec i m _ Hno) in H.
     unfold clone_spec in H.
+    apply clone_refusable_cases in H as [H | H].
+    { apply clone_refused_fail_inv in H as (e & He & Heq).
+      injection Heq as -> -> ->. cbn [eff_ret].
+      rewrite (errno_ret_error_b e ltac:(lia) ltac:(lia)).
+      split; intros Hx; [reflexivity | discriminate Hx]. }
+    unfold clone_spec_lists in H.
     destruct (clone_fork_flags_b (in_arg i 0)); cbv iota in H.
     { exact (clone_resolve_error_or_children _ _ _ _ _ H). }
     destruct (clone_ns_flags_b (in_arg i 0)); cbv iota in H;
@@ -618,6 +674,12 @@ Proof.
     exact (clone_ns_resolve_declines_or_sets_children _ _ _ _ _ H).
   - apply (clone3_is_clone3_spec i m _ Hno) in H.
     unfold clone3_spec in H.
+    apply clone_refusable_cases in H as [H | H].
+    { apply clone3_refused_fail_inv in H as (e & He & Heq).
+      injection Heq as -> -> ->. cbn [eff_ret].
+      rewrite (errno_ret_error_b e ltac:(lia) ltac:(lia)).
+      split; intros Hx; [reflexivity | discriminate Hx]. }
+    unfold clone3_spec_lists in H.
     destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
       cbv iota in H; [unfold unmodeled in H; discriminate|].
     sys_unfold. cbv iota in H. inv_ok.
@@ -714,6 +776,11 @@ Proof.
   intros i m eff m' evs [Hno|Hno] H He.
   - apply (clone_is_clone_spec i m _ Hno) in H.
     unfold clone_spec in H.
+    apply clone_refusable_cases in H as [H | H].
+    { apply clone_refused_fail_inv in H as (e & He' & Heq).
+      injection Heq as -> -> ->. cbn [eff_ret] in He.
+      rewrite (errno_ret_error_b e ltac:(lia) ltac:(lia)) in He. discriminate He. }
+    unfold clone_spec_lists in H.
     destruct (clone_fork_flags_b (in_arg i 0)); cbv iota in H.
     { exact (clone_resolve_records_pid _ _ _ _ _ H He). }
     destruct (clone_ns_flags_b (in_arg i 0)); cbv iota in H;
@@ -721,6 +788,11 @@ Proof.
     exact (clone_ns_resolve_records_pid _ _ _ _ _ H He).
   - apply (clone3_is_clone3_spec i m _ Hno) in H.
     unfold clone3_spec in H.
+    apply clone_refusable_cases in H as [H | H].
+    { apply clone3_refused_fail_inv in H as (e & He' & Heq).
+      injection Heq as -> -> ->. cbn [eff_ret] in He.
+      rewrite (errno_ret_error_b e ltac:(lia) ltac:(lia)) in He. discriminate He. }
+    unfold clone3_spec_lists in H.
     destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
       cbv iota in H; [unfold unmodeled in H; discriminate|].
     sys_unfold. cbv iota in H. inv_ok.

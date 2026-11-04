@@ -776,6 +776,10 @@ Definition child_ms (c c' : config) : machine_state :=
     [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
     a child cloned before its parent's first [getpid] would otherwise start
     at 0.  The inheritable capability set copies with the credentials.
+    The host's clone refusers ([procst_clone_refusers]) are copied: a
+    child inherits the inheritable perf events ([perf_event_init_task]),
+    and a BPF [task_alloc] program and a sched_ext scheduler are the
+    host's, not the task's.
     Kernel citations, read at v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
@@ -797,7 +801,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps).
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps) (procst_clone_refusers ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

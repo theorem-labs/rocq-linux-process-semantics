@@ -54,7 +54,7 @@ Definition kills_launch : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   true true true (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
+                   true true true (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers.
 
 (** The ordinary launch with SIGPIPE blocked: bit 12 of the mask is
     signal 13. *)
