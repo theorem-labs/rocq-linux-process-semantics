@@ -380,7 +380,7 @@ Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
 (** A table failure from copy_creds or copy_namespaces prevents alloc_pid
-    (kernel/fork.c:2053-2055,2188-2208, Linux v6.18.46). *)
+    (kernel/fork.c:2054-2056,2188-2208, Linux v6.18.46). *)
 Definition clone_pid_allocates (o : CloneNs) : bool :=
   match o with CnOk _ _ _ => true | _ => false end.
 
