@@ -99,7 +99,7 @@ Qed.
 
 (** The same call under the launch value [env_foreign_pgroups = true]: a
     reaper outside the model may have made a process group of [C]'s pid
-    after [C]'s modelled parent exited ([setpgid], kernel/sys.c:1143-1149),
+    after [C]'s modelled parent exited ([setpgid], kernel/sys.c:1144-1150),
     so EPERM (kernel/sys.c:1284-1285) is admitted beside the success. *)
 Definition c_st_foreign : NsState :=
   with_env c_st (env_with_foreign_pgroups (ns_env c_st) true).
