@@ -426,7 +426,7 @@ Definition default_mi_env : MiEnv :=
     [setsid]; a statement that wants that case names
     [env_foreign_pgroups := true] ([Task.setsid_arm]).
 
-    Last, the OPEN peer groups: the keys of the peer groups the tables
+    Then the OPEN peer groups: the keys of the peer groups the tables
     hold that have a member outside the tables, in a mount namespace the
     tables do not hold.  A mount or unmount at that outside member reaches
     every member of the group in the tables and every slave below them
@@ -441,7 +441,22 @@ Definition default_mi_env : MiEnv :=
     ([Propagation.open_reach]).  [empty_nsenv] sets it to [], the launch in which
     no host mount event reaches a namespace of the model
     ([Propagation.closed_no_outside_event]); a statement that wants that case
-    names a non-empty list. *)
+    names a non-empty list.
+
+    Last, [env_overflow_ids]: the values of kernel.overflowuid and
+    kernel.overflowgid, which [from_kuid_munged] and [from_kgid_munged]
+    give for an id with no mapping in the caller's user namespace
+    (kernel/user_namespace.c:466-473, 533-541, Linux v6.18.46). Each is
+    any value from 0 to 65535, 65534 by default (kernel/sys.c:167-168,
+    184-202; include/linux/highuid.h:41-42), and the host's root can write
+    them at any time. [Some (u, g)]: the launch measured them as [u] and
+    [g], and the host does not write them during the run. [None]: they are
+    unknown, or the host may write them during the run. The default,
+    [Some (65534, 65534)], assumes the kernel's defaults; a statement that
+    wants another launch names it with [env_with_overflow_ids]
+    ([Files.munged_ok]). A pair with a value outside 0 to 65535 is no
+    launch a host can have: a stat under it has no answer
+    ([Files.stat_ids_decided]). *)
 Record NsEnv := mkNsEnv {
   env_mount_max       : Z;
   env_proc_entries    : list ProcEntry;
@@ -450,49 +465,56 @@ Record NsEnv := mkNsEnv {
   env_nl_link_max     : Z;
   env_host_absent     : list (positive * list byte);
   env_foreign_pgroups : bool;
-  env_open_groups     : list positive
+  env_open_groups     : list positive;
+  env_overflow_ids    : option (Z * Z)
 }.
 
 (** The launch values of a system the namespace model knows nothing of:
     Linux's default mount limit (100000), no procfs entry, no fallback
     device, [default_mi_env], a link-message bound of 65536 bytes, no name
-    known absent, no foreign process group and no open peer group. *)
+    known absent, no foreign process group, no open peer group and the
+    default overflow ids (65534, 65534). *)
 Definition empty_nsenv : NsEnv :=
-  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false [].
+  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false [] (Some (65534, 65534)%Z).
 
 (** The setters of [NsEnv], one per field: with [empty_nsenv], the only
     places that apply [mkNsEnv] to every field. *)
 Definition env_with_mount_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv v (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_proc_entries (e : NsEnv) (v : list ProcEntry) : NsEnv :=
   mkNsEnv (env_mount_max e) v (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_net_fallback (e : NsEnv) (v : list NetIf) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) v (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_mountinfo (e : NsEnv) (v : MiEnv) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) v (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_nl_link_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) v
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_host_absent (e : NsEnv) (v : list (positive * list byte)) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) v (env_foreign_pgroups e) (env_open_groups e).
+          (env_nl_link_max e) v (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) b (env_open_groups e).
+          (env_nl_link_max e) (env_host_absent e) b (env_open_groups e) (env_overflow_ids e).
 
 Definition env_with_open_groups (e : NsEnv) (v : list positive) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) v.
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) v (env_overflow_ids e).
+
+(** The same environment with [env_overflow_ids] set to [o]. *)
+Definition env_with_overflow_ids (e : NsEnv) (o : option (Z * Z)) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) o.
 
 (** The order the kernel keeps of mount propagation, beyond each mount's
     peer group and master group ([Ns.Propagation]; Linux v6.18.46):

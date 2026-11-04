@@ -234,6 +234,78 @@ Example read_setgroups :
   = Some [(BUF, deny_line)].
 Proof. vm_compute. reflexivity. Qed.
 
+(** A gid_map line shows its lower id through the gid map of the parent
+    namespace, an uid_map line through its uid map ([gid_m_show] calls
+    [from_kgid], [uid_m_show] calls [from_kuid], kernel/user_namespace.c:624,
+    645, Linux v6.18.46).  Namespace 2 (A), a child of the initial one, maps
+    uids 0-65535 to 100000 and gids 0-65535 to 200000; namespace 3 (B), a
+    child of A, maps uid 0 to kernel uid 100000 and gid 0 to kernel gid
+    200000.  A task of B reads its own maps, so the namespace shown is A
+    (620-622, 641-643): both lines are "0 0 1".  Before this correction the
+    gid line went through A's uid map, which does not hold 200000, and
+    showed 65534. *)
+Definition ns_a : UserNs :=
+  mkUserNs 2 (Some 1%positive) 1 0 (Some [mkExtent 0 100000 65536]) (Some [mkExtent 0 200000 65536])
+    true false INT_MAX true.
+Definition ns_b (gid_lower : Z) : UserNs :=
+  mkUserNs 3 (Some 2%positive) 2 100000 (Some [mkExtent 0 100000 1]) (Some [mkExtent 0 gid_lower 1])
+    true false INT_MAX true.
+Definition gid_loc : Loc := LProcTask 1 42 [bytes [103; 105; 100; 95; 109; 97; 112]].
+Definition b_cred : IdCred := mkIdCred 3 0 0 0.
+Definition b_uid_reader : NsFile := mkNsFile (NfUserNsFile uid_loc 3 0) 0 b_cred.
+Definition b_gid_reader : NsFile := mkNsFile (NfUserNsFile gid_loc 3 0) 0 b_cred.
+Definition zero_line : list Z :=
+  repeat 32 9 ++ [48; 32] ++ repeat 32 9 ++ [48; 32] ++ repeat 32 9 ++ [49; 10].
+
+Example read_gid_map_through_gid_map :
+  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 200000])
+                     1%N b_gid_reader)
+  = Some [(BUF, zero_line)].
+Proof. vm_compute. reflexivity. Qed.
+
+Example read_uid_map_through_uid_map :
+  writes_of (read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_a; ns_b 200000])
+                     1%N b_uid_reader)
+  = Some [(BUF, zero_line)].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A lower id the shown namespace's map does not hold is [(gid_t)-1],
+    4294967295 (map_id_range_up, 399; from_kgid, 509-513), which "%10u"
+    prints as "4294967295" (647-650), not 65534.  [map_write] builds no
+    such table for a task's own map (it maps every lower range through the
+    parent's map); this hand-built one checks the branch.  The case states
+    the id that [map_line] prints: rendering it through [decimal_bytes],
+    which counts in unary [nat], is not computable for 4294967295. *)
+Example read_gid_map_unmapped_lower :
+  shown_lower [map_root; ns_a; ns_b 300000] 3%positive b_cred GidMap 300000 = Some 4294967295.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The same id from tables Linux does produce: namespace 4 (C), a sibling
+    of A under the initial namespace, maps uid and gid 0 to kernel id
+    300000.  A task of C that opens A's gid_map (fs/proc/base.c:3082-3105
+    binds the target task's namespace, whatever the opener's) is shown its
+    own namespace, C (641-643 take the parent only when the opener's
+    namespace is the file's), and C's gid map does not hold A's lower gid
+    200000: the line shows 4294967295.  As above, the case states the id. *)
+Definition ns_c : UserNs :=
+  mkUserNs 4 (Some 1%positive) 1 0 (Some [mkExtent 0 300000 1]) (Some [mkExtent 0 300000 1])
+    true false INT_MAX true.
+Definition c_cred : IdCred := mkIdCred 4 300000 300000 0.
+
+Example read_gid_map_sibling_unmapped :
+  shown_lower [map_root; ns_a; ns_c] 2%positive c_cred GidMap 200000 = Some 4294967295.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A shown namespace the tables do not hold: B's parent A is left out, so
+    the namespace a task of B is shown when it reads its own map is absent.
+    Linux keeps that namespace alive (kernel/user_namespace.c:133-134), so
+    the tables lack its map and the read has no answer; before this
+    correction the line showed the lower id 65534. *)
+Example read_gid_map_shown_absent :
+  read_fn (read_in 64) base_model map_ctx (map_state [map_root; ns_b 200000]) 1%N b_gid_reader
+  = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
 Definition file_state : NsState :=
   with_tree base_state
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
@@ -434,6 +506,22 @@ Example fchmod_fowner_userns_absent :
   /\ ret_of (fchmod_fn (fchmod_call 420) base_model (fown_absent_ctx 0) (fown_state 5000) chmod_file)
      = Some (-1).
 Proof. vm_compute. split; reflexivity. Qed.
+
+(** [uid_mapped] in the initial user namespace: every id but INVALID
+    maps (its one extent holds 0 to 4294967294, kernel/user.c:40-55), the
+    rule [uidgid_mapped] follows; before this correction the uid
+    4294967295 mapped.  fchmod reads [uid_mapped] only after its
+    EOVERFLOW for an INVALID uid or gid ([notify_change], fs/attr.c:
+    523-528), so no answer of fchmod changes: a caller with CAP_FOWNER in
+    the initial namespace gets EOVERFLOW on a file owned by 4294967295. *)
+Definition fown_init_ctx : NsCtx := with_caps base_ctx (mkCaps 8 8 0 0 0).
+
+Example uid_mapped_invalid_initial :
+  uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 4294967295 = Some false
+  /\ uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 5000 = Some true
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model fown_init_ctx (unlink_state 511 4294967295 7000 [])
+               chmod_file) = Some (-75).
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
