@@ -870,10 +870,12 @@ Definition clone_flags_of (c : config) : Z :=
       as the released step reads it ([Fork.clone3_spec]: the size test,
       then [State.copy_bytes_map] over the pre-syscall memory, which
       [Run.sys_input] gives as [ms_read_byte] whatever the segments,
-      [clone_in_of_input]), and only for a record [Fork.clone3_spec]
-      answers from: the fork image, or a record the argument checks
-      refuse.  A struct its own tests refuse or decline, a size or a
-      copy it declines or refuses, and a record it declines give none.
+      [clone_in_of_input]), and only for a record whose call
+      [Fork.clone3_spec] answers: the fork image, which it answers off
+      the raw struct ([Fork.clone3_fork_args_b]), or a record the
+      argument checks refuse.  A struct its own tests refuse or
+      decline, a size or a copy it declines or refuses, and a record it
+      declines give none.
     - Any other call, and no pending call: none.
     No rule of the core reads it yet. *)
 Definition clone_in_of (c : config) : CloneIn :=
@@ -937,10 +939,13 @@ Qed.
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
     [clone3] has no record, whatever the released step answers for it.
     The [Fork.CdErr] half is the second answer the namespace extension
-    owes: the core answers -EINVAL ([Fork.clone3_einval_b]) while the
-    call's [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of
-    65 in [Checks.Cases.Kernel.Fork.clone3_einval_words].  The
-    [Fork.CdDecline] half owes nothing: the core declines there, as
+    owes a NAMESPACE-WORLD caller: at [Fork.CLONE_ARGS_SIZE] the core
+    answers -EINVAL ([Fork.clone3_einval_b]) while the call's
+    [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of 65 in
+    [Checks.Cases.Kernel.Fork.clone3_einval_words]; at any other size
+    the core declines ([Checks.ProcessCreation.clone3_other_size_unmodeled]),
+    and the lemma holds there too.  The [Fork.CdDecline] half owes
+    nothing: the core declines there, as
     [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
     CLONE_NEWTIME image. *)
 Lemma clone_in_of_no_record : forall c bs x8,

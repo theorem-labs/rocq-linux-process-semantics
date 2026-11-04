@@ -1093,10 +1093,10 @@ Record CloneArgs := mkCloneArgs {
 
 (** What the core hands the namespace extension about a pending clone's
     arguments: the decoded record of the call, or nothing.  A record is
-    not a promise that the core answers the call — a [clone] (220) word
-    the core declines still has one — only that the decoders built one
-    and that the core reads the call from it ([Procs.clone_in_of] says
-    exactly which calls have one). *)
+    not a promise that the core answers the call, nor that any rule
+    reads the record — a [clone] (220) word the core declines still has
+    one, and the admitted words are still gated on the raw register.
+    [Procs.clone_in_of] says exactly which calls have one. *)
 Inductive CloneIn := CiArgs (r : CloneArgs) | CiNoArgs.
 
 (** [clone]'s registers under [CONFIG_CLONE_BACKWARDS], which
@@ -1312,7 +1312,10 @@ Definition clone_spec (flags : word) : Sys SyscallEffect :=
     [exit_signal = SIGCHLD], but with
     [CLONE_CLEAR_SIGHAND | CLONE_VM | CLONE_VFORK] in its BASE flag word
     — a spawn asking for a cgroup or a pidfd sets more — so it is
-    declined on the flags field whichever it is.  riscv64 has the [clone3] wrapper, so it
+    declined on the flags field whichever it is when its stack range
+    and its cgroup field are valid (-EINVAL when [access_ok] refuses
+    the stack range, or when it asks for a cgroup above INT_MAX).
+    riscv64 has the [clone3] wrapper, so it
     really executes here.  musl issues no clone3 at all.  So this arm, like the legacy one, is
     reached by a RAW syscall.
 
