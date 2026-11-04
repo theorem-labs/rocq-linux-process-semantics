@@ -88,8 +88,9 @@ Definition check_wait4_store (stat_addr : word) (ws : list (word * list byte))
     [Exit.wait4_spec].  A caller with no child admits -ECHILD and
     nothing else; [stat_addr] is not read there, because
     [kernel_wait4]'s copy-out is guarded on [ret > 0].  A caller with a
-    recorded child declines when the list is empty, when the process
-    has not installed SIG_DFL for SIGCHLD ([State.m_sigchld_dfl]), or
+    recorded child declines when the list is empty, when the install bit
+    [State.m_sigchld_dfl] is clear (no SIG_DFL install for SIGCHLD made
+    while the process had no recorded child), or
     when [stat_addr] is not NULL and not four writable bytes, and
     otherwise admits 0 with
     no write and the model unchanged, or a recorded nonzero pid with the

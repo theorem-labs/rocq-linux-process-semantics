@@ -86,7 +86,7 @@ Definition rt_sigaction_witness (sig act oact ss : word) (i : SyscallInput)
          else if sigaction_accepted sig then ret_outcome (Z_to_bv 64 0) m
          else if sigabrt_dfl_install sig (in_mem i) act then ret_outcome (Z_to_bv 64 0) m
          else if sigchld_dfl_install sig (in_mem i) act
-         then ret_outcome (Z_to_bv 64 0) (with_sigchld_dfl true m)
+         then ret_outcome (Z_to_bv 64 0) (sigchld_install_model m)
          else Unmodeled)
     end.
 

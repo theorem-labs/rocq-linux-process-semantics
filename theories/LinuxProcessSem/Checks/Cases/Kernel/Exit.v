@@ -217,3 +217,73 @@ Proof.
   repeat match goal with |- _ /\ _ => split end;
     first [vm_compute; reflexivity | check_eq].
 Qed.
+
+(* =========================================================================
+   THE ORDER OF THE CLONE AND THE INSTALL
+
+   PAIRED TEST.  The bit is set only if every child the process has was
+   cloned while SIGCHLD was SIG_DFL.  Linux decides whether to reap a
+   child itself when that child exits, from the parent's disposition
+   then ([do_notify_parent], kernel/signal.c:2241-2259, v6.18.46), so a
+   child cloned under a launcher's SIG_IGN can be gone before a later
+   SIG_DFL install, and [wait4] then answers 0 and -ECHILD, never its
+   pid.  The text before [Kernel.Signal.sigchld_install_model] set the
+   bit at that install too, and then answered 0 and the reap of 4242
+   and rejected -ECHILD: the review finding these cases close.
+   ========================================================================= *)
+
+(** [clone(SIGCHLD, 0, 0, 0, 0)]: musl's [fork] word. *)
+Definition wait4_clone_call : SyscallInput :=
+  mkInput 220 [17; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** THE CASE: CLONE, THEN INSTALL, THEN [wait4].  The clone records
+    4242 in a process that has made no install.  The install is still
+    answered 0 with the 24 bytes of [act] in the ledger, as Linux
+    answers it, but it leaves the model as it is: the bit stays clear,
+    because 4242 was cloned under the launch's disposition.  So every
+    [wait4] declines: the bare 0, the reap with a status and with a NULL
+    slot, and -ECHILD. *)
+Example wait4_clone_then_install_unmodeled :
+  check_syscall wait4_clone_call (mkEffect 4242 [] []) wait4_case_model
+    = CheckOk wait4_no_install_child []
+  /\ check_syscall wait4_sigaction_call
+       (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) wait4_no_install_child
+     = CheckOk wait4_no_install_child []
+  /\ m_sigchld_dfl wait4_no_install_child = false
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_no_install_child
+     = CheckUnmodeled
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_no_install_child
+     = CheckUnmodeled
+  /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
+       wait4_no_install_child = CheckUnmodeled
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_no_install_child = CheckUnmodeled.
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.
+
+(** THE CONTROL: INSTALL BEFORE ANY CLONE, bubblewrap's order (the
+    install at bubblewrap.c:2910-2914, before any clone).  The install
+    sets the bit, the clone records 4242 under SIG_DFL, and [wait4] is
+    answered: 0 with the model unchanged, or the reap of 4242 with a
+    status and with a NULL slot; -ECHILD is rejected. *)
+Example wait4_install_then_clone_answered :
+  check_syscall wait4_sigaction_call
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) wait4_case_model
+    = CheckOk wait4_installed []
+  /\ check_syscall wait4_clone_call (mkEffect 4242 [] []) wait4_installed
+     = CheckOk wait4_one_child []
+  /\ m_sigchld_dfl wait4_one_child = true
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_one_child
+     = CheckOk wait4_one_child []
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_one_child
+     = CheckOk wait4_reaped []
+  /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
+       wait4_one_child = CheckOk wait4_reaped []
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_one_child = CheckReject.
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.

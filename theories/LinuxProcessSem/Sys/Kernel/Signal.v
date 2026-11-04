@@ -481,13 +481,16 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
     and with [oact] NULL so does the syscall.
 
-    WHAT IT STORES: ONE BIT, [State.procst_sigchld_dfl], set to [true]
-    ([State.with_sigchld_dfl]).  [Exit.wait4_spec] reads it: a caller
-    with a recorded child is answered only after this install, because
-    under the launch's disposition -- SIG_DFL, or a SIG_IGN [execve]
-    kept -- [do_notify_parent] may already have reaped the child.  The
-    bit is never cleared: no answered call leaves SIGCHLD anything but
-    SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT STAYS DECLINED).
+    WHAT IT STORES: ONE BIT, [State.procst_sigchld_dfl], and only in a
+    process with no recorded child ([sigchld_install_model]): the bit
+    is set only if every child the process has was cloned while SIGCHLD
+    was SIG_DFL.  [Exit.wait4_spec] reads it: a caller with a recorded
+    child is answered only when it is set, because under the launch's
+    disposition -- SIG_DFL, or a SIG_IGN [execve] kept --
+    [do_notify_parent] may already have reaped a child cloned before the
+    install.  The bit is never cleared: no answered call leaves SIGCHLD
+    anything but SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT
+    STAYS DECLINED).
     Nothing else about the disposition is stored, because a SIG_DFL
     SIGCHLD is the disposition every other SIGCHLD argument in this
     model is written against, so the install moves the process TOWARDS
@@ -532,7 +535,8 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     recorded once this arm has set [State.procst_sigchld_dfl].  Admitting
     the install would make that arm unsound with no failing proof; the
     decline here is what keeps it sound, and the launch's own SIG_IGN
-    is covered by the bit: before this install the bit is clear and
+    is covered by the bit: it is set only by an install made while the
+    process has no recorded child ([sigchld_install_model]), and while it is clear
     [Exit.wait4_spec] declines a caller with a recorded child.  Nothing in
     scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are
@@ -549,6 +553,38 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | Some h, Some fl => w_is0 h && Z.eqb (Z.land (bv_unsigned fl) SA_NOCLDWAIT) 0
   | _, _ => false
   end.
+
+(** The model the answered SIGCHLD SIG_DFL install leaves.  The install
+    bit [State.procst_sigchld_dfl] is set when the process has no
+    recorded child ([State.m_has_children] clear) and kept when it is
+    already set; in a process with a recorded child and the bit clear
+    the install changes nothing, and the bit stays clear.  So the bit is
+    set only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL.
+
+    WHY A CHILD CLONED BEFORE THE INSTALL KEEPS THE BIT CLEAR.  Linux
+    decides whether to reap a child itself when that child exits, from
+    its parent's disposition at that moment: [do_notify_parent]
+    (kernel/signal.c:2241-2259, v6.18.46) sets [autoreap] when the
+    parent's SIGCHLD is SIG_IGN or carries SA_NOCLDWAIT, and
+    [exit_notify] (kernel/exit.c:763-785) then releases the child at
+    once.  A child cloned under a launcher's SIG_IGN can have exited and
+    been released before this install, and [wait4] then answers 0 and
+    -ECHILD, never its pid.  The model cannot see whether that happened,
+    so it leaves the bit clear and [Exit.wait4_spec] declines the
+    caller.  [State.m_has_children] is never cleared
+    ([State.with_children]), so after the first clone no install sets
+    the bit.  A child cloned after the install was cloned under SIG_DFL
+    with SA_NOCLDWAIT clear, and no answered call changes that
+    disposition (WHAT STAYS DECLINED at [sigchld_dfl_install]), so Linux
+    leaves that child a zombie for [wait4].
+
+    The call answers 0 in both cases: [do_sigaction] stores the action
+    and returns 0 whatever children exist.  Only the bit differs.
+    bubblewrap 0.13.1 makes the install before any clone
+    (bubblewrap.c:2910-2914), so its parent sets the bit. *)
+Definition sigchld_install_model (m : Model) : Model :=
+  with_sigchld_dfl (m_sigchld_dfl m || negb (m_has_children m)) m.
 
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
@@ -596,8 +632,9 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
          disposition; then 0 for SIGCHLD with the handler SIG_DFL and
-         SA_NOCLDWAIT clear ([sigchld_dfl_install]), recording the
-         install in [State.procst_sigchld_dfl]; and UNMODELED for every
+         SA_NOCLDWAIT clear ([sigchld_dfl_install]), setting
+         [State.procst_sigchld_dfl] only in a process with no recorded
+         child ([sigchld_install_model]); and UNMODELED for every
          other signal, handler and
          SIGCHLD flag word.
          Every answer after the copy records the 24
@@ -640,7 +677,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
          else if sigchld_dfl_install sig (in_mem i) act
-         then (modify (with_sigchld_dfl true) ;; ret_only (Z_to_bv 64 0))
+         then (modify sigchld_install_model ;; ret_only (Z_to_bv 64 0))
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 

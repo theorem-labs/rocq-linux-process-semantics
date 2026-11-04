@@ -461,6 +461,25 @@ Example parent_trace_sigchld_installed_before_clone :
   /\ m_sigchld_dfl parent_trace_s35 = true.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
+(** ...and what that order buys after the clone.  bubblewrap installs
+    SIG_DFL at call 08 (bubblewrap.c:2910-2914), before any clone, so the
+    bit is set and the child the clone at call 35 records (320) was
+    cloned under SIG_DFL.  [wait4(-1, NULL, WNOHANG, NULL)] is then
+    answered about 320: 0 with the model unchanged, or the reap of 320;
+    -ECHILD is rejected. *)
+Example parent_trace_wait4_after_clone_answered :
+  check_syscall (parent_trace_call 260 parent_trace_minus1 0 1 0 0 0)
+    (mkEffect 0 [] []) parent_trace_s35 = CheckOk parent_trace_s35 []
+  /\ check_syscall (parent_trace_call 260 parent_trace_minus1 0 1 0 0 0)
+       (mkEffect (Z_to_bv 64 320) [] []) parent_trace_s35
+     = CheckOk (with_child_pids [] parent_trace_s35) []
+  /\ check_syscall (parent_trace_call 260 parent_trace_minus1 0 1 0 0 0)
+       (mkEffect (errno_ret ECHILD) [] []) parent_trace_s35 = CheckReject.
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.
+
 (** After the last mapping: the break is 0x53000, the brk pages and the
     final page are mapped, the 16384-byte mapping is gone, and the guard
     page is inaccessible.  SIGCHLD is blocked once rt_sigprocmask has
