@@ -79,14 +79,16 @@ import sys
 import tempfile
 
 # Definition <prefix>_segment_<nnn> : Segment := {| seg_base := 0x..%N;
-# seg_size := 0x..%N; seg_perms := "r-x"; seg_bytes := ... |}, as
+# seg_size := 0x..%N; seg_perms := "r-x"; seg_bytes := ...;
+# seg_kind := SegLoader |}, as
 # elf-snapshot writes it.
 SEGMENT_RE = re.compile(
     r"Definition\s+\w+_segment_(?P<idx>\d+)\s*:\s*Segment\s*:=\s*\{\|"
     r"\s*seg_base\s*:=\s*0x(?P<base>[0-9a-f]+)%N;"
     r"\s*seg_size\s*:=\s*0x(?P<size>[0-9a-f]+)%N;"
     r'\s*seg_perms\s*:=\s*"(?P<perms>[^"]*)";'
-    r"\s*seg_bytes\s*:=\s*(?P<bytes>.*?)\s*\|\}\.", re.DOTALL)
+    r"\s*seg_bytes\s*:=\s*(?P<bytes>.*?);"
+    r"\s*seg_kind\s*:=\s*SegLoader\s*\|\}\.", re.DOTALL)
 
 DEPENDENCY_RE = re.compile(
     r'Extra Dependency\s+"(?P<file>[^"]+)"\s+as\s+(?P<dep>\w+)\.\s*'
