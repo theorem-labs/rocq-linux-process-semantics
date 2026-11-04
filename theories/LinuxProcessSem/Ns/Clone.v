@@ -13,14 +13,14 @@
     ([create_pid_namespace]) and net/core/net_namespace.c
     ([copy_net_ns]).
 
-    The model answers clone flags made of an exit signal and CLONE_NEWNS,
-    CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID and
-    CLONE_NEWNET, with or without CLONE_CHILD_SETTID and
-    CLONE_CHILD_CLEARTID (the form a C library's [fork] uses), whose
-    effects on the child's memory are the core's ([copy_process] stores
-    the child's pid in its own pid namespace, [CnOk]'s first pid); any
-    other flag declines.  The IPC namespace is not in the tables: no
-    modelled call reads it.
+    In the namespace world the model answers SIGCHLD alone or with
+    CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID
+    and CLONE_NEWNET, and no other bit.  Child-tid flags decline: the
+    core does not admit them or model their memory effects.  Linux's
+    [copy_process] stores their pointers (kernel/fork.c:2040,2044);
+    [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
+    and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
+    The IPC namespace is not in the tables: no modelled call reads it.
 
     With CLONE_NEWUTS the child gets a new UTS namespace (Linux v6.18.46:
     [copy_utsname], kernel/utsname.c:79-94, called by
@@ -58,6 +58,7 @@
 From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Fork.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -66,11 +67,10 @@ Definition PID_MAX : Z := 4194304.
 Definition CLONE_CHILD_CLEARTID : Z := 2097152.   (* 0x00200000 *)
 Definition CLONE_CHILD_SETTID : Z := 16777216.    (* 0x01000000 *)
 
-(** The flags the model answers: an exit signal, these six, and the two
-    child-tid flags. *)
+(** Namespace flags the model answers; the exit signal is SIGCHLD. *)
 Definition clone_ns_flags : Z :=
   fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWUSER; CLONE_NEWPID;
-                   CLONE_NEWNET; CLONE_CHILD_CLEARTID; CLONE_CHILD_SETTID] 0.
+                   CLONE_NEWNET] 0.
 
 Definition has_flag (f k : Z) : bool := negb (Z.land f k =? 0).
 
@@ -196,6 +196,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
      clone, whatever the rest of the flag word ([Ext.ext_clone_coherent]). *)
   if flat_view ctx st && negb (has_ns_bits f) then CnOk ctx None st
   else if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
+  else if negb (Z.land f CSIGNAL =? Fork.SIGCHLD) then CnUnmodeled
   else if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
   else
     match clone_creds m ctx st f with
@@ -280,6 +281,51 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
               end
           end
     end.
+
+(** The namespace mask and signal tests imply the core's gate.  This is
+    derived from the masks, not another test in [clone_ns_exact]. *)
+Lemma clone_ns_mask_core_gate : forall flags,
+  Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) = 0 ->
+  Z.land (bv_unsigned flags) CSIGNAL = Fork.SIGCHLD ->
+  Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true.
+Proof.
+  intros flags Hmask Hsignal.
+  assert (Hcover : bv_unsigned flags =
+      Z.land (bv_unsigned flags) (Z.lor CSIGNAL clone_ns_flags)).
+  { rewrite <- (Z.land_m1_r (bv_unsigned flags)) at 1.
+    rewrite <- (Z.lor_lnot_diag (Z.lor CSIGNAL clone_ns_flags)),
+      Z.land_lor_distr_r, Hmask, Z.lor_0_r. reflexivity. }
+  assert (Hout : Z.land (bv_unsigned flags) (Z.lnot Fork.clone_ns_mask) = Fork.SIGCHLD).
+  { rewrite Hcover at 1. rewrite <- Z.land_assoc.
+    change (Z.land (bv_unsigned flags) CSIGNAL = Fork.SIGCHLD).
+    exact Hsignal. }
+  destruct (Z.eqb (Z.land (bv_unsigned flags) Fork.clone_ns_mask) 0) eqn:Hns.
+  - apply Z.eqb_eq in Hns. left. unfold Fork.clone_fork_flags_b, bv_eqb.
+    assert (Hword : bv_unsigned flags = Fork.SIGCHLD).
+    { rewrite <- (Z.land_m1_r (bv_unsigned flags)),
+        <- (Z.lor_lnot_diag Fork.clone_ns_mask), Z.land_lor_distr_r,
+        Hns, Hout, Z.lor_0_l. reflexivity. }
+    rewrite Hword. reflexivity.
+  - right. unfold Fork.clone_ns_flags_b. rewrite Hout, Z.eqb_refl, Hns. reflexivity.
+Qed.
+
+(** Every answered word outside the released world is a word the core
+    admits.  The released no-namespace fast path remains unrestricted,
+    as [Ext.ext_clone_coherent] requires. *)
+Theorem clone_ns_exact_core_gate : forall flags m ctx st hq,
+  flat_view ctx st = false ->
+  clone_ns_exact (bv_unsigned flags) m ctx st hq <> CnUnmodeled ->
+  Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true.
+Proof.
+  intros flags m ctx st hq Hflat Hanswer.
+  unfold clone_ns_exact in Hanswer. rewrite Hflat in Hanswer. cbn [andb] in Hanswer.
+  destruct (negb (Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0))
+    eqn:Hmask; [exfalso; apply Hanswer; reflexivity|].
+  destruct (negb (Z.land (bv_unsigned flags) CSIGNAL =? Fork.SIGCHLD))
+    eqn:Hsignal; [exfalso; apply Hanswer; reflexivity|].
+  apply clone_ns_mask_core_gate;
+    apply negb_false_iff in Hmask, Hsignal; apply Z.eqb_eq; assumption.
+Qed.
 
 
 (** The pid namespaces the model made, from [active] outwards, each with
