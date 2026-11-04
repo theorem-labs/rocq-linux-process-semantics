@@ -312,9 +312,11 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          answers is written. *)
   | FdSeqpacket _ _ _ => None
       (* DECLINED.  The socket file has [.poll = sock_poll]
-         (net/socket.c [socket_file_ops], v6.18.46), but no modeled epfd
-         is an epoll file: [epoll_ctl_outcome] answers its earlier
-         -EINVAL without consulting this target's readiness. *)
+         (net/socket.c [socket_file_ops], v6.18.46), so [file_can_poll]
+         holds and Linux, with no modeled epfd an epoll file, answers
+         -EINVAL.  [epoll_ctl_outcome] does consult this target's
+         readiness, and [None] makes it decline there: a decline Linux
+         allows, kept until a case states the -EINVAL. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.

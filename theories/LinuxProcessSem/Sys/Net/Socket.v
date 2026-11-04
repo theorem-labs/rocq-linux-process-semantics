@@ -1609,9 +1609,11 @@ Definition shutdown_core_spec (fd how : word) : Sys SyscallEffect :=
     stores [val != 0] into [sk_scm_credentials] (:1551-1556:
     [sk_may_scm_recv] holds for AF_UNIX, include/net/sock.h:2917-2922)
     and answers 0.  Every option but [SO_PASSCRED] is declined, ahead of
-    the length test, so the order of the answered tests is Linux's.  The
-    LSM and BPF hooks between (net/socket.c:2338-2351) are the [sock_fd] note's
-    assumption: no active policy denies.
+    the length test, so the order of the answered tests is Linux's.  Of
+    the hooks between (net/socket.c:2338-2351), the LSM hook is the
+    [sock_fd] note's assumption (no active policy denies), and a
+    cgroup-BPF hook is the launch value [setsockopt_spec] tests first:
+    with it present every setsockopt declines.
 
     [optname] and [optval] are read off the input (arguments 2 and 3);
     the dispatcher binds [level] and [optlen] as their low 32 bits

@@ -135,9 +135,10 @@ Proof.
   cbn [in_cgroup_bpf_setsockopt] in Hbp. subst sk bp. reflexivity.
 Qed.
 
-(** Every thirteen-place literal has field 24 off, so is an image
-    ([embed_forget]); [State.mkProcInput_selfkill_terminal] is the same
-    fact. *)
+(** Every thirteen-place literal has field 24 off
+    ([State.mkProcInput_selfkill_terminal] is the same fact) and field 25
+    off ([State.mkProcInput_cgroup_bpf_setsockopt]), so is an image
+    ([embed_forget] needs both). *)
 Lemma mkProcInput_embed :
   forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
          abort_terminal va_size,
@@ -146,7 +147,9 @@ Lemma mkProcInput_embed :
        hwcap abort_terminal va_size) = false.
 Proof. intros. reflexivity. Qed.
 
-(** Every finite input has field 24 off, so is an image. *)
+(** Every finite input has field 24 off, and field 25 off
+    ([Checks.CgroupBpfEmbedding.finite_input_bpf_default]), so is an
+    image. *)
 Lemma to_proc_input_embed : forall f, in_selfkill_terminal (to_proc_input f) = false.
 Proof. intros f. reflexivity. Qed.
 
