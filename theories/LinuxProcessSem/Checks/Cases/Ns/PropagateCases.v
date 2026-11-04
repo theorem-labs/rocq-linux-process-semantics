@@ -48,7 +48,7 @@ Definition world (ms : list Mount) (owner2 : positive) : NsState :=
   let base := MountArmsCases.state false false [] in
   let st := with_mounts empty_nsstate ms in
   let st := with_userns st (ns_userns base) in
-  let st := with_mntns st [mkMntNs 1 1 1 false; mkMntNs 2 owner2 5 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false; mk_mntns 2 owner2 5 false] in
   let st := with_pidns st (ns_pidns base) in
   let st := with_sbs st [MountArmsCases.sb 1 1 SbHost; MountArmsCases.sb 2 20 SbTmpfs;
                          MountArmsCases.sb 3 30 SbTmpfs; MountArmsCases.sb 4 40 SbTmpfs] in
@@ -274,7 +274,7 @@ Proof. split; vm_compute; reflexivity. Qed.
 Definition clone_world : NsState :=
   let st := with_mounts empty_nsstate [m1; m2; shared 7 (mt 6 1 (Some 1) 4 20 2)] in
   let st := with_userns st (ns_userns CloneCases.inside) in
-  let st := with_mntns st [mkMntNs 1 2 1 false] in
+  let st := with_mntns st [mk_mntns 1 2 1 false] in
   let st := with_pidns st (ns_pidns CloneCases.inside) in
   with_netns st (ns_netns CloneCases.inside).
 
@@ -285,3 +285,15 @@ Example clone_newns_copy_after_original : forall m,
                                       clone_world 140))
   = Some (Some [2; 8; 6; 9]).
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** An outside task can change even private mounts of namespace 1. No
+    outside peer group is needed for this uncertainty. *)
+Definition entered_a : NsState := with_entered_mntns st_a [1].
+
+Eval vm_compute in (env_open_groups (ns_env entered_a),
+                    open_mount entered_a 1, ns_open entered_a 1,
+                    targets_open entered_a (Some PPrivate) 1 false,
+                    MountArmsCases.ret_of (bind_out entered_a bind_flags)).
+
+Example entered_bind_declines : bind_out entered_a bind_flags = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.

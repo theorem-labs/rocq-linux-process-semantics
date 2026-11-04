@@ -226,7 +226,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                   let nid := Pos.succ (max_mntns_id st) in
                   let other := negb (Pos.eqb (cc_user cc) (mntns_owner old)) in
                   let '(T', where_) := copy_mnt_ns (ns_mounts st) (mntns_root old) nid other in
-                  Some (nid, T', [mkMntNs nid (cc_user cc) (where_ (mntns_root old)) false], where_,
+                  Some (nid, T', [mk_mntns nid (cc_user cc) (where_ (mntns_root old)) false], where_,
                         copy_ns_links st (mntns_root old) other)
               | None => None
               end

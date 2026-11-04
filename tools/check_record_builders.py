@@ -34,9 +34,10 @@ CONSTRUCTORS = [
     "mkNsState",         # Ns.Tables.NsState
     "mkNsEnv",           # Ns.Tables.NsEnv
     "mkNsCtx",           # Ns.Tables.NsCtx
+    "mkMntNs",           # Ns.Tables.MntNs
 ]
 BASELINE = "tools/record_builders.json"
-PATTERN = re.compile(r"(?<![\[A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?![A-Za-z0-9_'\]])")
+PATTERN = re.compile(r"(?<![A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?![A-Za-z0-9_'\]])")
 
 
 def counts():
