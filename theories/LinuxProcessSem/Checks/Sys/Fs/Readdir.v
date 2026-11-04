@@ -423,6 +423,7 @@ Definition check_getdents64 (i : SyscallInput) (fd dirent count : word)
   | Some (FdFileRW _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdSocket _)  => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdSeqpacket _ _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdOpaque o) => check_getdents64_opaque i fd o dirent count eff m

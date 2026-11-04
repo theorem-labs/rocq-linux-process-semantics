@@ -75,7 +75,7 @@ let seed : M.rawProcInput = {
   rpi_channel_reader = true; rpi_sigpipe_default = true;
   rpi_sigpipe_terminal = false; rpi_ppid = z "0";
   rpi_cap_inheritable = z "0"; rpi_inherited_fds = [];
-  rpi_selfkill_terminal = false }
+  rpi_selfkill_terminal = false; rpi_cgroup_bpf_setsockopt = false }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -93,6 +93,24 @@ let input : M.rawInput = {
 let effect_of ret : M.rawEffect = {
   M.reff_ret = z ret; reff_writes = []; reff_zeros = []; reff_unmaps = [];
   reff_copies = []; reff_copyins = [] }
+
+let () =
+  let sockopt = { input with M.rin_sysno = z "208";
+                 rin_args = List.map z ["999"; "1"; "16"; "0"; "4"; "0"] } in
+  let hook_seed = { seed with M.rpi_cgroup_bpf_setsockopt = true } in
+  let hook_model =
+    match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") hook_seed with
+    | Some m -> m
+    | None -> failwith "the explicit hook-bearing seed was refused"
+  in
+  check "the explicit cgroup-BPF launch value makes setsockopt unmodeled"
+    (match M.check_syscall_for_run_checked sockopt (effect_of "18446744073709551607") hook_model with
+     | M.CheckedAnswer (Some M.CheckUnmodeled) -> true
+     | _ -> false);
+  check "without the hook the same missing descriptor still answers EBADF"
+    (match M.check_syscall_for_run_checked sockopt (effect_of "18446744073709551607") model with
+     | M.CheckedAnswer (Some (M.CheckOk (_, _))) -> true
+     | _ -> false)
 
 let refused ri re = match M.check_syscall_for_run_checked ri re model with
   | M.CheckedRefused -> true
@@ -254,7 +272,7 @@ let () =
               rpi_channel_reader = true; rpi_sigpipe_default = true;
               rpi_sigpipe_terminal = false; rpi_ppid = z "0";
               rpi_cap_inheritable = z "0"; rpi_inherited_fds = [];
-              rpi_selfkill_terminal = false }))
+              rpi_selfkill_terminal = false; rpi_cgroup_bpf_setsockopt = false }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

@@ -18,7 +18,7 @@
     extended step IS the core's own step, claimed calls included.
 
     [ns_clone_fail_step_released] is the same answer for the forced-only
-    filter of a failed clone (P11 b): under [ns_ext], beside
+    filter of a failed clone: under [ns_ext], beside
     [px_clone_fail]'s other premises, its step premise is the released
     step, so the filter changes no published answer
     ([ns_clone_filter_released], [clone_ns_exact_errno]).

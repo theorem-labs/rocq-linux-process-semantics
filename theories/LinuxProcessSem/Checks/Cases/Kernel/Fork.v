@@ -321,3 +321,30 @@ Example clone_declines_procfd_dir_and_signalfd :
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
        clone_signalfd_model = CheckUnmodeled.
 Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
+
+(** AN AF_UNIX SEQUENCED-PACKET END DECLINES THE CLONE
+    ([State.FdSeqpacket]; [Kernel.Fork.clone_no_shared_file_b]): the
+    child's second reference names the same socket, so a close in one
+    process would no longer release it, and [State.seq_peer], which reads
+    the peer off this process's table, would answer "closed" while the
+    other process still holds it.  [clone_seqpacket_model] holds the three
+    channels and the two ends and nothing else, so the ends are the only
+    entries that can make the gate refuse.  THE CONTROL: the same three
+    channels without the ends are admitted. *)
+Definition clone_seqpacket_model : Model :=
+  with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+            (3, FdSeqpacket 0 false seq_fresh);
+            (4, FdSeqpacket 0 true seq_fresh)] clone_case_model.
+
+Definition clone_channels_model : Model :=
+  with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2)] clone_case_model.
+
+Example clone_with_a_seqpacket_end_open_declines :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+    clone_seqpacket_model = CheckUnmodeled
+  /\ clone_no_shared_file_b [(0, FdChannel 0); (3, FdSeqpacket 0 false seq_fresh)]
+     = false
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+       clone_channels_model
+     = CheckOk (with_child (Z_to_bv 64 4242) clone_channels_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

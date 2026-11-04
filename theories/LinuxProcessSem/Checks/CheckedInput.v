@@ -664,7 +664,9 @@ Record RawProcInput := mkRawProcInput {
                                              ([State.in_inherited_fds]) *)
   rpi_selfkill_terminal : bool            (* the launch declares the self-kill
                                              death ([State.in_selfkill_terminal]);
-                                             a bool *)
+                                             a bool *);
+  rpi_cgroup_bpf_setsockopt : bool         (* the launch's cgroup-BPF setsockopt
+                                             hook value; no implicit default *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -998,7 +1000,8 @@ Qed.
     [word_of_Z].  The inherited descriptors are a list of numbers and
     file bytes with a launch clause, so [rpi_inherited_fds] is checked
     by [inherited_fds_of_raw], which asks both.  [in_selfkill_terminal]
-    bought [rpi_selfkill_terminal], a bool like the SIGPIPE three.  The
+    bought [rpi_selfkill_terminal], a bool like the SIGPIPE three.
+    [in_cgroup_bpf_setsockopt] likewise requires a raw bool. The
     repair is a raw field and its check, never [mkProcInput] and never a
     default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
@@ -1023,7 +1026,7 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
                   (urandom_of_bytes urandom) tmp kernel execfn
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
                   (rpi_sigpipe_terminal r) ppid cap_inheritable inherited
-                  (rpi_selfkill_terminal r))
+                  (rpi_selfkill_terminal r) (rpi_cgroup_bpf_setsockopt r))
       | _, _, _, _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None

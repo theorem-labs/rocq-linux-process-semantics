@@ -447,6 +447,7 @@ Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
   | Some (FdFileRW p _) => fstat_file_witness p statbuf i m
   | Some FdDir         => Unmodeled
   | Some (FdSocket _)  => Unmodeled
+  | Some (FdSeqpacket _ _ _) => Unmodeled
   | Some (FdPipe _ _)  => Unmodeled
   | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
   | Some FdUrandom => fstat_urandom_witness statbuf i m

@@ -337,6 +337,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
+  | Some (FdSeqpacket _ _ _) => Unmodeled   (* see [ReadWrite.read_spec] *)
   | Some (FdOpaque o) =>
       match o with
       | OInherited (Some (data, off)) =>
@@ -384,7 +385,7 @@ Lemma read_witness_ok : forall fd buf count i m,
   read_spec fd buf count i m (read_witness fd buf count i m).
 Proof.
   intros. unfold read_spec, read_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -411,6 +412,10 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply read_file_data_witness_ok. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply unmodeled_intro. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -816,6 +821,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else sigpipe_write_witness m
         (* no connection to send on: -EPIPE and SIGPIPE *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
+  | Some (FdSeqpacket _ _ _) => Unmodeled   (* see [ReadWrite.write_spec] *)
   | Some (FdOpaque o) => write_opaque_witness o buf count i m
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -854,7 +860,7 @@ Lemma write_witness_ok : forall fd buf count i m,
 Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
     write_fault_keep, write_ledger, write_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
       2:{ eapply bind_step; [apply input_ok|]. cbv beta.
@@ -880,6 +886,10 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply write_opaque_witness_ok. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
@@ -1158,6 +1168,7 @@ Definition pread64_witness (fd buf count pos : word) (i : SyscallInput)
       then ret_outcome (errno_ret EINVAL) m
       else ret_outcome (Z_to_bv 64 0) m
   | Some (FdOpaque _) => Unmodeled
+  | Some (FdSeqpacket _ _ _) => Unmodeled
   | Some FdUrandom =>
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
@@ -1198,7 +1209,7 @@ Lemma pread64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pread64_spec, pread64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
     destruct rd; cbn [negb]; cbv beta iota;
       [ destruct (access_okb buf (bv_unsigned count)) eqn:Hok; cbn [negb];
@@ -1218,6 +1229,10 @@ Proof.
         [apply pure_ok|].
       apply read_urandom_witness_ok. }
   9:{ (* the opaque kinds: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply unmodeled_intro. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply unmodeled_intro. }
@@ -1323,6 +1338,7 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
   | Some (FdFileA _ _) => Unmodeled        (* see [ReadWrite.pwrite64_spec] *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdOpaque _) => Unmodeled
+  | Some (FdSeqpacket _ _ _) => Unmodeled
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
       else if negb (access_okb buf (bv_unsigned count))
@@ -1359,7 +1375,7 @@ Lemma pwrite64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pwrite64_spec, pwrite64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (eapply bind_step; [apply input_ok|]; cbv beta;
          (eapply bind_step; [apply get_model_ok|]);
          cbv beta iota zeta; srw Hfd; apply pure_ok).
@@ -1371,6 +1387,10 @@ Proof.
      on this path can tell the two kinds apart, which is exactly why
      the spec gives them one arm. *)
   5: { (* the opaque kinds: declined *)
+       eapply bind_step; [apply input_ok|]. cbv beta.
+       eapply bind_step; [apply get_model_ok|].
+       cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
+  5: { (* an AF_UNIX SEQPACKET end: declined *)
        eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
        cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
@@ -1505,6 +1525,7 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
            end)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdOpaque _) => Unmodeled
+  | Some (FdSeqpacket _ _ _) => Unmodeled
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
       else outcome_copyins
@@ -1615,7 +1636,7 @@ Lemma writev_witness_ok : forall fd iov iovcnt i m,
 Proof.
   intros. unfold writev_witness, writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.
       2:{ wvw_open Hfd. apply pure_ok. }
@@ -1624,6 +1645,7 @@ Proof.
         (wvw_open Hfd; srw Hiv; eapply bind_step; [apply pure_ok|apply pure_ok]). }
   9:{ (* /dev/urandom: -EBADF *) wvw_open Hfd. apply pure_ok. }
   9:{ (* the opaque kinds: declined *) wvw_open Hfd. apply unmodeled_intro. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *) wvw_open Hfd. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { wvw_open Hfd. srw Hm. apply pure_ok. }
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
@@ -1803,7 +1825,9 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
       match readable_fd e with
-      | None => if fd_is_opaque e then Unmodeled else ret_outcome (errno_ret EBADF) m
+      | None => if fd_is_opaque e then Unmodeled
+                else if fd_is_seqpacket e then Unmodeled
+                else ret_outcome (errno_ret EBADF) m
           (* the read end has a [RdPipe]; only the O_WRONLY write end
              reaches this arm, where -EBADF is the kernel's own answer *)
       | Some r =>
@@ -2192,6 +2216,7 @@ Definition lseek_witness (fd off whence : word) (m : Model)
       | FdDevNull _ _ => ret_outcome (Z_to_bv 64 0) m
       | FdUrandom => ret_outcome (Z_to_bv 64 0) m
       | FdOpaque _ => Unmodeled
+      | FdSeqpacket _ _ _ => Unmodeled
       | FdDir => Unmodeled   (* unmodeled: see [ReadWrite.lseek_spec] *)
       | FdFile p cur =>
           match fs_lookup (m_fs m) p with
@@ -2260,7 +2285,7 @@ Lemma lseek_witness_ok : forall fd off whence i m,
   lseek_spec fd off whence i m (lseek_witness fd off whence m).
 Proof.
   intros. unfold lseek_spec, lseek_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
          [ eapply bind_step; [apply get_model_ok|];
            cbv beta iota; srw Hfd; first [apply pure_ok | apply unmodeled_intro] |]).
@@ -2341,6 +2366,9 @@ Proof.
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply pure_ok.
   - (* the opaque kinds: declined *)
+    eapply bind_step; [apply get_model_ok|].
+    cbv beta iota; srw Hfd. apply unmodeled_intro.
+  - (* an AF_UNIX SEQPACKET end: declined *)
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply unmodeled_intro.
   - eapply bind_step; [apply get_model_ok|].
