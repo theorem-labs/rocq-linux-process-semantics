@@ -483,9 +483,11 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
 
     WHAT IT STORES: ONE BIT, [State.procst_sigchld_dfl], set to [true]
     ([State.with_sigchld_dfl]).  [Exit.wait4_spec] reads it: a caller
-    with a recorded child is answered only after this install, because
-    under the launch's disposition -- SIG_DFL, or a SIG_IGN [execve]
-    kept -- [do_notify_parent] may already have reaped the child.  The
+    with a recorded child is answered only while it is set, because
+    under a SIG_IGN [execve] kept [do_notify_parent] reaps the child
+    itself.  [State.init_model] seeds it from the launch's declared
+    disposition ([State.ProcInput.in_sigchld_default]), so at a SIG_IGN
+    launch it is this install that sets it.  The
     bit is never cleared: no answered call leaves SIGCHLD anything but
     SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT STAYS DECLINED).
     Nothing else about the disposition is stored, because a SIG_DFL
@@ -532,8 +534,9 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     recorded once this arm has set [State.procst_sigchld_dfl].  Admitting
     the install would make that arm unsound with no failing proof; the
     decline here is what keeps it sound, and the launch's own SIG_IGN
-    is covered by the bit: before this install the bit is clear and
-    [Exit.wait4_spec] declines a caller with a recorded child.  Nothing in
+    is covered by the bit: [State.init_model] starts it clear at a
+    SIG_IGN launch, and until this install [Exit.wait4_spec] declines a
+    caller with a recorded child.  Nothing in
     scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are
     [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a

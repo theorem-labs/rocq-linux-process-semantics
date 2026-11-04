@@ -3,10 +3,11 @@
     Not part of the trusted specification: theorems ABOUT it.
 
     [ProcInput24] has exactly fields 1-24 of the process input before
-    the cgroup-BPF setsockopt field. [embed24] appends false, and the
-    host's clone refusers (field 26) at [State.no_clone_refusers];
-    [forget24] drops fields 25 and 26, and [embeds24] carries field 26's
-    frame and pin beside field 25's. No self-kill stance is lost: true and false
+    the cgroup-BPF setsockopt field. [embed24] appends false, the
+    host's clone refusers (field 26) at [State.no_clone_refusers] and
+    the SIGCHLD launch disposition (field 27) at [true], SIG_DFL;
+    [forget24] drops fields 25 to 27, and [embeds24] carries the frames
+    and pins of fields 26 and 27 beside field 25's. No self-kill stance is lost: true and false
     both embed. Ordinary input predicates additionally pin self-kill
     false, as they did before field 25. [SelfkillEmbedding] composes
     both pins against its mechanically checked 604b5c371ed0 copies.
@@ -77,7 +78,8 @@ Definition embed24 (o : ProcInput24) : ProcInput :=
      in_inherited_fds := p24_inherited_fds o;
      in_selfkill_terminal := p24_selfkill_terminal o;
      in_cgroup_bpf_setsockopt := false;
-     in_clone_refusers := no_clone_refusers |}.
+     in_clone_refusers := no_clone_refusers;
+     in_sigchld_default := true |}.
 
 Definition forget24 (inp : ProcInput) : ProcInput24 :=
   {| p24_argv := in_argv inp; p24_envp := in_envp inp;
@@ -102,11 +104,14 @@ Proof. intros []. reflexivity. Qed.
 
 Lemma embed24_forget24 : forall inp,
   in_cgroup_bpf_setsockopt inp = false ->
-  in_clone_refusers inp = no_clone_refusers -> embed24 (forget24 inp) = inp.
+  in_clone_refusers inp = no_clone_refusers ->
+  in_sigchld_default inp = true -> embed24 (forget24 inp) = inp.
 Proof.
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf] H Hc.
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf scd]
+    H Hc Hs.
   cbn [in_cgroup_bpf_setsockopt] in H. cbn [in_clone_refusers] in Hc.
-  subst bp crf. reflexivity.
+  cbn [in_sigchld_default] in Hs.
+  subst bp crf scd. reflexivity.
 Qed.
 
 Lemma embed24_selfkill : forall o,
@@ -116,9 +121,10 @@ Proof. reflexivity. Qed.
 Lemma image_observations24 : forall (A : Type) (observe : ProcInput -> A) inp,
   in_cgroup_bpf_setsockopt inp = false ->
   in_clone_refusers inp = no_clone_refusers ->
+  in_sigchld_default inp = true ->
   observe (embed24 (forget24 inp)) = observe inp.
 Proof.
-  intros A observe inp H Hc. rewrite (embed24_forget24 inp H Hc). reflexivity.
+  intros A observe inp H Hc Hs. rewrite (embed24_forget24 inp H Hc Hs). reflexivity.
 Qed.
 
 Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
@@ -127,13 +133,15 @@ Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
 Definition embeds24 (V V24 : ProcInput -> Prop) : Prop :=
   (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
   /\ (forall inp r, V24 (input_with_clone_refusers r inp) <-> V24 inp)
+  /\ (forall inp b, V24 (input_with_sigchld_default b inp) <-> V24 inp)
   /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
-                            /\ in_clone_refusers inp = no_clone_refusers).
+                            /\ in_clone_refusers inp = no_clone_refusers
+                            /\ in_sigchld_default inp = true).
 
 Lemma embeds24_of_embeds : forall V V_pre,
   embeds V V_pre -> embeds24 V (pre24 V_pre).
 Proof.
-  intros V V_pre [_ [Hframe [Hcframe HV]]]. split; [|split].
+  intros V V_pre [_ [Hframe [Hcframe [Hsframe HV]]]]. split; [|split; [|split]].
   - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
     + exact (proj1 (Hframe inp b) Hp).
     + exact Hsk.
@@ -144,12 +152,17 @@ Proof.
     + exact Hsk.
     + exact (proj2 (Hcframe inp r) Hp).
     + exact Hsk.
+  - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
+    + exact (proj1 (Hsframe inp b) Hp).
+    + exact Hsk.
+    + exact (proj2 (Hsframe inp b) Hp).
+    + exact Hsk.
   - intros inp. unfold pre24. rewrite HV.
     split; intros H.
-    + destruct H as [Hp [Hsk [Hbp Hcrf]]].
-      exact (conj (conj Hp Hsk) (conj Hbp Hcrf)).
-    + destruct H as [[Hp Hsk] [Hbp Hcrf]].
-      exact (conj Hp (conj Hsk (conj Hbp Hcrf))).
+    + destruct H as [Hp [Hsk [Hbp [Hcrf Hscd]]]].
+      exact (conj (conj Hp Hsk) (conj Hbp (conj Hcrf Hscd))).
+    + destruct H as [[Hp Hsk] [Hbp [Hcrf Hscd]]].
+      exact (conj Hp (conj Hsk (conj Hbp (conj Hcrf Hscd)))).
 Qed.
 
 Corollary valid_input_embeds24 : embeds24 valid_input (pre24 valid_input_pre).
@@ -221,6 +234,7 @@ Lemma valid_input_inherited_embeds24 :
 Proof.
   split; [intros inp b; split; intros H; exact H|].
   split; [intros inp r; split; intros H; exact H|].
+  split; [intros inp b; split; intros H; exact H|].
   intros inp. unfold valid_input_inherited, valid_input_inherited_pre24.
   embeds_conj.
 Qed.
@@ -228,25 +242,25 @@ Qed.
 Corollary embeds24_image : forall V V24, embeds24 V V24 ->
   forall o, V (embed24 o) <-> V24 (embed24 o).
 Proof.
-  intros V V24 [_ [_ HV]] o. split.
+  intros V V24 [_ [_ [_ HV]]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
   - intros H. apply (proj2 (HV (embed24 o))).
-    split; [exact H | split; reflexivity].
+    split; [exact H | split; [reflexivity | split; reflexivity]].
 Qed.
 
 Corollary embeds24_excludes : forall V V24, embeds24 V V24 ->
   forall inp, in_cgroup_bpf_setsockopt inp = true -> ~ V inp.
 Proof.
-  intros V V24 [_ [_ HV]] inp Ht Hv.
+  intros V V24 [_ [_ [_ HV]]] inp Ht Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
 Corollary embeds24_covers_images : forall V V24, embeds24 V V24 ->
   forall inp, V inp -> inp = embed24 (forget24 inp).
 Proof.
-  intros V V24 [_ [_ HV]] inp Hv.
-  destruct (proj1 (HV inp) Hv) as [_ [Hf Hc]].
-  symmetry. exact (embed24_forget24 inp Hf Hc).
+  intros V V24 [_ [_ [_ HV]]] inp Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [Hf [Hc Hs]]].
+  symmetry. exact (embed24_forget24 inp Hf Hc Hs).
 Qed.
 
 Lemma finite_input_bpf_default : forall f,

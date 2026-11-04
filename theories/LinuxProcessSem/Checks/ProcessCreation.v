@@ -919,9 +919,12 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     That is a closed-world assumption about the environment of exactly
     the shape [State.access_okb]'s is above.  The launch's SIGCHLD
     disposition is not assumed: a caller with a recorded child is
-    answered only after its own SIG_DFL install ([State.m_sigchld_dfl]),
-    so a launcher's SIG_IGN, under which Linux reaps each child itself,
-    can only turn an answer into a decline.
+    answered only while the held bit [State.m_sigchld_dfl] is set, which
+    [State.init_model] seeds from the declared launch disposition
+    ([State.in_sigchld_default], SIG_DFL under [Run.valid_input] and its
+    siblings) and the process's own SIG_DFL install sets, so a launcher's
+    SIG_IGN, under which Linux reaps each child itself, can only turn an
+    answer into a decline.
 
     [Checks.Examples.wait4_with_a_child_admits_no_echild] is the
     statement, outside this file, that a caller with a child never gets
@@ -1442,12 +1445,21 @@ Proof. vm_compute. reflexivity. Qed.
     for SIGCHLD before the clone ([State.with_sigchld_dfl], the install
     [Exit.wait4_spec] waits for): the pid that clone recorded is the
     one pid a reap may return, the reap removes it, and -ECHILD is no
-    longer admitted.  Without the install the same reap declines.  The
+    longer admitted.  At a SIG_IGN launch ([pc_model_sigchld_ign]) without
+    the install the same reap declines.  The
     argument gates are left to the lemmas' hypotheses. *)
 Definition wait4_input_any : SyscallInput :=
   mkInput (Z_to_bv 64 260)
     [Z_to_bv 64 (-1); 0; Z_to_bv 64 1; 0; 0; 0]
     (fun _ => None) (fun _ => None).
+
+(** [pc_model]'s launch with SIGCHLD at SIG_IGN ([State.in_sigchld_default]
+    false): the held bit starts clear. *)
+Definition pc_model_sigchld_ign : Model :=
+  init_model [] 0 0 (Z_to_bv 64 sp_window_lo) 0x40000000%Z
+    (input_with_sigchld_default false
+       (mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
+                    net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48)).
 
 Example wait4_checker_echild :
   check_syscall wait4_input_any (mkEffect (errno_ret ECHILD) [] []) pc_model
@@ -1471,7 +1483,7 @@ Example wait4_checker_after_clone :
        (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
      = CheckReject
   /\ check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4242) [] [])
-       (with_child (Z_to_bv 64 4242) pc_model) = CheckUnmodeled.
+       (with_child (Z_to_bv 64 4242) pc_model_sigchld_ign) = CheckUnmodeled.
 Proof.
   repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity.
 Qed.

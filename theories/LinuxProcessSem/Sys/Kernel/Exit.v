@@ -142,8 +142,9 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
     - NO CHILD ([State.m_has_children] clear): -ECHILD, and nothing
       else.
     - A RECORDED CHILD (the bit set and [State.m_child_pids] not empty),
-      in a process that has itself installed SIG_DFL for SIGCHLD
-      ([State.m_sigchld_dfl]; see THE SIGCHLD DISPOSITION below):
+      in a process whose held SIGCHLD bit is set ([State.m_sigchld_dfl]:
+      a SIG_DFL launch or its own SIG_DFL install; see THE SIGCHLD
+      DISPOSITION below):
       the environment's choice of 0, with nothing stored and the model
       unchanged, or of a reap: the pid [q] of a recorded child, never 0,
       with a status word [s] that [wait_status_okz] admits, [s] stored at
@@ -153,8 +154,8 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
       [unmodeled].  Every recorded child has been reaped by an earlier
       call, and the bit is never cleared ([State.with_children] says
       why), so the model does not know whether a child remains.
-    - A RECORDED CHILD IN A PROCESS THAT HAS NOT INSTALLED SIG_DFL FOR
-      SIGCHLD: [unmodeled], whatever the list holds.
+    - A RECORDED CHILD IN A PROCESS WHOSE SIGCHLD BIT IS CLEAR (a SIG_IGN
+      launch and no SIG_DFL install): [unmodeled], whatever the list holds.
 
     Before this, every caller with a child was declined, and the model
     contained no reap.
@@ -167,13 +168,16 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
     reaped at its exit, and [wait4] answers 0 and then -ECHILD, never
     its pid.  The disposition a process starts with is its launcher's:
     [begin_new_exec] (fs/exec.c) calls [flush_signal_handlers(me, 0)],
-    which keeps a SIG_IGN.  So the model answers a caller with a
-    recorded child only once the process has itself installed SIG_DFL
-    with SA_NOCLDWAIT clear, the one SIGCHLD install
-    [Kernel.Signal.rt_sigaction_spec] answers
-    ([Kernel.Signal.sigchld_dfl_install], recorded in
-    [State.procst_sigchld_dfl]); every other SIGCHLD install declines,
-    so after that install the disposition stays SIG_DFL.  A child the
+    which keeps a SIG_IGN, writes SIG_DFL over every other handler and
+    clears [sa_flags], SA_NOCLDWAIT included.  So the model answers a
+    caller with a recorded child only while the held bit
+    [State.procst_sigchld_dfl] is set: [State.init_model] seeds it from
+    the launch's declared disposition ([State.ProcInput.in_sigchld_default],
+    [true] at SIG_DFL, which [Run.valid_input] and its siblings pin), and
+    the one SIGCHLD install [Kernel.Signal.rt_sigaction_spec] answers,
+    SIG_DFL with SA_NOCLDWAIT clear ([Kernel.Signal.sigchld_dfl_install]),
+    sets it; every other SIGCHLD install declines, so once set the
+    disposition stays SIG_DFL.  A child the
     process cloned copies the bit, as [copy_sighand] (kernel/fork.c)
     copies the actions.  bubblewrap 0.13.1 makes the install first
     thing in [main] (bubblewrap.c:2910-2914), before any clone.  The

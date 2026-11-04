@@ -667,9 +667,12 @@ Record RawProcInput := mkRawProcInput {
                                              a bool *)
   rpi_cgroup_bpf_setsockopt : bool         (* the launch's cgroup-BPF setsockopt
                                              hook value; no implicit default *);
-  rpi_clone_refusers : CloneRefusers      (* the host's clone refusers
+  rpi_clone_refusers : CloneRefusers;     (* the host's clone refusers
                                              ([State.in_clone_refusers]); three
                                              bools, so every value is in type *)
+  rpi_sigchld_default : bool              (* SIGCHLD's launch disposition is
+                                             SIG_DFL ([State.in_sigchld_default]);
+                                             a bool *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -1006,8 +1009,9 @@ Qed.
     bought [rpi_selfkill_terminal], a bool like the SIGPIPE three.
     [in_cgroup_bpf_setsockopt] likewise requires a raw bool. The host's
     clone refusers are three bools, so [rpi_clone_refusers] is in type and
-    its check is the type itself. The repair is a raw field and its check,
-    never [mkProcInput] and never a default. *)
+    its check is the type itself. The launch's SIGCHLD disposition is a
+    bool, so [rpi_sigchld_default] is in type too. The repair is a raw
+    field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
         image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
@@ -1031,7 +1035,7 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
                   (rpi_sigpipe_terminal r) ppid cap_inheritable inherited
                   (rpi_selfkill_terminal r) (rpi_cgroup_bpf_setsockopt r)
-                  (rpi_clone_refusers r))
+                  (rpi_clone_refusers r) (rpi_sigchld_default r))
       | _, _, _, _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None

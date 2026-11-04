@@ -203,7 +203,11 @@ Proof. vm_compute. reflexivity. Qed.
     [Kernel.Exit.wait4_spec] reads before it answers a caller with a
     recorded child) -- and the same answer with an empty ledger
     rejected.  The model before [Signal.sigchld_dfl_install] declined
-    this call; it is the install bwrap makes first thing in [main]. *)
+    this call; it is the install bwrap makes first thing in [main].
+    [demo_input] launches SIGCHLD at SIG_DFL ([State.in_sigchld_default]),
+    so the bit is already set at its launch and the install keeps it;
+    [rt_sigaction_sigchld_dfl_over_ign_launch] is the same install at a
+    SIG_IGN launch, where it sets the bit. *)
 Definition sigchld_installed : Model :=
   with_sigchld_dfl true (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
 
@@ -217,8 +221,25 @@ Example rt_sigaction_sigchld_dfl_accepted :
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckReject /\
-  m_sigchld_dfl (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) = false /\
+  m_sigchld_dfl (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) = true /\
   m_sigchld_dfl sigchld_installed = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** The same install at a launch whose SIGCHLD is at SIG_IGN, which
+    [execve] kept ([State.in_sigchld_default] false): the held bit starts
+    clear and the install sets it.  That is bwrap's reason for the call
+    (bubblewrap.c:2910-2914). *)
+Definition sigchld_ign_launch : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (input_with_sigchld_default false (demo_input [] IEof)).
+
+Example rt_sigaction_sigchld_dfl_over_ign_launch :
+  m_sigchld_dfl sigchld_ign_launch = false /\
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) sigchld_ign_launch
+  = CheckOk (with_sigchld_dfl true sigchld_ign_launch) [] /\
+  m_sigchld_dfl (with_sigchld_dfl true sigchld_ign_launch) = true.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** A SIG_DFL [struct sigaction] whose flag word is [fl]: the low byte

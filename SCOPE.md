@@ -534,11 +534,15 @@ not apply.
   SA_NOCLDWAIT install for SIGCHLD that the process makes
   (`Kernel.Signal.sigchld_dfl_install`), and `execve` clears `sa_flags`,
   so only the launch's SIG_IGN is open (Linux v6.18.44; identical at
-  v6.18.46). `Kernel.Exit.wait4_spec` already declines a recorded child
-  until the process installs `SIG_DFL` (`State.m_sigchld_dfl`), so this
-  assumption keeps only the multi-process core's own `wait4` arms in
-  `Procs.v` honest, and it is retired when PROCS's fix of those arms
-  lands, with those arms reading the same `procst_sigchld_dfl` bit.
+  v6.18.46). `Kernel.Exit.wait4_spec` declines a recorded child unless
+  the held bit `State.m_sigchld_dfl` is set: `State.init_model` seeds it
+  from the declared launch disposition `State.ProcInput.in_sigchld_default`
+  (field 27, `true` at `SIG_DFL`), which `Run.valid_input` and every sibling
+  launch predicate pin to `SIG_DFL`, and the process's own `SIG_DFL`
+  install sets it. This assumption keeps only the multi-process core's own
+  `wait4` arms in `Procs.v` honest, and it is retired when PROCS's fix of
+  those arms lands, with those arms reading the same `procst_sigchld_dfl`
+  bit.
 - Nothing outside the process makes a signal pending for it, or wakes it
   as if one were: no other process sends it a signal; it is not frozen
   (`freeze_task`, `kernel/freezer.c`, for suspend and the cgroup v1
