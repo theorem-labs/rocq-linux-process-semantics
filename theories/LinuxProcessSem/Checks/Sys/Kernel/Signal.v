@@ -1116,6 +1116,8 @@ Definition check_kill_self (pid sig : word) (eff : SyscallEffect) (m : Model)
       then check_ret_only eff (errno_ret EINVAL) m []
       else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
         (if sigkill_blocked (m_sigmask m) then CheckUnmodeled
+         else if bv_eqb t (Z_to_bv 64 1)
+         then check_ret_only eff (Z_to_bv 64 0) m []
          else check_ret_only eff (Z_to_bv 64 0)
                 (with_killed (Z_to_bv 64 SIGKILL) m) [])
       else CheckUnmodeled
@@ -1143,6 +1145,9 @@ Proof.
     [| discriminate].
   destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
     [discriminate|].
+  destruct (bv_eqb t (Z_to_bv 64 1)); cbv beta iota in *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    unfold ret_only. apply pure_ok. }
   apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
   eapply bind_ok0;
     [ unfold set_killed; apply modify_ok
@@ -1163,6 +1168,8 @@ Proof.
     [| apply unmodeled_intro].
   destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
     [apply unmodeled_intro|].
+  destruct (bv_eqb t (Z_to_bv 64 1)); cbv beta iota in *.
+  { exfalso. eapply check_ret_only_no_unmodeled. exact H. }
   exfalso. eapply check_ret_only_no_unmodeled. exact H.
 Qed.
 
@@ -1181,6 +1188,8 @@ Proof.
     [| sys_unfold; inv_ok].
   destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
     [sys_unfold; inv_ok|].
+  destruct (bv_eqb t (Z_to_bv 64 1)); cbv beta iota in *.
+  { sys_unfold; inv_ok. apply check_ret_only_ok_iff. now repeat split. }
   sys_unfold; inv_ok. apply check_ret_only_ok_iff. now repeat split.
 Qed.
 
@@ -1199,6 +1208,8 @@ Proof.
     [| reflexivity].
   destruct (sigkill_blocked (m_sigmask m)); cbv beta iota in *;
     [reflexivity|].
+  destruct (bv_eqb t (Z_to_bv 64 1)); cbv beta iota in *.
+  { exfalso. sys_unfold; inv_ok. }
   exfalso. sys_unfold; inv_ok.
 Qed.
 
@@ -1269,3 +1280,8 @@ Proof.
     apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _);
     autorewrite with model; reflexivity.
 Qed.
+
+Print Assumptions check_kill_self_sound_ok.
+Print Assumptions check_kill_self_sound_unmodeled.
+Print Assumptions check_kill_self_complete_ok.
+Print Assumptions check_kill_self_complete_unmodeled.

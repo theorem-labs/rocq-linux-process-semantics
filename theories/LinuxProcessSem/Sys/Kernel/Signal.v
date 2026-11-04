@@ -1802,8 +1802,9 @@ Qed.
 
 (** WHY THIS NUMBER HAS AN ARM, AND WHY IT IS GATED.
 
-    A process that sends SIGKILL to its own process id dies by signal 9.
-    Some programs end a child that way on purpose, and a statement about
+    A non-init process that sends SIGKILL to its own process id dies by
+    signal 9; a namespace init ignores its own SIGKILL and returns 0.
+    Some programs end a child by signal, and a statement about
     such a program needs the death in the trace rather than a run that
     leaves the modeled surface.  But an ungated arm would put a
     [State.KillEv] into runs that quantify over [Run.valid_input], and
@@ -1838,17 +1839,26 @@ Qed.
     - every other value: a process group, or -1 for every process
       (:1592-1611).
 
-    For SIGKILL the delivery takes the fast path ([sig == SIGKILL],
-    :1070-1071) and [complete_signal] starts a group exit with exit code 9
-    (:1003-1018); [get_signal] then finds [SIGNAL_GROUP_EXIT] on the way
-    back to user space and reaches [do_group_exit] (:2875-2886).  The
-    process does not come back, so the 0 this arm returns on that branch
-    is never observed: [Run.sstep_killed] ends the trace with a
+    Before delivery, [prepare_signal] returns [!sig_ignored] (:935).
+    A namespace init has pid 1 (include/linux/pid.h:163-166), and
+    [copy_process] sets SIGNAL_UNKILLABLE (kernel/fork.c:2385-2388).
+    [sig_task_ignored] ignores its default-disposition signal unless
+    forced (:91-96). This arm sends SI_USER to the caller itself, so
+    sender and target share a pid namespace and [force] stays false
+    ([send_signal_locked], :1195-1214). [__send_signal_locked] drops the
+    ignored signal with return 0 (:1048-1054): the model stays unchanged.
+
+    For a non-init SIGKILL, delivery takes the fast path (:1070-1071)
+    and [complete_signal] starts a group exit with exit code 9
+    (:1003-1018); [get_signal] finds SIGNAL_GROUP_EXIT and reaches
+    [do_group_exit] (:2875-2886). That process does not come back, so the
+    returned 0 is never observed: [Run.sstep_killed] ends the trace with
     [State.KillEv] and discards the effect.
 
     ** WHAT IT ANSWERS
 
-    - [pid] the caller's own process id, [sig] 9: the death by SIGKILL.
+    - [pid] the caller's own process id, [sig] 9: 0 with the model
+      unchanged for pid 1, death by SIGKILL for every other positive pid.
     - [pid] the caller's own process id, [sig] above 64 (every negative
       [int] included, as for [tkill_sig_valid]): -EINVAL, reached only
       after the task lookup succeeded.
@@ -1899,6 +1909,7 @@ Definition kill_self (pid sig : word) : Sys SyscallEffect :=
       else if negb (tkill_sig_valid sig) then err_ret EINVAL
       else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
         (if sigkill_blocked (m_sigmask m) then unmodeled
+         else if bv_eqb t (Z_to_bv 64 1) then ret_only (Z_to_bv 64 0)
          else (set_killed (Z_to_bv 64 SIGKILL) ;; ret_only (Z_to_bv 64 0)))
       else unmodeled
   end.

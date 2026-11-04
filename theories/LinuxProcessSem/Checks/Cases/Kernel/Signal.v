@@ -1645,6 +1645,90 @@ Example kill_sigkill_blocked_declined :
      = m_sigmask selfkill_model.
 Proof. split; [vm_compute; reflexivity | reflexivity]. Qed.
 
+(** PID 1 is its namespace's child reaper (include/linux/pid.h:163-166);
+    copy_process sets SIGNAL_UNKILLABLE (kernel/fork.c:2385-2388).
+    Its own SI_USER SIGKILL is ignored: sig_task_ignored:91-96,
+    send_signal_locked:1195-1214 and __send_signal_locked:1048-1054
+    (kernel/signal.c, Linux v6.18.46). The sender IS the target, so it is
+    in the same pid namespace and force is false. The call returns 0 and
+    leaves the process running. K1 is the non-init fatal control. *)
+Example kill_namespace_init_returns_zero :
+  check_syscall (mkInput 129 [1; 9; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) (with_tid (Z_to_bv 64 1) selfkill_model)
+  = CheckOk (with_tid (Z_to_bv 64 1) selfkill_model) []
+  /\ m_killed (with_tid (Z_to_bv 64 1) selfkill_model) = None
+  /\ m_halted (with_tid (Z_to_bv 64 1) selfkill_model) = None.
+Proof. repeat split; check_eq. Qed.
+
+(** Signal validation still precedes the init delivery exception
+    (check_kill_permission, kernel/signal.c:805-806, v6.18.46). *)
+Example kill_namespace_init_bad_signal_einval :
+  check_syscall (mkInput 129 [1; 65; 0; 0; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) (with_tid (Z_to_bv 64 1) selfkill_model)
+  = CheckOk (with_tid (Z_to_bv 64 1) selfkill_model) [].
+Proof. check_eq. Qed.
+
+(** Both arguments are narrowed to their low 32 bits at the syscall
+    boundary (SYSCALL_DEFINE2(kill), kernel/signal.c:3958-3965,
+    Linux v6.18.46). Removing either narrowing loses this K1 answer. *)
+Example kill_arguments_narrow_to_32_bits :
+  check_syscall (mkInput 129 [4294971538; 4294967305; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model
+  = CheckOk (with_killed (Z_to_bv 64 9) selfkill_model) [].
+Proof. check_eq. Qed.
+
+(** A sign-extended INT_MIN is the same pid_t, and gives -ESRCH before
+    signal validation (kill_something_info, kernel/signal.c:1589-1590,
+    Linux v6.18.46). *)
+Example kill_sign_extended_int_min_esrch :
+  check_syscall (mkInput 129 [18446744071562067968; 65; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ESRCH) [] []) selfkill_model
+  = CheckOk selfkill_model [].
+Proof. check_eq. Qed.
+
+(** A signal-0 permission probe is outside the modeled envelope, even
+    for the caller (group_send_sig_info, kernel/signal.c:1427-1428,
+    Linux v6.18.46). *)
+Example kill_signal_zero_declined :
+  check_syscall (mkInput 129 [4242; 0; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** pid 0 names a process group and -1 names every permitted process,
+    not the caller alone (kill_something_info, kernel/signal.c:1592-1611,
+    Linux v6.18.46). K1 is the single-caller control. *)
+Example kill_zero_and_minus_one_declined :
+  check_syscall (mkInput 129 [0; 9; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) selfkill_model = CheckUnmodeled
+  /\ check_syscall (mkInput 129 [18446744073709551615; 9; 0; 0; 0; 0]
+                      (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) selfkill_model = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Another pid is declined before the signal is checked: the model
+    cannot establish which task the lookup finds. K2 is the same signal
+    sent to the caller, where the lookup is established and EINVAL is
+    answered (kernel/signal.c:1461-1467, :805-806, v6.18.46). *)
+Example kill_other_pid_bad_signal_declined :
+  check_syscall (mkInput 129 [4243; 65; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) selfkill_model = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions kill_namespace_init_returns_zero.
+Print Assumptions kill_namespace_init_bad_signal_einval.
+Print Assumptions kill_arguments_narrow_to_32_bits.
+Print Assumptions kill_sign_extended_int_min_esrch.
+Print Assumptions kill_signal_zero_declined.
+Print Assumptions kill_zero_and_minus_one_declined.
+Print Assumptions kill_other_pid_bad_signal_declined.
+
 (* =========================================================================
    The one-sided frame, refuted
    ========================================================================= *)

@@ -308,6 +308,7 @@ Definition kill_self_witness (pid sig : word) (m : Model)
       else if negb (tkill_sig_valid sig) then ret_outcome (errno_ret EINVAL) m
       else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
         (if sigkill_blocked (m_sigmask m) then Unmodeled
+         else if bv_eqb t (Z_to_bv 64 1) then ret_outcome (Z_to_bv 64 0) m
          else ret_outcome (Z_to_bv 64 0) (with_killed (Z_to_bv 64 SIGKILL) m))
       else Unmodeled
   end.
@@ -325,6 +326,8 @@ Proof.
     [|apply unmodeled_intro].
   destruct (sigkill_blocked (m_sigmask m)); cbv beta iota;
     [apply unmodeled_intro|].
+  destruct (bv_eqb t (Z_to_bv 64 1)); cbv beta iota.
+  { unfold ret_only, ret_outcome. apply pure_ok. }
   eapply bind_step;
     [ unfold set_killed; apply modify_ok
     | cbv beta; unfold ret_only, ret_outcome; apply pure_ok ].
@@ -348,3 +351,5 @@ Proof.
   destruct (pid_int_min pid); cbv beta iota; [|apply unmodeled_intro].
   unfold err_ret, ret_only, ret_outcome. apply pure_ok.
 Qed.
+
+Print Assumptions kill_self_witness_ok.

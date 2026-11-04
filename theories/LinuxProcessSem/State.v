@@ -4679,8 +4679,9 @@ Record ProcState := mkProcState {
                                     declines every call, as if 129 had no arm,
                                     so no run ends in [KillEv 9].  [true]:
                                     [kill] with the caller's own process id
-                                    and SIGKILL ends the process.  The plain
-                                    launch declines for
+                                    and SIGKILL ends a non-init process;
+                                    pid 1 ignores it and returns 0 unchanged.
+                                    The plain launch declines for
                                     [procst_sigpipe_terminal]'s reason:
                                     [Run.valid_input] and its siblings pin it
                                     [false], and [Run.valid_input_inherited]
@@ -7472,8 +7473,9 @@ Record ProcInput := mkProcInput_full {
        fact about the environment.  [init_model] copies it into
        [procst_selfkill_terminal], and nothing writes it after that.
        [false]: [Kernel.Signal.kill_spec] declines every call, as if 129
-       had no arm, so no run ends in [KillEv 9].  [true]: the call ends
-       the process ([Kernel.Signal.kill_self]).
+       had no arm, so no run ends in [KillEv 9]. [true]: the call ends a
+       non-init process, or returns 0 with the process unchanged for pid 1
+       ([Kernel.Signal.kill_self]).
 
        [Run.valid_input] and every sibling launch predicate except
        [Run.valid_input_inherited] PIN IT [false], so every statement

@@ -1131,11 +1131,12 @@ Definition reaches_error (c0 : config) : Prop :=
     [valid_input_abort]: with the declaration clear, [tkill_self]
     declines and no disposition can matter.
 
-    [Kernel.Signal.kill_self] delivers SIGKILL, and adds nothing to this
-    premise: no process, the launcher included, can change SIGKILL's
-    disposition, because [do_sigaction] answers -EINVAL for an install on
-    a [sig_kernel_only] signal (kernel/signal.c:4317-4318, Linux
-    v6.18.46), so SIGKILL is at SIG_DFL in every process.
+    [Kernel.Signal.kill_self] adds no launch-disposition premise:
+    [do_sigaction] refuses an install on a [sig_kernel_only] signal
+    (kernel/signal.c:4317-4318, Linux v6.18.46). SIG_DFL does not imply
+    death for a namespace init: [sig_task_ignored] ignores its own
+    SIGKILL (:91-96), so [kill_self] returns 0 unchanged for pid 1 and
+    delivers death only for another positive pid.
 
     [Kernel.Signal.rt_sigprocmask_spec] (135) rests on the same premise
     and leans on it hardest, being the only modeled syscall that both
@@ -4764,8 +4765,9 @@ Definition valid_input (inp : ProcInput) : Prop :=
     THE SELF-KILL DECLARATION IS PINNED HERE TOO, at [false], in this
     predicate and in every sibling below.  [State.in_selfkill_terminal]
     says whether the model answers [kill] (129) at all: with it on, a
-    [kill] of signal 9 that names the caller's own process id ends the
-    process; with it off [Kernel.Signal.kill_spec] declines every call
+    [kill] of signal 9 that names the caller's own process id ends a
+    non-init process, but returns 0 unchanged for pid 1; with it off
+    [Kernel.Signal.kill_spec] declines every call
     ([Kernel.Signal.kill_spec_off_unmodeled]), exactly as before [kill]
     had an arm, so every statement written before the field keeps its
     meaning and [Checks.KillFree.valid_input_no_kill] stays a closed
