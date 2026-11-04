@@ -26,7 +26,7 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  VmMapsDisjoint ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
+  ExecutableSpecs VmMapsDisjoint ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Prelude DispatchCompute.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs Require Import Namei.
 Import ListNotations.
