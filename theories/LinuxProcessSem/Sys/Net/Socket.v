@@ -2980,9 +2980,10 @@ Definition recvmsg_eof_writes (reads : list (word * nat)) (msg : word)
       run can send (:2605-2623, with no timeout: the file has no
       O_NONBLOCK), so the arm declines.  Once the peer has closed, its
       [unix_release_sock] has set this end's RCV_SHUTDOWN (:705-707) and no
-      [sk_err] (:708-709: the closed end's own queue was empty), so the
-      wait ends with no error and the call answers 0 (:2625-2630) with the
-      write-back of [recvmsg_eof_writes]. *)
+      [sk_err] (:708-709: the closed end's own queue was empty).  The
+      blocking [__skb_wait_for_more_packets] exits on RCV_SHUTDOWN with
+      [err = 0] (net/core/datagram.c:106-108,132-135, v6.18.46), so the
+      call answers 0 with the write-back of [recvmsg_eof_writes]. *)
 Definition seqpacket_recvmsg (id : word) (side : bool) (flags : word)
     : Sys SyscallEffect :=
   i <- input ;;
