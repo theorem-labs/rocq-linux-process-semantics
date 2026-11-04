@@ -245,3 +245,17 @@ Example clone_tables_run_succeeds : forall m,
   ALL_NS = 2080505873 /\
   exists child r st', clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138 = CnOk child r st'.
 Proof. intros m. split; [reflexivity|]. vm_compute. do 3 eexists. reflexivity. Qed.
+
+(** A released-world caller still declines CLONE_NEWCGROUP under the
+    namespace extension; an environment refusal cannot add an answer. *)
+Example clone_newcgroup_only_unmodeled : forall m o,
+  clone_ns (Z.lor CLONE_NEWCGROUP SIGCHLD) m caller host 138 o
+  <-> o = CnUnmodeled.
+Proof.
+  intros m o. unfold clone_ns.
+  assert (Hexact : clone_ns_exact (Z.lor CLONE_NEWCGROUP SIGCHLD) m caller host 138
+      = CnUnmodeled) by (vm_compute; reflexivity).
+  rewrite Hexact. split.
+  - intros [H | (H & _)]; [exact H | contradiction].
+  - intros H. left. exact H.
+Qed.
