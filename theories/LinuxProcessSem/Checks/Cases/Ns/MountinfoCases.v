@@ -146,6 +146,17 @@ Example mountinfo_open_group :
   mountinfo_text E (with_open_groups st2 [10%positive]) 1 (LDentry 1 1) = None.
 Proof. vm_compute. reflexivity. Qed.
 
+(** Mount 4 of namespace 2 is on superblock 1, mount 1's.  With only
+    namespace 2 entered from outside, namespace 1 holds no open mount, but
+    an outside remount through mount 4 can make superblock 1 read-only,
+    which every line of mount 1 prints as its super options' " ro"
+    (fs/proc_namespace.c:182, Linux v6.18.46): the text of namespace 1 has
+    no answer.  Namespace 2's own text has none either. *)
+Example mountinfo_shared_sb_entered :
+  mountinfo_text E (with_entered_mntns st [2%positive]) 1 (LDentry 1 1) = None
+  /\ mountinfo_text E (with_entered_mntns st [2%positive]) 2 (LDentry 4 1) = None.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** Groups 10 and 11 are live in [st2]; [E] gives them distinct numbers of
     at least 1, and one number for every group breaks the rule. *)
 Example E_groups_ok : mi_groups_ok E st2.
