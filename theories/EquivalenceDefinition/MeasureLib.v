@@ -2139,8 +2139,9 @@ Qed.
       [Run.valid_input] constrains neither field, as [FinInput]'s record
       header records.
     - [fin_kernel] is [State.default_kernel], the build [State.mkProcInput]
-      fills in.  [Run.valid_input] pins it there, so it is forced in the
-      way [fin_abort_terminal] is.
+      fills in.  [Run.valid_input] fixes nine of its fields there and
+      leaves the four launch facts free; the core forgets the field like
+      the others here, so the choice changes no sum.
     - [fin_execfn] is [State.default_execfn], the one-byte name "a".
       [Run.valid_launch] DOES constrain it, and this is the value that
       can be valid: it is a name [getname_flags] (fs/namei.c, Linux

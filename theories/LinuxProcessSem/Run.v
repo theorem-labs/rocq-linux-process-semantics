@@ -4558,10 +4558,23 @@ Ltac valid_urandom_default :=
     image, refused; [valid_input_image_real] below is the projection a
     proof uses. *)
 
-(** THE LAUNCH IS ON THE KERNEL OF RECORD: the LAST clause pins
-    [State.in_kernel] to [State.default_kernel], here and in every named
-    launch beside this one.  [valid_input_kernel] below is the
-    projection, and the section it opens says why. *)
+(** THE LAUNCH IS ON THE KERNEL OF RECORD, in the fields the published
+    statements had one answer for.  [recorded_kernel kb] is
+    [State.default_kernel] with [kb]'s four LAUNCH facts -- [kb_thp],
+    [kb_aslr], [kb_guard] and [kb_rnd_bits] -- copied in, so the clause
+    [in_kernel inp = recorded_kernel (in_kernel inp)], the LAST of this
+    predicate and of every named launch beside it, fixes the other nine
+    fields at [default_kernel]'s values and leaves those four free.  The
+    section that [valid_input_recorded_kernel] opens below says why the
+    line falls there. *)
+Definition recorded_kernel (kb : KernelBuild) : KernelBuild :=
+  mkKernelBuild (kb_thp kb) (kb_vdso default_kernel) (kb_aslr kb)
+                (kb_guard kb) (kb_rnd_bits kb) (kb_rseq default_kernel)
+                (kb_vlenb default_kernel) (kb_cache default_kernel)
+                (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+                (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+                (kb_rmem_max default_kernel).
+
 Definition valid_input (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4575,7 +4588,7 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4648,7 +4661,7 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4671,7 +4684,7 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4753,7 +4766,7 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = false
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4773,7 +4786,7 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4868,7 +4881,7 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
   /\ in_sigpipe_terminal inp = true
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4884,7 +4897,7 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5025,7 +5038,7 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = true
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5066,7 +5079,7 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5081,7 +5094,7 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5095,7 +5108,7 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5391,7 +5404,7 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5406,7 +5419,7 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5502,7 +5515,7 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5517,7 +5530,7 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-  /\ in_kernel inp = default_kernel.
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -5577,143 +5590,940 @@ Proof.
   assumption.
 Qed.
 
-(** * The kernel build: every named launch is on the kernel of record
+(** * The kernel build: the fields the published statements had one answer for
 
     [State.in_kernel] entered [State.ProcInput] after the statements
-    built on this predicate were published, and those statements spoke
-    about ONE kernel: the build [State.default_kernel] names, the one the
-    model's own start-up proofs are made for ([Common.AsanInit]'s
-    [inp_kernel], [rseq_true]).  Leaving the field free here would have
-    widened every one of them to all builds -- without [CONFIG_RSEQ],
-    without ASLR, with any vDSO size or cache topology -- with no
-    statement asking for it.  So every predicate in this family pins it,
-    the way the SIGPIPE and reader declarations are pinned: the plain
-    launch keeps the narrow assumption, and a wider case is something a
-    statement would have to name.  None does yet:
-    [Checks.Cases.KernelPin] is a build without [CONFIG_RSEQ], refused
-    by every predicate here.
+    built on this predicate were published.  The released model had no
+    kernel field, but it did not speak about one kernel in every
+    respect, and the line [recorded_kernel] draws follows what it did
+    speak about.
 
-    Each pin is read back by an accessor rather than by position, for
-    the reason [valid_input_abort_terminal] gives. *)
+    PINNED, because the released model had ONE answer for each: its
+    entry block was laid out for [CONFIG_RSEQ] ([kb_rseq]), and it had
+    no vDSO size ([kb_vdso]), vector unit ([kb_vlenb]), cache leaves
+    ([kb_cache]), [struct sk_buff] size ([kb_skb_head]) or socket sysctls
+    ([kb_wmem_default], [kb_rmem_default], [kb_wmem_max],
+    [kb_rmem_max]) other than the ones [State.default_kernel] names.
+    Leaving them free would have widened every published statement to
+    builds it never described, with no statement asking for it.
 
-Lemma valid_input_kernel : forall inp,
-  valid_input inp -> in_kernel inp = default_kernel.
+    FREE, because the released model covered a RANGE of each, and
+    pinning one value would narrow a published statement:
+    - [kb_aslr]: the released [State.mmap_base_max] is the base Linux
+      computes with randomisation off, so launches without ASLR were in.
+    - [kb_guard]: the released mmap-base band admitted the base for any
+      [stack_guard_gap]; [mmap_gap]'s clamp at [mmap_max_gap] keeps
+      every guard's base inside it.
+    - [kb_rnd_bits]: the released floor [State.mmap_base_min] is the
+      24-bit base.  More bits admit no base below it, because
+      [valid_entry_va] still carries [valid_mmap_base_va] with that
+      same floor, and [State.stack_guard_gap_bytes] keeps the guard
+      under the bound [State.mmap_base_min]'s comment names, so at 33
+      bits [mmap_base_of] does not go under the floor either.  A bound
+      on the field would remove only kernel records whose bases are
+      already covered at 24 bits or fewer.
+    - [kb_thp]: the released placement took any free address, the
+      2 MiB-aligned ones a [CONFIG_TRANSPARENT_HUGEPAGE] kernel gives
+      included.
+
+    Each pinned field is read back by an accessor rather than by
+    position, for the reason [valid_input_abort_terminal] gives: one per
+    field and per predicate, and three more for the quantities a
+    start-up proof computes from them ([launch_cache_words],
+    [vdso_text_pages], [min_sigframe_size]).  [Checks.Cases.KernelPin]
+    is a build without [CONFIG_RSEQ], refused by every predicate here,
+    and a launch without ASLR, admitted. *)
+
+Lemma recorded_kernel_default : recorded_kernel default_kernel = default_kernel.
+Proof. reflexivity. Qed.
+
+Lemma recorded_kernel_idem : forall kb,
+  recorded_kernel (recorded_kernel kb) = recorded_kernel kb.
+Proof. reflexivity. Qed.
+
+Lemma valid_input_recorded_kernel : forall inp,
+  valid_input inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_abort_kernel : forall inp,
-  valid_input_abort inp -> in_kernel inp = default_kernel.
+Lemma valid_input_rseq : forall inp,
+  valid_input inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_vdso : forall inp,
+  valid_input inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_vlenb : forall inp,
+  valid_input inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_cache : forall inp,
+  valid_input inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_skb_head : forall inp,
+  valid_input inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_wmem_default : forall inp,
+  valid_input inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_rmem_default : forall inp,
+  valid_input inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_wmem_max : forall inp,
+  valid_input inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_rmem_max : forall inp,
+  valid_input inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_cache_words : forall inp,
+  valid_input inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_vdso_text_pages : forall inp,
+  valid_input inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_min_sigframe_size : forall inp h,
+  valid_input inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_abort_recorded_kernel : forall inp,
+  valid_input_abort inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_either_kernel : forall inp,
-  valid_input_either inp -> in_kernel inp = default_kernel.
+Lemma valid_input_abort_rseq : forall inp,
+  valid_input_abort inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_vdso : forall inp,
+  valid_input_abort inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_vlenb : forall inp,
+  valid_input_abort inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_cache : forall inp,
+  valid_input_abort inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_skb_head : forall inp,
+  valid_input_abort inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_wmem_default : forall inp,
+  valid_input_abort inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_rmem_default : forall inp,
+  valid_input_abort inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_wmem_max : forall inp,
+  valid_input_abort inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_rmem_max : forall inp,
+  valid_input_abort inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_cache_words : forall inp,
+  valid_input_abort inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_vdso_text_pages : forall inp,
+  valid_input_abort inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_abort_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_min_sigframe_size : forall inp h,
+  valid_input_abort inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_abort_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_either_recorded_kernel : forall inp,
+  valid_input_either inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_sigpipe_ignored_kernel : forall inp,
-  valid_input_sigpipe_ignored inp -> in_kernel inp = default_kernel.
+Lemma valid_input_either_rseq : forall inp,
+  valid_input_either inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_vdso : forall inp,
+  valid_input_either inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_vlenb : forall inp,
+  valid_input_either inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_cache : forall inp,
+  valid_input_either inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_skb_head : forall inp,
+  valid_input_either inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_wmem_default : forall inp,
+  valid_input_either inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_rmem_default : forall inp,
+  valid_input_either inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_wmem_max : forall inp,
+  valid_input_either inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_rmem_max : forall inp,
+  valid_input_either inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_cache_words : forall inp,
+  valid_input_either inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_vdso_text_pages : forall inp,
+  valid_input_either inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_either_min_sigframe_size : forall inp h,
+  valid_input_either inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_either_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_sigpipe_ignored_recorded_kernel : forall inp,
+  valid_input_sigpipe_ignored inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_sigpipe_either_kernel : forall inp,
-  valid_input_sigpipe_either inp -> in_kernel inp = default_kernel.
+Lemma valid_input_sigpipe_ignored_rseq : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_vdso : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_vlenb : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_cache : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_skb_head : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_wmem_default : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_rmem_default : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_wmem_max : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_rmem_max : forall inp,
+  valid_input_sigpipe_ignored inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_cache_words : forall inp,
+  valid_input_sigpipe_ignored inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_vdso_text_pages : forall inp,
+  valid_input_sigpipe_ignored inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_sigpipe_ignored_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_ignored_min_sigframe_size : forall inp h,
+  valid_input_sigpipe_ignored inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_sigpipe_ignored_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_sigpipe_either_recorded_kernel : forall inp,
+  valid_input_sigpipe_either inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_channel_closed_kernel : forall inp,
-  valid_input_channel_closed inp -> in_kernel inp = default_kernel.
+Lemma valid_input_sigpipe_either_rseq : forall inp,
+  valid_input_sigpipe_either inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_vdso : forall inp,
+  valid_input_sigpipe_either inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_vlenb : forall inp,
+  valid_input_sigpipe_either inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_cache : forall inp,
+  valid_input_sigpipe_either inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_skb_head : forall inp,
+  valid_input_sigpipe_either inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_wmem_default : forall inp,
+  valid_input_sigpipe_either inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_rmem_default : forall inp,
+  valid_input_sigpipe_either inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_wmem_max : forall inp,
+  valid_input_sigpipe_either inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_rmem_max : forall inp,
+  valid_input_sigpipe_either inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_cache_words : forall inp,
+  valid_input_sigpipe_either inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_vdso_text_pages : forall inp,
+  valid_input_sigpipe_either inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_sigpipe_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_either_min_sigframe_size : forall inp h,
+  valid_input_sigpipe_either inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_sigpipe_either_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_channel_closed_recorded_kernel : forall inp,
+  valid_input_channel_closed inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_channel_either_kernel : forall inp,
-  valid_input_channel_either inp -> in_kernel inp = default_kernel.
+Lemma valid_input_channel_closed_rseq : forall inp,
+  valid_input_channel_closed inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_vdso : forall inp,
+  valid_input_channel_closed inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_vlenb : forall inp,
+  valid_input_channel_closed inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_cache : forall inp,
+  valid_input_channel_closed inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_skb_head : forall inp,
+  valid_input_channel_closed inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_wmem_default : forall inp,
+  valid_input_channel_closed inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_rmem_default : forall inp,
+  valid_input_channel_closed inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_wmem_max : forall inp,
+  valid_input_channel_closed inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_rmem_max : forall inp,
+  valid_input_channel_closed inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_cache_words : forall inp,
+  valid_input_channel_closed inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_vdso_text_pages : forall inp,
+  valid_input_channel_closed inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_channel_closed_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_closed_min_sigframe_size : forall inp h,
+  valid_input_channel_closed inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_channel_closed_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_channel_either_recorded_kernel : forall inp,
+  valid_input_channel_either inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_sigpipe_kills_kernel : forall inp,
-  valid_input_sigpipe_kills inp -> in_kernel inp = default_kernel.
+Lemma valid_input_channel_either_rseq : forall inp,
+  valid_input_channel_either inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_vdso : forall inp,
+  valid_input_channel_either inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_vlenb : forall inp,
+  valid_input_channel_either inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_cache : forall inp,
+  valid_input_channel_either inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_skb_head : forall inp,
+  valid_input_channel_either inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_wmem_default : forall inp,
+  valid_input_channel_either inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_rmem_default : forall inp,
+  valid_input_channel_either inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_wmem_max : forall inp,
+  valid_input_channel_either inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_rmem_max : forall inp,
+  valid_input_channel_either inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_cache_words : forall inp,
+  valid_input_channel_either inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_vdso_text_pages : forall inp,
+  valid_input_channel_either inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_channel_either_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_channel_either_min_sigframe_size : forall inp h,
+  valid_input_channel_either inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_channel_either_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_sigpipe_kills_recorded_kernel : forall inp,
+  valid_input_sigpipe_kills inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_sv39_kernel : forall inp,
-  valid_input_sv39 inp -> in_kernel inp = default_kernel.
+Lemma valid_input_sigpipe_kills_rseq : forall inp,
+  valid_input_sigpipe_kills inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_vdso : forall inp,
+  valid_input_sigpipe_kills inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_vlenb : forall inp,
+  valid_input_sigpipe_kills inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_cache : forall inp,
+  valid_input_sigpipe_kills inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_skb_head : forall inp,
+  valid_input_sigpipe_kills inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_wmem_default : forall inp,
+  valid_input_sigpipe_kills inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_rmem_default : forall inp,
+  valid_input_sigpipe_kills inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_wmem_max : forall inp,
+  valid_input_sigpipe_kills inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_rmem_max : forall inp,
+  valid_input_sigpipe_kills inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_cache_words : forall inp,
+  valid_input_sigpipe_kills inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_vdso_text_pages : forall inp,
+  valid_input_sigpipe_kills inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_sigpipe_kills_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sigpipe_kills_min_sigframe_size : forall inp h,
+  valid_input_sigpipe_kills inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_sigpipe_kills_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_sv39_recorded_kernel : forall inp,
+  valid_input_sv39 inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_sv57_kernel : forall inp,
-  valid_input_sv57 inp -> in_kernel inp = default_kernel.
+Lemma valid_input_sv39_rseq : forall inp,
+  valid_input_sv39 inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_vdso : forall inp,
+  valid_input_sv39 inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_vlenb : forall inp,
+  valid_input_sv39 inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_cache : forall inp,
+  valid_input_sv39 inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_skb_head : forall inp,
+  valid_input_sv39 inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_wmem_default : forall inp,
+  valid_input_sv39 inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_rmem_default : forall inp,
+  valid_input_sv39 inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_wmem_max : forall inp,
+  valid_input_sv39 inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_rmem_max : forall inp,
+  valid_input_sv39 inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_cache_words : forall inp,
+  valid_input_sv39 inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_vdso_text_pages : forall inp,
+  valid_input_sv39 inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_sv39_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv39_min_sigframe_size : forall inp h,
+  valid_input_sv39 inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_sv39_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_sv57_recorded_kernel : forall inp,
+  valid_input_sv57 inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_va_any_kernel : forall inp,
-  valid_input_va_any inp -> in_kernel inp = default_kernel.
+Lemma valid_input_sv57_rseq : forall inp,
+  valid_input_sv57 inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_vdso : forall inp,
+  valid_input_sv57 inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_vlenb : forall inp,
+  valid_input_sv57 inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_cache : forall inp,
+  valid_input_sv57 inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_skb_head : forall inp,
+  valid_input_sv57 inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_wmem_default : forall inp,
+  valid_input_sv57 inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_rmem_default : forall inp,
+  valid_input_sv57 inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_wmem_max : forall inp,
+  valid_input_sv57 inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_rmem_max : forall inp,
+  valid_input_sv57 inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_cache_words : forall inp,
+  valid_input_sv57 inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_vdso_text_pages : forall inp,
+  valid_input_sv57 inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_sv57_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_sv57_min_sigframe_size : forall inp h,
+  valid_input_sv57 inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_sv57_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_va_any_recorded_kernel : forall inp,
+  valid_input_va_any inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_hwcap_rv64gc_kernel : forall inp,
-  valid_input_hwcap_rv64gc inp -> in_kernel inp = default_kernel.
+Lemma valid_input_va_any_rseq : forall inp,
+  valid_input_va_any inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_vdso : forall inp,
+  valid_input_va_any inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_vlenb : forall inp,
+  valid_input_va_any inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_cache : forall inp,
+  valid_input_va_any inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_skb_head : forall inp,
+  valid_input_va_any inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_wmem_default : forall inp,
+  valid_input_va_any inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_rmem_default : forall inp,
+  valid_input_va_any inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_wmem_max : forall inp,
+  valid_input_va_any inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_rmem_max : forall inp,
+  valid_input_va_any inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_cache_words : forall inp,
+  valid_input_va_any inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_vdso_text_pages : forall inp,
+  valid_input_va_any inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_va_any_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_va_any_min_sigframe_size : forall inp h,
+  valid_input_va_any inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_va_any_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_hwcap_rv64gc_recorded_kernel : forall inp,
+  valid_input_hwcap_rv64gc inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_hwcap_rv64gcv_kernel : forall inp,
-  valid_input_hwcap_rv64gcv inp -> in_kernel inp = default_kernel.
+Lemma valid_input_hwcap_rv64gc_rseq : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_vdso : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_vlenb : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_cache : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_skb_head : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_wmem_default : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_rmem_default : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_wmem_max : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_rmem_max : forall inp,
+  valid_input_hwcap_rv64gc inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_cache_words : forall inp,
+  valid_input_hwcap_rv64gc inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_vdso_text_pages : forall inp,
+  valid_input_hwcap_rv64gc inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gc_min_sigframe_size : forall inp h,
+  valid_input_hwcap_rv64gc inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_hwcap_rv64gc_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_hwcap_rv64gcv_recorded_kernel : forall inp,
+  valid_input_hwcap_rv64gcv inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_abort_hwcap_rv64gc_kernel : forall inp,
-  valid_input_abort_hwcap_rv64gc inp -> in_kernel inp = default_kernel.
+Lemma valid_input_hwcap_rv64gcv_rseq : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_vdso : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_vlenb : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_cache : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_skb_head : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_wmem_default : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_rmem_default : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_wmem_max : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_rmem_max : forall inp,
+  valid_input_hwcap_rv64gcv inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_cache_words : forall inp,
+  valid_input_hwcap_rv64gcv inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_vdso_text_pages : forall inp,
+  valid_input_hwcap_rv64gcv inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_hwcap_rv64gcv_min_sigframe_size : forall inp h,
+  valid_input_hwcap_rv64gcv inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_hwcap_rv64gcv_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_recorded_kernel : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-Lemma valid_input_abort_hwcap_rv64gcv_kernel : forall inp,
-  valid_input_abort_hwcap_rv64gcv inp -> in_kernel inp = default_kernel.
+Lemma valid_input_abort_hwcap_rv64gc_rseq : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_vdso : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_vlenb : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_cache : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_skb_head : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_wmem_default : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_rmem_default : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_wmem_max : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_rmem_max : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_cache_words : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_vdso_text_pages : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gc_min_sigframe_size : forall inp h,
+  valid_input_abort_hwcap_rv64gc inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_abort_hwcap_rv64gc_recorded_kernel inp Hv)).
+Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_recorded_kernel : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> in_kernel inp = recorded_kernel (in_kernel inp).
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
+Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_rseq : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_rseq (in_kernel inp) = true.
+Proof. intros inp Hv. exact (f_equal kb_rseq (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_vdso : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_vdso (in_kernel inp) = 1%N.
+Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_vlenb : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_vlenb (in_kernel inp) = 0%N.
+Proof. intros inp Hv. exact (f_equal kb_vlenb (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_cache : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_cache (in_kernel inp) = cache_view_absent.
+Proof. intros inp Hv. exact (f_equal kb_cache (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_skb_head : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_skb_head (in_kernel inp) = 224%N.
+Proof. intros inp Hv. exact (f_equal kb_skb_head (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_wmem_default : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_wmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_default (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_rmem_default : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_rmem_default (in_kernel inp) = 212992%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_default (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_wmem_max : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_wmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_wmem_max (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_rmem_max : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> kb_rmem_max (in_kernel inp) = 4194304%N.
+Proof. intros inp Hv. exact (f_equal kb_rmem_max (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_cache_words : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> launch_cache_words (in_kernel inp) = launch_cache_words default_kernel.
+Proof. intros inp Hv. exact (f_equal launch_cache_words (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_vdso_text_pages : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> vdso_text_pages (in_kernel inp) = vdso_text_pages default_kernel.
+Proof. intros inp Hv. exact (f_equal vdso_text_pages (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)). Qed.
+
+Lemma valid_input_abort_hwcap_rv64gcv_min_sigframe_size : forall inp h,
+  valid_input_abort_hwcap_rv64gcv inp -> min_sigframe_size (in_kernel inp) h = min_sigframe_size default_kernel h.
+Proof.
+  intros inp h Hv.
+  exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)).
 Qed.
 
 (* =========================================================================

@@ -107,7 +107,24 @@ Section Init.
      naming [A] that is declared before the layout lemmas is
      discharged into them too, and their callers then carry an
      argument they have no reason to. *)
-  Definition inp : ProcInput := mkProcInput argv envp fs stdin uid gid groups net default_nofile (Z_to_bv 64 0) hw false Sv48.  (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48 *)
+  (** the kernel build: free in the four launch facts [Run.valid_input]
+      leaves free ([kb_thp], [kb_aslr], [kb_guard], [kb_rnd_bits]), and
+      [State.default_kernel] in the nine it pins, which is what
+      [Run.recorded_kernel] builds.  A run under [Run.valid_input] has
+      [in_kernel inp = recorded_kernel (in_kernel inp)]
+      ([Run.valid_input_recorded_kernel]), so it instantiates [kb] with
+      its own build.  The proofs below read only the pinned fields:
+      [kb_rseq] (the auxv count, [cat_string_off]) and [kb_vdso]
+      ([vdso_len], [vdso_text_pages]), with the cache words and the
+      vector unit through [launch_auxv]; [Run.stack_window_lo] goes
+      through lemmas stated for every build. *)
+  Variable kb : KernelBuild.
+  Definition inp : ProcInput :=
+    mkProcInput_full argv envp fs stdin uid gid groups net default_nofile
+      (Z_to_bv 64 0) hw false Sv48 default_urandom [] (recorded_kernel kb)
+      default_execfn true true false.
+    (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48; the
+       trailing fields are [State.mkProcInput]'s *)
 
   (** [Run.valid_input]'s last conjunct: the exec file name is a name
       [execve] admits and the launch fits under E2BIG. *)
@@ -118,9 +135,10 @@ Section Init.
       bounds the pad [V_W] and the image's length. *)
   Hypothesis Hlau : entry_launch_ok_va Sv48 (mkEntry sp brk0 mbase rdraw) inp.
 
-  (** the kernel build and the exec file name a positional [State.mkProcInput]
-      literal declares; spelled without [inp] so that the definitions below
-      stay functions of (sp, rdraw, argv, envp) alone *)
+  (** the pinned kernel field and the exec file name the input declares;
+      spelled without [inp] (and without [kb], whose launch facts they do
+      not read) so that the definitions below stay functions of (sp,
+      rdraw, argv, envp) alone *)
   Let rseq : bool := kb_rseq default_kernel.
   Let execfn : list byte := default_execfn.
   Let entryw : word := Z_to_bv 64 (Z.of_N apc).
@@ -132,7 +150,7 @@ Section Init.
   Lemma inp_uid : in_uid inp = uid.           Proof. reflexivity. Qed.
   Lemma inp_gid : in_gid inp = gid.           Proof. reflexivity. Qed.
   Lemma inp_hwcap : in_hwcap inp = hw.        Proof. reflexivity. Qed.
-  Lemma inp_kernel : in_kernel inp = default_kernel. Proof. reflexivity. Qed.
+  Lemma inp_kernel : in_kernel inp = recorded_kernel kb. Proof. reflexivity. Qed.
   Lemma inp_execfn : in_execfn inp = execfn.  Proof. reflexivity. Qed.
   Lemma inp_rseq : kb_rseq (in_kernel inp) = rseq. Proof. reflexivity. Qed.
   Lemma la_rseq_eq : la_rseq la = rseq.       Proof. reflexivity. Qed.
@@ -545,8 +563,9 @@ Section Init.
     split; [split|]; lia.
   Qed.
 
-  (** [State.default_kernel] has [kb_vdso = 1], so the text is two pages and
-      the pair is four vvar pages below them: 16384 and 8192 bytes. *)
+  (** [Run.recorded_kernel] carries [State.default_kernel]'s [kb_vdso = 1]
+      whatever [kb] is, so the text is two pages and the pair is four vvar
+      pages below them: 16384 and 8192 bytes. *)
   Lemma resx_eq : RESX = [(Z_to_bv 64 (VTOP - 24576), Z_to_bv 64 16384);
                           (Z_to_bv 64 (VTOP - 24576 + 16384), Z_to_bv 64 8192)].
   Proof.
@@ -783,7 +802,7 @@ Section Init.
     rewrite (cat_argv_ptr_offset (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 0 Hav0).
     change (total_arg_bytes_nat (firstn 0 (in_argv inp))) with 0%nat.
     rewrite (cat_string_base_offset Sv48 inp mbase sp brk0 rdraw Hlau).
-    change (in_kernel inp) with default_kernel. change (in_execfn inp) with default_execfn.
+    change (kb_rseq (in_kernel inp)) with (kb_rseq default_kernel). change (in_execfn inp) with default_execfn.
     change (in_argv inp) with argv. change (in_envp inp) with envp.
     unfold STR0, CHEAD, W, usp, rseq, top, execfn, cat_string_off in *.
     rewrite nat_to_word_add_merge, word_add_nat, u64_lit by lia. lia.
@@ -835,7 +854,7 @@ Section Init.
           pose proof u_e_str1 as U. unfold uE in U.
           rewrite (cat_argv_ptr_offset (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 1 Hav1).
           rewrite (cat_string_base_offset Sv48 inp mbase sp brk0 rdraw Hlau).
-          change (in_kernel inp) with default_kernel. change (in_execfn inp) with default_execfn.
+          change (kb_rseq (in_kernel inp)) with (kb_rseq default_kernel). change (in_execfn inp) with default_execfn.
           change (in_argv inp) with argv. change (in_envp inp) with envp.
           rewrite U. unfold STR0, CHEAD, W, usp, L0, rseq, top, execfn, cat_string_off in *.
           rewrite nat_to_word_add_merge, word_add_nat, u64_lit by lia. lia. }

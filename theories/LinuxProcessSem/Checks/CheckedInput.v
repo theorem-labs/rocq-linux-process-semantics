@@ -824,12 +824,12 @@ Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
     into the range the kernel admits, and [skb_head_bytes] and the four
     [sysctl_*] accessors do the same for the five socket numbers — so
     the model has no validity condition on the record to decide here.
-    [Run.valid_input] does pin the whole record to
-    [State.default_kernel], but that is a choice of which launch the
-    statements are about, like [in_va_size] and the SIGPIPE
-    declarations, and the boundary converts those without deciding
-    them too.  What is left to check is the one invariant extraction
-    erases: an [N] is not negative. *)
+    [Run.valid_input] does fix nine of its fields at
+    [State.default_kernel]'s values ([Run.recorded_kernel]), but that is
+    a choice of which launch the statements are about, like
+    [in_va_size] and the SIGPIPE declarations, and the boundary converts
+    those without deciding them too.  What is left to check is the one
+    invariant extraction erases: an [N] is not negative. *)
 Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
   match n_of_Z (rkb_vdso k), n_of_Z (rkb_guard k), n_of_Z (rkb_rnd_bits k),
         n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k),

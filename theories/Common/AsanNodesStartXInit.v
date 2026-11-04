@@ -68,8 +68,11 @@ Section GenericInit.
   Variable hw : word.   (* AT_HWCAP *)
   Variable groups : list word.
   Variable net : NetQueue.
+  (** the kernel build, free in the launch facts: [AsanInit.inp] runs on
+      [Run.recorded_kernel kb] *)
+  Variable kb : KernelBuild.
 
-  Let INP := inp argv envp fs stdin uid gid hw groups net.
+  Let INP := inp argv envp fs stdin uid gid hw groups net kb.
   Let entryw := Z_to_bv 64 (Z.of_N apc).
 
   Hypothesis Hsp : valid_sp sp.
@@ -91,7 +94,7 @@ Section GenericInit.
   (** the class invariant: anything implying SINV0 and stable like it *)
   Variable SINV : env -> (word -> option byte) -> Prop.
   Hypothesis SINV_SINV0 : forall E M, SINV E M ->
-    SINV0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net E M.
+    SINV0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net kb E M.
   Hypothesis SINV_frame : forall E M M', (forall a, argH0 sp rdraw argv envp E a = true -> M' a = M a) -> SINV E M -> SINV E M'.
   Hypothesis SINV_agree : forall E E' M, env_agree NX0 E E' -> SINV E M -> SINV E' M.
 
@@ -174,15 +177,16 @@ Section GenericInit.
           error far from its cause.  Same shape as the two copies of
           [AsanNodesMmLib.reserved_free_above] / [AsanNodesMmB.reserved_free_above]
           — two things that must agree with nothing to say so. *)
-      by (unfold usp, rseq, execfn, top; apply (AsanInit.str0_hi apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hlau)).
+      by (unfold usp, rseq, execfn, top; apply (AsanInit.str0_hi apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net kb Hlau)).
     rewrite str0_split in Ha. unfold s0 in Ha.
-    (** AsanInit's [argH0] carries the kernel build and the exec name INLINED
-        ([State.default_kernel], [State.default_execfn]), because they are
-        variable-free [Let]s of its Section; the hypotheses above carry them as
-        projections of [INP].  The two are convertible, so [change] lines them
-        up for [lia]. *)
+    (** AsanInit's [argH0] carries the pinned kernel field and the exec name
+        INLINED ([kb_rseq State.default_kernel], [State.default_execfn]),
+        because they are variable-free [Let]s of its Section; the hypotheses
+        above carry them as projections of [INP].  The two are convertible
+        ([Run.recorded_kernel] copies [kb_rseq] from [State.default_kernel]),
+        so [change] lines them up for [lia]. *)
     unfold rseq, execfn, top, usp in Ha, HT, HS0.
-    change (in_kernel INP) with default_kernel in Ha, HT, HS0.
+    change (kb_rseq (in_kernel INP)) with (kb_rseq default_kernel) in Ha, HT, HS0.
     change (in_execfn INP) with default_execfn in Ha, HT, HS0.
     apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
   Qed.

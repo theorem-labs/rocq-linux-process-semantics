@@ -337,14 +337,19 @@ input, so both binaries of a pair are launched on one machine by one
 launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
 the model (`State.skb_head_bytes`).
 
-`Run.valid_input`, and every named launch beside it, pins that build to
-`State.default_kernel` (`Run.valid_input_kernel`): randomising, the
-256-page guard gap, no extra `vm.mmap_rnd_bits`, `CONFIG_RSEQ`, no
-vector unit, no cache leaves, vDSO image 1 and the default socket
-numbers. The published statements were written about one kernel, and
-this keeps them about that one. The model's functions accept any
-build, so a statement about another build is one that names it; none
-does yet.
+`Run.valid_input`, and every named launch beside it, leaves four of
+those facts free and fixes the other nine (`Run.recorded_kernel`).
+Free: whether the launch randomises, the guard gap, `vm.mmap_rnd_bits`
+and transparent huge pages. The published statements covered a range
+of each, and a fixed value would narrow them. Fixed at
+`State.default_kernel`'s values: `CONFIG_RSEQ` on, vDSO image 1, no
+vector unit, no cache leaves, a 224-byte `struct sk_buff` and the
+default socket sysctls. The published statements had one answer for
+each of these. The model's functions accept any build, so a statement
+about another value of a fixed field is one that names it; none does
+yet. Each fixed field has an accessor per predicate
+(`Run.valid_input_rseq`, `Run.valid_input_vdso`,
+`Run.valid_input_cache_words` and the like).
 
 These cases stay outside the model:
 
@@ -359,9 +364,8 @@ These cases stay outside the model:
   the stack floor can differ from the model's. The proofs use Sv48.
 - A program run by a task whose `brk_randomized` bit is clear, on a
   kernel built with `CONFIG_COMPAT_BRK`. A launch that does not
-  randomise (`State.kb_aslr` false) is in the model, and so is the program
-  break it gets, though `Run.valid_input` pins randomisation on (see the
-  kernel build above). `Sys/Mm/Mmap.v`'s `min_brk` is `vm_start_brk`, Linux's
+  randomise (`State.kb_aslr` false) is in scope, and so is the program
+  break it gets. `Sys/Mm/Mmap.v`'s `min_brk` is `vm_start_brk`, Linux's
   `mm->start_brk`. `SYSCALL_DEFINE1(brk)` (`mm/mmap.c`) uses that value
   except under `CONFIG_COMPAT_BRK` with `current->brk_randomized` clear,
   where it takes `mm->end_data`, a lower floor: Linux then grants a
@@ -661,6 +665,8 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
+  `Run.valid_input` fixes `CONFIG_RSEQ`, the vector unit, the caches, the
+  vDSO image and the socket numbers, and leaves the other four free.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and
