@@ -834,12 +834,6 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
-- **`F_GETFD` and the close-on-exec bit.** The model records no
-  close-on-exec bit, so `fcntl` `F_GETFD` answers 0 or `FD_CLOEXEC` on
-  every descriptor. Linux answers the one value set by the call that
-  created the descriptor or by its last `F_SETFD`
-  (`do_fcntl`, `fs/fcntl.c:465-467`, v6.18.46). A program that branches
-  on the bit has both branches admitted.
 - **Errors of a namespace `clone`.** For the namespace flag word
   (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
   4095 but `-EINTR`. The failures run through `create_user_ns`,
@@ -870,7 +864,8 @@ equivalence) can be true of the model and false of Linux.
   `signalfd4`, `epoll_create1` or `timerfd_create` made, and
   on every descriptor of a `State.mkModel` fixture. Linux answers the
   one bit the creating call set (`get_unused_fd_flags`, `fs/file.c`,
-  v6.18.44; identical at v6.18.46).
+  v6.18.44; identical at v6.18.46). A program that branches on the bit
+  has both branches admitted.
 - **The `/proc/self/fd` listing.** `d_ino` of every record is the
   environment's, and so is the choice of `DT_UNKNOWN` with `d_ino` 1 for
   a descriptor (what `proc_fill_cache` writes when it cannot get a
