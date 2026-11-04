@@ -762,7 +762,7 @@ Lemma check_unlinkat_kf : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp, Namei.check_unlink_found, check_unlink_result,
-    check_unlink_type_result, Namei.check_unlink_open_tmp, check_unlink_open_result in H.
+    Namei.check_unlink_open_tmp, check_unlink_open_result, check_unlink_type_result in H.
   kf_frame H m Hoff Hk.
 Qed.
 
