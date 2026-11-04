@@ -844,10 +844,12 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     and that is a property of the LAUNCHER: Linux's [execve] empties
     neither, so a process that forked a grandchild or attached a
     tracee before exec'ing this image hands it something to wait for.
-    So must SIGCHLD not be at SIG_IGN at launch, or Linux reaps each
-    child itself and never reports a pid.  Both are closed-world
-    assumptions about the environment of exactly the shape
-    [State.access_okb]'s is above.
+    That is a closed-world assumption about the environment of exactly
+    the shape [State.access_okb]'s is above.  The launch's SIGCHLD
+    disposition is not assumed: a caller with a recorded child is
+    answered only after its own SIG_DFL install ([State.m_sigchld_dfl]),
+    so a launcher's SIG_IGN, under which Linux reaps each child itself,
+    can only turn an answer into a decline.
 
     [Checks.Examples.wait4_with_a_child_admits_no_echild] is the
     statement, outside this file, that a caller with a child never gets
@@ -895,8 +897,10 @@ Qed.
 
     - At a caller with NO child: -ECHILD, nothing stored, the model
       unchanged.
-    - At a caller with a child: 0, nothing stored, the model unchanged.
-    - At a caller with a child: a REAP — a recorded nonzero pid [q], a
+    - At a caller with a child, in a process that has installed SIG_DFL
+      for SIGCHLD ([State.m_sigchld_dfl]): 0, nothing stored, the model
+      unchanged.
+    - At such a caller: a REAP — a recorded nonzero pid [q], a
       status word [s] that [Exit.wait_status_okz] admits, stored at
       [stat_addr] (the second argument) unless it is NULL, and [q]
       removed from [State.m_child_pids].
@@ -910,16 +914,18 @@ Qed.
     THIS RESTATES [wait4_answers_only_echild], which said every
     resolution was -ECHILD.  That stopped being true when a caller with a
     recorded child became answered; the first disjunct is that statement
-    at the caller it still describes. *)
+    at the caller it still describes.  The second and third name the
+    SIGCHLD install they need, so a process that never made it gets the
+    first answer or none. *)
 Lemma wait4_answers : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 260%Z ->
   syscall_spec i m (Ok eff m' evs) ->
   evs = []
   /\ ( (m_has_children m = false
         /\ eff = mkEffect (errno_ret ECHILD) [] [] /\ m' = m)
-     \/ (m_has_children m = true
+     \/ (m_has_children m = true /\ m_sigchld_dfl m = true
          /\ eff = mkEffect (Z_to_bv 64 0) [] [] /\ m' = m)
-     \/ (m_has_children m = true
+     \/ (m_has_children m = true /\ m_sigchld_dfl m = true
          /\ exists q s,
               pid_recorded_b q (m_child_pids m) = true
               /\ w_is0 q = false
@@ -941,6 +947,8 @@ Proof.
   - (* a caller with a child: 0, or a reap *)
     destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H;
       [discriminate|].
+    destruct (negb (m_sigchld_dfl m)) eqn:Hd; cbv iota in H; [discriminate|].
+    apply negb_false_iff in Hd.
     destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
       [discriminate|].
     destruct zs as [|? ?]; [|discriminate].
@@ -953,7 +961,7 @@ Proof.
       injection H as <- <-.
       unfold w_is0 in H0. apply bv_eqb_eq in H0. subst ret.
       split; [reflexivity|]. right; left.
-      split; [reflexivity|]. split; reflexivity.
+      split; [reflexivity|]. split; [exact Hd|]. split; reflexivity.
     + destruct (pid_recorded_b ret (q0 :: l0)
                 && (clone_pid_ok_b m ret && check_wait4_store (in_arg i 1) ws))
         eqn:Hr; cbv iota in H; [|discriminate].
@@ -962,7 +970,7 @@ Proof.
       apply check_wait4_store_sound in Hw as (s & Hs & ->).
       injection H as <- <-.
       split; [reflexivity|]. right; right.
-      split; [reflexivity|].
+      split; [reflexivity|]. split; [exact Hd|].
       exists ret, s.
       split; [exact Hq|]. split; [exact H0|]. split; [exact Hp|]. split; [exact Hs|].
       split; reflexivity.
@@ -1358,10 +1366,12 @@ Proof. vm_compute. reflexivity. Qed.
     catches a [wait4] that admits a reap Linux cannot give.  Without it
     the accept above is satisfied by a checker that answers [CheckOk]
     to everything.  [wait4_checker_after_clone] is the composition with
-    [clone_checker_admits_a_pid]: the pid that clone recorded is the
+    [clone_checker_admits_a_pid], in a process that installed SIG_DFL
+    for SIGCHLD before the clone ([State.with_sigchld_dfl], the install
+    [Exit.wait4_spec] waits for): the pid that clone recorded is the
     one pid a reap may return, the reap removes it, and -ECHILD is no
-    longer admitted.  The argument gates are left to the lemmas'
-    hypotheses. *)
+    longer admitted.  Without the install the same reap declines.  The
+    argument gates are left to the lemmas' hypotheses. *)
 Definition wait4_input_any : SyscallInput :=
   mkInput (Z_to_bv 64 260)
     [Z_to_bv 64 (-1); 0; Z_to_bv 64 1; 0; 0; 0]
@@ -1379,12 +1389,17 @@ Proof. vm_compute. reflexivity. Qed.
 
 Example wait4_checker_after_clone :
   check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4242) [] [])
-    (with_child (Z_to_bv 64 4242) pc_model)
-  = CheckOk (with_child_pids [] (with_child (Z_to_bv 64 4242) pc_model)) []
+    (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+  = CheckOk (with_child_pids []
+               (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))) []
   /\ check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4321) [] [])
-       (with_child (Z_to_bv 64 4242) pc_model) = CheckReject
+       (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+     = CheckReject
   /\ check_syscall wait4_input_any (mkEffect (errno_ret ECHILD) [] [])
-       (with_child (Z_to_bv 64 4242) pc_model) = CheckReject.
+       (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+     = CheckReject
+  /\ check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4242) [] [])
+       (with_child (Z_to_bv 64 4242) pc_model) = CheckUnmodeled.
 Proof.
   repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity.
 Qed.

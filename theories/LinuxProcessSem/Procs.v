@@ -771,6 +771,11 @@ Definition child_ms (c c' : config) : machine_state :=
     [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
     a child cloned before its parent's first [getpid] would otherwise start
     at 0.  The inheritable capability set copies with the credentials.
+    [procst_sigchld_dfl] is copied: [copy_sighand] (kernel/fork.c) gives
+    the child a [memcpy] of its parent's signal actions, since the
+    released clone arms admit neither CLONE_SIGHAND nor
+    CLONE_CLEAR_SIGHAND, so a SIGCHLD the parent set to SIG_DFL with
+    SA_NOCLDWAIT clear is the child's too.
     Kernel citations, read at v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
@@ -792,7 +797,8 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps).
+              (procst_selfkill_terminal ps)
+              (procst_sigchld_dfl ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

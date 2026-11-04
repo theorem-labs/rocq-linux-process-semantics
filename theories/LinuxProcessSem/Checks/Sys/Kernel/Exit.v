@@ -88,8 +88,10 @@ Definition check_wait4_store (stat_addr : word) (ws : list (word * list byte))
     [Exit.wait4_spec].  A caller with no child admits -ECHILD and
     nothing else; [stat_addr] is not read there, because
     [kernel_wait4]'s copy-out is guarded on [ret > 0].  A caller with a
-    recorded child declines when the list is empty or [stat_addr] is
-    not NULL and not four writable bytes, and otherwise admits 0 with
+    recorded child declines when the list is empty, when the process
+    has not installed SIG_DFL for SIGCHLD ([State.m_sigchld_dfl]), or
+    when [stat_addr] is not NULL and not four writable bytes, and
+    otherwise admits 0 with
     no write and the model unchanged, or a recorded nonzero pid with the
     store [check_wait4_store] reads, the pid removed from the list.  The
     return decides which: 0 is the bare answer, any other word a reap. *)
@@ -102,7 +104,8 @@ Definition check_wait4 (i : SyscallInput) (upid stat_addr options rusage : word)
     match m_child_pids m with
     | [] => CheckUnmodeled
     | _ :: _ =>
-        if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then CheckUnmodeled
+        if negb (m_sigchld_dfl m) then CheckUnmodeled
+        else if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then CheckUnmodeled
         else
           match eff with
           | mkEffectU r ws [] [] [] [] =>
@@ -215,6 +218,7 @@ Proof.
   - (* a caller with a child: 0, or a reap *)
     destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H |- *;
       [discriminate|].
+    destruct (negb (m_sigchld_dfl m)); cbv iota in H |- *; [discriminate|].
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)); cbv iota in H |- *;
       [discriminate|].
@@ -265,6 +269,8 @@ Proof.
   destruct (m_has_children m) eqn:Hc; cbv iota in H |- *.
   - destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H |- *;
       [apply unmodeled_intro|].
+    destruct (negb (m_sigchld_dfl m)); cbv iota in H |- *;
+      [apply unmodeled_intro|].
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)); cbv iota in H |- *;
       [apply unmodeled_intro|].
@@ -303,6 +309,10 @@ Proof.
         destruct (m_child_pids mm) as [|q0 l0] eqn:Hl
     end; hall Hl; inv_ok.
     match goal with
+    | |- context [m_sigchld_dfl ?mm] =>
+        destruct (negb (m_sigchld_dfl mm)) eqn:Hd
+    end; hall Hd; inv_ok.
+    match goal with
     | |- context [wait4_stat_ok_b ?w ?a] =>
         destruct (negb (wait4_stat_ok_b w a)) eqn:Hw
     end; hall Hw; inv_ok.
@@ -333,11 +343,13 @@ Proof.
   destruct (negb (Z.eqb (bv_unsigned options) WNOHANG)); [reflexivity|].
   destruct (negb (w_is0 rusage)); [reflexivity|].
   (* -ECHILD, 0 and a reap all answer, so [Unmodeled] comes only from
-     the empty list or the unwritable [stat_addr], where the checker
-     declines too *)
+     the empty list, the missing SIGCHLD install or the unwritable
+     [stat_addr], where the checker declines too *)
   sys_unfold. inv_ok.
   destruct (m_has_children m) eqn:Hc; hall Hc; inv_ok;
     destruct (m_child_pids m) as [|q0 l0] eqn:Hl; hall Hl; inv_ok;
+    try reflexivity;
+    destruct (negb (m_sigchld_dfl m)) eqn:Hd; hall Hd; inv_ok;
     try reflexivity;
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)) eqn:Hw; hall Hw;
     inv_ok; reflexivity.

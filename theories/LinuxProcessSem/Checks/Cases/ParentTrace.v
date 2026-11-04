@@ -451,6 +451,16 @@ Example parent_trace_clone_descriptors :
   /\ fd_lookup (m_fds parent_trace_s34) 6 = None.
 Proof. repeat split; check_eq. Qed.
 
+(** The SIGCHLD install (call 08, bubblewrap.c:2910-2914) records
+    [State.procst_sigchld_dfl] before the clone, so the clone's parent
+    is a process [Kernel.Exit.wait4_spec] answers about its recorded
+    child; before call 08 the bit is clear. *)
+Example parent_trace_sigchld_installed_before_clone :
+  m_sigchld_dfl parent_trace_s07 = false
+  /\ m_sigchld_dfl parent_trace_s08 = true
+  /\ m_sigchld_dfl parent_trace_s35 = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
 (** After the last mapping: the break is 0x53000, the brk pages and the
     final page are mapped, the 16384-byte mapping is gone, and the guard
     page is inaccessible.  SIGCHLD is blocked once rt_sigprocmask has

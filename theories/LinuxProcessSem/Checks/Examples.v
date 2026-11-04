@@ -434,6 +434,33 @@ Proof.
   rewrite Hch, Hl. reflexivity.
 Qed.
 
+(** A caller with child history in a process that has NOT installed
+    SIG_DFL for SIGCHLD is declined, whatever its list holds and
+    whatever the arguments.  Linux leaves a child for [wait4] only when
+    the parent's SIGCHLD is not SIG_IGN and SA_NOCLDWAIT is clear, and
+    the disposition a process starts with is its launcher's, so the
+    model answers a recorded child only after the process's own install
+    ([Kernel.Exit.wait4_spec], THE SIGCHLD DISPOSITION).  This is the
+    universal half of the paired case
+    [Checks.Cases.Kernel.Exit.wait4_no_sigchld_install_unmodeled]. *)
+Lemma wait4_without_sigchld_install_is_unmodeled : forall i eff m,
+  bv_unsigned (in_sysno i) = 260%Z ->
+  m_has_children m = true ->
+  m_sigchld_dfl m = false ->
+  check_syscall i eff m = CheckUnmodeled.
+Proof.
+  intros i eff m Hno Hch Hd.
+  rewrite (check_syscall_wait4 i _ m Hno). unfold check_wait4.
+  destruct (negb (Z.eqb (bv_unsigned (pid32 (in_arg i 0))) WAIT_ANY32));
+    [reflexivity|].
+  destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
+    [reflexivity|].
+  destruct (negb (w_is0 (in_arg i 3))); [reflexivity|].
+  rewrite Hch. cbv iota.
+  destruct (m_child_pids m); [reflexivity|].
+  rewrite Hd. reflexivity.
+Qed.
+
 (** A caller with child history admits no -ECHILD return, regardless of
     the effect's stores or the post-model.  The reap's own pid bound
     excludes errno words even when a raw model records one as a pid. *)
@@ -455,6 +482,7 @@ Proof.
   destruct (negb (w_is0 (in_arg i 3))); [discriminate|].
   rewrite Hch in H. cbv iota in H.
   destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H; [discriminate|].
+  destruct (negb (m_sigchld_dfl m)); cbv iota in H; [discriminate|].
   destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
     [discriminate|].
   destruct zs as [|? ?]; [|discriminate].

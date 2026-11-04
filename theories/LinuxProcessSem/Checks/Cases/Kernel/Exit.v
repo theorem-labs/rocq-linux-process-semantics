@@ -25,20 +25,40 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
    recorded child, every call below at [wait4_one_child] was
    [CheckUnmodeled]: the arm declined any caller whose child bit was set.
    The call is bubblewrap 0.13.1's [monitor_child] loop through musl:
-   [wait4(-1, st, WNOHANG, 0)], after one [clone] returned 4242.  Each
-   example ends with a CONTROL the earlier text and this one answer
-   alike.
+   [wait4(-1, st, WNOHANG, 0)], after bubblewrap's SIGCHLD install and
+   one [clone] that returned 4242.  Each example ends with a CONTROL the
+   earlier text and this one answer alike.
    ========================================================================= *)
 
 (** No descriptor, no mapping: nothing here reads either. *)
 Definition wait4_case_model : Model :=
   mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
 
-(** The model after one clone that returned 4242: the child bit set and
-    the pid recorded ([State.with_child], as [Kernel.Fork.clone_resolve]
-    leaves it). *)
+(** bubblewrap 0.13.1's first call in [main] (bubblewrap.c:2910-2914):
+    "Reset SIGCHILD to SIG_DFL allowing signalfd working properly if the
+    parent process had set SIGCHLD to SIG_IGN" -- [sigaction(SIGCHLD,
+    &sa, NULL)] with [sa_handler] SIG_DFL, an empty mask and flags 0,
+    which musl passes as [rt_sigaction(17, act, NULL, 8)] over 24 zero
+    bytes. *)
+Definition wait4_sigaction_mem : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24) then Some 0 else None.
+Definition wait4_sigaction_call : SyscallInput :=
+  mkInput 134 [17; 4096; 0; 8; 0; 0] wait4_sigaction_mem (fun _ => None).
+
+(** The model after that install: [State.procst_sigchld_dfl] set. *)
+Definition wait4_installed : Model := with_sigchld_dfl true wait4_case_model.
+
+Example wait4_install_first :
+  check_syscall wait4_sigaction_call
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) wait4_case_model
+  = CheckOk wait4_installed [].
+Proof. vm_compute. reflexivity. Qed.
+
+(** The model after the install and one clone that returned 4242: the
+    child bit set and the pid recorded ([State.with_child], as
+    [Kernel.Fork.clone_resolve] leaves it). *)
 Definition wait4_one_child : Model :=
-  with_child (Z_to_bv 64 4242) wait4_case_model.
+  with_child (Z_to_bv 64 4242) wait4_installed.
 
 (** The same model after the reap of 4242: the list is empty, and the
     child bit stays set. *)
@@ -154,10 +174,46 @@ Qed.
 Example wait4_reap_bounds_raw_recorded_pids :
   check_syscall (wait4_in 0 (fun _ => None))
     (mkEffect (errno_ret ECHILD) [] [])
-    (with_child (errno_ret ECHILD) wait4_case_model) = CheckReject
+    (with_child (errno_ret ECHILD) wait4_installed) = CheckReject
   /\ check_syscall (wait4_in 0 (fun _ => None))
        (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
-       (with_child (Z_to_bv 64 PID_MAX_ENVELOPE) wait4_case_model) = CheckReject
+       (with_child (Z_to_bv 64 PID_MAX_ENVELOPE) wait4_installed) = CheckReject
   /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
        wait4_one_child = CheckOk wait4_reaped [].
 Proof. repeat split; check_eq. Qed.
+
+(** THE CASE, AT THE PRESENT VALUE OF THE INSTALL BIT: a clone that
+    returned 4242 in a process that has made no SIGCHLD install.  Its
+    disposition is the launcher's, which may be SIG_IGN ([execve] keeps
+    one), and under SIG_IGN Linux reaps the child at its exit
+    ([do_notify_parent], kernel/signal.c) and answers 0 and then
+    -ECHILD, never 4242.  So every call declines: the bare 0, the reap
+    with a status and with a NULL slot, and -ECHILD.  The text before
+    the install bit answered the first three, which is the review
+    finding this case closes.  THE CONTROLS: the same calls after the
+    install ([wait4_one_child]) are answered, and a caller with no child
+    gets -ECHILD with no install. *)
+Definition wait4_no_install_child : Model :=
+  with_child (Z_to_bv 64 4242) wait4_case_model.
+
+Example wait4_no_sigchld_install_unmodeled :
+  m_sigchld_dfl wait4_no_install_child = false
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_no_install_child
+     = CheckUnmodeled
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_no_install_child
+     = CheckUnmodeled
+  /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
+       wait4_no_install_child = CheckUnmodeled
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_no_install_child = CheckUnmodeled
+  (* the controls *)
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_one_child
+     = CheckOk wait4_one_child []
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_one_child
+     = CheckOk wait4_reaped []
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_case_model = CheckOk wait4_case_model [].
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.
