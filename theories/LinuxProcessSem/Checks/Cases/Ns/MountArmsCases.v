@@ -470,6 +470,29 @@ Example setattr_permission_precedes_copy :
     base_model c_none (state false false [])) = Some (-EPERM).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The size tests come before may_mount (fs/namespace.c:4973-4979, Linux
+    v6.18.46): an unprivileged caller with a size above PAGE_SIZE gets
+    E2BIG, and one with a size below MOUNT_ATTR_SIZE_VER0 gets EINVAL.
+    Before this correction the model answered EPERM to both. *)
+Example setattr_size_too_big_precedes_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 5000] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-E2BIG).
+Proof. vm_compute. reflexivity. Qed.
+
+Example setattr_size_too_small_precedes_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 16] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+(** At the boundary the size passes and may_mount answers. *)
+Example setattr_size_page_then_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 4096] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
 (** copy_mount_options distinguishes its first unreadable byte from a
     later partial copy. *)
 Example mount_options_first_fault :
