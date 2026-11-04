@@ -231,6 +231,7 @@ Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
                   if match ck with CDir => false | CLink _ => path_trailing_slash p end
                   then match lookup_child st ctx (fd_loc_of m st) parent name with
                        | LIError e => err reads e m ctx st
+                       | LIOver => EUnmodeled
                        | _ => err reads ENOENT m ctx st
                        end
                   else match create_tmpfs m ctx st (walk_creds m) parent name mode ck with
