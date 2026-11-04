@@ -1336,7 +1336,8 @@ Qed.
     ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b],
     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]; a word the
     argument checks refuse is -EINVAL or declines, and makes no child,
-    [Checks.ProcessCreation.clone_arg_checks_einval]), so no
+    [Checks.ProcessCreation.clone_arg_checks_einval] with
+    [clone_open_file_unmodeled] for the declining tables), so no
     process this model admits an outcome for can write another's
     [mm->context].  (riscv64 has no [fork] syscall of its own: [fork] IS
     [clone(SIGCHLD)], which this model answers.)
@@ -4066,11 +4067,17 @@ Record ProcState := mkProcState {
                                     [Unmodeled] on any bit of
                                     [clone_sharing_bits], [CLONE_THREAD]
                                     among them, that the argument checks
-                                    (and [clone3]'s own tests) do not
-                                    refuse; those they refuse are -EINVAL
-                                    or declined, and make no child
+                                    do not refuse and that the call
+                                    decodes to a record; those the
+                                    checks refuse are -EINVAL
                                     ([Checks.ProcessCreation.clone_arg_checks_einval],
-                                    [clone3_own_checks_einval]).
+                                    [clone3_arg_checks_einval]), and the
+                                    rest are -EINVAL or declined by
+                                    [clone3_own_checks_einval],
+                                    [clone_high_bits_unmodeled],
+                                    [clone3_declined_struct_unmodeled]
+                                    and [clone3_other_size_unmodeled].
+                                    None of them makes a child.
                                     Widening that predicate
                                     breaks the proof rather than this
                                     comment *)
