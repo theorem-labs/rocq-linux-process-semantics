@@ -37,7 +37,9 @@
     namespace ([copy_utsname], :87-88).
 
     The child is allocated in [pidns_children], or in its new child when
-    CLONE_NEWPID is set.  Its pids run from its own namespace outwards:
+    CLONE_NEWPID is set.  A children's namespace that is neither the active
+    namespace nor below it declines: Linux never holds one
+    ([pidns_install], [copy_pid_ns]).  Its pids run from its own namespace outwards:
     each model-held level gives the next pid under the clear-range and
     no-outside-allocation launch facts, below its measured limit; the host gives [hq], the pid the core
     chooses, by which the core keys its process table.  What the parent's
@@ -100,6 +102,11 @@ Fixpoint pidns_chain (fuel : nat) (st : NsState) (p : positive) : list PidNs :=
            | None => []
            end
   end.
+
+(** [pidns_below st a c]: the pid namespace [a] is in the chain of [c],
+    that is [c] is [a] or below it in the tables. *)
+Definition pidns_below (st : NsState) (a c : positive) : bool :=
+  existsb (fun x => Pos.eqb (pidns_id x) a) (pidns_chain (length (ns_pidns st)) st c).
 
 (** The child's pids from its own namespace outwards.  Every model level
     needs its clear-range launch fact, no outside allocator/control write,
@@ -233,6 +240,9 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
               let children := pidns_children ctx in
               let pid_part :=
                 if has_flag f CLONE_NEWPID then
+                  (* [copy_pid_ns] refuses a new pid namespace unless the
+                     children's namespace is the active one
+                     (kernel/pid_namespace.c:180-181, Linux v6.18.46). *)
                   if negb (Pos.eqb children active) then inl EINVAL else
                   match find_pidns st active with
                   | Some par =>
@@ -243,6 +253,12 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                   | None => inl 0
                   end
                 else if Pos.eqb children active then inr (children, [], false)
+                (* Linux keeps the children's namespace at the active one or
+                   below it: [pidns_install] refuses any other
+                   (kernel/pid_namespace.c:419-420) and [copy_pid_ns] makes
+                   a child of the active one (:175-183), Linux v6.18.46.
+                   The model declines the state Linux never reaches. *)
+                else if negb (pidns_below st active children) then inl 0
                 else match find_pidns st children with
                      | Some p => match pidns_alloc p with
                        | PaEmpty => if pidns_last p =? 0 then inr (children, [], false) else inl 0
