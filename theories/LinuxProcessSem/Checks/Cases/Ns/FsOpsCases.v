@@ -507,6 +507,22 @@ Example fchmod_fowner_userns_absent :
      = Some (-1).
 Proof. vm_compute. split; reflexivity. Qed.
 
+(** [uid_mapped] in the initial user namespace: every id but INVALID
+    maps (its one extent holds 0 to 4294967294, kernel/user.c:40-55), the
+    rule [uidgid_mapped] follows; before this correction the uid
+    4294967295 mapped.  fchmod reads [uid_mapped] only after its
+    EOVERFLOW for an INVALID uid or gid ([notify_change], fs/attr.c:
+    523-528), so no answer of fchmod changes: a caller with CAP_FOWNER in
+    the initial namespace gets EOVERFLOW on a file owned by 4294967295. *)
+Definition fown_init_ctx : NsCtx := with_caps base_ctx (mkCaps 8 8 0 0 0).
+
+Example uid_mapped_invalid_initial :
+  uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 4294967295 = Some false
+  /\ uid_mapped (unlink_state 511 5000 7000 []) fown_init_ctx 5000 = Some true
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model fown_init_ctx (unlink_state 511 4294967295 7000 [])
+               chmod_file) = Some (-75).
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** The environment's refusals ([fsops_injected]): a tmpfs create's space
     and allocation failures and its walk's; unlinkat's walk's, and no
     security module's (ENOENT and EACCES, the tables' answers, are not

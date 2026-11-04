@@ -537,6 +537,27 @@ not apply.
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
+- The sysctls `kernel.overflowuid` and `kernel.overflowgid` hold 65534,
+  the kernel's default (`include/linux/highuid.h:41-42`,
+  `kernel/sys.c:167-168`, v6.18.46), and the host does not write them
+  during the run. This is the default of the namespace model's launch
+  value `Ns.Tables.env_overflow_ids`, `Some (65534, 65534)`. A stat in
+  the namespace model shows an owner id that has no mapping in the
+  caller's user namespace, the id 4294967295 included, as that value
+  (`from_kuid_munged`, `from_kgid_munged`,
+  `kernel/user_namespace.c:466-473`, `533-541`; `Ns.Files.munged_ok`).
+  The host's root can set each sysctl to any value from 0 to 65535 at
+  any time (`kernel/sys.c:184-202`). A statement for a launch that
+  measured other values names them (`Some (u, g)`, through
+  `Ns.Tables.env_with_overflow_ids`); a statement for a host that may
+  write the sysctls during the run names `None`, under which such an id
+  is shown as any value from 0 to 65535. A mapped id is exact under
+  every value. A named `u` or `g` outside 0 to 65535 is no value a host
+  can hold, and a stat under it has no answer
+  (`Ns.Files.stat_ids_decided`); so has a stat by a caller whose user
+  namespace the tables do not hold, and a stat of an owner whose uid or
+  gid in the tables is outside 0 to 4294967295 (no kernel id is,
+  `include/linux/uidgid_types.h:7-13`).
 - An rtnetlink handler can fail for lack of memory: `rtnl_newlink` with
   `-ENOMEM` (`net/core/rtnetlink.c`), `inet_rtm_newaddr` with `-ENOBUFS`
   (`net/ipv4/devinet.c`), and a link or address dump with `-ENOBUFS` when

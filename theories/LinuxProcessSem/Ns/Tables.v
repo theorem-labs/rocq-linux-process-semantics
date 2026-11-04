@@ -354,7 +354,21 @@ Definition default_mi_env : MiEnv :=
     (kernel/sys.c:1284-1285).  [false], the default, assumes that no
     environment reaper calls [setpgid] on the caller before the caller's
     [setsid]; a statement that wants that case names
-    [env_foreign_pgroups := true] ([Task.setsid_arm]). *)
+    [env_foreign_pgroups := true] ([Task.setsid_arm]).  Last,
+    [env_overflow_ids]: the values of the sysctls kernel.overflowuid and
+    kernel.overflowgid, which [from_kuid_munged] and [from_kgid_munged]
+    give for an id with no mapping in the caller's user namespace
+    (kernel/user_namespace.c:466-473, 533-541, Linux v6.18.46).  Each is
+    any value from 0 to 65535, 65534 by default (kernel/sys.c:167-168,
+    184-202; include/linux/highuid.h:41-42), and the host's root can write
+    them at any time.  [Some (u, g)]: the launch measured them as [u] and
+    [g], and the host does not write them during the run.  [None]: they are
+    unknown, or the host may write them during the run.  The default,
+    [Some (65534, 65534)], assumes the kernel's defaults; a statement that
+    wants another launch names it with [env_with_overflow_ids]
+    ([Files.munged_ok]).  A pair with a value outside 0 to 65535 is no
+    launch a host can have: a stat under it has no answer
+    ([Files.stat_ids_decided]). *)
 Record NsEnv := mkNsEnv {
   env_mount_max       : Z;
   env_proc_entries    : list ProcEntry;
@@ -362,13 +376,19 @@ Record NsEnv := mkNsEnv {
   env_mountinfo       : MiEnv;
   env_nl_link_max     : Z;
   env_host_absent     : list (positive * list byte);
-  env_foreign_pgroups : bool
+  env_foreign_pgroups : bool;
+  env_overflow_ids    : option (Z * Z)
 }.
 
 (** The same environment with [env_foreign_pgroups] set to [b]. *)
 Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) b.
+          (env_nl_link_max e) (env_host_absent e) b (env_overflow_ids e).
+
+(** The same environment with [env_overflow_ids] set to [o]. *)
+Definition env_with_overflow_ids (e : NsEnv) (o : option (Z * Z)) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) o.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
     open files a process's descriptor table names by handle
@@ -431,11 +451,12 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
 (** The shared state of a system the namespace model knows nothing of: no
     mount tree and no namespace but the host's UTS namespace
     ([host_utsns], whose names are the released pin's), Linux's default
-    mount limit (100000) and no procfs entry.  A core builds its released
-    world from this, never from the constructor, so a new field changes no
-    caller. *)
+    mount limit (100000), no procfs entry, and the default overflow ids
+    (65534, 65534).  A core builds its released world from this, never from
+    the constructor, so a new field changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [host_utsns] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false).
+  mkNsState [] [] [] [] [] [host_utsns] [] [] [] []
+            (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false (Some (65534, 65534)%Z)).
 
 (** The setters of [NsState], one per field: with [empty_nsstate], the only
     places that apply [mkNsState] to every field. *)
