@@ -589,9 +589,123 @@ Proof.
   exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
 Qed.
 
-(* -------------------------------------------------- ppoll *)
+(* -------------------------------------------------------------------------
+   ppoll (73)
+   ------------------------------------------------------------------------- *)
 
-(** What makes an entry's two answers readable apart: equal, or a
+(** Where the plan is decided, the acceptor is [check_pselect_answer] on
+    the spec's own answer, the ledger [Select.ppoll_reads] included,
+    exactly as for pselect6.  Where it reaches [do_poll], the acceptor
+    reads the observed [revents] off the effect's writes
+    ([ppoll_read_choice]), requires them to be one choice
+    ([Select.ppoll_choice_in]), and hands [Select.ppoll_finish]'s answer
+    for that choice to [check_pselect_answer], whose only choice left is
+    the remaining time.  The model after the call is [Select.ppoll_rec]
+    of the choice read: the EPOLLERR each survivor it named has shown.
+    The gate [Select.ppoll_all_answered] is the spec's own, so a call the
+    spec declines is [CheckUnmodeled] here. *)
+
+(** The [revents] value the 2-byte write [b] stores, among an entry's
+    admitted ones [s]. *)
+Definition ppoll_read_one (s : list (Z * PpollTag)) (b : list byte) : option Z :=
+  option_map fst (find (fun a => listN_eqb (word_le2 (Z_to_bv 64 (fst a))) b) s).
+
+(** The observed choice: one value per entry, read off the writes in
+    entry order, or [None] where a write stores no admitted value. *)
+Fixpoint ppoll_read_choice (cs : list (Z * list (Z * PpollTag)))
+    (ws : list (word * list byte)) : option (list Z) :=
+  match cs with
+  | [] => Some []
+  | (_, s) :: cs' =>
+      match ws with
+      | [] => None
+      | w :: ws' =>
+          match ppoll_read_one s (snd w), ppoll_read_choice cs' ws' with
+          | Some r, Some rs => Some (r :: rs)
+          | _, _ => None
+          end
+      end
+  end.
+
+Definition check_ppoll (i : SyscallInput) (ufds nfds tsp sig sigsetsize : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+  | PpDecided None => CheckUnmodeled
+  | PpDecided (Some pa) =>
+      check_pselect_answer pa (fun _ => 0%Z)
+        (ppoll_reads i m ufds nfds tsp sig sigsetsize) (fun _ m0 => m0) eff m
+  | PpPoll tmo cs =>
+      if negb (ppoll_all_answered i ufds nfds tsp tmo cs) then CheckUnmodeled
+      else
+        match ppoll_read_choice cs (eff_writes eff) with
+        | None => CheckReject
+        | Some rs =>
+            if negb (ppoll_choice_in cs rs) then CheckReject
+            else
+              match ppoll_finish i ufds nfds tsp tmo rs with
+              | None => CheckReject
+              | Some pa =>
+                  check_pselect_answer pa (fun _ => 0%Z)
+                    (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+                    (fun _ => ppoll_rec cs rs) eff m
+              end
+        end
+  end.
+
+(** ** What an entry admits *)
+
+(** No two admitted values of an opaque descriptor's entry store the
+    same two bytes. *)
+Definition ppoll_set_inj (s : list Z) : Prop :=
+  forall r r', In r s -> In r' s ->
+  listN_eqb (word_le2 (Z_to_bv 64 r')) (word_le2 (Z_to_bv 64 r)) = true -> r' = r.
+
+Local Lemma ppoll_set_inj_single : forall v, ppoll_set_inj [v].
+Proof.
+  intros v. unfold ppoll_set_inj. intros r r' Hr Hr' _.
+  destruct Hr as [<-|[]]; destruct Hr' as [<-|[]]; reflexivity.
+Qed.
+
+Local Lemma ppoll_set_inj_eventfd :
+  ppoll_set_inj [0%Z; POLLIN; Z.lor POLLIN POLLERR].
+Proof.
+  unfold ppoll_set_inj. intros r r' Hr Hr' Hb. cbn [In] in Hr, Hr'.
+  destruct Hr as [<-|[<-|[<-|[]]]]; destruct Hr' as [<-|[<-|[<-|[]]]];
+    try reflexivity; vm_compute in Hb; discriminate Hb.
+Qed.
+
+Local Lemma ppoll_set_inj_signalfd : ppoll_set_inj [0%Z; POLLIN].
+Proof.
+  unfold ppoll_set_inj. intros r r' Hr Hr' Hb. cbn [In] in Hr, Hr'.
+  destruct Hr as [<-|[<-|[]]]; destruct Hr' as [<-|[<-|[]]];
+    try reflexivity; vm_compute in Hb; discriminate Hb.
+Qed.
+
+(** No two alternatives of an entry store the same two bytes unless
+    they are the same [revents]. *)
+Definition ppoll_alts_inj (s : list (Z * PpollTag)) : Prop :=
+  forall a a', In a s -> In a' s ->
+  listN_eqb (word_le2 (Z_to_bv 64 (fst a'))) (word_le2 (Z_to_bv 64 (fst a))) = true ->
+  fst a' = fst a.
+
+Definition ppoll_is_end (t : PpollTag) : bool :=
+  match t with
+  | PpEnd _ => true
+  | _ => false
+  end.
+
+(** What every entry [do_poll] scanned satisfies: it admits some
+    [revents], no two of its values are written alike, and it is either
+    a stream-pair end's two distinct masks -- [hi] nonzero, the
+    descriptor not negative -- or has no stream-pair alternative at
+    all. *)
+Definition ppoll_alts_ok (c : Z * list (Z * PpollTag)) : Prop :=
+  snd c <> [] /\ ppoll_alts_inj (snd c)
+  /\ ((exists lo hi, snd c = [(lo, PpEnd false); (hi, PpEnd true)]
+                     /\ lo <> hi /\ (0 <= fst c)%Z /\ hi <> 0%Z)
+      \/ (forall a, In a (snd c) -> ppoll_is_end (snd a) = false)).
+
+(** What makes a pair's two answers readable apart: equal, or a
     stream-pair end's two masks, both below 2^16, which [word_le2]
     writes apart. *)
 Definition cand_ok (c : Z * Z * Z) : Prop :=
@@ -614,6 +728,17 @@ Lemma stream_poll_mask_small : forall fds id side st,
    && (fst (stream_poll_mask fds id side st) <? 2 ^ 16)
    && (0 <=? snd (stream_poll_mask fds id side st))
    && (snd (stream_poll_mask fds id side st) <? 2 ^ 16))%Z = true.
+Proof.
+  intros fds id side st. unfold stream_poll_mask. cbv zeta.
+  destruct (stream_peer fds id side) as [[x pst]|]; destruct (se_rx st);
+    destruct (se_reset st); cbv beta iota; destr_ifs; reflexivity.
+Qed.
+
+(** [unix_poll]'s [lo] mask is within its [hi] mask: the undecided bits
+    are only ever added. *)
+Lemma stream_poll_mask_mono : forall fds id side st,
+  Z.lor (fst (stream_poll_mask fds id side st)) (snd (stream_poll_mask fds id side st))
+  = snd (stream_poll_mask fds id side st).
 Proof.
   intros fds id side st. unfold stream_poll_mask. cbv zeta.
   destruct (stream_peer fds id side) as [[x pst]|]; destruct (se_rx st);
@@ -643,20 +768,103 @@ Proof.
   split; apply land_bound; lia.
 Qed.
 
-Lemma ppoll_revents_ok : forall fds es cs,
-  ppoll_revents fds es = Some cs -> Forall cand_ok cs.
+(** Where an entry's two masks differ, the [hi] one is not 0. *)
+Lemma ppoll_revents_of_mono : forall fds fd ev lo hi,
+  ppoll_revents_of fds fd ev = Some (lo, hi) -> lo <> hi -> hi <> 0%Z.
 Proof.
-  intros fds es. induction es as [|[fd ev] es IH]; intros cs H; cbn [ppoll_revents] in H.
+  intros fds fd ev lo hi H Hne Hh0. apply Hne. unfold ppoll_revents_of in H.
+  destruct (fd <? 0)%Z; cbv beta iota in H.
+  { injection H as <- <-. reflexivity. }
+  destruct (fd_lookup fds (Z_to_bv 64 fd)) as [[]|]; cbv beta iota zeta in H;
+    try discriminate H;
+    try (injection H as <- <-; reflexivity).
+  match type of H with context [stream_poll_mask ?a ?b ?c ?d] =>
+    pose proof (stream_poll_mask_mono a b c d) as Hm;
+    destruct (stream_poll_mask a b c d) as [l h] end.
+  cbn [fst snd] in Hm. cbv beta iota in H. injection H as <- <-.
+  rewrite Hh0.
+  assert (Hlh : Z.land l h = l).
+  { apply Z.bits_inj'. intros n _. rewrite Z.land_spec, <- Hm, Z.lor_spec.
+    destruct (Z.testbit l n), (Z.testbit h n); reflexivity. }
+  rewrite <- Hlh, <- Z.land_assoc, Hh0, Z.land_0_r. reflexivity.
+Qed.
+
+Lemma ppoll_pair_alts_ok : forall fds fd ev lo hi,
+  ppoll_revents_of fds fd ev = Some (lo, hi) ->
+  ppoll_alts_ok (fd, ppoll_pair_alts (lo, hi)).
+Proof.
+  intros fds fd ev lo hi H.
+  pose proof (ppoll_revents_of_ok _ _ _ _ _ H) as Hc. cbv [cand_ok] in Hc.
+  unfold ppoll_pair_alts, ppoll_alts_ok. cbv beta iota. cbn [fst snd].
+  destruct (Z.eqb_spec lo hi) as [<-|Hne].
+  - split; [discriminate|]. split.
+    + intros a a' Ha Ha' _. cbn [In] in Ha, Ha'.
+      destruct Ha as [<-|[]]; destruct Ha' as [<-|[]]; reflexivity.
+    + right. intros a Ha. cbn [In] in Ha. destruct Ha as [<-|[]]. reflexivity.
+  - destruct Hc as [Heq|(Hfd & Hlo & Hhi)]; [contradiction|].
+    split; [discriminate|]. split.
+    + intros a a' Ha Ha' Hb. apply listN_eqb_eq in Hb. cbn [In] in Ha, Ha'.
+      destruct Ha as [<-|[<-|[]]]; destruct Ha' as [<-|[<-|[]]]; cbn [fst] in Hb |- *;
+        first [ reflexivity
+              | exact (word_le2_inj _ _ Hhi Hlo Hb)
+              | exact (word_le2_inj _ _ Hlo Hhi Hb) ].
+    + left. exists lo, hi. split; [reflexivity|]. split; [exact Hne|].
+      split; [exact Hfd|]. exact (ppoll_revents_of_mono _ _ _ _ _ H Hne).
+Qed.
+
+Local Lemma ppoll_opaque_revents_ok : forall m o ev l,
+  ppoll_opaque_revents m o ev = Some l -> l <> [] /\ ppoll_set_inj l.
+Proof.
+  intros m o ev l H. unfold ppoll_opaque_revents in H.
+  destruct o as [p|p|fl|h|fl pos|mask fl]; cbv iota in H; try discriminate H.
+  - (* an eventfd *)
+    destruct (Z.eqb ev POLLIN); cbv iota in H; [|discriminate H].
+    injection H as <-. split; [discriminate | apply ppoll_set_inj_eventfd].
+  - (* a signalfd *)
+    destruct (negb (Z.eqb ev POLLIN)); cbv iota in H; [discriminate H|].
+    destruct (signalfd_other_may_pend mask m); cbv iota in H; [discriminate H|].
+    destruct (signalfd_sigchld_may_pend mask m); cbv iota in H; injection H as <-;
+      (split; [discriminate|]); [apply ppoll_set_inj_signalfd | apply ppoll_set_inj_single].
+Qed.
+
+Lemma ppoll_alts_of_ok : forall m fd ev s,
+  ppoll_alts_of m fd ev = Some s -> ppoll_alts_ok (fd, s).
+Proof.
+  intros m fd ev s H. unfold ppoll_alts_of in H.
+  assert (Hpair : option_map ppoll_pair_alts (ppoll_revents_of (m_fds m) fd ev) = Some s ->
+                  ppoll_alts_ok (fd, s)).
+  { intros Hp. destruct (ppoll_revents_of (m_fds m) fd ev) as [[lo hi]|] eqn:Hr;
+      cbn [option_map] in Hp; [|discriminate Hp].
+    injection Hp as <-. exact (ppoll_pair_alts_ok _ _ _ _ _ Hr). }
+  destruct (fd <? 0)%Z; [exact (Hpair H)|].
+  destruct (fd_lookup (m_fds m) (Z_to_bv 64 fd)) as [[]|]; try exact (Hpair H).
+  (* an opaque descriptor *)
+  match type of H with context [ppoll_opaque_revents ?m0 ?o0 ?e0] =>
+    destruct (ppoll_opaque_revents m0 o0 e0) as [l|] eqn:Ho end;
+    cbn [option_map] in H; [|discriminate H].
+  injection H as <-. destruct (ppoll_opaque_revents_ok _ _ _ _ Ho) as [Hne Hinj].
+  unfold ppoll_alts_ok. cbn [fst snd]. split; [|split].
+  - destruct l as [|z l]; [contradiction|]. cbn [map]. discriminate.
+  - intros a a' Ha Ha' Hb. apply in_map_iff in Ha as (r & <- & Hr).
+    apply in_map_iff in Ha' as (r' & <- & Hr'). cbn [fst] in Hb |- *.
+    exact (Hinj r r' Hr Hr' Hb).
+  - right. intros a Ha. apply in_map_iff in Ha as (r & <- & _). reflexivity.
+Qed.
+
+Lemma ppoll_entries_alts_ok : forall m es cs,
+  ppoll_entries m es = Some cs -> Forall ppoll_alts_ok cs.
+Proof.
+  intros m. induction es as [|[fd ev] es IH]; intros cs H; cbn [ppoll_entries] in H.
   - injection H as <-. constructor.
-  - destruct (ppoll_revents_of fds fd ev) as [[lo hi]|] eqn:Hr; [|discriminate H].
-    destruct (ppoll_revents fds es) as [cs'|] eqn:Hrest; [|discriminate H].
+  - destruct (ppoll_alts_of m fd ev) as [s|] eqn:Hs; [|discriminate H].
+    destruct (ppoll_entries m es) as [cs'|] eqn:Hrest; [|discriminate H].
     injection H as <-. constructor.
-    + exact (ppoll_revents_of_ok _ _ _ _ _ Hr).
+    + exact (ppoll_alts_of_ok _ _ _ _ Hs).
     + exact (IH cs' eq_refl).
 Qed.
 
-Lemma ppoll_scan_cands : forall i m ufds nfds cs,
-  ppoll_scan i m ufds nfds = PpScanDone cs -> Forall cand_ok cs.
+Lemma ppoll_scan_alts_ok : forall i m ufds nfds cs,
+  ppoll_scan i m ufds nfds = PpScanDone cs -> Forall ppoll_alts_ok cs.
 Proof.
   intros i m ufds nfds cs H. unfold ppoll_scan in H. cbv zeta in H.
   destruct (bv_unsigned (m_nofile m) <? bv_unsigned nfds)%Z; cbv beta iota in H;
@@ -668,120 +876,250 @@ Proof.
   match type of H with context [read_bytes_map ?a ?b ?c] =>
     destruct (read_bytes_map a b c) as [bs|] end;
     cbv beta iota in H; [|discriminate H].
-  match type of H with context [ppoll_revents ?a ?b] =>
-    destruct (ppoll_revents a b) as [cs'|] eqn:Hr end;
+  match type of H with context [ppoll_entries ?a ?b] =>
+    destruct (ppoll_entries a b) as [cs'|] eqn:Hr end;
     cbv beta iota in H; [|discriminate H].
-  injection H as <-. exact (ppoll_revents_ok _ _ _ Hr).
+  injection H as <-. exact (ppoll_entries_alts_ok _ _ _ Hr).
 Qed.
 
-(** ppoll's readback: for each entry whose two answers differ, bit [fd]
-    when the [revents] written are [hi]'s. *)
-Fixpoint ppoll_read_sel (cs : list (Z * Z * Z)) (ws : list (word * list byte)) : Z :=
-  match cs, ws with
-  | (fd, lo, hi) :: cs', (_, bs) :: ws' =>
-      Z.lor (if negb (Z.eqb lo hi) && listN_eqb bs (word_le2 (Z_to_bv 64 hi))
-             then Z.shiftl 1 fd else 0%Z)
-            (ppoll_read_sel cs' ws')
-  | _, _ => 0%Z
-  end.
-
-Definition ppoll_rd (i : SyscallInput) (m : Model) (ufds nfds : word)
-    (ws : list (word * list byte)) : Z :=
-  match ppoll_scan i m ufds nfds with
-  | PpScanDone cs => ppoll_read_sel cs ws
-  | _ => 0%Z
-  end.
-
-Lemma land_pow2 : forall fd sel, (0 <= fd)%Z ->
-  Z.land (Z.shiftl 1 fd) sel = if Z.testbit sel fd then Z.shiftl 1 fd else 0%Z.
+Lemma ppoll_plan_alts_ok : forall i m ufds nfds tsp sig sigsetsize tmo cs,
+  ppoll_plan i m ufds nfds tsp sig sigsetsize = PpPoll tmo cs ->
+  Forall ppoll_alts_ok cs.
 Proof.
-  intros fd sel Hfd. rewrite Z.shiftl_1_l.
-  destruct (Z.testbit sel fd) eqn:Hs; cbv beta iota; apply Z.bits_inj'; intros j Hj;
-    rewrite Z.land_spec; rewrite ?Z.testbit_0_l;
-    rewrite (Z.pow2_bits_eqb fd j Hfd);
-    destruct (Z.eqb_spec fd j) as [<-|Hne]; rewrite ?Hs; reflexivity.
+  intros i m ufds nfds tsp sig sigsetsize tmo cs H.
+  destruct (ppoll_plan_poll _ _ _ _ _ _ _ _ _ H) as [Hs _].
+  exact (ppoll_scan_alts_ok _ _ _ _ _ Hs).
 Qed.
 
-Lemma ppoll_read_sel_pick : forall cs p sel e, Forall cand_ok cs ->
-  ppoll_read_sel cs (ppoll_writeback p (ppoll_pick cs sel) ++ e)
-  = Z.land (ppoll_undecided cs) sel.
+(** ** Choices of one entry *)
+
+Local Lemma tag_of_some : forall s r t,
+  ppoll_tag_of s r = Some t -> exists a, In a s /\ fst a = r /\ snd a = t.
 Proof.
-  induction cs as [|[[fd lo] hi] cs IH]; intros p sel e Hc.
-  - reflexivity.
-  - pose proof (Forall_inv Hc) as Hok. pose proof (Forall_inv_tail Hc) as Hcs.
-    cbn [ppoll_pick ppoll_writeback ppoll_undecided app ppoll_read_sel].
-    rewrite (IH _ sel e Hcs).
-    rewrite Z.land_lor_distr_l. f_equal.
-    cbv [cand_ok] in Hok.
-    destruct (Z.eqb_spec lo hi) as [Heq|Hne].
-    + subst hi. cbn [negb andb]. rewrite Z.land_0_l. reflexivity.
-    + destruct Hok as [Heq|(Hfd & Hlo & Hhi)]; [contradiction|].
-      cbn [negb andb].
-      rewrite (land_pow2 fd sel Hfd).
-      destruct (Z.testbit sel fd); cbv beta iota.
-      * rewrite (proj2 (listN_eqb_eq _ _) eq_refl). reflexivity.
-      * destruct (listN_eqb (word_le2 (Z_to_bv 64 lo)) (word_le2 (Z_to_bv 64 hi))) eqn:E;
-          [|reflexivity].
-        apply listN_eqb_eq in E.
-        exfalso. exact (Hne (word_le2_inj lo hi Hlo Hhi E)).
+  intros s r t H. unfold ppoll_tag_of in H.
+  destruct (find (fun a => Z.eqb (fst a) r) s) as [a|] eqn:E;
+    cbn [option_map] in H; [|discriminate H].
+  injection H as <-. apply find_some in E as [Hin Heq]. apply Z.eqb_eq in Heq.
+  exists a. split; [exact Hin | split; [exact Heq | reflexivity]].
 Qed.
 
-Lemma ppoll_core_readback : forall i m ufds nfds,
-  core_readback (ppoll_core i m ufds nfds) (fun _ => ppoll_rd i m ufds nfds).
+Local Lemma tag_of_in : forall s a, In a s ->
+  exists b, ppoll_tag_of s (fst a) = Some (snd b) /\ In b s.
 Proof.
-  intros i m ufds nfds. unfold ppoll_core.
-  destruct (ppoll_scan i m ufds nfds) as [| e0 | cs] eqn:Hs; try exact I.
-  cbn [core_readback]. intros sel e Hsel. cbv beta zeta. cbn [fst snd].
-  unfold ppoll_rd. rewrite Hs. cbv beta iota.
-  rewrite (ppoll_read_sel_pick cs ufds sel e (ppoll_scan_cands _ _ _ _ _ Hs)).
-  rewrite land_und_idem. exact Hsel.
+  intros s a Hin. unfold ppoll_tag_of.
+  destruct (find (fun b => Z.eqb (fst b) (fst a)) s) as [b|] eqn:Ef.
+  - apply find_some in Ef as [Hb _]. exists b. split; [reflexivity | exact Hb].
+  - exfalso. eapply find_none in Ef; [|exact Hin]. cbv beta in Ef.
+    rewrite Z.eqb_refl in Ef. discriminate Ef.
 Qed.
 
-Lemma writeback_access_readback : forall ufds nfds tmo c rd2,
-  core_readback c rd2 -> core_readback (ppoll_writeback_access ufds nfds tmo c) rd2.
+Local Lemma choice_at_admitted : forall sel fd s cs r rs,
+  ppoll_choice_at sel ((fd, s) :: cs) (r :: rs) = true ->
+  (exists a, In a s /\ fst a = r) /\ ppoll_choice_at sel cs rs = true.
 Proof.
-  intros ufds nfds tmo c rd2 H.
-  destruct c as [| e0 | und ans]; [exact I | exact I |].
-  unfold ppoll_writeback_access.
-  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); [exact H|].
-  destruct tmo; try exact I.
-  destruct (fst (ans 0%Z) =? 0)%Z; exact I.
+  intros sel fd s cs r rs H. cbn [ppoll_choice_at] in H.
+  apply andb_true_iff in H as [H1 H2]. split; [|exact H2].
+  destruct (ppoll_tag_of s r) as [t|] eqn:E; [|discriminate H1].
+  destruct (tag_of_some _ _ _ E) as (a & Hin & Ha & _).
+  exists a. split; [exact Hin | exact Ha].
 Qed.
 
-Lemma ppoll_outcome_readback : forall i m ufds nfds tsp sig sigsetsize pa,
-  ppoll_outcome i m ufds nfds tsp sig sigsetsize = Some pa ->
-  pa_readback pa (ppoll_rd i m ufds nfds).
+Local Lemma is_hi_end : forall t, ppoll_is_hi t = true -> ppoll_is_end t = true.
+Proof. intros [| |[]] H; first [reflexivity | discriminate H]. Qed.
+
+Local Lemma least_of_in : forall s, s <> [] ->
+  exists a, In a s /\ ppoll_least_of s = fst a.
 Proof.
-  intros i m ufds nfds tsp sig sigsetsize pa H.
-  unfold ppoll_outcome in H.
-  destruct (pselect_timeout (in_mem i) tsp) as [| | | | sec nsec];
-    cbv beta iota in H;
-    try (unfold pselect_err in H; injection H as <-;
-         apply pa_readback_und0; reflexivity).
+  intros s Hne. unfold ppoll_least_of.
+  destruct (existsb (fun a => Z.eqb (fst a) 0) s) eqn:E.
+  - apply existsb_exists in E as (a & Hin & Ha). cbv beta in Ha.
+    apply Z.eqb_eq in Ha. exists a. split; [exact Hin | symmetry; exact Ha].
+  - destruct s as [|a s]; [contradiction|].
+    exists a. split; [left; reflexivity | reflexivity].
+Qed.
+
+Local Lemma most_of_in : forall s, s <> [] ->
+  exists a, In a s /\ ppoll_most_of s = fst a.
+Proof.
+  intros s Hne. unfold ppoll_most_of.
+  destruct (find (fun a => ppoll_is_hi (snd a)) s) as [a|] eqn:Eh.
+  { apply find_some in Eh as [Ha _]. exists a. split; [exact Ha | reflexivity]. }
+  destruct (find (fun a => negb (Z.eqb (fst a) 0)) s) as [a|] eqn:En.
+  { apply find_some in En as [Ha _]. exists a. split; [exact Ha | reflexivity]. }
+  destruct s as [|a s]; [contradiction|].
+  exists a. split; [left; reflexivity | reflexivity].
+Qed.
+
+(** The LEAST choice of an entry is never a stream-pair end's [hi]. *)
+Local Lemma least_of_tag : forall fd s, ppoll_alts_ok (fd, s) ->
+  exists t, ppoll_tag_of s (ppoll_least_of s) = Some t /\ t <> PpEnd true.
+Proof.
+  intros fd s Hok. unfold ppoll_alts_ok in Hok. cbn [fst snd] in Hok.
+  destruct Hok as (Hne & _ & [(lo & hi & -> & _ & _ & Hhi) | Hno]).
+  - assert (E : ppoll_least_of [(lo, PpEnd false); (hi, PpEnd true)] = lo).
+    { unfold ppoll_least_of. cbn [existsb fst map hd].
+      destruct (Z.eqb_spec lo 0) as [->|_]; [reflexivity|].
+      rewrite (proj2 (Z.eqb_neq _ _) Hhi). reflexivity. }
+    rewrite E. exists (PpEnd false). split; [|discriminate].
+    unfold ppoll_tag_of. cbn [find fst]. rewrite Z.eqb_refl. reflexivity.
+  - destruct (least_of_in s Hne) as (a & Hin & ->).
+    destruct (tag_of_in s a Hin) as (b & -> & Hb).
+    exists (snd b). split; [reflexivity|]. intros E.
+    pose proof (Hno b Hb) as Hb'. rewrite E in Hb'. cbn [ppoll_is_end] in Hb'.
+    discriminate Hb'.
+Qed.
+
+(** The MOST choice of an entry is a stream-pair end's [hi] exactly
+    where the entry has one. *)
+Local Lemma most_of_tag : forall fd s, ppoll_alts_ok (fd, s) ->
+  exists t, ppoll_tag_of s (ppoll_most_of s) = Some t
+    /\ ((t = PpEnd true /\ (0 <= fd)%Z
+         /\ existsb (fun a => ppoll_is_hi (snd a)) s = true)
+        \/ (ppoll_is_end t = false
+            /\ existsb (fun a => ppoll_is_hi (snd a)) s = false)).
+Proof.
+  intros fd s Hok. unfold ppoll_alts_ok in Hok. cbn [fst snd] in Hok.
+  destruct Hok as (Hne & _ & [(lo & hi & -> & Hlh & Hfd & _) | Hno]).
+  - exists (PpEnd true). split.
+    + unfold ppoll_most_of, ppoll_tag_of. cbn [find ppoll_is_hi snd fst].
+      rewrite (proj2 (Z.eqb_neq _ _) Hlh), Z.eqb_refl. reflexivity.
+    + left. split; [reflexivity|]. split; [exact Hfd | reflexivity].
+  - destruct (most_of_in s Hne) as (a & Hin & ->).
+    destruct (tag_of_in s a Hin) as (b & -> & Hb).
+    exists (snd b). split; [reflexivity|]. right. split; [exact (Hno b Hb)|].
+    destruct (existsb (fun a0 => ppoll_is_hi (snd a0)) s) eqn:E; [|reflexivity].
+    apply existsb_exists in E as (c & Hc & Hh).
+    pose proof (is_hi_end _ Hh) as Hc'. rewrite (Hno c Hc) in Hc'. discriminate Hc'.
+Qed.
+
+Local Lemma most_of_nonzero : forall fd s r, ppoll_alts_ok (fd, s) ->
+  (exists a, In a s /\ fst a = r) -> r <> 0%Z -> ppoll_most_of s <> 0%Z.
+Proof.
+  intros fd s r Hok (a & Hin & <-) Hr. unfold ppoll_alts_ok in Hok. cbn [fst snd] in Hok.
+  destruct Hok as (_ & _ & [(lo & hi & -> & _ & _ & Hhi) | Hno]).
+  - unfold ppoll_most_of. cbn [find ppoll_is_hi snd fst]. exact Hhi.
+  - unfold ppoll_most_of.
+    destruct (find (fun b => ppoll_is_hi (snd b)) s) as [b|] eqn:Eh.
+    + exfalso. apply find_some in Eh as [Hb Hh].
+      pose proof (is_hi_end _ Hh) as Hb'. rewrite (Hno b Hb) in Hb'. discriminate Hb'.
+    + destruct (find (fun b => negb (Z.eqb (fst b) 0)) s) as [b|] eqn:En.
+      * apply find_some in En as [_ Hb]. apply negb_true_iff, Z.eqb_neq in Hb. exact Hb.
+      * exfalso. eapply find_none in En; [|exact Hin]. cbv beta in En.
+        rewrite (proj2 (Z.eqb_neq _ _) Hr) in En. discriminate En.
+Qed.
+
+(** ** What the observed choice is *)
+
+Local Lemma ppoll_read_one_ok : forall s a, ppoll_alts_inj s -> In a s ->
+  ppoll_read_one s (word_le2 (Z_to_bv 64 (fst a))) = Some (fst a).
+Proof.
+  intros s a Hinj Hin. unfold ppoll_read_one.
+  destruct (find (fun b => listN_eqb (word_le2 (Z_to_bv 64 (fst b)))
+                                     (word_le2 (Z_to_bv 64 (fst a)))) s) as [b|] eqn:Ef.
+  - apply find_some in Ef as [Hb Heq]. cbn [option_map]. f_equal.
+    exact (Hinj a b Hin Hb Heq).
+  - exfalso. eapply find_none in Ef; [|exact Hin]. cbv beta in Ef.
+    rewrite (proj2 (listN_eqb_eq _ _) eq_refl) in Ef. discriminate Ef.
+Qed.
+
+(** The choice read off a choice's write-back is that choice. *)
+Local Lemma ppoll_read_choice_writeback : forall sel cs rs p x,
+  Forall ppoll_alts_ok cs -> ppoll_choice_at sel cs rs = true ->
+  ppoll_read_choice cs (ppoll_writeback p rs ++ x) = Some rs.
+Proof.
+  intros sel. induction cs as [|[fd s] cs IH]; intros rs p x Hok Hc.
+  - destruct rs; [reflexivity | discriminate Hc].
+  - destruct rs as [|r rs]; [discriminate Hc|].
+    apply choice_at_admitted in Hc as [(a & Hin & <-) Hc].
+    destruct (Forall_inv Hok) as (_ & Hinj & _).
+    cbn [ppoll_writeback app ppoll_read_choice snd].
+    rewrite (IH rs _ x (Forall_inv_tail Hok) Hc).
+    rewrite (ppoll_read_one_ok s a Hinj Hin). reflexivity.
+Qed.
+
+Local Lemma pselect_effect_writes : forall reads a eff,
+  pselect_effect reads a eff -> exists y, eff_writes eff = snd (fst a) ++ y.
+Proof.
+  intros reads [[r ws] [[t [sec nsec]]|]] eff H; unfold pselect_effect in H;
+    cbv beta iota in H.
+  - destruct H as (rem & _ & ->). exists [(t, rem)]. reflexivity.
+  - subst eff. exists []. rewrite app_nil_r. reflexivity.
+Qed.
+
+(** An answered effect at [do_poll] shows the choice that made it. *)
+Local Lemma ppoll_poll_writes :
+  forall i m ufds nfds tsp sig sigsetsize tmo cs rs pa reads rec eff m' evs,
+  ppoll_plan i m ufds nfds tsp sig sigsetsize = PpPoll tmo cs ->
+  ppoll_choice_in cs rs = true ->
+  ppoll_finish i ufds nfds tsp tmo rs = Some pa ->
+  pselect_answer reads pa rec i m (Ok eff m' evs) ->
+  ppoll_read_choice cs (eff_writes eff) = Some rs.
+Proof.
+  intros i m ufds nfds tsp sig sigsetsize tmo cs rs pa reads rec eff m' evs Hp Hc Hf H.
+  pose proof (ppoll_choice_in_length _ _ Hc) as Hl.
+  apply pselect_answer_iff in H as (sel & eff' & Hsel & He & Ho).
+  injection Ho as Heff Hm Hv. subst eff'.
+  rewrite (ppoll_finish_und _ _ _ _ _ _ _ Hf), Z.land_0_l in Hsel. subst sel.
+  destruct (pselect_effect_writes _ _ _ He) as (y & ->).
+  destruct (ppoll_finish_writes _ _ _ _ _ _ _ Hf) as [(x & ->) | (-> & Ha)].
+  - rewrite <- app_assoc. unfold ppoll_choice_in in Hc.
+    exact (ppoll_read_choice_writeback _ _ _ _ _
+             (ppoll_plan_alts_ok _ _ _ _ _ _ _ _ _ Hp) Hc).
+  - destruct (ppoll_plan_poll _ _ _ _ _ _ _ _ _ Hp) as [Hs _].
+    pose proof (proj2 (ppoll_scan_done _ _ _ _ _ Hs) Ha) as E. subst cs.
+    destruct rs as [|r rs]; [reflexivity | discriminate Hl].
+Qed.
+
+(** [PpDecided] is injective; stated over variables so that no
+    reduction of the answers happens on the way. *)
+Lemma ppoll_decided_inj : forall o o', PpDecided o = PpDecided o' -> o = o'.
+Proof. intros o o' E. injection E as E. exact E. Qed.
+
+(** A decided answer has no choice but the remaining time. *)
+Lemma ppoll_decided_und : forall i m ufds nfds tsp sig sigsetsize pa,
+  ppoll_plan i m ufds nfds tsp sig sigsetsize = PpDecided (Some pa) -> pa_und pa = 0%Z.
+Proof.
+  intros i m ufds nfds tsp sig sigsetsize pa H. unfold ppoll_plan in H.
+  destruct (pselect_timeout (in_mem i) tsp) as [| | | | sec nsec]; cbv beta iota in H;
+    try (unfold pselect_err, ps_fixed in H; injection H as <-; reflexivity).
   all: destruct (ppoll_sigmask (in_mem i) sig sigsetsize); cbv beta iota in H;
-    try (unfold pselect_err in H; injection H as <-;
-         apply pa_readback_und0; reflexivity);
+    try (unfold pselect_err, ps_fixed in H; injection H as <-; reflexivity);
     try discriminate H.
-  all: eapply (finish_readback i tsp _ _ pa (fun _ => ppoll_rd i m ufds nfds));
-         [|exact H].
-  all: apply writeback_access_readback; apply ppoll_core_readback.
+  all: destruct (ppoll_scan i m ufds nfds) as [|e|cs]; cbv beta iota in H;
+    try discriminate H.
+  all: first
+    [ exact (pselect_finish_err_und _ _ _ _ _ (ppoll_decided_inj _ _ H))
+    | match type of H with
+      | context [ppoll_env_deadline ?t ?c] => destruct (ppoll_env_deadline t c)
+      end; discriminate H ].
 Qed.
 
-(** ppoll: [Select.ppoll_outcome] names the answers, or [None] where the
-    model declines, which is [CheckUnmodeled] here.  Its choices are
-    pselect6's, read back the same way: the [revents] of an undecided
-    pair end by [ppoll_rd], and the remaining time as the last write.
-    The ledger [Select.ppoll_reads] is compared as well, and the model
-    after the call is [Select.ppoll_rec] of the choice read back: the
-    EPOLLERR each survivor it named has shown. *)
-Definition check_ppoll (i : SyscallInput) (ufds nfds tsp sig sigsetsize : word)
-    (eff : SyscallEffect) (m : Model) : check_result :=
-  match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
-  | None => CheckUnmodeled
-  | Some pa =>
-      check_pselect_answer pa (ppoll_rd i m ufds nfds)
-        (ppoll_reads i m ufds nfds tsp sig sigsetsize) (ppoll_rec pa) eff m
-  end.
+(** What [check_ppoll] accepts leaves the model as it was, or records
+    one choice at [do_poll]. *)
+Lemma check_ppoll_model : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
+  check_ppoll i ufds nfds tsp sig sigsetsize eff m = CheckOk m' evs ->
+  m' = m
+  \/ exists tmo cs rs, ppoll_plan i m ufds nfds tsp sig sigsetsize = PpPoll tmo cs
+                       /\ m' = ppoll_rec cs rs m.
+Proof.
+  intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
+  unfold check_ppoll in H.
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs] eqn:Hp;
+    cbv beta iota in H.
+  - left. apply check_pselect_answer_model in H. exact H.
+  - discriminate H.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs)); cbv beta iota in H;
+      [discriminate H|].
+    destruct (ppoll_read_choice cs (eff_writes eff)) as [rs|]; cbv iota in H;
+      [|discriminate H].
+    destruct (negb (ppoll_choice_in cs rs)); cbv iota in H; [discriminate H|].
+    destruct (ppoll_finish i ufds nfds tsp tmo rs) as [pa|]; cbv iota in H;
+      [|discriminate H].
+    right. exists tmo, cs, rs. split; [reflexivity|].
+    apply check_pselect_answer_model in H. exact H.
+Qed.
+
+(** ** The four agreement lemmas *)
 
 Lemma check_ppoll_sound_ok :
   forall i ufds nfds tsp sig sigsetsize eff m m' evs,
@@ -791,9 +1129,21 @@ Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
   unfold check_ppoll in H. unfold ppoll_spec.
   apply bind_input_iff. cbv beta. apply bind_get_model. cbv beta.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
-    cbv beta iota; [|discriminate H].
-  eapply check_pselect_answer_sound. exact H.
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs];
+    cbv beta iota in H |- *.
+  - eapply check_pselect_answer_sound. exact H.
+  - discriminate H.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs));
+      cbv beta iota in H |- *; [discriminate H|].
+    destruct (ppoll_read_choice cs (eff_writes eff)) as [rs|]; cbv iota in H;
+      [|discriminate H].
+    destruct (negb (ppoll_choice_in cs rs)) eqn:Hc; cbv iota in H; [discriminate H|].
+    apply negb_false_iff in Hc.
+    destruct (ppoll_finish i ufds nfds tsp tmo rs) as [pa|] eqn:Hf; cbv iota in H;
+      [|discriminate H].
+    apply bind_choose_iff. exists (rs, pa). cbv beta. cbn [fst snd].
+    split; [split; [exact Hc | exact Hf]|].
+    eapply check_pselect_answer_sound. exact H.
 Qed.
 
 Lemma check_ppoll_sound_unmodeled :
@@ -804,9 +1154,19 @@ Proof.
   intros i ufds nfds tsp sig sigsetsize eff m H.
   unfold check_ppoll in H. unfold ppoll_spec.
   apply bind_input_iff. cbv beta. apply bind_get_model. cbv beta.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
-    cbv beta iota; [|apply unmodeled_intro].
-  exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ _ H).
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs];
+    cbv beta iota in H |- *.
+  - exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ _ H).
+  - apply unmodeled_intro.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs));
+      cbv beta iota in H |- *; [apply unmodeled_intro|].
+    exfalso.
+    destruct (ppoll_read_choice cs (eff_writes eff)) as [rs|]; cbv iota in H;
+      [|discriminate H].
+    destruct (negb (ppoll_choice_in cs rs)); cbv iota in H; [discriminate H|].
+    destruct (ppoll_finish i ufds nfds tsp tmo rs) as [pa|]; cbv iota in H;
+      [|discriminate H].
+    exact (check_pselect_answer_not_unmodeled _ _ _ _ _ _ H).
 Qed.
 
 Lemma check_ppoll_complete_ok :
@@ -818,10 +1178,19 @@ Proof.
   unfold ppoll_spec in H. apply bind_input_iff in H. cbv beta in H.
   apply bind_get_model in H. cbv beta in H.
   unfold check_ppoll.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|] eqn:Ho;
-    cbv beta iota in H |- *; [|unfold unmodeled in H; discriminate H].
-  eapply check_pselect_answer_complete; [|exact H].
-  exact (ppoll_outcome_readback _ _ _ _ _ _ _ _ Ho).
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs] eqn:Hp;
+    cbv beta iota in H |- *.
+  - eapply check_pselect_answer_complete; [|exact H].
+    apply pa_readback_und0. exact (ppoll_decided_und _ _ _ _ _ _ _ _ Hp).
+  - unfold unmodeled in H. cbv beta in H. discriminate H.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs));
+      cbv beta iota in H |- *; [unfold unmodeled in H; cbv beta in H; discriminate H|].
+    apply bind_choose_iff in H. destruct H as ([rs pa] & (Hc & Hf) & H).
+    cbn [fst snd] in Hc, Hf, H.
+    rewrite (ppoll_poll_writes _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ Hp Hc Hf H).
+    cbv beta iota. rewrite Hc. cbn [negb]. rewrite Hf. cbv beta iota.
+    eapply check_pselect_answer_complete; [|exact H].
+    apply pa_readback_und0. exact (ppoll_finish_und _ _ _ _ _ _ _ Hf).
 Qed.
 
 Lemma check_ppoll_complete_unmodeled :
@@ -833,7 +1202,213 @@ Proof.
   unfold ppoll_spec in H. apply bind_input_iff in H. cbv beta in H.
   apply bind_get_model in H. cbv beta in H.
   unfold check_ppoll.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
-    cbv beta iota in H |- *; [|reflexivity].
-  exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs];
+    cbv beta iota in H |- *.
+  - exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
+  - reflexivity.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs));
+      cbv beta iota in H |- *; [reflexivity|].
+    exfalso. apply bind_choose_iff in H. destruct H as (c & _ & H).
+    exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
+Qed.
+
+(** ** The gate is exact
+
+    [Select.ppoll_all_answered] tests two choices, the least and the most
+    ready, where the spec's reading is about every choice.  These lemmas
+    are what make the two the same for every scan result
+    ([ppoll_plan_alts_ok]): the gate admits only where EVERY choice is
+    answered ([ppoll_all_answered_sound]), so no admissible choice is
+    silently dropped, and where every choice is answered the gate admits
+    ([ppoll_all_answered_complete]). *)
+
+Local Lemma ppoll_least_length : forall cs, length (ppoll_least cs) = length cs.
+Proof. intros cs. unfold ppoll_least. apply length_map. Qed.
+
+Local Lemma ppoll_most_length : forall cs, length (ppoll_most cs) = length cs.
+Proof. intros cs. unfold ppoll_most. apply length_map. Qed.
+
+Local Lemma ppoll_least_count : forall sel cs rs,
+  ppoll_choice_at sel cs rs = true -> ppoll_count rs = 0%Z ->
+  ppoll_count (ppoll_least cs) = 0%Z.
+Proof.
+  intros sel. unfold ppoll_least.
+  induction cs as [|[fd s] cs IH]; intros [|r rs] Hc H0; try discriminate Hc;
+    [reflexivity|].
+  apply choice_at_admitted in Hc as [(a & Hin & Ha) Hc].
+  cbn [ppoll_count] in H0. pose proof (proj1 (ppoll_count_bounds rs)) as Hn.
+  destruct (Z.eqb r 0) eqn:Er; cbv iota in H0; [|lia].
+  apply Z.eqb_eq in Er. rewrite Er in Ha.
+  assert (E : ppoll_least_of s = 0%Z).
+  { unfold ppoll_least_of.
+    replace (existsb (fun a0 => Z.eqb (fst a0) 0) s) with true; [reflexivity|].
+    symmetry. apply existsb_exists. exists a. split; [exact Hin|].
+    cbv beta. rewrite Ha. reflexivity. }
+  cbn [map snd ppoll_count]. rewrite E, (IH rs Hc) by lia. reflexivity.
+Qed.
+
+Local Lemma ppoll_most_count : forall sel cs rs,
+  Forall ppoll_alts_ok cs ->
+  ppoll_choice_at sel cs rs = true -> ppoll_count rs <> 0%Z ->
+  ppoll_count (ppoll_most cs) <> 0%Z.
+Proof.
+  intros sel. unfold ppoll_most.
+  induction cs as [|[fd s] cs IH]; intros [|r rs] Hok Hc H0; try discriminate Hc;
+    [exact H0|].
+  apply choice_at_admitted in Hc as [Hr Hc].
+  cbn [map snd ppoll_count] in H0 |- *.
+  pose proof (proj1 (ppoll_count_bounds rs)) as Hn.
+  pose proof (proj1 (ppoll_count_bounds (map (fun c => ppoll_most_of (snd c)) cs))) as Hm.
+  destruct (Z.eqb r 0) eqn:Er; cbv iota in H0.
+  - specialize (IH rs (Forall_inv_tail Hok) Hc ltac:(lia)).
+    destruct (Z.eqb (ppoll_most_of s) 0); cbv iota; lia.
+  - apply Z.eqb_neq in Er.
+    rewrite (proj2 (Z.eqb_neq _ _) (most_of_nonzero fd s r (Forall_inv Hok) Hr Er)).
+    cbv iota. lia.
+Qed.
+
+Local Lemma ppoll_least_choice : forall cs, Forall ppoll_alts_ok cs ->
+  ppoll_choice_in cs (ppoll_least cs) = true.
+Proof.
+  intros cs Hok. unfold ppoll_choice_in.
+  enough (H : ppoll_sel cs (ppoll_least cs) = 0%Z
+              /\ ppoll_choice_at 0 cs (ppoll_least cs) = true)
+    by (destruct H as [-> H]; exact H).
+  revert Hok. unfold ppoll_least.
+  induction cs as [|[fd s] cs IH]; intros Hok; [split; reflexivity|].
+  destruct (IH (Forall_inv_tail Hok)) as [IH1 IH2].
+  destruct (least_of_tag fd s (Forall_inv Hok)) as (t & Ht & Hnt).
+  cbn [map snd ppoll_sel ppoll_choice_at]. rewrite Ht, IH1, IH2.
+  destruct t as [| |[]]; cbn [ppoll_is_hi];
+    [split; reflexivity | split; reflexivity | exfalso; apply Hnt; reflexivity |].
+  rewrite Z.testbit_0_l. split; reflexivity.
+Qed.
+
+Local Lemma ppoll_sel_most_bit : forall cs fd s,
+  Forall ppoll_alts_ok cs -> In (fd, s) cs ->
+  existsb (fun a => ppoll_is_hi (snd a)) s = true ->
+  Z.testbit (ppoll_sel cs (ppoll_most cs)) fd = true.
+Proof.
+  unfold ppoll_most.
+  induction cs as [|[fd0 s0] cs IH]; intros fd s Hok Hin Hhi; [destruct Hin|].
+  cbn [map snd ppoll_sel]. rewrite Z.lor_spec. apply orb_true_iff.
+  destruct Hin as [E|Hin].
+  - injection E as <- <-. left.
+    destruct (most_of_tag fd0 s0 (Forall_inv Hok))
+      as (t & Ht & [(-> & Hfd & _) | (_ & Hno)]).
+    + rewrite Ht. cbn [ppoll_is_hi]. rewrite Z.shiftl_1_l.
+      apply Z.pow2_bits_true. exact Hfd.
+    + rewrite Hno in Hhi. discriminate Hhi.
+  - right. exact (IH fd s (Forall_inv_tail Hok) Hin Hhi).
+Qed.
+
+Local Lemma ppoll_most_choice_at : forall sel cs, Forall ppoll_alts_ok cs ->
+  (forall fd s, In (fd, s) cs -> existsb (fun a => ppoll_is_hi (snd a)) s = true ->
+     Z.testbit sel fd = true) ->
+  ppoll_choice_at sel cs (ppoll_most cs) = true.
+Proof.
+  intros sel. unfold ppoll_most.
+  induction cs as [|[fd s] cs IH]; intros Hok Hb; [reflexivity|].
+  cbn [map snd ppoll_choice_at].
+  rewrite (IH (Forall_inv_tail Hok) (fun fd' s' H Hh => Hb fd' s' (or_intror H) Hh)),
+    andb_true_r.
+  destruct (most_of_tag fd s (Forall_inv Hok))
+    as (t & Ht & [(-> & Hfd & Hhi) | (Hne & _)]); rewrite Ht; cbv beta iota.
+  - rewrite (Hb fd s (or_introl eq_refl) Hhi). reflexivity.
+  - destruct t as [| |b]; [reflexivity | reflexivity |].
+    cbn [ppoll_is_end] in Hne. discriminate Hne.
+Qed.
+
+Local Lemma ppoll_most_choice : forall cs, Forall ppoll_alts_ok cs ->
+  ppoll_choice_in cs (ppoll_most cs) = true.
+Proof.
+  intros cs Hok. unfold ppoll_choice_in.
+  apply ppoll_most_choice_at; [exact Hok|].
+  intros fd s Hin Hhi. exact (ppoll_sel_most_bit cs fd s Hok Hin Hhi).
+Qed.
+
+(** [Select.ppoll_writeback]'s addresses and lengths do not depend on the
+    values written, so neither does its writability. *)
+Local Lemma ppoll_writeback_writable : forall i p rs rs' x,
+  length rs = length rs' ->
+  writes_all_writable i (ppoll_writeback p rs ++ x)
+  = writes_all_writable i (ppoll_writeback p rs' ++ x).
+Proof.
+  intros i p rs. revert p.
+  induction rs as [|r rs IH]; intros p [|r' rs'] x Hl; try discriminate Hl;
+    [reflexivity|].
+  cbn [ppoll_writeback app]. unfold writes_all_writable in *.
+  cbn [forallb fst snd].
+  rewrite (IH _ rs' x) by (cbn [length] in Hl; lia). reflexivity.
+Qed.
+
+(** [Select.ppoll_finish] answers or declines a choice by whether its
+    count is 0 and by nothing else about it. *)
+Local Lemma ppoll_finish_shape : forall i ufds nfds tsp tmo rs rs',
+  length rs = length rs' ->
+  Z.eqb (ppoll_count rs) 0 = Z.eqb (ppoll_count rs') 0 ->
+  ppoll_answers (ppoll_finish i ufds nfds tsp tmo rs)
+  = ppoll_answers (ppoll_finish i ufds nfds tsp tmo rs').
+Proof.
+  intros i ufds nfds tsp tmo rs rs' Hl Hc.
+  pose proof (ppoll_writeback_writable i ufds rs rs' [] Hl) as Hw.
+  rewrite !app_nil_r in Hw.
+  pose proof (ppoll_writeback_writable i ufds rs rs'
+                [(tsp, pselect_timespec_zero)] Hl) as Hd.
+  rewrite !ppoll_finish_eq.
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); destruct tmo;
+    rewrite ?Hc, ?Hw, ?Hd; try reflexivity;
+    repeat match goal with
+           | |- context [if ?b then _ else _] => destruct b
+           end;
+    reflexivity.
+Qed.
+
+Lemma ppoll_all_answered_sound : forall i ufds nfds tsp tmo cs,
+  Forall ppoll_alts_ok cs ->
+  ppoll_all_answered i ufds nfds tsp tmo cs = true ->
+  forall rs, ppoll_choice_in cs rs = true ->
+  ppoll_finish i ufds nfds tsp tmo rs <> None.
+Proof.
+  intros i ufds nfds tsp tmo cs Hok Hg rs Hc.
+  unfold ppoll_all_answered in Hg.
+  apply Bool.andb_true_iff in Hg as [Hg Hhi].
+  apply Bool.andb_true_iff in Hg as [Hg Hlo].
+  pose proof (ppoll_choice_in_length _ _ Hc) as Hl.
+  pose proof (ppoll_least_length cs) as Hllo.
+  pose proof (ppoll_most_length cs) as Hlhi.
+  unfold ppoll_choice_in in Hc.
+  assert (Ha : ppoll_answers (ppoll_finish i ufds nfds tsp tmo rs) = true).
+  { destruct (Z.eqb (ppoll_count rs) 0) eqn:E.
+    - apply Z.eqb_eq in E.
+      rewrite (ppoll_finish_shape i ufds nfds tsp tmo rs (ppoll_least cs));
+        [exact Hlo | lia |].
+      rewrite (proj2 (Z.eqb_eq _ _) E),
+        (proj2 (Z.eqb_eq _ _) (ppoll_least_count _ _ _ Hc E)).
+      reflexivity.
+    - apply Z.eqb_neq in E.
+      rewrite (ppoll_finish_shape i ufds nfds tsp tmo rs (ppoll_most cs));
+        [exact Hhi | lia |].
+      rewrite (proj2 (Z.eqb_neq _ _) E),
+        (proj2 (Z.eqb_neq _ _) (ppoll_most_count _ _ _ Hok Hc E)).
+      reflexivity. }
+  unfold ppoll_answers in Ha.
+  destruct (ppoll_finish i ufds nfds tsp tmo rs); [discriminate | discriminate Ha].
+Qed.
+
+Lemma ppoll_all_answered_complete : forall i ufds nfds tsp tmo cs,
+  Forall ppoll_alts_ok cs ->
+  (forall rs, ppoll_choice_in cs rs = true ->
+     ppoll_finish i ufds nfds tsp tmo rs <> None) ->
+  ppoll_all_answered i ufds nfds tsp tmo cs = true.
+Proof.
+  intros i ufds nfds tsp tmo cs Hok Hall.
+  pose proof (ppoll_least_choice _ Hok) as Hlo.
+  pose proof (ppoll_most_choice _ Hok) as Hhi.
+  unfold ppoll_all_answered. rewrite Hlo, Hhi. cbn [andb].
+  destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_least cs)) eqn:E1;
+    [|exfalso; exact (Hall _ Hlo E1)].
+  destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_most cs)) eqn:E2;
+    [|exfalso; exact (Hall _ Hhi E2)].
+  reflexivity.
 Qed.

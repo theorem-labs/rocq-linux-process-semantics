@@ -42,8 +42,9 @@
     - Lemma 2's compositions ([ppoll_clear_then_read_eof],
       [ppoll_set_then_read_reset]) are stated over the choice bit
       [ppoll_record] stores, for the call right after the ppoll, not over
-      the [revents] in the ppoll's effect; the checker reads that bit
-      back from [revents] ([Checks.Sys.Fs.Select.ppoll_rd]).
+      the [revents] in the ppoll's effect; the checker reads the choice
+      back from the [revents] writes ([Checks.Sys.Fs.Select.ppoll_read_choice])
+      and [Fs.Select.ppoll_rec] stores its bit ([Fs.Select.ppoll_sel]).
       [decided_ppoll_has_one_answer] is stated for one entry's masks
       ([Fs.Select.ppoll_revents_of]), not for the whole of [ppoll_spec].
     The first holds by reading the model: [State.se_set_reset] is the
@@ -306,95 +307,41 @@ Proof.
   - exists st. split; [first [exact He | reflexivity]|]. rewrite Hr. exact I.
 Qed.
 
-(** What ppoll_spec does to the model: the record of one choice. *)
+(** What ppoll_spec does to the model: the record of one choice, over
+    no descriptor or over the stream-pair ends the scanned entries name
+    ([ppoll_und]). *)
 Lemma ppoll_spec_records : forall ufds nfds tsp sig sigsetsize i m eff m' evs,
   ppoll_spec ufds nfds tsp sig sigsetsize i m (Ok eff m' evs) ->
-  exists pa sel, ppoll_outcome i m ufds nfds tsp sig sigsetsize = Some pa
-    /\ m' = with_fds (ppoll_record (m_fds m) (pa_und pa) sel) m.
+  exists und sel, m' = with_fds (ppoll_record (m_fds m) und sel) m
+    /\ (und = 0%Z
+        \/ exists cs, ppoll_scan i m ufds nfds = PpScanDone cs /\ und = ppoll_und cs).
 Proof.
   intros ufds nfds tsp sig sigsetsize i m eff m' evs H.
-  apply check_ppoll_complete_ok in H. unfold check_ppoll in H.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|]; [|discriminate H].
-  apply check_pselect_answer_model in H.
-  exists pa, (Z.land (pa_und pa) (ppoll_rd i m ufds nfds (eff_writes eff))).
-  split; [reflexivity|exact H].
+  apply check_ppoll_complete_ok in H.
+  destruct (check_ppoll_model _ _ _ _ _ _ _ _ _ _ H) as [-> | (tmo & cs & rs & Hp & ->)].
+  - exists 0%Z, 0%Z. rewrite ppoll_record_und0, with_fds_m_fds.
+    split; [reflexivity | left; reflexivity].
+  - exists (ppoll_und cs), (ppoll_sel cs rs). split; [reflexivity | right].
+    exists cs. split; [exact (proj1 (ppoll_plan_poll _ _ _ _ _ _ _ _ _ Hp)) | reflexivity].
 Qed.
 
-(** The call's undecided set is empty, or it is [ppoll_undecided] of the
-    entries [do_poll] scanned. *)
-Lemma pselect_finish_und : forall i tsp tmo c pa,
-  pselect_finish i tsp tmo c = Some pa ->
-  pa_und pa = 0%Z \/ exists und ans, c = PsCoreDone und ans /\ pa_und pa = und.
+(** A descriptor in the stream-pair choice set is one the call's
+    entries name. *)
+Lemma ppoll_und_named : forall cs b, (0 <= b)%Z ->
+  Z.testbit (ppoll_und cs) b = true -> exists s, In (b, s) cs.
 Proof.
-  intros i tsp tmo c pa H.
-  destruct c as [| e0 | und ans]; unfold pselect_finish in H.
-  - discriminate H.
-  - left. destruct tmo as [| | | | sec nsec]; cbv beta iota in H;
-      try (unfold pselect_err, ps_fixed in H; injection H as <-; reflexivity).
-    destruct (writes_all_writable i [(tsp, pselect_timespec_zero)]);
-      cbv beta iota in H; [|discriminate H].
-    injection H as <-. reflexivity.
-  - right. exists und, ans. split; [reflexivity|].
-    destruct (ans 0%Z) as [r0 ws0]. cbv beta iota in H.
-    destruct tmo as [| | | | sec nsec]; cbv beta iota in H; try discriminate H.
-    + destruct (r0 =? 0)%Z; cbv beta iota in H; [discriminate H|].
-      destruct (writes_all_writable i ws0); cbv beta iota in H; [|discriminate H].
-      injection H as <-. reflexivity.
-    + destruct (writes_all_writable i ws0); cbv beta iota in H; [|discriminate H].
-      injection H as <-. reflexivity.
-    + destruct (writes_all_writable i (ws0 ++ [(tsp, pselect_timespec_zero)]));
-        cbv beta iota in H; [|discriminate H].
-      injection H as <-. reflexivity.
-Qed.
-
-Lemma writeback_access_done : forall ufds nfds tmo c und ans,
-  ppoll_writeback_access ufds nfds tmo c = PsCoreDone und ans -> c = PsCoreDone und ans.
-Proof.
-  intros ufds nfds tmo c und ans H.
-  destruct c as [| e0 | und0 ans0]; unfold ppoll_writeback_access in H;
-    cbv beta iota in H; try exact H.
-  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); [exact H|].
-  destruct tmo; try discriminate H.
-  destruct (fst (ans0 0%Z) =? 0)%Z; discriminate H.
-Qed.
-
-Lemma ppoll_outcome_und : forall i m ufds nfds tsp sig sigsetsize pa,
-  ppoll_outcome i m ufds nfds tsp sig sigsetsize = Some pa ->
-  pa_und pa = 0%Z
-  \/ exists cs, ppoll_scan i m ufds nfds = PpScanDone cs /\ pa_und pa = ppoll_undecided cs.
-Proof.
-  intros i m ufds nfds tsp sig sigsetsize pa H.
-  unfold ppoll_outcome in H.
-  destruct (pselect_timeout (in_mem i) tsp) as [| | | | sec nsec]; cbv beta iota in H;
-    try (unfold pselect_err, ps_fixed in H; injection H as <-; left; reflexivity).
-  all: destruct (ppoll_sigmask (in_mem i) sig sigsetsize); cbv beta iota in H;
-    try (unfold pselect_err, ps_fixed in H; injection H as <-; left; reflexivity);
-    try discriminate H.
-  all: apply pselect_finish_und in H;
-    destruct H as [H|(und & ans & Hc & Hu)]; [left; exact H|right].
-  all: apply writeback_access_done in Hc; unfold ppoll_core in Hc;
-    destruct (ppoll_scan i m ufds nfds) as [| e0 | cs]; cbv beta iota in Hc;
-    try discriminate Hc.
-  all: injection Hc as Hund _; exists cs; split; [reflexivity|];
-    rewrite Hu, Hund; reflexivity.
-Qed.
-
-(** A descriptor in the undecided set is one the call's entries name. *)
-Lemma ppoll_undecided_named : forall cs b, (0 <= b)%Z ->
-  Z.testbit (ppoll_undecided cs) b = true -> exists lo hi, In (b, lo, hi) cs.
-Proof.
-  induction cs as [|[[fd lo] hi] cs IH]; intros b Hb H.
-  - cbn [ppoll_undecided] in H. rewrite Z.testbit_0_l in H. discriminate H.
-  - cbn [ppoll_undecided] in H. rewrite Z.lor_spec in H.
+  induction cs as [|[fd s] cs IH]; intros b Hb H.
+  - cbn [ppoll_und] in H. rewrite Z.testbit_0_l in H. discriminate H.
+  - cbn [ppoll_und] in H. rewrite Z.lor_spec in H.
     apply orb_true_iff in H. destruct H as [H|H].
-    + destruct (Z.eqb lo hi); cbv iota in H;
-        [rewrite Z.testbit_0_l in H; discriminate H|].
+    + match type of H with context [if ?c then _ else _] => destruct c end;
+        cbv iota in H; [|rewrite Z.testbit_0_l in H; discriminate H].
       rewrite Z.shiftl_1_l in H.
       destruct (Z.ltb_spec fd 0) as [Hneg|Hpos].
       * rewrite (Z.pow_neg_r 2 fd Hneg) in H. rewrite Z.testbit_0_l in H. discriminate H.
       * rewrite (Z.pow2_bits_eqb fd b Hpos) in H. apply Z.eqb_eq in H. subst b.
-        exists lo, hi. left. reflexivity.
-    + destruct (IH b Hb H) as (lo' & hi' & Hin). exists lo', hi'. right. exact Hin.
+        exists s. left. reflexivity.
+    + destruct (IH b Hb H) as (s' & Hin). exists s'. right. exact Hin.
 Qed.
 
 (* =========================================================================
@@ -617,7 +564,7 @@ Theorem ppoll_forward : forall ufds nfds tsp sig sigsetsize i m eff m' evs,
   resets_forward (m_fds m) (m_fds m').
 Proof.
   intros ufds nfds tsp sig sigsetsize i m eff m' evs H.
-  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (pa & sel & _ & ->).
+  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (und & sel & -> & _).
   rewrite m_fds_with_fds. apply record_forward.
 Qed.
 
@@ -840,7 +787,7 @@ Theorem ppoll_keeps_a_decided_end : forall ufds nfds tsp sig sigsetsize i m eff 
   /\ (stream_peer (m_fds m) id side = None -> stream_peer (m_fds m') id side = None).
 Proof.
   intros ufds nfds tsp sig sigsetsize i m eff m' evs fd id side st H Hfd Hr.
-  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (pa & sel & _ & ->).
+  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (und & sel & -> & _).
   rewrite m_fds_with_fds. split.
   - apply ppoll_record_keeps_decided; assumption.
   - apply peer_ppoll_record_none.
@@ -889,21 +836,21 @@ Theorem ppoll_single_reporter : forall ufds nfds tsp sig sigsetsize i m eff m' e
   fd_lookup (m_fds m') fd = Some (FdStream id s st1) ->
   se_reset st1 <> se_reset st0 ->
   stream_peer (m_fds m) id s = None
-  /\ exists cs lo hi, ppoll_scan i m ufds nfds = PpScanDone cs /\ In (bv_unsigned fd, lo, hi) cs.
+  /\ exists cs a, ppoll_scan i m ufds nfds = PpScanDone cs /\ In (bv_unsigned fd, a) cs.
 Proof.
   intros ufds nfds tsp sig sigsetsize i m eff m' evs fd id s st0 st1 H H0 H1 Hne.
-  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (pa & sel & Ho & ->).
+  destruct (ppoll_spec_records _ _ _ _ _ _ _ _ _ _ H) as (und & sel & -> & Ho).
   rewrite m_fds_with_fds, lookup_ppoll_record, H0 in H1. cbn [option_map] in H1.
-  assert (H1' : ppoll_record_entry (m_fds m) (pa_und pa) sel fd (FdStream id s st0)
+  assert (H1' : ppoll_record_entry (m_fds m) und sel fd (FdStream id s st0)
                 = FdStream id s st1) by (injection H1 as H1; exact H1).
   clear H1. apply ppoll_record_entry_stream in H1'.
   destruct H1' as (st & E & [-> | (Hu & Hp & _ & _)]).
   - injection E as E. subst st. exfalso. apply Hne. reflexivity.
   - split; [exact Hp|].
-    destruct (ppoll_outcome_und _ _ _ _ _ _ _ _ Ho) as [H0u | (cs & Hs & Hcs)].
+    destruct Ho as [H0u | (cs & Hs & Hcs)].
     + rewrite H0u, Z.testbit_0_l in Hu. discriminate Hu.
     + rewrite Hcs in Hu.
-      destruct (ppoll_undecided_named cs (bv_unsigned fd)
-                  (proj1 (bv_unsigned_in_range _ fd)) Hu) as (lo & hi & Hin).
-      exists cs, lo, hi. split; [exact Hs | exact Hin].
+      destruct (ppoll_und_named cs (bv_unsigned fd)
+                  (proj1 (bv_unsigned_in_range _ fd)) Hu) as (a & Hin).
+      exists cs, a. split; [exact Hs | exact Hin].
 Qed.

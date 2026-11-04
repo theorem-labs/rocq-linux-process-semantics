@@ -77,15 +77,26 @@ Proof.
     cbv beta iota; [apply pselect_answer_witness_ok | apply unmodeled_intro].
 Qed.
 
-(** ppoll witness: an answer [Select.ppoll_outcome] admits, or
-    [Unmodeled] where it declines (fail closed, but never stuck). *)
+(** ppoll witness: the decided answer where [Select.ppoll_plan] decides
+    one, and at [do_poll] the LEAST ready choice where every choice is
+    answered, each through [pselect_answer_witness]; [Unmodeled] where
+    the spec declines (fail closed, but never stuck). *)
 Definition ppoll_witness (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : outcome SyscallEffect :=
-  match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
-  | None => Unmodeled
-  | Some pa =>
+  match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+  | PpDecided None => Unmodeled
+  | PpDecided (Some pa) =>
       pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
-        (ppoll_rec pa) m
+        (fun _ m0 => m0) m
+  | PpPoll tmo cs =>
+      if negb (ppoll_all_answered i ufds nfds tsp tmo cs) then Unmodeled
+      else
+        match ppoll_finish i ufds nfds tsp tmo (ppoll_least cs) with
+        | Some pa =>
+            pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
+              (fun _ => ppoll_rec cs (ppoll_least cs)) m
+        | None => Unmodeled
+        end
   end.
 
 Lemma ppoll_witness_ok : forall ufds nfds tsp sig sigsetsize i m,
@@ -95,6 +106,20 @@ Proof.
   intros. unfold ppoll_spec, ppoll_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
-    cbv beta iota; [apply pselect_answer_witness_ok | apply unmodeled_intro].
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[pa|]|tmo cs];
+    cbv beta iota.
+  - apply pselect_answer_witness_ok.
+  - apply unmodeled_intro.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo cs)) eqn:Ha;
+      cbv beta iota; [apply unmodeled_intro|].
+    apply negb_false_iff in Ha.
+    unfold ppoll_all_answered in Ha.
+    apply andb_true_iff in Ha as [Ha _]. apply andb_true_iff in Ha as [Ha Hlo].
+    apply andb_true_iff in Ha as [Hclo _].
+    destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_least cs)) as [pa|]
+      eqn:Hf; [|discriminate Hlo].
+    eapply bind_step.
+    + apply (choose_ok _ (ppoll_least cs, pa)). cbn [fst snd].
+      split; [exact Hclo | exact Hf].
+    + cbv beta. cbn [fst snd]. apply pselect_answer_witness_ok.
 Qed.

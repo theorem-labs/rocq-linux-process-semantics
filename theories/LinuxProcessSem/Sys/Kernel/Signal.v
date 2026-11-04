@@ -1001,9 +1001,18 @@ Qed.
         [signalfd_dequeue] calls [dequeue_signal] against that
         [ctx->sigmask], so a read of the fd hands back exactly the
         signals a blocked mask left pending.
-        [ReadWrite.read_opaque_spec] declines a read of a signalfd
-        ([State.OSignalFd]), and ppoll, pselect6 and epoll decline the
-        descriptor, so nothing modeled reads through it.
+        [ReadWrite.read_signalfd_spec] answers that read on a
+        non-blocking signalfd ([State.OSignalFd]) and declines it on a
+        blocking one.  It READS two things, and both are exact: the
+        mask this spec keeps ([State.m_sigmask], whether SIGCHLD is
+        blocked) and [State.m_has_children]
+        ([Signalfd.signalfd_sigchld_may_pend]), and, for the signals the
+        process raises itself, the pending bits beside the mask
+        ([Signalfd.signalfd_other_may_pend], on which it declines).  It
+        dequeues pending signals, which the model does not hold, and it
+        writes no mask.  [ppoll]'s readiness on the descriptor
+        ([Select.ppoll_opaque_revents]) asks the same two questions and
+        writes nothing either; pselect6 and epoll decline it.
         132 is the easy one, and is called out separately so the others
         are not read as the pattern: it has NO window to shut.
         [do_sigaltstack] (kernel/signal.c) reads and writes
@@ -1043,7 +1052,7 @@ Qed.
         time, reached from [SYSCALL_DEFINE5(ppoll, ...)] with the mask
         pointer and its size as two arguments rather than through an
         argpack; [Fs.Select]'s [ppoll_sigmask] classifies an install as
-        [PpSigReal] and [ppoll_outcome] answers [None] for it, and the
+        [PpSigReal] and [ppoll_plan] decides a decline for it, and the
         only errnos admitted ahead of that are the timeout's, which the
         kernel raises before [set_user_sigmask] runs.  Every number on
         this bullet is checked rather than asserted, by
@@ -1068,8 +1077,10 @@ Qed.
         [spec_table]: both numbers have arms there, and the argument
         does not depend on them.
 
-    So this spec is the sole reader and the sole writer of the mask it
-    keeps, which is what makes a single field enough.
+    So this spec is the sole writer of the mask it keeps, and every
+    reader -- this spec's [oset], the SIGPIPE and SIGABRT arms, the
+    signalfd read and [ppoll]'s readiness on a signalfd -- reads that one
+    field, which is what makes a single field enough.
 
     WHY THERE IS NO ACCEPTED-SIGNAL LIST.  This is the question to ask
     of a spec that answers every mask, because the obvious worry is a
@@ -1131,7 +1142,10 @@ Qed.
     [sigmask_deliver_model] above is the writer that pairs with it:
     the install that uncovers signal 13 kills there, in the same way
     the SIGABRT branch does, so [oset]'s value stays the value of a
-    mask the next reader will agree with. *)
+    mask the next reader will agree with.  The signalfd read and
+    [ppoll]'s readiness on a signalfd are readers of the same kind: they
+    read [procst_sigmask] itself (whether SIGCHLD is blocked) and write
+    nothing, so they need no second field. *)
 
 (** [how] is [int] ([SYSCALL_DEFINE4(rt_sigprocmask, int, how, ...)]),
     so the kernel sees only the low half of the register and

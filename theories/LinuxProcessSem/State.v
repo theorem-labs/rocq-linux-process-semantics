@@ -2799,12 +2799,14 @@ Definition PipeBuf : Type := list byte * Z.
       counter value, a blocking read declines, and a write answers under
       the counter exclusion SCOPE.md states
       ([Fs.ReadWrite.read_eventfd_spec], [Fs.ReadWrite.write_eventfd_spec]);
-      readiness declines on it, and fcntl's F_GETFL and F_SETFL answer
-      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  No arm on it reads a
-      counter the model stores, and a non-blocking read is a free choice
-      over every answer Linux can give (-EAGAIN, or any nonzero count,
-      exactly 1 under [EFD_SEMAPHORE]), never one modeled value (the LPS
-      owner's rulings of 2026-11-03, 08:33Z option 1 and 14:25Z).
+      a [ppoll] entry on it for POLLIN admits a choice of readiness
+      ([Fs.Select.ppoll_opaque_revents]), select and epoll decline on it,
+      and fcntl's F_GETFL and F_SETFL answer from [w]
+      ([Fs.Fcntl.oeventfd_f_flags]).  No arm on it reads a counter the
+      model stores, and a non-blocking read is a free choice over every
+      answer Linux can give (-EAGAIN, or any nonzero count, exactly 1
+      under [EFD_SEMAPHORE]), never one modeled value (the LPS owner's
+      rulings of 2026-11-03, 08:33Z option 1 and 14:25Z).
       F_GETFD declines on it ([Fs.Fcntl.getfd_declines]): its
       close-on-exec bit came from the [eventfd2] word's EFD_CLOEXEC,
       which [w] does not carry.
@@ -2851,9 +2853,13 @@ Definition PipeBuf : Type := list byte * Z.
     - [OSignalFd mask flags]: a signalfd ([Fs.Signalfd.signalfd4_spec]),
       carrying the signal mask it reads ([mask], the caller's mask with
       SIGKILL and SIGSTOP removed, as [do_signalfd4] stores it before
-      [signotset]) and the [SFD_] flag word it was created with.  Only
-      [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
-      poll and every other arm decline it.
+      [signotset]) and the [SFD_] flag word it was created with.  A
+      [read] of a non-blocking one answers from what the model knows
+      can be pending ([Fs.ReadWrite.read_signalfd_spec]); [close],
+      [close_range], [F_SETFD] and [F_GETFD] answer on it; a [ppoll]
+      entry on it for POLLIN admits a choice of readiness
+      ([Fs.Select.ppoll_opaque_revents]); a blocking read and every
+      other arm decline it.
         fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)

@@ -2864,6 +2864,437 @@ Proof.
 Qed.
 
 (* =========================================================================
+   Waits that end: [WaitEnv] and [run_wcfg]
+   =========================================================================
+
+   [Fs.Select.ppoll_spec] declines a [ppoll] with a NULL timeout whose
+   entries may all be not ready -- an eventfd or a signalfd entry, whose
+   readiness is the environment's -- because the choice where nothing is
+   ready never returns, and the model cannot say that a call never
+   returns.  That is the right DEFAULT.  Under a reading in which such a
+   call returns, a statement that a program must exit would silently
+   assume that someone writes the eventfd or that the child changes
+   state, and a program whose child never ends would be proved to exit.
+
+   [WaitEnv] is the other reading, as a premise a statement NAMES: the
+   environment ends every such wait with a ready outcome.  It is a claim
+   about the environment's future, so it is a configuration of the run
+   in the pattern of [SpuriousCfg] above, and not a launch predicate.
+   [waits_may_hang] is the default and changes nothing
+   ([sstep_wcfg_hang_iff], [run_wcfg_hang]); [waits_end] is the premise.
+   A statement about a monitor loop that must make progress names
+   [waits_end] in its run.
+
+   [sstep_wcfg cfg w] is [sstep_cfg cfg] with two changes, both at an
+   input [Fs.Select.ppoll_wakeable_b] names and only when [we_wakes w]
+   ([wait_ends]): the decline there no longer steps to [SError], and the
+   step takes one of the call's ready outcomes
+   ([Fs.Select.ppoll_wake_spec]) exactly as [sstep_cfg_syscall] takes an
+   answered outcome, its materialization fault included.  At such an
+   input [syscall_spec] admits the decline and nothing else
+   ([syscall_spec_wakeable]), so no step of [sstep_cfg] is lost, and the
+   wake step always exists ([sstep_wcfg_wake_progress]).  Nothing under
+   [Sys/] reads a [WaitEnv], and [sstep], [sstep_cfg] and every
+   statement above are unchanged. *)
+
+Record WaitEnv := mkWaitEnv {
+  we_wakes : bool
+}.
+
+(** The default reading: an infinite wait may never end. *)
+Definition waits_may_hang : WaitEnv := mkWaitEnv false.
+
+(** The named premise: every infinite wait on an eventfd or a signalfd
+    ends with a ready outcome. *)
+Definition waits_end : WaitEnv := mkWaitEnv true.
+
+(** Under [w], the wait of the call at [(i, m)] ends. *)
+Definition wait_ends (w : WaitEnv) (i : SyscallInput) (m : Model) : Prop :=
+  we_wakes w = true /\ ppoll_wakeable_b i m = true.
+
+Lemma wait_ends_hang : forall i m, ~ wait_ends waits_may_hang i m.
+Proof. intros i m (H & _). discriminate H. Qed.
+
+(** Where a wait can end, [syscall_spec] declines and admits nothing
+    else. *)
+Lemma syscall_spec_wakeable : forall i m o,
+  ppoll_wakeable_b i m = true -> (syscall_spec i m o <-> o = Unmodeled).
+Proof.
+  intros i m o Hw.
+  pose proof (ppoll_wakeable_sysno _ _ Hw) as E.
+  assert (Hl : lookup_arm spec_table (bv_unsigned (in_sysno i))
+               = Some (mkSpecArm 73%Z (fun i => ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1))
+                                               (in_arg i 2) (in_arg i 3) (in_arg i 4) i)))
+    by (rewrite E; reflexivity).
+  assert (Hd : syscall_spec i m o
+               <-> ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+                     (in_arg i 3) (in_arg i 4) i m o)
+    by (unfold syscall_spec; exact (dispatch_arm _ _ _ _ _ Hl)).
+  exact (iff_trans Hd (ppoll_spec_wakeable_declined _ _ _ Hw)).
+Qed.
+
+(** [ppoll] draws no injected refusal, so no configuration filters its
+    outcomes. *)
+Lemma injected_family_off_ppoll : forall cfg i,
+  bv_unsigned (in_sysno i) = 73%Z -> injected_family_off cfg i = false.
+Proof.
+  intros cfg i E. unfold injected_family_off. rewrite E. reflexivity.
+Qed.
+
+Section StepWCfg.
+Variable segs : list Segment.
+
+(** [sstep_cfg] under a wait environment: every constructor is
+    [sstep_cfg]'s, the decline additionally requires that the wait does
+    not end, and the two wake constructors take a ready outcome where it
+    does. *)
+Inductive sstep_wcfg (cfg : SpuriousCfg) (w : WaitEnv)
+    : config -> list event -> step_to -> Prop :=
+| sstep_wcfg_instr : forall ms model ms' model',
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineOk (ms', model') ->
+    sstep_wcfg cfg w (mkCfg ms model) [] (SNext (mkCfg ms' model'))
+| sstep_wcfg_instr_fault : forall ms model,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineFault ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_instr_unmodeled : forall ms model,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = None ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_vdso_call : forall ms model fn n eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep_wcfg cfg w (mkCfg ms model) evs
+          (SNext (mkCfg (vdso_post segs ms model (vdso_frame segs) eff)
+                        (with_vdso_bump model'')))
+| sstep_wcfg_vdso_materialization_fault : forall ms model fn n eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_vdso_unmodeled : forall ms model fn,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_call_unmodeled segs ms model fn ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_syscall : forall ms model x8 eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    ~ spurious_refusal_cfg cfg (sys_input segs ms x8) model eff ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep_wcfg cfg w (mkCfg ms model) evs
+          (SNext (mkCfg (advance_past_svc (apply_effect ms eff)) model''))
+| sstep_wcfg_syscall_materialization_fault : forall ms model x8 eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    ~ spurious_refusal_cfg cfg (sys_input segs ms x8) model eff ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_exit : forall ms model x8 eff model' evs code,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    m_halted model' = Some code ->
+    m_killed model' = None ->
+    sstep_wcfg cfg w (mkCfg ms model) (evs ++ [ExitEv code (m_fs model')])
+          (SNext (mkCfg ms model'))
+| sstep_wcfg_killed : forall ms model x8 eff model' evs sig,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    m_killed model' = Some sig ->
+    sstep_wcfg cfg w (mkCfg ms model) (evs ++ [KillEv sig (m_fs model')])
+          (SNext (mkCfg ms model'))
+| sstep_wcfg_syscall_unmodeled : forall ms model x8,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input segs ms x8) model Unmodeled ->
+    ~ wait_ends w (sys_input segs ms x8) model ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError
+| sstep_wcfg_wake : forall ms model x8 eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    wait_ends w (sys_input segs ms x8) model ->
+    ppoll_wake_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    ~ spurious_refusal_cfg cfg (sys_input segs ms x8) model eff ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep_wcfg cfg w (mkCfg ms model) evs
+          (SNext (mkCfg (advance_past_svc (apply_effect ms eff)) model''))
+| sstep_wcfg_wake_materialization_fault : forall ms model x8 eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    wait_ends w (sys_input segs ms x8) model ->
+    ppoll_wake_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+    ~ spurious_refusal_cfg cfg (sys_input segs ms x8) model eff ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep_wcfg cfg w (mkCfg ms model) [] SError.
+
+(** MEANING: under [waits_may_hang] the relation is [sstep_cfg]. *)
+Lemma sstep_wcfg_hang_iff : forall cfg c evs r,
+  sstep_wcfg cfg waits_may_hang c evs r <-> sstep_cfg segs cfg c evs r.
+Proof.
+  intros cfg c evs r; split; intros H.
+  - destruct H;
+      [ eapply sstep_cfg_instr | eapply sstep_cfg_instr_fault
+      | eapply sstep_cfg_instr_unmodeled
+      | eapply sstep_cfg_vdso_call | eapply sstep_cfg_vdso_materialization_fault
+      | eapply sstep_cfg_vdso_unmodeled
+      | eapply sstep_cfg_syscall | eapply sstep_cfg_syscall_materialization_fault
+      | eapply sstep_cfg_exit | eapply sstep_cfg_killed
+      | eapply sstep_cfg_syscall_unmodeled
+      | exfalso; eapply wait_ends_hang; eassumption
+      | exfalso; eapply wait_ends_hang; eassumption ];
+      eauto.
+  - destruct H;
+      [ eapply sstep_wcfg_instr | eapply sstep_wcfg_instr_fault
+      | eapply sstep_wcfg_instr_unmodeled
+      | eapply sstep_wcfg_vdso_call | eapply sstep_wcfg_vdso_materialization_fault
+      | eapply sstep_wcfg_vdso_unmodeled
+      | eapply sstep_wcfg_syscall | eapply sstep_wcfg_syscall_materialization_fault
+      | eapply sstep_wcfg_exit | eapply sstep_wcfg_killed
+      | eapply sstep_wcfg_syscall_unmodeled ];
+      eauto using wait_ends_hang.
+Qed.
+
+(** A wake step is a [ppoll] that RETURNED READY: its outcome leaves the
+    model as it was, emits nothing, returns the count of ready entries,
+    between 1 and [Fs.Select.ppoll_nfds_max], and writes back the
+    [revents] of that choice at [a0]. *)
+Lemma sstep_wcfg_wake_ready : forall ms model x8 eff model' evs,
+  ppoll_wake_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
+  model' = model /\ evs = []
+  /\ exists rs, (1 <= ppoll_count rs <= ppoll_nfds_max)%Z
+             /\ eff_ret eff = Z_to_bv 64 (ppoll_count rs)
+             /\ eff_writes eff = ppoll_writeback (in_arg (sys_input segs ms x8) 0) rs.
+Proof.
+  intros ms model x8 eff model' evs H.
+  exact (ppoll_wake_spec_ready _ _ _ _ _ H).
+Qed.
+
+(** Where a wait ends, the run steps: by a ready outcome, or by the
+    error transition where its first touch of a page is refused. *)
+Lemma sstep_wcfg_wake_progress : forall cfg w ms model x8,
+  m_halted model = None ->
+  ms_svc_pending ms = Some x8 ->
+  wait_ends w (sys_input segs ms x8) model ->
+  exists evs st, sstep_wcfg cfg w (mkCfg ms model) evs st.
+Proof.
+  intros cfg w ms model x8 Hh Hsvc Hw.
+  destruct (ppoll_wake_spec_progress _ _ (proj2 Hw)) as (eff & Hspec).
+  assert (Hns : ~ spurious_refusal_cfg cfg (sys_input segs ms x8) model eff).
+  { apply spurious_refusal_family_on. apply injected_family_off_ppoll.
+    exact (ppoll_wakeable_sysno _ _ (proj2 Hw)). }
+  destruct (materialize_model_accesses model (syscall_effect_accesses eff))
+    as [model'' |] eqn:Hmat.
+  - eexists _, _. eapply sstep_wcfg_wake; eassumption.
+  - eexists _, _. eapply sstep_wcfg_wake_materialization_fault; eassumption.
+Qed.
+
+Inductive star_wcfg (cfg : SpuriousCfg) (w : WaitEnv) : config -> list event -> config -> Prop :=
+| star_wcfg_refl : forall c, star_wcfg cfg w c [] c
+| star_wcfg_step : forall c1 evs c2 tr c3,
+    sstep_wcfg cfg w c1 evs (SNext c2) ->
+    star_wcfg cfg w c2 tr c3 ->
+    star_wcfg cfg w c1 (evs ++ tr) c3.
+
+Lemma star_wcfg_hang_iff : forall cfg c tr c',
+  star_wcfg cfg waits_may_hang c tr c' <-> star_cfg segs cfg c tr c'.
+Proof.
+  intros cfg c tr c'; split; intros H; induction H.
+  - apply star_cfg_refl.
+  - eapply star_cfg_step; [apply sstep_wcfg_hang_iff; eassumption | assumption].
+  - apply star_wcfg_refl.
+  - eapply star_wcfg_step; [apply sstep_wcfg_hang_iff; eassumption | assumption].
+Qed.
+
+(** The uncovered points of the run under [w]: [unmodeled_at]'s, less a
+    decline where the wait ends, which steps instead. *)
+Definition unmodeled_wat (w : WaitEnv) (c : config) : Prop :=
+  m_halted (cfg_model c) = None /\
+  ( (ms_svc_pending (cfg_ms c) = None /\
+       mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+       vdso_entry_fn segs (ms_pc (cfg_ms c)) = None)
+    \/ (ms_svc_pending (cfg_ms c) = None /\
+        mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+        (exists fn,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn /\
+           vdso_call_unmodeled segs (cfg_ms c) (cfg_model c) fn))
+    \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
+                   syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) Unmodeled /\
+                   ~ wait_ends w (sys_input segs (cfg_ms c) x8) (cfg_model c)) ).
+
+Lemma unmodeled_wat_hang : forall c,
+  unmodeled_wat waits_may_hang c <-> unmodeled_at segs c.
+Proof.
+  intros c; split.
+  - intros (Hh & [Hi | [Hv | (x8 & Hsvc & Hspec & _)]]).
+    + split; [exact Hh | left; exact Hi].
+    + split; [exact Hh | right; left; exact Hv].
+    + split; [exact Hh | right; right; exists x8; split; assumption].
+  - intros (Hh & [Hi | [Hv | (x8 & Hsvc & Hspec)]]).
+    + split; [exact Hh | left; exact Hi].
+    + split; [exact Hh | right; left; exact Hv].
+    + split; [exact Hh |].
+      right. right. exists x8. split; [exact Hsvc |]. split; [exact Hspec |].
+      apply wait_ends_hang.
+Qed.
+
+Definition obs_trace_wcfg (cfg : SpuriousCfg) (w : WaitEnv) (c0 : config)
+    (tr : list event) : Prop :=
+  exists tr' c, star_wcfg cfg w c0 tr' c /\ is_prefix tr tr'.
+
+Definition reaches_error_wcfg (cfg : SpuriousCfg) (w : WaitEnv) (c0 : config) : Prop :=
+  exists tr c evs, star_wcfg cfg w c0 tr c /\ sstep_wcfg cfg w c evs SError.
+
+Inductive all_traces_error_wcfg (cfg : SpuriousCfg) (w : WaitEnv) : config -> Prop :=
+| all_traces_error_wcfg_intro : forall c,
+    (exists evs to, sstep_wcfg cfg w c evs to) ->
+    (forall evs c', sstep_wcfg cfg w c evs (SNext c') -> all_traces_error_wcfg cfg w c') ->
+    all_traces_error_wcfg cfg w c.
+
+Definition reaches_unmodeled_wcfg (cfg : SpuriousCfg) (w : WaitEnv) (c0 : config) : Prop :=
+  exists tr c, star_wcfg cfg w c0 tr c /\ unmodeled_wat w c.
+
+(** ... and under [waits_may_hang] each of the four is [sstep_cfg]'s. *)
+Lemma obs_trace_wcfg_hang : forall cfg c0 tr,
+  obs_trace_wcfg cfg waits_may_hang c0 tr <-> obs_trace_cfg segs cfg c0 tr.
+Proof.
+  intros cfg c0 tr; split; intros (tr' & c & Hs & Hp); exists tr', c;
+    (split; [apply star_wcfg_hang_iff; exact Hs | exact Hp]).
+Qed.
+
+Lemma reaches_error_wcfg_hang : forall cfg c0,
+  reaches_error_wcfg cfg waits_may_hang c0 <-> reaches_error_cfg segs cfg c0.
+Proof.
+  intros cfg c0; split; intros (tr & c & evs & Hs & He); exists tr, c, evs;
+    (split; [apply star_wcfg_hang_iff; exact Hs | apply sstep_wcfg_hang_iff; exact He]).
+Qed.
+
+Lemma all_traces_error_wcfg_hang : forall cfg c,
+  all_traces_error_wcfg cfg waits_may_hang c <-> all_traces_error_cfg segs cfg c.
+Proof.
+  intros cfg c; split; intros H.
+  - induction H as [c (evs & to & Hstep) _ IH].
+    constructor.
+    + exists evs, to. apply sstep_wcfg_hang_iff; exact Hstep.
+    + intros evs' c' Hss. apply (IH evs' c'). apply sstep_wcfg_hang_iff; exact Hss.
+  - induction H as [c (evs & to & Hstep) _ IH].
+    constructor.
+    + exists evs, to. apply sstep_wcfg_hang_iff; exact Hstep.
+    + intros evs' c' Hss. apply (IH evs' c'). apply sstep_wcfg_hang_iff; exact Hss.
+Qed.
+
+Lemma reaches_unmodeled_wcfg_hang : forall cfg c0,
+  reaches_unmodeled_wcfg cfg waits_may_hang c0 <-> reaches_unmodeled_cfg segs cfg c0.
+Proof.
+  intros cfg c0; split; intros (tr & c & Hs & Hu); exists tr, c;
+    (split; [apply star_wcfg_hang_iff; exact Hs | apply unmodeled_wat_hang; exact Hu]).
+Qed.
+
+(** Under every wait environment, an uncovered point is an error, and a
+    run all of whose executions error reaches an error. *)
+Lemma reaches_unmodeled_wcfg_reaches_error_wcfg : forall cfg w c0,
+  reaches_unmodeled_wcfg cfg w c0 -> reaches_error_wcfg cfg w c0.
+Proof.
+  intros cfg w c0 (tr & [ms model] & Hstar & Hh &
+                   [(Hsvc & Hacc & Hv) | [(Hsvc & Hacc & fn & Hv & Hu)
+                                         | (x8 & Hsvc & Hspec & Hne)]]);
+    cbn [cfg_ms cfg_model] in *.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    apply sstep_wcfg_instr_unmodeled; assumption.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    eapply sstep_wcfg_vdso_unmodeled; eassumption.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    apply (sstep_wcfg_syscall_unmodeled cfg w ms model x8); assumption.
+Qed.
+
+Lemma all_traces_error_wcfg_reaches_error_wcfg : forall cfg w c,
+  all_traces_error_wcfg cfg w c -> reaches_error_wcfg cfg w c.
+Proof.
+  intros cfg w c Hall. induction Hall as [c Hprogress Hnext IH].
+  destruct Hprogress as (evs & to & Hstep). destruct to as [c' |].
+  - destruct (IH evs c' Hstep) as (tr & c2 & err_evs & Hstar & Herr).
+    exists (evs ++ tr), c2, err_evs. split; [| exact Herr].
+    econstructor; eauto.
+  - exists [], c, evs. split; [apply star_wcfg_refl | exact Hstep].
+Qed.
+
+End StepWCfg.
+
+(** [run] under a spurious-failure configuration and a wait environment,
+    written as the same [match] as [run_scfg]. *)
+Definition run_wcfg (cfg : SpuriousCfg) (w : WaitEnv) (img : Image) (lim : Z)
+    (en : ExecEntry) (inp : ProcInput) : behavior :=
+  match img, en with
+  | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace_wcfg vsegs cfg w c0;
+       bh_errors := reaches_error_wcfg vsegs cfg w c0;
+       bh_all_errors := all_traces_error_wcfg vsegs cfg w c0;
+       bh_unmodeled := reaches_unmodeled_wcfg vsegs cfg w c0 |}
+  end.
+
+(** MEANING PRESERVED: [run_wcfg cfg waits_may_hang] is [run_scfg cfg],
+    observation by observation. *)
+Lemma run_wcfg_hang : forall cfg img lim en inp,
+  behavior_equiv (run_wcfg cfg waits_may_hang img lim en inp)
+                 (run_scfg cfg img lim en inp).
+Proof.
+  intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp.
+  cbn [run_wcfg run_scfg bh_traces bh_errors bh_all_errors bh_unmodeled].
+  split; [intros tr; apply obs_trace_wcfg_hang |].
+  split; [apply reaches_error_wcfg_hang |].
+  split; [apply all_traces_error_wcfg_hang |].
+  apply reaches_unmodeled_wcfg_hang.
+Qed.
+
+Lemma run_wcfg_unmodeled_errors : forall cfg w img lim en inp,
+  bh_unmodeled (run_wcfg cfg w img lim en inp) -> bh_errors (run_wcfg cfg w img lim en inp).
+Proof.
+  intros cfg w [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  cbn [run_wcfg bh_unmodeled bh_errors] in *.
+  eapply reaches_unmodeled_wcfg_reaches_error_wcfg; exact H.
+Qed.
+
+Lemma run_wcfg_all_errors_errors : forall cfg w img lim en inp,
+  bh_all_errors (run_wcfg cfg w img lim en inp) -> bh_errors (run_wcfg cfg w img lim en inp).
+Proof.
+  intros cfg w [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  cbn [run_wcfg bh_all_errors bh_errors] in *.
+  eapply all_traces_error_wcfg_reaches_error_wcfg; exact H.
+Qed.
+
+(* =========================================================================
    No vDSO call touches the lazy ledger
    =========================================================================
 

@@ -697,10 +697,12 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          nonzero value or -EAGAIN, and a write 8 or
                          -EAGAIN, whatever another writer has done
                          ([ReadWrite.read_eventfd_spec],
-                         [ReadWrite.write_eventfd_spec]); select, poll
-                         and epoll decline on it.  The child is one more
-                         such writer.  It also shares [f_flags], whose
-                         O_NONBLOCK those two arms read
+                         [ReadWrite.write_eventfd_spec]); select and
+                         epoll decline, while a ppoll entry for POLLIN
+                         admits a choice of readiness
+                         ([Select.ppoll_opaque_revents]).  The child is
+                         one more such writer.  It also shares [f_flags],
+                         whose O_NONBLOCK those two arms read
                          ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
                          no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
@@ -739,10 +741,12 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        tasks, so read and write answer from the
                        environment's counter
                        ([ReadWrite.read_eventfd_spec],
-                       [ReadWrite.write_eventfd_spec]) and select, poll
-                       and epoll decline.  Before the clone, and after a
-                       clone that failed, the entry stays [FdEventfd] and
-                       the counter stays modeled. *)
+                       [ReadWrite.write_eventfd_spec]).  Select and epoll
+                       decline; a ppoll entry for POLLIN admits a choice
+                       of readiness ([Select.ppoll_opaque_revents]).
+                       Before the clone, and after a clone that failed,
+                       the entry stays [FdEventfd] and the counter stays
+                       modeled. *)
                     | FdEventfd _ => true
                     (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
                        [Fs.File.dup_modeled_entry]'s reason: one rule for
@@ -787,8 +791,9 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
     [State.FdOpaque (State.OEventFd w)], on which no arm reads a counter
     the model stores: read and write answer from the environment's
     counter ([ReadWrite.read_eventfd_spec],
-    [ReadWrite.write_eventfd_spec], which read [w]'s two bits), and
-    select, poll and epoll decline.
+    [ReadWrite.write_eventfd_spec], which read [w]'s two bits).  Select
+    and epoll decline; a ppoll entry for POLLIN admits a choice of
+    readiness ([Select.ppoll_opaque_revents]).
     The table this model holds is the parent's; the child is not run
     (SCOPE.md, "Threads"), so there is no second table to convert here.
 

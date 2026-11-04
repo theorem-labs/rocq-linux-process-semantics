@@ -14,6 +14,9 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Uaccess.
+(* [Fs.Signalfd]'s pending-signal questions, which a signalfd's [revents]
+   below is answered from. *)
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Signalfd.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -175,7 +178,9 @@ Open Scope sys_scope.
     There is no [poll] and no [epoll_wait] either -- [ppoll] (73) and the
     [epoll] family are the only other multiplexing entry points.  [ppoll]
     is modeled, at the bottom of this file, on the same readiness
-    argument and with the same declines.  The epoll family is, on its
+    argument and with the same declines, except that an eventfd's and a
+    signalfd's readiness is the environment's ([ppoll_opaque_revents]).
+    The epoll family is, on its
     REJECTING half only:
     [Fs.EventPoll] declines [epoll_create1]'s success arm, so no
     descriptor is ever an epoll instance and neither [epoll_ctl] nor
@@ -680,7 +685,7 @@ Definition select_pick (lo hi sel : Z) : Z :=
     range an import has already accepted.  [set_fd_set] rewrites the
     word [read_fd_set] imported at the same [p], [put_timespec64] the
     sixteen bytes [pselect_timeout] imported at the same [tsp], and the
-    [revents] write-back lies inside the array [ppoll_core] imported,
+    [revents] write-back lies inside the array [ppoll_scan] imported,
     whose [access_okb] holds for every [nfds] that writes at all.  If a
     refused range ever does reach it, the answer is the decline, and
     that is deliberate, because what Linux does with a refused write
@@ -951,9 +956,9 @@ Definition pselect_remaining_ok (sec nsec : word) (rem : list byte) : bool :=
 (** [poll_select_finish]: the timeout write-back.  STATED OVER AN
     ABSTRACT [PselectCore] rather than over [core_sys_select], because
     the kernel's function is shared: ppoll (73) reaches the identical
-    call with the identical [PT_TIMESPEC] argument, so [ppoll_outcome]
-    reuses this definition unchanged and every sentence below is about
-    both syscalls.
+    call with the identical [PT_TIMESPEC] argument, so [ppoll_plan] and
+    [ppoll_finish] reuse this definition unchanged and every sentence
+    below is about both syscalls.
 
     Every return that comes out of [core_sys_select] passes through it,
     errors included, and it writes the REMAINING TIME back to [*tsp].
@@ -1251,7 +1256,22 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
     [FdFile] arm the same way -- and so does the decline of every
     descriptor whose readiness is a schedule rather than a constant.
 
-    Three things are genuinely new:
+    AN EVENTFD MADE SHARED BY A CLONE, AND A SIGNALFD, ARE THE
+    EXCEPTION: their readiness is a schedule too, but one the model can
+    bound, so for an entry whose [events] is exactly POLLIN
+    [ppoll_opaque_revents] answers a SET of admissible [revents] rather
+    than one, and the call admits one choice per entry.  The call is
+    answered only where EVERY choice is answered by the path the
+    deterministic kinds take ([ppoll_all_answered]); otherwise the whole
+    call declines, because a spec may never admit a decline beside an
+    answer.  That has three consequences, by timeout.  A zero timeout is
+    answered for every choice.  A NULL timeout is declined whenever the
+    all-not-ready choice exists, because that choice never returns.  A
+    real deadline is declined whenever such a shared-eventfd entry or a
+    ready-capable signalfd entry is present ([ppoll_env_deadline]).  An
+    all-zero signalfd entry does not cause this decline.
+
+    Four things are genuinely new:
 
     - AN UNOPENED DESCRIPTOR IS AN ANSWER, NOT AN ERROR.  Where
       [max_select_fd] makes one closed descriptor -EBADF for the whole
@@ -1298,7 +1318,11 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
       that the peer's close fixed, so every later call on the end -- a
       read or another ppoll -- keeps to what this one showed.  The
       truesize choice is not recorded: a later call that answers it
-      differently adds runs Linux may not have, and removes none.
+      differently adds runs Linux may not have, and removes none.  An
+      eventfd made shared by a clone and a signalfd are chosen per ENTRY
+      instead (the paragraph above): another task changes what they
+      report, and it may run between two entries' polls.  [PpollTag]
+      says whose choice each admitted [revents] is.
 
     WHERE THE ORDERING COMES FROM.  As for pselect6: the bodies of
     [SYSCALL_DEFINE5(ppoll, ...)], [do_sys_poll], [do_poll] and
@@ -1405,7 +1429,7 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [bits_all_pollable] gives *)
            Some (Z.land default_pollmask events, Z.land default_pollmask events)
        (* ENUMERATED ON PURPOSE, exactly as [bits_all_pollable] is and
-          for the same reason: a [Some _ => true] catch-all would be
+          for the same reason: a [Some _ => ...] catch-all would be
           extensionally identical today and would silently absorb the
           next [FdEntry] constructor as unconditionally ready.  A
           channel, a socket and a pipe end each have a [->poll] method
@@ -1422,14 +1446,9 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
        | Some FdUrandom => None
            (* the same: [urandom_fops] has no [.poll] either *)
        | Some (FdOpaque _) => None
-           (* FAIL-CLOSED: [do_pollfd]'s [fdget] refuses an O_PATH
-              descriptor (that would be [EPOLLNVAL]), an eventfd answers
-              [eventfd_poll] off its counter, a /proc/sys file answers
-              [proc_sys_poll], the /proc/self/fd directory
-              [DEFAULT_POLLMASK] (no [.poll]), a signalfd
-              [signalfd_poll] off its pending signals, and an
-              [ONsFile]'s object is of unknown type; none of the six is
-              written *)
+           (* never asked: [ppoll_alts_of] answers an opaque descriptor
+              with [ppoll_opaque_revents] before this function is
+              consulted, and [None] here keeps this function closed *)
        | Some (FdStream id side st) =>
            (* [sock_poll] -> [unix_poll], masked by the entry's filter:
               [demangle_poll(events) | EPOLLERR | EPOLLHUP] ([do_pollfd],
@@ -1438,7 +1457,7 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               the two are equal and there is one answer; where they fall
               inside -- POLLOUT asked in the truesize band, or the
               EPOLLERR every filter holds on a survivor that has shown
-              nothing yet ([State.RsUnknown]) -- [ppoll_core] makes the
+              nothing yet ([State.RsUnknown]) -- [ppoll_alts_of] makes the
               entry's [revents] a choice of the two, and [ppoll_record]
               records the survivor's *)
            let '(lo, hi) := stream_poll_mask fds id side st in
@@ -1458,50 +1477,173 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               carry *)
        end.
 
-(** Every entry's [fd] and its two answers, in entry order, or [None]
-    where the model declines one -- which declines the whole call. *)
-Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
-    : option (list (Z * Z * Z)) :=
+(** [POLLIN] and [POLLERR] (include/uapi/asm-generic/poll.h: 0x0001 and
+    0x0008), the two bits an eventfd's or a signalfd's [revents] can
+    carry under an [events] of POLLIN.  They equal [EPOLLIN] and
+    [EPOLLERR] (include/uapi/linux/eventpoll.h), so [mangle_poll] passes
+    them unchanged.  Both read at v6.18.44; identical at v6.18.46. *)
+Definition POLLIN : Z := 1.
+
+Definition POLLERR : Z := 8.
+
+(** [do_pollfd] on an opaque descriptor ([State.OpaqueFd]): the
+    [revents] it may answer, or [None] where the model declines.
+
+    For an entry whose [events] is exactly POLLIN, [do_pollfd]'s filter
+    is EPOLLIN|EPOLLERR|EPOLLHUP, and two objects answer:
+    - AN EVENTFD MADE SHARED BY A CLONE ([State.OEventFd]; before a
+      clone it is [State.FdEventfd], which [ppoll_revents_of] answers
+      from its counter).  [eventfd_poll] (fs/eventfd.c) reports EPOLLIN
+      when the counter is above 0, EPOLLERR when it is [ULLONG_MAX], and
+      EPOLLOUT when it is below [ULLONG_MAX - 1].  The filter drops
+      EPOLLOUT, and EPOLLERR comes only with EPOLLIN, so the answer is 0,
+      POLLIN or POLLIN|POLLERR.  The counter is the environment's, as
+      for [ReadWrite.read_eventfd_spec], and [ULLONG_MAX] is reachable
+      through [eventfd_signal_mask], so all three are admitted.
+    - A SIGNALFD.  [signalfd_poll] (fs/signalfd.c) reports EPOLLIN when a
+      signal in the descriptor's mask is pending.  Where
+      [Signalfd.signalfd_sigchld_may_pend] holds a SIGCHLD may be, so 0
+      and POLLIN are admitted; otherwise nothing can be, and the answer is
+      0.  Where [Signalfd.signalfd_other_may_pend] holds the entry
+      declines, as the signalfd read does.
+    Any other [events] word on these two declines: it is not a shape a
+    program in reach asks, and each extra bit would need its own
+    argument.  The other four objects decline whatever [events] is: an
+    O_PATH descriptor is refused by [do_pollfd]'s [fdget] (that would be
+    EPOLLNVAL), a /proc/sys file answers [proc_sys_poll], the
+    /proc/self/fd directory [DEFAULT_POLLMASK] (no [.poll]), and an
+    [ONsFile]'s object is of unknown type; none of these is written.
+      fs/select.c [do_pollfd]: read at v6.18.44; identical at v6.18.46.
+      fs/eventfd.c [eventfd_poll], [eventfd_signal_mask]: read at v6.18.44; identical at v6.18.46.
+      fs/signalfd.c [signalfd_poll]: read at v6.18.44; identical at v6.18.46. *)
+Definition ppoll_opaque_revents (m : Model) (o : OpaqueFd) (events : Z)
+    : option (list Z) :=
+  match o with
+  | OEventFd _ =>
+      if Z.eqb events POLLIN then Some [0%Z; POLLIN; Z.lor POLLIN POLLERR]
+      else None
+  | OSignalFd mask _ =>
+      if negb (Z.eqb events POLLIN) then None
+      else if signalfd_other_may_pend mask m then None
+      else if signalfd_sigchld_may_pend mask m then Some [0%Z; POLLIN]
+      else Some [0%Z]
+  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ => None
+  end.
+
+(** WHOSE CHOICE an admitted [revents] is: [PpOnly], the entry's one
+    answer; [PpEnv], one of the answers of an eventfd made shared by a
+    clone or of a signalfd, which the environment picks per entry
+    ([ppoll_opaque_revents]); [PpEnd hi], the [lo] ([hi = false]) or the
+    [hi] ([hi = true]) mask of a stream-pair end whose two masks differ,
+    picked once per descriptor ([ppoll_choice_at]). *)
+Inductive PpollTag := PpOnly | PpEnv | PpEnd (hi : bool).
+
+(** A stream-pair end's pair as alternatives: one where the two masks
+    are equal, else both, tagged with the side. *)
+Definition ppoll_pair_alts (p : Z * Z) : list (Z * PpollTag) :=
+  let '(lo, hi) := p in
+  if Z.eqb lo hi then [(lo, PpOnly)] else [(lo, PpEnd false); (hi, PpEnd true)].
+
+(** [do_pollfd] for one entry: every [revents] the model admits, with
+    whose choice it is, or [None] where the model declines (fail
+    closed).  An opaque descriptor is answered by
+    [ppoll_opaque_revents]; every other one by [ppoll_revents_of]. *)
+Definition ppoll_alts_of (m : Model) (fd events : Z)
+    : option (list (Z * PpollTag)) :=
+  match (if (fd <? 0)%Z then None else fd_lookup (m_fds m) (Z_to_bv 64 fd)) with
+  | Some (FdOpaque o) =>
+      option_map (map (fun r => (r, PpEnv))) (ppoll_opaque_revents m o events)
+  | _ => option_map ppoll_pair_alts (ppoll_revents_of (m_fds m) fd events)
+  end.
+
+(** Every entry's [fd] and its admitted [revents], in entry order, or
+    [None] where the model declines one -- which declines the whole
+    call. *)
+Fixpoint ppoll_entries (m : Model) (es : list (Z * Z))
+    : option (list (Z * list (Z * PpollTag))) :=
   match es with
   | [] => Some []
   | (fd, ev) :: rest =>
-      match ppoll_revents_of fds fd ev with
+      match ppoll_alts_of m fd ev with
       | None => None
-      | Some (lo, hi) =>
-          match ppoll_revents fds rest with
+      | Some s =>
+          match ppoll_entries m rest with
           | None => None
-          | Some cs => Some ((fd, lo, hi) :: cs)
+          | Some cs => Some ((fd, s) :: cs)
           end
       end
   end.
 
-(** The descriptors whose [revents] is a choice: bit [fd] of each entry
-    whose two answers differ.  Such an entry names a stream-pair end, so
-    its [fd] is not negative. *)
-Fixpoint ppoll_undecided (cs : list (Z * Z * Z)) : Z :=
-  match cs with
-  | [] => 0%Z
-  | (fd, lo, hi) :: rest =>
-      Z.lor (if Z.eqb lo hi then 0%Z else Z.shiftl 1 fd) (ppoll_undecided rest)
+Definition ppoll_is_hi (t : PpollTag) : bool :=
+  match t with
+  | PpEnd true => true
+  | _ => false
   end.
 
-(** Each entry's [revents] for a choice [sel]: [hi] where [sel] has bit
-    [fd], [lo] elsewhere.  Keyed by the descriptor, so two entries naming
-    one end report the same mask, as they do in Linux. *)
-Fixpoint ppoll_pick (cs : list (Z * Z * Z)) (sel : Z) : list Z :=
+(** The descriptors whose [revents] is a stream-pair choice: bit [fd] of
+    each entry with a [hi] alternative.  Such an entry names a
+    stream-pair end, so its [fd] is not negative.  An eventfd's or a
+    signalfd's choice is per entry and has no bit here. *)
+Fixpoint ppoll_und (cs : list (Z * list (Z * PpollTag))) : Z :=
   match cs with
-  | [] => []
-  | (fd, lo, hi) :: rest => (if Z.testbit sel fd then hi else lo) :: ppoll_pick rest sel
+  | [] => 0%Z
+  | (fd, s) :: rest =>
+      Z.lor (if existsb (fun a => ppoll_is_hi (snd a)) s then Z.shiftl 1 fd else 0%Z)
+            (ppoll_und rest)
   end.
+
+(** The tag of the answer [r] among an entry's alternatives [s], or
+    [None] where [s] does not admit [r].  An entry's alternatives have
+    distinct [revents], so the first one found is the only one. *)
+Definition ppoll_tag_of (s : list (Z * PpollTag)) (r : Z) : option PpollTag :=
+  option_map snd (find (fun a => Z.eqb (fst a) r) s).
+
+(** The stream-pair choice the answers [rs] show: bit [fd] of each entry
+    whose answer is its [hi] mask. *)
+Fixpoint ppoll_sel (cs : list (Z * list (Z * PpollTag))) (rs : list Z) : Z :=
+  match cs, rs with
+  | (fd, s) :: cs', r :: rs' =>
+      Z.lor (match ppoll_tag_of s r with
+             | Some t => if ppoll_is_hi t then Z.shiftl 1 fd else 0%Z
+             | None => 0%Z
+             end)
+            (ppoll_sel cs' rs')
+  | _, _ => 0%Z
+  end.
+
+(** [rs] is one CHOICE for the entries [cs] under the stream-pair choice
+    [sel]: one value per entry, each admitted by its entry, and each
+    stream-pair end's answer the one [sel] picks -- [hi] where [sel] has
+    bit [fd], [lo] elsewhere.  Keyed by the descriptor, so two entries
+    naming one end report the same mask, as they do in Linux; an
+    eventfd's or a signalfd's answer is free per entry. *)
+Fixpoint ppoll_choice_at (sel : Z) (cs : list (Z * list (Z * PpollTag)))
+    (rs : list Z) : bool :=
+  match cs, rs with
+  | [], [] => true
+  | (fd, s) :: cs', r :: rs' =>
+      match ppoll_tag_of s r with
+      | None => false
+      | Some (PpEnd b) => Bool.eqb (Z.testbit sel fd) b
+      | Some _ => true
+      end && ppoll_choice_at sel cs' rs'
+  | _, _ => false
+  end.
+
+(** [rs] is one choice for [cs], under the stream-pair choice [rs]
+    itself shows ([ppoll_sel]). *)
+Definition ppoll_choice_in (cs : list (Z * list (Z * PpollTag))) (rs : list Z)
+    : bool :=
+  ppoll_choice_at (ppoll_sel cs rs) cs rs.
 
 (** [do_poll]'s return: the number of entries whose [do_pollfd]
     answered a non-zero mask.  Within the modeled band that is exactly
     the number of non-zero [revents], because every mask this spec
     produces -- 0, [EPOLLNVAL], a subset of [DEFAULT_POLLMASK], a
-    subset of [stream_poll_mask]'s bits, or a subset of
-    [eventfd_poll_mask]'s -- is built from [EPOLL*] bits
-    that [mangle_poll] maps to [POLL*] bits of the same value on riscv64,
-    so the mask is zero exactly when
+    subset of [stream_poll_mask]'s bits, a subset of
+    [eventfd_poll_mask]'s, POLLIN or POLLIN|POLLERR -- is built from
+    [EPOLL*] bits that [mangle_poll] maps to [POLL*] bits of the same
+    value on riscv64, so the mask is zero exactly when
     the stored [revents] is.  Unlike pselect6's, this count is a
     DESCRIPTOR count: one entry contributes at most 1 however many bits
     its [revents] carries. *)
@@ -1525,11 +1667,11 @@ Fixpoint ppoll_writeback (p : word) (rs : list Z) : list (word * list byte) :=
 
 (** What [do_sys_poll] has once [do_poll] returns, before its
     write-back: an errno, the model's decline, or every entry's [fd] and
-    two answers ([ppoll_revents]). *)
+    admitted [revents] ([ppoll_entries]). *)
 Inductive PpollScan :=
   | PpScanGap
   | PpScanErr (e : Z)
-  | PpScanDone (cs : list (Z * Z * Z)).
+  | PpScanDone (cs : list (Z * list (Z * PpollTag))).
 
 (** [do_sys_poll] within the modeled band, up to [do_poll].
 
@@ -1578,41 +1720,25 @@ Definition ppoll_scan (i : SyscallInput) (m : Model) (ufds nfds : word)
             (Z_to_bv 64 (pollfd_bytes * n)) with
     | None => PpScanErr EFAULT
     | Some bs =>
-        match ppoll_revents (m_fds m) (decode_pollfds bs (Z.to_nat n)) with
+        match ppoll_entries m (decode_pollfds bs (Z.to_nat n)) with
         | None => PpScanGap
         | Some cs => PpScanDone cs
         end
     end.
 
-(** [do_sys_poll]'s answers before its range test: for a choice [sel] of
-    the undecided descriptors ([ppoll_undecided]), each entry's
-    [revents] is [ppoll_pick]'s, the count is the number of non-zero ones
-    and the write-back is theirs.  With nothing undecided this is the one
-    answer every entry has. *)
-Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
-    : PselectCore :=
-  match ppoll_scan i m ufds nfds with
-  | PpScanGap => PsCoreGap
-  | PpScanErr e => PsCoreErr e
-  | PpScanDone cs =>
-      PsCoreDone (ppoll_undecided cs)
-        (fun sel => let rs := ppoll_pick cs sel in (ppoll_count rs, ppoll_writeback ufds rs))
-  end.
-
 (** WHAT A PPOLL RECORDS: the EPOLLERR that each survivor it named has
-    now shown.  [und] is the call's undecided descriptors -- [pa_und] of
-    its answer, which is [ppoll_undecided] of the entries when [do_poll]'s
-    [revents] are written back and 0 on every errno -- and [sel] is the
-    choice.  A descriptor in [und] that holds a survivor still at
-    [State.RsUnknown] had EPOLLERR as its undecided bit, because every
-    filter holds EPOLLERR, and its entry now records what its [revents]
-    showed: [RsPending] where [sel] chose [hi] (EPOLLERR set), [RsNone]
-    where it chose [lo] (clear).  Every other entry stays as it is: a
-    live peer's end in [und] is the truesize band's, which is not
-    recorded; a survivor that has shown its error already had one
-    answer; and no other descriptor's entry is touched.  Keyed by the
-    descriptor, as [ppoll_pick] is, so an end that two entries name
-    records one choice. *)
+    now shown.  [und] is the call's undecided descriptors -- [ppoll_und]
+    of its entries -- and [sel] is the choice its written-back [revents]
+    show ([ppoll_sel]).  A descriptor in [und] that holds a survivor
+    still at [State.RsUnknown] had EPOLLERR as its undecided bit,
+    because every filter holds EPOLLERR, and its entry now records what
+    its [revents] showed: [RsPending] where [sel] chose [hi] (EPOLLERR
+    set), [RsNone] where it chose [lo] (clear).  Every other entry stays
+    as it is: a live peer's end in [und] is the truesize band's, which
+    is not recorded; a survivor that has shown its error already had
+    one answer; and no other descriptor's entry is touched.  Keyed by
+    the descriptor, as [ppoll_choice_at] is, so an end that two entries
+    name records one choice. *)
 Definition ppoll_record_entry (fds : list (word * FdEntry)) (und sel : Z)
     (fd : word) (e : FdEntry) : FdEntry :=
   match e with
@@ -1632,29 +1758,31 @@ Definition ppoll_record (fds : list (word * FdEntry)) (und sel : Z)
     : list (word * FdEntry) :=
   map (fun p => (fst p, ppoll_record_entry fds und sel (fst p) (snd p))) fds.
 
-(** [ppoll_record] as [pselect_answer]'s record step. *)
-Definition ppoll_rec (pa : PselectAnswers) (sel : Z) (m : Model) : Model :=
-  with_fds (ppoll_record (m_fds m) (pa_und pa) sel) m.
+(** [ppoll_record] for the entries [cs] and the answers [rs]: the record
+    step [ppoll_spec] hands [pselect_answer].  An errno answer records
+    nothing. *)
+Definition ppoll_rec (cs : list (Z * list (Z * PpollTag))) (rs : list Z)
+    (m : Model) : Model :=
+  with_fds (ppoll_record (m_fds m) (ppoll_und cs) (ppoll_sel cs rs)) m.
 
 (** [user_write_access_begin(ufds, nfds * sizeof pollfd)] (fs/select.c),
     the range test [do_sys_poll] makes on the write-back band.
 
     IT RUNS AFTER [do_poll], which is the whole reason it is a second
-    definition rather than a line in [ppoll_core].  A call that would
+    definition rather than a line in [ppoll_scan].  A call that would
     not return cannot answer -EFAULT either: with a NULL [tsp] and no
     ready descriptor, [do_poll]'s [timed_out] flag is never set and the
     loop never exits (the argument is [pselect_finish]'s, which answers
     [None] for exactly that shape), so this test is never reached and
-    the model declines -- and under a choice it declines when the
-    smallest count, [sel = 0]'s, is 0, as [pselect_finish] does.  Every
-    other shape -- a zero timeout, a real deadline, or a nonzero count --
-    has [do_poll] returning, and the failed range test then discards
-    that return, and with it every choice, for the [-EFAULT] the
-    function opened with.  [PsCoreErr] carries it to [pselect_finish],
-    which under a real deadline writes the remaining time with it, as
-    it does for every other errno out of [do_sys_poll].
+    the model declines a choice whose count is 0, as [pselect_finish]
+    does.  Every other shape -- a zero timeout, a real deadline, or a
+    nonzero count -- has [do_poll] returning, and the failed range test
+    then discards that return for the [-EFAULT] the function opened
+    with.  [PsCoreErr] carries it to [pselect_finish], which under a
+    real deadline writes the remaining time with it, as it does for
+    every other errno out of [do_sys_poll].
 
-    Above [nfds = 0] this is dead: [ppoll_core]'s own [access_ok] on
+    Above [nfds = 0] this is dead: [ppoll_scan]'s own [access_ok] on
     the same range has already answered.  It is written over the whole
     band anyway, because the kernel's call is unconditional and
     conditioning it on [n] would make the model's agreement with
@@ -1707,43 +1835,132 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
        | None => PpSigFault
        end.
 
-(** [ppoll ufds nfds tsp sigmask sigsetsize] -- the answers the modeled
-    band admits, or [None] where the model declines (fail closed).  The
-    choices are pselect6's: the [revents] of an undecided pair end, and
-    the remaining time of a deadline the call did not run out.
+(** What the call answers once [do_poll] has returned the [revents] [rs]:
+    the write-back's own range test, then [poll_select_finish].  It is a
+    function of [rs] through the count and the write-back alone, and its
+    only choice is the remaining time ([pa_und] is 0): the readiness
+    choice is [rs] itself. *)
+Definition ppoll_finish (i : SyscallInput) (ufds nfds tsp : word)
+    (tmo : PselectTimeout) (rs : list Z) : option PselectAnswers :=
+  pselect_finish i tsp tmo
+    (ppoll_writeback_access ufds nfds tmo
+       (PsCoreDone 0 (fun _ => (ppoll_count rs, ppoll_writeback ufds rs)))).
+
+(** The LEAST and the MOST ready choice: per entry, 0 where 0 is
+    admitted (else its first answer), and the [hi] mask of a stream-pair
+    end, else a nonzero answer where one is admitted (else its first).
+    Both are choices: LEAST takes every end's [lo] and MOST every end's
+    [hi], so two entries naming one end agree.  Every other choice's
+    count lies between theirs, and [ppoll_finish] reads a choice only
+    through whether its count is 0 and through the write-back's
+    addresses, which no choice moves -- so these two decide every choice
+    ([Checks.Sys.Fs.Select.ppoll_all_answered_sound] and
+    [Checks.Sys.Fs.Select.ppoll_all_answered_complete]). *)
+Definition ppoll_least_of (s : list (Z * PpollTag)) : Z :=
+  if existsb (fun a => Z.eqb (fst a) 0) s then 0%Z else hd 0%Z (map fst s).
+
+Definition ppoll_most_of (s : list (Z * PpollTag)) : Z :=
+  match find (fun a => ppoll_is_hi (snd a)) s with
+  | Some a => fst a
+  | None =>
+      match find (fun a => negb (Z.eqb (fst a) 0)) s with
+      | Some a => fst a
+      | None => hd 0%Z (map fst s)
+      end
+  end.
+
+Definition ppoll_least (cs : list (Z * list (Z * PpollTag))) : list Z :=
+  map (fun c => ppoll_least_of (snd c)) cs.
+
+Definition ppoll_most (cs : list (Z * list (Z * PpollTag))) : list Z :=
+  map (fun c => ppoll_most_of (snd c)) cs.
+
+Definition ppoll_answers (o : option PselectAnswers) : bool :=
+  match o with
+  | Some _ => true
+  | None => false
+  end.
+
+(** EVERY choice for [cs] is answered.  A spec may never admit a
+    decline beside an answer, so where one choice would be declined --
+    a NULL timeout whose all-not-ready choice exists, a write-back that
+    is not writable -- the whole call is. *)
+Definition ppoll_all_answered (i : SyscallInput) (ufds nfds tsp : word)
+    (tmo : PselectTimeout) (cs : list (Z * list (Z * PpollTag))) : bool :=
+  ppoll_choice_in cs (ppoll_least cs)
+  && ppoll_choice_in cs (ppoll_most cs)
+  && ppoll_answers (ppoll_finish i ufds nfds tsp tmo (ppoll_least cs))
+  && ppoll_answers (ppoll_finish i ufds nfds tsp tmo (ppoll_most cs)).
+
+(** Some eventfd or signalfd entry can be ready: one of the
+    environment's answers is not 0.  A signalfd entry whose only answer
+    is 0 (no signal it waits for can be pending) is not. *)
+Definition ppoll_env_ready (cs : list (Z * list (Z * PpollTag))) : bool :=
+  existsb (fun c =>
+    existsb (fun a => match snd a with
+                      | PpEnv => negb (Z.eqb (fst a) 0)
+                      | _ => false
+                      end) (snd c)) cs.
+
+(** [ppoll_plan] declines a real deadline when an eventfd or signalfd
+    entry can be ready ([ppoll_env_ready]).  An all-zero signalfd entry
+    does not cause this decline. *)
+Definition ppoll_env_deadline (tmo : PselectTimeout)
+    (cs : list (Z * list (Z * PpollTag))) : bool :=
+  match tmo with
+  | PsToDeadline _ _ => ppoll_env_ready cs
+  | _ => false
+  end.
+
+(** Where [ppoll] stands after its arguments are judged: decided -- the
+    answers, or [None] for a decline -- or at [do_poll] with each entry's
+    admitted [revents]. *)
+Inductive PpollPlan :=
+  | PpDecided (o : option PselectAnswers)
+  | PpPoll (tmo : PselectTimeout) (cs : list (Z * list (Z * PpollTag))).
+
+(** [ppoll ufds nfds tsp sigmask sigsetsize] as far as it is decided
+    without a choice of readiness.
 
     The arms are in the kernel's own decision order, so reading them top
     to bottom is reading [SYSCALL_DEFINE5(ppoll, ...)] in sequence.
     Note where [poll_select_finish] is and is not: the two
     [set_user_sigmask] errnos below return from the entry directly and
-    write no timeout back, while everything [ppoll_core] answers --
+    write no timeout back, while everything [ppoll_scan] answers --
     errnos included -- passes through it.  [do_sys_poll] is TWO
-    definitions here, [ppoll_core] and [ppoll_writeback_access], and
+    definitions here, [ppoll_scan] and [ppoll_writeback_access], and
     the second is the range test that follows [do_poll]; it needs the
     timeout because a call that never returns cannot answer -EFAULT
-    either. *)
-Definition ppoll_outcome (i : SyscallInput) (m : Model)
-    (ufds nfds tsp sig sigsetsize : word) : option PselectAnswers :=
+    either, and it reaches the readiness only through [ppoll_finish].
+    A real deadline with an eventfd or signalfd entry that can be ready
+    declines ([ppoll_env_deadline]). *)
+Definition ppoll_plan (i : SyscallInput) (m : Model)
+    (ufds nfds tsp sig sigsetsize : word) : PpollPlan :=
   match pselect_timeout (in_mem i) tsp with
   (* [get_timespec64] and [poll_select_set_timeout] *)
-  | PsToFault => pselect_err EFAULT
-  | PsToInval => pselect_err EINVAL
+  | PsToFault => PpDecided (pselect_err EFAULT)
+  | PsToInval => PpDecided (pselect_err EINVAL)
   | tmo =>
       (* [set_user_sigmask] *)
       match ppoll_sigmask (in_mem i) sig sigsetsize with
-      | PpSigBadSize => pselect_err EINVAL
-      | PpSigFault => pselect_err EFAULT
-      | PpSigReal => None
+      | PpSigBadSize => PpDecided (pselect_err EINVAL)
+      | PpSigFault => PpDecided (pselect_err EFAULT)
+      | PpSigReal => PpDecided None
       | PpSigNone =>
           (* [do_sys_poll] -- the copy and [do_poll], then the
              write-back's own range test -- and then
              [poll_select_finish] *)
-          pselect_finish i tsp tmo
-            (ppoll_writeback_access ufds nfds tmo (ppoll_core i m ufds nfds))
+          match ppoll_scan i m ufds nfds with
+          | PpScanGap => PpDecided None
+          | PpScanErr e => PpDecided (pselect_finish i tsp tmo (PsCoreErr e))
+              (* [ppoll_writeback_access] passes an errno through *)
+          | PpScanDone cs =>
+              if ppoll_env_deadline tmo cs then PpDecided None else PpPoll tmo cs
+          end
       end
   end.
 
-(** The ranges [ppoll_outcome]'s answer has already read from user
+(** The ranges [ppoll_plan]'s answer has already read from user
     memory, in the kernel's order, for [State.eff_copyins]: the 16-byte
     timespec at [tsp] ([get_timespec64]), then -- past
     [set_user_sigmask], whose only successful read is on the declined
@@ -1752,8 +1969,9 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
     admits.  The same conventions as [pselect6_reads]: a failed copy
     records nothing -- including the copy its own [access_ok] refuses --
     and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE soft limit reads
-    no array.  It restates the decision order of [ppoll_outcome] and
-    [ppoll_core], and must change with them. *)
+    no array.  It restates the decision order of [ppoll_plan] and
+    [ppoll_scan], and must change with them; no choice of readiness
+    moves it. *)
 Definition ppoll_reads (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : list (word * nat) :=
   let mp := in_mem i in
@@ -1775,11 +1993,561 @@ Definition ppoll_reads (i : SyscallInput) (m : Model)
       end
   end.
 
+(** [ppoll]: the decided answers, or, at [do_poll], one choice of
+    readiness -- per entry for an eventfd made shared by a clone and for
+    a signalfd, per descriptor for a stream-pair end ([ppoll_choice_in])
+    -- where every choice is answered ([ppoll_all_answered]), and a
+    decline where one is not.  The answer is [pselect_answer]'s, so the
+    remaining time of a real deadline is a choice as it is for pselect6.
+    The readiness choice is in the written-back [revents], and its
+    stream-pair part is recorded ([ppoll_rec]); an errno answer records
+    nothing. *)
 Definition ppoll_spec (ufds nfds tsp sig sigsetsize : word)
     : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
-  match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
-  | None => unmodeled
-  | Some pa => pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa (ppoll_rec pa)
+  match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+  | PpDecided None => unmodeled
+  | PpDecided (Some pa) =>
+      pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa (fun _ m0 => m0)
+  | PpPoll tmo cs =>
+      if negb (ppoll_all_answered i ufds nfds tsp tmo cs) then unmodeled
+      else
+        c <- choose (fun c : list Z * PselectAnswers =>
+               ppoll_choice_in cs (fst c) = true
+               /\ ppoll_finish i ufds nfds tsp tmo (fst c) = Some (snd c)) ;;
+        pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) (snd c)
+          (fun _ => ppoll_rec cs (fst c))
   end.
+
+(** *** Facts about the choices, for the checker and for [Run] *)
+
+Lemma ppoll_count_bounds : forall rs,
+  (0 <= ppoll_count rs <= Z.of_nat (length rs))%Z.
+Proof.
+  induction rs as [|r rs IH]; cbn [ppoll_count length]; [lia|].
+  destruct (Z.eqb r 0); cbv iota; lia.
+Qed.
+
+Lemma ppoll_choice_at_length : forall sel cs rs,
+  ppoll_choice_at sel cs rs = true -> length rs = length cs.
+Proof.
+  intros sel. induction cs as [|[fd s] cs IH]; intros [|r rs] H;
+    try discriminate H; [reflexivity|].
+  cbn [ppoll_choice_at] in H. apply andb_true_iff in H as [_ H].
+  cbn [length]. f_equal. exact (IH _ H).
+Qed.
+
+Lemma ppoll_choice_in_length : forall cs rs,
+  ppoll_choice_in cs rs = true -> length rs = length cs.
+Proof.
+  intros cs rs H. unfold ppoll_choice_in in H.
+  exact (ppoll_choice_at_length _ _ _ H).
+Qed.
+
+Lemma decode_pollfds_length : forall k bs, length (decode_pollfds bs k) = k.
+Proof.
+  induction k as [|k IH]; intros bs; cbn [decode_pollfds length];
+    [reflexivity | f_equal; apply IH].
+Qed.
+
+Lemma ppoll_entries_length : forall m es cs,
+  ppoll_entries m es = Some cs -> length cs = length es.
+Proof.
+  intros m. induction es as [|[fd ev] es IH]; intros cs H.
+  - cbn in H. injection H as <-. reflexivity.
+  - cbn [ppoll_entries] in H.
+    destruct (ppoll_alts_of m fd ev) as [s|]; cbv iota in H; [|discriminate H].
+    destruct (ppoll_entries m es) as [cs'|] eqn:E; cbv iota in H; [|discriminate H].
+    injection H as <-. cbn [length]. f_equal. exact (IH _ eq_refl).
+Qed.
+
+(** At [do_poll] there are at most [ppoll_nfds_max] entries, and where
+    the write-back's range test refuses, none: [ppoll_scan] went on only
+    because nothing was copied. *)
+Lemma ppoll_scan_done : forall i m ufds nfds cs,
+  ppoll_scan i m ufds nfds = PpScanDone cs ->
+  (Z.of_nat (length cs) <= ppoll_nfds_max)%Z
+  /\ (access_okb ufds (pollfd_bytes * bv_unsigned nfds) = false -> cs = []).
+Proof.
+  intros i m ufds nfds cs H. unfold ppoll_scan in H. cbv zeta in H.
+  pose proof (bv_unsigned_range_u64 nfds) as Hn.
+  destruct (bv_unsigned (m_nofile m) <? bv_unsigned nfds)%Z; cbv iota in H;
+    [discriminate H|].
+  destruct (ppoll_nfds_max <? bv_unsigned nfds)%Z eqn:Hmax; cbv iota in H;
+    [discriminate H|].
+  apply Z.ltb_ge in Hmax.
+  destruct (negb (Z.eqb (bv_unsigned nfds) 0)
+            && negb (access_okb ufds (pollfd_bytes * bv_unsigned nfds)))%bool
+    eqn:Hacc; cbv iota in H; [discriminate H|].
+  match type of H with
+  | context [read_bytes_map ?a ?b ?c] => destruct (read_bytes_map a b c) as [bs|]
+  end; cbv iota in H; [|discriminate H].
+  match type of H with
+  | context [ppoll_entries ?m0 ?es] => destruct (ppoll_entries m0 es) as [ss|] eqn:E
+  end; cbv iota in H; [|discriminate H].
+  injection H as <-.
+  pose proof (ppoll_entries_length _ _ _ E) as Hl.
+  rewrite decode_pollfds_length in Hl.
+  split.
+  - rewrite Hl. lia.
+  - intros Ha. rewrite Ha in Hacc. cbn [negb] in Hacc. rewrite andb_true_r in Hacc.
+    apply negb_false_iff in Hacc. apply Z.eqb_eq in Hacc.
+    rewrite Hacc in Hl. cbn in Hl. destruct ss; [reflexivity | discriminate Hl].
+Qed.
+
+(** At [do_poll] the scan is done, the timeout is the one judged, and
+    no real deadline meets an environment's entry that can be ready. *)
+Lemma ppoll_plan_poll : forall i m ufds nfds tsp sig sigsetsize tmo cs,
+  ppoll_plan i m ufds nfds tsp sig sigsetsize = PpPoll tmo cs ->
+  ppoll_scan i m ufds nfds = PpScanDone cs
+  /\ pselect_timeout (in_mem i) tsp = tmo
+  /\ ppoll_env_deadline tmo cs = false.
+Proof.
+  intros i m ufds nfds tsp sig sigsetsize tmo cs H.
+  unfold ppoll_plan in H.
+  destruct (pselect_timeout (in_mem i) tsp); cbv iota in H; try discriminate H;
+    destruct (ppoll_sigmask (in_mem i) sig sigsetsize); cbv iota in H;
+    try discriminate H;
+    destruct (ppoll_scan i m ufds nfds); cbv iota in H; try discriminate H;
+    match type of H with
+    | context [ppoll_env_deadline ?t ?c] => destruct (ppoll_env_deadline t c) eqn:Ed
+    end; cbv iota in H; try discriminate H;
+    injection H as <- <-; (split; [reflexivity | split; [reflexivity | exact Ed]]).
+Qed.
+
+(** An errno through [poll_select_finish] has no choice but the
+    remaining time. *)
+Lemma pselect_finish_err_und : forall i tsp tmo e pa,
+  pselect_finish i tsp tmo (PsCoreErr e) = Some pa -> pa_und pa = 0%Z.
+Proof.
+  intros i tsp tmo e pa H. unfold pselect_finish, pselect_err, ps_fixed in H.
+  destruct tmo; cbv beta iota in H;
+    repeat (match type of H with context [if ?b then _ else _] => destruct b end;
+            cbv beta iota in H);
+    try discriminate H; injection H as <-; reflexivity.
+Qed.
+
+(** An answer with no choice in it but the remaining time: every answer
+    [ppoll_finish] gives is one ([ppoll_finish_eq]). *)
+Definition ps_one (a : word * list (word * list byte) * option (word * (word * word)))
+    : PselectAnswers :=
+  mkPselectAnswers 0 (fun _ => a).
+
+(** [ppoll_finish] spelled out by the range test, the timeout and the
+    count. *)
+Lemma ppoll_finish_eq : forall i ufds nfds tsp tmo rs,
+  ppoll_finish i ufds nfds tsp tmo rs =
+  if access_okb ufds (pollfd_bytes * bv_unsigned nfds) then
+    match tmo with
+    | PsToNone =>
+        if Z.eqb (ppoll_count rs) 0 then None
+        else if writes_all_writable i (ppoll_writeback ufds rs)
+        then Some (ps_one (Z_to_bv 64 (ppoll_count rs), ppoll_writeback ufds rs, None))
+        else None
+    | PsToZero =>
+        if writes_all_writable i (ppoll_writeback ufds rs)
+        then Some (ps_one (Z_to_bv 64 (ppoll_count rs), ppoll_writeback ufds rs, None))
+        else None
+    | PsToDeadline sec nsec =>
+        if writes_all_writable i (ppoll_writeback ufds rs ++ [(tsp, pselect_timespec_zero)])
+        then Some (ps_one
+               (if Z.eqb (ppoll_count rs) 0
+                then (Z_to_bv 64 0, ppoll_writeback ufds rs ++ [(tsp, pselect_timespec_zero)],
+                      None)
+                else (Z_to_bv 64 (ppoll_count rs), ppoll_writeback ufds rs,
+                      Some (tsp, (sec, nsec)))))
+        else None
+    | _ => None
+    end
+  else
+    match tmo with
+    | PsToNone => if Z.eqb (ppoll_count rs) 0 then None else pselect_err EFAULT
+    | PsToDeadline sec nsec =>
+        if writes_all_writable i [(tsp, pselect_timespec_zero)]
+        then Some (ps_one (errno_ret EFAULT, [], Some (tsp, (sec, nsec))))
+        else None
+    | _ => pselect_err EFAULT
+    end.
+Proof.
+  intros i ufds nfds tsp tmo rs.
+  unfold ppoll_finish, ppoll_writeback_access, pselect_finish, pselect_err, ps_fixed,
+    ps_one.
+  cbv beta iota zeta. cbn [fst].
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); destruct tmo;
+    try reflexivity; destruct (Z.eqb (ppoll_count rs) 0); reflexivity.
+Qed.
+
+Lemma ppoll_finish_und : forall i ufds nfds tsp tmo rs pa,
+  ppoll_finish i ufds nfds tsp tmo rs = Some pa -> pa_und pa = 0%Z.
+Proof.
+  intros i ufds nfds tsp tmo rs pa H.
+  rewrite ppoll_finish_eq in H. unfold pselect_err, ps_fixed in H.
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); destruct tmo;
+    cbv beta iota in H;
+    repeat (match type of H with context [if ?b then _ else _] => destruct b end;
+            cbv beta iota in H);
+    try discriminate H; injection H as <-; reflexivity.
+Qed.
+
+(** A choice where nothing is ready never returns from a NULL-timeout
+    call: [poll_select_finish] gets no count, and the write-back's range
+    test is never reached. *)
+Lemma ppoll_finish_quiet : forall i ufds nfds tsp rs,
+  ppoll_count rs = 0%Z -> ppoll_finish i ufds nfds tsp PsToNone rs = None.
+Proof.
+  intros i ufds nfds tsp rs H.
+  rewrite ppoll_finish_eq, H.
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)); reflexivity.
+Qed.
+
+(** A NULL-timeout call that returns, where the write-back's range test
+    passes, returns the count of ready entries and writes their
+    [revents] back. *)
+Lemma ppoll_finish_ready : forall i ufds nfds tsp rs pa,
+  access_okb ufds (pollfd_bytes * bv_unsigned nfds) = true ->
+  ppoll_finish i ufds nfds tsp PsToNone rs = Some pa ->
+  pa = ps_one (Z_to_bv 64 (ppoll_count rs), ppoll_writeback ufds rs, None).
+Proof.
+  intros i ufds nfds tsp rs pa Ha H.
+  rewrite ppoll_finish_eq, Ha in H. cbv iota in H.
+  destruct (Z.eqb (ppoll_count rs) 0); cbv iota in H; [discriminate H|].
+  destruct (writes_all_writable i (ppoll_writeback ufds rs)); cbv iota in H;
+    [|discriminate H].
+  injection H as <-. reflexivity.
+Qed.
+
+(** The writes of an answer: the [revents] write-back of [rs] first, or
+    nothing at all where the range test refused. *)
+Lemma ppoll_finish_writes : forall i ufds nfds tsp tmo rs pa,
+  ppoll_finish i ufds nfds tsp tmo rs = Some pa ->
+  (exists x, snd (fst (pa_ans pa 0%Z)) = ppoll_writeback ufds rs ++ x)
+  \/ (snd (fst (pa_ans pa 0%Z)) = []
+      /\ access_okb ufds (pollfd_bytes * bv_unsigned nfds) = false).
+Proof.
+  intros i ufds nfds tsp tmo rs pa H.
+  rewrite ppoll_finish_eq in H. unfold pselect_err, ps_fixed in H.
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)) eqn:Ha; destruct tmo;
+    cbv beta iota in H;
+    repeat (match type of H with context [if ?b then _ else _] => destruct b end;
+            cbv beta iota in H);
+    try discriminate H; injection H as <-; try unfold ps_one; cbn [pa_ans fst snd];
+    first [ left; exists []; rewrite app_nil_r; reflexivity
+          | left; eexists; reflexivity
+          | right; split; [reflexivity | first [exact Ha | reflexivity]] ].
+Qed.
+
+(** A NULL-timeout answer at [do_poll] for an admitted choice is the
+    count and the write-back of that choice: the range test passes,
+    since where it would refuse there is no entry and no ready choice. *)
+Lemma ppoll_finish_wait : forall i m ufds nfds tsp sig sigsetsize cs rs pa,
+  ppoll_plan i m ufds nfds tsp sig sigsetsize = PpPoll PsToNone cs ->
+  ppoll_choice_in cs rs = true ->
+  ppoll_finish i ufds nfds tsp PsToNone rs = Some pa ->
+  pa = ps_one (Z_to_bv 64 (ppoll_count rs), ppoll_writeback ufds rs, None).
+Proof.
+  intros i m ufds nfds tsp sig sigsetsize cs rs pa Hp Hc Hf.
+  destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds)) eqn:Ha.
+  - exact (ppoll_finish_ready _ _ _ _ _ _ Ha Hf).
+  - destruct (ppoll_plan_poll _ _ _ _ _ _ _ _ _ Hp) as [Hscan _].
+    pose proof (proj2 (ppoll_scan_done _ _ _ _ _ Hscan) Ha) as Hs. subst cs.
+    pose proof (ppoll_choice_in_length _ _ Hc) as Hl.
+    destruct rs; [|discriminate Hl].
+    rewrite (ppoll_finish_quiet i ufds nfds tsp [] eq_refl) in Hf. discriminate Hf.
+Qed.
+
+(** The effects [pselect_answer] admits for the answer [a] of one
+    choice: [a]'s return and writes, and where a remaining time is
+    written, any sixteen bytes [pselect_remaining_ok] admits, as the last
+    write. *)
+Definition pselect_effect (reads : list (word * nat))
+    (a : word * list (word * list byte) * option (word * (word * word)))
+    (eff : SyscallEffect) : Prop :=
+  match a with
+  | (r, ws, None) => eff = with_copyins reads (mkEffect r ws [])
+  | (r, ws, Some (tsp, (sec, nsec))) =>
+      exists rem, pselect_remaining_ok sec nsec rem = true
+                  /\ eff = with_copyins reads (mkEffect r (ws ++ [(tsp, rem)]) [])
+  end.
+
+Lemma pselect_answer_iff : forall reads pa rec i m o,
+  pselect_answer reads pa rec i m o
+  <-> exists sel eff, Z.land (pa_und pa) sel = sel
+                      /\ pselect_effect reads (pa_ans pa sel) eff
+                      /\ o = Ok eff (rec sel m) [].
+Proof.
+  intros reads pa rec i m o. split.
+  - intros H. unfold pselect_answer, bind, choose, modify, pure in H.
+    destruct o as [eff m' evs|]; cbv beta iota in H.
+    + destruct H as (sel & m1 & evs1 & evs2 & (sel0 & Hsel & Hc) & Hk & ->).
+      injection Hc as -> -> ->.
+      destruct Hk as (u & m2 & evs3 & evs4 & Hm & Hk & ->).
+      injection Hm as -> -> ->.
+      exists sel0. unfold pselect_effect.
+      destruct (pa_ans pa sel0) as [[r ws] [[tsp [sec nsec]]|]];
+        cbv beta iota in Hk |- *.
+      * destruct Hk as (rem & m3 & e1 & e2 & (rem0 & Hrem & Hc2) & Hk2 & ->).
+        injection Hc2 as -> -> ->. injection Hk2 as -> -> ->.
+        eexists. split; [exact Hsel|].
+        split; [exists rem0; split; [exact Hrem | reflexivity] | reflexivity].
+      * injection Hk as -> -> ->.
+        eexists. split; [exact Hsel|]. split; reflexivity.
+    + exfalso.
+      destruct H as [(x & _ & Hx) | (sel & m1 & evs1 & _ & Hk)]; [discriminate Hx|].
+      destruct Hk as [Hu | (u & m2 & evs2 & _ & Hk)]; [discriminate Hu|].
+      destruct (pa_ans pa sel) as [[r ws] [[tsp [sec nsec]]|]]; cbv beta iota in Hk.
+      * destruct Hk as [(y & _ & Hy) | (rem & m3 & e1 & _ & Hk2)];
+          [discriminate Hy | discriminate Hk2].
+      * discriminate Hk.
+  - intros (sel & eff & Hsel & He & ->).
+    unfold pselect_answer, bind, choose, modify, pure. cbv beta iota.
+    exists sel, m, [], []. split; [exists sel; split; [exact Hsel | reflexivity]|].
+    split; [|reflexivity].
+    exists tt, (rec sel m), [], []. split; [reflexivity|]. split; [|reflexivity].
+    unfold pselect_effect in He.
+    destruct (pa_ans pa sel) as [[r ws] [[tsp [sec nsec]]|]]; cbv beta iota in He |- *.
+    + destruct He as (rem & Hrem & ->).
+      exists rem, (rec sel m), [], [].
+      split; [exists rem; split; [exact Hrem | reflexivity]|].
+      split; reflexivity.
+    + subst eff. reflexivity.
+Qed.
+
+Lemma bind_choose_iff {A B} (P : A -> Prop) (k : A -> Sys B) : forall i m o,
+  bind (choose P) k i m o <-> exists x, P x /\ k x i m o.
+Proof.
+  intros i m o. unfold bind, choose. destruct o as [y m2 evs|]; cbv beta iota; split.
+  - intros (x & m1 & evs1 & evs2 & (x0 & Hx & Hc) & Hk & ->).
+    injection Hc as -> -> ->. exists x0. split; [exact Hx | exact Hk].
+  - intros (x & Hx & Hk). exists x, m, [], evs.
+    split; [exists x; split; [exact Hx | reflexivity]|].
+    split; [exact Hk | reflexivity].
+  - intros [(x & _ & Hx) | (x & m1 & evs1 & (x0 & Hx & Hc) & Hk)]; [discriminate Hx|].
+    injection Hc as -> -> ->. exists x0. split; [exact Hx | exact Hk].
+  - intros (x & Hx & Hk). right. exists x, m, [].
+    split; [exists x; split; [exact Hx | reflexivity] | exact Hk].
+Qed.
+
+Lemma ppoll_record_entry_und0 : forall fds sel fd e,
+  ppoll_record_entry fds 0%Z sel fd e = e.
+Proof.
+  intros fds sel fd e. unfold ppoll_record_entry.
+  destruct e; try reflexivity. rewrite Z.testbit_0_l. reflexivity.
+Qed.
+
+Lemma ppoll_record_und0 : forall fds sel, ppoll_record fds 0%Z sel = fds.
+Proof.
+  intros fds sel. unfold ppoll_record.
+  assert (H : forall l,
+    map (fun p => (fst p, ppoll_record_entry fds 0%Z sel (fst p) (snd p))) l = l).
+  { induction l as [|[fd e] l IH]; [reflexivity|].
+    cbn [map]. rewrite ppoll_record_entry_und0. cbn [fst snd]. rewrite IH.
+    reflexivity. }
+  exact (H fds).
+Qed.
+
+Lemma with_fds_m_fds : forall m, with_fds (m_fds m) m = m.
+Proof. intros [[t p] vm io fs pr lim tm]. reflexivity. Qed.
+
+(** With no stream-pair choice in the call, it records nothing. *)
+Lemma ppoll_rec_und0 : forall cs rs m, ppoll_und cs = 0%Z -> ppoll_rec cs rs m = m.
+Proof.
+  intros cs rs m H. unfold ppoll_rec. rewrite H, ppoll_record_und0.
+  apply with_fds_m_fds.
+Qed.
+
+(** ** An infinite wait that ends: [ppoll_wakeable_b] and [ppoll_wake_spec]
+
+    [ppoll_spec] declines a NULL-timeout call whose all-not-ready choice
+    exists, because that choice never returns and the model cannot say
+    so.  That is the reading every statement gets by default: a
+    statement that a program must exit would otherwise assume that the
+    eventfd's writer writes or that the child changes state, and a
+    program whose child never ends would be proved to exit.
+
+    A run that names [Run.waits_end] reads such a call instead as ENDING
+    with one of its ready choices; [Run.sstep_wcfg] is where that reading
+    is taken.  These two definitions say where that is and what it
+    admits.  Neither changes [ppoll_spec], and neither is consulted
+    anywhere else. *)
+
+(** The shape: [ppoll] (73) with a NULL [tsp] and a NULL mask, its
+    entries answerable, no stream-pair end with two answers ([ppoll_und]
+    is 0), a choice where nothing is ready (the LEAST choice counts 0),
+    and a ready choice that is answered (the MOST choice), so that the
+    wait can end.  The two counts are what "at least one eventfd or
+    signalfd entry that can be ready" comes to: with no stream-pair
+    choice, only those kinds admit both 0 and a ready answer.  A
+    stream-pair end's choice is the end's own hidden state, not a wake
+    the environment sends, so a call that has one is left to
+    [ppoll_spec]. *)
+Definition ppoll_wakeable_b (i : SyscallInput) (m : Model) : bool :=
+  let ufds := in_arg i 0 in
+  let nfds := unfds32 (in_arg i 1) in
+  let tsp := in_arg i 2 in
+  let sig := in_arg i 3 in
+  Z.eqb (bv_unsigned (in_sysno i)) 73 && w_is0 tsp && w_is0 sig
+  && match ppoll_plan i m ufds nfds tsp sig (in_arg i 4) with
+     | PpPoll PsToNone cs =>
+         Z.eqb (ppoll_und cs) 0
+         && ppoll_choice_in cs (ppoll_least cs)
+         && Z.eqb (ppoll_count (ppoll_least cs)) 0
+         && ppoll_choice_in cs (ppoll_most cs)
+         && ppoll_answers (ppoll_finish i ufds nfds tsp PsToNone (ppoll_most cs))
+     | _ => false
+     end.
+
+(** The READY choices of that call -- at least one entry with a nonzero
+    [revents] -- answered as [ppoll_spec] answers them, through
+    [pselect_answer] with the ledger [ppoll_reads], read off the same
+    arguments [Sys.SyscallTable.spec_table] hands [ppoll_spec].  Every
+    ready choice is answered there, since [ppoll_finish] reads a choice
+    only through whether its count is 0 and the MOST choice is
+    answered.  Off that shape it declines. *)
+Definition ppoll_wake_spec : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let ufds := in_arg i 0 in
+  let nfds := unfds32 (in_arg i 1) in
+  let tsp := in_arg i 2 in
+  let sig := in_arg i 3 in
+  let sigsetsize := in_arg i 4 in
+  if negb (ppoll_wakeable_b i m) then unmodeled
+  else
+    match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+    | PpPoll tmo cs =>
+        c <- choose (fun c : list Z * PselectAnswers =>
+               ppoll_choice_in cs (fst c) = true
+               /\ ppoll_count (fst c) <> 0%Z
+               /\ ppoll_finish i ufds nfds tsp tmo (fst c) = Some (snd c)) ;;
+        pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) (snd c)
+          (fun _ => ppoll_rec cs (fst c))
+    | PpDecided _ => unmodeled
+    end.
+
+Lemma ppoll_wakeable_sysno : forall i m,
+  ppoll_wakeable_b i m = true -> bv_unsigned (in_sysno i) = 73%Z.
+Proof.
+  intros i m Hw. unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  apply andb_true_iff in Hw as [Hw _]. apply andb_true_iff in Hw as [Hw _].
+  apply andb_true_iff in Hw as [Hw _]. apply Z.eqb_eq. exact Hw.
+Qed.
+
+(** Where the shape holds, [ppoll_spec] declines and admits nothing
+    else: the reading [ppoll_wake_spec] replaces is a decline, never an
+    answer. *)
+Lemma ppoll_spec_wakeable_declined : forall i m o,
+  ppoll_wakeable_b i m = true ->
+  (ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) (in_arg i 3)
+     (in_arg i 4) i m o
+   <-> o = Unmodeled).
+Proof.
+  intros i m o Hw.
+  unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo cs] eqn:Hp;
+    cbv iota in Hw; [rewrite andb_false_r in Hw; discriminate Hw|].
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  apply andb_true_iff in Hw as [_ Hw].
+  apply andb_true_iff in Hw as [Hw _]. apply andb_true_iff in Hw as [Hw _].
+  apply andb_true_iff in Hw as [_ Hq]. apply Z.eqb_eq in Hq.
+  assert (Hg : ppoll_all_answered i (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+                 PsToNone cs = false).
+  { unfold ppoll_all_answered. rewrite (ppoll_finish_quiet _ _ _ _ _ Hq).
+    cbn [ppoll_answers]. rewrite !andb_false_r. reflexivity. }
+  unfold ppoll_spec. split.
+  - intros H. destruct o as [eff m' evs|]; [exfalso|reflexivity].
+    destruct H as (i0 & m1 & evs1 & evs2 & Hin & H & _).
+    unfold input in Hin. injection Hin as -> -> ->.
+    destruct H as (m0 & m2 & evs3 & evs4 & Hgm & H & _).
+    unfold get_model in Hgm. injection Hgm as -> -> ->.
+    cbv beta in H. rewrite Hp in H. cbv iota in H. rewrite Hg in H.
+    cbn [negb] in H. unfold unmodeled in H. cbv beta in H. discriminate H.
+  - intros ->.
+    eapply bind_unmodeled2; [apply input_ok|].
+    cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|].
+    cbv beta. rewrite Hp. cbv iota. rewrite Hg. cbn [negb]. reflexivity.
+Qed.
+
+(** Where the shape holds, a ready outcome exists: the MOST choice. *)
+Lemma ppoll_wake_spec_progress : forall i m,
+  ppoll_wakeable_b i m = true -> exists eff, ppoll_wake_spec i m (Ok eff m []).
+Proof.
+  intros i m Hw0. pose proof Hw0 as Hw.
+  unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo cs] eqn:Hp;
+    cbv iota in Hw; [rewrite andb_false_r in Hw; discriminate Hw|].
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  apply andb_true_iff in Hw as [_ Hw].
+  apply andb_true_iff in Hw as [Hw Hans]. apply andb_true_iff in Hw as [Hw Hchi].
+  apply andb_true_iff in Hw as [Hw _]. apply andb_true_iff in Hw as [Hu _].
+  apply Z.eqb_eq in Hu.
+  destruct (ppoll_finish i (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) PsToNone
+              (ppoll_most cs)) as [pa|] eqn:Hf; [|discriminate Hans].
+  assert (Hc : ppoll_count (ppoll_most cs) <> 0%Z).
+  { intros Hq. rewrite (ppoll_finish_quiet _ _ _ _ _ Hq) in Hf. discriminate Hf. }
+  pose proof (ppoll_finish_wait _ _ _ _ _ _ _ _ _ _ Hp Hchi Hf) as Hpa.
+  exists (with_copyins
+            (ppoll_reads i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+               (in_arg i 3) (in_arg i 4))
+            (mkEffect (Z_to_bv 64 (ppoll_count (ppoll_most cs)))
+               (ppoll_writeback (in_arg i 0) (ppoll_most cs)) [])).
+  unfold ppoll_wake_spec.
+  exists i, m, [], []. split; [reflexivity|]. split; [|reflexivity].
+  exists m, m, [], []. split; [reflexivity|]. split; [|reflexivity].
+  cbv beta zeta. rewrite Hw0. cbn [negb]. rewrite Hp. cbv iota.
+  apply (proj2 (bind_choose_iff _ _ _ _ _)).
+  exists (ppoll_most cs, pa). cbv beta. cbn [fst snd].
+  split; [split; [exact Hchi | split; [exact Hc | exact Hf]]|].
+  apply (proj2 (pselect_answer_iff _ _ _ _ _ _)).
+  subst pa. exists 0%Z. eexists.
+  split; [reflexivity|]. split.
+  - unfold pselect_effect, ps_one. cbn [pa_ans]. reflexivity.
+  - cbv beta. rewrite (ppoll_rec_und0 _ _ _ Hu). reflexivity.
+Qed.
+
+(** A wake outcome is a call that RETURNED READY: it leaves the model as
+    it was, emits nothing, returns the count of ready entries, between 1
+    and [ppoll_nfds_max], and writes back the [revents] of that choice. *)
+Lemma ppoll_wake_spec_ready : forall i m eff m' evs,
+  ppoll_wake_spec i m (Ok eff m' evs) ->
+  m' = m /\ evs = []
+  /\ exists rs, (1 <= ppoll_count rs <= ppoll_nfds_max)%Z
+             /\ eff_ret eff = Z_to_bv 64 (ppoll_count rs)
+             /\ eff_writes eff = ppoll_writeback (in_arg i 0) rs.
+Proof.
+  intros i m eff m' evs H. unfold ppoll_wake_spec in H.
+  destruct H as (i0 & m1 & evs1 & evs2 & Hin & H & Hevs).
+  unfold input in Hin. injection Hin as -> -> ->.
+  destruct H as (m0 & m2 & evs3 & evs4 & Hgm & H & Hevs2).
+  unfold get_model in Hgm. injection Hgm as -> -> ->.
+  cbv beta zeta in H.
+  destruct (negb (ppoll_wakeable_b i m)) eqn:Hw; cbv beta iota in H;
+    [unfold unmodeled in H; cbv beta in H; discriminate H|].
+  apply negb_false_iff in Hw. unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo cs] eqn:Hp;
+    cbv iota in H, Hw.
+  { unfold unmodeled in H. cbv beta in H. discriminate H. }
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  apply andb_true_iff in Hw as [_ Hw].
+  do 4 (apply andb_true_iff in Hw as [Hw _]).
+  apply Z.eqb_eq in Hw.
+  apply (proj1 (bind_choose_iff _ _ _ _ _)) in H.
+  destruct H as ([rs pa] & (Hc & Hcnt & Hf) & H).
+  cbn [fst snd] in Hc, Hcnt, Hf, H.
+  apply (proj1 (pselect_answer_iff _ _ _ _ _ _)) in H.
+  destruct H as (sel & eff0 & Hsel & He & Ho).
+  pose proof (ppoll_finish_wait _ _ _ _ _ _ _ _ _ _ Hp Hc Hf) as Hpa. subst pa.
+  injection Ho as Heff Hm' Hevs4. subst eff m' evs4.
+  unfold pselect_effect, ps_one in He. cbn [pa_ans] in He. subst eff0.
+  destruct (ppoll_plan_poll _ _ _ _ _ _ _ _ _ Hp) as [Hscan _].
+  destruct (ppoll_scan_done _ _ _ _ _ Hscan) as [Hlen _].
+  pose proof (ppoll_count_bounds rs) as Hb.
+  pose proof (ppoll_choice_in_length _ _ Hc) as Hl.
+  cbn [app] in Hevs, Hevs2. subst evs evs2.
+  split; [exact (ppoll_rec_und0 _ _ _ Hw)|]. split; [reflexivity|].
+  exists rs. split; [lia|]. split; reflexivity.
+Qed.

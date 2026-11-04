@@ -576,9 +576,10 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     [ppoll_revents_of] enumerates the descriptor kinds, which makes a
     MISSING arm a build error — the same shape, and the same reason, as
     [Locks.path_openers].  What it does not make is a WRONG arm visible:
-    [check_ppoll] calls [Select.ppoll_outcome] directly rather than
-    mirroring it, so the spec arm IS the checker arm and no agreement
-    proof can disagree with it.  Masking the read-write arm's answer to 0
+    [check_ppoll] calls [Select.ppoll_plan], [Select.ppoll_all_answered]
+    and [Select.ppoll_finish] directly rather than mirroring them, so the
+    spec arm IS the checker arm and no agreement proof can disagree with
+    it.  Masking the read-write arm's answer to 0
     therefore compiles green across every file that can see [Select.v],
     and [ppoll] on an O_RDWR descriptor then reports [revents] 0 and does
     not count the entry — a wrong modeled answer, not a decline.
@@ -943,6 +944,298 @@ Example ppoll_an_unreadable_mask_is_efault :
     (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
+
+(* ---- ppoll (73) on an eventfd and a signalfd ----------------------------- *)
+
+(** bubblewrap's monitor process polls two descriptors for POLLIN: the
+    signalfd it made for SIGCHLD (fd 3) and the eventfd its child writes
+    (fd 4), both made non-blocking, with SIGCHLD blocked and a child
+    recorded.  Before [Select.ppoll_opaque_revents] the model declined
+    every [ppoll] naming either. *)
+Definition pp_bwrap_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_children (with_sigmask (Z_to_bv 64 0x10000)
+    (with_fds (fd_insert (fd_insert (m_fds m)
+                 3 (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+                 4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))) m)).
+
+(** The same with SIGCHLD NOT blocked. *)
+Definition pp_bwrap_unblocked_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_children
+    (with_fds (fd_insert (fd_insert (m_fds m)
+                 3 (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+                 4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))) m).
+
+(** [ppoll({{3, POLLIN}, {4, ev4}}, 2, tsp, NULL, 8)] with the timespec
+    bytes [ts] at [pp_tsp]. *)
+Definition pp_bwrap_in (tsp : word) (ts : list byte) (ev4 : Z) : SyscallInput :=
+  mkInput 73 [pp_ufds; 2; tsp; 0; 8; 0]
+    (mem_join (bytes_at pp_ufds (pp_entry 3 1 ++ pp_entry 4 ev4))
+              (bytes_at pp_tsp ts)) pp_wmem.
+
+(** [n] returned, the signalfd's [revents] [sfd] and the eventfd's [efd]
+    written back, the timespec (where [reads_tsp]) and the 16-byte array
+    on the ledger. *)
+Definition pp_bwrap_eff (reads_tsp : bool) (n sfd efd : Z) : SyscallEffect :=
+  with_copyins
+    ((if reads_tsp then [(pp_tsp, 16%nat)] else []) ++ [(pp_ufds, 16%nat)])
+    (mkEffect (Z_to_bv 64 n)
+       [(pp_ufds + 6, word_le2 (Z_to_bv 64 sfd));
+        (pp_ufds + 14, word_le2 (Z_to_bv 64 efd))] []).
+
+(** WITH A ZERO TIMEOUT every choice is answered: neither ready (0),
+    either one (1), or both (2), the eventfd's [revents] being POLLIN, or
+    POLLIN|POLLERR (9) at a counter of 2^64 - 1.  POLLOUT (4) on the
+    eventfd is rejected: [eventfd_poll] reports it, but the POLLIN filter
+    masks it away.  A count that disagrees with the [revents] is
+    rejected.
+
+    THE CONTROL, answered alike by the old text and the new: [ppoll] on a
+    regular file entry, whose readiness is the constant
+    [DEFAULT_POLLMASK]. *)
+Example ppoll_bwrap_monitor_zero_timeout :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 0 0 0) pp_bwrap_model
+  = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 1 0)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 1)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 9)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 4)
+       pp_bwrap_model
+     = CheckReject
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 0)
+       pp_bwrap_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0] (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []))
+       pselect_model
+     = CheckOk pselect_model [].
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** WHERE A CHOICE WOULD BE DECLINED, THE WHOLE CALL IS.  With SIGCHLD
+    NOT blocked nothing can be pending for the signalfd, so its POLLIN is
+    rejected while the eventfd's is answered.  With a NULL timeout the
+    all-not-ready choice never returns, so the call declines whatever the
+    effect claims; with a real deadline a choice that counts would return
+    the remaining time, so it declines too.  An [events] word other than
+    POLLIN on the eventfd declines.
+
+    THE CONTROL, answered alike by the old text and the new: [ppoll] with
+    a NULL timeout on a regular file entry, answered. *)
+Example ppoll_bwrap_monitor_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 1 0)
+    pp_bwrap_unblocked_model
+  = CheckReject
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       pp_bwrap_unblocked_model
+     = CheckOk pp_bwrap_unblocked_model []
+  /\ check_syscall (pp_bwrap_in 0 (pp_ts 0 0) 1) (pp_bwrap_eff false 1 1 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 1000000) 1) (pp_bwrap_eff true 1 1 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 5) (pp_bwrap_eff true 0 0 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0] (bytes_at pp_ufds (pp_entry 3 1)) pp_wmem)
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []))
+       pselect_model
+     = CheckOk pselect_model [].
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** Replacing the signalfd's mask leaves the monitor's other fields and the
+    eventfd unchanged. *)
+Definition pp_bwrap_with_sfd_mask (mask : Z) : Model :=
+  with_fds
+    (fd_insert (m_fds pp_bwrap_model) 3
+      (FdOpaque (OSignalFd (Z_to_bv 64 mask) (Z_to_bv 64 0x80800))))
+    pp_bwrap_model.
+
+(** A pending selected signal makes [signalfd_poll] decline, so a zero-timeout
+    poll cannot choose an otherwise-ready eventfd outcome.  The control has
+    the same descriptor mask without the pending signal. *)
+Example ppoll_bwrap_pending_sigabrt_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+    (with_sigabrt_pending (pp_bwrap_with_sfd_mask sigabrt_mask))
+  = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       (pp_bwrap_with_sfd_mask sigabrt_mask)
+     = CheckOk (pp_bwrap_with_sfd_mask sigabrt_mask) [].
+Proof. split; check_eq. Qed.
+
+Example ppoll_bwrap_pending_sigpipe_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+    (with_sigpipe_pending (pp_bwrap_with_sfd_mask sigpipe_mask))
+  = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       (pp_bwrap_with_sfd_mask sigpipe_mask)
+     = CheckOk (pp_bwrap_with_sfd_mask sigpipe_mask) [].
+Proof. split; check_eq. Qed.
+
+(* ---- ppoll (73) with a NULL timeout, at the step: [Run.waits_end] ------- *)
+
+(** A machine state at a [ppoll] ecall with [nfds] entries [ent] at
+    [pp_ufds], a NULL timeout and a NULL mask.  The entries are the only
+    memory, and memory a process holds is writable, so the [revents]
+    write-back lands. *)
+Definition pp_wait_ms (ent : list byte) (nfds : Z) : machine_state := {|
+  ms_regs := bvmap_set 10 pp_ufds
+               (bvmap_set 11 (Z_to_bv 64 nfds) (bvmap_set 14 (Z_to_bv 64 8) bvmap_empty));
+  ms_fregs := bvmap_empty;
+  ms_pc_val := Z_to_bv 64 0x100;
+  ms_svc_pending := Some (Z_to_bv 64 73);
+  ms_resv := None; ms_fcsr := Z_to_bv 32 0;
+  ms_mem := bytes_at pp_ufds ent;
+  ms_rom := fun _ => None |}.
+
+(** bubblewrap's monitor loop at its [ppoll(fds, 2, NULL, NULL, 8)]. *)
+Definition pp_wait_bwrap_ms : machine_state := pp_wait_ms (pp_entry 3 1 ++ pp_entry 4 1) 2.
+
+Definition pp_wait_i : SyscallInput := sys_input [] pp_wait_bwrap_ms (Z_to_bv 64 73).
+
+(** The ready outcome where the signalfd reports POLLIN and the eventfd
+    nothing. *)
+Definition pp_wake_eff : SyscallEffect :=
+  with_copyins
+    (ppoll_reads pp_wait_i pp_bwrap_model (in_arg pp_wait_i 0) (unfds32 (in_arg pp_wait_i 1))
+       (in_arg pp_wait_i 2) (in_arg pp_wait_i 3) (in_arg pp_wait_i 4))
+    (mkEffect (Z_to_bv 64 1) (ppoll_writeback (in_arg pp_wait_i 0) [1; 0]%Z) []).
+
+Lemma pp_wait_wakeable : ppoll_wakeable_b pp_wait_i pp_bwrap_model = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma pp_wait_plan :
+  ppoll_plan pp_wait_i pp_bwrap_model (in_arg pp_wait_i 0) (unfds32 (in_arg pp_wait_i 1))
+    (in_arg pp_wait_i 2) (in_arg pp_wait_i 3) (in_arg pp_wait_i 4)
+  = PpPoll PsToNone
+      [(3, [(0, PpEnv); (1, PpEnv)]); (4, [(0, PpEnv); (1, PpEnv); (9, PpEnv)])]%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+(** UNDER THE DEFAULT READING THE CALL IS A DECLINE: the choice where
+    neither descriptor is ready never returns, so [ppoll_spec] admits
+    nothing but [Unmodeled], and the step is the error transition. *)
+Example ppoll_bwrap_infinite_hangs_by_default : forall cfg,
+  sstep_wcfg [] cfg waits_may_hang (mkCfg pp_wait_bwrap_ms pp_bwrap_model) [] SError.
+Proof.
+  intros cfg.
+  apply (sstep_wcfg_syscall_unmodeled [] cfg waits_may_hang pp_wait_bwrap_ms
+           pp_bwrap_model (Z_to_bv 64 73)).
+  - reflexivity.
+  - reflexivity.
+  - apply (check_syscall_sound_unmodeled _ (mkEffect 0 [] [])).
+    vm_compute. reflexivity.
+  - apply wait_ends_hang.
+Qed.
+
+(** UNDER [Run.waits_end] THE CALL RETURNS READY: a step with the
+    signalfd's [revents] POLLIN exists ... *)
+Example ppoll_bwrap_infinite_wakes_under_waits_end : forall cfg,
+  sstep_wcfg [] cfg waits_end (mkCfg pp_wait_bwrap_ms pp_bwrap_model) []
+    (SNext (mkCfg (advance_past_svc (apply_effect pp_wait_bwrap_ms pp_wake_eff))
+                  pp_bwrap_model)).
+Proof.
+  intros cfg.
+  apply (sstep_wcfg_wake [] cfg waits_end pp_wait_bwrap_ms pp_bwrap_model (Z_to_bv 64 73)
+           pp_wake_eff pp_bwrap_model pp_bwrap_model []).
+  - reflexivity.
+  - reflexivity.
+  - split; [reflexivity | exact pp_wait_wakeable].
+  - change (sys_input [] pp_wait_bwrap_ms (Z_to_bv 64 73)) with pp_wait_i.
+    unfold ppoll_wake_spec.
+    exists pp_wait_i, pp_bwrap_model, [], []. split; [reflexivity|]. split; [|reflexivity].
+    exists pp_bwrap_model, pp_bwrap_model, [], [].
+    split; [reflexivity|]. split; [|reflexivity].
+    cbv beta zeta. rewrite pp_wait_wakeable. cbn [negb]. rewrite pp_wait_plan. cbv iota.
+    apply (proj2 (bind_choose_iff _ _ _ _ _)).
+    exists ([1; 0]%Z,
+            ps_one (Z_to_bv 64 1, ppoll_writeback (in_arg pp_wait_i 0) [1; 0]%Z, None)).
+    cbv beta. cbn [fst snd].
+    split.
+    { split; [vm_compute; reflexivity|].
+      split; [intros Hc; vm_compute in Hc; discriminate Hc|].
+      first [ vm_compute; reflexivity
+            | rewrite ppoll_finish_eq; vm_compute; reflexivity ]. }
+    apply (proj2 (pselect_answer_iff _ _ _ _ _ _)).
+    exists 0%Z. eexists.
+    split; [reflexivity|]. split.
+    + unfold pselect_effect, ps_one. cbn [pa_ans]. reflexivity.
+    + cbv beta. rewrite ppoll_rec_und0; [reflexivity | vm_compute; reflexivity].
+  - apply spurious_refusal_family_on. apply injected_family_off_ppoll. reflexivity.
+  - reflexivity.
+  - apply materialize_model_accesses_no_lazy. reflexivity.
+Qed.
+
+(** ... and no error transition does. *)
+Example ppoll_bwrap_infinite_no_error_under_waits_end : forall cfg evs,
+  ~ sstep_wcfg [] cfg waits_end (mkCfg pp_wait_bwrap_ms pp_bwrap_model) evs SError.
+Proof.
+  intros cfg evs H.
+  inversion H; subst;
+    try (match goal with
+         | [ Hsvc : ms_svc_pending _ = None |- _ ] => discriminate Hsvc
+         end);
+    match goal with
+    | [ Hsvc : ms_svc_pending _ = Some ?x8 |- _ ] =>
+        change (ms_svc_pending pp_wait_bwrap_ms) with (Some (Z_to_bv 64 73)) in Hsvc;
+        injection Hsvc as <-
+    end.
+  - (* an answered outcome whose pages fault: there is no answered outcome *)
+    match goal with
+    | [ Hspec : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
+        apply (syscall_spec_wakeable _ _ _ pp_wait_wakeable) in Hspec; discriminate Hspec
+    end.
+  - (* the decline: the wait ends instead *)
+    match goal with
+    | [ Hne : ~ wait_ends _ _ _ |- _ ] =>
+        apply Hne; split; [reflexivity | exact pp_wait_wakeable]
+    end.
+  - (* a ready outcome whose pages fault: there is no lazy page here *)
+    match goal with
+    | [ Hwk : ppoll_wake_spec _ _ (Ok _ _ _),
+        Hmat : materialize_model_accesses _ _ = None |- _ ] =>
+        destruct (ppoll_wake_spec_ready _ _ _ _ _ Hwk) as (Hm & _ & _); subst;
+        rewrite materialize_model_accesses_no_lazy in Hmat by reflexivity;
+        discriminate Hmat
+    end.
+Qed.
+
+(** THE CONTROL, alike under both readings: an infinite [ppoll] on a
+    regular file, whose readiness is the constant [DEFAULT_POLLMASK],
+    answers 1 and steps on under [waits_may_hang] and [waits_end]
+    alike. *)
+Definition pp_file_ms : machine_state := pp_wait_ms (pp_entry 3 1) 1.
+
+Definition pp_file_eff : SyscallEffect :=
+  with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []).
+
+Example ppoll_file_infinite_steps_alike : forall cfg w,
+  sstep_wcfg [] cfg w (mkCfg pp_file_ms pselect_model) []
+    (SNext (mkCfg (advance_past_svc (apply_effect pp_file_ms pp_file_eff)) pselect_model)).
+Proof.
+  intros cfg w.
+  apply (sstep_wcfg_syscall [] cfg w pp_file_ms pselect_model (Z_to_bv 64 73) pp_file_eff
+           pselect_model pselect_model []).
+  - reflexivity.
+  - reflexivity.
+  - apply check_syscall_sound_ok. check_eq.
+  - apply spurious_refusal_family_on. apply injected_family_off_ppoll. reflexivity.
+  - reflexivity.
+  - apply materialize_model_accesses_no_lazy. reflexivity.
+Qed.
 
 (* =========================================================================
    THE USER RANGES THAT WALKED OFF THE TOP OF THE ADDRESS SPACE

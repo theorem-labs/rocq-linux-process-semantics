@@ -1782,6 +1782,19 @@ Ltac vm_done H :=
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
 
+(** The signalfd read hands back the model it was given.  Proved apart
+    and applied whole in [vm_read_opaque]: [vm_step] splits on the first
+    closed [if] it finds anywhere in the hypothesis, so a closed test
+    inside one arm doubles every other arm's goals, and this arm's tests
+    on [count] are closed. *)
+Lemma check_read_signalfd_frame : forall i mask flags buf count eff m m' evs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i mask flags buf count eff m m' evs H.
+  apply check_read_signalfd_model in H. subst m'. reflexivity.
+Qed.
+
 (** A stream-pair end's read and send ([Fs.ReadWrite.check_stream_read],
     [Fs.ReadWrite.check_stream_send]) rewrite fd-table entries -- the
     reader's queue, or the peer's -- with [with_fds], and the send's
@@ -1924,7 +1937,8 @@ Proof.
   destruct o; cbv beta iota in H;
     first [ discriminate H
           | eapply vm_read_proc; exact H
-          | eapply vm_read_eventfd; exact H ].
+          | eapply vm_read_eventfd; exact H
+          | eapply check_read_signalfd_frame; exact H ].
 Qed.
 
 Lemma vm_write_opaque : forall i o buf count eff m m' evs,
@@ -1965,7 +1979,6 @@ Proof.
           || (eapply vm_anon_fault_extend in H; exact H));
   try reflexivity.
 Qed.
-
 Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -2740,10 +2753,8 @@ Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
-    cbv beta iota in H; [|discriminate H].
-  apply check_pselect_answer_model in H. subst m'. reflexivity.
+  destruct (check_ppoll_model _ _ _ _ _ _ _ _ _ _ H) as [-> | (tmo & cs & rs & _ & ->)];
+    reflexivity.
 Qed.
 
 Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,

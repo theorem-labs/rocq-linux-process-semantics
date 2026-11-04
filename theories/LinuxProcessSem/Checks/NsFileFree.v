@@ -610,12 +610,21 @@ Proof.
   intros i fl buf count eff m m' evs H. unfold check_write_eventfd in H. nf_frame H.
 Qed.
 
+(** A signalfd read keeps the model ([check_read_signalfd_model]). *)
+Lemma nf_read_signalfd : forall i mask flags buf count eff m m' evs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i mask flags buf count eff m m' evs H.
+  apply check_read_signalfd_model in H. subst m'. apply ns_kept_refl.
+Qed.
+
 Lemma nf_read_opaque : forall i o buf count eff m m' evs,
   check_read_opaque i o buf count eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i o buf count eff m m' evs H. unfold check_read_opaque in H.
   destruct o; cbv beta iota in H;
-    first [ discriminate H | nf_use nf_read_proc H | nf_use nf_read_eventfd H ].
+    first [ discriminate H | nf_use nf_read_proc H | nf_use nf_read_eventfd H
+          | nf_use nf_read_signalfd H ].
 Qed.
 
 Lemma nf_write_opaque : forall i o buf count eff m m' evs,
@@ -1106,7 +1115,8 @@ Lemma check_ppoll_nf : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   check_ppoll i ufds nfds tsp sig sigsetsize eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll, check_pselect_answer in H. nf_frame H.
+  destruct (check_ppoll_model _ _ _ _ _ _ _ _ _ _ H) as [-> | (tmo & cs & rs & _ & ->)];
+    nf_finish.
 Qed.
 
 (** Fstat's and newfstatat's helpers, one lemma each, as in

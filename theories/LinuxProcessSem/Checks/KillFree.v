@@ -568,6 +568,48 @@ Proof.
   all: kf_close m Hoff Hk.
 Qed.
 
+(** A signalfd read: every answer keeps the model and has no event. *)
+Lemma kf_signalfd_deliver : forall buf kmax eff m m' evs,
+  check_signalfd_deliver buf kmax eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros buf kmax eff m m' evs H.
+  unfold check_signalfd_deliver in H.
+  destruct eff as [r ws zs us cs ci].
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate H.
+  cbv beta iota in H.
+  destruct (bv_eqb r (len_word bs) && bv_eqb a buf
+            && signalfd_records_b (Z.to_nat kmax) bs); [|discriminate H].
+  injection H as <- <-. split; reflexivity.
+Qed.
+
+Lemma kf_read_signalfd : forall i mask flags buf count eff m m' evs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i mask flags buf count eff m m' evs H Hoff Hk.
+  assert (Hro : forall v, check_ret_only eff v m [] = CheckOk m' evs -> m' = m /\ evs = []).
+  { intros v Hc. apply check_ret_only_ok_iff in Hc.
+    destruct Hc as (_ & -> & ->). split; reflexivity. }
+  assert (Heq : m' = m /\ evs = []).
+  { unfold check_read_signalfd in H.
+    destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+      [exact (Hro _ H)|].
+    destruct (Z.eqb (signalfd_read_max count) 0); cbv iota in H; [exact (Hro _ H)|].
+    destruct (negb (sfd_nonblock_b flags)); cbv iota in H; [discriminate H|].
+    destruct (signalfd_other_may_pend mask m); cbv iota in H; [discriminate H|].
+    destruct (negb (signalfd_sigchld_may_pend mask m)); cbv iota in H;
+      [exact (Hro _ H)|].
+    destruct (negb (modeled_rw_count count)); cbv iota in H; [discriminate H|].
+    destruct (read_bytes_map (in_wmem i) buf
+                (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)));
+      cbv iota in H; [|discriminate H].
+    destruct (eff_is_errno EAGAIN eff); cbv iota in H.
+    - injection H as <- <-. split; reflexivity.
+    - exact (kf_signalfd_deliver _ _ _ _ _ _ H). }
+  destruct Heq as [-> ->].
+  split; [exact Hoff | split; [exact Hk | intros ? ? []]].
+Qed.
+
 Lemma kf_read_opaque : forall i o buf count eff m m' evs,
   check_read_opaque i o buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -575,7 +617,8 @@ Proof.
   destruct o; cbv beta iota in H;
     first [ discriminate H
           | exact (kf_read_proc _ _ _ _ _ _ _ H Hoff Hk)
-          | exact (kf_read_eventfd _ _ _ _ _ _ _ _ H Hoff Hk) ].
+          | exact (kf_read_eventfd _ _ _ _ _ _ _ _ H Hoff Hk)
+          | exact (kf_read_signalfd _ _ _ _ _ _ _ _ _ H Hoff Hk) ].
 Qed.
 
 Lemma kf_write_opaque : forall i o buf count eff m m' evs,
