@@ -615,6 +615,58 @@ Example getcwd_unreachable :
   = Some [(BUF, [40; 117; 110; 114; 101; 97; 99; 104; 97; 98; 108; 101; 41] ++ s_home ++ [0])].
 Proof. vm_compute. reflexivity. Qed.
 
+(** Mount 6 covers mount 2's root. An event received by mount 2 can
+    detach mount 6, changing the upward path without touching the procfs
+    walk used to read /proc/self/cwd. *)
+Definition path_world (parent_peer start_peer : option positive) (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts W
+      (map (fun mt => if Pos.eqb (mnt_id mt) 2 then mnt_with_peer mt parent_peer else mt)
+           (ns_mounts W) ++
+       [mnt_with_peer (mnt 6 (Some 2%positive) 20 20 2 no_flags) start_peer])) gs.
+Definition path_ctx : NsCtx := with_cwd c0 (6%positive, 22%positive).
+Definition path_getcwd : SyscallInput := call 17 [BUF; 64] (fun _ => None) (wmem 64).
+Definition s_locked : list Z := [47; 116; 109; 112; 47; 108; 111; 99; 107; 101; 100].
+Definition s_cwd : list Z := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 99; 119; 100].
+
+Definition proc_path_world (gs : list positive) : NsState :=
+  let st := path_world (Some 7%positive) None gs in
+  with_mounts st
+    (map (fun mt => if Pos.eqb (mnt_id mt) 3 then mnt_with_place mt (Some 2%positive) 20 else mt)
+         (ns_mounts st)).
+
+Example d_path_proc_open_parent_declines :
+  d_path (proc_path_world [7%positive]) c0 (LProcTask 3 42 []) = None
+  /\ d_path (proc_path_world []) c0 (LProcTask 3 42 []) = Some (bytes [47; 116; 109; 112; 47; 52; 50]).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example getcwd_open_parent_declines :
+  getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None [7%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+Example readlinkat_cwd_open_parent_declines :
+  readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+               (path_world (Some 7%positive) None [7%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A closed chain, an unrelated open group, and an open start mount
+    keep the path: an event on the start alone changes no upward step. *)
+Example getcwd_closed_chain_answers :
+  writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None []))
+    = Some [(BUF, s_locked ++ [0])]
+  /\ writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world (Some 7%positive) None [8%positive]))
+    = Some [(BUF, s_locked ++ [0])]
+  /\ writes_of (getcwd_fn path_getcwd m3 path_ctx (path_world None (Some 7%positive) [7%positive]))
+    = Some [(BUF, s_locked ++ [0])].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+Example readlinkat_cwd_closed_chain_answers :
+  writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                          (path_world (Some 7%positive) None [])) = Some [(BUF, s_locked)]
+  /\ writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                            (path_world (Some 7%positive) None [8%positive])) = Some [(BUF, s_locked)]
+  /\ writes_of (readlinkat_fn (readlink_in CWD s_cwd 64) m3 path_ctx
+                            (path_world None (Some 7%positive) [7%positive])) = Some [(BUF, s_locked)].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
 (* ---- chdir, fchdir ----------------------------------------------------- *)
 
 Definition chdir_in (p : list Z) : SyscallInput := call 49 [PATH] (path_mem p) (fun _ => None).

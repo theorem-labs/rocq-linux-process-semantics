@@ -552,7 +552,12 @@ not apply.
   `env_open_groups`. With a non-empty list, a call whose answer reads a
   mount that can receive such an event has no answer: a path walk that
   enters such a mount (`Ns.Walk.follow_mounts_fuel`,
-  `Ns.Propagation.open_mount`), a `clone` or `unshare` with
+  `Ns.Propagation.open_mount`), `getcwd` and the text of a procfs
+  cwd/root/fd link whose upward path steps into such a parent mount
+  (`Ns.Files.path_open`: a host unmount can detach the child below it,
+  `fs/pnode.c:500-535`, `586-593`; `fs/namespace.c:1752-1753`,
+  `1813-1819`, `993-1000`; the climb then stops there,
+  `fs/d_path.c:110-125`), a `clone` or `unshare` with
   `CLONE_NEWUSER`, which reads the topmost mount on the caller's mount
   namespace's root mount to decide whether the caller is chrooted
   (`Ns.UserArms.current_chrooted`; `current_chrooted`,

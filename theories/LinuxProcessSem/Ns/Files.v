@@ -36,7 +36,7 @@
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Propagation Walk Task.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -1289,6 +1289,47 @@ Fixpoint prepend_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) 
            end
   end.
 
+(** A parent mount that [__prepend_path] steps into can receive an event
+    from an open group. A propagated unmount can detach the child below
+    that parent ([gather_candidates], fs/pnode.c:500-535, [trim_one],
+    586-593; [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819;
+    [__umount_mnt], 993-1000), so Linux's climb stops there instead
+    (fs/d_path.c:110-125, v6.18.46). The start mount alone does not change
+    an upward step. Follow [prepend_fuel]'s roots, dentries and fuel. *)
+Fixpoint path_open_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) : bool :=
+  match fuel with
+  | O => false
+  | S f =>
+      if loc_eqb (LDentry m d) root then false
+      else match find_mount (ns_mounts st) m with
+           | None => false
+           | Some mt =>
+               if Pos.eqb d (mnt_root mt)
+               then match mnt_parent mt with
+                    | Some p => open_mount st p || path_open_fuel f st root p (mnt_mountpoint mt)
+                    | None => false
+                    end
+               else match find_dentry st d with
+                    | Some x => match d_parent x with
+                                | Some q => path_open_fuel f st root m q
+                                | None => false
+                                end
+                    | None => false
+                    end
+           end
+  end.
+
+(** No traversal is needed under the default, closed launch. *)
+Definition path_open (st : NsState) (root : Loc) (m d : positive) : bool :=
+  match env_open_groups (ns_env st) with
+  | [] => false
+  | _ => path_open_fuel (S (length (ns_mounts st) + length (ns_dentries st))) st root m d
+  end.
+
+Theorem path_open_closed : forall st root m d,
+  env_open_groups (ns_env st) = [] -> path_open st root m d = false.
+Proof. intros st root m d H. unfold path_open. rewrite H. reflexivity. Qed.
+
 (** [prepend_path] (fs/d_path.c): the escaped case starts again empty, and
     an empty name is "/". *)
 Definition prepend_path (st : NsState) (root : Loc) (m d : positive) : option (Z * list byte) :=
@@ -1302,10 +1343,12 @@ Definition prepend_path (st : NsState) (root : Loc) (m d : positive) : option (Z
 (** [d_path] (fs/d_path.c) from the task's root, no marker for a path not
     under it, and " (deleted)" after the path of an unlinked dentry; an
     entry of a task's procfs directory is the procfs root's path, the pid
-    and the names below it. *)
+    and the names below it. Declines when [path_open] holds: the host
+    can change a mount-parent link that the upward path reads. *)
 Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
   match l with
   | LDentry m d =>
+      if path_open st (ctx_root_loc ctx) m d then None else
       let deleted := match find_dentry st d with
                      | Some x => if d_unlinked x then ascii [32; 40; 100; 101; 108; 101; 116; 101; 100; 41] else []
                      | None => []
@@ -1318,6 +1361,7 @@ Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
           match find_sb st (mnt_sb mt) with
           | None => None
           | Some s =>
+              if path_open st (ctx_root_loc ctx) m (sb_root s) then None else
               match prepend_path st (ctx_root_loc ctx) m (sb_root s) with
               | None => None
               | Some (_, base) =>
@@ -1427,12 +1471,15 @@ Definition unreachable_prefix : list byte :=
 (** [getcwd] (17): [SYSCALL_DEFINE2(getcwd)] (fs/d_path.c): the cwd's path
     from the root by [prepend_path], "(unreachable)" before it when the cwd
     is not under the root, and its NUL; ENAMETOOLONG past PATH_MAX, ERANGE
-    when it does not fit, EFAULT; the length with the NUL.  No cwd of the
+    when it does not fit, EFAULT; the length with the NUL. No cwd of the
     tables is unlinked (ENOENT): the model unlinks only non-directories
-    ([FsOps.unlinkat_fn]).  Kind: exact. *)
+    ([FsOps.unlinkat_fn]). Kind: exact; declines when a parent the path
+    climbs into can receive an event from an open group ([path_open]):
+    every answer reads that climb (fs/d_path.c:424-443, v6.18.46). *)
 Definition getcwd_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let buf := in_arg i 0 in
   let size := bv_unsigned (in_arg i 1) in
+  if path_open st (ctx_root_loc ctx) (fst (cx_cwd ctx)) (snd (cx_cwd ctx)) then EUnmodeled else
   match prepend_path st (ctx_root_loc ctx) (fst (cx_cwd ctx)) (snd (cx_cwd ctx)) with
   | None => EUnmodeled
   | Some (code, s) =>
