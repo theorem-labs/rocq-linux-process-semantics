@@ -295,14 +295,12 @@ Example read_uid_map_sibling_unmapped :
   shown_lower [map_root; ns_a; ns_c] 2%positive c_cred UidMap 100000 = Some 4294967295.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Both map kinds render the whole line, including the unmapped lower id. *)
+(** Both map kinds read A's extents and render the whole line for C's opener. *)
 Example map_lines_sibling_unmapped_render :
-  option_map bytes_z (map_lines [map_root; ns_a; ns_c] 2%positive c_cred UidMap
-    [mkExtent 0 100000 65536]) =
+  option_map bytes_z (map_text [map_root; ns_a; ns_c] 2%positive c_cred UidMap) =
       Some (repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
         ++ repeat 32 5 ++ [54; 53; 53; 51; 54; 10]) /\
-  option_map bytes_z (map_lines [map_root; ns_a; ns_c] 2%positive c_cred GidMap
-    [mkExtent 0 200000 65536]) =
+  option_map bytes_z (map_text [map_root; ns_a; ns_c] 2%positive c_cred GidMap) =
       Some (repeat 32 9 ++ [48; 32] ++ [52; 50; 57; 52; 57; 54; 55; 50; 57; 53; 32]
         ++ repeat 32 5 ++ [54; 53; 53; 51; 54; 10]).
 Proof. vm_compute. split; reflexivity. Qed.

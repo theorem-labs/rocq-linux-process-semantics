@@ -3,8 +3,9 @@
 Read this document before you use a proof as evidence about a real program.
 It tells you which system the model describes, where the model is narrower
 than that system, which assumptions it does not check, where it is less
-precise, and where a run under QEMU user mode is not a Linux run. The
-design priorities in [README.md](README.md#design-priorities) refer to
+precise, and where a run under QEMU user mode is not a Linux run. It also
+records which parts of a separate Lean translation lag this Rocq model.
+The design priorities in [README.md](README.md#design-priorities) refer to
 this document.
 
 ## Supported systems
@@ -26,6 +27,9 @@ them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
 `-EINVAL` for a refused flag word and never `-ENOSYS`.
 
 ## Lean translations behind the Rocq model
+
+The Lean translation of this Rocq model is maintained separately; its
+source is not included in this repository.
 
 - The namespace layer's Lean translation is pending.
 - Binary decimal rendering and the full uid_map/gid_map regression cases are pending too.
