@@ -84,6 +84,12 @@ Proof. intros a b -> n H. exact H. Qed.
 Lemma fds_grow_insert : forall a b k e, fds_grow a b -> fds_grow a (fd_insert b k e).
 Proof. intros a b k e H n Hn. apply fd_lookup_insert_keep. exact (H n Hn). Qed.
 
+Lemma fds_grow_forfeit : forall fds, fds_grow fds (forfeit_inherited fds).
+Proof.
+  intros fds n Hn. rewrite fd_lookup_forfeit_inherited.
+  destruct (fd_lookup fds n); [discriminate|contradiction].
+Qed.
+
 (** What an arm that does not write the map owes: the map is the old
     one and the table's domain only grows. *)
 Definition fd_rel (m m' : Model) : Prop :=
@@ -272,12 +278,11 @@ Proof.
     reflexivity.
 Qed.
 
-(** A leaf: the post-model keeps [State.m_fd] (by conversion, or through
-    one of the wrappers above), or keeps the map and only inserts into the
-    table. *)
+(** A leaf keeps the fd state whole, inserts a descriptor, or forfeits
+    inherited offsets after clone while retaining every descriptor key. *)
 Ltac fr_grow :=
   repeat (apply fds_grow_insert);
-  apply fds_grow_of_eq; reflexivity.
+  first [apply fds_grow_of_eq; reflexivity | apply fds_grow_forfeit].
 
 Ltac fr_leaf :=
   cbv beta;
@@ -604,13 +609,14 @@ Proof.
   fr_leaf.
 Qed.
 
-(** An opaque arm hands back the model whole
-    ([VmMapsDisjoint.check_read_opaque_keeps] and its write twin). *)
+(** [check_read_opaque] keeps the model whole.  A live inherited entry
+    instead uses [check_read_file_data], which replaces its table entry
+    without changing the close-on-exec map or losing a descriptor key. *)
 Lemma check_read_fr : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_access_ok_zero in H.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
   cbv beta iota zeta in H.
   repeat (vm_step H || fr_done H
           || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
