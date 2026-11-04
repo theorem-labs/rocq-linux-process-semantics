@@ -36,28 +36,27 @@
     SIGABRT.  [Run.valid_input] pins [State.in_abort_terminal] to
     [false], and with the declaration off [Kernel.Signal.tkill_spec]
     declines every call, so no run this statement quantifies over can
-    reach a [State.KillEv] CARRYING SIGABRT ([Run.sstep_off_no_kill],
-    which says that and no longer says "no kill").  So that refutation
+    reach a [State.KillEv] ([Checks.KillFree.valid_input_no_kill], which
+    covers SIGPIPE too).  So that refutation
     is fired where it can be — against [MustExit.must_exit_in] on
     [Checks.AbortWitness]'s killed run — and [abrt_input_not_valid_input]
     pins the reason it stops there, so a reader does not take the
     missing statement-level refutation for an oversight.
 
-    SIGPIPE.  This one has no declaration that holds it off everywhere.
+    SIGPIPE.  The same shape, through its own declaration.
     [Fs.ReadWrite.write_spec] raises signal 13 from ordinary modeled
     state — a pipe whose read end the program closed, a socket with no
     connection, a channel [State.in_channel_reader] says is unread —
-    and [Run.valid_input] constrains only the third of the three: it
-    pins the reader PRESENT, so the reader-less channel is reached by
-    name under [Run.valid_input_channel_closed], while the closed pipe
-    and the unconnected socket are ordinary states under the ordinary
-    predicate.  So the kill conjunct of [MustExit.must_exit_in_at] is a
-    LIVE refutation of
-    [halts_allowed_T] over this very input class, and
-    [halts_allowed_T_refuted_by_kill] below, which used to be
-    unfireable at statement level, is a lemma with a reachable
-    hypothesis.  A run that dies by signal 13 does not satisfy
-    [must_exit_in]: that predicate's halted constructor requires
+    but [Fs.ReadWrite.sigpipe_write] DECLINES such a write at SIG_DFL
+    unless the launch declares the death ([State.in_sigpipe_terminal]),
+    and [Run.valid_input] pins that declaration [false].  So under the
+    ordinary predicate no run ends in [KillEv 13]
+    ([Checks.KillFree.valid_input_no_kill]): the write is an
+    error, which [must_exit_in] refutes through its error conjunct.  The
+    death is reached by name, under [Run.valid_input_sigpipe_kills] for
+    a pipe or a socket and [Run.valid_input_channel_closed] for a
+    reader-less channel, and there a run that dies by signal 13 does not
+    satisfy [must_exit_in]: that predicate's halted constructor requires
     [State.m_killed] to be [None], so it asks the program to end BY
     EXIT and not merely to end. *)
 
@@ -82,8 +81,9 @@ Open Scope bv_scope.
     memory access beyond its own fetches, so the stack the entry
     describes is never looked at. *)
 Lemma exit0_must_exit_at_anywhere : forall sp brk0 mbase rnd lim inp,
-  must_exit_at exit0_segments verdict_accept
-    (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp).
+  must_exit_at (run_segments exit0_segments inp sp mbase) verdict_accept
+    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
+       rnd lim inp).
 Proof.
   intros. unfold init_config.
   apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity | apply exit0_exits_c].
@@ -231,13 +231,13 @@ Proof.
     | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
     end.
     split; [apply star_cfg_refl |].
-    split; [reflexivity |]. left. split; [reflexivity |].
+    split; [reflexivity |]. left. split; [reflexivity |]. split; [| reflexivity].
     cbn [cfg_ms cfg_model].
     match goal with
     | |- mi_account_step ?segs ?ms ?model = _ =>
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
-    rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+    rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
   - apply H; [exact (demo_entry_valid_undecodable demo_proc_input
                        demo_input_valid)
             | exact demo_input_valid].
@@ -314,16 +314,22 @@ Qed.
     leaves the modeled surface, and there is no [State.KillEv] to refute
     it by.  The two stances therefore differ on this image for
     [halts_allowed_T] exactly as [Checks.AbortWitness] shows they differ
-    for the error-free family. *)
+    for the error-free family.
+
+    It is stated at the run's own segment list, [Checks.AbortWitness]'s
+    [abrt_rsegs] (the image's segment, then the vDSO pair), and at the
+    model [Run.init_config] builds for the undeclared launch at
+    [abrt_entry]: the entry's break, mmap base and stack pointer, under
+    [State.with_vdso]. *)
 Example abrt_declined_undeclared_is_unmodeled :
-  check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
+  check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
-       (init_model (segments_reserved abrt_segments) (Z_to_bv 64 0x1000)
-          (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000)
-          source_alloc_limit abrt_input_undeclared))
+       (with_vdso (Vdso.vdso_run_init (ed_vdso abrt_draw))
+          (init_model (segments_reserved abrt_rsegs) abrt_brk abrt_mbase abrt_sp
+             source_alloc_limit abrt_input_undeclared)))
   = CheckUnmodeled.
-Proof. exact abrt_tkill_declined_undeclared. Qed.
+Proof. abrt_open2. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
    The set form is not the single-code form in disguise

@@ -690,15 +690,17 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          the environment's choice whatever the offset
                          ([ReadWrite.read_proc_spec]), so no answer the
                          model gives depends on it.
-                       - an eventfd ([OEventFd]) shares one counter, and
-                         the model already holds that counter as the
-                         environment's: a read answers any nonzero value
-                         or -EAGAIN, and a write 8 or -EAGAIN, whatever
-                         another writer has done
+                       - an eventfd an earlier clone shared ([OEventFd],
+                         made by [share_eventfds] below) shares one
+                         counter, and the model already holds that
+                         counter as the environment's: a read answers any
+                         nonzero value or -EAGAIN, and a write 8 or
+                         -EAGAIN, whatever another writer has done
                          ([ReadWrite.read_eventfd_spec],
-                         [ReadWrite.write_eventfd_spec]).  The child is
-                         one more such writer.  It also shares
-                         [f_flags], whose O_NONBLOCK those two arms read
+                         [ReadWrite.write_eventfd_spec]); select, poll
+                         and epoll decline on it.  The child is one more
+                         such writer.  It also shares [f_flags], whose
+                         O_NONBLOCK those two arms read
                          ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
                          no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
@@ -717,6 +719,42 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          read at v6.18.44; identical at v6.18.46). *)
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _) => true
                     | FdOpaque (OProcFdDir _ _ | OSignalFd _ _) => false
+                    (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
+                       the pipe's reason: the child's copy names the same
+                       socket, so a child that reads drains the parent's
+                       queue and a child that closes its copy does not run
+                       [unix_release_sock], which happens at the last
+                       [fput] -- and [State.stream_peer] reads ends off
+                       the fd table, which a copied table would double. *)
+                    | FdStream _ _ _ => false
+                    (* AN EVENTFD PASSES, AND THE CLONE MAKES IT THE
+                       SHARED KIND.  The child's copy names the same
+                       [eventfd_ctx], so after the clone a child that
+                       reads or writes moves the counter [State.FdEventfd]
+                       keeps in this one entry.  The success branch
+                       therefore replaces the entry with
+                       [FdOpaque (OEventFd w)] ([share_eventfds] below),
+                       on which no arm reads a counter the model stores:
+                       after a clone the description is shared by two
+                       tasks, so read and write answer from the
+                       environment's counter
+                       ([ReadWrite.read_eventfd_spec],
+                       [ReadWrite.write_eventfd_spec]) and select, poll
+                       and epoll decline.  Before the clone, and after a
+                       clone that failed, the entry stays [FdEventfd] and
+                       the counter stays modeled. *)
+                    | FdEventfd _ => true
+                    (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
+                       [Fs.File.dup_modeled_entry]'s reason: one rule for
+                       every socket kind. *)
+                    | FdDgram _ => false
+                    (* AN UNNAMED FILE JOINS THE GATE: the child's copy
+                       would share the one [struct file] -- its [f_pos]
+                       -- and the inode, so a child's write would move
+                       contents that [State.FdAnon] keeps in this
+                       process's entries alone.  SCOPE.md states that an
+                       unnamed file is this process's only. *)
+                    | FdAnon _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -738,15 +776,87 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
   (0 <? bv_unsigned r)%Z && (bv_unsigned r <? PID_MAX_ENVELOPE)%Z &&
   (match m_tid m with None => true | Some t0 => negb (bv_eqb r t0) end).
 
+(** THE EVENTFDS A SUCCESSFUL CLONE SHARES.
+
+    [copy_files] gives the child a second reference to every open
+    [struct file] (kernel/fork.c [copy_process], [dup_fd] in fs/file.c,
+    Linux v6.18.46), so an eventfd open at the clone has one
+    [eventfd_ctx] that two tasks can read and write.  The model holds
+    one of the two tasks.  So the success branch of each clone
+    resolution turns every [State.FdEventfd] in the table into
+    [State.FdOpaque (State.OEventFd w)], on which no arm reads a counter
+    the model stores: read and write answer from the environment's
+    counter ([ReadWrite.read_eventfd_spec],
+    [ReadWrite.write_eventfd_spec], which read [w]'s two bits), and
+    select, poll and epoll decline.
+    The table this model holds is the parent's; the child is not run
+    (SCOPE.md, "Threads"), so there is no second table to convert here.
+
+    [w] is the part of the file's flag word the model keeps, rebuilt
+    from the context: [EFD_SEMAPHORE] when [ef_semaphore], and
+    O_NONBLOCK (= EFD_NONBLOCK) when [ef_nonblock].  [Fcntl.fcntl_spec]
+    answers F_GETFL and F_SETFL on the shared kind exactly from [w].
+    EFD_CLOEXEC is not in [w]: it is a bit of the descriptor table, not
+    of the file, and this model keeps no close-on-exec bit, so after the
+    clone it is unknown, and [Fcntl.fcntl_spec]'s F_GETFD declines on
+    the shared kind ([Fcntl.getfd_declines]). *)
+Definition eventfd_shared_flags (c : EventfdCtx) : word :=
+  Z_to_bv 64 (Z.lor (if ef_semaphore c then EFD_SEMAPHORE else 0%Z)
+                    (if ef_nonblock c then O_NONBLOCK else 0%Z)).
+
+Definition eventfd_shared_entry (e : FdEntry) : FdEntry :=
+  match e with
+  | FdEventfd c => FdOpaque (OEventFd (eventfd_shared_flags c))
+  | _ => e
+  end.
+
+Fixpoint share_eventfds (fds : list (word * FdEntry)) : list (word * FdEntry) :=
+  match fds with
+  | [] => []
+  | (k, e) :: r => (k, eventfd_shared_entry e) :: share_eventfds r
+  end.
+
+(** The model after a successful clone: the child recorded
+    ([State.with_children]) and the eventfds shared ([share_eventfds]). *)
+Definition clone_child_made (m : Model) : Model :=
+  with_children (with_fds (share_eventfds (m_fds m)) m).
+
+(** NO [FdEventfd] IS LEFT after the conversion, under any descriptor
+    number: the post-clone table holds the counter nowhere. *)
+Lemma share_eventfds_no_eventfd : forall fds fd c,
+  fd_lookup (share_eventfds fds) fd <> Some (FdEventfd c).
+Proof.
+  induction fds as [|[k e] r IH]; intros fd c; cbn [share_eventfds fd_lookup].
+  - discriminate.
+  - destruct (bv_eqb k fd).
+    + destruct e; cbn [eventfd_shared_entry]; discriminate.
+    + apply IH.
+Qed.
+
+Lemma share_eventfds_no_eventfd_in : forall fds k c,
+  ~ In (k, FdEventfd c) (share_eventfds fds).
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k c; cbn [share_eventfds In].
+  - tauto.
+  - intros [Heq|Hin].
+    + destruct e; cbn [eventfd_shared_entry] in Heq; inversion Heq.
+    + exact (IH k c Hin).
+Qed.
+
+Lemma clone_child_made_no_eventfd : forall m fd c,
+  fd_lookup (m_fds (clone_child_made m)) fd <> Some (FdEventfd c).
+Proof. intros m fd c. exact (share_eventfds_no_eventfd (m_fds m) fd c). Qed.
+
 (** The resolution both entry points share, once the arguments are known
-    to describe a plain fork.  The caller's identity, descriptors, file
-    system and clock are all untouched by its own [clone], and the child
-    is not a thing this model holds — but the FACT that a child now
-    exists is, because [Kernel.Exit.wait4_spec] answers -ECHILD only
-    while no child has been created.  So the success branch, and only
-    the success branch, records it with [State.with_children]: the
-    errno alternative created nothing, and the [clone_no_shared_file_b]
-    decline never reaches a resolution at all.
+    to describe a plain fork.  The caller's identity, file system and
+    clock are all untouched by its own [clone], and the child is not a
+    thing this model holds — but the FACT that a child now exists is,
+    because [Kernel.Exit.wait4_spec] answers -ECHILD only while no child
+    has been created, and so is the sharing of every open eventfd
+    ([share_eventfds]).  So the success branch, and only the success
+    branch, applies [clone_child_made], which records the child with
+    [State.with_children]: the errno alternative created nothing, and the
+    [clone_no_shared_file_b] decline never reaches a resolution at all.
 
     Without this call the pair is unsound in a way neither side's proofs
     can see — [wait4] would answer -ECHILD for a caller that has a
@@ -760,7 +870,7 @@ Definition clone_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_from clone_errnos ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify clone_child_made ;;
          ret_only pid).
 
 (* =========================================================================
@@ -836,13 +946,16 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       in its own namespace, and the caller still sees an ordinary pid of
       its own namespace.  So the admitted pids are exactly
       [clone_resolve]'s: [clone_pid_ok_b], never 0.  And the caller now
-      has a child, so the success branch records it with
-      [State.with_children], which [Kernel.Exit.wait4_spec]'s -ECHILD
-      reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
+      has a child, so the success branch applies [clone_child_made]: it
+      records the child with [State.with_children], which
+      [Kernel.Exit.wait4_spec]'s -ECHILD reads
+      ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]),
+      and it turns each open eventfd into the shared kind
+      ([share_eventfds]), for [clone_resolve]'s reason.
       No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
-      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
-      descriptors and [fs_struct] are not touched: [copy_creds],
-      [copy_namespaces] and [copy_fs] act on the new task [p].
+      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces
+      and [fs_struct] are not touched: [copy_creds], [copy_namespaces]
+      and [copy_fs] act on the new task [p].
     - FAILURE: EVERY ERRNO FROM 1 TO 4095 BUT -EINTR ([Syscall.errno_any]).  The
       failures of this word run through everything a plain fork's do
       ([clone_errnos]) and then through [create_user_ns] (-ENOSPC past 32
@@ -879,7 +992,7 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_any ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-         modify with_children ;;
+         modify clone_child_made ;;
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to

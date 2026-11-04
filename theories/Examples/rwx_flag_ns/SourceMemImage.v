@@ -14,7 +14,8 @@ Definition SourceMemImage_segment_000 : Segment := {|
   seg_base  := 0x10000%N;
   seg_size  := 0x1000%N;
   seg_perms := "rwx";
-  seg_bytes := [SourceMemImage_seg_bytes_000]
+  seg_bytes := [SourceMemImage_seg_bytes_000];
+  seg_kind  := SegLoader
 |}.
 
 Definition SourceMemImage_loaded_segments : list Segment :=
