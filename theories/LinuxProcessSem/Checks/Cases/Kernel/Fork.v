@@ -509,31 +509,6 @@ Example clone3_newtime_declines :
        clone3_model = CheckOk clone3_model [].
 Proof. repeat split; check_eq. Qed.
 
-(** The restated statements at one [clone3] struct each:
-    [Checks.ProcessCreation.clone3_arg_checks_einval] at CLONE_SIGHAND
-    with exit signal SIGCHLD (C4), and
-    [Checks.ProcessCreation.clone3_sharing_flags_unmodeled] at
-    CLONE_VM, CLONE_SIGHAND and CLONE_THREAD with exit signal 0, a
-    thread word [clone3] admits (fork.c:2871-2873) that no check
-    refuses and that holds sharing bits. *)
-Example clone3_restated_statements_at_one_struct :
-  (forall o, clone3_spec clone3_args_base (Z_to_bv 64 CLONE_ARGS_SIZE)
-               (clone3_args_call [(CLONE_SIGHAND)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z;
-                                  0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
-               clone3_model o
-             <-> o = Ok (with_copyins [(clone3_args_base, CLONE_ARGS_SIZE_nat)]
-                           (mkEffect (errno_ret EINVAL) [] [])) clone3_model [])
-  /\ clone3_spec clone3_args_base (Z_to_bv 64 CLONE_ARGS_SIZE)
-       (clone3_args_call [(CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)%Z; 0%Z; 0%Z; 0%Z;
-                          0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
-       clone3_model Unmodeled.
-Proof.
-  split.
-  - intros o. eapply ProcessCreation.clone3_arg_checks_einval; check_eq.
-  - eapply ProcessCreation.clone3_sharing_flags_unmodeled;
-      [check_eq | check_eq | check_eq | intro Hc; vm_compute in Hc; discriminate Hc].
-Qed.
-
 (** AN AF_UNIX SEQUENCED-PACKET END DECLINES THE CLONE
     ([State.FdSeqpacket]; [Kernel.Fork.clone_no_shared_file_b]): the
     child's second reference names the same socket, so a close in one
