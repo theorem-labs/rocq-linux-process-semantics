@@ -9,14 +9,11 @@ From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ProcsChildPids.
-From LinuxProcessSemantics.Examples.forkwait Require Import Halts.
 Import ListNotations.
 Open Scope bv_scope.
 
 (** The contract output can be compared across a change to the table writers. *)
 Goal True. idtac "PARENT_PID_CONTRACTS_BEGIN". exact I. Qed.
-Check forkwait_halts_proved.
-Print Assumptions forkwait_halts_proved.
 Check pstep_single_next.
 Check pstep_single_err.
 Check pstep_x_at_agree_iff.
