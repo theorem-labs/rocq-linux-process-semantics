@@ -28,6 +28,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   VmMapsDisjoint ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Prelude DispatchCompute.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs Require Import Common Namei.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
