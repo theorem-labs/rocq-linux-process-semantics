@@ -176,7 +176,7 @@ Section GenericInit.
     intros E M a HS Ha. apply SINV_SINV0 in HS. destruct HS as [_ HM]. apply HM. unfold argH0. apply orb_true_intro. right.
     assert (HS0 : Z.of_nat (length (nth 0 argv [])) + 1
                   <= Z.of_nat (launch_string_bytes argv envp execfn))
-      by (unfold execfn; apply (s0_in_strings apc sp rdraw argv envp Hva Hfit)).
+      by (unfold execfn; eapply (s0_in_strings apc sp rdraw argv envp Hva Hfit); eassumption).
     assert (HT : usp + Z.of_nat (block_head_size rseq argv envp)
                  + Z.of_nat (block_pad_len rseq sp top argv envp execfn)
                  + Z.of_nat (launch_string_bytes argv envp execfn) + 8 = bv_unsigned top)
@@ -197,6 +197,13 @@ Section GenericInit.
     change (in_execfn INP) with default_execfn in Ha, HT, HS0.
     apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
   Qed.
+
+  (** [AsanInit.argH0_high] at this Section's names.  [argH0] reads [kb] now
+      (the run's own CONFIG_RSEQ flag), so the lemma takes it too; [eapply]
+      places it from [H] rather than by its position. *)
+  Lemma argH0_high_sp : forall E (a : word),
+    argH0 sp rdraw argv envp kb E a = true -> CEIL sp <= bv_unsigned a.
+  Proof. intros E a H. eapply (argH0_high apc sp rdraw argv envp Hva); eassumption. Qed.
 
   (** THE RUN'S CEILING for the start extensions.  [AsanInit.CEIL] is
       [page_round_down_Z (sp - stack_max_size)], so these two are what
@@ -237,7 +244,7 @@ Section GenericInit.
   Proof.
     apply (x_sound_pnscan segs A NX0 LIMIT (CEIL sp) ceil_ok_sp RZ SINV (argH0 sp rdraw argv envp kb) FS0
               SEGS_wx SEGS_in_hull HULL_ok
-              (argH0_high apc sp rdraw argv envp Hva kb) (argH0_agree sp rdraw argv envp kb)
+              argH0_high_sp (argH0_agree sp rdraw argv envp kb)
               SINV_frame SINV_agree
               wp0 wp1 wp2 wp3 wp4 Xpn Fp0 Fp1 Fp2 Fp3 Fp4 Ep Dp0 Dp1 Dp2 Dp3 Dp4
               ph INP mbase entryw sp brk0 rdraw);
