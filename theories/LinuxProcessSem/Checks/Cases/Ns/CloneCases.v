@@ -442,12 +442,16 @@ Example no_provenance_keeps_allocation_unknown :
   pidns_alloc (pidns_with_alloc (mk_pidns 3 (Some 2%positive) 1 2 0) PaEmpty) = PaEmpty.
 Proof. split; reflexivity. Qed.
 
-(** A closed children's namespace remains declined until the process
-    core keeps its forced ENOMEM through the clone refusal filter. *)
-Example closed_children_declines : forall m,
-  clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
-    (pid_failed launch_children_state 3) 141 = CnUnmodeled.
-Proof. intros m. vm_compute. reflexivity. Qed.
+(** A closed children's namespace refuses allocation after all model
+    cursors advance, with no first-pid reset (kernel/pid.c:262,276-303,
+    Linux v6.18.46). *)
+Example closed_children_enomem : forall m,
+  let st := pid_failed launch_children_state 3 in
+  clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx st 141
+    = CnErr ENOMEM (pid_advanced st 3) /\
+  map pidns_last (ns_pidns (pid_advanced st 3)) = [0; 9; 2] /\
+  option_map pidns_alloc (find_pidns (pid_advanced st 3) 3) = Some PaClosed.
+Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
 
 Print Assumptions flat_view_empty.
 Print Assumptions flat_view_pidns_children.

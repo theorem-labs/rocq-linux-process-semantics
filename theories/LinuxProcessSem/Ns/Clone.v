@@ -103,9 +103,11 @@ Fixpoint pidns_chain (fuel : nat) (st : NsState) (p : positive) : list PidNs :=
 
 (** The child's pids from its own namespace outwards.  Every model level
     needs its clear-range launch fact, no outside allocator/control write,
-    and a next pid below its measured limit.  An empty namespace becomes
-    initialized on success; the host's pid remains the core's [hq]. *)
-Definition alloc_pids (outside : bool) (chain : list PidNs) (hq : Z)
+    and a next pid below its measured limit.  [initialize] marks empty
+    namespaces initialized on success; it is false for a closed-namespace
+    failure, which advances cursors without changing allocation states.
+    The host's pid remains the core's [hq]. *)
+Definition alloc_pids (outside initialize : bool) (chain : list PidNs) (hq : Z)
     : option (list (positive * Z) * list PidNs) :=
   fold_right (fun x acc =>
     match acc with
@@ -117,7 +119,9 @@ Definition alloc_pids (outside : bool) (chain : list PidNs) (hq : Z)
             if outside || negb (pidns_cursor_clear x) || (pidns_max x <=? p) then None
             else Some ((pidns_id x, p) :: ps,
                        pidns_with_last_alloc x p
-                         (match pidns_alloc x with PaEmpty => PaInit | a => a end) :: ns)
+                         (match pidns_alloc x with
+                          | PaEmpty => if initialize then PaInit else PaEmpty
+                          | a => a end) :: ns)
         | None => Some ((pidns_id x, hq) :: ps, ns)
         end
     end) (Some ([], [])) chain.
@@ -234,27 +238,32 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                       if negb (in_userns U (pidns_owner par) (cc_user cc)) then inl EINVAL
                       else if Nat.leb 32 (pidns_level par) then inl ENOSPC
                       else let nid := Pos.succ (max_pidns_id st) in
-                           inr (nid, [fresh_pidns nid children (cc_user cc) (S (pidns_level par))])
+                           inr (nid, [fresh_pidns nid children (cc_user cc) (S (pidns_level par))], false)
                   | None => inl 0
                   end
-                else if Pos.eqb children active then inr (children, [])
+                else if Pos.eqb children active then inr (children, [], false)
                 else match find_pidns st children with
                      | Some p => match pidns_alloc p with
-                       | PaEmpty => if pidns_last p =? 0 then inr (children, []) else inl 0
-                       | PaInit | PaClosed | PaUnknown => inl 0
+                       | PaEmpty => if pidns_last p =? 0 then inr (children, [], false) else inl 0
+                       | PaClosed => inr (children, [], true)
+                       | PaInit | PaUnknown => inl 0
                        end
                      | None => inl 0
                      end in
               match pid_part with
               | inl 0 => CnUnmodeled
               | inl e => CnErr e st
-              | inr (child_ns, new_pidns) =>
+              | inr (child_ns, new_pidns, closed) =>
                   let st_p := ns_pidns st ++ new_pidns in
                   let chain := pidns_chain (length st_p) (with_pidns st st_p) child_ns in
-                  match alloc_pids (ns_outside_pids st) chain hq with
+                  match alloc_pids (ns_outside_pids st) (negb closed) chain hq with
                   | None => CnUnmodeled
                   | Some (pids, updated) =>
                         let pidns' := fold_left replace_pidns updated st_p in
+                        (* PIDNS_ADDING is checked only after all ids have
+                           been allocated (kernel/pid.c:262,276-303,
+                           Linux v6.18.46).  Closed namespaces do not reset. *)
+                        if closed then CnErr ENOMEM (with_pidns st pidns') else
                         (* the network namespace *)
                         let '(net, new_net) :=
                           if has_flag f CLONE_NEWNET then
