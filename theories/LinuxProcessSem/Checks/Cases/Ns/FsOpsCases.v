@@ -81,10 +81,10 @@ Example mkdirat_existing_before_readonly :
                     base_model base_ctx existing_ro_state) = Some (-17).
 Proof. vm_compute. reflexivity. Qed.
 
-(** procfs has no mkdir operation, so vfs_mkdir returns EPERM. *)
-Example mkdirat_procfs_eperm :
+(** An unlisted procfs root name is not known to be absent. *)
+Example mkdirat_procfs_unknown_declines :
   ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
-                    base_model base_ctx proc_state) = Some (-1).
+                    base_model base_ctx proc_state) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The parent walk fails before creation for a missing directory. *)
@@ -118,6 +118,92 @@ Example symlinkat_tmpfs_target :
   ret_of (symlinkat_fn symlink_in base_model base_ctx base_state) = Some 0
   /\ newest_link (symlinkat_fn symlink_in base_model base_ctx base_state) = Some (511, target_fd0).
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** Procfs lookup precedes the deferred write error (Linux v6.18.46,
+    fs/namei.c:4231-4237). Only enumerated directories decide absence. *)
+Definition proc_listed_state : NsState :=
+  one_sb ro_flags (FilesCases.sb 1 1 (SbProc 1) 40864)
+    [mkDentry 1 1 None [] 1;
+     mkDentry 2 1 (Some 1%positive) (bytes [108; 105; 115; 116; 101; 100]) 2]
+    [mkInode 1 IDir 365 0 0 0 [] false; mkInode 2 IDir 365 0 0 0 [] false].
+Definition devpts_state (mf : MountFlags) (perm : Z) : NsState :=
+  one_sb mf (FilesCases.sb 1 1 SbDevpts 7377)
+    [mkDentry 1 1 None [] 1] [mkInode 1 IDir perm 1000 1002 0 [] false].
+
+Example mkdirat_procfs_listed_absent_before_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;108;105;115;116;101;100;47;110;101;119]) (fun _ => None))
+    base_model base_ctx proc_listed_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_task_unknown_declines :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;110;101;119]) (fun _ => None))
+    base_model base_ctx proc_state) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_missing_fd_is_enoent :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;102;100;47;57]) (fun _ => None))
+    base_model base_ctx proc_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_known_fd_is_eexist :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;102;100;47;48]) (fun _ => None))
+    base_model base_ctx proc_state) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_readonly_precedes_permission :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 365)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_write_permission_precedes_missing_operation :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_missing_operation_is_eperm :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_readonly_precedes_missing_operation :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state ro_flags 511))
+    = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Definition trailing_symlink_in : SyscallInput :=
+  call 36 [PATH; -100; PATH + 128]
+    (fun a => match at_ PATH (target_fd0 ++ [0]) a with
+              | Some b => Some b
+              | None => at_ (PATH + 128) (s_link ++ [47; 0]) a
+              end) (fun _ => None).
+
+Example symlinkat_devpts_trailing_name_keeps_enoent :
+  ret_of (symlinkat_fn trailing_symlink_in base_model base_ctx
+    (devpts_state ro_flags 511)) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Definition devpts_unmapped_state (mf : MountFlags) : NsState :=
+  with_userns (devpts_state mf 511)
+    [FilesCases.uns 2 None 0 None None;
+     FilesCases.uns 1 (Some 2%positive) 1 None None].
+
+Example mkdirat_devpts_unmapped_creator_is_eoverflow :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_readonly_precedes_unmapped_creator :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state ro_flags)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
 
 Definition identity_map : list IdExtent := [mkExtent 0 0 4294967296].
 Definition map_root : UserNs := mkUserNs 1 None 0 0 (Some identity_map) (Some identity_map) true false INT_MAX true.

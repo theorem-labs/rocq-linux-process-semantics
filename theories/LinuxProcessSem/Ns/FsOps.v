@@ -115,17 +115,54 @@ Definition file_can_write (f : NsFile) : bool :=
 
 Inductive CreatedKind := CDir | CLink (target : list byte).
 
-(** [may_create], [vfs_mkdir] and [vfs_symlink] first refuse unsupported
-    directory operations on procfs and devpts, then create a tmpfs inode.
-    Linux 6.18.44: fs/namei.c [may_create], [vfs_prepare_mode], [vfs_mkdir],
-    [vfs_symlink]; mm/shmem.c [shmem_mkdir], [shmem_symlink]; fs/inode.c
-    [inode_init_owner].  A host directory declines. *)
+(** [filename_create] returns a procfs lookup error before its deferred
+    write error (Linux v6.18.46, fs/namei.c:4231-4237). Procfs absence is
+    decided only by listed non-root directories or the caller's fd
+    table; incomplete root/task listings decline. Devpts has a negative
+    lookup, then the deferred EROFS, [may_create]'s EOVERFLOW and write
+    permission (3315-3318), before the absent operation's EPERM
+    ([vfs_mkdir], 4444-4446; [vfs_symlink], 4814-4815). A host directory
+    declines. Tmpfs creation keeps its existing decision. *)
 Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (p : Loc) (name : list byte) (mode : Z) (ck : CreatedKind) : OpenRes :=
   match loc_mnt_sb st p with
   | Some (mt, sb) =>
       match sb_kind sb with
-      | SbProc _ | SbDevpts => ORErr EPERM
+      | SbProc _ =>
+          match child_exists st p name with
+          | Some false => ORErr ENOENT
+          | Some true => ORErr EEXIST
+          | None =>
+              match p with
+              | LProcTask mn pid [entry] =>
+                  if bytes_eqb entry proc_fd_name && proc_own st ctx mn pid
+                  then match lookup_proc_task ctx (fd_loc_of m st) mn pid [entry] name with
+                       | LIError e => ORErr e
+                       | LIOver => OROver
+                       | _ => ORErr EEXIST
+                       end
+                  else OROver
+              | _ => OROver
+              end
+          end
+      | SbDevpts =>
+          match p with
+          | LDentry _ d =>
+              match find_dentry st d, dentry_inode st d with
+              | Some dx, Some parent =>
+                  if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+                  else if mf_ro (mnt_flags mt) || sb_rdonly sb then ORErr EROFS
+                  else if negb (fsuidgid_mapped st (sb_owner sb) cr) then ORErr EOVERFLOW
+                  else let attr := mkObj (ino_kind parent) (ino_perm parent) (ino_uid parent)
+                                         (ino_gid parent) None (Zpos (d_sb dx)) in
+                       match inode_permission st ctx cr (task_eff ctx) p sb attr (MAY_WRITE + MAY_EXEC) with
+                       | Some e => ORErr e
+                       | None => ORErr EPERM
+                       end
+              | _, _ => OROver
+              end
+          | _ => OROver
+          end
       | SbHost => OROver
       | SbTmpfs =>
           match p with
