@@ -665,3 +665,5 @@ Print Assumptions clone_ns_flat_fork_ok.
 Print Assumptions clone_tables_failures_flat.
 Print Assumptions s1_no_record_is_core.
 Print Assumptions s1_option_b_clone3_newns_fs.
+Print Assumptions clone_ns_exact_arg_checks.
+Print Assumptions clone_ns_exact_no_args.

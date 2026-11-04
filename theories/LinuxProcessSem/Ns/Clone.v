@@ -413,6 +413,20 @@ Proof.
   - unfold CSIGNAL. rewrite Hes. exact Hsignal.
 Qed.
 
+(** A record the argument checks refuse ([Fork.clone_arg_checks]),
+    outside the released fast path, answers exactly -EINVAL with the
+    state unchanged.  For example CLONE_SIGHAND without CLONE_VM:
+    [copy_process] returns -EINVAL (kernel/fork.c:1969-1970, Linux
+    v6.18.46) before any other step, so before [copy_namespaces]. *)
+Theorem clone_ns_exact_arg_checks : forall r m ctx st hq,
+  (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
+  Fork.clone_arg_checks r = true ->
+  clone_ns_exact (Fork.CiArgs r) m ctx st hq = CnErr EINVAL st.
+Proof.
+  intros r m ctx st hq Hfast Hc.
+  unfold clone_ns_exact. rewrite Hfast. cbv beta iota. rewrite Hc. reflexivity.
+Qed.
+
 
 Definition bump_pid_cursor (x : PidNs) : list PidNs :=
   match pidns_parent x with
