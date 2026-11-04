@@ -40,7 +40,8 @@ Definition check_pipe2 (i : SyscallInput) (fildes flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_flags_mask) 0)
   then check_ret_only eff (errno_ret EINVAL) m []
-  else if negb (w_is0 flags) then CheckUnmodeled
+  else if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags) 0)
+  then CheckUnmodeled
   else
   let id := pipe_new_id (m_pipes m) in
   match pipe_lookup (m_pipes m) id with
@@ -104,7 +105,8 @@ Proof.
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|].
     rewrite ?Hbad; cbv beta iota zeta. apply pure_ok. }
-  destruct (negb (w_is0 flags)) eqn:Hnz; [discriminate|].
+  destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags =? 0)%Z)
+    eqn:Hnz; [discriminate|].
   destruct (pipe_lookup (m_pipes m) (pipe_new_id (m_pipes m))) as [st|] eqn:Hid;
     [discriminate|].
   destruct (negb (access_okb fildes 8)) eqn:Hak.
@@ -193,7 +195,8 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|].
   rewrite ?Hbad; cbv beta iota zeta.
-  destruct (negb (w_is0 flags)) eqn:Hnz; [apply unmodeled_intro|].
+  destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags =? 0)%Z)
+    eqn:Hnz; [apply unmodeled_intro|].
   destruct (pipe_lookup (m_pipes m) (pipe_new_id (m_pipes m))) as [st|] eqn:Hid;
     [apply unmodeled_intro|].
   destruct (negb (access_okb fildes 8)) eqn:Hak.
@@ -235,7 +238,8 @@ Proof.
   destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_flags_mask =? 0)%Z)
     eqn:Hbad.
   { hall Hbad; inv_ok. cbn; rewrite bv_eqb_refl; reflexivity. }
-  destruct (negb (w_is0 flags)) eqn:Hnz.
+  destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags =? 0)%Z)
+    eqn:Hnz.
   { hall Hbad; hall Hnz; inv_ok; try discriminate. }
   destruct (pipe_lookup (m_pipes m) (pipe_new_id (m_pipes m))) as [st|] eqn:Hid.
   { hall Hbad; hall Hnz; inv_ok; hall Hid; inv_ok; try discriminate. }
@@ -281,7 +285,8 @@ Proof.
   destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_flags_mask =? 0)%Z)
     eqn:Hbad.
   { hall Hbad; inv_ok; try discriminate. }
-  destruct (negb (w_is0 flags)) eqn:Hnz; [reflexivity|].
+  destruct (negb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags =? 0)%Z)
+    eqn:Hnz; [reflexivity|].
   destruct (pipe_lookup (m_pipes m) (pipe_new_id (m_pipes m))) as [st|] eqn:Hid;
     [reflexivity|].
   destruct (negb (access_okb fildes 8)) eqn:Hak.
