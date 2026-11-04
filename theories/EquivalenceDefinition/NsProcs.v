@@ -86,6 +86,25 @@ Proof.
   - intros _ hq en st'. apply Hce; assumption.
 Qed.
 
+(** UNDER [ns_ext] A FAILED CLONE'S FILTER KEEPS WHAT THE TABLES DECIDE,
+    and nothing more: [ns_ext]'s clone ([clone_ns]) admits no success where
+    [clone_ns_exact] is [CnErr] or [CnUnmodeled], so
+    [Procs.clone_table_kept] is exactly its two table conditions: the
+    errno is [clone_ns_exact]'s [CnErr] errno, or [clone_ns_exact] is
+    [CnUnmodeled]. *)
+Lemma ns_clone_table_kept : forall f m ctx st hq en,
+  clone_table_kept ns_ext f m ctx st hq en
+  <-> (exists st', clone_ns_exact f m ctx st hq = CnErr en st')
+      \/ clone_ns_exact f m ctx st hq = CnUnmodeled.
+Proof.
+  intros f m ctx st hq en. unfold clone_table_kept. split; [intros [_ H]; exact H|].
+  intros H. split; [|exact H].
+  intros child ret st' Hc. change (ext_clone ns_ext) with clone_ns in Hc.
+  unfold clone_ns in Hc.
+  destruct Hc as [Hc | (_ & e & st'' & _ & _ & Hc)]; [|discriminate Hc].
+  destruct H as [(st0 & H) | H]; rewrite H in Hc; discriminate Hc.
+Qed.
+
 (* =========================================================================
    Clones on the extended core
    ========================================================================= *)

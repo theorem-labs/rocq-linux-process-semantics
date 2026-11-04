@@ -76,6 +76,11 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Exit Fork.
 (** [NsState] and [NsCtx].  This file DEPENDS ON [Ns/Tables.v] and does not
     vendor it: two representations of one thing are what diverge. *)
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext.
+(** [Ns.Clone.clone_ns_exact], the namespace tables' own answer to a clone,
+    which the forced-only filter of [px_clone_fail] reads
+    ([clone_table_kept]).  Required, not imported: no name of it is
+    needed here but that one. *)
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Clone.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -2713,6 +2718,100 @@ Proof.
   - rewrite multiproc_allowed_split, H. reflexivity.
 Qed.
 
+(** THE FORCED-ONLY FILTER OF A FAILED CLONE.  The released step filters
+    a clone's outcome with [Run.spurious_refusal_cfg]: it removes an
+    outcome when its errno is in the clone's refusal list
+    ([Fork.clone_errnos]), the clone's family is forced-only in the run's
+    configuration, and the released spec admits a non-refusal at the same
+    input.  That filter cannot see the namespace state, so once an errno
+    the namespace tables decide is in the refusal list (a closed pid
+    namespace's ENOMEM, which the tables do not answer yet) it can remove
+    an answer the tables force, and then [px_clone_fail] has no step to
+    match the extension's answer.  Today no [CnErr] errno of
+    [clone_ns_exact] (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], and
+    where [clone_ns_exact] is [CnUnmodeled], [Ns.Spec.ns_ext]'s clone admits
+    no failure; so under [ns_ext] the filter below admits exactly the
+    failures the released one admits.
+
+    So for a caller in the namespace world, under an extension other than
+    [no_ext], the failure is the released step with the clone's family
+    allowed to fail, and the filter removes an outcome with errno [e] only
+    when all of these hold: (1) [e] is in the refusal list and its family
+    is forced-only; (2) [e] is not the errno of [clone_ns_exact]'s [CnErr]
+    for this call; (3) the released spec admits a non-refusal at the same
+    input; and [clone_ns_exact] is not [CnUnmodeled].  (1) and (3) are
+    [Run.spurious_refusal_cfg]'s conjuncts.  So an outcome is kept when the
+    released filter keeps it, or when the tables decide it
+    ([clone_table_kept]): [clone_fail_step] is that disjunction.  The
+    refusal list stays [Fork.clone_errnos].
+
+    The namespace world under an extension other than [no_ext] is the
+    first conjunct of [clone_table_kept]: the extension's clone admits no
+    success at this call.  [no_ext]'s clone ([released_clone]) admits one
+    at every call, and so does every extension's for a caller in the
+    released world whose word has no namespace bit
+    ([Ns.Ext.ext_clone_coherent]); there the filter is the released one,
+    unchanged ([clone_fail_step_unchanged]).  [Ns.Spec.ns_ext]'s clone
+    admits no success whenever [clone_ns_exact] is [CnErr] or
+    [CnUnmodeled], so for it the conjunct adds nothing to (2) and the last
+    condition ([NsProcs.ns_clone_table_kept]).  A test of the extension's
+    identity would not do: [ExtSpec] has no decidable equality, and
+    [pstep_x_at_agree_iff] holds for every extension whose clone is
+    [released_clone] at the caller, in the namespace world too. *)
+Definition clone_table_kept (ext : ExtSpec) (f : Z) (m : Model) (ctx : NsCtx)
+    (st : NsState) (hq en : Z) : Prop :=
+  (forall child ret st', ~ ext_clone ext f m ctx st hq (CnOk child ret st'))
+  /\ ((exists st', Ns.Clone.clone_ns_exact f m ctx st hq = CnErr en st')
+      \/ Ns.Clone.clone_ns_exact f m ctx st hq = CnUnmodeled).
+
+(** The released step of a failed clone, under the filter above.  The
+    step is the pending clone's own syscall step, and [sstep_cfg]'s filter
+    reads only the pending call's family, so [may_fail_cfg] there is the
+    run's configuration with the clone's family allowed to fail. *)
+Definition clone_fail_step (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
+    (c : config) (ctx : NsCtx) (st : NsState) (hq en : Z) (evs : list event)
+    (c' : config) : Prop :=
+  sstep_cfg segs cfg c evs (SNext c')
+  \/ (sstep_cfg segs may_fail_cfg c evs (SNext c')
+      /\ clone_table_kept ext (clone_flags_of c) (cfg_model c) ctx st hq en).
+
+(** Where the extension's clone admits a success, the filter is the
+    released one. *)
+Lemma clone_fail_step_success_iff : forall ext segs cfg c ctx st hq en evs c',
+  (exists child ret st',
+     ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq (CnOk child ret st')) ->
+  (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
+Proof.
+  intros ext segs cfg c ctx st hq en evs c' (child & ret & st' & Hok). split.
+  - intros [Hs | (_ & Hno & _)]; [exact Hs|].
+    exfalso. exact (Hno child ret st' Hok).
+  - intros Hs. left. exact Hs.
+Qed.
+
+(** ... so it is wherever the extension's clone is the released clone. *)
+Lemma clone_fail_step_released_clone : forall ext segs cfg c ctx st hq en evs c',
+  (forall o, ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq o
+             <-> released_clone ctx st o) ->
+  (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
+Proof.
+  intros ext segs cfg c ctx st hq en evs c' Hrc. apply clone_fail_step_success_iff.
+  exists ctx, None, st. apply (proj2 (Hrc _)). unfold released_clone. left. reflexivity.
+Qed.
+
+(** NO PUBLISHED ANSWER CHANGES: under [no_ext], and for a caller in the
+    released world whose word has no namespace bit, the premise of
+    [px_clone_fail] is the released step under the run's configuration, as
+    it was before the filter above. *)
+Theorem clone_fail_step_unchanged : forall ext segs cfg c ctx st hq en evs c',
+  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits (clone_flags_of c) = false) ->
+  (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
+Proof.
+  intros ext segs cfg c ctx st hq en evs c' H. apply clone_fail_step_released_clone.
+  intros o. destruct H as [-> | (Hf & Hb)].
+  - apply no_ext_clone.
+  - apply ext_clone_coherent; assumption.
+Qed.
+
 (** ONE TRANSITION OF THE SYSTEM UNDER AN EXTENSION, indexed by the pid
     that steps, as [pstep_at] is.
 
@@ -2753,15 +2852,17 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs
       (PNext (clone_result_x P e (with_ret c' ret) q child st'))
 (** A FAILED clone is the released failure, with the state [ext_clone]
-    says the failure leaves.  Its errno comes from the released step
-    ([sstep_cfg] above), so under a forced-only configuration a refusal the
-    released filter ([Run.spurious_refusal_cfg], Run.v:2019) drops is no
-    step here either; and the run's clone environment [cenv] must admit
-    the failure. *)
+    says the failure leaves.  Its errno comes from the released step under
+    the clone's forced-only filter ([clone_fail_step]): under a forced-only
+    configuration a refusal the released filter
+    ([Run.spurious_refusal_cfg]) drops is no step here either, unless the
+    namespace tables decide it ([clone_table_kept]); and the run's clone
+    environment [cenv] must admit the failure. *)
 | px_clone_fail : forall P e evs c' en hq st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
-    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+    clone_fail_step ext segs cfg (pe_cfg (pcfg_shared P) e) (pe_nsctx e)
+      (sh_ns (pcfg_shared P)) hq en evs c' ->
     clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
     clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
     ms_gpr (cfg_ms c') 0 = errno_ret en ->
@@ -3220,6 +3321,8 @@ Proof.
       injection Heq as -> -> ->. cbn [with_ret]. rewrite clone_result_x_same.
       apply pstep_clone; assumption.
     + (* px_clone_fail *)
+      apply (proj1 (clone_fail_step_released_clone ext segs cfg _ _ _ hq en ev c' (Hcln hq)))
+        in Hs.
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en' & _ & Heq)]; [discriminate Heq|].
       injection Heq as _ ->. rewrite absorb_x_same.
@@ -3281,6 +3384,7 @@ Proof.
         rewrite <- absorb_x_same.
         apply px_clone_fail with (en := en) (hq := 0%Z); try assumption.
         -- exact (Hclp eq_refl).
+        -- left. exact Hs.
         -- apply (proj2 (Hcln _ _)). right. exists en. split; [exact Hen | reflexivity].
         -- exact (Hnrf eq_refl _ _ _).
       * rewrite <- absorb_x_same.
