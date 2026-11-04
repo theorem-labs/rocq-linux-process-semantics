@@ -513,6 +513,22 @@ Proof.
   repeat dif H; first [discriminate H | injection H as <- _; reflexivity].
 Qed.
 
+Lemma check_clone_einval_halted : forall eff m m' evs,
+  check_clone_einval eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Proof.
+  intros eff m m' evs H. unfold check_clone_einval in H.
+  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m)));
+    cbv iota in H; [|discriminate H].
+  apply check_ret_only_ok_iff in H as (_ & -> & _). reflexivity.
+Qed.
+
+Lemma check_clone3_einval_halted : forall uargs eff m m' evs,
+  check_clone3_einval uargs eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Proof.
+  intros uargs eff m m' evs H. unfold check_clone3_einval in H.
+  apply check_ret_only_copyins_ok_iff in H as (_ & -> & _). reflexivity.
+Qed.
+
 (** Every answer the released spec gives [clone] (220) and [clone3] (435)
     leaves the caller's halt flag as it was: the model comes back
     unchanged, or with the child recorded ([State.with_child]). *)
@@ -529,7 +545,8 @@ Proof.
       cbv beta iota in H;
       repeat dif H; try discriminate H;
       first [ exact (check_clone_answer_halted _ _ _ _ H)
-            | exact (check_clone_ns_answer_halted _ _ _ _ H) ].
+            | exact (check_clone_ns_answer_halted _ _ _ _ H)
+            | exact (check_clone_einval_halted _ _ _ _ H) ].
   - rewrite (check_syscall_clone3 i _ m Hno) in H.
     unfold check_clone3, check_clone3_resolve, check_ret_only in H.
     destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE) as [bs|];
@@ -538,6 +555,7 @@ Proof.
       cbv beta iota in H;
       repeat dif H; try discriminate H;
       first [ exact (check_clone_answer_halted _ _ _ _ H)
+            | exact (check_clone3_einval_halted _ _ _ _ _ H)
             | injection H as <- _; reflexivity ].
 Qed.
 

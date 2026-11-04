@@ -1027,15 +1027,32 @@ Definition MAX_RT_PRIO : Z := 100%Z.
     space (include/uapi/linux/sched.h, Linux v6.18.46, commit
     1f99e9ab748f).
 
-    Named here for ONE reader, and it is not in [Sys/]: it is the bit
-    [Kernel.Futex.Syscalls]'s empty-waiter-set argument depends on
-    nobody ever granting, and
-    [Checks.Cases.Kernel.Futex.Syscalls] turns that dependency into a
-    compile-time fact over every clone gate.  [Kernel.Fork] names the
-    flag in prose throughout and needs no constant: the fork gate is an
-    equality on the whole word, and the namespace gate below admits only
-    [SIGCHLD] and the [CLONE_NEW*] bits. *)
+    Named here first for [Kernel.Futex.Syscalls]'s empty-waiter-set
+    argument, which depends on nobody ever granting it, and which
+    [Checks.Cases.Kernel.Futex.Syscalls] turns into a compile-time fact
+    over every clone gate.  [Kernel.Fork]'s argument checks
+    ([Kernel.Fork.clone_arg_checks]) read it too, with the bits below. *)
 Definition CLONE_VM : Z := 256%Z.
+
+(** The other bits of a clone flag word that [Kernel.Fork]'s argument
+    decoding and checks read ([clone_args_of_clone], [clone3_pre],
+    [clone_arg_checks]; include/uapi/linux/sched.h, Linux v6.18.46).  [CSIGNAL]
+    is the exit-signal byte of legacy [clone]'s register.
+    [CLONE_CLEAR_SIGHAND] and [CLONE_INTO_CGROUP] are [clone3]'s own,
+    above bit 31.  [CLONE_LEGACY_FLAGS] is
+    include/linux/sched/task.h's, the low 32 bits. *)
+Definition CSIGNAL             : Z := 0x000000ff%Z.
+Definition CLONE_NEWTIME       : Z := 0x00000080%Z.
+Definition CLONE_FS            : Z := 0x00000200%Z.
+Definition CLONE_SIGHAND       : Z := 0x00000800%Z.
+Definition CLONE_PIDFD         : Z := 0x00001000%Z.
+Definition CLONE_PARENT        : Z := 0x00008000%Z.
+Definition CLONE_THREAD        : Z := 0x00010000%Z.
+Definition CLONE_PARENT_SETTID : Z := 0x00100000%Z.
+Definition CLONE_DETACHED      : Z := 0x00400000%Z.
+Definition CLONE_CLEAR_SIGHAND : Z := 0x100000000%Z.
+Definition CLONE_INTO_CGROUP   : Z := 0x200000000%Z.
+Definition CLONE_LEGACY_FLAGS  : Z := 0xffffffff%Z.
 
 (** The seven namespace bits of [clone]'s flag word that
     [Kernel.Fork.clone_ns_flags_b] admits beside [SIGCHLD]

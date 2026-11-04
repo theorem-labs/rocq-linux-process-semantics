@@ -807,7 +807,38 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);
-    [clone3] (435) answers only the fork image, whose word is [SIGCHLD]. *)
+    [SIGCHLD] for [clone3] (435), the word of the one image it resolves.
+
+    KNOWN GAP until the namespace extension takes the decoded argument
+    record ([Fork.CloneArgs]) and answers [CnErr EINVAL] where
+    [Fork.clone_arg_checks] fires.  The released step now answers -EINVAL
+    for a word the argument checks refuse (and, for [clone3], a struct
+    its own tests refuse: [Fork.clone3_einval_b]), while the extension
+    still sees this word, so:
+    - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
+      extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
+      whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
+      under the clone environment [Ns.Clone.clone_tables_failures]
+      (before, the call was the error step), and under
+      [Ext.any_clone_failure] it is a failure step whose state may be
+      [Ns.Clone]'s cursor advance, a state Linux does not reach, since
+      these checks come before [alloc_pid]; where [clone_ns_exact] is
+      [CnUnmodeled] it is still the error step;
+    - under [Ext.no_ext], whose clone is [Ns.Ext.released_clone], a
+      refused [clone] (220) word with a namespace bit (for example
+      CLONE_NEWNS or CLONE_NEWUSER with CLONE_FS) has no step under
+      [Ns.Clone.clone_tables_failures], for which [clone_ns_exact] is
+      [CnUnmodeled] (before, the call was the error step).  Under
+      [Ns.Spec.ns_ext] such a word keeps the error step
+      ([px_clone_unmodeled]): every refused word holds a bit outside
+      [Ns.Clone]'s mask.
+    - under [Ext.no_ext] and [Ns.Clone.clone_tables_failures], a
+      namespace-world caller's refused [clone] or [clone3], with or
+      without a namespace bit, has no step either: [clone_ns_exact] is
+      not [CnErr EINVAL] for its word, and [Ns.Ext.released_clone] never
+      gives [CnUnmodeled].
+    Each is a missing or an extra outcome of a call the model declined
+    before, never a changed answer to a call it answered. *)
 Definition clone_flags_of (c : config) : Z :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD

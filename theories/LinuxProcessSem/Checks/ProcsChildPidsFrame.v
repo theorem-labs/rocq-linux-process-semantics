@@ -1187,9 +1187,17 @@ Lemma check_clone_cp : forall flags eff m m' evs,
 Proof.
   intros flags [ret ws zs us cs ci] m m' evs H.
   unfold check_clone, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer in H.
-  repeat vm_step H.
-  all: clone_leaf.
+    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
+  repeat (lazymatch type of H with
+          | check_ret_only _ _ _ _ = CheckOk _ _ =>
+              apply check_ret_only_ok_iff in H;
+              let Heq := fresh "Heq" in
+              destruct H as (Heq & -> & ->); inversion Heq; subst
+          | _ => vm_step H
+          end).
+  all: first
+    [ clone_leaf
+    | left; split; [reflexivity | vm_compute; reflexivity] ].
 Qed.
 
 Lemma check_clone3_cp : forall i uargs size eff m m' evs,
@@ -1199,10 +1207,13 @@ Lemma check_clone3_cp : forall i uargs size eff m m' evs,
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
+  unfold check_clone3, check_clone3_resolve, check_clone_answer,
+    check_clone3_einval in H.
   repeat (lazymatch type of H with
           | check_ret_only _ _ _ _ = CheckOk _ _ =>
               apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->)
+          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ =>
+              apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->)
           | _ => vm_step H
           end).
   all: first

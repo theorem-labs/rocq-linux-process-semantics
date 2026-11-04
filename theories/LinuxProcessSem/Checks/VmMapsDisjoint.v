@@ -2842,7 +2842,7 @@ Lemma check_clone_frame : forall flags eff m m' evs,
 Proof.
   intros flags eff m m' evs H.
   unfold check_clone, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer in H.
+    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
   vm_frame2 H.
 Qed.
 
@@ -2850,7 +2850,8 @@ Lemma check_clone3_frame : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
+  unfold check_clone3, check_clone3_resolve, check_clone_answer,
+    check_clone3_einval in H.
   vm_frame2 H.
 Qed.
 
