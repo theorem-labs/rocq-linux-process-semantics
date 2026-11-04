@@ -2,9 +2,9 @@
 
     Not part of the trusted specification: a theorem ABOUT it.
 
-    [Run.kill_frame] is the claim that, from a running model whose four
-    kill gates are closed ([Run.kill_off]: the abort and SIGPIPE
-    declarations clear, nothing pending), no syscall outcome opens a
+    [Run.kill_frame] is the claim that, from a running model whose five
+    kill gates are closed ([Run.kill_off]: the abort, SIGPIPE and
+    self-kill declarations clear, nothing pending), no syscall outcome opens a
     gate, records a kill or emits a [State.KillEv].  This file PROVES it,
     arm by arm over the dispatcher [Checks.Sys.Dispatch.checked_table],
     and carries it to [Specs.syscall_spec] through
@@ -22,7 +22,7 @@
     that unfolds its checker exactly as that file's [_frame] lemma does
     and then runs one tactic, [kf_frame], which splits every branch of
     the checker and closes each by conversion: every setter but
-    [State.with_killed] carries the four gates and [State.m_killed]
+    [State.with_killed] carries the five gates and [State.m_killed]
     across, and the branches that reach [with_killed] are each behind a
     gate the hypotheses close.  [checked_table_kill_free] is the
     [Forall] over the table, so an arm added to the dispatcher without a
@@ -202,12 +202,14 @@ Ltac kf_close m Hoff Hk :=
      | kf_ev | exact Hoff | exact Hk ])
   | (let Ha := fresh "Ha" in let Hp := fresh "Hp" in
      let Ht := fresh "Ht" in let Hq := fresh "Hq" in
-     pose proof Hoff as (Ha & Hp & Ht & Hq);
+     let Hs := fresh "Hs" in
+     pose proof Hoff as (Ha & Hp & Ht & Hq & Hs);
      try rewrite !(sigmask_deliver_model_off _ _ Hp Hq);
      unfold kill_off;
-     refine (conj (conj _ (conj _ (conj _ _))) (conj _ _));
+     refine (conj (conj _ (conj _ (conj _ (conj _ _)))) (conj _ _));
      [ kf_fld m_abort_terminal m Ha | kf_fld m_sigabrt_pending m Hp
      | kf_fld m_sigpipe_terminal m Ht | kf_fld m_sigpipe_pending m Hq
+     | kf_fld m_selfkill_terminal m Hs
      | kf_fld m_killed m Hk | kf_ev ]) ].
 
 (** The atomic sub-checkers [kf_step] does not open, as [vm_done] has
@@ -298,8 +300,16 @@ Ltac kf_frame H m Hoff Hk :=
    The arms whose checker reaches a gate
    ------------------------------------------------------------------------- *)
 
-(** [tkill] and [tgkill] decline outright while the abort declaration is
-    clear. *)
+(** [kill] declines outright while the self-kill declaration is clear,
+    and [tkill] and [tgkill] while the abort declaration is. *)
+Lemma check_kill_kf : forall pid sig eff m m' evs,
+  check_kill pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros pid sig eff m m' evs H (_ & _ & _ & _ & Hs) _.
+  unfold check_kill in H. rewrite Hs in H. cbv beta iota delta [negb] in H.
+  discriminate H.
+Qed.
+
 Lemma check_tkill_kf : forall pid sig eff m m' evs,
   check_tkill pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1484,6 +1494,7 @@ Proof.
     | eapply check_sched_yield_kf; eassumption
     | eapply check_sigaltstack_kf; eassumption
     | eapply check_rt_sigaction_kf; eassumption
+    | eapply check_kill_kf; eassumption
     | eapply check_tkill_kf; eassumption
     | eapply check_tgkill_kf; eassumption
     | eapply check_rt_sigprocmask_kf; eassumption
@@ -1545,10 +1556,11 @@ Qed.
    The consequences for runs
    ------------------------------------------------------------------------- *)
 
-(** Any launch that leaves both kill declarations clear. *)
+(** Any launch that leaves all three kill declarations clear. *)
 Theorem run_no_kill_of_decls : forall img lim en inp tr,
   in_abort_terminal inp = false ->
   in_sigpipe_terminal inp = false ->
+  in_selfkill_terminal inp = false ->
   bh_traces (run img lim en inp) tr ->
   no_kill tr.
 Proof. exact (run_kill_off kill_frame_holds). Qed.
@@ -1566,10 +1578,12 @@ Theorem valid_input_no_kill : forall cfg img lim en inp tr,
 Proof.
   intros cfg img lim en inp tr Hv Htr.
   apply run_scfg_sub_traces in Htr.
-  apply (run_no_kill_of_decls img lim en inp tr); [| | exact Htr].
+  apply (run_no_kill_of_decls img lim en inp tr); [| | | exact Htr].
   - red in Hv. repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
     assumption.
   - exact (valid_input_sigpipe_terminal _ Hv).
+  - red in Hv. repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+    assumption.
 Qed.
 
 Corollary valid_input_no_kill_run : forall img lim en inp tr,
@@ -1578,13 +1592,15 @@ Corollary valid_input_no_kill_run : forall img lim en inp tr,
   forall sig fs, ~ In (KillEv sig fs) tr.
 Proof.
   intros img lim en inp tr Hv Htr.
-  apply (run_no_kill_of_decls img lim en inp tr); [| | exact Htr].
+  apply (run_no_kill_of_decls img lim en inp tr); [| | | exact Htr].
   - red in Hv. repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
     assumption.
   - exact (valid_input_sigpipe_terminal _ Hv).
+  - red in Hv. repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+    assumption.
 Qed.
 
-(** The SIG_IGN launch pins both declarations clear too, so the same
+(** The SIG_IGN launch pins all three declarations clear too, so the same
     holds there. *)
 Corollary valid_input_sigpipe_ignored_no_kill : forall cfg img lim en inp tr,
   valid_input_sigpipe_ignored inp ->

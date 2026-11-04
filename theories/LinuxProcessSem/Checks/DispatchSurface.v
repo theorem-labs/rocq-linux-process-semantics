@@ -149,20 +149,23 @@ Definition probe_model : Model :=
     reading before the table below rather than after.
 
     [tkill] (130) and [tgkill] (131) answer only where the task DECLARED
-    the abort path ([State.in_abort_terminal]) and only for the caller's
-    own tid, so no choice of argument registers reaches an answer from
-    [probe_model]: the declaration is a property of the run, not of the
-    call.  That is the arms' whole design — with the declaration clear
-    they decline every shape, which is what the numbers did when they had
-    no arm — so the probe for those two numbers runs against a model that
-    declares it and pins a tid, and every other number keeps
+    the abort path ([State.in_abort_terminal]), and [kill] (129) only
+    where it declared the self-kill path ([State.in_selfkill_terminal]);
+    all three answer only for the caller's own tid (or, for [kill], the
+    pid INT_MIN), so no choice of argument registers reaches an answer
+    from [probe_model]: the declaration is a property of the run, not of
+    the call.  That is the arms' whole design — with the declaration
+    clear they decline every shape, which is what the numbers did when
+    they had no arm — so the probe for those three numbers runs against
+    a model that declares it and pins a tid, and every other number keeps
     [probe_model].
 
-    What this check therefore says about 130 and 131 is "answers under a
-    declaration", which is the strongest true statement about them.  The
-    other half — that they decline WITHOUT one — is
-    [Checks.Cases.Kernel.Signal]'s [tkill_off_declined], which runs the
-    answering shape against a model with the declaration clear. *)
+    What this check therefore says about 129, 130 and 131 is "answers
+    under a declaration", which is the strongest true statement about
+    them.  The other half — that they decline WITHOUT one — is
+    [Checks.Cases.Kernel.Signal]'s [tkill_off_declined] and
+    [kill_off_declined], which run the answering shape against a model with
+    the declaration clear. *)
 Definition probe_tid : word := Z_to_bv 64 4242.
 
 Definition probe_model_abort : Model :=
@@ -173,9 +176,15 @@ Definition probe_model_abort : Model :=
                     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc
                     true Sv48)).
 
+(** The self-kill declaration set, on [probe_model] with the same tid. *)
+Definition probe_model_selfkill : Model :=
+  with_selfkill_terminal true (with_tid probe_tid probe_model).
+
 (** The model a probe of [n] runs against. *)
 Definition probe_model_for (n : Z) : Model :=
-  if (Z.eqb n 130 || Z.eqb n 131)%bool then probe_model_abort else probe_model.
+  if (Z.eqb n 130 || Z.eqb n 131)%bool then probe_model_abort
+  else if Z.eqb n 129 then probe_model_selfkill
+  else probe_model.
 
 (** Where [clone3]'s probe finds a FORK-SHAPED [struct clone_args].  Far
     from 0 and from AT_FDCWD, the two addresses every other probe uses. *)
@@ -447,10 +456,16 @@ Definition probe_args (n : Z) : list word :=
        back.  Any address serves; AT_FDCWD is reused so the entry names
        no new constant.  a1 stays 0, so [ufds] is never dereferenced. *)
     [AT_FDCWD; z; AT_FDCWD; z; z; z]
+  else if Z.eqb n 129 then
+    (* kill, as tkill below: the caller's own pid, which
+       [probe_model_selfkill] pins, and SIGKILL, the one signal the arm
+       sends.  The default [AT_FDCWD] in a0 is a negative pid other than
+       INT_MIN, which the arm declines. *)
+    [probe_tid; Z_to_bv 64 SIGKILL; z; z; z; z]
   else if Z.eqb n 130 then
     (* tkill answers only for the caller's own tid, which
-       [probe_model_abort] pins; the signal is SIGABRT, the only one any
-       arm sends.  The default [AT_FDCWD] in a0 is negative and would
+       [probe_model_abort] pins; the signal is SIGABRT, the only one it
+       sends.  The default [AT_FDCWD] in a0 is negative and would
        reach the -EINVAL gate, so the entry is what makes the probe
        measure the DELIVERY rather than the argument check. *)
     [probe_tid; Z_to_bv 64 SIGABRT; z; z; z; z]
