@@ -26,7 +26,7 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
+  ProcsWellFormed ProcsPrivateFrame ProcsSharedFrame ProcsClockSync ProcsSyncOnce.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -61,9 +61,12 @@ Lemma look_absorb_self : forall P e c',
   look P (pe_pid e) = Some e ->
   look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
 Proof.
-  intros P e c' Hl. unfold look, absorb. cbn [pcfg_procs].
+  intros P e c' Hl.
+  pose proof (look_in_first_root_pin_children_self P e (cfg_model c')
+    (pcfg_procs P) e Hl) as Hl'.
+  unfold look, absorb. cbn [pcfg_procs].
   rewrite orphan_at_exit_map, look_in_orphan.
-  rewrite look_in_replace_same by (unfold look in Hl; rewrite Hl; discriminate).
+  rewrite look_in_replace_same by (rewrite Hl'; discriminate).
   cbn [option_map]. unfold orphan_slot.
   destruct (m_halted _); [|reflexivity].
   unfold orphan_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.
@@ -171,8 +174,12 @@ Proof.
   intros segs cfg P evs P' e x8 q f Hl Hs H35 Hp Hne Hf Hin.
   destruct (pstep_next_gate_cases _ _ _ _ _ _ Hp) as (e1 & Hl1 & _ & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
-  - destruct (absorb_keeps_other P e c' q f (fun E => Hne (eq_sym E)) Hf)
+  destruct Hcases as [ (c' & Hstep & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
+  - assert (Hshared : multiproc_shared (pe_cfg (pcfg_shared P) e) = true).
+    { unfold multiproc_shared. cbn [cfg_ms pe_cfg]. rewrite Hs, H35. reflexivity. }
+    pose proof (sstep_shared_frame _ _ _ _ _ Hshared Hstep) as (_ & Htid).
+    change (m_tid (cfg_model c') = m_tid (pe_model e)) in Htid.
+    destruct (absorb_keeps_other_tid_stable P e c' q f (fun E => Hne (eq_sym E)) Hf Htid)
       as (f' & Hf' & Hm & _).
     exists f'. split; [exact Hf'|]. split; [exact Hm|].
     assert (Hlen : (1 < List.length (pcfg_procs P))%nat)

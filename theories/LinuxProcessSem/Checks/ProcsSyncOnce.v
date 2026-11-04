@@ -11,8 +11,8 @@
       is closed, for every synced number (80, 101, 113, 160).
     - (2) [other_step_keeps_entry], with [uts_lag_pinned] and
       [pin_lag_pinned]: a step of ANOTHER entry leaves a running entry's
-      machine state and model as they were (but for the tid the root pin
-      writes), and the uname and fstat gates
+      machine state unchanged; the model may only acquire a root tid or
+      a resolved parent pid. The uname and fstat gates
       read only the entry's own pin once it has one.  So for 160 and 80 the
       gate, once closed by a pin, stays closed until the entry itself
       steps: at most one sync per call.
@@ -205,12 +205,14 @@ Proof.
   - cbn [look_in fst snd]. destruct (bv_eqb k p); [reflexivity|]. apply IH. exact Hne.
 Qed.
 
-Lemma absorb_keeps_other : forall P e c' p f,
+Lemma absorb_keeps_other_tid_stable : forall P e c' p f,
   pe_pid e <> p -> look P p = Some f ->
+  m_tid (cfg_model c') = m_tid (pe_model e) ->
   exists f', look (absorb P e c') p = Some f' /\ pe_model f' = pe_model f
              /\ pe_ms f' = pe_ms f.
 Proof.
-  intros P e c' p f Hne Hf. unfold look, absorb. cbn [pcfg_procs].
+  intros P e c' p f Hne Hf Htid. unfold look, absorb. cbn [pcfg_procs].
+  rewrite first_root_pin_children_same_tid by exact Htid.
   rewrite orphan_at_exit_map, look_in_orphan, look_in_replace_other
     by (intros E; apply Hne; symmetry; exact E).
   unfold look in Hf. rewrite Hf. cbn [option_map].
@@ -219,22 +221,58 @@ Proof.
     split; reflexivity.
 Qed.
 
-(** A step of another entry leaves a running entry's machine state, and
-    its model but for the tid the root pin writes into the root's (its
-    parent may be cleared by an exit). *)
+Lemma absorb_keeps_other_state : forall P e c' p f,
+  pe_pid e <> p -> look P p = Some f ->
+  exists f', look (absorb P e c') p = Some f' /\ pe_ms f' = pe_ms f
+    /\ (pe_model f' = pe_model f \/ exists t, pe_model f' = with_ppid t (pe_model f)).
+Proof.
+  intros P e c' p f Hne Hf. unfold look in Hf.
+  assert (Hfirst : exists g,
+    look_in (first_root_pin_children P e (cfg_model c') (pcfg_procs P)) p = Some g
+    /\ pe_ms g = pe_ms f
+    /\ (pe_model g = pe_model f \/ exists t, pe_model g = with_ppid t (pe_model f))).
+  { unfold first_root_pin_children.
+    destruct (bv_eqb (pe_pid e) (pcfg_root P));
+      destruct (m_tid (pe_model e)) as [old|];
+      destruct (m_tid (cfg_model c')) as [t|];
+      try (exists f; split; [exact Hf|split; [reflexivity|left; reflexivity]]).
+    exists (snd (root_child_ppid_one (pcfg_root P) t (p, f))). split.
+    - rewrite look_in_root_children_ppid, Hf. reflexivity.
+    - pose proof (root_child_ppid_one_fields (pcfg_root P) t p f) as (_ & _ & Hms & _).
+      split; [exact Hms|].
+      destruct (root_child_ppid_one_model (pcfg_root P) t p f) as [Hm|Hm];
+        [left; exact Hm|right; exists t; exact Hm]. }
+  destruct Hfirst as (g & Hg & Hms & Hmodel).
+  unfold look, absorb. cbn [pcfg_procs].
+  rewrite orphan_at_exit_map, look_in_orphan, look_in_replace_other
+    by (intros E; apply Hne; symmetry; exact E).
+  rewrite Hg. cbn [option_map]. eexists. split; [reflexivity|].
+  destruct (orphan_slot_orphaned (cfg_model c') (pe_pid e) p g) as [-> | (_ & ->)];
+    split; assumption.
+Qed.
+
+(** Another entry's step preserves a running entry's machine state. It
+    may pin the root's tid or resolve a child's parent pid; an exit may
+    clear the parent link. Neither pid bookkeeping consumes a reparent move. *)
 Theorem other_step_keeps_entry : forall segs cfg q P evs P' p f,
   pstep_at segs cfg q P evs (PNext P') ->
   q <> p -> look P p = Some f -> m_halted (pe_model f) = None ->
   exists f', look P' p = Some f' /\ pe_ms f' = pe_ms f
-    /\ (pe_model f' = pe_model f \/ exists t, pe_model f' = with_tid t (pe_model f)).
+    /\ (pe_model f' = pe_model f
+        \/ (exists t, pe_model f' = with_tid t (pe_model f))
+        \/ exists t, pe_model f' = with_ppid t (pe_model f)).
 Proof.
   intros segs cfg q P evs P' p f H Hne Hf Hh.
   assert (Hab : forall e c', pe_pid e <> p ->
             exists f', look (absorb P e c') p = Some f' /\ pe_ms f' = pe_ms f
               /\ (pe_model f' = pe_model f
-                  \/ exists t, pe_model f' = with_tid t (pe_model f))).
-  { intros e c' Hep. destruct (absorb_keeps_other P e c' p f Hep Hf) as (f' & H1 & H2 & H3).
-    exists f'. split; [exact H1|]. split; [exact H3 | left; exact H2]. }
+                  \/ (exists t, pe_model f' = with_tid t (pe_model f))
+                  \/ exists t, pe_model f' = with_ppid t (pe_model f))).
+  { intros e c' Hep.
+    destruct (absorb_keeps_other_state P e c' p f Hep Hf) as (f' & H1 & Hms & Hmodel).
+    exists f'. split; [exact H1|]. split; [exact Hms|].
+    destruct Hmodel as [Hm|[t Hm]];
+      [left; exact Hm|right; right; exists t; exact Hm]. }
   inversion H; subst.
   - (* pstep_other *) apply Hab; assumption.
   - (* pstep_clone *)
@@ -274,23 +312,40 @@ Proof.
     unfold look, sync_result. cbn [pcfg_procs].
     rewrite look_in_replace_other by (intros E; apply Hne; symmetry; exact E).
     unfold look in Hf. exact Hf.
-  - (* pstep_pin_root: the root's tid, nothing else *)
+  - (* pstep_pin_root: pin the root and resolve its running children's parent pid *)
     match goal with
-    | Hlr : look P (pcfg_root P) = Some ?r |- _ =>
-        destruct (bv_eqb (pcfg_root P) p) eqn:Erp;
-        [ apply bv_eqb_true_eq in Erp; rewrite Erp in Hlr; rewrite Hf in Hlr;
-          injection Hlr as <-;
-          eexists; split;
-          [ unfold look, pin_root; cbn [pcfg_procs]; rewrite <- Erp;
-            apply look_in_replace_same; unfold look in Hf; rewrite <- Erp in Hf;
-            rewrite Hf; discriminate
-          | split; [reflexivity | right; eexists; reflexivity] ]
-        | exists f; split; [|split; [reflexivity | left; reflexivity]];
-          unfold look, pin_root; cbn [pcfg_procs];
+    | Hlr : look P (pcfg_root P) = Some ?r |- context [pin_root P r ?t] =>
+      destruct (bv_eqb (pcfg_root P) p) eqn:Erp
+    end.
+    + apply bv_eqb_true_eq in Erp.
+      match goal with Hlr : look P (pcfg_root P) = Some ?r |- _ =>
+        rewrite Erp in Hlr; rewrite Hf in Hlr; injection Hlr as <-
+      end.
+      eexists. split.
+      * unfold look, pin_root. cbn [pcfg_procs]. rewrite <- Erp.
+        apply look_in_replace_same.
+        destruct (m_tid (pe_model f)); [|rewrite look_in_root_children_ppid_root];
+          unfold look in Hf; rewrite <- Erp in Hf; rewrite Hf; discriminate.
+      * split; [reflexivity|right; left; eexists; reflexivity].
+    + match goal with
+      | Hlr : look P (pcfg_root P) = Some ?r |- context [pin_root P r ?t] =>
+        destruct (m_tid (pe_model r)) eqn:Et;
+        [ exists f; split; [|split; [reflexivity|left; reflexivity]];
+          unfold look, pin_root; cbn [pcfg_procs]; rewrite Et;
           rewrite look_in_replace_other
             by (intros E; rewrite E, bv_eqb_same in Erp; discriminate Erp);
-          unfold look in Hf; exact Hf ]
-    end.
+          exact Hf
+        | exists (snd (root_child_ppid_one (pcfg_root P) t (p, f))); split;
+          [ unfold look, pin_root; cbn [pcfg_procs]; rewrite Et;
+            rewrite look_in_replace_other
+              by (intros E; rewrite E, bv_eqb_same in Erp; discriminate Erp);
+            rewrite look_in_root_children_ppid, Hf; reflexivity
+          | pose proof (root_child_ppid_one_fields (pcfg_root P) t p f)
+              as (_ & _ & Hms & _);
+            split; [exact Hms|];
+            destruct (root_child_ppid_one_model (pcfg_root P) t p f) as [Hm|Hm];
+              [left; exact Hm|right; right; exists t; exact Hm] ] ]
+      end.
 Qed.
 
 (** And once pinned, the uname and fstat gates read only the entry's own

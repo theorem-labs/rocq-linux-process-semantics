@@ -1020,6 +1020,14 @@ Proof.
     reflexivity.
 Qed.
 
+Lemma look_in_root_children_ppid_root : forall root t ps,
+  look_in (root_children_ppid root t ps) root = look_in ps root.
+Proof.
+  intros root t ps. rewrite look_in_root_children_ppid.
+  destruct (look_in ps root) as [f|]; [|reflexivity]. cbn [option_map].
+  unfold root_child_ppid_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
 Lemma first_root_pin_children_same_tid : forall P e m' ps,
   m_tid m' = m_tid (pe_model e) -> first_root_pin_children P e m' ps = ps.
 Proof.
@@ -2032,12 +2040,11 @@ Qed.
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
-  intros c c'. unfold absorb. rewrite first_root_pin_children_single.
-  replace (replace_in (pcfg_procs (one_proc c)) (pe_pid (one_entry c))
-             (pe_absorb (one_entry c) c'))
-    with [(one_pid, pe_absorb (one_entry c) c')]
-    by (cbn; rewrite bv_eqb_same; reflexivity).
+  intros c c'. unfold absorb.
+  change (pcfg_procs (one_proc c)) with [(pe_pid (one_entry c), one_entry c)].
+  rewrite first_root_pin_children_single.
   change (pe_pid (one_entry c)) with one_pid.
+  cbn [replace_in fst snd]. rewrite ?bv_eqb_same.
   rewrite orphan_at_exit_single.
   unfold one_proc, one_entry. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
