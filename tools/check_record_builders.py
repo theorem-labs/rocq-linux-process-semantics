@@ -34,6 +34,7 @@ CONSTRUCTORS = [
     "mkNsState",         # Ns.Tables.NsState
     "mkNsEnv",           # Ns.Tables.NsEnv
     "mkNsCtx",           # Ns.Tables.NsCtx
+    "mkSeqEnd",          # State.SeqEnd (future queue fields append here)
 ]
 BASELINE = "tools/record_builders.json"
 PATTERN = re.compile(r"(?<![\[A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?![A-Za-z0-9_'\]])")

@@ -221,6 +221,9 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe, socket or terminal *)
   | Some (FdSocket _)  => err_ret EINVAL          (* nor on a socket: [socket_file_ops] carries no
                                                      [.fsync], so [vfs_fsync_range] is -EINVAL *)
+  | Some (FdSeqpacket _ _ _) => err_ret EINVAL    (* the [FdSocket] answer, from [socket_file_ops]
+                                                     alone (net/socket.c:156, no [.fsync];
+                                                     fs/sync.c:183-184, v6.18.46) *)
   | Some (FdPipe _ _)  => err_ret EINVAL          (* no [.fsync] on a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL        (* no [.fsync] on /dev/null either: [null_fops]
                                                      (drivers/char/mem.c, v6.18.46) lists [.llseek],

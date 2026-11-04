@@ -320,8 +320,8 @@ Proof.
      ([State.OProcFile]), an eventfd ([State.OEventFd]) and a live inherited
      file ([State.OInherited]), so each gets a bullet rather than a one-line
      dismissal.  The two write-only kinds ([FdFileW] and the append
-     [FdFileA]) are the -EBADF pair. *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+     [FdFileA]) are the -EBADF pair; a sequenced-packet end declines. *)
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|id sd st]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -345,6 +345,7 @@ Proof.
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_file_data_delivery_clamped
                    _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | discriminate Hspec
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -2625,10 +2626,11 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|id sd st]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
-  (* the opaque kinds, fifth of the survivors: [CheckUnmodeled] *)
-  5: discriminate.
+  (* the opaque kinds and the sequenced-packet ends, fifth and sixth of
+     the survivors: [CheckUnmodeled] *)
+  5-6: discriminate.
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two
      TRANSFERRING kinds -- the O_WRONLY and O_RDWR descriptions, which
@@ -2831,7 +2833,7 @@ Definition noreader_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   false true true (Z_to_bv 64 0) (Z_to_bv 64 0) [] false.
+                   false true true (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
 
 (** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
@@ -2845,7 +2847,7 @@ Definition noreader_ignored_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   false false false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false.
+                   false false false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
 
 Definition noreader_model : Model :=
   init_model [] 0 0 demo_sp demo_limit noreader_input.

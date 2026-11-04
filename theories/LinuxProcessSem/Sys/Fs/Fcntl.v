@@ -274,6 +274,11 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          the /proc/self/fd directory's is, but [F_GETFL] reads it there
          ([getfl_f_flags]), so a write to it would have to be recorded.
          None of the answers is written. *)
+  | FdSeqpacket _ _ _ => false
+      (* DECLINED.  The end's [f_flags] is known to be [O_RDWR]:
+         [socketpair] declines SOCK_NONBLOCK and this arm declines
+         F_SETFL.  [sock_alloc_file] sets the word (net/socket.c:483-485,
+         v6.18.46).  The [setfl] cases for this kind are not written. *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -620,6 +625,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          object.  The entry records none of the five words exactly
          (fs/fcntl.c, fs/open.c, fs/eventfd.c, fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46). *)
+  | FdSeqpacket _ _ _ => None
+      (* DECLINED.  [setfl_noop_on]'s invariant fixes the word at
+         [O_RDWR] ([sock_alloc_file], net/socket.c:483-485, v6.18.46).
+         This answer has not been implemented for this kind. *)
   end.
 
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on

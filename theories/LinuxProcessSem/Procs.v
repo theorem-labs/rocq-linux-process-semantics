@@ -675,6 +675,9 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
   | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
   | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom | FdOpaque _ => None
+  | FdSeqpacket _ _ _ => None
+    (* unreachable: the clone gate declines while an end is open
+       ([Kernel.Fork.clone_no_shared_file_b]) *)
   end.
 
 (** PROMOTE one descriptor out of a private table into the shared one, with
@@ -797,7 +800,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps)
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps)
               (procst_sigchld_dfl ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=

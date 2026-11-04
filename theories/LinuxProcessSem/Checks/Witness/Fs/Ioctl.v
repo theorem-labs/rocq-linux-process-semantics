@@ -26,6 +26,7 @@ Definition ioctl_witness (fd req : word) (m : Model) : outcome SyscallEffect :=
       else Unmodeled
   | Some FdUrandom => Unmodeled
   | Some (FdOpaque _) => Unmodeled   (* declined on every request *)
+  | Some (FdSeqpacket _ _ _) => Unmodeled   (* declined on every request *)
   end.
 
 Lemma ioctl_witness_ok : forall fd req i m, ioctl_spec fd req i m (ioctl_witness fd req m).

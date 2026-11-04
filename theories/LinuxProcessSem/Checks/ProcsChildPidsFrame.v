@@ -38,12 +38,11 @@ Local Open Scope bool_scope.
 
 Definition cp_of (m : Model) : list word := m_child_pids m.
 
-(** What each arm's lemma below shows its answer keeps: the list, and the
-    self-kill declaration ([State.m_selfkill_terminal]), which only the
-    launch writes ([State.init_model]).  Both ride on the same lemmas:
-    every setter carries each of them across by conversion. *)
-Definition cps_of (m : Model) : list word * bool :=
-  (m_child_pids m, m_selfkill_terminal m).
+(** Every non-clone answer retains the child list and both launch
+    values: self-kill and cgroup-BPF setsockopt. Only [init_model] seeds
+    the launch values; every transition setter carries them across. *)
+Definition cps_of (m : Model) : list word * (bool * bool) :=
+  (m_child_pids m, (m_selfkill_terminal m, m_cgroup_bpf_setsockopt m)).
 
 (** A released [wait4] that reaps removes one recorded pid. *)
 Definition wait4_reaped (m m' : Model) : Prop :=
@@ -55,7 +54,7 @@ Definition wait4_reaped (m m' : Model) : Prop :=
 Definition cps_kept (n : Z) (m m' : Model) : Prop :=
   cps_of m' = cps_of m
   \/ ((n =? 260)%Z = true /\ wait4_reaped m m'
-      /\ m_selfkill_terminal m' = m_selfkill_terminal m).
+      /\ snd (cps_of m') = snd (cps_of m)).
 
 (** Its list half. *)
 Definition cp_kept (n : Z) (m m' : Model) : Prop :=
@@ -912,12 +911,13 @@ Proof.
   unfold check_getpeername, check_getpeername_core in H. cp_frame2 H.
 Qed.
 
-Lemma check_setsockopt_cp : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs ->
+Lemma check_setsockopt_cp : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core in H. cp_frame2 H.
+  intros i fd level optlen eff m m' evs H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
+    in H. cp_frame2 H.
 Qed.
 
 Lemma check_getsockopt_cp : forall i fd level optlenp eff m m' evs,
@@ -958,9 +958,11 @@ Lemma check_socketpair_cp : forall i family type protocol sv eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted
-    in H. cp_frame2 H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  cp_frame2 H.
 Qed.
+Print Assumptions check_socketpair_cp.
 
 Lemma check_recvfrom_cp : forall i fd buf size eff m m' evs,
   check_recvfrom i fd buf size eff m = CheckOk m' evs ->
@@ -971,12 +973,13 @@ Proof.
   cp_frame2 H.
 Qed.
 
-Lemma check_recvmsg_cp : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs ->
+Lemma check_recvmsg_cp : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros fd flags eff m m' evs H.
-  unfold check_recvmsg, check_recv_fd_answer in H. cp_frame2 H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H. cp_frame2 H.
 Qed.
 
 Lemma check_sendto_cp : forall i fd buf count flags addrp eff m m' evs,
@@ -1387,10 +1390,10 @@ Proof.
     | fail 1 "checked_table_cp has no case for this arm: give its checker a *_cp lemma above" ].
 Qed.
 
-(** THE SPEC FACT: every released answer keeps the list and the
-    self-kill declaration, but a clone's, which leaves the model alone
-    with an errno or is [with_child] of the pid it returns, and a
-    [wait4]'s, which may remove one recorded pid. *)
+(** THE SPEC FACT: every released answer keeps the list and the launch
+    values, but a clone's, which leaves the model alone with an errno or
+    is [with_child] of the pid it returns, and a [wait4]'s, which keeps
+    the launch values and may remove one recorded pid. *)
 Theorem syscall_spec_cps : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   (clone_sysno (bv_unsigned (in_sysno i)) = false
@@ -1431,11 +1434,25 @@ Proof.
   intros i m eff m' evs H.
   destruct (syscall_spec_cps _ _ _ _ _ H)
     as [(_ & [E | (_ & _ & E)]) | (_ & [(-> & _) | (-> & _)])].
-  - exact (f_equal snd E).
-  - exact E.
+  - exact (f_equal (fun p => fst (snd p)) E).
+  - exact (f_equal fst E).
   - reflexivity.
   - reflexivity.
 Qed.
+
+Theorem syscall_spec_cgroup_bpf_setsockopt_kept : forall i m eff m' evs,
+  syscall_spec i m (Ok eff m' evs) ->
+  m_cgroup_bpf_setsockopt m' = m_cgroup_bpf_setsockopt m.
+Proof.
+  intros i m eff m' evs H.
+  destruct (syscall_spec_cps _ _ _ _ _ H)
+    as [(_ & [E | (_ & _ & E)]) | (_ & [(-> & _) | (-> & _)])].
+  - exact (f_equal (fun p => snd (snd p)) E).
+  - exact (f_equal snd E).
+  - reflexivity.
+  - reflexivity.
+Qed.
+Print Assumptions syscall_spec_cgroup_bpf_setsockopt_kept.
 
 (* =========================================================================
    The released step

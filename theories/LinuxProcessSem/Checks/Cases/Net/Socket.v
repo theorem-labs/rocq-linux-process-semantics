@@ -2041,9 +2041,10 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** The flag-bit check runs BEFORE the two descriptors are reserved, so
     -EINVAL leaves sv alone — and it is answered for every family, not
-    just the modeled one.  AF_UNIX (family 1) really does hand back two
-    sockets connected to each other, a shape [State.SockState] cannot
-    express: fail closed. *)
+    just the modeled one.  An AF_UNIX stream pair (family 1, type 1)
+    really does hand back two sockets connected to each other, a shape
+    [State.SockState] cannot express: fail closed.  (The AF_UNIX
+    sequenced-packet pair is answered: see the section at the end.) *)
 Example socketpair_flag_check_precedes_the_writes :
   check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
     (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
@@ -2671,3 +2672,412 @@ Example sendmsg_ordinary_header_still_sends :
        (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model
      = CheckReject.
 Proof. split; check_eq. Qed.
+
+(* ---- AF_UNIX SOCK_SEQPACKET pairs: socketpair (199), setsockopt (208),
+        close (57), recvmsg (212) -------------------------------------------
+
+   The pair [Net.Socket.socketpair_unix_spec] makes, the one option
+   [Net.Socket.seqpacket_setsockopt] answers, and the end of file
+   [Net.Socket.seqpacket_recvmsg] answers once the peer has closed.  Every
+   case has a control: an answer the same call must not give. *)
+
+(** Channels 0-2 and nothing else, so the pair takes 3 and 4. *)
+Definition seqp_base_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+
+(** The pair: descriptors 3 (side [false]) and 4 (side [true]), pair id
+    0, both ends fresh ([State.seq_fresh]). *)
+Definition seqp_pair_model : Model :=
+  with_fds (fd_insert (fd_insert (m_fds seqp_base_model) 3
+                         (FdSeqpacket 0 false seq_fresh))
+                      4 (FdSeqpacket 0 true seq_fresh)) seqp_base_model.
+
+(** End 3 after [SO_PASSCRED] is set to 1. *)
+Definition seqp_passcred_model : Model :=
+  with_fds (fd_insert (m_fds seqp_pair_model) 3
+              (FdSeqpacket 0 false (with_sq_passcred true seq_fresh))) seqp_pair_model.
+
+(** End 3 alone: its peer at 4 has closed. *)
+Definition seqp_closed_model : Model :=
+  with_fds (fd_remove (m_fds seqp_pair_model) 4) seqp_pair_model.
+
+(** socketpair (AF_UNIX = 1, [type], [protocol], [sv]). *)
+Definition seqp_socketpair_in (type protocol sv : word)
+    (wm : word -> option byte) : SyscallInput :=
+  mkInput 199 [1; type; protocol; sv; 0; 0] (fun _ => None) wm.
+
+(** SOCK_SEQPACKET (5) | SOCK_CLOEXEC (0x80000). *)
+Definition seqp_type : word := Z_to_bv 64 (5 + 0x80000).
+
+(** S1.  THE PAIR: 0, the two lowest free numbers stored at [sv] and
+    [sv + 4] in that order, and two connected ends installed.  THE
+    CONTROLS: AF_INET's -EOPNOTSUPP with the same stores (an AF_UNIX
+    pair succeeds), and the numbers swapped. *)
+Example seqpacket_socketpair_installs_two_ends :
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) seqp_base_model
+  = CheckOk seqp_pair_model []
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+       (mkEffect (errno_ret EOPNOTSUPP) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
+       seqp_base_model
+     = CheckReject
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+       (mkEffect 0 [(4096, [4;0;0;0]); (4100, [3;0;0;0])] []) seqp_base_model
+     = CheckReject
+  (* without SOCK_CLOEXEC: the same pair *)
+  /\ check_syscall (seqp_socketpair_in 5 0 4096 wmem_open)
+       (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) seqp_base_model
+     = CheckOk seqp_pair_model [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** S2.  THE DESTINATION [access_ok] REFUSES ([sv = TASK_SIZE]): -EFAULT,
+    nothing stored and nothing installed.  THE CONTROL: 0. *)
+Example seqpacket_socketpair_refused_destination_is_efault :
+  check_syscall (seqp_socketpair_in seqp_type 0 (Z_to_bv 64 TASK_SIZE) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) seqp_base_model
+  = CheckOk seqp_base_model []
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 (Z_to_bv 64 TASK_SIZE) (fun _ => None))
+       (mkEffect 0 [] []) seqp_base_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** S3.  THE ENVIRONMENT'S FAILURES, on the two sides of the stores:
+    -EMFILE from the reservations, with nothing stored; -ENFILE from
+    [sock_alloc] after both stores, with both stored and nothing
+    installed (net/socket.c:1788-1796, :1798-1802, :1811-1819, v6.18.46).
+    THE CONTROLS: -EMFILE with the stores, and -ENFILE without them. *)
+Example seqpacket_socketpair_failures_keep_the_store_order :
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret EMFILE) [] []) seqp_base_model
+  = CheckOk seqp_base_model []
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+       (mkEffect (errno_ret ENFILE) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
+       seqp_base_model
+     = CheckOk seqp_base_model []
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+       (mkEffect (errno_ret EMFILE) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
+       seqp_base_model
+     = CheckReject
+  /\ check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+       (mkEffect (errno_ret ENFILE) [] []) seqp_base_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** S4.  STILL DECLINED: SOCK_NONBLOCK (an end has no O_NONBLOCK),
+    protocol 1 (PF_UNIX, which Linux accepts and the model does not
+    admit), and the other AF_UNIX types (here SOCK_DGRAM, 2). *)
+Example seqpacket_socketpair_other_shapes_decline :
+  check_syscall (seqp_socketpair_in (Z_to_bv 64 (5 + 2048)) 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) seqp_base_model
+  = CheckUnmodeled
+  /\ check_syscall (seqp_socketpair_in seqp_type 1 4096 wmem_open)
+       (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) seqp_base_model
+     = CheckUnmodeled
+  /\ check_syscall (seqp_socketpair_in 2 0 4096 wmem_open)
+       (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) seqp_base_model
+     = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
+
+(** setsockopt (fd, [level], [optname], 12288, [optlen]); the four bytes
+    at 12288 are [optval]'s. *)
+Definition seqp_setsockopt_in (fd level optname optlen : word) (v : Z)
+    : SyscallInput :=
+  mkInput 208 [fd; level; optname; 12288; optlen; 0] (mem_of (u64_at 12288 v))
+    (fun _ => None).
+
+(** O1.  SO_PASSCRED (16) AT SOL_SOCKET (1) on end 3: 0, the four bytes
+    read, and the flag stored ([sk_setsockopt], net/core/sock.c:1551-1556,
+    v6.18.46); a value of 0 clears it again.  THE CONTROL: -ENOPROTOOPT. *)
+Example seqpacket_setsockopt_passcred_is_stored :
+  check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)]) seqp_pair_model
+  = CheckOk seqp_passcred_model []
+  /\ check_syscall (seqp_setsockopt_in 3 1 16 4 0)
+       (mkEffectU 0 [] [] [] [] [(12288, 4%nat)]) seqp_passcred_model
+     = CheckOk (with_fds (fd_insert (m_fds seqp_passcred_model) 3
+                            (FdSeqpacket 0 false (with_sq_passcred false (with_sq_passcred true seq_fresh))))
+                  seqp_passcred_model) []
+  /\ check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+       (mkEffect (errno_ret ENOPROTOOPT) [] []) seqp_pair_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** O2.  THE LENGTH TESTS: [optlen] 3 is -EINVAL ([optlen < sizeof(int)],
+    net/core/sock.c:1204-1205), and a negative [optlen] is -EINVAL before
+    the level is looked at ([do_sock_setsockopt], net/socket.c:2335-2336),
+    so level 6 does not make it -EOPNOTSUPP.  THE CONTROLS: 0, and
+    -EOPNOTSUPP for the negative length. *)
+Example seqpacket_setsockopt_length_tests :
+  check_syscall (seqp_setsockopt_in 3 1 16 3 1)
+    (mkEffect (errno_ret EINVAL) [] []) seqp_pair_model
+  = CheckOk seqp_pair_model []
+  /\ check_syscall (seqp_setsockopt_in 3 1 16 3 1)
+       (mkEffect 0 [] []) seqp_pair_model
+     = CheckReject
+  /\ check_syscall (seqp_setsockopt_in 3 6 16 (Z_to_bv 64 (2 ^ 31)) 1)
+       (mkEffect (errno_ret EINVAL) [] []) seqp_pair_model
+     = CheckOk seqp_pair_model []
+  /\ check_syscall (seqp_setsockopt_in 3 6 16 (Z_to_bv 64 (2 ^ 31)) 1)
+       (mkEffect (errno_ret EOPNOTSUPP) [] []) seqp_pair_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** O3.  ANOTHER LEVEL (IPPROTO_TCP, 6) is -EOPNOTSUPP: [unix_seqpacket_ops]
+    has no [.setsockopt] (net/unix/af_unix.c:1029-1050; net/socket.c:2358-2359).
+    THE CONTROL: -ENOPROTOOPT, which an AF_INET socket answers there. *)
+Example seqpacket_setsockopt_other_level_is_eopnotsupp :
+  check_syscall (seqp_setsockopt_in 3 6 16 4 1)
+    (mkEffect (errno_ret EOPNOTSUPP) [] []) seqp_pair_model
+  = CheckOk seqp_pair_model []
+  /\ check_syscall (seqp_setsockopt_in 3 6 16 4 1)
+       (mkEffect (errno_ret ENOPROTOOPT) [] []) seqp_pair_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** O4.  AN UNREADABLE [optval]: -EFAULT with nothing read
+    (net/core/sock.c:1207-1208).  THE CONTROL: 0. *)
+Example seqpacket_setsockopt_unreadable_value_is_efault :
+  check_syscall (mkInput 208 [3; 1; 16; 12288; 4; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) seqp_pair_model
+  = CheckOk seqp_pair_model []
+  /\ check_syscall (mkInput 208 [3; 1; 16; 12288; 4; 0] (fun _ => None) (fun _ => None))
+       (mkEffectU 0 [] [] [] [] [(12288, 4%nat)]) seqp_pair_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** O5.  EVERY OTHER OPTION DECLINES (here SO_SNDBUF, 7). *)
+Example seqpacket_setsockopt_other_option_declines :
+  check_syscall (seqp_setsockopt_in 3 1 7 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)]) seqp_pair_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** AN END IS A SOCKET, so the calls the model does not answer on one
+    decline: bind (200), listen (201), connect (203), getsockname (204),
+    getpeername (205), getsockopt (209), shutdown (210) and accept4 (242).
+    Four of them (bind, listen, connect, accept4) end in an -ENOTSOCK arm
+    for every other descriptor kind, which would be a wrong answer for an
+    end.  THE CONTROL: listen on the channel at 0 is still -ENOTSOCK. *)
+Example seqpacket_end_other_socket_calls_decline :
+  Forall (fun no =>
+    check_syscall (mkInput no [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+      (mkEffect (errno_ret ENOTSOCK) [] []) seqp_pair_model
+    = CheckUnmodeled)
+    [200; 201; 203; 204; 205; 209; 210; 242]
+  /\ check_syscall (mkInput 201 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENOTSOCK) [] []) seqp_pair_model
+     = CheckOk seqp_pair_model [].
+Proof. split; [repeat constructor; vm_compute; reflexivity | check_eq]. Qed.
+
+(** C1.  CLOSE OF ONE END: 0, the entry removed (the kind-blind arm).
+    THE CONTROL: -EBADF. *)
+Example seqpacket_close_removes_the_end :
+  check_syscall (mkInput 57 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) seqp_pair_model
+  = CheckOk seqp_closed_model []
+  /\ check_syscall (mkInput 57 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) seqp_pair_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** A [struct user_msghdr] at 8192: [msg_name] [name], [msg_namelen] 0,
+    [msg_iov] 8320, [msg_iovlen] [iovlen], [msg_control] 8448,
+    [msg_controllen] 32, [msg_flags] 0. *)
+Definition seqp_msghdr (name iovlen : Z) : list (Z * Z) :=
+  u64_at 8192 name ++ u64_at 8200 0 ++ u64_at 8208 8320 ++ u64_at 8216 iovlen
+  ++ u64_at 8224 8448 ++ u64_at 8232 32 ++ u64_at 8240 0.
+
+(** One [struct iovec] at 8320. *)
+Definition seqp_iovec (base len : Z) : list (Z * Z) :=
+  u64_at 8320 base ++ u64_at 8328 len.
+
+(** The header a receiver of one byte with a 32-byte control buffer
+    passes: no address, one buffer of one byte at 8576. *)
+Definition seqp_recv_mem : list (Z * Z) := seqp_msghdr 0 1 ++ seqp_iovec 8576 1.
+
+(** recvmsg (3, 8192, [flags]) over readable bytes [l] and writable map
+    [wm]. *)
+Definition seqp_recvmsg_in (l : list (Z * Z)) (wm : word -> option byte)
+    (flags : word) : SyscallInput :=
+  mkInput 212 [3; 8192; flags; 0; 0; 0] (mem_of l) wm.
+
+(** The ledger of an imported header and iovec. *)
+Definition seqp_reads : list (word * nat) := [(8192, 56%nat); (8320, 16%nat)].
+
+(** R1.  END OF FILE once the peer has closed: 0, then [msg_flags] (4 zero
+    bytes at offset 48) and [msg_controllen] (8 zero bytes at offset 40)
+    written back, in that order (net/socket.c:2864-2875, v6.18.46; a
+    blocking end's 0 comes from net/core/datagram.c:106-108,132-135 and
+    leaves through net/unix/af_unix.c:2625-2630).  THE CONTROLS: 1, and 0
+    without the write-back. *)
+Example seqpacket_recvmsg_end_of_file :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] []
+               seqp_reads)
+    seqp_closed_model
+  = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+       (mkEffectU 1 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] []
+                  seqp_reads)
+       seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+       (mkEffectU 0 [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE WRITE-BACK FAULTS: with nothing writable the first store faults,
+    so -EFAULT with nothing stored; with only [msg_flags] writable the
+    second faults, so -EFAULT with the first stored.  THE CONTROLS: 0 in
+    each. *)
+Definition seqp_flags_only_wmem : word -> option byte :=
+  fun a => if ((8240 <=? bv_unsigned a)%Z && (bv_unsigned a <? 8244)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example seqpacket_recvmsg_write_back_faults :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem (fun _ => None) 0)
+    (mkEffectU (errno_ret EFAULT) [] [] [] [] seqp_reads) seqp_closed_model
+  = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in seqp_recv_mem (fun _ => None) 0)
+       (mkEffectU 0 [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in seqp_recv_mem seqp_flags_only_wmem 0)
+       (mkEffectU (errno_ret EFAULT) [(8240, [0;0;0;0])] [] [] [] seqp_reads)
+       seqp_closed_model
+     = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in seqp_recv_mem seqp_flags_only_wmem 0)
+       (mkEffectU 0 [(8240, [0;0;0;0])] [] [] [] seqp_reads) seqp_closed_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** R2.  THE PEER STILL OPEN: Linux waits for a message no process of the
+    run can send, so the call declines. *)
+Example seqpacket_recvmsg_with_the_peer_open_declines :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] []
+               seqp_reads)
+    seqp_pair_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** R3.  THE HEADER AND IOVEC ERRORS, in Linux's order
+    ([copy_msghdr_from_user], net/socket.c:2553-2572, v6.18.46): an
+    unreadable header is -EFAULT with nothing read; [msg_iovlen] 1025 is
+    -EMSGSIZE with the header read; an unreadable iovec is -EFAULT, a
+    length of 2^63 -EINVAL and a buffer [access_ok] refuses -EFAULT, each
+    with the header and what was read of the iovec.  THE CONTROLS: 0 on
+    each. *)
+Example seqpacket_recvmsg_header_and_iovec_errors :
+  check_syscall (seqp_recvmsg_in [] wmem_open 0)
+    (mkEffect (errno_ret EFAULT) [] []) seqp_closed_model
+  = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in [] wmem_open 0)
+       (mkEffect 0 [] []) seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1025) wmem_open 0)
+       (mkEffectU (errno_ret EMSGSIZE) [] [] [] [] [(8192, 56%nat)]) seqp_closed_model
+     = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1025) wmem_open 0)
+       (mkEffectU 0 [] [] [] [] [(8192, 56%nat)]) seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1) wmem_open 0)
+       (mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56%nat)]) seqp_closed_model
+     = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1) wmem_open 0)
+       (mkEffectU 0 [] [] [] [] [(8192, 56%nat)]) seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1 ++ seqp_iovec 8576 (2 ^ 63))
+                     wmem_open 0)
+       (mkEffectU (errno_ret EINVAL) [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1 ++ seqp_iovec 8576 (2 ^ 63))
+                     wmem_open 0)
+       (mkEffectU 0 [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckReject
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1 ++ seqp_iovec (2 ^ 63) 1)
+                     wmem_open 0)
+       (mkEffectU (errno_ret EFAULT) [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckOk seqp_closed_model []
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 0 1 ++ seqp_iovec (2 ^ 63) 1)
+                     wmem_open 0)
+       (mkEffectU 0 [] [] [] [] seqp_reads) seqp_closed_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** R4.  STILL DECLINED: a flag (here MSG_OOB, 1) and a non-NULL
+    [msg_name]. *)
+Example seqpacket_recvmsg_flags_and_name_decline :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 1)
+    (mkEffectU (errno_ret EOPNOTSUPP) [] [] [] [] seqp_reads) seqp_closed_model
+  = CheckUnmodeled
+  /\ check_syscall (seqp_recvmsg_in (seqp_msghdr 4096 1 ++ seqp_iovec 8576 1)
+                     wmem_open 0)
+       (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] []
+                  seqp_reads)
+       seqp_closed_model
+     = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Reservations precede every destination store. At limit 4 the second
+    reservation fails; at limit 3 the first fails. Neither can succeed,
+    write a late failure, or reach the destination's EFAULT test. *)
+Example seqpacket_socketpair_limit_before_stores :
+  let m := with_nofile 4 seqp_base_model in
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret EMFILE) [] []) m = CheckOk m [] /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret ENFILE) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret ENOMEM) [] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 (Z_to_bv 64 TASK_SIZE) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret EMFILE) [] []) (with_nofile 3 seqp_base_model)
+    = CheckOk (with_nofile 3 seqp_base_model) [].
+Proof. cbn zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+Example seqpacket_socketpair_limit_allows_both_numbers :
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
+    (with_nofile 5 seqp_base_model)
+  = CheckOk (with_nofile 5 seqp_pair_model) [].
+Proof. check_eq. Qed.
+
+(** Pair 0's peer is closed, while pair 1 still has both ends. A peer
+    lookup that ignored the pair id would incorrectly find end 6 for 3. *)
+Definition seqp_two_pairs_model : Model :=
+  with_fds (fd_insert (fd_insert (m_fds seqp_closed_model)
+               5 (FdSeqpacket 1 false seq_fresh))
+               6 (FdSeqpacket 1 true seq_fresh)) seqp_closed_model.
+
+Example seqpacket_recvmsg_matches_pair_id :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] [] seqp_reads)
+    seqp_two_pairs_model = CheckOk seqp_two_pairs_model [] /\
+  check_syscall (mkInput 212 [5; 8192; 0; 0; 0; 0] (mem_of seqp_recv_mem) wmem_open)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] [] seqp_reads)
+    seqp_two_pairs_model = CheckUnmodeled.
+Proof. split; check_eq. Qed.
+
+(** A cgroup-BPF setsockopt hook can rewrite the option or bypass its
+    handler (net/socket.c:2342-2351, v6.18.46). Its launch value therefore
+    declines the call, rather than substituting an errno-only answer. *)
+Example setsockopt_cgroup_bpf_launch_declines :
+  check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)])
+    (with_cgroup_bpf_setsockopt true seqp_pair_model) = CheckUnmodeled /\
+  check_syscall (seqp_setsockopt_in 3 6 16 4 1)
+    (mkEffect (errno_ret EOPNOTSUPP) [] [])
+    (with_cgroup_bpf_setsockopt true seqp_pair_model) = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example setsockopt_without_cgroup_bpf_keeps_the_answer :
+  check_syscall (seqp_setsockopt_in 3 1 16 4 1)
+    (mkEffectU 0 [] [] [] [] [(12288, 4%nat)])
+    (with_cgroup_bpf_setsockopt false seqp_pair_model)
+  = CheckOk (with_cgroup_bpf_setsockopt false seqp_passcred_model) [].
+Proof. check_eq. Qed.
+Print Assumptions setsockopt_cgroup_bpf_launch_declines.
+Print Assumptions setsockopt_without_cgroup_bpf_keeps_the_answer.
