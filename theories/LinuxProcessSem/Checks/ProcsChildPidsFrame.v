@@ -1162,9 +1162,10 @@ Proof.
     inversion H; subst; autorewrite with model; reflexivity.
 Qed.
 
-(** The clone arms: the model as it was with an errno, or [with_child] of a
-    pid in the envelope over the model the caller keeps
-    ([Kernel.Fork.forfeit_model]), for either word. *)
+(** The clone arms: the model as it was with an errno, or
+    [Kernel.Fork.clone_child_made] of a pid in the envelope (the child
+    recorded over the caller's forfeited table with its eventfds
+    shared), for either word. *)
 Lemma clone_errno_error : forall r,
   errno_ret_in clone_errnos r = true -> addr_is_error_b r = true.
 Proof.
@@ -1185,7 +1186,7 @@ Local Ltac clone_leaf :=
 Lemma check_clone_cp : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs ->
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+  \/ (m' = clone_child_made (eff_ret eff) m
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros flags [ret ws zs us cs ci] m m' evs H.
@@ -1198,7 +1199,7 @@ Qed.
 Lemma check_clone3_cp : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+  \/ (m' = clone_child_made (eff_ret eff) m
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros i uargs size eff m m' evs H.
@@ -1220,7 +1221,7 @@ Qed.
 
 Definition clone_answer (eff : SyscallEffect) (m m' : Model) : Prop :=
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+  \/ (m' = clone_child_made (eff_ret eff) m
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 
 Definition arm_cp (c : CheckedArm) : Prop :=
@@ -1372,8 +1373,7 @@ Proof.
 Qed.
 
 (** The declaration half, for EVERY answer: a clone's keeps it too,
-    because [State.with_child] and [Kernel.Fork.forfeit_model] carry it
-    across by conversion. *)
+    because [Kernel.Fork.clone_child_made] carries it across by conversion. *)
 Theorem syscall_spec_selfkill_kept : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   m_selfkill_terminal m' = m_selfkill_terminal m.
@@ -1441,7 +1441,7 @@ Lemma clone_answer_running : forall eff m m',
 Proof.
   intros eff m m' [(-> & _) | (-> & _)] Hh.
   - split; [exact Hh | exact (killed_none_of_running _ Hh)].
-  - rewrite halted_with_child, killed_with_child.
+  - unfold clone_child_made. rewrite halted_with_child, killed_with_child.
     split; [exact Hh | exact (killed_none_of_running m Hh)].
 Qed.
 

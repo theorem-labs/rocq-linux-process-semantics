@@ -677,8 +677,12 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
   | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
   | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom | FdOpaque _ => None
-  | FdSeqpacket _ _ _ => None
-    (* unreachable: the clone gate declines while an end is open
+  | FdEventfd _ => None
+    (* per-process too: the clone shares it ([Kernel.Fork.share_eventfds]),
+       which turns it into [FdOpaque (OEventFd _)] in both tables, a kind on
+       which every arm that reads or moves the counter declines *)
+  | FdSeqpacket _ _ _ | FdStream _ _ _ | FdDgram _ | FdAnon _ _ => None
+    (* unreachable: the clone gate declines while one is open
        ([Kernel.Fork.clone_no_shared_file_b]) *)
   end.
 
@@ -765,8 +769,11 @@ Definition child_ms (c c' : config) : machine_state :=
     - [procst_reparent_moved] is false: the child's parent pid is its
       parent's key, given below, so it has not moved.
 
-    The four launch facts ([procst_channel_reader], [procst_sigpipe_default],
-    [procst_sigpipe_terminal], [procst_selfkill_terminal]) are copied, and so are the no-new-privs bit
+    The four launch facts ([procst_channel_reader], [procst_sigpipe_terminal],
+    [procst_selfkill_terminal], [procst_cgroup_bpf_setsockopt]) are copied,
+    and so is SIGPIPE's action ([procst_sigpipe_action]: [copy_sighand],
+    kernel/fork.c, copies the parent's action table without CLONE_SIGHAND),
+    and so are the no-new-privs bit
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
@@ -790,7 +797,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
                  wrong value.  (Found in review, 2026-11-01.) *)
               (procst_killed ps) false
               (procst_abort_terminal ps) (procst_statpins ps)
-              false (procst_channel_reader ps) (procst_sigpipe_default ps)
+              false (procst_channel_reader ps) (procst_sigpipe_action ps)
               (procst_sigpipe_terminal ps)
               (Z_to_bv 64 0)
               [] (procst_no_new_privs ps) (procst_dumpable ps)
@@ -802,11 +809,19 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
 
+(** THE CHILD'S DESCRIPTOR TABLE is the parent's table BEFORE the call,
+    [pe_model e], with each eventfd shared ([Kernel.Fork.share_eventfds]):
+    the child names the same [eventfd_ctx] as the parent, so neither may
+    answer from a counter.  Nothing else of the table changes: a live
+    inherited entry keeps its bytes and offset here, because the parent's
+    successful clone forfeits its own copy ([Kernel.Fork.clone_child_made]),
+    and the child is the one holder left. *)
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
           (clear_shared (with_proc (child_proc (pe_pid e) (m_proc (pe_model e)))
-                                   (pe_model e)))
+                                   (with_fds (share_eventfds (m_fds (pe_model e)))
+                                             (pe_model e))))
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);

@@ -62,10 +62,11 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
     -ECHILD is carried by two things rather than by an absence.
 
     - THE CREATING ARMS RECORD THE CHILD.  [clone_resolve] and
-      [clone_ns_resolve] end their pid branch with [with_child pid]
+      [clone_ns_resolve] end their pid branch with [clone_child_made pid]
       ([State.with_children]'s bit and the pid appended to
-      [State.procst_child_pids]; both apply it to the model the caller
-      keeps, [Kernel.Fork.forfeit_model]), and
+      [State.procst_child_pids], over the caller's table with its live
+      inherited offsets forfeited and its eventfds shared,
+      [Kernel.Fork.clone_child_made]), and
       [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
       and [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
       are the universal statements of it, over every model, every
