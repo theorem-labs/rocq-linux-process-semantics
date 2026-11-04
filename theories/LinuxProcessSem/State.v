@@ -4629,9 +4629,12 @@ Record ProcState := mkProcState {
                                     instead and store it
                                     ([Kernel.Sys.getppid_spec],
                                     [with_ppid_answered]).  A child gets its
-                                    parent's pid, the parent's key in the
-                                    process table; [Procs.child_proc] names
-                                    that rule.  Kernel citations, read at
+                                    parent's pinned tid when the parent has
+                                    one, otherwise the parent's key in the
+                                    process table, which the first root-tid
+                                    pin resolves ([Procs.child_entry],
+                                    [Procs.pin_root]); [Procs.child_proc]
+                                    installs it.  Kernel citations, read at
                                     v6.18.44 and identical at v6.18.46:
                                     kernel/sys.c [getppid],
                                     kernel/sched/core.c [task_ppid_nr_ns],
@@ -5577,8 +5580,10 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
                          (m_reparent_unseen m) (m_reparent_moved m))
             (m_lim m) (m_time m).
 
-(** Install the current parent pid, the window bits unchanged.  Its one
-    caller is [init_model]'s setter chain; [getppid] writes the field
+(** Install the current parent pid, the window bits unchanged.  Its
+    callers are [init_model]'s setter chain and
+    [Procs.root_child_ppid_one], which resolves a root child's provisional
+    parent pid at the first root-tid pin; [getppid] writes the field
     through [with_ppid_answered].  See [procst_ppid]. *)
 Definition with_ppid (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
