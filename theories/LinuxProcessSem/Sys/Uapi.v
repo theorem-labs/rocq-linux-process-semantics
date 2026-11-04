@@ -273,6 +273,7 @@ Definition urandom_path : path :=
     generates only unistd_32.h and unistd_64.h — so every constant here
     is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
+Definition AF_UNIX   : Z := 1%Z.    (* include/linux/socket.h:191 *)
 Definition AF_INET   : Z := 2%Z.
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
 
@@ -349,6 +350,10 @@ Definition SOCKADDR_IN_SIZE      : Z := 16%Z.
     the other is exactly how a model gets [shutdown]'s validation
     backwards. *)
 Definition SOL_SOCKET : Z := 1%Z.
+(** [SO_PASSCRED], the one [SOL_SOCKET] option the model answers on an
+    AF_UNIX SEQPACKET end (include/uapi/asm-generic/socket.h:29,
+    v6.18.46). *)
+Definition SO_PASSCRED : Z := 16%Z.
 Definition SHUT_RD    : Z := 0%Z.
 Definition SHUT_WR    : Z := 1%Z.
 Definition SHUT_RDWR  : Z := 2%Z.
@@ -879,6 +884,16 @@ Definition sig_kernel_only_mask : Z := 262400%Z.
     renders as 134. *)
 Definition SIGABRT : Z := 6%Z.
 Definition sigabrt_mask : Z := 32%Z.
+
+(** SIGKILL, 9 (include/uapi/asm-generic/signal.h:20, Linux v6.18.46).
+    Its default disposition is SIG_TERM with no core dump. A process
+    cannot install a handler or SIG_IGN for it, or block it while user
+    code runs: [sig_kernel_only] and [Kernel.Signal.sigmask_strip].
+    The kernel itself ignores a namespace init's own SIGKILL
+    ([sig_task_ignored], kernel/signal.c:91-96, v6.18.46).
+    [Kernel.Signal.kill_spec] answers that call with 0 and no change;
+    it records death for a non-init process that names itself. *)
+Definition SIGKILL : Z := 9%Z.
 
 (** SIGPIPE, the bit it occupies in a [sigset_t], and the test for a
     mask that blocks it.  13 (include/uapi/asm-generic/signal.h), so

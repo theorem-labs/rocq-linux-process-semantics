@@ -434,19 +434,87 @@ Proof.
   rewrite Hch, Hl. reflexivity.
 Qed.
 
-(** ...and the half that names the wrong answer directly: with a child,
-    the childless answer — -ECHILD, nothing stored, the model unchanged —
-    is not admitted at all.  This is the one that fails loudly if
-    [wait4_spec]'s gate is dropped while something still sets the field.
-    The model is part of the answer named: on a model whose list holds
-    the -ECHILD word itself as a pid, a reap of that "pid" returns the
-    same word, and it is the removal from the list that tells it apart. *)
-Lemma wait4_with_a_child_admits_no_echild : forall i m evs,
+(** A caller with child history in a process whose install bit is clear
+    (no SIG_DFL install for SIGCHLD, or one made after a child was
+    recorded) is declined, whatever its list holds and whatever the
+    arguments.  Linux leaves a child for [wait4] only when the parent's
+    SIGCHLD is not SIG_IGN and SA_NOCLDWAIT is clear at that child's
+    exit, and the disposition a process starts with is its launcher's,
+    so the model answers a recorded child only while the bit is set
+    ([Kernel.Exit.wait4_spec], THE SIGCHLD DISPOSITION).  This is the
+    universal half of the paired cases
+    [Checks.Cases.Kernel.Exit.wait4_no_sigchld_install_unmodeled] and
+    [Checks.Cases.Kernel.Exit.wait4_clone_then_install_unmodeled]. *)
+Lemma wait4_without_sigchld_install_is_unmodeled : forall i eff m,
   bv_unsigned (in_sysno i) = 260%Z ->
   m_has_children m = true ->
-  ~ syscall_spec i m (Ok (mkEffect (errno_ret ECHILD) [] []) m evs).
+  m_sigchld_dfl m = false ->
+  check_syscall i eff m = CheckUnmodeled.
 Proof.
-  intros i m evs Hno Hch H.
+  intros i eff m Hno Hch Hd.
+  rewrite (check_syscall_wait4 i _ m Hno). unfold check_wait4.
+  destruct (negb (Z.eqb (bv_unsigned (pid32 (in_arg i 0))) WAIT_ANY32));
+    [reflexivity|].
+  destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
+    [reflexivity|].
+  destruct (negb (w_is0 (in_arg i 3))); [reflexivity|].
+  rewrite Hch. cbv iota.
+  destruct (m_child_pids m); [reflexivity|].
+  rewrite Hd. reflexivity.
+Qed.
+
+(** THE INVARIANT THE INSTALL BIT CARRIES: the bit is set only if every
+    child the process has was cloned while SIGCHLD was SIG_DFL.  This is
+    its [rt_sigaction] half, for every resolution of 134 at every
+    argument shape: an answered call that leaves [State.m_sigchld_dfl]
+    set found it set already, or found a process with no recorded child
+    ([Kernel.Signal.sigchld_install_model]).  A child cloned before the
+    install may have been reaped by Linux under the launcher's SIG_IGN
+    ([do_notify_parent], kernel/signal.c:2241-2259, v6.18.46), so an
+    install after it must not let [Kernel.Exit.wait4_spec] answer about
+    that child.  [Checks.Cases.Kernel.Exit.wait4_clone_then_install_unmodeled]
+    is the paired case. *)
+Lemma rt_sigaction_sets_sigchld_bit_only_without_children :
+  forall i eff m m' evs,
+  bv_unsigned (in_sysno i) = 134%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  m_sigchld_dfl m' = true ->
+  m_sigchld_dfl m = true \/ m_has_children m = false.
+Proof.
+  intros i eff m m' evs Hno H Hd.
+  apply check_syscall_complete_ok in H.
+  rewrite (check_syscall_rt_sigaction i _ m Hno) in H.
+  unfold check_rt_sigaction in H.
+  repeat match type of H with
+         | CheckUnmodeled = CheckOk _ _ => discriminate H
+         | check_ret_only _ _ _ _ = CheckOk _ _ =>
+             apply check_ret_only_ok_iff in H;
+             let E := fresh in destruct H as (_ & E & _); subst m'
+         | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ =>
+             apply check_ret_only_copyins_ok_iff in H;
+             let E := fresh in destruct H as (_ & E & _); subst m'
+         | context [ if ?b then _ else _ ] => destruct b; cbv beta iota in H
+         | context [ match ?x with _ => _ end ] => destruct x; cbv beta iota in H
+         end.
+  all: first
+    [ left; exact Hd
+    | (unfold sigchld_install_model in Hd;
+       rewrite m_sigchld_dfl_with_sigchld_dfl in Hd;
+       destruct (m_sigchld_dfl m); [left; reflexivity|];
+       destruct (m_has_children m); [cbn in Hd; discriminate Hd | right; reflexivity]) ].
+Qed.
+
+(** A caller with child history admits no -ECHILD return, regardless of
+    the effect's stores or the post-model.  The reap's own pid bound
+    excludes errno words even when a raw model records one as a pid. *)
+Lemma wait4_with_a_child_admits_no_echild : forall i eff m m' evs,
+  bv_unsigned (in_sysno i) = 260%Z ->
+  m_has_children m = true ->
+  eff_ret eff = errno_ret ECHILD ->
+  ~ syscall_spec i m (Ok eff m' evs).
+Proof.
+  intros i [r ws zs us cs ins] m m' evs Hno Hch Hr H.
+  cbn [eff_ret] in Hr. subst r.
   apply check_syscall_complete_ok in H.
   rewrite (check_syscall_wait4 i _ m Hno) in H.
   unfold check_wait4 in H.
@@ -457,21 +525,21 @@ Proof.
   destruct (negb (w_is0 (in_arg i 3))); [discriminate|].
   rewrite Hch in H. cbv iota in H.
   destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H; [discriminate|].
+  destruct (negb (m_sigchld_dfl m)); cbv iota in H; [discriminate|].
   destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
     [discriminate|].
+  destruct zs as [|? ?]; [|discriminate].
+  destruct us as [|? ?]; [|discriminate].
+  destruct cs as [|? ?]; [|discriminate].
+  destruct ins as [|? ?]; [|discriminate].
+  cbv iota in H.
   assert (Hz : w_is0 (errno_ret ECHILD) = false) by (vm_compute; reflexivity).
-  rewrite Hz in H. cbv iota in H.
-  destruct (pid_recorded_b (errno_ret ECHILD) (q0 :: l0)
-            && check_wait4_store (in_arg i 1) []) eqn:Hr; cbv iota in H;
-    [|discriminate].
-  apply andb_true_iff in Hr as [Hq _].
-  (* a reap of the -ECHILD word: it removed one entry, so the model moved *)
-  injection H as Hm _.
-  apply (f_equal m_child_pids) in Hm.
-  change (remove_pid (errno_ret ECHILD) (q0 :: l0) = m_child_pids m) in Hm.
-  rewrite Hl in Hm.
-  pose proof (remove_pid_length _ _ Hq) as Hlen.
-  rewrite Hm in Hlen. lia.
+  assert (Hp : clone_pid_ok_b m (errno_ret ECHILD) = false)
+    by (unfold clone_pid_ok_b; vm_compute; reflexivity).
+  rewrite Hz, Hp in H.
+  repeat rewrite andb_false_l in H.
+  repeat rewrite andb_false_r in H.
+  discriminate H.
 Qed.
 
 (** On the first [set_tid_address] call, EVERY environment choice is a
@@ -1149,7 +1217,7 @@ Example the_random_clause_is_what_the_fixture_carries :
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
                           false Sv48 IEof [] default_kernel default_execfn
-                          true true false (Z_to_bv 64 0) (Z_to_bv 64 0) []).
+                          true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false).
 Proof.
   split.
   - valid_urandom_default.

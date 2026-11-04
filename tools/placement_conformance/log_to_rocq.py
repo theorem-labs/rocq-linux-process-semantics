@@ -329,13 +329,13 @@ Definition replay_kernel : KernelBuild :=
     standard output is read, whose SIGPIPE is at SIG_DFL and whose
     SIGPIPE death is declined, which is what [Run.valid_input] pins and
     what a placement replay has no opinion about.  The launch parent pid
-    and inheritable capability set are 0, and the launch inherits no
-    descriptor above 2. *)
+    and inheritable capability set are 0, the launch inherits no
+    descriptor above 2, and the self-kill declaration is off. *)
 Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
     default_urandom [] replay_kernel default_execfn true true false
-    (Z_to_bv 64 0) (Z_to_bv 64 0) [].
+    (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)

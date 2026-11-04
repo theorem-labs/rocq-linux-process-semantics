@@ -13,6 +13,7 @@
 From Stdlib Require Import ZArith Bool List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export Syscall Uapi.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Fork.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -140,7 +141,9 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
 
     - NO CHILD ([State.m_has_children] clear): -ECHILD, and nothing
       else.
-    - A RECORDED CHILD (the bit set and [State.m_child_pids] not empty):
+    - A RECORDED CHILD (the bit set and [State.m_child_pids] not empty),
+      in a process that installed SIG_DFL for SIGCHLD before its first
+      child ([State.m_sigchld_dfl]; see THE SIGCHLD DISPOSITION below):
       the environment's choice of 0, with nothing stored and the model
       unchanged, or of a reap: the pid [q] of a recorded child, never 0,
       with a status word [s] that [wait_status_okz] admits, [s] stored at
@@ -150,9 +153,39 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
       [unmodeled].  Every recorded child has been reaped by an earlier
       call, and the bit is never cleared ([State.with_children] says
       why), so the model does not know whether a child remains.
+    - A RECORDED CHILD IN A PROCESS WHOSE INSTALL BIT IS CLEAR (no
+      SIG_DFL install, or one made after a child was cloned):
+      [unmodeled], whatever the list holds.
 
-    Before this, the second caller was declined too, and the model
+    Before this, every caller with a child was declined, and the model
     contained no reap.
+
+    ** THE SIGCHLD DISPOSITION
+
+    Linux leaves an exiting child a zombie for [wait4] only when its
+    parent's SIGCHLD is not SIG_IGN and SA_NOCLDWAIT is clear: otherwise
+    [do_notify_parent] (kernel/signal.c) sets [autoreap], the child is
+    reaped at its exit, and [wait4] answers 0 and then -ECHILD, never
+    its pid.  The disposition a process starts with is its launcher's:
+    [begin_new_exec] (fs/exec.c) calls [flush_signal_handlers(me, 0)],
+    which keeps a SIG_IGN.  And Linux decides whether to reap a child
+    itself when that child exits, from the parent's disposition then
+    ([do_notify_parent], kernel/signal.c:2241-2259, v6.18.46), so a
+    child cloned under a launcher's SIG_IGN may already be gone when a
+    later install restores SIG_DFL.  So the model answers a caller with
+    a recorded child only when [State.m_sigchld_dfl] is set, and the bit
+    is set only if every child the process has was cloned while SIGCHLD
+    was SIG_DFL: the one SIGCHLD install
+    [Kernel.Signal.rt_sigaction_spec] answers, SIG_DFL with
+    SA_NOCLDWAIT clear ([Kernel.Signal.sigchld_dfl_install]), sets
+    [State.procst_sigchld_dfl] only in a process with no recorded child
+    ([Kernel.Signal.sigchld_install_model]); every other SIGCHLD install
+    declines, so after that install the disposition stays SIG_DFL.  A
+    child the process cloned copies the bit, as [copy_sighand]
+    (kernel/fork.c) copies the actions.  bubblewrap 0.13.1 makes the
+    install first thing in [main] (bubblewrap.c:2910-2914), before any
+    clone.  The childless -ECHILD does not read the bit: with no child
+    there is nothing to reap, whatever the disposition.
 
     ** A CALLER WITH NO CHILD: -ECHILD IS THE ONE ANSWER LINUX GIVES
 
@@ -227,7 +260,7 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
     also declines the bare 0, which Linux would give without touching
     the pointer: coverage lost, not soundness.
 
-    ** WHAT THE LAUNCH IS ASSUMED TO GIVE (both in SCOPE.md)
+    ** WHAT THE LAUNCH IS ASSUMED TO GIVE (in SCOPE.md)
 
     - NO CHILDREN AND NO TRACEES AT LAUNCH.  For the lists to match what
       the model recorded they must have STARTED empty, and that is a
@@ -246,15 +279,19 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
       and [ptrace_init_task] (include/linux/ptrace.h) give a FRESH task
       empty lists, and a task that forks nothing before exec'ing keeps
       them.
-    - SIGCHLD IS NOT AT SIG_IGN AT LAUNCH.  A launcher's SIG_IGN
-      survives [execve] ([begin_new_exec] calls
-      [flush_signal_handlers(me, 0)], which keeps SIG_IGN, fs/exec.c and
-      kernel/signal.c), and under it [do_notify_parent] (kernel/signal.c)
-      reaps an exiting child itself, so [wait4] answers 0 and then
-      -ECHILD, never a pid.  The model declines every in-process SIG_IGN
-      or SA_NOCLDWAIT install for SIGCHLD ([Kernel.Signal.sigchld_dfl_install]),
-      and [flush_signal_handlers] clears [sa_flags], so a launcher's
-      SA_NOCLDWAIT does not survive; only the launch's SIG_IGN is open.
+
+    This spec does NOT assume the launch's SIGCHLD disposition.  It
+    answers a recorded child only while [State.m_sigchld_dfl] is set
+    (THE SIGCHLD DISPOSITION above), and the bit is set only if every
+    child the process has was cloned while SIGCHLD was SIG_DFL
+    ([Kernel.Signal.sigchld_install_model] sets it only in a process
+    with no recorded child).  A child cloned under a launcher's SIG_IGN,
+    which Linux may have reaped at its exit, therefore keeps the bit
+    clear, and the caller is declined.  [flush_signal_handlers] clears
+    [sa_flags] at [execve], so a launcher's SA_NOCLDWAIT does not
+    survive either.  SCOPE.md still lists "At launch SIGCHLD is not at
+    SIG_IGN" for the multi-process core's own [wait4] arms in [Procs],
+    which do not read the bit, until the fix tracked in #125 lands.
 
     THE TRACEE LIST IS CLOSED BY A DECLINE.  [ptrace] (117) is the only
     route to the caller's [current->ptraced] a modeled syscall could
@@ -333,13 +370,15 @@ Definition wait4_spec (upid stat_addr options rusage : word)
       match State.m_child_pids m with
       | [] => unmodeled
       | _ :: _ =>
+          if negb (State.m_sigchld_dfl m) then unmodeled
+          else
           i <- input ;;
           if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then unmodeled
           else
             alt (ret_only (Z_to_bv 64 0))
                 (q <- choose (fun q =>
                         (pid_recorded_b q (State.m_child_pids m)
-                         && negb (w_is0 q)) = true) ;;
+                         && clone_pid_ok_b m q) = true) ;;
                  s <- choose (fun s => wait_status_okz s = true) ;;
                  modify (with_child_pids
                            (remove_pid q (State.m_child_pids m))) ;;

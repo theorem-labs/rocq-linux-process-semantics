@@ -234,15 +234,17 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          [setfl] acts on can be set on the fd already -- for a file
          that is a theorem about [Open.modeled_open_flags].  A pipe end
          has one too, and this arm is a CHOICE rather than a gap:
-         [Fs.Pipe.pipe2_spec] declines every nonzero flag word, so every
-         [FdPipe] the model can build was created with flags 0, and
-         O_NONBLOCK, O_DIRECT and FASYNC are all provably clear on it.
+         [Fs.Pipe.pipe2_spec] creates an [FdPipe] with 0 or O_CLOEXEC,
+         and O_CLOEXEC never reaches [f_flags]
+         (fs/pipe.c:944-946, :956-957, v6.18.46), so O_NONBLOCK,
+         O_DIRECT and FASYNC are all provably clear on it.
          Answering 0 here would be sound today.  It is not done because
          the theorem is a fact about the ONE constructor that exists
          rather than about the fd kind, and it evaporates the moment
-         pipe2 admits a flag: that admission would have to remember to
-         come back here, and nothing makes it.  The remaining text says
-         what would then be wrong.  pipe2 takes all three bits
+         pipe2 admits a flag that reaches [f_flags]: that admission
+         would have to remember to come back here, and nothing makes it.
+         The remaining text says what would then be wrong.  pipe2 takes
+         all three bits
          (fs/pipe.c [__do_pipe_flags] admits
          O_CLOEXEC|O_NONBLOCK|O_DIRECT|O_NOTIFICATION_PIPE, v6.18.46).
          O_DIRECT is the sharp one: it is in neither
@@ -272,6 +274,11 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          the /proc/self/fd directory's is, but [F_GETFL] reads it there
          ([getfl_f_flags]), so a write to it would have to be recorded.
          None of the answers is written. *)
+  | FdSeqpacket _ _ _ => false
+      (* DECLINED.  The end's [f_flags] is known to be [O_RDWR]:
+         [socketpair] declines SOCK_NONBLOCK and this arm declines
+         F_SETFL.  [sock_alloc_file] sets the word (net/socket.c:483-485,
+         v6.18.46).  The [setfl] cases for this kind are not written. *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -573,9 +580,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          fs/pipe.c [create_pipe_files] builds the write end with
          [O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT))] and the read end
          with [O_RDONLY | (flags & O_NONBLOCK)] (v6.18.46), and
-         [Fs.Pipe.pipe2_spec] answers [unmodeled] for any nonzero flag
-         word — so every [FdPipe] the model can build has [f_flags] of
-         O_WRONLY when [writer] and O_RDONLY otherwise, exactly.
+         [Fs.Pipe.pipe2_spec] answers [unmodeled] for any accepted word
+         with a bit other than O_CLOEXEC — so every [FdPipe] the model
+         can build has [f_flags] of O_WRONLY when [writer] and O_RDONLY
+         otherwise, exactly.
          Answering that would be sound.
 
          WHAT SEPARATES IT FROM THE SOCKET is how likely the premise is
@@ -585,13 +593,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          than this file: the model has no non-blocking mode at all, and
          [State.EAGAIN] records that as a project decision, so admitting
          the bit is not a change anyone makes without noticing.
-         [pipe2_spec]'s decline of every nonzero flag is interim
-         narrowness of a different kind — it declines O_CLOEXEC too,
-         which cannot reach [f_flags] — so the premise here is one a
-         later widening moves casually, and the widening that matters
-         (O_NONBLOCK, O_DIRECT) reaches [f_flags] while the harmless one
-         does not.  A reader of that future change has no reason to come
-         back here.
+         [pipe2_spec] answers O_CLOEXEC, which cannot reach [f_flags],
+         and declines O_NONBLOCK and O_DIRECT, which do.  A later change
+         admitting either of those two moves the premise here.  A
+         reader of that future change has no reason to come back here.
 
          And the arm one screen up declined for the same premise.
          [setfl_noop_on]'s [FdPipe] arm is [false] on an argument that
@@ -620,6 +625,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          object.  The entry records none of the five words exactly
          (fs/fcntl.c, fs/open.c, fs/eventfd.c, fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46). *)
+  | FdSeqpacket _ _ _ => None
+      (* DECLINED.  [setfl_noop_on]'s invariant fixes the word at
+         [O_RDWR] ([sock_alloc_file], net/socket.c:483-485, v6.18.46).
+         This answer has not been implemented for this kind. *)
   end.
 
 (** The bit an [F_SETFD] writes: [argi & FD_CLOEXEC], so only bit 0 of
@@ -711,8 +720,9 @@ Definition getfd_word (b : bool) : word := if b then FD_CLOEXEC else Z_to_bv 64 
     description.  A descriptor whose bit the model knows answers exactly
     FD_CLOEXEC or 0 ([getfd_word]).  One whose bit it does not know —
     minted by a creating arm that records none, such as
-    [Net.Socket.socket_spec] with SOCK_CLOEXEC, or a fixture built by
-    [State.mkModel] — answers 0 or FD_CLOEXEC, EITHER ONE, as an [alt].
+    [Net.Socket.socket_spec] with SOCK_CLOEXEC or [Pipe.pipe2_spec] with
+    O_CLOEXEC, or a fixture built by [State.mkModel] — answers 0 or
+    FD_CLOEXEC, EITHER ONE, as an [alt].
     That is sound because Linux's answer is one of the two, and because
     every key in the map is an open descriptor
     ([Checks.CloexecKeys.cloexec_keys_open]), so a creating arm that

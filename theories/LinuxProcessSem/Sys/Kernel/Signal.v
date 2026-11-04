@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), tkill (130), tgkill (131)
+(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), kill (129), tkill (130), tgkill (131)
 
     This file answers to Linux [kernel/signal.c]: it holds what the
     kernel defines there, and nothing else.  Which file a spec belongs
@@ -141,9 +141,11 @@ Open Scope sys_scope.
         list says more.
 
     Accepted: SIGINT (2), SIGTERM (15).  Both arrive only from outside
-    the process, and nothing modeled sends a signal — [kill] (129) and
-    [tgkill] (131) are both outside [modeled_sysnos], so a process
-    cannot even signal itself.  [rt_sigprocmask] (135) IS modeled and
+    the process: no modeled call sends either.  [kill] (129), [tkill]
+    (130) and [tgkill] (131) have arms, but each sends only to the
+    caller itself and only SIGKILL ([kill_self]) or SIGABRT
+    ([tkill_self]); [rt_sigqueueinfo] (138), [rt_tgsigqueueinfo] (240)
+    and [pidfd_send_signal] (424) have none.  [rt_sigprocmask] (135) IS modeled and
     does not disturb that: a mask decides DELIVERY, not sending, and
     what the premise below rules out is a signal arriving at all.
 
@@ -479,8 +481,18 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
     and with [oact] NULL so does the syscall.
 
-    WHY NO STATE.  After the call SIGCHLD's disposition is SIG_DFL, and a
-    SIG_DFL SIGCHLD is the disposition every SIGCHLD argument in this
+    WHAT IT STORES: ONE BIT, [State.procst_sigchld_dfl], and only in a
+    process with no recorded child ([sigchld_install_model]): the bit
+    is set only if every child the process has was cloned while SIGCHLD
+    was SIG_DFL.  [Exit.wait4_spec] reads it: a caller with a recorded
+    child is answered only when it is set, because under the launch's
+    disposition -- SIG_DFL, or a SIG_IGN [execve] kept --
+    [do_notify_parent] may already have reaped a child cloned before the
+    install.  The bit is never cleared: no answered call leaves SIGCHLD
+    anything but SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT
+    STAYS DECLINED).
+    Nothing else about the disposition is stored, because a SIG_DFL
+    SIGCHLD is the disposition every other SIGCHLD argument in this
     model is written against, so the install moves the process TOWARDS
     the model's assumption rather than away from it:
     - [Fork.clone_spec]'s header argues that the SIGCHLD a child's exit
@@ -520,9 +532,12 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     reaped at once instead of being left a zombie, and a later [wait4]
     finds a different state: Linux answers 0 and then -ECHILD, never the
     pid, while [Exit.wait4_spec] admits a reap of every child the model
-    recorded.  Admitting the install would make that arm unsound with no
-    failing proof; the decline here is what keeps it sound, and the
-    launch's own SIG_IGN is an assumption SCOPE.md states.  Nothing in
+    recorded once this arm has set [State.procst_sigchld_dfl].  Admitting
+    the install would make that arm unsound with no failing proof; the
+    decline here is what keeps it sound, and the launch's own SIG_IGN
+    is covered by the bit: it is set only by an install made while the
+    process has no recorded child ([sigchld_install_model]), and while it is clear
+    [Exit.wait4_spec] declines a caller with a recorded child.  Nothing in
     scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are
     [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a
@@ -538,6 +553,38 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | Some h, Some fl => w_is0 h && Z.eqb (Z.land (bv_unsigned fl) SA_NOCLDWAIT) 0
   | _, _ => false
   end.
+
+(** The model the answered SIGCHLD SIG_DFL install leaves.  The install
+    bit [State.procst_sigchld_dfl] is set when the process has no
+    recorded child ([State.m_has_children] clear) and kept when it is
+    already set; in a process with a recorded child and the bit clear
+    the install changes nothing, and the bit stays clear.  So the bit is
+    set only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL.
+
+    WHY A CHILD CLONED BEFORE THE INSTALL KEEPS THE BIT CLEAR.  Linux
+    decides whether to reap a child itself when that child exits, from
+    its parent's disposition at that moment: [do_notify_parent]
+    (kernel/signal.c:2241-2259, v6.18.46) sets [autoreap] when the
+    parent's SIGCHLD is SIG_IGN or carries SA_NOCLDWAIT, and
+    [exit_notify] (kernel/exit.c:763-785) then releases the child at
+    once.  A child cloned under a launcher's SIG_IGN can have exited and
+    been released before this install, and [wait4] then answers 0 and
+    -ECHILD, never its pid.  The model cannot see whether that happened,
+    so it leaves the bit clear and [Exit.wait4_spec] declines the
+    caller.  [State.m_has_children] is never cleared
+    ([State.with_children]), so after the first clone no install sets
+    the bit.  A child cloned after the install was cloned under SIG_DFL
+    with SA_NOCLDWAIT clear, and no answered call changes that
+    disposition (WHAT STAYS DECLINED at [sigchld_dfl_install]), so Linux
+    leaves that child a zombie for [wait4].
+
+    The call answers 0 in both cases: [do_sigaction] stores the action
+    and returns 0 whatever children exist.  Only the bit differs.
+    bubblewrap 0.13.1 makes the install before any clone
+    (bubblewrap.c:2910-2914), so its parent sets the bit. *)
+Definition sigchld_install_model (m : Model) : Model :=
+  with_sigchld_dfl (m_sigchld_dfl m || negb (m_has_children m)) m.
 
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
@@ -585,8 +632,10 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
          disposition; then 0 for SIGCHLD with the handler SIG_DFL and
-         SA_NOCLDWAIT clear ([sigchld_dfl_install]), storing no
-         disposition; and UNMODELED for every other signal, handler and
+         SA_NOCLDWAIT clear ([sigchld_dfl_install]), setting
+         [State.procst_sigchld_dfl] only in a process with no recorded
+         child ([sigchld_install_model]); and UNMODELED for every
+         other signal, handler and
          SIGCHLD flag word.
          Every answer after the copy records the 24
          bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
@@ -627,7 +676,8 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if negb (sa_flags_ok fl) then unmodeled
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
-         else if sigchld_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else if sigchld_dfl_install sig (in_mem i) act
+         then (modify sigchld_install_model ;; ret_only (Z_to_bv 64 0))
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
@@ -761,11 +811,14 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         [pselect6] (72), [ppoll] (73) and [epoll_pwait] (22) belong to
         that family and are handled in the bullet below instead, because
         they have arms.
-        Then [kill] (129),
-        [tgkill] (131), [rt_sigqueueinfo] (138), [rt_tgsigqueueinfo] (240) and
-        [pidfd_send_signal] (424), so a process cannot even signal
-        itself.  Checked against [Sys.SyscallTable.spec_table]: none of
-        them has an arm.
+        Then [rt_sigqueueinfo] (138), [rt_tgsigqueueinfo] (240) and
+        [pidfd_send_signal] (424): checked against
+        [Sys.SyscallTable.spec_table], none of them has an arm.
+        [kill] (129), [tkill] (130) and [tgkill] (131) do have arms, and
+        none of them moves [procst_sigmask]: each sends only to the
+        caller itself, [kill] only SIGKILL, which no mask holds
+        ([sigmask_strip]), and [tkill] and [tgkill] only SIGABRT, which a
+        mask holds pending ([send_sigabrt]).
       - [rt_sigaction] (134), [pselect6] (72), [ppoll] (73),
         [epoll_pwait] (22), [sigaltstack] (132) and [signalfd4] (74) ARE
         on the modeled surface, and their windows are shut one level
@@ -1226,8 +1279,11 @@ Definition sigabrt_blocked (mask : word) : bool :=
 
 (** TWO SIGNALS, IN THE KERNEL'S ORDER.  A mask install that uncovers a
     pending signal delivers it on the way back to user space, and both
-    signals this model can raise are FATAL at their default
+    signals this model can hold pending are FATAL at their default
     disposition, so the install that uncovers one ends the process.
+    The third signal the model raises, SIGKILL from [kill_spec] below,
+    is never pending: it cannot be blocked while user code runs, and the
+    arm declines a call made with its bit set rather than queue it.
 
     SIGABRT IS TESTED FIRST, and that is [next_signal]'s rule rather
     than a choice: kernel/signal.c [get_signal] dequeues through
@@ -1785,5 +1841,141 @@ Lemma tgkill_spec_off_unmodeled : forall tgid pid sig i m o,
   m_abort_terminal m = false -> tgkill_spec tgid pid sig i m o -> o = Unmodeled.
 Proof.
   intros tgid pid sig i m o Hoff H. unfold tgkill_spec in H.
+  rewrite bind_get_model, Hoff in H. exact H.
+Qed.
+
+(* =========================================================================
+   kill (129) — SIGKILL to the caller itself, and only under a task's
+   declaration
+   ========================================================================= *)
+
+(** WHY THIS NUMBER HAS AN ARM, AND WHY IT IS GATED.
+
+    A non-init process that sends SIGKILL to its own process id dies by
+    signal 9; a namespace init ignores its own SIGKILL and returns 0.
+    Some programs end a child by signal, and a statement about
+    such a program needs the death in the trace rather than a run that
+    leaves the modeled surface.  But an ungated arm would put a
+    [State.KillEv] into runs that quantify over [Run.valid_input], and
+    [Checks.KillFree.valid_input_no_kill] — the theorem that keeps the
+    error-free statements meaning what they say — would be false.
+
+    So the stance is declared in the INPUT, as for the abort path and
+    SIGPIPE: [State.in_selfkill_terminal], pinned [false] by
+    [Run.valid_input] and its siblings and left free by
+    [Run.valid_input_inherited].  With the declaration off this arm
+    answers [unmodeled] for every argument shape, which is what the
+    dispatcher does for a number with no arm; the decline is the FIRST
+    test, for [tkill_spec]'s reason.
+
+    ** THE KERNEL'S ORDER (kernel/signal.c, Linux v6.18.46)
+
+    [SYSCALL_DEFINE2(kill)] (:3958-3965) builds an SI_USER siginfo
+    ([prepare_kill_siginfo], :3942-3951) and calls
+    [kill_something_info] (:1581-1615), which tests, in this order:
+
+    - [pid > 0] (:1585-1586): [kill_proc_info] (:1485-1492) looks the
+      pid up.  No task gives -ESRCH ([kill_pid_info_type], :1461-1467).
+      A task found goes to [group_send_sig_info] (:1418-1430), whose
+      [check_kill_permission] (:799-833) answers -EINVAL for a signal
+      that fails [valid_signal] (:805-806;
+      [valid_signal] is [sig <= _NSIG], include/linux/signal.h:272-274,
+      [_NSIG] 64, include/uapi/asm-generic/signal.h:7) and ends with the
+      LSM's [security_task_kill] (:832).  Signal 0 stops there
+      ([if (!ret && sig)], :1427).
+    - [pid == INT_MIN] (:1589-1590): -ESRCH, for every [sig], with no
+      signal check before it.
+    - every other value: a process group, or -1 for every process
+      (:1592-1611).
+
+    Before delivery, [prepare_signal] returns [!sig_ignored] (:935).
+    A namespace init has pid 1 (include/linux/pid.h:163-166), and
+    [copy_process] sets SIGNAL_UNKILLABLE (kernel/fork.c:2385-2388).
+    [sig_task_ignored] ignores its default-disposition signal unless
+    forced (:91-96). This arm sends SI_USER to the caller itself, so
+    sender and target share a pid namespace and [force] stays false
+    ([send_signal_locked], :1195-1214). [__send_signal_locked] drops the
+    ignored signal with return 0 (:1048-1054): the model stays unchanged.
+
+    For a non-init SIGKILL, delivery takes the fast path (:1070-1071)
+    and [complete_signal] starts a group exit with exit code 9
+    (:1003-1018); [get_signal] finds SIGNAL_GROUP_EXIT and reaches
+    [do_group_exit] (:2875-2886). That process does not come back, so the
+    returned 0 is never observed: [Run.sstep_killed] ends the trace with
+    [State.KillEv] and discards the effect.
+
+    ** WHAT IT ANSWERS
+
+    - [pid] the caller's own process id, [sig] 9: 0 with the model
+      unchanged for pid 1, death by SIGKILL for every other positive pid.
+    - [pid] the caller's own process id, [sig] above 64 (every negative
+      [int] included, as for [tkill_sig_valid]): -EINVAL, reached only
+      after the task lookup succeeded.
+    - [pid] INT_MIN: -ESRCH.
+
+    ** WHAT IT DECLINES
+
+    - [pid] positive and not the caller: the pid names a process this
+      model cannot see, so -ESRCH or a delivery would be a guess.
+    - [pid] 0 or another value below 0, INT_MIN aside: a process group
+      or every process.
+    - [sig] 0: the answer is the LSM's.
+    - any other signal in 1..64: the model holds no disposition for it,
+      as for [tkill] (see the tkill section above).
+    - [State.m_tid] not yet pinned: nothing has made the pid observable.
+    - SIGKILL in the blocked mask: never true while user code runs
+      ([sigmask_strip] drops it from every installed mask), and the arm
+      declines it rather than resting on that argument.
+
+    In this model a process's id and its thread id are one value, the
+    fact [State.procst_tid] rests on, so [pid] is compared with
+    [State.m_tid] as [tkill_self] compares its [pid].
+
+    ** THE LSM GAP
+
+    The answers above do not admit the -EPERM an enabled LSM can give
+    through [security_task_kill] (:832), even for a signal to oneself.
+    That is the same known gap as [tkill]'s. *)
+
+(** [pid_t] INT_MIN after [Syscall.pid32]: 0x80000000, i.e. 2^31. *)
+Definition pid_int_min (p : word) : bool := Z.eqb (bv_unsigned p) (2 ^ 31)%Z.
+
+(** SIGKILL is blocked: the mask test that [sigabrt_blocked] makes for
+    signal 6.  Never true while user code runs ([sigmask_strip]); the arm
+    declines it rather than resting on that argument. *)
+Definition sigkill_blocked (mask : word) : bool :=
+  negb (w_is0 (bv_and mask (Z_to_bv 64 (Z.shiftl 1 (SIGKILL - 1))))).
+
+(** The caller has named a positive pid: is it this process, and which
+    signal.  The order is [kill_proc_info] then [check_kill_permission]
+    (kernel/signal.c:1485-1492, :805-806, :832, Linux v6.18.46). *)
+Definition kill_self (pid sig : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  match m_tid m with
+  | None => unmodeled
+  | Some t =>
+      if negb (bv_eqb pid t) then unmodeled
+      else if negb (tkill_sig_valid sig) then err_ret EINVAL
+      else if bv_eqb sig (Z_to_bv 64 SIGKILL) then
+        (if sigkill_blocked (m_sigmask m) then unmodeled
+         else if bv_eqb t (Z_to_bv 64 1) then ret_only (Z_to_bv 64 0)
+         else (set_killed (Z_to_bv 64 SIGKILL) ;; ret_only (Z_to_bv 64 0)))
+      else unmodeled
+  end.
+
+Definition kill_spec (pid sig : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if negb (m_selfkill_terminal m) then unmodeled
+  else if pid_positive pid then kill_self pid sig
+  else if pid_int_min pid then err_ret ESRCH
+  else unmodeled.
+
+(** With the declaration off the only outcome is [Unmodeled], the twin of
+    [tkill_spec_off_unmodeled]; [Checks.KillFree.kill_frame_holds] uses it
+    through the checker. *)
+Lemma kill_spec_off_unmodeled : forall pid sig i m o,
+  m_selfkill_terminal m = false -> kill_spec pid sig i m o -> o = Unmodeled.
+Proof.
+  intros pid sig i m o Hoff H. unfold kill_spec in H.
   rewrite bind_get_model, Hoff in H. exact H.
 Qed.

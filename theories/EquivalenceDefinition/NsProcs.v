@@ -17,6 +17,12 @@
     released world, with no pending clone that makes a namespace, the
     extended step IS the core's own step, claimed calls included.
 
+    [ns_clone_fail_step_released] is the same answer for the forced-only
+    filter of a failed clone: under [ns_ext], beside
+    [px_clone_fail]'s other premises, its step premise is the released
+    step, so the filter changes no published answer
+    ([ns_clone_filter_released], [clone_ns_exact_errno]).
+
     [pholts_x_within_budget] is PROCS's whole-system halting statement over
     the extended step, with the clone environment as an explicit argument;
     [lholts_ns_within_budget] is the halting statement of the lineage (the
@@ -84,6 +90,127 @@ Proof.
   - apply ns_clone_unclaimed.
   - apply ns_wait_unclaimed.
   - intros _ hq en st'. apply Hce; assumption.
+Qed.
+
+(** UNDER [ns_ext] A FAILED CLONE'S FILTER KEEPS WHAT THE TABLES DECIDE,
+    and nothing more: [ns_ext]'s clone ([clone_ns]) admits no success where
+    [clone_ns_exact] is [CnErr] or [CnUnmodeled], so
+    [Procs.clone_table_kept] is exactly its two table conditions: the
+    errno is [clone_ns_exact]'s [CnErr] errno, or [clone_ns_exact] is
+    [CnUnmodeled]. *)
+Lemma ns_clone_table_kept : forall f m ctx st hq en,
+  clone_table_kept ns_ext f m ctx st hq en
+  <-> (exists st', clone_ns_exact f m ctx st hq = CnErr en st')
+      \/ clone_ns_exact f m ctx st hq = CnUnmodeled.
+Proof.
+  intros f m ctx st hq en. unfold clone_table_kept. split; [intros [_ H]; exact H|].
+  intros H. split; [|exact H].
+  intros child ret st' Hc. change (ext_clone ns_ext) with clone_ns in Hc.
+  unfold clone_ns in Hc.
+  destruct Hc as [Hc | (_ & e & st'' & _ & _ & Hc)]; [|discriminate Hc].
+  destruct H as [(st0 & H) | H]; rewrite H in Hc; discriminate Hc.
+Qed.
+
+(** The errnos the namespace tables answer a clone with: EPERM, EINVAL
+    and ENOSPC, none of them in [Fork.clone_errnos]. *)
+Lemma clone_ns_exact_errno : forall f m ctx st hq e st',
+  clone_ns_exact f m ctx st hq = CnErr e st' -> e = 1%Z \/ e = 22%Z \/ e = 28%Z.
+Proof.
+  intros f m ctx st hq e st' H.
+  unfold clone_ns_exact, clone_creds, Userns.create_user_ns in H.
+  (* Split every test but an errno's (a [Z]); then compute the errno. *)
+  repeat match type of H with
+         | context [match ?x with _ => _ end] =>
+             lazymatch x with context [match _ with _ => _ end] => fail | _ => idtac end;
+             lazymatch type of x with Z => fail | _ => idtac end;
+             destruct x; cbn beta iota zeta in H
+         end;
+    try discriminate H; vm_compute in H; try discriminate H; injection H as <- _; lia.
+Qed.
+
+(** A table errno is no refusal of clone or clone3. *)
+Lemma clone_refusal_b_table_errno : forall i m en,
+  In (bv_unsigned (in_sysno i)) [220; 435]%Z -> en = 1%Z \/ en = 22%Z \/ en = 28%Z ->
+  refusal_b i m (errno_ret en) = false.
+Proof.
+  intros i m en Hs He. unfold refusal_b.
+  destruct Hs as [Hs | [Hs | []]]; rewrite <- Hs;
+    destruct He as [-> | [-> | ->]]; vm_compute; reflexivity.
+Qed.
+
+(** Under [ns_ext], for every failure its clone admits, the filter keeps
+    and removes what the released filter keeps and removes.  Either the
+    tables keep nothing at this call, or the errno is the tables' own,
+    which is no refusal. *)
+Theorem ns_clone_filter_released : forall cfg i m f ctx st hq en st' eff,
+  In (bv_unsigned (in_sysno i)) [220; 435]%Z ->
+  eff_ret eff = errno_ret en ->
+  ext_clone ns_ext f m ctx st hq (CnErr en st') ->
+  (clone_kept ns_ext cfg i m f ctx st hq en eff <-> ~ spurious_refusal_cfg cfg i m eff)
+  /\ (clone_removed ns_ext cfg i m f ctx st hq en eff <-> spurious_refusal_cfg cfg i m eff).
+Proof.
+  intros cfg i m f ctx st hq en st' eff Hsys Hret Hc.
+  assert (Hcase : ~ clone_table_kept ns_ext f m ctx st hq en
+                  \/ ~ spurious_refusal_cfg cfg i m eff).
+  { change (ext_clone ns_ext) with clone_ns in Hc. unfold clone_ns in Hc.
+    destruct (clone_ns_exact f m ctx st hq) as [c r s | e0 s0 |] eqn:Ex.
+    - left. intros (Hno & _). apply (Hno c r s).
+      change (ext_clone ns_ext) with clone_ns. unfold clone_ns. left. rewrite Ex. reflexivity.
+    - destruct (Z.eq_dec en e0) as [-> | Hne].
+      + right. apply spurious_refusal_not_refusal. rewrite Hret.
+        apply clone_refusal_b_table_errno; [exact Hsys|].
+        exact (clone_ns_exact_errno _ _ _ _ _ _ _ Ex).
+      + left. intros (_ & [(s & Hs) | Hs]); rewrite Ex in Hs;
+          [injection Hs as Hs _; congruence | discriminate Hs].
+    - exfalso. destruct Hc as [Hc | (Hnu & _)]; [discriminate Hc | exact (Hnu eq_refl)]. }
+  destruct Hcase as [Hnk | Hnsp].
+  - split; split.
+    + intros [Hn | Hk]; [exact Hn | exfalso; exact (Hnk Hk)].
+    + intros Hn. left. exact Hn.
+    + intros (Hs & _). exact Hs.
+    + intros Hs. split; [exact Hs | exact Hnk].
+  - split; split.
+    + intros _. exact Hnsp.
+    + intros _. left. exact Hnsp.
+    + intros (Hs & _). exact Hs.
+    + intros Hs. exfalso. exact (Hnsp Hs).
+Qed.
+
+(** NO PUBLISHED ANSWER CHANGES UNDER [ns_ext] EITHER: under the premises
+    [px_clone_fail] puts beside it (a pending clone, a0 after the step the
+    errno, [ns_ext]'s clone admitting the failure), its step premise is the
+    released step under the run's configuration. *)
+Theorem ns_clone_fail_step_released : forall segs cfg c ctx st hq en st' evs c',
+  clone_pending_b c = true ->
+  ms_gpr (cfg_ms c') 0 = errno_ret en ->
+  ext_clone ns_ext (clone_flags_of c) (cfg_model c) ctx st hq (CnErr en st') ->
+  (clone_fail_step ns_ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
+Proof.
+  intros segs cfg c ctx st hq en st' evs c' Hcs Hret0 Hc. split; [|intros H; left; exact H].
+  intros [H | (Hmf & Hk)]; [exact H|].
+  destruct c as [ms model].
+  revert Hcs Hret0 Hc Hk Hmf.
+  remember (mkCfg ms model) as c0 eqn:Ec. remember (SNext c') as r0 eqn:Er.
+  intros Hcs Hret0 Hc Hk Hmf.
+  destruct Hmf; injection Ec as Ems Emd; subst; try discriminate Er;
+    unfold clone_pending_b in Hcs; cbn [cfg_ms] in Hcs;
+    match goal with Hp : ms_svc_pending _ = _ |- _ => rewrite Hp in Hcs end;
+    cbn beta iota in Hcs; try discriminate Hcs;
+    injection Er as Ec'; subst c';
+    first [ eapply sstep_cfg_exit; eassumption
+          | eapply sstep_cfg_killed; eassumption
+          | eapply sstep_cfg_syscall; try eassumption ].
+  (* the syscall arm: the filter is the released one at this errno *)
+  cbn [cfg_ms] in Hret0. rewrite a0_after_effect in Hret0.
+  match goal with
+  | Hp : ms_svc_pending ?s = Some ?y |- ~ spurious_refusal_cfg _ _ ?md ?e2 =>
+      assert (Hsys : In (bv_unsigned (in_sysno (sys_input segs s y))) [220; 435]%Z)
+        by (cbn [sys_input in_sysno]; unfold clone_sysno in Hcs;
+            apply orb_true_iff in Hcs as [E | E]; apply Z.eqb_eq in E; rewrite E;
+            [left; reflexivity | right; left; reflexivity]);
+      exact (proj1 (proj1 (ns_clone_filter_released cfg _ md _ ctx st hq en st' e2 Hsys Hret0 Hc))
+               (or_intror Hk))
+  end.
 Qed.
 
 (* =========================================================================

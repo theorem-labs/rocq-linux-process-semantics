@@ -2386,6 +2386,7 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdSocket _) => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdSeqpacket _ _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFSOCK *)
   | Some (FdPipe _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR again *)
@@ -2421,7 +2422,7 @@ Proof.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
@@ -2442,7 +2443,7 @@ Proof.
   unfold check_ftruncate in H. unfold ftruncate_spec.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   (* the opaque kinds: the spec declines outright *)
   all: try (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
@@ -2467,7 +2468,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
@@ -2483,7 +2484,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;

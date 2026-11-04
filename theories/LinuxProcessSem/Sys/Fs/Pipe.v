@@ -28,6 +28,20 @@ Open Scope sys_scope.
 Definition pipe2_flags_mask : Z :=
   (O_CLOEXEC + O_NONBLOCK + O_DIRECT + O_EXCL)%Z.
 
+(** The accepted bit the model answers, by treating it as absent: O_CLOEXEC.
+    [__do_pipe_flags] passes the word to [create_pipe_files] and twice to
+    [get_unused_fd_flags] (fs/pipe.c:990, :994, :999, v6.18.46).  The first
+    reads only O_NOTIFICATION_PIPE (:935), O_NONBLOCK and O_DIRECT (:945,
+    :956).  The second reads only O_CLOEXEC, which [alloc_fd] turns into
+    the new descriptor's close-on-exec bit and nothing else
+    (fs/file.c:606, :322-340).  No errno, descriptor number, [f_flags] or
+    copied byte depends on it.  The model records no close-on-exec bit:
+    [Fcntl.fcntl_spec]'s F_GETFD admits both answers, and execve has no
+    arm ([Run.execve_boundary_stops]).  So a pair made with O_CLOEXEC is
+    the pair made with 0, the treatment [Open.open_ignored_flags] gives
+    openat and [File.dup3_spec] gives dup3. *)
+Definition pipe2_ignored_flags : Z := O_CLOEXEC.
+
 (** pipe2's injectable failures: environment conditions the model does
     not track.  [-EMFILE] at RLIMIT_NOFILE (and pipe2 needs TWO free
     descriptors, so it can hit it where an [openat] would not),
@@ -68,13 +82,11 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
 
     - FLAGS FIRST (:987-988), before anything else and before the user
       pointer is read: a bit outside [pipe2_flags_mask] is [-EINVAL], so
-      [pipe2(unmapped, 1)] is [-EINVAL] and never [-EFAULT].  Of the four
-      accepted bits the model interprets only their ABSENCE: [flags = 0]
-      is the whole modeled surface (it is what a [pipe(2)] call becomes
-      on riscv64, which has no [pipe] syscall — musl's src/unistd/pipe.c
-      issues [pipe2(fd, 0)]), and any nonzero accepted combination is
-      [unmodeled].  Each of the four would need something the model does
-      not have: [O_CLOEXEC] an execve, [O_NONBLOCK] the [-EAGAIN]
+      [pipe2(unmapped, 1)] is [-EINVAL] and never [-EFAULT].  O_CLOEXEC
+      is answered as absent through [pipe2_ignored_flags], so flags 0
+      and O_CLOEXEC have the same answers.  A word with O_NONBLOCK,
+      O_DIRECT or O_NOTIFICATION_PIPE remains [unmodeled].  Each needs
+      something the model does not have: [O_NONBLOCK] the [-EAGAIN]
       answers this spec's whole design declines, [O_DIRECT] packet mode
       (where a read DISCARDS the tail of a packet it did not take), and
       [O_NOTIFICATION_PIPE] a kernel built with CONFIG_WATCH_QUEUE —
@@ -92,15 +104,15 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
       the effect is one contiguous range, not two.  A failed copy is
       [-EFAULT] with NOTHING installed: [do_pipe2] [fput]s both files and
       [put_unused_fd]s both reservations (:1041-1045), so the call is
-      atomic — the fd table is exactly as it was.  The model therefore
-      answers [-EFAULT] and changes nothing.
-      A PARTIALLY writable destination is [unmodeled] instead: the kernel
-      copies a prefix before it faults, and how much depends on the
-      architecture's uaccess loop, so the model will not say what is in
-      those bytes.
+      atomic as to installed descriptors: the fd table is exactly as it
+      was. The model answers [-EFAULT] with no stored bytes when
+      [access_ok] refuses the range or byte 0 is unwritable. If byte 0
+      is writable but not all eight are, the model declines instead:
+      [copy_to_user] can leave a prefix whose length depends on the
+      architecture's uaccess loop.
     - ONE INVERSION OF THAT ORDER, named rather than assumed away.  The
       term tests the destination's writability BEFORE it allocates, so on
-      the wholly-unwritable branch it offers [-EFAULT] beside the
+      the byte-0-unwritable branch it offers [-EFAULT] beside the
       injected [pipe2_errnos].  Linux runs [__do_pipe_flags] first, so a
       task with fewer than two free descriptors answers [-EMFILE] and
       never attempts the copy — the model admits an answer that kernel
@@ -146,8 +158,9 @@ Definition pipe2_errnos : list Z := [EMFILE; ENFILE; ENOMEM].
     [-EAGAIN] answers are a function of the pipe state alone, plus a way
     for a program to ASK for them.  There are two such ways and neither
     is available today: [pipe2]'s own [O_NONBLOCK] is inside the accepted
-    mask but any nonzero flag word is [unmodeled] (above), and [fcntl]
-    answers [F_SETFL] only where it provably changes nothing — the
+    mask but any word with O_NONBLOCK, O_DIRECT or O_NOTIFICATION_PIPE
+    is [unmodeled] (above), and [fcntl] answers [F_SETFL] only where it
+    provably changes nothing — the
     [F_SETFL] that would actually set [O_NONBLOCK] declines, and the
     [F_GETFL] that [setnonblocking] issues first declines ahead of it
     (see [Fs.Fcntl.fcntl_spec] and [Fs.Fcntl.setfl_noop_on]).
@@ -172,8 +185,9 @@ Definition pipe2_spec (fildes flags : word) : Sys SyscallEffect :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_flags_mask) 0)
   then err_ret EINVAL          (* a bit outside the accepted mask: real -EINVAL, before
                                   the pipe is made and before [fildes] is touched *)
-  else if negb (w_is0 flags) then unmodeled
-                               (* an accepted but uninterpreted flag: fail closed *)
+  else if negb (Z.eqb (Z.ldiff (bv_unsigned flags) pipe2_ignored_flags) 0)
+  then unmodeled   (* O_NONBLOCK, O_DIRECT or O_NOTIFICATION_PIPE: accepted, not
+                      interpreted; fail closed *)
   else
   let id := pipe_new_id (m_pipes m) in
   match pipe_lookup (m_pipes m) id with
@@ -215,7 +229,7 @@ Definition pipe2_spec (fildes flags : word) : Sys SyscallEffect :=
       | None =>
           match read_bytes_map (in_wmem i) fildes (Z_to_bv 64 1) with
           | None => alt injected (err_ret EFAULT)
-              (* not one byte of the destination is writable: real -EFAULT,
+              (* byte 0 of the destination is unwritable: real -EFAULT,
                  with no pipe made and no descriptor installed *)
           | Some _ => unmodeled
               (* a writable prefix and an unwritable tail: [copy_to_user]

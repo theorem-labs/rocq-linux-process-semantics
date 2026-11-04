@@ -262,6 +262,9 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        Linux as in the model; and the two arms that could show the inode
        through the alias, [fstat] and an open of "/proc/self/fd/<alias>",
        decline it *)
+  | (_, FdSeqpacket _ _ _) :: r => fd_names_path r p
+    (* exact, like the pipe end: a [socketpair] end is an anonymous
+       sockfs inode, so it names no path [unlinkat] can reach *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

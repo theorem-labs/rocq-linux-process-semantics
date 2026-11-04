@@ -341,6 +341,24 @@ Example fcntl_setfd_on_a_pipe_end_is_zero :
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
+(** P7. Linux's F_GETFD on either end made with O_CLOEXEC is
+    FD_CLOEXEC (fs/fcntl.c:465-467, v6.18.46). The model admits that
+    answer and also 0 because it does not record the bit; 2 is refused. *)
+Example fcntl_getfd_on_a_cloexec_pipe_end_admits_linux :
+  let m := pipe2_model
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) 0 in
+  Forall (fun fd =>
+    check_syscall (mkInput 25 [fd; F_GETFD; 0; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+      (mkEffect FD_CLOEXEC [] []) m = CheckOk m []
+    /\ check_syscall (mkInput 25 [fd; F_GETFD; 0; 0; 0; 0]
+                        (fun _ => None) (fun _ => None))
+         (mkEffect 0 [] []) m = CheckOk m []
+    /\ check_syscall (mkInput 25 [fd; F_GETFD; 0; 0; 0; 0]
+                        (fun _ => None) (fun _ => None))
+         (mkEffect 2 [] []) m = CheckReject) [3; 4].
+Proof. repeat constructor; check_eq. Qed.
+
 (* =========================================================================
    The two arms that are predicates rather than syscall answers
    ========================================================================= *)
@@ -709,3 +727,82 @@ Example pipe2_unwrapped_fildes_rejects_efault :
     (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckReject.
 Proof. check_eq. Qed.
+
+(** P1. O_CLOEXEC changes only the two descriptors' close-on-exec bits
+    (fs/file.c:606, v6.18.46), not their numbers or the copy-out. Adding
+    O_NONBLOCK still declines rather than silently making a blocking pipe. *)
+Example pipe2_cloexec_installs_the_pair :
+  check_syscall (mkInput 59 [pipe2_flat_fildes; Z_to_bv 64 O_CLOEXEC; 0; 0; 0; 0]
+                   (fun _ => None) pipe2_flat_mem)
+    (mkEffect 0 [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [])
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk one_pipe_model []
+  /\ check_syscall (mkInput 59 [pipe2_flat_fildes; 526336; 0; 0; 0; 0]
+                      (fun _ => None) pipe2_flat_mem)
+       (mkEffect 0 [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [])
+       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+     = CheckUnmodeled.
+Proof. split; check_eq. Qed.
+
+(** P2. A wholly unwritable destination still gives -EFAULT, with no
+    descriptor installed (fs/pipe.c:1040-1045, v6.18.46). *)
+Example pipe2_cloexec_unwritable_fildes_is_efault :
+  let i := mkInput 59 [pipe2_flat_fildes; Z_to_bv 64 O_CLOEXEC; 0; 0; 0; 0]
+             (fun _ => None) (fun _ => None) in
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  check_syscall i (mkEffect (errno_ret EFAULT) [] []) m = CheckOk m []
+  /\ check_syscall i
+       (mkEffect 0 [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] []) m
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** P3. O_CLOEXEC admits allocation failure, not an unknown-flag error:
+    -EMFILE at RLIMIT_NOFILE (fs/file.c:591-593, v6.18.46). *)
+Example pipe2_cloexec_allocation_failure_keeps_the_model :
+  let i := mkInput 59 [pipe2_flat_fildes; Z_to_bv 64 O_CLOEXEC; 0; 0; 0; 0]
+             (fun _ => None) pipe2_flat_mem in
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  check_syscall i (mkEffect (errno_ret EMFILE) [] []) m = CheckOk m []
+  /\ check_syscall i (mkEffect (errno_ret EINVAL) [] []) m = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** P4. Unknown bit 0 gives -EINVAL before the destination is touched
+    (fs/pipe.c:987-988 before :1040, v6.18.46). Without bit 0 the same
+    destination gives -EFAULT (P2), and -EINVAL is refused. *)
+Example pipe2_cloexec_bad_bit_precedes_the_copy :
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  check_syscall (mkInput 59 [pipe2_flat_fildes; 524289; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) m = CheckOk m []
+  /\ check_syscall (mkInput 59 [pipe2_flat_fildes; Z_to_bv 64 O_CLOEXEC; 0; 0; 0; 0]
+                      (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) m = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** P5. The entire checker answer set is the flag-0 answer set, on
+    every input, effect and model, not just the successful example. *)
+Lemma pipe2_cloexec_answers_as_zero : forall i fildes eff m,
+  check_pipe2 i fildes (Z_to_bv 64 O_CLOEXEC) eff m =
+  check_pipe2 i fildes (Z_to_bv 64 0) eff m.
+Proof. intros. unfold check_pipe2. reflexivity. Qed.
+
+(** The three accepted bits requiring more state still decline, with or
+    without O_CLOEXEC: non-blocking mode, packet mode and watch queues. *)
+Example pipe2_other_accepted_bits_still_decline : forall i fildes eff m,
+  Forall (fun flags =>
+    check_pipe2 i fildes (Z_to_bv 64 flags) eff m = CheckUnmodeled)
+    [O_NONBLOCK; O_DIRECT; O_EXCL; 526336; 540672; 524416]%Z.
+Proof. intros. repeat constructor; reflexivity. Qed.
+
+(** P6. pipe2's int argument drops the high half before testing flags
+    (Syscall.pipe_flags32); the neighbouring O_NONBLOCK still declines. *)
+Example pipe2_cloexec_high_half_is_dropped :
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let eff := mkEffect 0 [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [] in
+  check_syscall (mkInput 59 [pipe2_flat_fildes; 4295491584; 0; 0; 0; 0]
+                   (fun _ => None) pipe2_flat_mem) eff m
+  = CheckOk one_pipe_model []
+  /\ check_syscall (mkInput 59 [pipe2_flat_fildes; 4294969344; 0; 0; 0; 0]
+                      (fun _ => None) pipe2_flat_mem) eff m
+     = CheckUnmodeled.
+Proof. split; check_eq. Qed.

@@ -11,6 +11,7 @@
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Fork.
 Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
@@ -87,8 +88,11 @@ Definition check_wait4_store (stat_addr : word) (ws : list (word * list byte))
     [Exit.wait4_spec].  A caller with no child admits -ECHILD and
     nothing else; [stat_addr] is not read there, because
     [kernel_wait4]'s copy-out is guarded on [ret > 0].  A caller with a
-    recorded child declines when the list is empty or [stat_addr] is
-    not NULL and not four writable bytes, and otherwise admits 0 with
+    recorded child declines when the list is empty, when the install bit
+    [State.m_sigchld_dfl] is clear (no SIG_DFL install for SIGCHLD made
+    while the process had no recorded child), or
+    when [stat_addr] is not NULL and not four writable bytes, and
+    otherwise admits 0 with
     no write and the model unchanged, or a recorded nonzero pid with the
     store [check_wait4_store] reads, the pid removed from the list.  The
     return decides which: 0 is the bare answer, any other word a reap. *)
@@ -101,7 +105,8 @@ Definition check_wait4 (i : SyscallInput) (upid stat_addr options rusage : word)
     match m_child_pids m with
     | [] => CheckUnmodeled
     | _ :: _ =>
-        if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then CheckUnmodeled
+        if negb (m_sigchld_dfl m) then CheckUnmodeled
+        else if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then CheckUnmodeled
         else
           match eff with
           | mkEffectU r ws [] [] [] [] =>
@@ -111,7 +116,7 @@ Definition check_wait4 (i : SyscallInput) (upid stat_addr options rusage : word)
                 | _ :: _ => CheckReject
                 end
               else if pid_recorded_b r (m_child_pids m)
-                      && check_wait4_store stat_addr ws
+                      && (clone_pid_ok_b m r && check_wait4_store stat_addr ws)
               then CheckOk (with_child_pids (remove_pid r (m_child_pids m)) m) []
               else CheckReject
           | _ => CheckReject
@@ -190,6 +195,16 @@ Proof.
   - exact (f_equal S (IH H)).
 Qed.
 
+(** Every pid the reap admits is nonzero, independently of the raw list. *)
+Lemma wait4_pid_nonzero : forall m q,
+  clone_pid_ok_b m q = true -> w_is0 q = false.
+Proof.
+  intros m q H. unfold w_is0.
+  destruct (bv_eqb q (Z_to_bv 64 0)) eqn:E; [|reflexivity].
+  apply bv_eqb_eq in E. subst q.
+  unfold clone_pid_ok_b in H. vm_compute in H. discriminate H.
+Qed.
+
 Lemma check_wait4_sound_ok : forall i upid stat_addr options rusage eff m m' evs,
   check_wait4 i upid stat_addr options rusage eff m = CheckOk m' evs ->
   wait4_spec upid stat_addr options rusage i m (Ok eff m' evs).
@@ -204,6 +219,7 @@ Proof.
   - (* a caller with a child: 0, or a reap *)
     destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H |- *;
       [discriminate|].
+    destruct (negb (m_sigchld_dfl m)); cbv iota in H |- *; [discriminate|].
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)); cbv iota in H |- *;
       [discriminate|].
@@ -219,14 +235,16 @@ Proof.
       unfold w_is0 in H0. apply bv_eqb_eq in H0. subst ret.
       apply alt_l. unfold ret_only. apply pure_ok.
     + (* a reap of a recorded pid *)
-      destruct (pid_recorded_b ret (q0 :: l0) && check_wait4_store stat_addr ws)
+      destruct (pid_recorded_b ret (q0 :: l0)
+                && (clone_pid_ok_b m ret && check_wait4_store stat_addr ws))
         eqn:Hr; cbv iota in H; [|discriminate].
-      apply andb_true_iff in Hr as [Hq Hw].
+      apply andb_true_iff in Hr as [Hq Hr].
+      apply andb_true_iff in Hr as [Hp Hw].
       apply check_wait4_store_sound in Hw as (s & Hs & ->).
       injection H as <- <-.
       apply alt_r.
       eapply bind_ok0;
-        [apply (choose_ok _ ret); cbv beta; rewrite Hq, H0; reflexivity|].
+        [apply (choose_ok _ ret); cbv beta; rewrite Hq, Hp; reflexivity|].
       eapply bind_ok0; [apply (choose_ok _ s); exact Hs|].
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok.
@@ -252,6 +270,8 @@ Proof.
   destruct (m_has_children m) eqn:Hc; cbv iota in H |- *.
   - destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H |- *;
       [apply unmodeled_intro|].
+    destruct (negb (m_sigchld_dfl m)); cbv iota in H |- *;
+      [apply unmodeled_intro|].
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)); cbv iota in H |- *;
       [apply unmodeled_intro|].
@@ -262,7 +282,8 @@ Proof.
     destruct ins as [|? ?]; [|discriminate].
     cbv iota in H.
     destruct (w_is0 ret); cbv iota in H; [destruct ws; discriminate|].
-    destruct (pid_recorded_b ret (q0 :: l0) && check_wait4_store stat_addr ws);
+    destruct (pid_recorded_b ret (q0 :: l0)
+              && (clone_pid_ok_b m ret && check_wait4_store stat_addr ws));
       discriminate.
   - exfalso. wait4_empty_ledgers ws zs us cs ins discriminate.
     destruct (bv_eqb ret (errno_ret ECHILD)); discriminate.
@@ -289,6 +310,10 @@ Proof.
         destruct (m_child_pids mm) as [|q0 l0] eqn:Hl
     end; hall Hl; inv_ok.
     match goal with
+    | |- context [m_sigchld_dfl ?mm] =>
+        destruct (negb (m_sigchld_dfl mm)) eqn:Hd
+    end; hall Hd; inv_ok.
+    match goal with
     | |- context [wait4_stat_ok_b ?w ?a] =>
         destruct (negb (wait4_stat_ok_b w a)) eqn:Hw
     end; hall Hw; inv_ok.
@@ -297,10 +322,11 @@ Proof.
     all: try (unfold w_is0; rewrite bv_eqb_refl; reflexivity).
     (* a reap *)
     all: match goal with
-         | Hq : andb (pid_recorded_b ?q _) (negb (w_is0 ?q)) = true,
+         | Hq : andb (pid_recorded_b ?q _) (clone_pid_ok_b ?mm ?q) = true,
            Hs : wait_status_okz ?s = true |- _ =>
-             apply andb_true_iff in Hq as [Hq Hn]; apply negb_true_iff in Hn;
-             rewrite Hn, Hq, (check_wait4_store_complete stat_addr s Hs);
+             apply andb_true_iff in Hq as [Hq Hp];
+             pose proof (wait4_pid_nonzero mm q Hp) as Hn;
+             rewrite Hn, Hq, Hp, (check_wait4_store_complete stat_addr s Hs);
              reflexivity
          end.
   - (* no child: -ECHILD *)
@@ -318,11 +344,13 @@ Proof.
   destruct (negb (Z.eqb (bv_unsigned options) WNOHANG)); [reflexivity|].
   destruct (negb (w_is0 rusage)); [reflexivity|].
   (* -ECHILD, 0 and a reap all answer, so [Unmodeled] comes only from
-     the empty list or the unwritable [stat_addr], where the checker
-     declines too *)
+     the empty list, the missing SIGCHLD install or the unwritable
+     [stat_addr], where the checker declines too *)
   sys_unfold. inv_ok.
   destruct (m_has_children m) eqn:Hc; hall Hc; inv_ok;
     destruct (m_child_pids m) as [|q0 l0] eqn:Hl; hall Hl; inv_ok;
+    try reflexivity;
+    destruct (negb (m_sigchld_dfl m)) eqn:Hd; hall Hd; inv_ok;
     try reflexivity;
     destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)) eqn:Hw; hall Hw;
     inv_ok; reflexivity.

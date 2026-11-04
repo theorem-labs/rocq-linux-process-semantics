@@ -57,6 +57,15 @@ jobs:
       # one by position records itself in tools/record_builders.json.
       - name: No new positional builders of growing records
         run: python3 tools/check_record_builders.py
+      # Checks/SelfkillEmbedding.v proves that the self-kill declaration
+      # changes no earlier statement, against copies of the definitions at
+      # commit 604b5c3. Rocq cannot read an old commit, so this compares
+      # each copy with `git show` of that commit (the checkout above has the
+      # whole history) and fails on any difference but white space.
+      - name: Pre-change copies match their commit
+        run: python3 tools/check_pre_copies.py
+      - name: Pre-hook predicate and option bodies match their commit
+        run: python3 -m unittest discover -s tests -p test_bpf_pre_copies.py && python3 tools/check_bpf_pre_copies.py
       - id: route
         env:
           EVENT: ${{ github.event_name }}

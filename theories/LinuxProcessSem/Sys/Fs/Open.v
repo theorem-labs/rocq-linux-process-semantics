@@ -1875,6 +1875,17 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     [State.pipe_new_id]), and a reader whose end is still open still
     sees them, as it does on Linux.
 
+    THE SAME HOLDS FOR AN AF_UNIX SEQPACKET END ([State.FdSeqpacket]).
+    [close] drops the file's last reference at once ([fput_close_sync],
+    fs/open.c:1589, v6.18.46), so [sock_close] (net/socket.c:1454-1458)
+    runs [unix_release] (net/unix/af_unix.c:1189-1201), whose
+    [unix_release_sock] sets the PEER's RCV_SHUTDOWN (:705-707).  The
+    model reads that fact off the table: the peer's next [recvmsg] finds
+    no end on the other side ([State.seq_peer] is [None]) and answers end
+    of file ([Net.Socket.seqpacket_recvmsg]).  The end holds exactly one
+    descriptor, because [dup] and [clone] decline the kind, so this close
+    is that last reference.
+
     The descriptor's close-on-exec key is forgotten
     ([State.cloexec_forget]): the slot is free, and whatever installs a
     descriptor there next writes its own bit ([alloc_fd] and [do_dup2]
@@ -2108,6 +2119,11 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     inode is S_ISSOCK, so [do_ftruncate]'s
                                                     !S_ISREG test answers -EINVAL before FMODE_WRITE
                                                     is consulted *)
+  | Some (FdSeqpacket _ _ _) => err_ret EINVAL   (* the [FdSocket] answer, from the socket inode
+                                                    alone: [sock_alloc] makes every socket inode
+                                                    S_IFSOCK (net/socket.c:644, v6.18.46), so
+                                                    [do_ftruncate]'s !S_ISREG test answers -EINVAL
+                                                    (fs/open.c:175) *)
   | Some (FdPipe _ _) => err_ret EINVAL          (* the same answer for the same reason, on an fd
                                                     the model KNOWS is a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL       (* and on /dev/null: a character device is not

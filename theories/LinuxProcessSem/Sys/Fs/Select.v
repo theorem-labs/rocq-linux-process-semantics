@@ -438,6 +438,10 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                mask; an alias's description is used through its partner
                only ([State.OAlias]). None is written as an arm, so the
                call declines to [PsCoreGap]. *)
+            | Some (FdSeqpacket _ _ _) => false
+            (* FAIL-CLOSED: an AF_UNIX end's mask is [unix_dgram_poll]'s
+               (net/unix/af_unix.c, v6.18.46), not [DEFAULT_POLLMASK];
+               not written *)
             end
        else true)
       && bits_all_pollable fds z k'
@@ -1040,6 +1044,8 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               object is of unknown type, and an alias's description is
               used through its partner only ([State.OAlias]); none of the
               seven is written *)
+       | Some (FdSeqpacket _ _ _) => None
+           (* FAIL-CLOSED: [unix_dgram_poll]'s mask is not written *)
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))

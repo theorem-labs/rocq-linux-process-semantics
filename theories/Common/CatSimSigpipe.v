@@ -56,7 +56,7 @@ Definition w1x_input (reader : bool) : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
     default_kernel default_execfn reader true (negb reader)
-    (Z_to_bv 64 0) (Z_to_bv 64 0) [].
+    (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
 
 (** THE TWO LAUNCHES, EACH UNDER ITS OWN PREDICATE.  [Run.valid_input]
     pins the reader PRESENT, so it is the reader launch that it admits

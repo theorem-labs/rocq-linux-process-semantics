@@ -2886,6 +2886,22 @@ Inductive OpaqueFd :=
   | OInherited (live : option (list byte * word))
   | OAlias (partner : word).
 
+(** One end's own socket state, for an AF_UNIX SOCK_SEQPACKET end
+    ([FdSeqpacket] below).  One field: [sq_passcred] is the end's
+    [sk_scm_credentials] bit, which [setsockopt (SOL_SOCKET,
+    SO_PASSCRED)] sets ([sk_setsockopt], net/core/sock.c:1551-1556,
+    v6.18.46) and which [scm_recv_unix] reads when a message arrives
+    (net/unix/af_unix.c:2688).  No call the model answers reads it yet:
+    no message ever arrives on an end (see [FdSeqpacket]).  It is stored
+    so that the answer to a later read is not lost.  THE RECORD HAS NO
+    QUEUE.  When a sender is modeled, the queue is APPENDED as a new
+    field, never inserted. *)
+Record SeqEnd := mkSeqEnd { sq_passcred : bool }.
+
+(** Change only this end's credential flag. Callers keep the old end so
+    that appending socket state does not require rebuilding it elsewhere. *)
+Definition with_sq_passcred (b : bool) (_st : SeqEnd) : SeqEnd := mkSeqEnd b.
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -3050,7 +3066,26 @@ Inductive OpaqueFd :=
       kind of object or declines.  [Fs.ReadWrite.read_spec] reads a live
       inherited file as it reads an [FdFile], because the object is a
       read-only regular file; it takes bytes from the entry instead of
-      a path.  An alias leaves its description's state to its partner. *)
+      a path.  An alias leaves its description's state to its partner.
+    - [FdSeqpacket id side st]: ONE END of an AF_UNIX SOCK_SEQPACKET
+      pair that [Net.Socket.socketpair_spec] made, both ends held by
+      this process.  [id] names the pair (both ends carry it), [side]
+      the end ([false] for the first descriptor [socketpair] stores,
+      [true] for the second), and [st] this end's own socket state
+      ([SeqEnd]). Each pair has a fresh id; the peer is the other side
+      carrying that same id in the descriptor table ([seq_peer]). New
+      ids are one above the largest live one ([seq_new_id]). THE RECEIVE
+      QUEUE IS ALWAYS EMPTY: every call that would queue a message on an
+      end ([sendmsg], [sendto], [write]) declines, so the record holds
+      no queue, and the peer's [sk_err] is never set, because
+      [unix_release_sock] sets it only when the closing end's own queue
+      holds a message (net/unix/af_unix.c:699, :708-709, v6.18.46).
+      Reading the peer off the table is exact because [dup], [dup3] and
+      [F_DUPFD] decline the kind ([Fs.File.dup_modeled_entry]) and a
+      [clone] while one is open declines
+      ([Kernel.Fork.clone_no_shared_file_b]): each end has one
+      descriptor, in this process, and closing it is the end's
+      [unix_release_sock]. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -3062,7 +3097,8 @@ Inductive FdEntry :=
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
   | FdUrandom
-  | FdOpaque (o : OpaqueFd).
+  | FdOpaque (o : OpaqueFd)
+  | FdSeqpacket (id : word) (side : bool) (st : SeqEnd).
 
 (** Is [e] one of the seven opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
@@ -3080,6 +3116,18 @@ Inductive FdEntry :=
 Abbreviation fd_is_opaque e :=
   (match e with
    | FdOpaque _ => true
+   | _ => false
+   end).
+
+(** Is [e] an AF_UNIX SEQPACKET end?  The second classifier with a
+    wildcard, correct by construction for [fd_is_opaque]'s reason.  Its
+    one use is [Fs.ReadWrite.readv_spec]'s FMODE_READ gate, where
+    [ReadWrite.readable_fd]'s [None] would otherwise read as -EBADF: an
+    end is open O_RDWR, and [readv] on one declines.  An abbreviation
+    for [fd_is_opaque]'s reason. *)
+Abbreviation fd_is_seqpacket e :=
+  (match e with
+   | FdSeqpacket _ _ _ => true
    | _ => false
    end).
 
@@ -4222,17 +4270,19 @@ Record ProcState := mkProcState {
                                     ONLY [State.with_killed] sets it.  Its
                                     callers are in [Sys.Kernel.Signal] and in
                                     [Sys.Fs.ReadWrite], and the signals they
-                                    send are SIGABRT (6) and SIGPIPE (13) --
-                                    [Kernel.Signal.tkill_spec] raises the
-                                    first, the three write arms of
+                                    send are SIGABRT (6), SIGPIPE (13) and
+                                    SIGKILL (9) -- [Kernel.Signal.tkill_spec]
+                                    raises the first, the three write arms of
                                     [Fs.ReadWrite.write_spec] raise the
-                                    second through [raise_sigpipe], and
+                                    second through [raise_sigpipe],
+                                    [Kernel.Signal.kill_spec] raises the third
+                                    for a process that names itself, and
                                     [Kernel.Signal.sigmask_deliver_model]
-                                    delivers whichever of them a mask install
-                                    uncovers.  Both have the default
-                                    disposition TERMINATE in every run this
-                                    model covers, which is what makes the halt
-                                    this field marks the end of the run. *)
+                                    delivers whichever of the first two a mask
+                                    install uncovers.  All three have the
+                                    default disposition TERMINATE in every run
+                                    this model covers, which is what makes the
+                                    halt this field marks the end of the run. *)
 ;
   procst_sigabrt_pending : bool  (* SIGABRT has been sent to this process and
                                     is BLOCKED, so it sits in
@@ -4243,14 +4293,18 @@ Record ProcState := mkProcState {
 
                                     A BOOL AND NOT A SIGSET, because at most
                                     one signal can ever be in it: the only arm
-                                    that sends a signal is
+                                    that can leave a sent signal pending is
                                     [Kernel.Signal.tkill_spec], and the only
-                                    signal it sends is SIGABRT.  A [sigset_t]
-                                    here would be a field whose other 63 bits
-                                    no reachable state can set, and the name
-                                    would stop saying that.  The day a second
-                                    signal becomes sendable this widens rather
-                                    than gains a case.
+                                    signal it sends is SIGABRT.
+                                    [Kernel.Signal.kill_spec] sends SIGKILL,
+                                    which no mask holds, so it kills,
+                                    returns 0 unchanged for pid 1, or declines,
+                                    and leaves nothing pending. A
+                                    [sigset_t] here would be a field whose
+                                    other 63 bits no reachable state can set,
+                                    and the name would stop saying that.  The
+                                    day a second signal can be held pending
+                                    this widens rather than gains a case.
 
                                     WHY THE STATE EXISTS AT ALL, given that the
                                     model delivers no signals from outside: it
@@ -4711,7 +4765,91 @@ Record ProcState := mkProcState {
                                     new signal is 0.  Otherwise it keeps it,
                                     so a write of the value already held
                                     changes nothing.  Every other setter
-                                    carries it. *)
+                                    carries it. *);
+  procst_selfkill_terminal : bool (* THE TASK'S DECLARATION of whether the
+                                    model covers DEATH BY A SIGKILL THE
+                                    PROCESS SENDS ITSELF, the twin of
+                                    [procst_abort_terminal] and
+                                    [procst_sigpipe_terminal] for the third
+                                    signal this model can raise.  Seeded by
+                                    [init_model] from [ProcInput]'s
+                                    [in_selfkill_terminal], copied into a
+                                    child by [Procs.child_proc], and written by
+                                    nothing else, so it is constant along every
+                                    run.  READ IT THROUGH
+                                    [m_selfkill_terminal].
+
+                                    [false]: [Kernel.Signal.kill_spec]
+                                    declines every call, as if 129 had no arm,
+                                    so no run ends in [KillEv 9].  [true]:
+                                    [kill] with the caller's own process id
+                                    and SIGKILL ends a non-init process;
+                                    pid 1 ignores it and returns 0 unchanged.
+                                    The plain launch declines for
+                                    [procst_sigpipe_terminal]'s reason:
+                                    [Run.valid_input] and its siblings pin it
+                                    [false], and [Run.valid_input_inherited]
+                                    leaves it free. *);
+  procst_cgroup_bpf_setsockopt : bool
+    (* Whether this launch has a cgroup-BPF setsockopt hook. Such a hook
+       can rewrite the option or bypass its handler (net/socket.c,
+       do_sock_setsockopt:2342-2351, v6.18.46). Until those effects are
+       modeled, [Net.Socket.setsockopt_spec] declines when it is present.
+       [init_model] seeds this from [in_cgroup_bpf_setsockopt]; every
+       transition and a child's construction retain the launch value. *);
+  procst_sigchld_dfl : bool      (* WHETHER THIS PROCESS HAS ITSELF INSTALLED
+                                    SIG_DFL FOR SIGCHLD with SA_NOCLDWAIT
+                                    clear.  [false] at launch ([mkModel],
+                                    [init_model]); set by the one SIGCHLD
+                                    install the model answers
+                                    ([Kernel.Signal.sigchld_dfl_install] in
+                                    [Kernel.Signal.rt_sigaction_spec]), and
+                                    only in a process with no recorded child
+                                    ([Kernel.Signal.sigchld_install_model]);
+                                    copied into a child by [Procs.child_proc];
+                                    written by nothing else.  READ IT THROUGH
+                                    [m_sigchld_dfl].
+
+                                    WHY THE MODEL RECORDS IT.  The SIGCHLD
+                                    disposition a process starts with is its
+                                    launcher's: [begin_new_exec] calls
+                                    [flush_signal_handlers(me, 0)] (fs/exec.c,
+                                    Linux v6.18.46), which keeps a SIG_IGN
+                                    (kernel/signal.c).  Under SIG_IGN, or with
+                                    SA_NOCLDWAIT set, [do_notify_parent]
+                                    (kernel/signal.c) reaps an exiting child
+                                    itself, so [wait4] never returns its pid.
+                                    Linux decides this when the child exits,
+                                    from the parent's disposition then
+                                    ([do_notify_parent], kernel/signal.c:2241-2259),
+                                    so a child cloned under a launcher's
+                                    SIG_IGN may be gone before a later
+                                    SIG_DFL install.  So the bit is set only
+                                    if every child the process has was cloned
+                                    while SIGCHLD was SIG_DFL, and
+                                    [Kernel.Exit.wait4_spec] answers a caller
+                                    with a recorded child only when it is
+                                    set; that answer rests on no fact about
+                                    the launch's disposition.
+
+                                    WHY IT IS NEVER CLEARED.  Once set, SIGCHLD
+                                    is SIG_DFL with SA_NOCLDWAIT clear, and no
+                                    answered call changes that: every other
+                                    SIGCHLD install declines
+                                    ([Kernel.Signal.rt_sigaction_spec]), and an
+                                    install with [act] NULL installs nothing.
+                                    [execve] keeps a SIG_DFL ([flush_signal_handlers]
+                                    writes SIG_DFL over every handler that is
+                                    not SIG_IGN and clears [sa_flags]); the
+                                    model has no [execve] step.
+
+                                    WHY A CHILD COPIES IT.  A child the
+                                    released clone arms create gets a COPY of
+                                    its parent's actions: [copy_sighand]
+                                    (kernel/fork.c) [memcpy]s them unless
+                                    CLONE_SIGHAND shares them, and resets
+                                    them only under CLONE_CLEAR_SIGHAND, and
+                                    [Kernel.Fork] admits neither flag. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4904,6 +5042,19 @@ Definition m_reparent_unseen (m : Model) : bool :=
     [procst_reparent_moved]. *)
 Definition m_reparent_moved (m : Model) : bool :=
   procst_reparent_moved (m_proc m).
+(** Whether the model covers a SIGKILL the process sends itself: death
+    for a non-init process, or 0 unchanged for pid 1. [Run.valid_input]
+    pins this launch declaration to [false]; see [procst_selfkill_terminal]. *)
+Definition m_selfkill_terminal (m : Model) : bool :=
+  procst_selfkill_terminal (m_proc m).
+Definition m_cgroup_bpf_setsockopt (m : Model) : bool :=
+  procst_cgroup_bpf_setsockopt (m_proc m).
+(** Whether this process has itself installed SIG_DFL for SIGCHLD with
+    SA_NOCLDWAIT clear, which [Kernel.Exit.wait4_spec] reads before it
+    answers a caller with a recorded child.  [false] at launch; see
+    [procst_sigchld_dfl]. *)
+Definition m_sigchld_dfl (m : Model) : bool :=
+  procst_sigchld_dfl (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4961,7 +5112,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
                false true true false (Z_to_bv 64 0) [] false (Z_to_bv 64 1)
-               (Z_to_bv 64 0) (Z_to_bv 64 0) false false)
+               (Z_to_bv 64 0) (Z_to_bv 64 0) false false false false false)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -5091,7 +5242,8 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -5112,7 +5264,8 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5126,7 +5279,8 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -5157,7 +5311,8 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -5198,7 +5353,8 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -5229,7 +5385,8 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -5247,7 +5404,8 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5260,7 +5418,8 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.  The released
@@ -5290,7 +5449,8 @@ Definition with_children (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -5315,7 +5475,8 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -5347,7 +5508,8 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -5378,7 +5540,8 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -5404,7 +5567,8 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -5427,7 +5591,8 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE disposition.  Its only caller is
@@ -5450,7 +5615,8 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          b (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE-death declaration.  Its only caller is
@@ -5469,7 +5635,72 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
                          (m_sigpipe_default m) b (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
+            (m_lim m) (m_time m).
+
+(** Seed the task's declaration of a SIGKILL it sends itself.  Its only
+    caller is [init_model], for the reason [with_abort_terminal] gives,
+    and like that field nothing in the model's own transitions writes it:
+    it is constant along every run.  See [procst_selfkill_terminal]. *)
+Definition with_selfkill_terminal (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m)
+                         (m_reparent_unseen m) (m_reparent_moved m) b
+                         (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
+            (m_lim m) (m_time m).
+
+(** Seed the cgroup-BPF setsockopt launch value. No syscall writes it. *)
+Definition with_cgroup_bpf_setsockopt (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m) (m_child_pids m)
+                         (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m)
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) b (m_sigchld_dfl m))
+            (m_lim m) (m_time m).
+
+(** Record whether the process installed SIG_DFL for SIGCHLD with
+    SA_NOCLDWAIT clear while it had no recorded child.  Its one writer is
+    [Kernel.Signal.rt_sigaction_spec]'s [sigchld_dfl_install] arm,
+    through [Kernel.Signal.sigchld_install_model], which writes [true]
+    in a process with no recorded child and the bit's own value
+    otherwise; nothing turns it from [true] to [false], because no
+    answered call can leave SIGCHLD anything else afterwards.  See
+    [procst_sigchld_dfl]. *)
+Definition with_sigchld_dfl (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m)
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) b)
             (m_lim m) (m_time m).
 
 (** Install a parent-death signal.  Two kinds of caller, both in
@@ -5508,7 +5739,8 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                          (andb (m_reparent_moved m)
                                (orb (orb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
                                          (m_reparent_unseen m))
-                                    (negb (Z.eqb (bv_unsigned s) 0)))))
+                                    (negb (Z.eqb (bv_unsigned s) 0))))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Install the list of unreaped children.  Its writers are the reap
@@ -5526,7 +5758,8 @@ Definition with_child_pids (l : list word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          l (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record a child a successful clone created: [with_children]'s bit,
@@ -5561,7 +5794,8 @@ Definition with_no_new_privs (b : bool) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) b (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Install a dumpable mode.  Two kinds of caller, both in [Kernel.Sys]:
@@ -5580,7 +5814,8 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) d
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Install the current parent pid, the window bits unchanged.  Its
@@ -5602,7 +5837,8 @@ Definition with_ppid (p : word) (m : Model) : Model :=
                          (m_pdeath_signal m) (m_child_pids m)
                          (m_no_new_privs m) (m_dumpable m) p
                          (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Record a [getppid] answer [p]: the held parent pid becomes [p],
@@ -5626,7 +5862,8 @@ Definition with_ppid_answered (p : word) (m : Model) : Model :=
                          (m_pdeath_signal m) (m_child_pids m)
                          (m_no_new_privs m) (m_dumpable m) p
                          (m_cap_inheritable m) false
-                         (orb (m_reparent_moved m) (negb (bv_eqb p (m_ppid m)))))
+                         (orb (m_reparent_moved m) (negb (bv_eqb p (m_ppid m))))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** Install the inheritable capability set.  [Kernel.Capability.capset_spec]
@@ -5644,7 +5881,8 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m)
                          (m_pdeath_signal m) (m_child_pids m)
                          (m_no_new_privs m) (m_dumpable m) (m_ppid m) c
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -5655,8 +5893,8 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     [procst_killed] alone -- [Run.sstep_exit] declines a death by signal
     and [Run.sstep_killed] takes it -- so the two cannot both apply.
 
-    IN THE DISPATCHER IT HAS FOUR CALLERS, IN TWO SIGNALS, and which is
-    which decides what guards them (a fifth, outside it, is at the end).
+    IN THE DISPATCHER IT HAS FIVE CALLERS, IN THREE SIGNALS, and which is
+    which decides what guards them (a sixth, outside it, is at the end).
 
     SIGABRT (6).  [Kernel.Signal.send_sigabrt] is the SEND, and it sits
     behind the task's declaration.  [Kernel.Signal.sigmask_deliver_model]
@@ -5690,6 +5928,12 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     death is followed at all; [Run.valid_input_sigpipe_kills] and
     [Run.valid_input_channel_closed] are the launches that set it.
 
+    SIGKILL (9).  [Kernel.Signal.kill_spec] is the SEND, for a [kill]
+    that names the caller's own process id, and it sits behind its own
+    declaration, [procst_selfkill_terminal]: with that field clear the
+    arm declines every call.  There is no delivery row: no mask holds
+    SIGKILL, so it is never pending.  [Run.valid_input] pins it clear.
+
     THAT THESE ARE THE ONLY CALLERS IN THE DISPATCHER, AND THAT EACH IS
     GATED, IS A THEOREM: [Checks.KillFree.kill_frame_holds] goes through
     every arm of the dispatcher, and [Checks.KillFree.valid_input_no_kill]
@@ -5713,7 +5957,8 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
-                         (m_reparent_unseen m) (m_reparent_moved m))
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -5774,8 +6019,8 @@ Inductive event :=
     events to everything that observes this process, and folding the
     second into the first would make a model in which a program can fake
     its own abort.  The only rule that emits one is [Run.sstep_killed],
-    and the only signal that reaches it is SIGABRT -- see
-    [procst_killed]. *)
+    and the signals that reach it are SIGABRT, SIGPIPE and SIGKILL --
+    see [procst_killed]. *)
 
 (* =========================================================================
    fd table helpers
@@ -6168,7 +6413,97 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
        track; and the eventfd, the /proc/self/fd directory and the
        signalfd are anonymous or procfs files with no [pipe_inode_info]
        ([eventfd_fops], [proc_fd_operations], [signalfd_fops]) *)
+  | (_, FdSeqpacket _ _ _) :: r => pipe_end_live r id writer
+    (* not an end either: an AF_UNIX socket's file has [socket_file_ops]
+       and no [pipe_inode_info] (net/socket.c [sock_alloc_file]) *)
   end.
+
+(* =========================================================================
+   AF_UNIX SOCK_SEQPACKET pair helpers: the ends of a pair are found
+   by matching both its id and its side in the descriptor table
+   ========================================================================= *)
+
+(** The descriptor and state of end [(id, side)], the first entry that
+    names it.  There is never a second: an end is made only by
+    [Net.Socket.socketpair_spec], which takes [id] from [seq_new_id], and
+    no modeled call duplicates one (see [FdSeqpacket]).
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor able to name a pair end must stop the build here.  A
+    missed end would make [seq_peer] answer "closed" for a live peer,
+    and [Net.Socket.recvmsg_spec] would then answer end of file where
+    Linux waits. *)
+Fixpoint seq_end (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * SeqEnd) :=
+  match fds with
+  | [] => None
+  | (fd, FdSeqpacket id' s st) :: r =>
+      if (bv_eqb id' id && Bool.eqb s side)%bool then Some (fd, st)
+      else seq_end r id side
+  | (_, FdChannel _) :: r => seq_end r id side
+  | (_, FdFile _ _) :: r => seq_end r id side
+  | (_, FdFileW _ _) :: r => seq_end r id side
+  | (_, FdFileA _ _) :: r => seq_end r id side
+  | (_, FdFileRW _ _) :: r => seq_end r id side
+  | (_, FdDir) :: r => seq_end r id side
+  | (_, FdSocket _) :: r => seq_end r id side
+    (* an AF_INET socket: no [socketpair] joins one to anything *)
+  | (_, FdPipe _ _) :: r => seq_end r id side
+  | (_, FdDevNull _ _) :: r => seq_end r id side
+  | (_, FdUrandom) :: r => seq_end r id side
+  | (_, FdOpaque _) :: r => seq_end r id side
+    (* none of the seven opaque objects is a socket this model made *)
+  end.
+
+(** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
+    peer's descriptor is still open.  [None] means the peer has closed:
+    [unix_release_sock] ran for it and set this end's RCV_SHUTDOWN
+    (net/unix/af_unix.c:705-707, v6.18.46). *)
+Definition seq_peer (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * SeqEnd) :=
+  seq_end fds id (negb side).
+
+(** The largest pair id a live end carries, or -1 when none does.
+    Enumerated for [seq_end]'s reason. *)
+Fixpoint seq_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, FdSeqpacket id _ _) :: r => Z.max (bv_unsigned id) (seq_max_id r)
+  | (_, FdChannel _) :: r => seq_max_id r
+  | (_, FdFile _ _) :: r => seq_max_id r
+  | (_, FdFileW _ _) :: r => seq_max_id r
+  | (_, FdFileA _ _) :: r => seq_max_id r
+  | (_, FdFileRW _ _) :: r => seq_max_id r
+  | (_, FdDir) :: r => seq_max_id r
+  | (_, FdSocket _) :: r => seq_max_id r
+  | (_, FdPipe _ _) :: r => seq_max_id r
+  | (_, FdDevNull _ _) :: r => seq_max_id r
+  | (_, FdUrandom) :: r => seq_max_id r
+  | (_, FdOpaque _) :: r => seq_max_id r
+  end.
+
+(** The id a new pair gets: one above every LIVE pair's.  Unlike
+    [pipe_new_id] it need not avoid dead pairs, because a pair has no
+    side table for a dead one to haunt.  What it must avoid is a LIVE
+    end, whose [seq_peer] a reused id would confuse, and one above the
+    largest live id does.  [Net.Socket.socketpair_spec] still checks
+    that no live end carries it, so the one way to fail -- a live id of
+    2^64 - 1, where the successor wraps to 0 -- declines rather than
+    aliases. *)
+Definition seq_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (seq_max_id fds + 1).
+
+(** Does some live end carry pair id [id], on either side? *)
+Definition seq_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  match seq_end fds id false, seq_end fds id true with
+  | None, None => false
+  | _, _ => true
+  end.
+
+(** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
+    then connects it: [sk_scm_credentials] clear, because [sk_alloc]
+    zeroes the new socket (net/core/sock.c:2299, v6.18.46). *)
+Definition seq_fresh : SeqEnd := mkSeqEnd false.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
     [copy_to_user] of an [int] lays down. *)
@@ -7480,22 +7815,49 @@ Record ProcInput := mkProcInput_full {
        [Run.valid_input_inherited], which admits a list
        [Run.inherited_fds_ok] accepts and states the assumption such a
        launch rests on.  The field is appended after every field the
-       record had, as [mkProcInput]'s note asks *)
+       record had, as [mkProcInput]'s note asks *);
+  in_selfkill_terminal : bool
+    (* THE TASK'S DECLARATION of whether the model covers a DEATH BY A
+       SIGKILL THE PROCESS SENDS ITSELF: [kill] with the caller's own
+       process id and signal 9.  Like [in_abort_terminal] and
+       [in_sigpipe_terminal] it is a stance of the statement and not a
+       fact about the environment.  [init_model] copies it into
+       [procst_selfkill_terminal], and nothing writes it after that.
+       [false]: [Kernel.Signal.kill_spec] declines every call, as if 129
+       had no arm, so no run ends in [KillEv 9]. [true]: the call ends a
+       non-init process, or returns 0 with the process unchanged for pid 1
+       ([Kernel.Signal.kill_self]).
+
+       [Run.valid_input] and every sibling launch predicate except
+       [Run.valid_input_inherited] PIN IT [false], so every statement
+       written before the field keeps its domain, and
+       [Checks.KillFree.valid_input_no_kill] stays a theorem about it.
+       [Run.valid_input_inherited] leaves it free.  The field is
+       appended after every field the record had, as [mkProcInput]'s
+       note asks *);
+  in_cgroup_bpf_setsockopt : bool
+    (* Field 25: whether this launch has a cgroup-BPF setsockopt hook.
+       The runtime retains the value in [procst_cgroup_bpf_setsockopt].
+       A present hook makes setsockopt decline: its option rewrites and
+       handler bypass are not represented by an errno-only outcome.
+       Ordinary input predicates pin it false; the raw input boundary
+       requires the caller's value rather than silently defaulting it. *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the ten
+(** THE POSITIONAL-LITERAL FORM: every field except the twelve
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
     [in_kernel], [in_execfn], [in_channel_reader],
     [in_sigpipe_default], [in_sigpipe_terminal], [in_ppid],
-    [in_cap_inheritable], [in_inherited_fds]).
+    [in_cap_inheritable], [in_inherited_fds], [in_selfkill_terminal],
+    [in_cgroup_bpf_setsockopt]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last ten with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    last twelve with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
     DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
     SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0, AN EMPTY
-    INHERITABLE SET and NO INHERITED DESCRIPTOR: [default_urandom],
-    which is zero bytes
+    INHERITABLE SET, NO INHERITED DESCRIPTOR and SELF-SENT SIGKILL
+    DECLINED, and NO CGROUP-BPF SETSOCKOPT HOOK: [default_urandom], which is zero bytes
     forever; a private /tmp that starts empty; [default_kernel], a
     kernel built without transparent huge pages; [default_execfn], the
     one-byte name "a"; [true], the reading every literal written before
@@ -7503,15 +7865,18 @@ Record ProcInput := mkProcInput_full {
     the SIG_DFL launch [Run.valid_input] pins; [false], the
     declined SIGPIPE death [Run.valid_input] pins
     ([mkProcInput_sigpipe_terminal] proves it is the literal); the
-    literal 0 for each word; and the literal [[]], the empty list of
+    literal 0 for each word; the literal [[]], the empty list of
     inherited descriptors [Run.valid_input] pins
-    ([mkProcInput_inherited_fds]).  So a literal written
+    ([mkProcInput_inherited_fds]); and [false], the declined self-sent
+    SIGKILL [Run.valid_input] pins ([mkProcInput_selfkill_terminal]);
+    and [false], the absent cgroup-BPF setsockopt hook.
+    So a literal written
     through this name denotes an input in an environment that holds no
     file of its own, on an ordinary kernel, launched as "a", whose
     standard output is read, whose SIGPIPE is at SIG_DFL, whose
     write to a reader-less descriptor declines, whose parent is observed
-    as pid 0, whose inheritable set is empty, and which inherits no
-    descriptor above 2.
+    as pid 0, whose inheritable set is empty, which inherits no
+    descriptor above 2, and whose [kill] of itself declines.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -7538,7 +7903,7 @@ Definition mkProcInput
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
     default_kernel default_execfn true true false (Z_to_bv 64 0)
-    (Z_to_bv 64 0) [].
+    (Z_to_bv 64 0) [] false false.
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
@@ -7579,6 +7944,25 @@ Lemma mkProcInput_inherited_fds :
        hwcap abort_terminal va_size) = [].
 Proof. reflexivity. Qed.
 
+(** The self-kill default is the LITERAL [false], not a variable: every
+    input built through [mkProcInput] is one on which [kill] of the
+    caller itself declines, which is the value [Run.valid_input] pins. *)
+Lemma mkProcInput_selfkill_terminal :
+  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_selfkill_terminal
+    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = false.
+Proof. reflexivity. Qed.
+
+Lemma mkProcInput_cgroup_bpf_setsockopt :
+  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_cgroup_bpf_setsockopt
+    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = false.
+Proof. reflexivity. Qed.
+
 (** [inp] with its inherited descriptors replaced by [l], every other
     field kept.  The fixtures that need a keyed launch build it from an
     ordinary one with this, so they name no other field by position. *)
@@ -7589,7 +7973,27 @@ Definition with_inherited_fds (l : list (word * list byte)) (inp : ProcInput)
     (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
-    (in_ppid inp) (in_cap_inheritable inp) l.
+    (in_ppid inp) (in_cap_inheritable inp) l (in_selfkill_terminal inp)
+    (in_cgroup_bpf_setsockopt inp).
+
+(** Replace only the cgroup-BPF setsockopt launch value. *)
+Definition input_with_cgroup_bpf_setsockopt (b : bool) (inp : ProcInput)
+    : ProcInput :=
+  mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) (in_stdin inp)
+    (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp) (in_nofile inp)
+    (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
+    (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+    (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
+    (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
+    (in_selfkill_terminal inp) b.
+
+Lemma in_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b inp,
+  in_cgroup_bpf_setsockopt (input_with_cgroup_bpf_setsockopt b inp) = b.
+Proof. reflexivity. Qed.
+
+Lemma m_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b m,
+  m_cgroup_bpf_setsockopt (with_cgroup_bpf_setsockopt b m) = b.
+Proof. reflexivity. Qed.
 
 Lemma in_inherited_fds_with_inherited_fds : forall l inp,
   in_inherited_fds (with_inherited_fds l inp) = l.
@@ -7767,7 +8171,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
        (in_sigpipe_default inp) (in_sigpipe_terminal inp) (Z_to_bv 64 0) [] false
-       (Z_to_bv 64 1) (in_ppid inp) (in_cap_inheritable inp) false false)
+       (Z_to_bv 64 1) (in_ppid inp) (in_cap_inheritable inp) false false
+       (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) false)
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -7778,7 +8183,9 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
     (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_cap_inheritable (in_cap_inheritable inp)
+  with_cgroup_bpf_setsockopt (in_cgroup_bpf_setsockopt inp)
+  (with_selfkill_terminal (in_selfkill_terminal inp)
+  (with_cap_inheritable (in_cap_inheritable inp)
   (with_ppid (in_ppid inp)
   (with_sigpipe_terminal (in_sigpipe_terminal inp)
   (with_sigpipe_default (in_sigpipe_default inp)
@@ -7803,7 +8210,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None))))))))))))).
+       None))))))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
@@ -11468,6 +11875,25 @@ Proof. reflexivity. Qed.
 Lemma m_sigpipe_pending_init_model : forall reserved brk0 mbase sp lim inp,
   m_sigpipe_pending (init_model reserved brk0 mbase sp lim inp) = false.
 Proof. reflexivity. Qed.
+
+(** The self-kill declaration is the input's, as the other two are. *)
+Lemma m_selfkill_terminal_init_model : forall reserved brk0 mbase sp lim inp,
+  m_selfkill_terminal (init_model reserved brk0 mbase sp lim inp)
+    = in_selfkill_terminal inp.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_selfkill_terminal_init_model : model.
+
+(** No SIGCHLD install at launch: the process has made none yet, whatever
+    disposition its launcher left ([procst_sigchld_dfl]). *)
+Lemma m_sigchld_dfl_init_model : forall reserved brk0 mbase sp lim inp,
+  m_sigchld_dfl (init_model reserved brk0 mbase sp lim inp) = false.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigchld_dfl_init_model : model.
+
+Lemma m_sigchld_dfl_with_sigchld_dfl : forall b m,
+  m_sigchld_dfl (with_sigchld_dfl b m) = b.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigchld_dfl_with_sigchld_dfl : model.
 
 Lemma m_pipes_init_model : forall reserved brk0 mbase sp lim inp,
   m_pipes (init_model reserved brk0 mbase sp lim inp) =

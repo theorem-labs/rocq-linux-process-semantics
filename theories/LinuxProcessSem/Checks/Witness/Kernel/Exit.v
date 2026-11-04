@@ -34,7 +34,7 @@ Qed.
 
 (* =========================================================================
    wait4 (260) — witness: -ECHILD for a caller with no child, 0 for a
-   caller with a recorded child.
+   caller with a recorded child after its SIGCHLD SIG_DFL install.
    ========================================================================= *)
 
 (** The bare 0 is always admissible where the reap is, so it is the
@@ -48,7 +48,8 @@ Definition wait4_witness (upid stat_addr options rusage : word)
     match m_child_pids m with
     | [] => Unmodeled
     | _ :: _ =>
-        if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then Unmodeled
+        if negb (m_sigchld_dfl m) then Unmodeled
+        else if negb (wait4_stat_ok_b (in_wmem i) stat_addr) then Unmodeled
         else ret_outcome (Z_to_bv 64 0) m
     end
   else ret_outcome (errno_ret ECHILD) m.
@@ -66,13 +67,17 @@ Proof.
   - destruct (m_child_pids m) as [|q0 l0] eqn:Hl.
     + eapply bind_unmodeled2; [apply get_model_ok|].
       cbv beta. rewrite Hc, Hl. cbv iota. apply unmodeled_intro.
-    + destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)) eqn:Hw.
+    + destruct (negb (m_sigchld_dfl m)) eqn:Hd.
+      { eapply bind_unmodeled2; [apply get_model_ok|].
+        cbv beta. rewrite Hc, Hl. cbv iota. rewrite Hd. cbv iota.
+        apply unmodeled_intro. }
+      destruct (negb (wait4_stat_ok_b (in_wmem i) stat_addr)) eqn:Hw.
       * eapply bind_unmodeled2; [apply get_model_ok|].
-        cbv beta. rewrite Hc, Hl. cbv iota.
+        cbv beta. rewrite Hc, Hl. cbv iota. rewrite Hd. cbv iota.
         eapply bind_unmodeled2; [apply input_ok|].
         cbv beta. rewrite Hw. cbv iota. apply unmodeled_intro.
       * eapply bind_step; [apply get_model_ok|].
-        cbv beta. rewrite Hc, Hl. cbv iota.
+        cbv beta. rewrite Hc, Hl. cbv iota. rewrite Hd. cbv iota.
         eapply bind_step; [apply input_ok|].
         cbv beta. rewrite Hw. cbv iota.
         apply alt_l. unfold ret_only, ret_outcome. apply pure_ok.

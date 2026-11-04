@@ -1116,6 +1116,11 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
       | _ => read_opaque_spec o buf count
           (* one arm per opaque object: see [read_opaque_spec] *)
       end
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED: a read on an AF_UNIX SEQPACKET end is
+         [sock_read_iter] -> [unix_seqpacket_recvmsg] (net/socket.c,
+         net/unix/af_unix.c, v6.18.46); only [recvmsg] on the kind is
+         written ([Net.Socket.recvmsg_spec]) *)
   end.
 
 (** [write fd buf count].
@@ -2046,6 +2051,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   | Some (FdOpaque o) => write_opaque_spec o buf count
       (* the eventfd answers, five objects answer an errno, and
          [State.ONsFile] and [State.OAlias] decline: see [write_opaque_spec] *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED: the model sends no message on an end, so its
+         receive queue stays empty ([State.FdSeqpacket]) *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -2258,6 +2266,9 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
          [ONsFile]'s object is of unknown type, and an alias's
          description is used through its partner only ([State.OAlias]).
          None of the seven answers is. *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED: a positional read of an AF_UNIX end is not
+         written *)
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -2457,6 +2468,8 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the seven answers
          is written *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED, as [pread64_spec]'s arm *)
   end.
 
 (** [IOV_MAX] (= Linux UIO_MAXIOV) and [MAX_RW_COUNT] are in State.v,
@@ -2803,6 +2816,8 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          [ONsFile]'s object is of unknown type (fs/read_write.c,
          fs/eventfd.c, fs/signalfd.c, read at v6.18.44; identical at
          v6.18.46).  None is written. *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED: no send on an end, as [write_spec]'s arm *)
   end.
 
 
@@ -2951,6 +2966,11 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        v6.18.44; identical at v6.18.46); a /proc/sys file, an eventfd,
        the /proc/self/fd directory and a signalfd are open for reading,
        and an alias's mode is its partner's description's *)
+  | FdSeqpacket _ _ _ => None
+    (* NOT AN -EBADF either: an AF_UNIX end is open O_RDWR
+       ([sock_alloc_file], net/socket.c:483-485, v6.18.46), and
+       [readv_spec] declines it in its [None] branch through
+       [State.fd_is_seqpacket] *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -3286,7 +3306,9 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | Some e =>
       match readable_fd e with
       | None =>
-          if fd_is_opaque e then unmodeled   (* see [readable_fd]'s [FdOpaque] arm *)
+          if fd_is_opaque e then unmodeled      (* see [readable_fd]'s [FdOpaque] arm *)
+          else if fd_is_seqpacket e then unmodeled
+            (* see [readable_fd]'s [FdSeqpacket] arm *)
           else err_ret EBADF                 (* FMODE_READ, ahead of the import *)
           (* EVERY OTHER [None] IS A REAL -EBADF, including the pipe end
              that reaches it.  [readable_fd] hands the read end a
@@ -3535,5 +3557,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              object is of unknown type; and an lseek through an alias
              would move the [f_pos] its partner's entry carries
              ([State.OAlias]).  None of the seven answers is written. *)
+      | FdSeqpacket _ _ _ => unmodeled
+          (* FAIL-CLOSED: a seek on an AF_UNIX end is not written *)
       end
   end.

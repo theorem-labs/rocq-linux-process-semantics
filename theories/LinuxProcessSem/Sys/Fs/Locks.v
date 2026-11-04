@@ -110,6 +110,9 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
        every flock on an eventfd, a /proc/sys file, the /proc/self/fd
        directory or a signalfd declines in this model, so none of them
        can hold a lock the model let it take *)
+  | (_, FdSeqpacket _ _ _) :: r => path_openers r p
+    (* a socket inode on sockfs is not a key of [Fs.Fs], and every flock
+       on an end declines in this model ([flock_spec]) *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -353,5 +356,8 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
                  an [FdUrandom] count would be needed.  Not written. *)
           | FdOpaque _ => unmodeled
               (* unreachable: [fd_is_opaque] declined this kind above *)
+          | FdSeqpacket _ _ _ => unmodeled
+              (* FAIL-CLOSED, for the [FdSocket] reason: no caller, and a
+                 lock on a sockfs inode needs its own argument *)
           end
     end.
