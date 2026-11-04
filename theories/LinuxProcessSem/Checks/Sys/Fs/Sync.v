@@ -22,13 +22,10 @@ Definition check_fsync (fd : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdSocket _)  => check_ret_only eff (errno_ret EINVAL) m []
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => check_ret_only eff (errno_ret EINVAL) m []
-=======
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdDgram _)   => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdEventfd _) => check_ret_only eff (errno_ret EINVAL) m []
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []

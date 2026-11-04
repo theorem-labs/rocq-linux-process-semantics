@@ -221,18 +221,15 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe, socket or terminal *)
   | Some (FdSocket _)  => err_ret EINVAL          (* nor on a socket: [socket_file_ops] carries no
                                                      [.fsync], so [vfs_fsync_range] is -EINVAL *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => err_ret EINVAL    (* the [FdSocket] answer, from [socket_file_ops]
                                                      alone (net/socket.c:156, no [.fsync];
                                                      fs/sync.c:183-184, v6.18.46) *)
-=======
   | Some (FdStream _ _ _) => err_ret EINVAL       (* a stream-pair end has [socket_file_ops] too *)
   | Some (FdDgram _)   => err_ret EINVAL          (* and so does a datagram socket *)
   | Some (FdEventfd _) => err_ret EINVAL          (* nor on an eventfd: [eventfd_fops] (fs/eventfd.c,
                                                      v6.18.46) lists [.show_fdinfo], [.release],
                                                      [.poll], [.read_iter], [.write] and [.llseek]
                                                      and no [.fsync] *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _)  => err_ret EINVAL          (* no [.fsync] on a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL        (* no [.fsync] on /dev/null either: [null_fops]
                                                      (drivers/char/mem.c, v6.18.46) lists [.llseek],
