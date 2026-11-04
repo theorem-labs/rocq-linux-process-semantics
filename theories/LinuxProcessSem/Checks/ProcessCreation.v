@@ -919,12 +919,16 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     That is a closed-world assumption about the environment of exactly
     the shape [State.access_okb]'s is above.  The launch's SIGCHLD
     disposition is not assumed: a caller with a recorded child is
-    answered only while the held bit [State.m_sigchld_dfl] is set, which
-    [State.init_model] seeds from the declared launch disposition
-    ([State.in_sigchld_default], SIG_DFL under [Run.valid_input] and its
-    siblings) and the process's own SIG_DFL install sets, so a launcher's
-    SIG_IGN, under which Linux reaps each child itself, can only turn an
-    answer into a decline.
+    answered only while [State.m_sigchld_dfl] is set, and the bit is set
+    only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL.  [State.init_model] seeds it from the declared launch
+    disposition ([State.in_sigchld_default], SIG_DFL under
+    [Run.valid_input] and its siblings), when the process has no child;
+    [Kernel.Signal.sigchld_install_model] sets it only in a process with
+    no recorded child
+    ([Checks.Examples.rt_sigaction_sets_sigchld_bit_only_without_children]).
+    So a child cloned under a launcher's SIG_IGN, which Linux may reap
+    at its exit, can only turn an answer into a decline.
 
     [Checks.Examples.wait4_with_a_child_admits_no_echild] is the
     statement, outside this file, that a caller with a child never gets

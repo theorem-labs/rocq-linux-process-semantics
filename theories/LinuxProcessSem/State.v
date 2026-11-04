@@ -4820,9 +4820,11 @@ Record ProcState := mkProcState {
                                     starts it [false]; set by the one SIGCHLD
                                     install the model answers
                                     ([Kernel.Signal.sigchld_dfl_install] in
-                                    [Kernel.Signal.rt_sigaction_spec]); copied
-                                    into a child by [Procs.child_proc]; written
-                                    by nothing else.  READ IT THROUGH
+                                    [Kernel.Signal.rt_sigaction_spec]), and
+                                    only in a process with no recorded child
+                                    ([Kernel.Signal.sigchld_install_model]);
+                                    copied into a child by [Procs.child_proc];
+                                    written by nothing else.  READ IT THROUGH
                                     [m_sigchld_dfl].
 
                                     WHY THE MODEL RECORDS IT.  The SIGCHLD
@@ -4835,8 +4837,17 @@ Record ProcState := mkProcState {
                                     SA_NOCLDWAIT set, [do_notify_parent]
                                     (kernel/signal.c) reaps an exiting child
                                     itself, so [wait4] never returns its pid.
-                                    [Kernel.Exit.wait4_spec] answers a caller
-                                    with a recorded child only when this bit is
+                                    Linux decides this when the child exits,
+                                    from the parent's disposition then
+                                    ([do_notify_parent], kernel/signal.c:2241-2259),
+                                    so a child cloned under a launcher's
+                                    SIG_IGN may be gone before a later
+                                    SIG_DFL install.  So the bit is set only
+                                    if every child the process has was cloned
+                                    while SIGCHLD was SIG_DFL (the launch seed
+                                    keeps this: [init_model] records no child),
+                                    and [Kernel.Exit.wait4_spec] answers a caller
+                                    with a recorded child only when it is
                                     set, so that answer rests on the launch's
                                     declared disposition or the process's own
                                     install, never on an unstated assumption.
@@ -5700,11 +5711,13 @@ Definition with_cgroup_bpf_setsockopt (b : bool) (m : Model) : Model :=
             (m_lim m) (m_time m).
 
 (** Install the held SIGCHLD bit.  Its transition writer is
-    [Kernel.Signal.rt_sigaction_spec]'s [sigchld_dfl_install] arm, which
-    writes [true]; no transition writes [false], because no answered call
-    can leave SIGCHLD anything else afterwards.  [init_model_setter_chain]
-    writes the launch's declared value ([ProcInput.in_sigchld_default]).
-    See [procst_sigchld_dfl]. *)
+    [Kernel.Signal.rt_sigaction_spec]'s [sigchld_dfl_install] arm,
+    through [Kernel.Signal.sigchld_install_model], which writes [true]
+    in a process with no recorded child and the bit's own value
+    otherwise; nothing turns it from [true] to [false], because no
+    answered call can leave SIGCHLD anything else afterwards.
+    [init_model_setter_chain] writes the launch's declared value
+    ([ProcInput.in_sigchld_default]).  See [procst_sigchld_dfl]. *)
 Definition with_sigchld_dfl (b : bool) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
