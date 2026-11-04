@@ -204,11 +204,13 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
     and a key fd set up by [openat] and then [dup3] onto the key's
     number, are this shape.
 
-    A PIPE END AND A SOCKET DO NOT MOVE.  What an alias answers from its
-    kind alone is derived for a regular file's description: the socket
-    calls' -ENOTSOCK ([Net.Socket.sock_fd]).  That does not hold for a
-    socket, and nothing in scope moves a pipe end, so both keep
-    [dup_modeled_entry]'s decline.
+    A PIPE END AND A SOCKET DO NOT MOVE, an AF_UNIX SEQPACKET end
+    included.  What an alias answers from its kind alone is derived for
+    a regular file's description: the socket calls' -ENOTSOCK
+    ([Net.Socket.sock_fd]).  That does not hold for a socket, and
+    nothing in scope moves a pipe end, so all of them keep
+    [dup_modeled_entry]'s decline; a SEQPACKET end must also keep one
+    descriptor for [State.seq_peer] to stay exact.
 
     THE ALIAS MAY DANGLE.  [close] and [close_range] of [newfd], and a
     later [dup3] onto it, are answered as for any descriptor, so an
@@ -230,7 +232,7 @@ Definition dup3_moves_entry (e : FdEntry) : bool :=
   match e with
   | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _ => true
   | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdOpaque _ => false
+  | FdOpaque _ | FdSeqpacket _ _ _ => false
   end.
 
 (** The table [dup3 oldfd newfd] leaves when [oldfd] holds [e], or
