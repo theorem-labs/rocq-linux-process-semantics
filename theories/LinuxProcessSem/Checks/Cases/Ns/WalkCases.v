@@ -160,6 +160,22 @@ Example walk_dotdot_stops_at_root_mountpoint :
   = (WOk (LDentry 2 20), false).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The walk-root test comes before the open-parent test, as in Linux
+    (fs/namei.c:1389-1391): with mount 1 open, ".." at the root of mount 2
+    still stays there when mount 2's mount point is the task's root, and
+    gives no answer when it is not. *)
+Definition root_parent_open_world : NsState :=
+  with_open_groups
+    (with_mounts world
+      (map (fun mt => if Pos.eqb (mnt_id mt) 1 then mnt_with_peer mt (Some 7%positive) else mt)
+           (ns_mounts world))) [7%positive].
+Example walk_dotdot_root_mountpoint_open_parent :
+  walk root_parent_open_world (ctx_at 1 no_caps (1%positive, 3%positive)) creds no_fd
+       (LDentry 2 20) (bytes [46; 46]) f_follow = (WOk (LDentry 2 20), false)
+  /\ walk root_parent_open_world (ctx 1 no_caps) creds no_fd (LDentry 2 20)
+       (bytes [46; 46]) f_follow = (WOver, false).
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** A covered directory shows the root of the mount on it. *)
 Example walk_covered_directory :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1)
