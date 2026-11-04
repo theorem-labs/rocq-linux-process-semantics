@@ -33,6 +33,7 @@ source is not included in this repository.
 
 - The namespace layer's Lean translation is pending.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
+- The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
 A list of definitions to translate is not Lean code or evidence that the two models agree.
 
