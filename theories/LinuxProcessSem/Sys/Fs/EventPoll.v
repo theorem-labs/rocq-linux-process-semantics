@@ -359,11 +359,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-<<<<<<< HEAD
-Proof. intros [| | | | | | | | | | |]; vm_compute; split; congruence. Qed.
-=======
-Proof. intros [| | | | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+Proof. intros [| | | | | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)

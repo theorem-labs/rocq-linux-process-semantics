@@ -432,7 +432,6 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                of all three result sets (fs/select.c); an eventfd's
                mask is [eventfd_poll]'s, a function of a counter the
                model does not hold (fs/eventfd.c); a /proc/sys file has
-<<<<<<< HEAD
                [proc_sys_poll] (fs/proc/proc_sysctl.c); the
                /proc/self/fd directory's [proc_fd_operations] has no
                [.poll], so its mask is [DEFAULT_POLLMASK]
@@ -448,11 +447,6 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
             (* FAIL-CLOSED: an AF_UNIX end's mask is [unix_dgram_poll]'s
                (net/unix/af_unix.c, v6.18.46), not [DEFAULT_POLLMASK];
                not written *)
-=======
-               [proc_sys_poll] (fs/proc/proc_sysctl.c).  All read at
-               v6.18.44; identical at v6.18.46; an [ONsFile]'s object is
-               of unknown type.  None is written as an arm, so the call
-               declines to [PsCoreGap]. *)
             | Some (FdStream _ _ _) => false
             (* NOT CONSTANT: [unix_poll] reads the end's queues and
                shutdown bits.  It is answered, but per descriptor, by
@@ -464,7 +458,6 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
             (* FAIL-CLOSED: [sock_poll] reaches [unix_dgram_poll] or
                [udp_poll], each a function of socket state
                [State.FdDgram] does not carry *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
             end
        else true)
       && bits_all_pollable fds z k'
@@ -1438,7 +1431,6 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
            (* FAIL-CLOSED: [do_pollfd]'s [fdget] refuses an O_PATH
               descriptor (that would be [EPOLLNVAL]), an eventfd answers
               [eventfd_poll] off its counter, a /proc/sys file answers
-<<<<<<< HEAD
               [proc_sys_poll], the /proc/self/fd directory
               [DEFAULT_POLLMASK] (no [.poll]), a signalfd
               [signalfd_poll] off its pending signals, and an
@@ -1446,9 +1438,6 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               written *)
        | Some (FdSeqpacket _ _ _) => None
            (* FAIL-CLOSED: [unix_dgram_poll]'s mask is not written *)
-=======
-              [proc_sys_poll], and an [ONsFile]'s object is of unknown
-              type; none of the four is written *)
        | Some (FdStream id side st) =>
            (* [sock_poll] -> [unix_poll], masked by the entry's filter:
               [demangle_poll(events) | EPOLLERR | EPOLLHUP] ([do_pollfd],
@@ -1475,7 +1464,6 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
            (* FAIL-CLOSED, for [bits_all_pollable]'s reason: a datagram
               socket's [->poll] reads state [State.FdDgram] does not
               carry *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
        end.
 
 (** Every entry's [fd] and its two answers, in entry order, or [None]
