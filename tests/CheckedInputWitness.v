@@ -733,7 +733,7 @@ Qed.
     shows which test was written. *)
 Definition seed_with_inherited (l : list (Z * list Z)) : RawProcInput :=
   mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
-    raw_kernel_default [97] true true false 0 0 l false.
+    raw_kernel_default [97] true true false 0 0 l false false.
 
 (* one descriptor at 3 holding "h": converted, and the seed holds it *)
 Example seed_inherited_one_key_converted :
