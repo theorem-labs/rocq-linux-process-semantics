@@ -224,14 +224,18 @@ Definition error_free (b : behavior) : Prop := ~ bh_errors b.
     [Checks.KillFree.valid_input_no_kill]: no trace of [Run.run] or of
     [Run.run_scfg] under any configuration carries one.  It is proved
     arm by arm over the dispatcher ([Checks.KillFree.kill_frame_holds]),
-    because both signals the model raises sit behind a declaration that
+    because every signal the model raises sits behind a declaration that
     [Run.valid_input] pins clear
     ([Kernel.Signal.tkill_spec_off_unmodeled] for SIGABRT,
-    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled] for SIGPIPE).  Under
-    [Run.valid_input_abort] a program that calls [abort] has one, and
-    under [Run.valid_input_sigpipe_kills] or
+    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled] for SIGPIPE,
+    [Kernel.Signal.kill_spec_off_unmodeled] for SIGKILL).  Under
+    [Run.valid_input_abort] a program that calls [abort] has one, under
+    [Run.valid_input_sigpipe_kills] or
     [Run.valid_input_channel_closed] a write whose far end has no reader
-    has one.  If a kill ever became reachable under [Run.valid_input],
+    has one, and under [Run.valid_input_inherited], which leaves
+    [State.in_selfkill_terminal] free, a [kill] of the caller with
+    SIGKILL has one.
+    If a kill ever became reachable under [Run.valid_input],
     every error-free statement in this tree would silently weaken; that
     theorem is what would break first, and
     [Checks.KillFree.valid_input_error_free_unkilled_iff] states the
