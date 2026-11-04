@@ -90,14 +90,62 @@ Proof.
     [unfold err_ret, ret_only, ret_outcome; apply pure_ok | apply unmodeled_intro].
 Qed.
 
-Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
+(** [CLONE_NEWIPC] with [CLONE_SYSVSEM] admits every errno but -EINTR
+    behind the gate, so the same -EAGAIN outcome witnesses it. *)
+Lemma clone_ns_refused_witness_ok : forall i m,
+  clone_ns_refused i m (clone_resolve_witness m).
+Proof.
+  intros. unfold clone_ns_refused, clone_resolve_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota;
+    [apply unmodeled_intro|].
+  unfold errno_any. eapply bind_step.
+  { apply (choose_ok _ EAGAIN). cbv beta. unfold EAGAIN, EINTR. lia. }
+  apply pure_ok.
+Qed.
+
+(** A word with stores: the body's witness when the stores are ones the
+    model states.  The -EAGAIN answer is an errno, so it stores
+    nothing. *)
+Definition clone_stores_witness (i : SyscallInput) (r : CloneArgs) (m : Model)
+    : outcome SyscallEffect :=
+  if clone_stores_ok i m r then clone_resolve_witness m else Unmodeled.
+
+Lemma clone_stores_witness_ok : forall (body : Sys SyscallEffect) i r m,
+  body i m (clone_resolve_witness m) ->
+  clone_with_stores r body i m (clone_stores_witness i r m).
+Proof.
+  intros body i r m Hb. apply clone_with_stores_iff. unfold clone_stores_witness.
+  destruct (clone_stores_ok i m r) eqn:Hok; cbv iota.
+  - left. split; [reflexivity|].
+    unfold clone_resolve_witness in *.
+    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in Hb |- *;
+      [exact Hb|].
+    unfold ret_outcome in *. cbv iota.
+    exists (mkEffect (errno_ret EAGAIN) [] []). split; [exact Hb|].
+    unfold tid_store_effect. cbn [eff_ret].
+    replace (addr_is_error_b (errno_ret EAGAIN)) with true by (vm_compute; reflexivity).
+    reflexivity.
+  - right. split; reflexivity.
+Qed.
+
+Definition clone_witness (i : SyscallInput) (flags : word) (m : Model)
+    : outcome SyscallEffect :=
   if clone_fork_flags_b flags then clone_resolve_witness m
   else if clone_ns_flags_b flags then clone_resolve_witness m
-  else if clone_legacy_einval_b flags then clone_einval_witness m
-  else Unmodeled.
+  else match clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) with
+       | Some r =>
+           if clone_arg_checks r then clone_einval_witness m
+           else match clone_class r with
+                | CcFork | CcNs => clone_stores_witness i r m
+                | CcNsRefused => clone_resolve_witness m
+                | CcNone => Unmodeled
+                end
+       | None => Unmodeled
+       end.
 
-Lemma clone_witness_ok : forall flags i m,
-  clone_spec flags i m (clone_witness flags m).
+Lemma clone_witness_ok : forall i flags m,
+  clone_spec flags i m (clone_witness i flags m).
 Proof.
   intros. unfold clone_spec, clone_witness.
   destruct (clone_fork_flags_b flags); cbv iota;
@@ -105,12 +153,14 @@ Proof.
   destruct (clone_ns_flags_b flags); cbv iota;
     [apply clone_ns_resolve_witness_ok|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
-             (in_arg i 4)).
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota; [|apply unmodeled_intro].
-  destruct (clone_arg_checks r); cbv iota;
-    [apply clone_einval_witness_ok | apply unmodeled_intro].
+  destruct (clone_arg_checks r); cbv iota; [apply clone_einval_witness_ok|].
+  destruct (clone_class r); cbv iota.
+  - apply clone_stores_witness_ok, clone_resolve_witness_ok.
+  - apply clone_stores_witness_ok, clone_ns_resolve_witness_ok.
+  - apply clone_ns_refused_witness_ok.
+  - apply unmodeled_intro.
 Qed.
 
 (** The same witness, carrying the copy-in ledger the [clone3] resolution
@@ -135,6 +185,37 @@ Proof.
     unfold clone_resolve_witness in H. rewrite Hg in H. exact H.
 Qed.
 
+(** A [clone3] record with stores ([Kernel.Fork.clone3_with_stores]):
+    the struct's ledger around the same witness. *)
+Definition clone3_stores_witness (i : SyscallInput) (uargs : word) (r : CloneArgs)
+    (m : Model) : outcome SyscallEffect :=
+  if clone_stores_ok i m r
+  then clone3_resolve_witness uargs m else Unmodeled.
+
+Lemma clone3_stores_witness_ok : forall i uargs r m,
+  clone3_with_stores uargs r i m (clone3_stores_witness i uargs r m).
+Proof.
+  intros i uargs r m. unfold clone3_with_stores, clone3_stores_witness.
+  destruct (clone_stores_ok i m r) eqn:Hok; cbv iota.
+  - unfold clone3_resolve_witness.
+    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg; cbv iota.
+    + apply record_copyins_unmodeled. apply clone_with_stores_iff. left.
+      split; [exact Hok|]. cbv iota.
+      unfold clone_resolve. eapply bind_unmodeled2; [apply get_model_ok|].
+      cbv beta. rewrite Hg. cbv iota. apply unmodeled_intro.
+    + apply record_copyins_ok_empty with (eff := mkEffect (errno_ret EAGAIN) [] []);
+        [reflexivity|].
+      apply clone_with_stores_iff. left. split; [exact Hok|]. cbv iota.
+      exists (mkEffect (errno_ret EAGAIN) [] []). split.
+      * pose proof (clone_resolve_witness_ok i m) as H.
+        unfold clone_resolve_witness in H. rewrite Hg in H. exact H.
+      * unfold tid_store_effect. cbn [eff_ret].
+        replace (addr_is_error_b (errno_ret EAGAIN)) with true by (vm_compute; reflexivity).
+        reflexivity.
+  - apply record_copyins_unmodeled. apply clone_with_stores_iff. right.
+    split; [exact Hok | reflexivity].
+Qed.
+
 Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then Unmodeled
@@ -148,7 +229,14 @@ Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
            else if clone3_einval_b bs
            then Ok (with_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
                       (mkEffect (errno_ret EINVAL) [] [])) m []
-           else Unmodeled
+           else match clone3_pre bs with
+                | CdArgs r =>
+                    match clone_class r with
+                    | CcFork => clone3_stores_witness i uargs r m
+                    | _ => Unmodeled
+                    end
+                | _ => Unmodeled
+                end
        end.
 
 Lemma clone3_witness_ok : forall i uargs size m,
@@ -164,7 +252,11 @@ Proof.
          |apply unmodeled_intro]. }
   cbv iota.
   destruct (clone3_fork_args_b bs); cbv iota; [apply clone3_resolve_witness_ok|].
-  destruct (clone3_einval_b bs); cbv iota; [|apply unmodeled_intro].
-  unfold clone3_einval. apply record_copyins_ok_empty; [reflexivity|].
-  unfold err_ret, ret_only. apply pure_ok.
+  destruct (clone3_einval_b bs); cbv iota.
+  { unfold clone3_einval. apply record_copyins_ok_empty; [reflexivity|].
+    unfold err_ret, ret_only. apply pure_ok. }
+  destruct (clone3_pre bs) as [| |r]; cbv iota; [apply unmodeled_intro | apply unmodeled_intro|].
+  destruct (clone_class r); cbv iota;
+    [apply clone3_stores_witness_ok | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro].
 Qed.

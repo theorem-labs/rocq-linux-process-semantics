@@ -892,14 +892,25 @@ Qed.
     The two pids differ because the arm required the child's to be FREE:
     [look P q = None] against the parent's own entry. *)
 (** The child's model is the parent's with a fresh [State.ProcState]
-    that keeps the halt flag, so all three clauses come through. *)
-Lemma fw_model_ok_child : forall e c c' q,
+    that keeps the halt flag, and the accounting of its own store, which
+    moves neither the lazy ledger nor the descriptor table
+    ([Procs.child_model_frame]), so all four clauses come through. *)
+Lemma fw_model_ok_child : forall S e c' q,
   fw_model_ok (pe_model e) ->
-  fw_model_ok (pe_model (child_entry e c c' q)).
+  fw_model_ok (pe_model (child_entry e (pe_cfg S e) c' q)).
 Proof.
-  intros e c c' q (Hh & Hl & Hc & Ht).
-  split; [exact Hh|]. split; [exact Hl|].
-  split; [exact Hc | reflexivity].
+  intros S e c' q (Hh & Hl & Hc & Ht).
+  destruct (child_model_frame (pe_model e) (cfg_model (pe_cfg S e))
+              (child_tid_store (pe_cfg S e) c') eq_refl eq_refl) as (Hfd & Hlz).
+  split; [exact Hh|]. split.
+  - change (m_vm_lazy (child_model (pe_model e) (cfg_model (pe_cfg S e))
+                         (child_tid_store (pe_cfg S e) c')) = []).
+    rewrite Hlz. exact Hl.
+  - split; [|reflexivity].
+    change (clone_no_shared_file_b
+              (fdst_table (m_fd (child_model (pe_model e) (cfg_model (pe_cfg S e))
+                                   (child_tid_store (pe_cfg S e) c')))) = true).
+    rewrite Hfd. exact Hc.
 Qed.
 
 Lemma fw_clone_target : forall P e c' q,
@@ -934,7 +945,7 @@ Proof.
   split; [exact Hppar|].
   split.
   - split; [exact (fw_model_ok_clear_shared _ Hh) | exact Hpw].
-  - left. split; [exact (fw_model_ok_child e _ c' q Hhe) | exact Hcw].
+  - left. split; [exact (fw_model_ok_child _ e c' q Hhe) | exact Hcw].
 Qed.
 
 (** FACT TWO: the reap's successor is a one-entry shape at [0x11040].
@@ -2798,18 +2809,23 @@ Proof. bveq. Qed.
 Lemma fw_w_is0_zero : w_is0 (0 : word) = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** With [newsp] zero -- which is what this program passes -- the child
-    inherits the parent's stack and differs from it only in a0
-    ([Procs.clone_child_sp] moves it only for a [clone] with a non-zero
-    [newsp]). *)
+(** With [clone(SIGCHLD, 0, ...)] -- which is what this program issues --
+    the child inherits the parent's stack, makes no store, and differs
+    from the parent's successor only in a0 and in having the parent's
+    memory as the call began ([Procs.child_ms]). *)
 Lemma fw_child_ms_eq : forall c c',
+  ms_svc_pending (cfg_ms c) = Some 220 ->
+  ms_gpr (cfg_ms c) 0 = 17 ->
   ms_gpr (cfg_ms c) 1 = 0 ->
-  child_ms c c' = set_reg (cfg_ms c') 10 (Z_to_bv 64 0).
+  child_ms c c' = ms_with_mem (set_reg (cfg_ms c') 10 (Z_to_bv 64 0)) (ms_mem (cfg_ms c)).
 Proof.
-  intros c c' H1. unfold child_ms, clone_child_sp. cbv zeta.
-  destruct (ms_svc_pending (cfg_ms c)) as [x8|]; [|reflexivity].
-  destruct (Z.eqb (bv_unsigned x8) 220%Z); [|reflexivity].
-  rewrite H1, fw_w_is0_zero. reflexivity.
+  intros c c' Hsv H0 H1.
+  assert (Hr : clone_args_of_cfg c
+               = clone_args_of_clone 17 0 (ms_gpr (cfg_ms c) 2) (ms_gpr (cfg_ms c) 3)
+                   (ms_gpr (cfg_ms c) 4)).
+  { unfold clone_args_of_cfg. cbv zeta. rewrite Hsv. cbv beta iota.
+    rewrite fw_two_twenty, H0, H1. reflexivity. }
+  unfold child_ms, child_tid_store. rewrite Hr. reflexivity.
 Qed.
 
 (** An errno return is negative as a signed word, which is what sends
@@ -2894,14 +2910,18 @@ Proof.
     assert (Hremc : fw_rem (pe_ms (child_entry e (pe_cfg (pcfg_shared P) e)
                                      cc (eff_ret eff))) fw_q_exit7).
     { unfold child_entry. cbn [pe_ms].
-      rewrite (fw_child_ms_eq (pe_cfg (pcfg_shared P) e) cc Ha1).
+      rewrite (fw_child_ms_eq (pe_cfg (pcfg_shared P) e) cc Hsv Ha0 Ha1).
       destruct (fw_set_reg10_frame (cfg_ms cc) (Z_to_bv 64 0))
         as (Hf1 & Hf2 & Hf3 & _ & _).
       apply fw_child_rem.
-      - rewrite Hf1. exact Hsv'.
-      - rewrite Hf2. exact Hrv'.
-      - rewrite Hf3. exact Hpc'.
-      - rewrite ms_gpr_set_reg_a0. apply fw_zero_word. }
+      - change (ms_svc_pending (set_reg (cfg_ms cc) 10 (Z_to_bv 64 0)) = None).
+        rewrite Hf1. exact Hsv'.
+      - change (ms_resv (set_reg (cfg_ms cc) 10 (Z_to_bv 64 0)) = None).
+        rewrite Hf2. exact Hrv'.
+      - change (bv_unsigned (ms_pc_val (set_reg (cfg_ms cc) 10 (Z_to_bv 64 0))) = 0x1101c%Z).
+        rewrite Hf3. exact Hpc'.
+      - change (ms_gpr (set_reg (cfg_ms cc) 10 (Z_to_bv 64 0)) 0 = 0).
+        rewrite ms_gpr_set_reg_a0. apply fw_zero_word. }
     split.
     + right; left.
       apply (fw_clone_target P e cc (eff_ret eff));

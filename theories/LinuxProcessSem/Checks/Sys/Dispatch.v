@@ -1082,8 +1082,8 @@ Defined.
 Definition arm_clone : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 220%Z (fun i => clone_spec (in_arg i 0) i))
-                       (fun i eff m => check_clone (in_arg i 0) eff m)
-                       (fun i m => clone_witness (in_arg i 0) m)
+                       (fun i eff m => check_clone i (in_arg i 0) eff m)
+                       (fun i m => clone_witness i (in_arg i 0) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_clone_sound_ok, check_clone_sound_unmodeled, check_clone_complete_ok, check_clone_complete_unmodeled, clone_witness_ok.
@@ -2251,10 +2251,10 @@ Lemma sa_spec_arm_mremap : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_clone : forall i eff m,
-  ca_check arm_clone i eff m = check_clone (in_arg i 0) eff m.
+  ca_check arm_clone i eff m = check_clone i (in_arg i 0) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_clone : forall i m,
-  ca_witness arm_clone i m = clone_witness (in_arg i 0) m.
+  ca_witness arm_clone i m = clone_witness i (in_arg i 0) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_clone : forall i m o,
   sa_spec (ca_arm arm_clone) i m o = clone_spec (in_arg i 0) i m o.

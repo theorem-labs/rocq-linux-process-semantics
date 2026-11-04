@@ -183,21 +183,72 @@ Definition check_clone_einval (eff : SyscallEffect) (m : Model)
   then check_ret_only eff (errno_ret EINVAL) m []
   else CheckUnmodeled.
 
-(** [Kernel.Fork.clone_legacy_einval_b] is the record's answer for every
-    a1 to a4 ([Kernel.Fork.clone_legacy_einval_b_spec]), so the checker
-    needs only the flag word. *)
-Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
+(** [CLONE_NEWIPC] with [CLONE_SYSVSEM]: an errno other than -EINTR, the
+    model as it was ([Kernel.Fork.clone_ns_refused]). *)
+Definition check_clone_ns_refused (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then CheckUnmodeled
+  else match eff with
+  | mkEffectU ret [] [] [] [] [] => if errno_any_b ret then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+(** The effect a body of [Kernel.Fork.clone_with_stores] gave, with the
+    caller's [CLONE_PARENT_SETTID] store taken out: the store is appended
+    only to a successful answer ([Kernel.Fork.tid_store_effect]), and the
+    two bodies write nothing of their own. *)
+Definition strip_tid_writes (eff : SyscallEffect) : SyscallEffect :=
+  if addr_is_error_b (eff_ret eff) then eff
+  else mkEffectU (eff_ret eff) [] (eff_zeros eff) (eff_unmaps eff) (eff_copies eff)
+         (eff_copyins eff).
+
+(** [Kernel.Fork.clone_with_stores]' checker, around the checker [inner]
+    of its body: the stores decide first, then the body decides the
+    stripped effect, and a successful answer must carry exactly the store
+    [Kernel.Fork.tid_writes] gives. *)
+Definition check_with_stores (i : SyscallInput) (r : CloneArgs)
+    (inner : SyscallEffect -> Model -> check_result) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (clone_stores_ok i m r) then CheckUnmodeled
+  else match inner (strip_tid_writes eff) m with
+       | CheckOk m' evs =>
+           if addr_is_error_b (eff_ret eff)
+              || writes_eqb (eff_writes eff)
+                   (tid_writes (in_wmem i) (clone_parent_tid r) (eff_ret eff))
+           then CheckOk m' evs else CheckReject
+       | res => res
+       end.
+
+(** [Kernel.Fork.clone_spec], branch for branch: the record comes from
+    the call's registers, as the spec decodes it. *)
+Definition check_clone (i : SyscallInput) (flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if clone_fork_flags_b flags then check_clone_resolve eff m
   else if clone_ns_flags_b flags then check_clone_ns_resolve eff m
-  else if clone_legacy_einval_b flags then check_clone_einval eff m
-  else CheckUnmodeled.
+  else match clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) with
+       | Some r =>
+           if clone_arg_checks r then check_clone_einval eff m
+           else match clone_class r with
+                | CcFork => check_with_stores i r check_clone_resolve eff m
+                | CcNs => check_with_stores i r check_clone_ns_resolve eff m
+                | CcNsRefused => check_clone_ns_refused eff m
+                | CcNone => CheckUnmodeled
+                end
+       | None => CheckUnmodeled
+       end.
 
 (** [clone3]'s -EINVAL carries the struct in its ledger
     ([Kernel.Fork.clone3_einval]). *)
 Definition check_clone3_einval (uargs : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   check_ret_only_copyins [(uargs, CLONE_ARGS_SIZE_nat)] eff (errno_ret EINVAL) m [].
+
+(** [Kernel.Fork.clone3_with_stores]: the struct in the ledger, and the
+    rest decided on the effect with the ledger cleared. *)
+Definition check_clone3_stores (i : SyscallInput) (uargs : word) (r : CloneArgs)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  check_copyins_after [(uargs, CLONE_ARGS_SIZE_nat)] eff
+    (check_with_stores i r check_clone_resolve (clear_copyins eff) m).
 
 (** A [uargs] range [access_ok] refuses is -EFAULT with an EMPTY ledger,
     asked through [State.copy_bytes_map] before the walk; one it admits
@@ -214,7 +265,14 @@ Definition check_clone3 (i : SyscallInput) (uargs size : word)
        | Some bs =>
            if clone3_fork_args_b bs then check_clone3_resolve uargs eff m
            else if clone3_einval_b bs then check_clone3_einval uargs eff m
-           else CheckUnmodeled
+           else match clone3_pre bs with
+                | CdArgs r =>
+                    match clone_class r with
+                    | CcFork => check_clone3_stores i uargs r eff m
+                    | _ => CheckUnmodeled
+                    end
+                | _ => CheckUnmodeled
+                end
        end.
 
 (** No admissible pid can be mistaken for an admissible errno.  Every
@@ -582,76 +640,317 @@ Proof.
   destruct (clone_pid_ok_b m ret); discriminate.
 Qed.
 
-Lemma check_clone_sound_ok : forall flags eff m m' evs i,
-  check_clone flags eff m = CheckOk m' evs -> clone_spec flags i m (Ok eff m' evs).
+(* ------------------------------------- CLONE_NEWIPC with CLONE_SYSVSEM *)
+
+Lemma check_clone_ns_refused_sound_ok : forall eff m m' evs i,
+  check_clone_ns_refused eff m = CheckOk m' evs -> clone_ns_refused i m (Ok eff m' evs).
 Proof.
-  intros flags eff m m' evs i H.
+  intros [ret ws zs us cs ci] m m' evs i H.
+  unfold check_clone_ns_refused in H. unfold clone_ns_refused.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+    cbv iota in H |- *; [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H.
+  destruct (errno_any_b ret) eqn:He; [|discriminate H].
+  injection H as <- <-.
+  apply errno_any_b_errno in He as (e & He & ->).
+  unfold errno_any. eapply bind_ok0; [apply (choose_ok _ e); exact He|].
+  unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Lemma check_clone_ns_refused_sound_unmodeled : forall eff m i,
+  check_clone_ns_refused eff m = CheckUnmodeled -> clone_ns_refused i m Unmodeled.
+Proof.
+  intros [ret ws zs us cs ci] m i H.
+  unfold check_clone_ns_refused in H. unfold clone_ns_refused.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+    cbv iota in H |- *; [apply unmodeled_intro|].
+  exfalso. destruct ws, zs, us, cs, ci; try discriminate H.
+  destruct (errno_any_b ret); discriminate H.
+Qed.
+
+Lemma check_clone_ns_refused_complete_ok : forall eff m m' evs i,
+  clone_ns_refused i m (Ok eff m' evs) -> check_clone_ns_refused eff m = CheckOk m' evs.
+Proof.
+  intros eff m m' evs i H.
+  unfold clone_ns_refused, errno_any in H. unfold check_clone_ns_refused.
+  sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok.
+  cbv beta iota. rewrite errno_any_b_ret by (intuition lia). reflexivity.
+Qed.
+
+Lemma check_clone_ns_refused_complete_unmodeled : forall m i eff,
+  clone_ns_refused i m Unmodeled -> check_clone_ns_refused eff m = CheckUnmodeled.
+Proof.
+  intros m i eff H.
+  unfold clone_ns_refused, errno_any in H. unfold check_clone_ns_refused.
+  sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
+    hall Hg; inv_ok; reflexivity.
+Qed.
+
+(* ------------------------------------------------ the stores of a record *)
+
+(** The two bodies of [Kernel.Fork.clone_with_stores] write nothing and
+    read nothing of their own. *)
+Lemma check_clone_resolve_no_writes : forall eff m m' evs,
+  check_clone_resolve eff m = CheckOk m' evs -> eff_writes eff = [] /\ eff_copyins eff = [].
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_clone_resolve in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+    [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H. split; reflexivity.
+Qed.
+
+Lemma check_clone_ns_resolve_no_writes : forall eff m m' evs,
+  check_clone_ns_resolve eff m = CheckOk m' evs -> eff_writes eff = [] /\ eff_copyins eff = [].
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_clone_ns_resolve in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+    [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H. split; reflexivity.
+Qed.
+
+Lemma writes_eqb_refl : forall l, writes_eqb l l = true.
+Proof. intros l. apply writes_eqb_eq. reflexivity. Qed.
+
+(** [check_with_stores] against [Kernel.Fork.clone_with_stores], for any
+    body and checker of it that agree. *)
+Lemma check_with_stores_sound_ok : forall (body : Sys SyscallEffect) inner i r eff m m' evs,
+  (forall e m1 evs1, inner e m = CheckOk m1 evs1 -> body i m (Ok e m1 evs1)) ->
+  check_with_stores i r inner eff m = CheckOk m' evs ->
+  clone_with_stores r body i m (Ok eff m' evs).
+Proof.
+  intros body inner i r [ret ws zs us cs ci] m m' evs Hs H.
+  unfold check_with_stores in H. apply clone_with_stores_iff.
+  destruct (clone_stores_ok i m r) eqn:Hok; cbn [negb] in H; [|discriminate H].
+  left. split; [reflexivity|]. cbv iota.
+  destruct (inner (strip_tid_writes (mkEffectU ret ws zs us cs ci)) m)
+    as [m1 evs1| |] eqn:Hin; cbv iota in H; try discriminate H.
+  cbn [eff_ret eff_writes] in H.
+  destruct (addr_is_error_b ret
+            || writes_eqb ws (tid_writes (in_wmem i) (clone_parent_tid r) ret)) eqn:Hc;
+    cbv iota in H; [|discriminate H].
+  injection H as <- <-.
+  exists (strip_tid_writes (mkEffectU ret ws zs us cs ci)).
+  split; [exact (Hs _ _ _ Hin)|].
+  unfold strip_tid_writes, tid_store_effect. cbn [eff_ret].
+  destruct (addr_is_error_b ret) eqn:He; cbn [eff_ret eff_writes eff_zeros eff_unmaps
+                                               eff_copies eff_copyins]; rewrite ?He.
+  - reflexivity.
+  - rewrite ?He in Hc. cbn [orb] in Hc. apply writes_eqb_eq in Hc. subst ws. reflexivity.
+Qed.
+
+Lemma check_with_stores_sound_unmodeled : forall (body : Sys SyscallEffect) inner i r eff m,
+  (forall e, inner e m = CheckUnmodeled -> body i m Unmodeled) ->
+  check_with_stores i r inner eff m = CheckUnmodeled ->
+  clone_with_stores r body i m Unmodeled.
+Proof.
+  intros body inner i r eff m Hs H.
+  unfold check_with_stores in H. apply clone_with_stores_iff.
+  destruct (clone_stores_ok i m r) eqn:Hok; cbn [negb] in H.
+  - left. split; [reflexivity|]. cbv iota.
+    destruct (inner (strip_tid_writes eff) m) eqn:Hin; cbv iota in H.
+    + destruct (addr_is_error_b (eff_ret eff)
+                || writes_eqb (eff_writes eff)
+                     (tid_writes (in_wmem i) (clone_parent_tid r) (eff_ret eff)));
+        cbv iota in H; discriminate H.
+    + discriminate H.
+    + exact (Hs _ Hin).
+  - right. split; reflexivity.
+Qed.
+
+Lemma check_with_stores_complete_ok : forall (body : Sys SyscallEffect) inner i r eff m m' evs,
+  (forall e m1 evs1, body i m (Ok e m1 evs1) -> inner e m = CheckOk m1 evs1) ->
+  (forall e m1 evs1, inner e m = CheckOk m1 evs1 -> eff_writes e = []) ->
+  clone_with_stores r body i m (Ok eff m' evs) ->
+  check_with_stores i r inner eff m = CheckOk m' evs.
+Proof.
+  intros body inner i r eff m m' evs Hc Hw H.
+  apply clone_with_stores_iff in H as [[Hok (e0 & Hb & ->)] | [_ Hu]]; [|discriminate Hu].
+  unfold check_with_stores. rewrite Hok. cbn [negb].
+  pose proof (Hc _ _ _ Hb) as Hin. pose proof (Hw _ _ _ Hin) as Hw0.
+  destruct e0 as [ret ws zs us cs ci]. cbn [eff_writes] in Hw0. subst ws.
+  unfold tid_store_effect, strip_tid_writes. cbn [eff_ret].
+  destruct (addr_is_error_b ret) eqn:He; cbn [eff_ret eff_writes eff_zeros eff_unmaps
+                                               eff_copies eff_copyins app]; rewrite ?He;
+    cbv iota; rewrite Hin; cbv iota.
+  - reflexivity.
+  - rewrite writes_eqb_refl. reflexivity.
+Qed.
+
+Lemma check_with_stores_complete_unmodeled : forall (body : Sys SyscallEffect) inner i r eff m,
+  (forall e, body i m Unmodeled -> inner e m = CheckUnmodeled) ->
+  clone_with_stores r body i m Unmodeled ->
+  check_with_stores i r inner eff m = CheckUnmodeled.
+Proof.
+  intros body inner i r eff m Hc H.
+  unfold check_with_stores.
+  apply clone_with_stores_iff in H as [[Hok Hb] | [Hok _]]; rewrite Hok; cbn [negb];
+    [|reflexivity].
+  rewrite (Hc _ Hb). reflexivity.
+Qed.
+
+(** The same four for [clone3]'s, which carries the struct in its
+    ledger. *)
+Lemma check_clone3_stores_sound_ok : forall i uargs r eff m m' evs,
+  check_clone3_stores i uargs r eff m = CheckOk m' evs ->
+  clone3_with_stores uargs r i m (Ok eff m' evs).
+Proof.
+  intros i uargs r eff m m' evs H. unfold check_clone3_stores in H.
+  apply check_copyins_after_ok_iff in H as [Hci H].
+  unfold clone3_with_stores. apply record_copyins_clear_ok; [exact Hci|].
+  apply (check_with_stores_sound_ok clone_resolve check_clone_resolve); [|exact H].
+  intros e m1 evs1 He. now apply check_clone_resolve_sound_ok.
+Qed.
+
+Lemma check_clone3_stores_sound_unmodeled : forall i uargs r eff m,
+  check_clone3_stores i uargs r eff m = CheckUnmodeled ->
+  clone3_with_stores uargs r i m Unmodeled.
+Proof.
+  intros i uargs r eff m H. unfold check_clone3_stores in H.
+  apply check_copyins_after_unmodeled in H.
+  unfold clone3_with_stores. apply record_copyins_unmodeled.
+  apply (check_with_stores_sound_unmodeled clone_resolve check_clone_resolve i r
+           (clear_copyins eff) m); [|exact H].
+  intros e He. now apply check_clone_resolve_sound_unmodeled with (eff := e).
+Qed.
+
+Lemma check_clone3_stores_complete_ok : forall i uargs r eff m m' evs,
+  clone3_with_stores uargs r i m (Ok eff m' evs) ->
+  check_clone3_stores i uargs r eff m = CheckOk m' evs.
+Proof.
+  intros i uargs r eff m m' evs H. unfold clone3_with_stores in H.
+  apply record_copyins_ok_inv in H as (core & Hcore & ->).
+  assert (Hci : eff_copyins core = []).
+  { pose proof Hcore as Hc0.
+    apply clone_with_stores_iff in Hc0 as [[_ (e0 & Hb & ->)] | [_ Hu]]; [|discriminate Hu].
+    pose proof (check_clone_resolve_complete_ok _ _ _ _ i Hb) as Hk.
+    destruct (check_clone_resolve_no_writes _ _ _ _ Hk) as [_ Hci0].
+    unfold tid_store_effect. destruct (addr_is_error_b (eff_ret e0)); [exact Hci0|].
+    cbn [eff_copyins]. exact Hci0. }
+  unfold check_clone3_stores. apply check_copyins_after_ok_iff. split.
+  - unfold with_copyins. cbn [eff_copyins]. rewrite Hci, app_nil_r. reflexivity.
+  - replace (clear_copyins (with_copyins ([(uargs, CLONE_ARGS_SIZE_nat)] ++ eff_copyins core)
+                              core)) with core.
+    + apply (check_with_stores_complete_ok clone_resolve); [| |exact Hcore].
+      * intros e m1 evs1 He. now apply check_clone_resolve_complete_ok with (i := i).
+      * intros e m1 evs1 He. exact (proj1 (check_clone_resolve_no_writes _ _ _ _ He)).
+    + destruct core as [ret ws zs us cs ci]. cbn [eff_copyins] in Hci. subst ci.
+      reflexivity.
+Qed.
+
+Lemma check_clone3_stores_complete_unmodeled : forall i uargs r eff m,
+  clone3_with_stores uargs r i m Unmodeled ->
+  check_clone3_stores i uargs r eff m = CheckUnmodeled.
+Proof.
+  intros i uargs r eff m H. unfold clone3_with_stores in H.
+  apply record_copyins_unmodeled_inv in H.
+  unfold check_clone3_stores.
+  rewrite (check_with_stores_complete_unmodeled clone_resolve check_clone_resolve i r
+             (clear_copyins eff) m).
+  - reflexivity.
+  - intros e Hb. now apply check_clone_resolve_complete_unmodeled with (i := i).
+  - exact H.
+Qed.
+
+(* ------------------------------------------------------ the two arms *)
+
+Lemma check_clone_sound_ok : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> clone_spec flags i m (Ok eff m' evs).
+Proof.
+  intros i flags eff m m' evs H.
   unfold check_clone in H. unfold clone_spec.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_sound_ok|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_ns_resolve_sound_ok|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
-             (in_arg i 4)) in H.
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota in H |- *; [|discriminate].
-  destruct (clone_arg_checks r); cbv iota in H |- *; [|discriminate].
-  now apply check_clone_einval_sound_ok.
+  destruct (clone_arg_checks r); cbv iota in H |- *;
+    [now apply check_clone_einval_sound_ok|].
+  destruct (clone_class r); cbv iota in H |- *; try discriminate H.
+  - apply (check_with_stores_sound_ok clone_resolve check_clone_resolve); [|exact H].
+    intros e m1 evs1 He. now apply check_clone_resolve_sound_ok.
+  - apply (check_with_stores_sound_ok clone_ns_resolve check_clone_ns_resolve); [|exact H].
+    intros e m1 evs1 He. now apply check_clone_ns_resolve_sound_ok.
+  - now apply check_clone_ns_refused_sound_ok.
 Qed.
 
-Lemma check_clone_sound_unmodeled : forall flags eff m i,
-  check_clone flags eff m = CheckUnmodeled -> clone_spec flags i m Unmodeled.
+Lemma check_clone_sound_unmodeled : forall i flags eff m,
+  check_clone i flags eff m = CheckUnmodeled -> clone_spec flags i m Unmodeled.
 Proof.
-  intros flags eff m i H.
+  intros i flags eff m H.
   unfold check_clone in H. unfold clone_spec.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_sound_unmodeled with (eff := eff)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_ns_resolve_sound_unmodeled with (eff := eff)|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
-             (in_arg i 4)) in H.
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota in H |- *; [|apply unmodeled_intro].
-  destruct (clone_arg_checks r); cbv iota in H |- *; [|apply unmodeled_intro].
-  now apply check_clone_einval_sound_unmodeled with (eff := eff).
+  destruct (clone_arg_checks r); cbv iota in H |- *;
+    [now apply check_clone_einval_sound_unmodeled with (eff := eff)|].
+  destruct (clone_class r); cbv iota in H |- *.
+  - apply (check_with_stores_sound_unmodeled clone_resolve check_clone_resolve i r eff m);
+      [|exact H].
+    intros e He. now apply check_clone_resolve_sound_unmodeled with (eff := e).
+  - apply (check_with_stores_sound_unmodeled clone_ns_resolve check_clone_ns_resolve i r
+             eff m); [|exact H].
+    intros e He. now apply check_clone_ns_resolve_sound_unmodeled with (eff := e).
+  - now apply check_clone_ns_refused_sound_unmodeled with (eff := eff).
+  - apply unmodeled_intro.
 Qed.
 
-Lemma check_clone_complete_ok : forall flags eff m m' evs i,
-  clone_spec flags i m (Ok eff m' evs) -> check_clone flags eff m = CheckOk m' evs.
+Lemma check_clone_complete_ok : forall i flags eff m m' evs,
+  clone_spec flags i m (Ok eff m' evs) -> check_clone i flags eff m = CheckOk m' evs.
 Proof.
-  intros flags eff m m' evs i H.
+  intros i flags eff m m' evs H.
   unfold clone_spec in H. unfold check_clone.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_complete_ok with (i := i)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_ns_resolve_complete_ok with (i := i)|].
   apply input_bind_ok_inv in H. cbv beta in H.
-  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
-             (in_arg i 4)).
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota in H |- *; [|unfold unmodeled in H; discriminate].
-  destruct (clone_arg_checks r); cbv iota in H |- *; [|unfold unmodeled in H; discriminate].
-  now apply check_clone_einval_complete_ok with (i := i).
+  destruct (clone_arg_checks r); cbv iota in H |- *;
+    [now apply check_clone_einval_complete_ok with (i := i)|].
+  destruct (clone_class r); cbv iota in H |- *;
+    try (unfold unmodeled in H; discriminate H).
+  - apply (check_with_stores_complete_ok clone_resolve); [| |exact H].
+    + intros e m1 evs1 He. now apply check_clone_resolve_complete_ok with (i := i).
+    + intros e m1 evs1 He. exact (proj1 (check_clone_resolve_no_writes _ _ _ _ He)).
+  - apply (check_with_stores_complete_ok clone_ns_resolve); [| |exact H].
+    + intros e m1 evs1 He. now apply check_clone_ns_resolve_complete_ok with (i := i).
+    + intros e m1 evs1 He. exact (proj1 (check_clone_ns_resolve_no_writes _ _ _ _ He)).
+  - now apply check_clone_ns_refused_complete_ok with (i := i).
 Qed.
 
-Lemma check_clone_complete_unmodeled : forall flags m i eff,
-  clone_spec flags i m Unmodeled -> check_clone flags eff m = CheckUnmodeled.
+Lemma check_clone_complete_unmodeled : forall i flags m eff,
+  clone_spec flags i m Unmodeled -> check_clone i flags eff m = CheckUnmodeled.
 Proof.
-  intros flags m i eff H.
+  intros i flags m eff H.
   unfold clone_spec in H. unfold check_clone.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_complete_unmodeled with (i := i)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_ns_resolve_complete_unmodeled with (i := i)|].
   apply input_bind_unmodeled_inv in H. cbv beta in H.
-  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
-             (in_arg i 4)).
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota in H |- *; [|reflexivity].
-  destruct (clone_arg_checks r); cbv iota in H |- *; [|reflexivity].
-  now apply check_clone_einval_complete_unmodeled with (i := i).
+  destruct (clone_arg_checks r); cbv iota in H |- *;
+    [now apply check_clone_einval_complete_unmodeled with (i := i)|].
+  destruct (clone_class r); cbv iota in H |- *.
+  - apply (check_with_stores_complete_unmodeled clone_resolve); [|exact H].
+    intros e Hb. now apply check_clone_resolve_complete_unmodeled with (i := i).
+  - apply (check_with_stores_complete_unmodeled clone_ns_resolve); [|exact H].
+    intros e Hb. now apply check_clone_ns_resolve_complete_unmodeled with (i := i).
+  - now apply check_clone_ns_refused_complete_unmodeled with (i := i).
+  - reflexivity.
 Qed.
 
 Lemma check_clone3_sound_ok : forall i uargs size eff m m' evs,
@@ -673,8 +972,10 @@ Proof.
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [now apply check_clone3_resolve_sound_ok|].
   destruct (clone3_einval_b bs) eqn:He;
-    cbv iota; cbv iota in H; [|discriminate].
-  now apply check_clone3_einval_sound_ok.
+    cbv iota; cbv iota in H; [now apply check_clone3_einval_sound_ok|].
+  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; try discriminate H.
+  destruct (clone_class r); cbv iota in H |- *; try discriminate H.
+  now apply check_clone3_stores_sound_ok.
 Qed.
 
 Lemma check_clone3_sound_unmodeled : forall i uargs size eff m,
@@ -694,10 +995,14 @@ Proof.
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H;
     [now apply check_clone3_resolve_sound_unmodeled with (eff := eff)|].
-  destruct (clone3_einval_b bs) eqn:He;
-    cbv iota; cbv iota in H; [|apply unmodeled_intro].
-  exfalso. unfold check_clone3_einval in H.
-  exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  destruct (clone3_einval_b bs) eqn:He; cbv iota; cbv iota in H.
+  { exfalso. unfold check_clone3_einval in H.
+    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H). }
+  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; [apply unmodeled_intro
+                                                           | apply unmodeled_intro|].
+  destruct (clone_class r); cbv iota in H |- *;
+    [now apply check_clone3_stores_sound_unmodeled with (eff := eff)
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 Lemma check_clone3_complete_ok : forall i uargs size eff m m' evs,
@@ -717,7 +1022,11 @@ Proof.
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
   { now apply check_clone3_resolve_complete_ok with (i := i). }
   destruct (clone3_einval_b bs) eqn:He; hall He; inv_ok.
-  now apply check_clone3_einval_complete_ok with (i := i).
+  { now apply check_clone3_einval_complete_ok with (i := i). }
+  destruct (clone3_pre bs) as [| |r] eqn:Hp3; hall Hp3; inv_ok.
+  destruct (clone_class r) eqn:Hcc; hall Hcc; inv_ok.
+  match goal with Hx : clone3_with_stores _ _ _ _ _ |- _ =>
+    now apply check_clone3_stores_complete_ok end.
 Qed.
 
 Lemma check_clone3_complete_unmodeled : forall i uargs size m eff,
@@ -728,14 +1037,218 @@ Proof.
   unfold clone3_spec in H. unfold check_clone3.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [reflexivity|].
-  sys_unfold. cbv iota in H. inv_ok.
+  apply input_bind_unmodeled_inv in H. cbv beta in H.
   destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs;
-         inv_ok; reflexivity. }
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
+    as [bs|] eqn:Hbs; cbv iota in H |- *.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; cbv iota in H |- *;
+         [unfold err_ret, ret_only, pure in H; discriminate H | reflexivity]. }
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *.
   { now apply check_clone3_resolve_complete_unmodeled with (i := i). }
-  destruct (clone3_einval_b bs) eqn:He; hall He; inv_ok.
-  all: first [ reflexivity
-             | exfalso; eapply clone3_einval_not_unmodeled; eassumption ].
+  destruct (clone3_einval_b bs) eqn:He; cbv iota in H |- *.
+  { exfalso; eapply clone3_einval_not_unmodeled; eassumption. }
+  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; try reflexivity.
+  destruct (clone_class r); cbv iota in H |- *; try reflexivity.
+  now apply check_clone3_stores_complete_unmodeled.
+Qed.
+
+(* ------------------------------------------- what an accepted answer is *)
+
+(** An accepted answer of [check_with_stores] is its body's checker's
+    answer on the stripped effect, with the same return. *)
+Lemma check_with_stores_ok_inv : forall i r inner eff m m' evs,
+  check_with_stores i r inner eff m = CheckOk m' evs ->
+  inner (strip_tid_writes eff) m = CheckOk m' evs.
+Proof.
+  intros i r inner eff m m' evs H. unfold check_with_stores in H.
+  destruct (negb (clone_stores_ok i m r)); cbv iota in H; [discriminate H|].
+  destruct (inner (strip_tid_writes eff) m) as [m1 evs1| |] eqn:Hin; cbv iota in H;
+    try discriminate H.
+  destruct (addr_is_error_b (eff_ret eff)
+            || writes_eqb (eff_writes eff)
+                 (tid_writes (in_wmem i) (clone_parent_tid r) (eff_ret eff)));
+    cbv iota in H; [|discriminate H].
+  injection H as <- <-. reflexivity.
+Qed.
+
+Lemma strip_tid_writes_ret : forall eff, eff_ret (strip_tid_writes eff) = eff_ret eff.
+Proof.
+  intros eff. unfold strip_tid_writes. destruct (addr_is_error_b (eff_ret eff)); reflexivity.
+Qed.
+
+(** Every answer [check_clone] accepts is one of four checkers' answers,
+    with the same return: the frame lemmas over the dispatcher read the
+    model and events off these. *)
+Lemma check_clone_ok_inv : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs ->
+  (exists e, check_clone_resolve e m = CheckOk m' evs /\ eff_ret e = eff_ret eff)
+  \/ (exists e, check_clone_ns_resolve e m = CheckOk m' evs /\ eff_ret e = eff_ret eff)
+  \/ check_clone_einval eff m = CheckOk m' evs
+  \/ check_clone_ns_refused eff m = CheckOk m' evs.
+Proof.
+  intros i flags eff m m' evs H. unfold check_clone in H.
+  destruct (clone_fork_flags_b flags); cbv iota in H.
+  { left. exists eff. split; [exact H | reflexivity]. }
+  destruct (clone_ns_flags_b flags); cbv iota in H.
+  { right; left. exists eff. split; [exact H | reflexivity]. }
+  destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
+    as [r|]; cbv iota in H; [|discriminate H].
+  destruct (clone_arg_checks r); cbv iota in H.
+  { right; right; left. exact H. }
+  destruct (clone_class r); cbv iota in H.
+  - left. exists (strip_tid_writes eff).
+    split; [exact (check_with_stores_ok_inv _ _ _ _ _ _ _ H) | apply strip_tid_writes_ret].
+  - right; left. exists (strip_tid_writes eff).
+    split; [exact (check_with_stores_ok_inv _ _ _ _ _ _ _ H) | apply strip_tid_writes_ret].
+  - right; right; right. exact H.
+  - discriminate H.
+Qed.
+
+Lemma check_clone3_ok_inv : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs ->
+  check_clone3_resolve uargs eff m = CheckOk m' evs
+  \/ check_ret_only eff (errno_ret EFAULT) m [] = CheckOk m' evs
+  \/ check_clone3_einval uargs eff m = CheckOk m' evs
+  \/ (exists e, check_clone_resolve e m = CheckOk m' evs /\ eff_ret e = eff_ret eff).
+Proof.
+  intros i uargs size eff m m' evs H. unfold check_clone3 in H.
+  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota in H;
+    [discriminate H|].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|]; cbv iota in H.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota in H; [|discriminate H].
+       right; left. exact H. }
+  destruct (clone3_fork_args_b bs); cbv iota in H; [left; exact H|].
+  destruct (clone3_einval_b bs); cbv iota in H; [right; right; left; exact H|].
+  destruct (clone3_pre bs) as [| |r]; cbv iota in H; try discriminate H.
+  destruct (clone_class r); cbv iota in H; try discriminate H.
+  right; right; right. unfold check_clone3_stores in H.
+  apply check_copyins_after_ok_iff in H as [_ H].
+  exists (strip_tid_writes (clear_copyins eff)).
+  split; [exact (check_with_stores_ok_inv _ _ _ _ _ _ _ H)|].
+  rewrite strip_tid_writes_ret. reflexivity.
+Qed.
+
+(** THE SHAPE OF AN ACCEPTED ANSWER: no event, and either an
+    error-encoded return with the model as it was, or an admissible pid
+    with the child recorded over the model the caller keeps
+    ([Kernel.Fork.forfeit_model]).  The memory the answer writes is not
+    part of it. *)
+Definition clone_answer_shape (eff : SyscallEffect) (m m' : Model) (evs : list event)
+    : Prop :=
+  evs = []
+  /\ ((m' = m /\ addr_is_error_b (eff_ret eff) = true)
+      \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+          /\ clone_pid_ok_b m (eff_ret eff) = true)).
+
+Lemma check_clone_answer_shape : forall ret m m' evs,
+  check_clone_answer ret m = CheckOk m' evs ->
+  clone_answer_shape (mkEffect ret [] []) m m' evs.
+Proof.
+  intros ret m m' evs H. unfold check_clone_answer in H. unfold clone_answer_shape.
+  cbn [eff_ret].
+  destruct (errno_ret_in clone_errnos ret) eqn:He.
+  - injection H as <- <-. split; [reflexivity|]. left. split; [reflexivity|].
+    apply errno_ret_in_true in He as (e & Hin & ->).
+    destruct (errnos_ok_range clone_errnos e eq_refl Hin) as [H1 H2].
+    exact (errno_ret_error_b e H1 H2).
+  - destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate H].
+    injection H as <- <-. split; [reflexivity|]. right.
+    split; [reflexivity | first [exact Hv | reflexivity]].
+Qed.
+
+Lemma check_clone_ns_answer_shape : forall ret m m' evs,
+  check_clone_ns_answer ret m = CheckOk m' evs ->
+  clone_answer_shape (mkEffect ret [] []) m m' evs.
+Proof.
+  intros ret m m' evs H. unfold check_clone_ns_answer in H. unfold clone_answer_shape.
+  cbn [eff_ret].
+  destruct (errno_any_b ret) eqn:He.
+  - injection H as <- <-. split; [reflexivity|]. left. split; [reflexivity|].
+    unfold errno_any_b in He. apply andb_true_iff in He as [He _]. exact He.
+  - destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate H].
+    injection H as <- <-. split; [reflexivity|]. right.
+    split; [reflexivity | first [exact Hv | reflexivity]].
+Qed.
+
+Lemma check_clone_resolve_shape : forall eff m m' evs,
+  check_clone_resolve eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_clone_resolve in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in H;
+    [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H.
+  exact (check_clone_answer_shape _ _ _ _ H).
+Qed.
+
+Lemma check_clone_ns_resolve_shape : forall eff m m' evs,
+  check_clone_ns_resolve eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_clone_ns_resolve in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in H;
+    [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H.
+  exact (check_clone_ns_answer_shape _ _ _ _ H).
+Qed.
+
+Lemma check_clone_einval_shape : forall eff m m' evs,
+  check_clone_einval eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros eff m m' evs H. unfold check_clone_einval in H.
+  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m))); cbv iota in H;
+    [|discriminate H].
+  apply check_ret_only_ok_iff in H as (-> & -> & ->).
+  split; [reflexivity|]. left. split; [reflexivity|]. vm_compute. reflexivity.
+Qed.
+
+Lemma check_clone_ns_refused_shape : forall eff m m' evs,
+  check_clone_ns_refused eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_clone_ns_refused in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in H;
+    [discriminate H|].
+  destruct ws, zs, us, cs, ci; try discriminate H.
+  destruct (errno_any_b ret) eqn:He; [|discriminate H].
+  injection H as <- <-. split; [reflexivity|]. left. split; [reflexivity|].
+  cbn [eff_ret]. unfold errno_any_b in He. apply andb_true_iff in He as [He _]. exact He.
+Qed.
+
+Lemma check_clone3_resolve_shape : forall uargs eff m m' evs,
+  check_clone3_resolve uargs eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros uargs [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in H;
+    [discriminate H|].
+  destruct ws, zs, us, cs; try discriminate H.
+  destruct ci as [|[a n] [|? ?]]; try discriminate H.
+  destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat); cbv iota in H;
+    [|discriminate H].
+  exact (check_clone_answer_shape _ _ _ _ H).
+Qed.
+
+Lemma clone_answer_shape_ret : forall e eff m m' evs,
+  eff_ret e = eff_ret eff -> clone_answer_shape e m m' evs -> clone_answer_shape eff m m' evs.
+Proof. intros e eff m m' evs Hr H. unfold clone_answer_shape in *. rewrite <- Hr. exact H. Qed.
+
+Lemma check_clone_shape : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros i flags eff m m' evs H.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H) as [(e & He & Hr)|[(e & He & Hr)|[He|He]]].
+  - exact (clone_answer_shape_ret _ _ _ _ _ Hr (check_clone_resolve_shape _ _ _ _ He)).
+  - exact (clone_answer_shape_ret _ _ _ _ _ Hr (check_clone_ns_resolve_shape _ _ _ _ He)).
+  - exact (check_clone_einval_shape _ _ _ _ He).
+  - exact (check_clone_ns_refused_shape _ _ _ _ He).
+Qed.
+
+Lemma check_clone3_shape : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Proof.
+  intros i uargs size eff m m' evs H.
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H) as [He|[He|[He|(e & He & Hr)]]].
+  - exact (check_clone3_resolve_shape _ _ _ _ _ He).
+  - apply check_ret_only_ok_iff in He as (-> & -> & ->).
+    split; [reflexivity|]. left. split; [reflexivity|]. vm_compute. reflexivity.
+  - unfold check_clone3_einval in He.
+    apply check_ret_only_copyins_ok_iff in He as (-> & -> & ->).
+    split; [reflexivity|]. left. split; [reflexivity|]. vm_compute. reflexivity.
+  - exact (clone_answer_shape_ret _ _ _ _ _ Hr (check_clone_resolve_shape _ _ _ _ He)).
 Qed.

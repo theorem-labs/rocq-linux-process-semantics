@@ -2837,22 +2837,26 @@ Proof.
   unfold check_rt_sigaction in H. vm_frame2 H.
 Qed.
 
-Lemma check_clone_frame : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_clone_frame : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros flags eff m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  vm_frame2 H.
+  intros i flags eff m m' evs H.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H) as [(e & He & _)|[(e & He & _)|[He|He]]];
+    clear H;
+    unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+      check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
+    vm_frame2 He.
 Qed.
 
 Lemma check_clone3_frame : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  vm_frame2 H.
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H) as [He|[He|[He|(e & He & _)]]];
+    clear H;
+    unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+      check_clone3_einval in He;
+    vm_frame2 He.
 Qed.
 
 (* -------------------------------------------------------------------------

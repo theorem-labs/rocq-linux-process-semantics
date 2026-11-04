@@ -535,3 +535,116 @@ Example clone_with_a_seqpacket_end_open_declines :
        clone_channels_model
      = CheckOk (with_child (Z_to_bv 64 4242) clone_channels_model) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(* -------------------------------------------------------------------------
+   clone (220) and clone3 (435): CLONE_SYSVSEM and the four tid bits,
+   without CLONE_VM
+
+   PAIRED TEST.  Before [Kernel.Fork.clone_class] every word below
+   declined, but for the [clone3] row with stack 0 and stack_size 8, a
+   control that answers -EINVAL before and after.  Each other word now
+   gets a child, with the caller's [CLONE_PARENT_SETTID] store in the
+   answer; gets an errno and no child (CLONE_NEWIPC with CLONE_SYSVSEM);
+   or declines where the model does not state a store (kernel/fork.c,
+   Linux v6.18.46).  The child's registers and memory are
+   [Checks.Cases.Kernel.ProcsCloneTid]'s.
+   ------------------------------------------------------------------------- *)
+
+Definition tid_pid_model : Model := with_child 4242 (forfeit_model clone_case_model).
+
+(** Four zero bytes at [lo, hi). *)
+Definition tid_slot_mem (lo hi : Z) : word -> option byte :=
+  fun a => if ((lo <=? bv_unsigned a) && (bv_unsigned a <? hi))%Z
+           then Some (Z_to_bv 8 0) else None.
+
+(** [clone] with the parent-tid and the child-tid pointer both [p]. *)
+Definition tid_call (flags : Z) (p : word) (rd wr : word -> option byte) : SyscallInput :=
+  mkInput 220 [Z_to_bv 64 flags; 0; p; 0; p; 0] rd wr.
+
+Definition tid_p : word := Z_to_bv 64 0x2000.
+Definition tid_full : word -> option byte := tid_slot_mem 0x2000 0x2004.
+
+(** CLONE_SYSVSEM: a child, and nothing else changes; its -ENOMEM
+    ([get_undo_list], from [copy_semundo], ipc/sem.c:1855-1858) is one of
+    [Fork.clone_errnos].  CLONE_CHILD_CLEARTID: no change. *)
+Example clone_sysvsem_and_cleartid_child :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM))) (mkEffect 4242 [] [])
+    clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret ENOMEM) [] []) clone_case_model = CheckOk clone_case_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_CHILD_CLEARTID)))
+       (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** CLONE_PARENT_SETTID.  A writable a2: the pid's
+    four bytes there, and the answer without them is refused; a failure
+    stores nothing; an a2 [access_ok] refuses, or one in a read-only
+    mapping: a child, nothing written; an a2 the memory backs in part:
+    declines. *)
+Example clone_parent_settid_cases :
+  check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) tid_p tid_full tid_full)
+    (mkEffect 4242 [(tid_p, le32_bytes 4242)] []) clone_case_model
+    = CheckOk tid_pid_model []
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) tid_p tid_full tid_full)
+       (mkEffect 4242 [] []) clone_case_model = CheckReject
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) tid_p tid_full tid_full)
+       (mkEffect (errno_ret EAGAIN) [] []) clone_case_model = CheckOk clone_case_model []
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) (Z_to_bv 64 (2 ^ 64 - 2))
+                      (fun _ => None) (fun _ => None))
+       (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) tid_p tid_full (fun _ => None))
+       (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_PARENT_SETTID) tid_p
+                      (tid_slot_mem 0x2000 0x2002) (tid_slot_mem 0x2000 0x2002))
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** CLONE_CHILD_SETTID: a writable a4 gets the child's store in the
+    child's copy, so the caller's answer writes nothing; a read-only a4,
+    where the core's store from the read view would differ from Linux's,
+    declines; and with CLONE_NEWPID, where the child's own pid is the
+    namespace extension's, declines. *)
+Example clone_child_settid_cases :
+  check_syscall (tid_call (SIGCHLD + CLONE_CHILD_SETTID) tid_p tid_full tid_full)
+    (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_CHILD_SETTID) tid_p tid_full (fun _ => None))
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled
+  /\ check_syscall (tid_call (SIGCHLD + CLONE_CHILD_SETTID + CLONE_NEWPID) tid_p tid_full tid_full)
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** A namespace word with CLONE_SYSVSEM gets a child; CLONE_NEWIPC with
+    CLONE_SYSVSEM gets none (kernel/nsproxy.c:161-162, 171-173): an errno
+    is admitted and a pid refused.  Which errno, -EPERM or -EINVAL, is
+    the namespace tables'. *)
+Example clone_ns_sysvsem_cases :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWNS + CLONE_SYSVSEM)))
+    (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
+       (mkEffect 4242 [] []) clone_case_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckOk clone_case_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret EINVAL) [] []) clone_case_model = CheckOk clone_case_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** clone3 with stack 0x8000 and stack_size 0x1000: a child,
+    and the record's stack is 0x9000, the child's sp
+    (fork.c:2845-2847); with stack 0 and stack_size 8: -EINVAL
+    (fork.c:2835-2837). *)
+Example clone3_stack_cases :
+  check_syscall
+    (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0x8000%Z; 0x1000%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    (mkEffectU 4242 [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
+    = CheckOk (with_child 4242 (forfeit_model clone3_model)) []
+  /\ option_map (fun bs => match clone3_pre bs with
+                           | CdArgs r => bv_unsigned (cla_stack r)
+                           | _ => 0%Z
+                           end)
+       (copy_bytes_map
+          (clone3_args_mem [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0x8000%Z; 0x1000%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+          clone3_args_base CLONE_ARGS_SIZE) = Some 0x9000%Z
+  /\ check_syscall
+       (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 8%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model [].
+Proof. repeat split; check_eq. Qed.

@@ -168,8 +168,10 @@ Local Ltac declined_at Hno :=
 (** [clone] (220) and [clone3] (435) — MODELED, parent-side, and stated
     here in the negative.  The model does not cover all of clone: its
     spec answers two flag-word shapes, [SIGCHLD] alone and [SIGCHLD]
-    plus namespace bits ([Fork.clone_ns_flags_b]), answers -EINVAL for a
-    word whose decoded record Linux's argument-only checks refuse
+    plus namespace bits ([Fork.clone_ns_flags_b]), either of them with
+    [CLONE_SYSVSEM] and the four tid bits ([Fork.clone_class], the
+    caller's [CLONE_PARENT_SETTID] store in its answer), answers -EINVAL
+    for a word whose decoded record Linux's argument-only checks refuse
     ([Fork.clone_arg_checks]; for [clone] only behind the descriptor
     gate) or, for [clone3], a struct its own tests refuse, and the
     statements below say what it still declines.
@@ -177,7 +179,9 @@ Local Ltac declined_at Hno :=
     [Fork.clone_spec]'s header has the reasoning.  In short: the model
     creates no second process, so a child's effect on the PARENT is the
     only thing that can make ignoring it unsound.  The flag bits that
-    carry such an effect are outside the admitted word — but flag bits
+    carry such an effect on the parent are outside the admitted words —
+    the caller's own [CLONE_PARENT_SETTID] store is in the answer — but
+    flag bits
     are not the only carrier, and that header names five channels no
     flag test can close.  What a lemma buys over a comment is that
     widening the flag test breaks the build. *)
@@ -225,19 +229,27 @@ Definition CLONE_IO             : Z := 0x80000000.
       the model describes to be its own group leader, and a task created
       with [CLONE_THREAD] whose leader later exits is not.  See
       [Fork.set_tid_address_spec] and [State.m_tid]'s note;
-    - a write fires when a CHILD exits ([CLONE_CHILD_CLEARTID]).  This
-      is a reason to decline the BIT; it is NOT what
-      [Fork.set_tid_address_spec] rests on, which is a different writer
-      into a same-named field — see the note above;
+    - a write can fire when a CHILD exits ([CLONE_CHILD_CLEARTID]), into
+      the memory of its mm while another holder pins that mm.  It is NOT
+      what [Fork.set_tid_address_spec] rests on, which is a different
+      writer into a same-named field — see the note above;
     - the call would use an argument this spec does not fetch.
       [CLONE_CHILD_SETTID] gates the read of [child_tidptr]; on riscv64
       [CLONE_SETTLS] copies nothing — [copy_thread] assigns
       [childregs->tp = args->tls] — but it is the bit that makes [tls]
-      mean anything.  TWO comments say in so many words that neither
-      argument is read for an admitted word: [Fork.clone_spec]'s header
-      and the dispatcher's own note at the [clone] arm.  (A word the
-      argument checks look at is decoded into [Fork.CloneArgs], which
-      carries them, but no check reads them.)
+      mean anything.
+
+    Five of these bits are now admitted without [CLONE_VM]
+    ([Fork.clone_class]; [unadmitted_bits] below is the rest):
+    [CLONE_SYSVSEM], whose undo list no answer of this model reads; and
+    the four tid bits, whose effects are stated: the caller's
+    [CLONE_PARENT_SETTID] store is in the answer
+    ([Fork.clone_with_stores]), the child's [CLONE_CHILD_SETTID] store and
+    its [CLONE_SETTLS] tp are in the child the multi-process core makes
+    ([Procs.child_ms]), and its [CLONE_CHILD_CLEARTID] store at exit or
+    exec is made only while another holder pins its mm ([mm_users > 1],
+    kernel/fork.c:1436-1446), which without [CLONE_VM] nothing modeled
+    does, so nothing is stored, and no other task reads that memory.
 
     Every citation of the lemma below names a bit in THIS list, which is
     the point of listing more than the address-space pair: widening
@@ -250,12 +262,39 @@ Definition clone_sharing_bits : Z :=
      CLONE_PARENT_SETTID; CLONE_CHILD_CLEARTID; CLONE_CHILD_SETTID;
      CLONE_IO] 0%Z.
 
-(** The bits no clone word that gets a child may hold yet.  No word holding one
-    of [clone_sharing_bits] gets a child: it answers -EINVAL or
-    declines.  A change that
-    admits one of these bits removes it here, and the two
-    [_sharing_flags_unmodeled] statements shrink with it. *)
-Definition unadmitted_bits : Z := clone_sharing_bits.
+(** The bits no clone word that gets a child may hold yet.  A change that
+    admits one of [clone_sharing_bits] removes it here, and the two
+    [_sharing_flags_unmodeled] statements shrink with it.  [CLONE_SYSVSEM]
+    and the four tid bits ([Fork.clone_extra_bits]) are admitted without
+    [CLONE_VM] ([Fork.clone_class]); the rest of [clone_sharing_bits]
+    stays out: no word holding one of them gets a child, it answers
+    -EINVAL or declines. *)
+Definition unadmitted_bits : Z := Z.land clone_sharing_bits (Z.lnot clone_extra_bits).
+
+(** A word holding one of [unadmitted_bits] holds a bit [Fork.clone_class]
+    admits for no record. *)
+Local Lemma land_nonzero_outside : forall f U M,
+  Z.land U M = 0%Z -> Z.land f U <> 0%Z -> Z.land f (Z.lnot M) <> 0%Z.
+Proof.
+  intros f U M HUM Hf Hz. apply Hf.
+  assert (HU : Z.land U (Z.lnot M) = U).
+  { apply Z.bits_inj'. intros n Hn. rewrite Z.land_spec, Z.lnot_spec by exact Hn.
+    destruct (Z.testbit U n) eqn:Hu; [|reflexivity].
+    assert (Hm : Z.testbit (Z.land U M) n = false) by (rewrite HUM; apply Z.testbit_0_l).
+    rewrite Z.land_spec, Hu in Hm. cbn in Hm. rewrite Hm. reflexivity. }
+  rewrite <- HU, (Z.land_comm U (Z.lnot M)), Z.land_assoc, Hz, Z.land_0_l. reflexivity.
+Qed.
+
+Local Lemma unadmitted_class_none : forall r,
+  (Z.land (cla_flags r) unadmitted_bits <> 0)%Z -> clone_class r = CcNone.
+Proof.
+  intros r Hbit.
+  assert (Hh : clone_has (cla_flags r) (Z.lnot (Z.lor clone_extra_bits clone_ns_mask)) = true).
+  { unfold clone_has. apply negb_true_iff, Z.eqb_neq.
+    apply (land_nonzero_outside _ unadmitted_bits); [vm_compute; reflexivity | exact Hbit]. }
+  unfold clone_class. cbv zeta. rewrite Hh.
+  destruct (negb (cla_exit_signal r =? SIGCHLD)%Z); reflexivity.
+Qed.
 
 (** RESTATED FOR THE ARGUMENT CHECKS, as two statements over the decoded
     argument record [r] of the call ([Fork.clone_args_of_clone]).  The
@@ -277,7 +316,7 @@ Definition unadmitted_bits : Z := clone_sharing_bits.
     32 to 63 set) declines.  With [clone_open_file_unmodeled] (a table
     the descriptor gate closes declines) the four cover, by case
     analysis on the record, the checks and the gate, every word that
-    holds a sharing bit, so none of them gets a child. *)
+    holds a bit of [unadmitted_bits], so none of them gets a child. *)
 Lemma clone_arg_checks_einval : forall flags i m r o,
   clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) = Some r ->
   clone_arg_checks r = true ->
@@ -312,13 +351,13 @@ Lemma clone_sharing_flags_unmodeled : forall flags i m r,
   clone_spec flags i m Unmodeled.
 Proof.
   intros flags i m r Hr Hc Hbit.
-  assert (Hb : (Z.land (bv_unsigned flags) clone_sharing_bits <> 0)%Z).
+  assert (Hb : (Z.land (bv_unsigned flags) unadmitted_bits <> 0)%Z).
   { pose proof Hr as Hr0. unfold clone_args_of_clone in Hr0.
     destruct (bv_unsigned flags <? 2 ^ 32)%Z; [|discriminate Hr0].
-    injection Hr0 as <-. cbn [cla_flags] in Hbit. unfold unadmitted_bits in Hbit.
+    injection Hr0 as <-. cbn [cla_flags] in Hbit.
     rewrite <- Z.land_assoc in Hbit.
-    replace (Z.land (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) clone_sharing_bits)
-      with clone_sharing_bits in Hbit by (vm_compute; reflexivity).
+    replace (Z.land (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) unadmitted_bits)
+      with unadmitted_bits in Hbit by (vm_compute; reflexivity).
     exact Hbit. }
   unfold clone_spec.
   destruct (clone_fork_flags_b flags) eqn:Hf; cbv iota.
@@ -326,10 +365,11 @@ Proof.
     apply bv_eqb_eq in Hf. subst flags. apply Hb. vm_compute. reflexivity. }
   destruct (clone_ns_flags_b flags) eqn:Hns; cbv iota.
   { exfalso. apply Hb.
-    apply (clone_ns_flags_disjoint flags clone_sharing_bits Hns);
+    apply (clone_ns_flags_disjoint flags unadmitted_bits Hns);
       vm_compute; reflexivity. }
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  rewrite Hr. cbv iota. rewrite Hc. cbv iota. apply unmodeled_intro.
+  rewrite Hr. cbv iota. rewrite Hc. cbv iota.
+  rewrite (unadmitted_class_none r Hbit). apply unmodeled_intro.
 Qed.
 
 (** A [clone] word with any of bits 32 to 63 set has no record and
@@ -377,8 +417,9 @@ Qed.
     and one they decline declines ([clone3_declined_struct_unmodeled]);
     every size but [CLONE_ARGS_SIZE] declines
     ([clone3_other_size_unmodeled]): together they cover every struct
-    the copy reads that holds a sharing bit.  (A struct the copy does not
-    read answers -EFAULT or declines, before any field is judged.) *)
+    the copy reads that holds a bit of [unadmitted_bits].  (A struct the
+    copy does not read answers -EFAULT or declines, before any field is
+    judged.) *)
 Local Lemma clone3_einval_b_answer : forall uargs i m bs o,
   copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
   clone3_einval_b bs = true ->
@@ -478,7 +519,7 @@ Proof.
     repeat (apply andb_true_iff in Ha as [Ha ?]).
     apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity. }
   cbv iota. unfold clone3_einval_b. rewrite Hp. cbv iota. rewrite Hc. cbv iota.
-  apply unmodeled_intro.
+  rewrite (unadmitted_class_none r Hbit). apply unmodeled_intro.
 Qed.
 
 (** The FILE OFFSET is the one thing a plain fork still shares:
@@ -507,10 +548,27 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
     as [r|]; cbv iota; [|apply unmodeled_intro].
-  destruct (clone_arg_checks r); cbv iota; [|apply unmodeled_intro].
-  unfold clone_einval.
-  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  rewrite Hfd. cbv iota. apply unmodeled_intro.
+  destruct (clone_arg_checks r); cbv iota.
+  { unfold clone_einval.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+    rewrite Hfd. cbv iota. apply unmodeled_intro. }
+  destruct (clone_class r); cbv iota.
+  - apply clone_with_stores_iff.
+    destruct (clone_stores_ok i m r) eqn:Hok; [left | right].
+    + split; [reflexivity|]. cbv iota. unfold clone_resolve.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+      rewrite Hfd. cbv iota. apply unmodeled_intro.
+    + split; reflexivity.
+  - apply clone_with_stores_iff.
+    destruct (clone_stores_ok i m r) eqn:Hok; [left | right].
+    + split; [reflexivity|]. cbv iota. unfold clone_ns_resolve.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+      rewrite Hfd. cbv iota. apply unmodeled_intro.
+    + split; reflexivity.
+  - unfold clone_ns_refused.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+    rewrite Hfd. cbv iota. apply unmodeled_intro.
+  - apply unmodeled_intro.
 Qed.
 
 (** A LIVE INHERITED DESCRIPTOR closes the gate of every table that
@@ -538,34 +596,16 @@ Proof.
   destruct Hin as [<-|[<-|[<-|[<-|[]]]]]; vm_compute in Hc; discriminate.
 Qed.
 
-(** A word neither admitted test takes answers only -EINVAL, with the
-    model as it was ([Kernel.Fork.clone_einval]). *)
-Local Lemma clone_spec_other_word : forall flags i m eff m' evs,
-  clone_fork_flags_b flags = false -> clone_ns_flags_b flags = false ->
-  clone_spec flags i m (Ok eff m' evs) ->
-  eff = mkEffect (errno_ret EINVAL) [] [] /\ m' = m.
+(** An answer of the shape every accepted clone answer has
+    ([Checks.Sys.Kernel.Fork.clone_answer_shape]) is not 0: an
+    error-encoded word is not, and neither is an admissible pid. *)
+Local Lemma clone_answer_shape_nonzero : forall eff m m' evs,
+  clone_answer_shape eff m m' evs -> eff_ret eff <> Z_to_bv 64 0.
 Proof.
-  intros flags i m eff m' evs Hf Hns H.
-  unfold clone_spec in H. rewrite Hf, Hns in H. cbv iota in H.
-  apply input_bind_ok_inv in H. cbv beta in H.
-  destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
-    as [r|]; cbv iota in H; [|unfold unmodeled in H; discriminate].
-  destruct (clone_arg_checks r); cbv iota in H; [|unfold unmodeled in H; discriminate].
-  unfold clone_einval in H. apply bind_get_model in H. cbv beta in H.
-  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m)));
-    cbv iota in H; [|unfold unmodeled in H; discriminate].
-  unfold err_ret, ret_only, pure in H. injection H as -> -> _. split; reflexivity.
-Qed.
-
-(** [clone3]'s -EINVAL: the struct in the ledger, the model as it was. *)
-Local Lemma clone3_einval_inv : forall uargs i m eff m' evs,
-  clone3_einval uargs i m (Ok eff m' evs) ->
-  eff = with_copyins [(uargs, CLONE_ARGS_SIZE_nat)] (mkEffect (errno_ret EINVAL) [] [])
-  /\ m' = m.
-Proof.
-  intros uargs i m eff m' evs H. unfold clone3_einval in H.
-  apply record_copyins_ok_inv in H as (core & Hc & ->).
-  unfold err_ret, ret_only, pure in Hc. injection Hc as -> -> _. split; reflexivity.
+  intros eff m m' evs (_ & [(_ & He) | (_ & Hv)]) Hc; rewrite Hc in *.
+  - vm_compute in He. discriminate He.
+  - unfold clone_pid_ok_b in Hv. apply andb_true_iff in Hv as [Hr _].
+    apply andb_true_iff in Hr as [Hlo _]. vm_compute in Hlo. discriminate Hlo.
 Qed.
 
 (** ZERO IS NEVER AN ANSWER.  Zero is what the CHILD sees returned from
@@ -577,81 +617,16 @@ Lemma clone_never_returns_zero : forall flags i m eff m' evs,
   clone_spec flags i m (Ok eff m' evs) -> eff_ret eff <> Z_to_bv 64 0.
 Proof.
   intros flags i m eff m' evs H.
-  destruct (clone_fork_flags_b flags) eqn:Hf;
-    [|destruct (clone_ns_flags_b flags) eqn:Hns].
-  3: { destruct (clone_spec_other_word _ _ _ _ _ _ Hf Hns H) as [-> _].
-       intro Hc. apply (f_equal bv_unsigned) in Hc. vm_compute in Hc. discriminate Hc. }
-  1: unfold clone_spec in H; rewrite Hf in H; cbv iota in H.
-  2: unfold clone_spec in H; rewrite Hf, Hns in H; cbv iota in H.
-  - unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
-    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
-      hall Hg; inv_ok.
-    all: cbn [eff_ret].
-    all: try (match goal with
-              | Hin : In ?e clone_errnos |- _ =>
-                  exact (clone_errno_ret_nonzero e Hin)
-              end).
-    all: match goal with
-         | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
-             unfold clone_pid_ok_b in Hv;
-             apply andb_true_iff in Hv as [Hr _];
-             apply andb_true_iff in Hr as [Hlo _];
-             apply Z.ltb_lt in Hlo;
-             intro Hc; subst r;
-             change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hlo; lia
-         end.
-  - unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
-    (* the namespace word's resolution *)
-    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
-      hall Hg; inv_ok.
-    all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
-    all: cbn [eff_ret].
-    all: try (match goal with
-              | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
-                  intro Hc; apply (f_equal bv_unsigned) in Hc;
-                  rewrite (errno_ret_unsigned e H1 H2) in Hc;
-                  change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hc;
-                  unfold two_pow_64 in Hc; lia
-              end).
-    all: match goal with
-         | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
-             unfold clone_pid_ok_b in Hv;
-             apply andb_true_iff in Hv as [Hr _];
-             apply andb_true_iff in Hr as [Hlo _];
-             apply Z.ltb_lt in Hlo;
-             intro Hc; subst r;
-             change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hlo; lia
-         end.
+  apply (check_clone_complete_ok i) in H.
+  exact (clone_answer_shape_nonzero _ _ _ _ (check_clone_shape _ _ _ _ _ _ H)).
 Qed.
 
 Lemma clone3_never_returns_zero : forall uargs size i m eff m' evs,
   clone3_spec uargs size i m (Ok eff m' evs) -> eff_ret eff <> Z_to_bv 64 0.
 Proof.
   intros uargs size i m eff m' evs H.
-  unfold clone3_spec in H.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
-    cbv iota in H; [unfold unmodeled in H; discriminate|].
-  sys_unfold. cbv iota in H. inv_ok.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-  2: { (* a refused range answers -EFAULT, which is not 0 either *)
-       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs; inv_ok.
-       cbn [eff_ret]. intro Hc. apply (f_equal bv_unsigned) in Hc.
-       vm_compute in Hc. discriminate. }
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
-  2: { destruct (clone3_einval_b bs) eqn:He; hall He; inv_ok.
-       match goal with
-       | Hr : clone3_einval _ _ _ (Ok _ _ _) |- _ =>
-           apply clone3_einval_inv in Hr as [-> _]
-       end.
-       intro Hc. apply (f_equal bv_unsigned) in Hc. vm_compute in Hc. discriminate Hc. }
-  match goal with
-  | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
-      apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
-  end.
-  eapply (clone_never_returns_zero (Z_to_bv 64 SIGCHLD) i m).
-  unfold clone_spec, clone_fork_flags_b. rewrite bv_eqb_refl.
-  unfold clone_resolve. sys_unfold. cbv iota. eassumption.
+  apply (check_clone3_complete_ok i) in H.
+  exact (clone_answer_shape_nonzero _ _ _ _ (check_clone3_shape _ _ _ _ _ _ _ H)).
 Qed.
 
 (** THE ARM IS THE ONE IT CLAIMS TO BE.  Every lemma above pins what
@@ -799,38 +774,24 @@ Proof.
     cbn [eff_ret]. split; intros He; [congruence | reflexivity].
 Qed.
 
-(** [clone_resolve_declines_or_sets_children] keyed the way the
-    dispatcher statement below needs it: on the error encoding rather
-    than on [Fork.clone_errnos], every member of which is
-    error-encoded. *)
-Local Lemma clone_resolve_error_or_children : forall i m eff m' evs,
-  clone_resolve i m (Ok eff m' evs) ->
-  (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
-  (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
+(** Every answer the dispatcher gives [clone] or [clone3] has the shape
+    [Checks.Sys.Kernel.Fork.clone_answer_shape]: read off the executable
+    checker, which [check_syscall_complete_ok] says accepts every
+    admissible outcome, so the branches of the two specs are walked in
+    one place. *)
+Local Lemma clone_spec_shape : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
+  syscall_spec i m (Ok eff m' evs) -> clone_answer_shape eff m m' evs.
 Proof.
-  intros i m eff m' evs H.
-  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
-    hall Hg; inv_ok.
-  - match goal with
-    | Hin : In ?e clone_errnos |- _ =>
-        destruct (errnos_ok_range clone_errnos e eq_refl Hin) as [H1 H2];
-        assert (Hyes := errno_ret_error_b e H1 H2)
-    end.
-    cbn [eff_ret]. split; intros He; [reflexivity | congruence].
-  - match goal with
-    | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
-        assert (Hno := clone_pid_not_error mm r Hv)
-    end.
-    cbn [eff_ret]. split; intros He; [congruence | reflexivity].
+  intros i m eff m' evs [Hno|Hno] H; apply check_syscall_complete_ok in H.
+  - rewrite (check_syscall_clone i _ m Hno) in H. exact (check_clone_shape _ _ _ _ _ _ H).
+  - rewrite (check_syscall_clone3 i _ m Hno) in H.
+    exact (check_clone3_shape _ _ _ _ _ _ _ H).
 Qed.
 
-(** The same claim at the dispatcher, over both entry points at once.
-    On the success path [clone3] adds a copy-in ledger and nothing else
-    — [clone3_resolve_inv] strips it and hands back the very
-    [clone_resolve] outcome, with the same post-model — so one lemma
-    covers 220 and 435 and the two cannot drift apart; each entry
-    point's -EINVAL leaves the model as it was.
+(** The same claim at the dispatcher, over both entry points at once,
+    every word each admits included: an error-encoded answer leaves the
+    model as it was, and any other answer records the child.
 
     RESTATED, and the old forms are worth recording.  On main both
     conjuncts were keyed on [errno_ret_in Fork.clone_errnos (eff_ret eff)];
@@ -857,44 +818,11 @@ Lemma clone_success_sets_children : forall i m eff m' evs,
   (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
   (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
 Proof.
-  intros i m eff m' evs [Hno|Hno] H.
-  - apply (clone_is_clone_spec i m _ Hno) in H.
-    destruct (clone_fork_flags_b (in_arg i 0)) eqn:Hf.
-    { unfold clone_spec in H. rewrite Hf in H. cbv iota in H.
-      exact (clone_resolve_error_or_children _ _ _ _ _ H). }
-    destruct (clone_ns_flags_b (in_arg i 0)) eqn:Hns.
-    { unfold clone_spec in H. rewrite Hf, Hns in H. cbv iota in H.
-      exact (clone_ns_resolve_declines_or_sets_children _ _ _ _ _ H). }
-    (* a word the argument checks refuse: -EINVAL, the model as it was *)
-    destruct (clone_spec_other_word _ _ _ _ _ _ Hf Hns H) as [-> ->].
-    split; intros He; [reflexivity|]. vm_compute in He. discriminate He.
-  - apply (clone3_is_clone3_spec i m _ Hno) in H.
-    unfold clone3_spec in H.
-    destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
-      cbv iota in H; [unfold unmodeled in H; discriminate|].
-    sys_unfold. cbv iota in H. inv_ok.
-    destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE)
-      as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-    2: { (* the refused range: -EFAULT is error-encoded, and the model is
-            untouched *)
-         destruct (negb (access_okb (in_arg i 0) CLONE_ARGS_SIZE)) eqn:Hs;
-           hall Hs; inv_ok.
-         cbn [eff_ret]. split; intros He; [reflexivity|].
-         rewrite (errno_ret_error_b EFAULT ltac:(unfold EFAULT; lia)
-                    ltac:(unfold EFAULT; lia)) in He.
-         discriminate He. }
-    destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
-    2: { destruct (clone3_einval_b bs) eqn:He0; hall He0; inv_ok.
-         match goal with
-         | Hr : clone3_einval _ _ _ (Ok _ _ _) |- _ =>
-             apply clone3_einval_inv in Hr as [-> ->]
-         end.
-         split; intros He; [reflexivity|]. vm_compute in He. discriminate He. }
-    match goal with
-    | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
-        apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
-    end.
-    exact (clone_resolve_error_or_children _ _ _ _ _ H0).
+  intros i m eff m' evs Hno H.
+  destruct (clone_spec_shape i m eff m' evs Hno H) as (_ & [(-> & He) | (-> & Hv)]).
+  - split; intros He'; [reflexivity | congruence].
+  - pose proof (clone_pid_not_error _ _ Hv) as Hne.
+    split; intros He'; [congruence | reflexivity].
 Qed.
 
 (** And for the executable checker, which is the half a
@@ -929,81 +857,16 @@ Qed.
     ([Kernel.Fork.forfeit_model_gate]).  A reap removes the pid again;
     the multi-process core's invariant that the list names exactly the
     caller's children starts from this lemma. *)
-Local Lemma clone_resolve_records_pid : forall i m eff m' evs,
-  clone_resolve i m (Ok eff m' evs) ->
-  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) (forfeit_model m).
-Proof.
-  intros i m eff m' evs H He.
-  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
-    hall Hg; inv_ok.
-  - match goal with
-    | Hin : In ?e clone_errnos |- _ =>
-        destruct (errnos_ok_range clone_errnos e eq_refl Hin) as [H1 H2];
-        assert (Hyes := errno_ret_error_b e H1 H2)
-    end.
-    cbn [eff_ret] in He. congruence.
-  - reflexivity.
-Qed.
-
-Local Lemma clone_ns_resolve_records_pid : forall i m eff m' evs,
-  clone_ns_resolve i m (Ok eff m' evs) ->
-  addr_is_error_b (eff_ret eff) = false -> m' = with_child (eff_ret eff) (forfeit_model m).
-Proof.
-  intros i m eff m' evs H He.
-  unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
-    hall Hg; inv_ok.
-  all: repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
-  - match goal with
-    | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
-        assert (Hyes := errno_ret_error_b e H1 H2)
-    end.
-    cbn [eff_ret] in He. congruence.
-  - reflexivity.
-Qed.
-
 Lemma clone_success_records_pid : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
   addr_is_error_b (eff_ret eff) = false ->
   m' = with_child (eff_ret eff) (forfeit_model m).
 Proof.
-  intros i m eff m' evs [Hno|Hno] H He.
-  - apply (clone_is_clone_spec i m _ Hno) in H.
-    destruct (clone_fork_flags_b (in_arg i 0)) eqn:Hf.
-    { unfold clone_spec in H. rewrite Hf in H. cbv iota in H.
-      exact (clone_resolve_records_pid _ _ _ _ _ H He). }
-    destruct (clone_ns_flags_b (in_arg i 0)) eqn:Hns.
-    { unfold clone_spec in H. rewrite Hf, Hns in H. cbv iota in H.
-      exact (clone_ns_resolve_records_pid _ _ _ _ _ H He). }
-    destruct (clone_spec_other_word _ _ _ _ _ _ Hf Hns H) as [-> ->].
-    vm_compute in He. discriminate He.
-  - apply (clone3_is_clone3_spec i m _ Hno) in H.
-    unfold clone3_spec in H.
-    destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
-      cbv iota in H; [unfold unmodeled in H; discriminate|].
-    sys_unfold. cbv iota in H. inv_ok.
-    destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE)
-      as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-    2: { destruct (negb (access_okb (in_arg i 0) CLONE_ARGS_SIZE)) eqn:Hs;
-           hall Hs; inv_ok.
-         cbn [eff_ret] in He.
-         rewrite (errno_ret_error_b EFAULT ltac:(unfold EFAULT; lia)
-                    ltac:(unfold EFAULT; lia)) in He.
-         discriminate He. }
-    destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
-    2: { destruct (clone3_einval_b bs) eqn:He0; hall He0; inv_ok.
-         match goal with
-         | Hr : clone3_einval _ _ _ (Ok _ _ _) |- _ =>
-             apply clone3_einval_inv in Hr as [-> ->]
-         end.
-         vm_compute in He. discriminate He. }
-    match goal with
-    | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
-        apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret in He |- *
-    end.
-    exact (clone_resolve_records_pid _ _ _ _ _ H0 He).
+  intros i m eff m' evs Hno H He.
+  destruct (clone_spec_shape i m eff m' evs Hno H) as (_ & [(_ & He') | (-> & _)]).
+  - congruence.
+  - reflexivity.
 Qed.
 
 (** And for the executable checker. *)

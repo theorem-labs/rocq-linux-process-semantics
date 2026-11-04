@@ -1246,22 +1246,26 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_clone_kf : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_clone_kf : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros flags eff m m' evs H Hoff Hk.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  kf_frame H m Hoff Hk.
+  intros i flags eff m m' evs H Hoff Hk.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H) as [(e & He & _)|[(e & He & _)|[He|He]]];
+    clear H;
+    unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+      check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
+    kf_frame He m Hoff Hk.
 Qed.
 
 Lemma check_clone3_kf : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i uargs size eff m m' evs H Hoff Hk.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  kf_frame H m Hoff Hk.
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H) as [He|[He|[He|(e & He & _)]]];
+    clear H;
+    unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+      check_clone3_einval in He;
+    kf_frame He m Hoff Hk.
 Qed.
 
 Lemma check_getsockname_kf : forall fd eff m m' evs,

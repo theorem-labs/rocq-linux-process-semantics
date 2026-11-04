@@ -143,7 +143,7 @@ Proof.
   intros ext cenv segs cfg p P e evs r Hl Hwo Hp. revert Hl Hwo.
   destruct Hp as
     [ Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hst0 Han0 Hmp
-    | Q e0 ev c' q child ret st' Hl0 Hcl Hs Hsucc Hq Hfree Hma Hec
+    | Q e0 ev c' q child ret st' c'' Hl0 Hcl Hs Hsucc Hq Hfree Hma Hec Hrw
     | Q e0 ev c' en hq st' Hl0 Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
     | Q e0 ev c' hq Hl0 Hcl Hs Hcp Hma Hec
     | Q e0 Hl0 Hh Hcp Hcl
@@ -158,7 +158,8 @@ Proof.
     | Q e0 Hl0 Hh Hns0
     | Q e0 Hl0 Hh Hsy0
     | Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hmp Hst0 Han0
-    | Q e0 r t Hl0 Hh Hpin Hlr Ht Hkt ]; intros Hl Hwo;
+    | Q e0 r t Hl0 Hh Hpin Hlr Ht Hkt
+    | Q e0 ev c' q child ret st' Hl0 Hcl Hs Hsucc Hq Hfree Hma Hec Hrw ]; intros Hl Hwo;
     rewrite Hl0 in Hl; injection Hl as Hl; subst e0.
   - (* px_other: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
@@ -201,6 +202,9 @@ Proof.
                (fun z Hz => ltac:(rewrite Hy in Hz; injection Hz as <-;
                                   rewrite Hy260; discriminate))) in Hpin.
     discriminate Hpin.
+  - (* px_clone_store_refuse *)
+    rewrite (clone_pending_not_owned Q e (clone_success_pending _ _ Hsucc)) in Hwo.
+    discriminate Hwo.
 Qed.
 
 (** What the two "never blocks" theorems share: a non-blocking [wait4] of

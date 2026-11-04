@@ -27,11 +27,13 @@
 
     EACH SEGMENT IS QUANTIFIED OVER AN ARBITRARY REGISTER FILE AND MEMORY,
     with hypotheses naming only what that segment reads.  It has to be: the
-    state the clone arm hands the child is [Procs.child_ms], which is
-    [set_reg (cfg_ms c') 10 0] over a register file that ALREADY carries the
-    parent's return value, hence a double update at x10 — not syntactically
-    the state one would write by hand, and a lemma pinned to one spelling
-    would not apply to the other.  [mkst_eta] below puts any state the
+    state the clone arm hands the child is [Procs.child_ms], which for this
+    program's [clone(SIGCHLD, 0)] is [set_reg (cfg_ms c') 10 0] over a
+    register file that ALREADY carries the parent's return value, hence a
+    double update at x10, with the parent's memory as the call began put
+    back by [Procs.ms_with_mem] — not syntactically the state one would
+    write by hand, and a lemma pinned to one spelling would not apply to
+    the other.  [mkst_eta] below puts any state the
     consumer holds into the form these lemmas are about.
 
     THE INSTRUCTION COUNTS INCLUDE THE [ecall].  The model executes the
