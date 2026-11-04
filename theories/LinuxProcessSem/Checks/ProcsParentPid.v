@@ -123,7 +123,7 @@ Example root_child_after_exit_answers_reaper : forall ms,
       end
   | _, _ => False
   end.
-Proof. intros ms. check_eq. Qed.
+Proof. intros ms. vm_compute. split; [reflexivity | exact I]. Qed.
 
 (** A later child starts with the already-pinned tgid, not key 1. *)
 Example root_child_after_pin_keeps_move : forall ms,
@@ -133,7 +133,7 @@ Example root_child_after_pin_keeps_move : forall ms,
   | CheckOk m [] => m_ppid m = 37 /\ m_reparent_moved m = false
   | _ => False
   end.
-Proof. intros ms. check_eq. Qed.
+Proof. intros ms. vm_compute. split; reflexivity. Qed.
 
 (** The root's own first tid call aligns existing children too. *)
 Example root_tid_absorption_keeps_child_move : forall ms,
