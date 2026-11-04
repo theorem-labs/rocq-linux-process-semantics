@@ -212,7 +212,7 @@ Definition fstat_witness_buf (n : nat) (pin : option (list byte)) : list byte :=
 Definition fstat_file_witness (p : Fs.path) (statbuf : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match fs_lookup (m_fs m) p with
-  | None => Unmodeled                          (* unlinked under an open fd *)
+  | None => Unmodeled                          (* a key no run leaves an fd on *)
   | Some data =>
       if negb (access_okb statbuf STAT_SIZE) then ret_outcome (errno_ret EFAULT) m
       else
@@ -370,6 +370,7 @@ Proof.
     [apply stat_urandom_witness_base_wf | apply stat_urandom_witness_base_ok].
 Qed.
 
+<<<<<<< HEAD
 (** The /proc/self/fd directory's seed: [Uapi.PROCFD_DIR_MODE] in
     [st_mode] at offset 16, zero everywhere else, which
     [Uapi.stat_buf_wf] admits for the file seed's reason. *)
@@ -388,11 +389,46 @@ Proof. vm_compute. reflexivity. Qed.
     above. *)
 Definition fstat_procfd_dir_witness (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
+=======
+(** THE UNNAMED FILE'S TWO EXTRA ASSERTIONS, S_IFREG and [st_nlink] 0,
+    both of which the file seed above already meets, and both of which
+    sit in the head [Uapi.stat_set_size] leaves alone. *)
+Lemma stat_witness_base_reg : stat_is_reg stat_witness_base = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma stat_witness_base_nlink_zero : stat_nlink_zero stat_witness_base = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma stat_set_size_reg : forall n bs,
+  (48 <= length bs)%nat -> stat_is_reg (stat_set_size n bs) = stat_is_reg bs.
+Proof.
+  intros n bs Hlen. unfold stat_is_reg, stat_ifmt.
+  rewrite (stat_field_le_head ST_MODE_OFF 4 (stat_set_size n bs) bs);
+    [reflexivity | unfold ST_MODE_OFF; lia | apply stat_set_size_head; exact Hlen].
+Qed.
+
+Lemma stat_set_size_nlink_zero : forall n bs,
+  (48 <= length bs)%nat -> stat_nlink_zero (stat_set_size n bs) = stat_nlink_zero bs.
+Proof.
+  intros n bs Hlen. unfold stat_nlink_zero.
+  rewrite (stat_field_le_head ST_NLINK_OFF 4 (stat_set_size n bs) bs);
+    [reflexivity | unfold ST_NLINK_OFF; lia | apply stat_set_size_head; exact Hlen].
+Qed.
+
+(** fstat's unnamed-file arm, mirroring [Stat.fstat_anon_spec] branch
+    for branch, with the [choose]s resolved to [fstat_witness_buf] over
+    the descriptor's own contents and pin.  On the unpinned branch the
+    delivered bytes become the pin of every descriptor of the file, as
+    the spec writes them. *)
+Definition fstat_anon_witness (id : word) (af : AnonFile) (statbuf : word)
+    (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   if negb (access_okb statbuf STAT_SIZE) then ret_outcome (errno_ret EFAULT) m
   else
     match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
     | None => Unmodeled                    (* a partial [copy_to_user] *)
     | Some _ =>
+<<<<<<< HEAD
         Ok (mkEffect (Z_to_bv 64 0) [(statbuf, stat_procfd_dir_witness_base)] []) m []
     end.
 
@@ -402,10 +438,34 @@ Proof.
   intros statbuf i m.
   unfold fstat_procfd_dir_spec, fstat_procfd_dir_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
+=======
+        match af_pin af with
+        | Some b0 =>
+            if negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool
+            then Unmodeled
+            else Ok (mkEffect (Z_to_bv 64 0)
+                      [(statbuf, fstat_witness_buf (length (af_data af)) (Some b0))] [])
+                    m []
+        | None =>
+            let bs := fstat_witness_buf (length (af_data af)) None in
+            Ok (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
+               (with_fds (anon_update (m_fds m) id (fun a => af_set_pin a bs)) m) []
+        end
+    end.
+
+Lemma fstat_anon_witness_ok : forall id af statbuf i m,
+  fstat_anon_spec id af statbuf i m (fstat_anon_witness id af statbuf i m).
+Proof.
+  intros id af statbuf i m.
+  unfold fstat_anon_spec, fstat_anon_witness.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha; cbv iota;
     [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
     as [w|] eqn:Hw; cbv iota; [|apply unmodeled_intro].
+<<<<<<< HEAD
   eapply bind_step;
     [apply (choose_ok _ stat_procfd_dir_witness_base); split;
      [apply stat_procfd_dir_witness_base_wf | apply stat_procfd_dir_witness_base_ok]|].
@@ -430,12 +490,48 @@ Proof.
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro | apply fstat_procfd_dir_witness_ok
     | apply unmodeled_intro | apply unmodeled_intro].
+=======
+  destruct (af_pin af) as [b0|] eqn:Hp; cbv iota zeta.
+  - destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
+      eqn:Hb0; cbv iota; [apply unmodeled_intro|].
+    apply Bool.negb_false_iff in Hb0.
+    apply andb_true_iff in Hb0 as [Hwr HNL].
+    apply andb_true_iff in Hwr as [HWF HREG].
+    pose proof (stat_buf_wf_length b0 HWF) as Hlen.
+    unfold fstat_witness_buf.
+    eapply bind_step;
+      [apply (choose_ok _ (stat_set_size (length (af_data af)) b0));
+       refine (conj _ (conj _ (conj _ (conj _ _))))|].
+    + now apply stat_set_size_wf.
+    + rewrite stat_set_size_reg by lia. exact HREG.
+    + rewrite stat_set_size_nlink_zero by lia. exact HNL.
+    + now apply stat_set_size_size_ok.
+    + now apply stat_set_size_stable.
+    + apply pure_ok.
+  - unfold fstat_witness_buf.
+    eapply bind_step;
+      [apply (choose_ok _ (stat_set_size (length (af_data af)) stat_witness_base));
+       refine (conj _ (conj _ (conj _ _)))|].
+    + apply stat_set_size_wf, stat_witness_base_wf.
+    + rewrite stat_set_size_reg by (rewrite stat_witness_base_length; lia).
+      apply stat_witness_base_reg.
+    + rewrite stat_set_size_nlink_zero by (rewrite stat_witness_base_length; lia).
+      apply stat_witness_base_nlink_zero.
+    + apply stat_set_size_size_ok, stat_witness_base_length.
+    + eapply bind_step; [apply modify_ok|]. apply pure_ok.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a
     delivered [struct stat] on the four file kinds, on the two device
+<<<<<<< HEAD
     kinds and on the /proc/self/fd directory, and [Unmodeled] on the
     rest. *)
+=======
+    kinds and on an unnamed file whose descriptors agree
+    ([State.anon_agree]), and [Unmodeled] on the other eight and on a
+    disagreeing unnamed file. *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -447,11 +543,24 @@ Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
   | Some (FdFileRW p _) => fstat_file_witness p statbuf i m
   | Some FdDir         => Unmodeled
   | Some (FdSocket _)  => Unmodeled
+<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled
   | Some (FdPipe _ _)  => Unmodeled
   | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
   | Some FdUrandom => fstat_urandom_witness statbuf i m
   | Some (FdOpaque o) => fstat_opaque_witness o statbuf i m
+=======
+  | Some (FdStream _ _ _) => Unmodeled
+  | Some (FdDgram _)   => Unmodeled
+  | Some (FdEventfd _) => Unmodeled
+  | Some (FdPipe _ _)  => Unmodeled
+  | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
+  | Some FdUrandom => fstat_urandom_witness statbuf i m
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then Unmodeled
+      else fstat_anon_witness id af statbuf i m
+  | Some (FdOpaque _) => Unmodeled
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 Lemma fstat_witness_ok : forall fd statbuf i m,
@@ -460,12 +569,21 @@ Proof.
   intros. unfold fstat_spec, fstat_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota;
-    [destruct e; cbv iota;
-       first [apply unmodeled_intro | apply fstat_file_witness_ok
+    [|unfold ret_outcome; apply pure_ok].
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+    cbv iota.
+  (* the unnamed file: the agreement test first *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota;
+            [apply unmodeled_intro|]).
+  all: first [apply unmodeled_intro | apply fstat_file_witness_ok
              | apply fstat_devnull_witness_ok
              | apply fstat_urandom_witness_ok
+<<<<<<< HEAD
              | apply fstat_opaque_witness_ok]
     |unfold ret_outcome; apply pure_ok].
+=======
+             | apply fstat_anon_witness_ok].
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma newfstatat_witness_ok : forall dirfd pathp flag i m,

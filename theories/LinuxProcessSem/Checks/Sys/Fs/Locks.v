@@ -56,6 +56,10 @@ Definition check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model)
           | FdPipe _ _  => CheckUnmodeled
           | FdDevNull _ _ => CheckUnmodeled
           | FdUrandom => CheckUnmodeled
+          | FdStream _ _ _ => CheckUnmodeled
+          | FdDgram _ => CheckUnmodeled
+          | FdEventfd _ => CheckUnmodeled
+          | FdAnon _ _ => CheckUnmodeled
           | FdOpaque _ => CheckUnmodeled   (* unreachable: declined above *)
           | FdSeqpacket _ _ _ => CheckUnmodeled   (* see [Locks.flock_spec] *)
           end
@@ -81,7 +85,11 @@ Proof.
     [| apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
        eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
        srw Hfd; apply pure_ok ].
+<<<<<<< HEAD
   destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; cbv beta iota in H;
+=======
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o]; cbv beta iota in H;
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     (* the opaque kinds: [CheckUnmodeled] *)
     try discriminate;
     destruct (flock_unlock_b cmd) eqn:Hun;
@@ -106,12 +114,18 @@ Proof.
     [now apply check_ret_only_no_unmodeled in H|].
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [|now apply check_ret_only_no_unmodeled in H].
+<<<<<<< HEAD
   destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; cbv beta iota in H.
   11: { (* the opaque kinds, declined ahead of the unlock *)
+=======
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o]; cbv beta iota in H.
+  15: { (* the opaque kinds, declined ahead of the unlock *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
         eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
         srw Hfd. apply unmodeled_intro. }
   all: destruct (flock_unlock_b cmd) eqn:Hun;
     [now apply check_ret_only_no_unmodeled in H|].
+
   - eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
@@ -142,7 +156,21 @@ Proof.
   - (* /dev/urandom: declined *)
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
+<<<<<<< HEAD
   - (* an AF_UNIX SEQPACKET end: declined *)
+=======
+  - (* a stream-pair end: declined, the [FdSocket] case *)
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an eventfd: declined, fail-closed on the shared anonymous inode *)
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* a datagram socket: declined, the [FdSocket] case *)
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an unnamed file: declined, the sole-opener gate has no count of
+       the descriptors of the file id *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
 Qed.
@@ -157,7 +185,11 @@ Proof.
     try (destruct (negb (flock_cmd_ok_b cmd)) eqn:Hok; hall Hok; inv_ok;
          try (destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
               try (destruct (flock_unlock_b cmd) eqn:Hun; hall Hun; inv_ok;
+<<<<<<< HEAD
                    try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; hall Hfd; inv_ok;
+=======
+                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o]; hall Hfd; inv_ok;
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
                         try (destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
                              hall Hsole; inv_ok)))));
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
@@ -173,7 +205,11 @@ Proof.
     try (destruct (negb (flock_cmd_ok_b cmd)) eqn:Hok; hall Hok; inv_ok;
          try (destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
               try (destruct (flock_unlock_b cmd) eqn:Hun; hall Hun; inv_ok;
+<<<<<<< HEAD
                    try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; hall Hfd; inv_ok;
+=======
+                   try (destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o]; hall Hfd; inv_ok;
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
                         try (destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;
                              hall Hsole; inv_ok)))));
     reflexivity.

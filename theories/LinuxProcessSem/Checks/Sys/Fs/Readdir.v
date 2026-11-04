@@ -423,10 +423,20 @@ Definition check_getdents64 (i : SyscallInput) (fd dirent count : word)
   | Some (FdFileRW _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdSocket _)  => check_ret_only eff (errno_ret ENOTDIR) m []
+<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdOpaque o) => check_getdents64_opaque i fd o dirent count eff m
+=======
+  | Some (FdStream _ _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdDgram _)   => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdOpaque _) => CheckUnmodeled   (* declined: [Readdir.getdents64_spec] *)
+  | Some (FdAnon _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some FdDir =>
       if getdents64_no_room count then
         match eff with
@@ -448,7 +458,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
     try discriminate;
     (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
-    (* the five -ENOTDIR arms and the -EBADF one are plain returns *)
+    (* the -ENOTDIR arms and the -EBADF one are plain returns *)
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
   (* the opaque kinds *)
@@ -501,6 +511,7 @@ Proof.
   unfold getdents64_spec in H. unfold check_getdents64.
   apply get_model_bind_ok_inv in H. cbv beta in H.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; [destruct e|];
+<<<<<<< HEAD
     cbv iota in H.
   (* the opaque kinds *)
   all: try (now apply check_getdents64_opaque_complete_ok).
@@ -511,6 +522,32 @@ Proof.
             try contradiction; vm_compute; reflexivity).
   (* the eight plain returns *)
   all: sys_unfold; inv_ok; cbn [check_ret_only]; rewrite bv_eqb_refl; reflexivity.
+=======
+    hall Hfd.
+  (* THE DIRECTORY ARM (sixth: [State.FdEntry]'s constructors are
+     [FdChannel], [FdFile], [FdFileW], [FdFileA], [FdFileRW], [FdDir],
+     [FdSocket], [FdPipe], [FdDevNull], [FdUrandom], [FdStream],
+     [FdEventfd], [FdDgram], [FdAnon], then the closed fd).  THE INDEX MOVES WITH
+     THE TYPE: every constructor added ahead of [FdDir] shifts it, and
+     the goal this selects is silently a different arm if it is not
+     moved with it.  [getdents64_errnos] IS UNFOLDED BEFORE
+     [inv_ok] runs, and that is load-bearing rather than tidiness:
+     [errno_from]'s [choose] leaves [In e getdents64_errnos] with [e]
+     still a variable, [inv_ok] matches [_ \/ _] syntactically and a
+     [In] over a constant name is not one, so [e] survives to the
+     [vm_compute] below -- which then has to normalize
+     [errno_ret e = Z_to_bv 64 (- e)] with a SYMBOLIC [e], including its
+     well-formedness proof, and does not come back.  Unfolding the list
+     turns the [In] into the disjunction [inv_ok] does see, [e] is
+     substituted, and what is left is closed. *)
+  6: { destruct (getdents64_no_room count) eqn:Hroom; cbv iota in *;
+       unfold getdents64_errnos in *; cbn [In] in *; inv_ok;
+       try contradiction; vm_compute; reflexivity. }
+  (* the thirteen plain returns.  Delta is restricted to the acceptor, for
+     the same reason: [getdents64_no_room count] is over a variable
+     count, and a full-delta [cbn] descends into it. *)
+  all: inv_ok; cbn [check_ret_only]; rewrite bv_eqb_refl; reflexivity.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_getdents64_complete_unmodeled : forall i fd dirent count m eff,

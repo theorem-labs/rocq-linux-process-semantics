@@ -1470,7 +1470,7 @@ Proof.
      address space (which it grants, exactly where [region_free]
      accepted). *)
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
-  { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     difn H Epos; [discriminate|].
@@ -1522,7 +1522,7 @@ Proof.
        where [region_free] accepted, an occupied one is refused with
        [vm_maps] untouched. *)
     destruct (mmap_noreplace_noaccess_b prot flags off) eqn:Enrn.
-    { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+    { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
       difn H Eceil; [discriminate|].
       difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
       difn H Epos; [discriminate|].
@@ -1540,7 +1540,7 @@ Proof.
       - destruct ws, zs, us, cs, ci; try discriminate.
         difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
-    difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+    difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     difn H Epos; [discriminate|].
@@ -1557,7 +1557,7 @@ Proof.
         * exact (region_free_app_r _ _ _ _ Efree).
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
-  difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact Hwf|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Epos; [discriminate|].
@@ -1782,6 +1782,7 @@ Ltac vm_done H :=
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
 
+<<<<<<< HEAD
 (** The opaque arms keep the model: every answer is the model they were
     given and no event.  Proved apart, once each, so that the frame lemmas
     here, in [Checks.KillFree] and in the other per-arm frame files do not
@@ -2093,20 +2094,123 @@ Proof.
           || (eapply vm_openat_resolved in H; exact H));
   try reflexivity.
 Qed.
+=======
+(** A stream-pair end's read and send ([Fs.ReadWrite.check_stream_read],
+    [Fs.ReadWrite.check_stream_send]) rewrite fd-table entries -- the
+    reader's queue, or the peer's -- with [with_fds], and the send's
+    -EPIPE raises SIGPIPE through [check_sigpipe_write]; none of that
+    moves a mapping.  read(2), write(2), readv(2), writev(2), sendto and
+    recvfrom all reach these acceptors, so their frames are proved once
+    here and [vm_stream] hands them to each caller. *)
+Lemma check_stream_read_empty_frame : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H. vm_frame2 H.
+Qed.
+
+Lemma check_stream_read_frame :
+  forall fd id side st nonblock buf count i eff m m' evs,
+  check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd id side st nonblock buf count i eff m m' evs H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
+  cbv beta zeta in H. vm_frame2 H.
+Qed.
+
+Lemma check_stream_send_frame :
+  forall id side st nonblock nosignal n src ledger eff m m' evs,
+  check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros id side st nonblock nosignal n src ledger eff m m' evs H.
+  unfold check_stream_send in H. cbv beta zeta in H. vm_frame2 H.
+Qed.
+
+Lemma check_stream_write_frame :
+  forall id side st nonblock nosignal buf count i eff m m' evs,
+  check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros id side st nonblock nosignal buf count i eff m m' evs H.
+  unfold check_stream_write in H. eapply check_stream_send_frame. exact H.
+Qed.
+
+Ltac vm_stream H :=
+  first
+  [ apply check_stream_read_frame in H; exact H
+  | apply check_stream_read_empty_frame in H; exact H
+  | apply check_stream_write_frame in H; exact H
+  | apply check_stream_send_frame in H; exact H ].
+
+Ltac vm_frame3 H :=
+  repeat (vm_step H || vm_done H || vm_stream H); try reflexivity.
+
+(** READ'S AND WRITE'S HELPERS, ONE LEMMA EACH.  Each proves its own
+    step, so the frame lemmas of [read], [write], [pread64], [pwrite64],
+    [writev] and [pwritev2] below close these calls by name instead of
+    unfolding every helper into every arm: that costs the build more
+    memory than a CI runner has. *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma vm_read_urandom : forall i buf count eff m m' evs,
   check_read_urandom i buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
+<<<<<<< HEAD
   intros i buf count eff m m' evs H. unfold check_read_urandom, check_access_ok_zero in H.
+=======
+  intros i buf count eff m m' evs H. unfold check_read_urandom in H.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H);
   try reflexivity.
 Qed.
 
 Lemma vm_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
+<<<<<<< HEAD
   check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros e fd peer ch buf count i eff m m' evs H. unfold check_socket_pending_error, check_access_ok_zero in H.
+=======
+  check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros e fd peer ch buf count i eff m m' evs H.
+  unfold check_socket_pending_error, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+(** A read of a /proc/sys file (C1's [OProcFile]). *)
+Lemma vm_read_proc : forall i buf count eff m m' evs,
+  check_read_proc i buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i buf count eff m m' evs H.
+  unfold check_read_proc, check_read_proc_bare in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_eventfd_read : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_read in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_eventfd_write : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_write in H.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H);
   try reflexivity.
@@ -2115,35 +2219,80 @@ Qed.
 Lemma vm_write_fault_extend : forall reads m p off eff m' evs,
   check_write_fault_extend reads m p off eff = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
+<<<<<<< HEAD
   intros reads m p off eff m' evs H. unfold check_write_fault_extend, check_access_ok_zero in H.
+=======
+  intros reads m p off eff m' evs H. unfold check_write_fault_extend in H.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H);
   try reflexivity.
 Qed.
 
+<<<<<<< HEAD
+=======
+Lemma vm_anon_fault_extend : forall reads m id data dst eff m' evs,
+  check_anon_fault_extend reads m id data dst eff = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros reads m id data dst eff m' evs H. unfold check_anon_fault_extend in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_anon_write_fault : forall reads m id af eff m' evs,
+  check_anon_write_fault reads m id af eff = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros reads m id af eff m' evs H. unfold check_anon_write_fault in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_anon_fault_extend in H; exact H));
+  try reflexivity.
+Qed.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
+<<<<<<< HEAD
   unfold check_read, check_read_file_data, check_access_ok_zero in H.
   cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H
           || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
           || (eapply vm_read_urandom in H; exact H)
           || (eapply vm_socket_pending_error in H; exact H));
+=======
+  unfold check_read, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H || vm_stream H
+          || (eapply vm_read_urandom in H; exact H)
+          || (eapply vm_socket_pending_error in H; exact H)
+          || (eapply vm_read_proc in H; exact H)
+          || (eapply vm_eventfd_read in H; exact H));
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   try reflexivity.
 Qed.
 
+(** [anon_place_fds] stays folded: whatever table it answers, the arm
+    installs it with [with_fds]. *)
 Lemma check_write_frame : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_access_ok_zero in H.
   cbv beta iota zeta in H.
+<<<<<<< HEAD
   repeat (vm_step H || vm_done H
           || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
           || (eapply vm_write_fault_extend in H; exact H));
+=======
+  repeat (vm_step H || vm_done H || vm_stream H
+          || (eapply vm_write_fault_extend in H; exact H)
+          || (eapply vm_eventfd_write in H; exact H)
+          || (eapply vm_anon_write_fault in H; exact H));
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   try reflexivity.
 Qed.
 
@@ -2156,7 +2305,10 @@ Lemma check_pread64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pread64, check_read_urandom in H. cbv zeta in H. vm_frame2 H.
+  unfold check_pread64 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_read_urandom in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
@@ -2164,7 +2316,244 @@ Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64, check_write_fault_extend in H. vm_frame2 H.
+  unfold check_pwrite64 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_write_fault_extend in H; exact H)
+          || (eapply vm_anon_fault_extend in H; exact H));
+  try reflexivity.
+Qed.
+
+(** OPENAT'S SUB-CHECKERS, ONE LEMMA EACH.  Each proves its own step
+    and closes the sub-checkers it calls with their lemmas, so no proof
+    unfolds the whole openat tree: unfolding every sub-checker at once
+    and splitting it costs the build more memory than a CI runner has.
+    The sub-checkers are [Local] to [Checks/Sys/Fs/Open.v]; nothing they
+    do reaches the address space. *)
+
+Lemma vm_open_wronly : forall p eff m m' evs,
+  check_create_wronly p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold check_create_wronly in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_append : forall p eff m m' evs,
+  check_open_append p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold check_open_append in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_rdwr : forall p fs' eff m m' evs,
+  check_open_rdwr p fs' eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p fs' eff m m' evs H. unfold check_open_rdwr in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_read : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_read in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_create : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_create in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_wronly in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_excl : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_excl in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_wronly in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_append : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros excl p eff m m' evs H. unfold Open.check_openat_append in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_append in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_rdwr : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros creat trunc p eff m m' evs H. unfold Open.check_openat_rdwr in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_rdwr in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_rdwr_excl : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_rdwr_excl in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_rdwr in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_dir : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p eff m m' evs H. unfold Open.check_openat_dir in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_localtime : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_localtime in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_open_devnull : forall rd wr eff m m' evs,
+  Open.check_open_devnull rd wr eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros rd wr eff m m' evs H. unfold Open.check_open_devnull in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_devnull : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_devnull in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_devnull in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_open_urandom : forall eff m m' evs,
+  Open.check_open_urandom eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros eff m m' evs H. unfold Open.check_open_urandom in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_urandom : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros flags eff m m' evs H. unfold Open.check_openat_urandom in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_open_urandom in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_tmp : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros n p flags eff m m' evs H. unfold Open.check_openat_tmp in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_read in H; exact H)
+          || (eapply vm_openat_create in H; exact H)
+          || (eapply vm_openat_rdwr_excl in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_sep : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p flags eff m m' evs H. unfold Open.check_openat_sep in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_localtime in H; exact H)
+          || (eapply vm_openat_devnull in H; exact H)
+          || (eapply vm_openat_urandom in H; exact H)
+          || (eapply vm_openat_tmp in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_resolved : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros p flags eff m m' evs H. unfold Open.check_openat_resolved in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_sep in H; exact H)
+          || (eapply vm_openat_read in H; exact H)
+          || (eapply vm_openat_create in H; exact H)
+          || (eapply vm_openat_excl in H; exact H)
+          || (eapply vm_openat_dir in H; exact H)
+          || (eapply vm_openat_append in H; exact H)
+          || (eapply vm_openat_rdwr in H; exact H)
+          || (eapply vm_openat_rdwr_excl in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_proc_open_result : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros o eff m m' evs H. unfold Open.check_proc_open_result in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+(** The "/proc/self/fd/N" reopen installs a descriptor with [with_fds]
+    and nothing else. *)
+Lemma vm_openat_procfd : forall n flags eff m m' evs,
+  Open.check_openat_procfd n flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros n flags eff m m' evs H. unfold Open.check_openat_procfd in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H);
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_proc : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros c flags eff m m' evs H. unfold Open.check_openat_proc in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_proc_open_result in H; exact H)
+          || (eapply vm_openat_procfd in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma vm_openat_body : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold Open.check_openat_body in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H
+          || (eapply vm_openat_proc in H; exact H)
+          || (eapply vm_openat_resolved in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
@@ -2232,16 +2621,38 @@ Proof.
   intros eff m m' evs H. unfold check_set_tid_address in H. vm_frame2 H.
 Qed.
 
-Lemma check_ioctl_frame : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
-Proof. intros fd req eff m m' evs H. unfold check_ioctl in H. vm_frame2 H. Qed.
+Lemma check_ioctl_frame : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd req eff m m' evs H.
+  unfold check_ioctl, check_siocgifindex, check_ifreq_writeback in H. vm_frame2 H.
+Qed.
 
 Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev, check_write_fault_extend in H. vm_frame2 H.
+  unfold check_writev in H. cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H || vm_stream H
+          || (eapply vm_write_fault_extend in H; exact H)
+          || (eapply vm_anon_write_fault in H; exact H));
+  try reflexivity.
+Qed.
+
+(** pwritev2 (287) writes the unnamed file's contents into every
+    descriptor of it and nothing else, so the mappings come across
+    untouched, as [check_pwrite64]'s do. *)
+Lemma check_pwritev2_frame :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
+  unfold check_pwritev2 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || vm_done H || vm_stream H
+          || (eapply vm_anon_fault_extend in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
@@ -2250,7 +2661,7 @@ Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
 Proof.
   intros i fd r iovs0 eff m m' evs H.
   unfold check_readv_imported in H.
-  vm_frame2 H.
+  vm_frame3 H.
 Qed.
 
 Lemma check_readv_frame : forall i fd iov iovcnt eff m m' evs,
@@ -2340,16 +2751,18 @@ Proof.
   unfold check_timerfd_create in H. vm_frame2 H.
 Qed.
 
-(** [eventfd2] changes [m_fds] alone: its -EINVAL is decided from the
-    flag word, and its descriptor is [State.with_fds] over the table
-    ([Open.check_new_fd_result]), which carries the VM subsystem across
-    untouched.  A [*_frame] rather than a [*_preserves]: nothing is
-    written for [vm_wf] to be re-established over. *)
-Lemma check_eventfd2_frame : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs ->
+(** [eventfd2] leaves the address space alone on every answer: the
+    -EINVAL it decides from the flag word alone, before the [kmalloc],
+    touches no field of the model, and past the gate the injected errno
+    keeps the model while the new descriptor writes the fd table alone
+    ([State.with_fds]), [m_vmmaps] included.  A [*_frame] rather than a
+    [*_preserves]: nothing is written for [vm_wf] to be re-established
+    over. *)
+Lemma check_eventfd2_frame : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros flags eff m m' evs H.
+  intros i flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
@@ -2567,7 +2980,8 @@ Lemma check_unlinkat_frame : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result in H.
+    Namei.check_unlink_found, check_unlink_result, Namei.check_unlink_open_tmp,
+    check_unlink_open_result, check_unlink_type_result in H.
   vm_frame2 H.
 Qed.
 
@@ -2594,7 +3008,10 @@ Lemma check_pselect6_frame : forall i n32 inp outp exp tsp sig eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H.
-  unfold check_pselect6 in H. vm_frame2 H.
+  unfold check_pselect6 in H.
+  destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [pa|];
+    cbv beta iota in H; [|discriminate H].
+  apply check_pselect_answer_model in H. subst m'. reflexivity.
 Qed.
 
 Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
@@ -2602,7 +3019,10 @@ Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H. vm_frame2 H.
+  unfold check_ppoll in H.
+  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
+    cbv beta iota in H; [|discriminate H].
+  apply check_pselect_answer_model in H. subst m'. reflexivity.
 Qed.
 
 Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,
@@ -2671,6 +3091,7 @@ Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
 
+<<<<<<< HEAD
 (** The /proc/self/fd directory's [fstat] hands back the model it was
     given; the other opaque objects decline. *)
 Lemma check_fstat_opaque_frame : forall i o statbuf eff m m' evs,
@@ -2679,6 +3100,30 @@ Lemma check_fstat_opaque_frame : forall i o statbuf eff m m' evs,
 Proof.
   intros i o statbuf eff m m' evs H.
   apply check_fstat_opaque_keeps in H as (-> & _). reflexivity.
+=======
+(** The unnamed file's [fstat] records its pin in EVERY descriptor of the
+    file ([State.anon_update] under [State.with_fds]); that setter
+    rebuilds the fd table and carries [m_vmmaps] across untouched. *)
+Lemma check_fstat_anon_frame : forall i id af statbuf eff m m' evs,
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i id af statbuf eff m m' evs H.
+  unfold check_fstat_anon in H.
+  destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
+    [|discriminate].
+  assert (Hdel : exists pin,
+             check_fstat_anon_deliver statbuf id (length (af_data af)) pin eff m
+             = CheckOk m' evs).
+  { destruct (af_pin af) as [b0|]; [|eauto].
+    destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool);
+      [discriminate|eauto]. }
+  destruct Hdel as (pin & Hd).
+  apply check_fstat_anon_deliver_ok in Hd
+    as (bs & _ & _ & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
+    reflexivity.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
@@ -2686,11 +3131,23 @@ Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [|vm_frame2 H].
+<<<<<<< HEAD
   destruct e; try discriminate;
     first [eapply check_fstat_file_frame; exact H
           |eapply check_fstat_devnull_frame; exact H
           |eapply check_fstat_urandom_frame; exact H
           |eapply check_fstat_opaque_frame; exact H].
+=======
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o];
+    cbv iota in H; try discriminate.
+  (* the unnamed file: past the agreement test *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H;
+            [discriminate|]).
+  all: first [eapply check_fstat_file_frame; exact H
+             |eapply check_fstat_devnull_frame; exact H
+             |eapply check_fstat_urandom_frame; exact H
+             |eapply check_fstat_anon_frame; exact H].
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,
@@ -2829,12 +3286,21 @@ Proof.
   unfold check_sigaltstack in H. vm_frame2 H.
 Qed.
 
+(** The SIGPIPE arm installs an action ([State.with_sigpipe_install],
+    a [ProcState] record alone); its frame is
+    [Checks.Sys.Kernel.Signal.check_rt_sigaction_sigpipe_frame], stated
+    there for the reason [check_rt_sigprocmask_frame] is.  Every other
+    signal answers at the model it was given. *)
 Lemma check_rt_sigaction_frame : forall i sig act oact ss eff m m' evs,
   check_rt_sigaction i sig act oact ss eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i sig act oact ss eff m m' evs H.
-  unfold check_rt_sigaction in H. vm_frame2 H.
+  unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [vm_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { eapply check_rt_sigaction_sigpipe_frame; exact H. }
+  vm_frame2 H.
 Qed.
 
 Lemma check_clone_frame : forall flags eff m m' evs,
@@ -2895,21 +3361,29 @@ Definition arm_preserves_vm (c : CheckedArm) : Prop :=
     for exactly this. *)
 (** The five socket option/address calls.  Each resolves the fd and
     answers from the socket state; none has an address-space effect, so
-    each leaves [m_vmmaps] exactly as it found it. *)
-Lemma check_getsockname_frame : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs ->
+    each leaves [m_vmmaps] exactly as it found it.  A stream-pair end's
+    setsockopt and shutdown rewrite fd-table entries with [with_fds],
+    which carries the VM subsystem across; the [check_stream_*]
+    acceptors are unfolded because [vm_step] sees no [if] or [match]
+    through a folded definition. *)
+Lemma check_getsockname_frame : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core in H. vm_frame2 H.
+  intros i fd eff m m' evs H.
+  unfold check_getsockname, check_getsockname_core, check_stream_getname,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. vm_frame2 H.
 Qed.
 
-Lemma check_getpeername_frame : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs ->
+Lemma check_getpeername_frame : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core in H. vm_frame2 H.
+  intros i fd eff m m' evs H.
+  unfold check_getpeername, check_getpeername_core, check_stream_getname,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. vm_frame2 H.
 Qed.
 
 Lemma check_setsockopt_frame : forall i fd level optlen eff m m' evs,
@@ -2917,8 +3391,13 @@ Lemma check_setsockopt_frame : forall i fd level optlen eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd level optlen eff m m' evs H.
+<<<<<<< HEAD
   unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
     in H. vm_frame2 H.
+=======
+  unfold check_setsockopt, check_setsockopt_core, check_stream_setsockopt in H.
+  cbv zeta in H. vm_frame2 H.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
@@ -2926,7 +3405,9 @@ Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt, check_getsockopt_core in H. vm_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core, check_stream_getsockopt,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. vm_frame2 H.
 Qed.
 
 Lemma check_shutdown_frame : forall fd how eff m m' evs,
@@ -2934,7 +3415,8 @@ Lemma check_shutdown_frame : forall fd how eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown, check_shutdown_core in H. vm_frame2 H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H.
+  cbv zeta in H. vm_frame2 H.
 Qed.
 
 (** The send path.  [check_send_on_socket] is the shared body
@@ -2973,9 +3455,15 @@ Lemma check_socketpair_frame : forall i family type protocol sv eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
+<<<<<<< HEAD
   unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
     check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
   vm_frame2 H.
+=======
+  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted,
+    check_socketpair_unix_written in H.
+  cbv zeta in H. vm_frame2 H.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 Print Assumptions check_socketpair_frame.
 
@@ -2986,7 +3474,7 @@ Lemma check_recvfrom_frame : forall i fd buf size eff m m' evs,
 Proof.
   intros i fd buf size eff m m' evs H.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H.
-  vm_frame2 H.
+  vm_frame3 H.
 Qed.
 
 
@@ -3005,7 +3493,7 @@ Lemma check_sendto_frame : forall i fd buf count flags addrp eff m m' evs,
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
   unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
-  vm_frame2 H.
+  vm_frame3 H.
 Qed.
 
 Lemma check_sendmsg_frame : forall i fd msgp flags eff m m' evs,
@@ -3081,6 +3569,7 @@ Proof.
     | erewrite check_pwrite64_frame by eassumption; exact Hwf
     | erewrite check_readv_frame by eassumption; exact Hwf
     | erewrite check_writev_frame by eassumption; exact Hwf
+    | erewrite check_pwritev2_frame by eassumption; exact Hwf
     | erewrite check_openat_frame by eassumption; exact Hwf
     | erewrite check_close_frame by eassumption; exact Hwf
     | erewrite check_lseek_frame by eassumption; exact Hwf

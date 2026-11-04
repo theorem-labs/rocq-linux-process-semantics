@@ -481,13 +481,23 @@ Definition getdents64_spec (fd dirent count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
+  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
+                                              file is still a regular file, whose
+                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
+<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => err_ret ENOTDIR
                                            (* the [FdSocket] answer, from
                                               [socket_file_ops] alone: it has no
                                               [.iterate_shared] (net/socket.c:156,
                                               v6.18.46) *)
+=======
+  | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
+  | Some (FdDgram _)   => err_ret ENOTDIR    (* nor for a datagram socket's file *)
+  | Some (FdEventfd _) => err_ret ENOTDIR    (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
+                                                [.iterate_shared] either *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)

@@ -438,7 +438,13 @@ Definition rec_kernel : KernelBuild :=
       ({l1d})
       ({l2})
       ({l3}))
+<<<<<<< HEAD
     (kb_suid_dumpable default_kernel).
+=======
+    (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+    (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+    (kb_rmem_max default_kernel).
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** The argument vector, the environment and the exec file name, byte for
     byte as the probe recorded them. *)
@@ -683,7 +689,10 @@ def emit(f, module, r, base_at_zero):
         "[randomize_va_space] = %d%s.  [kb_vlenb] is %d%s.  The four cache "
         "leaves are the devicetree's (%s), read the way [cache_of_set_props] "
         "(drivers/base/cacheinfo.c) reads them, with the SET count in "
-        "[cl_assoc] as [State.cache_ways] expects."
+        "[cl_assoc] as [State.cache_ways] expects.  The five socket numbers "
+        "([kb_skb_head] and the four [net.core] buffer sysctls) are "
+        "[State.default_kernel]'s: the probe does not record them, and "
+        "nothing in the entry block reads them."
         % (f["text_pages"] - 1, f["text_pages"], guard_note,
            f["rnd_bits"] - 18, f["rnd_bits"],
            "true" if f["aslr"] else "false", f["rva"], norandmaps_note,

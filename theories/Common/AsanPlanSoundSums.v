@@ -28,17 +28,18 @@
     [summary_copy_sound] (the bytes exist: [wbytes_defined]).
 
     USAGE (assembly).  [APS.check_sound] has the hypothesis
-    [node_x_sound : forall x, APS.x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 x].
+    [node_x_sound : forall x, APS.x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 x].
     Discharge it by [destruct x]; the five summary cases are the theorems of
     part 6 of this file,
 <<
-      APSX.node_x_sound_XIMemset   : ... -> APSX.fill_spec SEGS (x_imemset A) 256    -> APS.x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemset
+      APSX.node_x_sound_XIMemset   : ... -> APSX.fill_spec SEGS (x_imemset A) 256    -> APS.x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XIMemset
       APSX.node_x_sound_XMemset    : ... -> APSX.fill_spec SEGS (x_memset A) two64   -> APS.x_stmt ... XMemset
       APSX.node_x_sound_XIMemcpy   : ... -> APSX.segs_wr_ok SEGS -> APSX.copy_spec SEGS (x_imemcpy A) -> APS.x_stmt ... XIMemcpy
       APSX.node_x_sound_XMemcpy    : ... -> APSX.segs_wr_ok SEGS -> APSX.copy_spec SEGS (x_memcpy A)  -> APS.x_stmt ... XMemcpy
       APSX.node_x_sound_XMemIsZero : ... -> APSX.miz_spec SEGS (x_memiszero A)       -> APS.x_stmt ... XMemIsZero
 >>
-    where [...] = SEGS A nx0 LIMIT CEIL, SEGS_wx, SEGS_in_hull, hull_ok (stated as
+    where [...] = SEGS A nx0 LIMIT CEIL, rz (the plan's CONFIG_RSEQ flag, which no
+    summary reads), SEGS_wx, SEGS_in_hull, hull_ok (stated as
     [hull_okP A], convertible to [APS.hull_ok A] and to the bare conjunction),
     SINV argH, argH_high, argH_agree, SINV_frame, SINV_agree, FS0 — APS's own
     Section variables / hypotheses; so inside any context holding them,
@@ -698,6 +699,8 @@ Variable nx0 : nat.
 Variable LIMIT : Z.
 Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
 Hypothesis CEIL_ok : ceil_ok CEIL.
+(** the plan's CONFIG_RSEQ flag ([APS.rz]); the summaries do not read it *)
+Variable rz : Z.
 Hypothesis SEGS_wx : wx_segs_nowrap SEGS.
 Hypothesis SEGS_in_hull : forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None.
 (** the two numeric image facts, wrapped (as in AsanPlanSound) so that [lia]
@@ -1705,31 +1708,31 @@ Proof.
 Qed.
 
 Theorem node_x_sound_XIMemset :
-  fill_spec SEGS (x_imemset A) 256 -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemset.
+  fill_spec SEGS (x_imemset A) 256 -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XIMemset.
 Proof. intros SUM args. exact (summary_fill_sound _ _ SUM). Qed.
 
 Theorem node_x_sound_XMemset :
-  fill_spec SEGS (x_memset A) two64 -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemset.
+  fill_spec SEGS (x_memset A) two64 -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XMemset.
 Proof. intros SUM args. exact (summary_fill_sound _ _ SUM). Qed.
 
 Theorem node_x_sound_XIMemcpy :
-  copy_spec SEGS (x_imemcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemcpy.
+  copy_spec SEGS (x_imemcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XIMemcpy.
 Proof. intros SUM args. exact (summary_copy_sound _ SUM). Qed.
 
 Theorem node_x_sound_XMemcpy :
-  copy_spec SEGS (x_memcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemcpy.
+  copy_spec SEGS (x_memcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XMemcpy.
 Proof. intros SUM args. exact (summary_copy_sound _ SUM). Qed.
 
 Theorem node_x_sound_XMemIsZero :
-  miz_spec SEGS (x_memiszero A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemIsZero.
+  miz_spec SEGS (x_memiszero A) -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XMemIsZero.
 Proof. intros SUM args. exact (summary_miz_sound SUM). Qed.
 
 Theorem node_x_sound_XIStrncpy :
-  istrncpy_spec SEGS (x_istrncpy A) (x_sealed A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIStrncpy.
+  istrncpy_spec SEGS (x_istrncpy A) (x_sealed A) -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XIStrncpy.
 Proof. intros SUM args. exact (summary_istrncpy_sound SUM). Qed.
 
 Theorem node_x_sound_XPopFree :
-  popfree_spec SEGS (x_popfree A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XPopFree.
+  popfree_spec SEGS (x_popfree A) -> x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XPopFree.
 Proof. intros SUM args. exact (summary_popfree_sound SUM args). Qed.
 
 End Sound.

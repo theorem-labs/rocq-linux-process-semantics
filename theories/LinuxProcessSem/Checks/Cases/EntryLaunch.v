@@ -496,16 +496,30 @@ Qed.
 Definition a1_argv : list (list byte) := [[Z_to_bv 8 97]].
 Definition a1_execfn : list byte := [Z_to_bv 8 97].
 
-(** The launch facts: no transparent huge pages, the FIRST vDSO image
-    ([kb_vdso] 0, one text page under [State.vdso_text_pages]), the
+(** The launch facts: no transparent huge pages, the vDSO image
+    [kb_vdso] 0 names, which is the one measured image
+    ([Vdso.vdso_images] is a singleton and [State.vdso_image_of] indexes
+    it modulo its length, so every value of the field names that image,
+    two text pages), the
     guard gap at its boot default of 256 pages (mm/mmap.c,
     [stack_guard_gap = 256UL << PAGE_SHIFT]), [vm.mmap_rnd_bits] at
     riscv64's ARCH_MMAP_RND_BITS_MIN of 18 ([kb_rnd_bits] 0,
+<<<<<<< HEAD
     arch/riscv/Kconfig), CONFIG_RSEQ on, no vector unit, no cache leaf
     reported, and fs.suid_dumpable at its default 0.  Randomization is
     the one fact the examples vary. *)
 Definition a1_kernel (aslr : bool) : KernelBuild :=
   mkKernelBuild false 0%N aslr 256%N 0%N true 0%N cache_view_absent SuidDumpDisable.
+=======
+    arch/riscv/Kconfig), CONFIG_RSEQ on, no vector unit, no cache
+    leaf reported, and [State.default_kernel]'s socket numbers (a
+    224-byte [struct sk_buff], the [net.core] buffer sysctls at their
+    defaults), which no launch reads.  Randomization is the one fact
+    the examples vary. *)
+Definition a1_kernel (aslr : bool) : KernelBuild :=
+  mkKernelBuild false 0%N aslr 256%N 0%N true 0%N cache_view_absent
+                224%N 212992%N 212992%N 4194304%N 4194304%N.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Definition a1_input_argv (argv : list (list byte)) (execfn : list byte)
     (kb : KernelBuild) : ProcInput :=

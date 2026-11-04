@@ -105,7 +105,11 @@ Qed.
 
 (* ----------------------------------------------------------- clone/clone3 *)
 
+<<<<<<< HEAD
 (** clone / clone3: no writes; only the success arm updates the model.  The two arms of
+=======
+(** clone / clone3: no writes.  The two arms of
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     [Fork.clone_resolve] are disjoint on the observed return — every
     admissible pid is below [PID_MAX_ENVELOPE] and every member of
     [Fork.clone_errnos] reads as an unsigned value just under 2^64 — so
@@ -117,6 +121,7 @@ Qed.
     and the errno set cannot drift between them.  The two differ only in
     the copy-in ledger they require, which is the whole observable
     difference between [clone] and [clone3]. *)
+<<<<<<< HEAD
 (** The success arm records the child in the model the caller keeps
     ([Kernel.Fork.forfeit_model]: each live inherited descriptor without
     its offset), mirroring [Kernel.Fork.clone_resolve]'s success branch.
@@ -124,6 +129,15 @@ Qed.
 Definition check_clone_answer (ret : word) (m : Model) : check_result :=
   if errno_ret_in clone_errnos ret then CheckOk m []
   else if clone_pid_ok_b m ret then CheckOk (with_child ret (forfeit_model m)) []
+=======
+(** The success arm returns the model WITH the child recorded and the
+    open eventfds shared, mirroring [Kernel.Fork.clone_resolve]'s
+    [clone_child_made] on the same branch.  The errno arm returns [m]
+    unchanged: it created nothing. *)
+Definition check_clone_answer (ret : word) (m : Model) : check_result :=
+  if errno_ret_in clone_errnos ret then CheckOk m []
+  else if clone_pid_ok_b m ret then CheckOk (clone_child_made m) []
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   else CheckReject.
 
 Definition check_clone_resolve (eff : SyscallEffect) (m : Model)
@@ -164,7 +178,11 @@ Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
     would accept a -EINTR the spec no longer admits. *)
 Definition check_clone_ns_answer (ret : word) (m : Model) : check_result :=
   if errno_any_b ret then CheckOk m []
+<<<<<<< HEAD
   else if clone_pid_ok_b m ret then CheckOk (with_child ret (forfeit_model m)) []
+=======
+  else if clone_pid_ok_b m ret then CheckOk (clone_child_made m) []
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   else CheckReject.
 
 Definition check_clone_ns_resolve (eff : SyscallEffect) (m : Model)

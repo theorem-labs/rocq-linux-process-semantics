@@ -21,7 +21,13 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdSocket _)  => ret_outcome (errno_ret EINVAL) m  (* no [.fsync] on a socket *)
+<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => ret_outcome (errno_ret EINVAL) m
+=======
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m  (* [socket_file_ops] too *)
+  | Some (FdDgram _)   => ret_outcome (errno_ret EINVAL) m    (* and a datagram socket *)
+  | Some (FdEventfd _) => ret_outcome (errno_ret EINVAL) m    (* no [.fsync] in [eventfd_fops] *)
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _)  => ret_outcome (errno_ret EINVAL) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m
   | Some FdUrandom => ret_outcome (errno_ret EINVAL) m
@@ -31,6 +37,7 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | Some (FdFileW _ _) => ret_outcome (Z_to_bv 64 0) m
   | Some FdDir         => ret_outcome (Z_to_bv 64 0) m
   | Some (FdOpaque _)  => Unmodeled   (* the spec declines the opaque kinds *)
+  | Some (FdAnon _ _)  => ret_outcome (Z_to_bv 64 0) m   (* the [FdFile] answer: [noop_fsync] *)
   end.
 
 Lemma fsync_witness_ok : forall fd i m, fsync_spec fd i m (fsync_witness fd m).

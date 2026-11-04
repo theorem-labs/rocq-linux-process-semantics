@@ -481,9 +481,14 @@ Qed.
     no single model can carry: that every resolution of 220 and 435
     which returns a PID leaves that field set.  [clone_checker_admits_a_pid]
     below pins one model and one pid; this is the [forall], and it is the
+<<<<<<< HEAD
     statement [Kernel.Fork.clone_resolve]'s
     [modify (fun m0 => with_child pid (forfeit_model m0))] exists to make
     true.
+=======
+    statement [Kernel.Fork.clone_resolve]'s [modify clone_child_made]
+    (which applies [State.with_children]) exists to make true.
+>>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
     THE TWO ARMS ARE SEPARATED, NOT MERELY COVERED.  The statement is a
     pair of implications keyed on the observed return rather than a

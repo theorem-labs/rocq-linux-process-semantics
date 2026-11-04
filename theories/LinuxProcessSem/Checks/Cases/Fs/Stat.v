@@ -112,8 +112,11 @@ Definition fstat_model_rw : Model :=
     (init_model [] 0 0 demo_sp demo_limit
        (demo_input [(fstat_path, fstat_data)] IEof)).
 
-(** A descriptor on a path the map does not hold: what [unlinkat] leaves
-    behind. *)
+(** A descriptor on a path the map does not hold.  No run builds it:
+    [unlinkat] never removes a key a descriptor still names -- the
+    working-directory arm declines that removal, and the /tmp arm turns
+    each such descriptor into a [State.FdAnon] first
+    ([Fs.Namei.unlink_open_tmp_spec]). *)
 Definition fstat_model_unlinked : Model :=
   with_fds [(Z_to_bv 64 3, FdFile fstat_path (Z_to_bv 64 0))]
     (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
@@ -370,11 +373,11 @@ Example fstat_one_byte_short_is_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** A descriptor whose path the map no longer holds — what an
-    [unlinkat] under an open fd leaves — is declined.  Linux answers
-    such a stat from the surviving inode with [st_nlink] 0; the model
-    has no contents to size and no link count to drop, and declining is
-    also what keeps [st_nlink] among the members the pin holds fixed. *)
+(** A descriptor whose path the map no longer holds is declined, as
+    [Stat.fstat_file_spec] says, for a [Model] no run builds (see
+    [fstat_model_unlinked]).  What the /tmp arm's removal of an open name
+    really leaves is an unnamed file, whose [fstat] is
+    [Stat.fstat_anon_spec]'s, with [st_nlink] 0. *)
 Example fstat_unlinked_path_is_unmodeled :
   check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] [])
     fstat_model_unlinked
