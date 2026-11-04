@@ -572,7 +572,10 @@ not apply.
   (`Ns.Propagation.targets_open`: `change_mnt_propagation` takes the next
   peer among the group's members outside the tables too,
   `fs/pnode.c:101-116`, and `transfer_propagation` sets the master of
-  each slave it hands over, `fs/pnode.c:74-88`), an
+  each slave it hands over, `fs/pnode.c:74-88`; a `mount_setattr` still
+  answers the `EPERM` or `EBUSY` that its selected tree alone decides,
+  `mount_setattr_prepare`, `fs/namespace.c:4710-4743`, as it reads those
+  slaves and mounts only after these checks), an
   `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
   and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
   `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,

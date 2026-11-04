@@ -732,36 +732,40 @@ Definition setattr_writer_busy (st : NsState) (targets : list positive) : bool :
     [mount442_injected].  A refused call leaves the groups as they were
     ([cleanup_group_ids], 4831-4833).  No answer, after the namespace
     check, when a mount the call reads can receive an event from an open
-    group ([Propagation.targets_open]): a mount of the selected tree, and
-    with a propagation type a slave the change hands over or a mount whose
-    slave list it changes.  The rule of open groups gives a call that
-    reads such a mount no answer ([Tables.env_open_groups]), so the test
-    comes before the EPERM and EBUSY checks of [mount_setattr_prepare]
-    (4710-4743).  With AT_RECURSIVE the host can also add mounts to the
-    tree, whose flags and writers those checks would read.  Without it
-    the checks read only the target (the loop returns after the first
-    mount, 4733-4734), which no host event changes: an open target still
-    has no answer, even where Linux decides EPERM or EBUSY from it alone,
-    and only a launch that names an open group reaches that case
-    ([Propagation.targets_open_closed]).  The flags do not change a
-    mount's group or master, so the test reads [st]. *)
+    group ([Propagation.targets_open]; the rule of open groups,
+    [Tables.env_open_groups]).  The EPERM and EBUSY checks of
+    [mount_setattr_prepare] (4710-4743) read the selected tree alone, so
+    the test of that tree ([targets_open] with [None]) comes before them.
+    With AT_RECURSIVE the host can also add mounts to the tree, whose
+    flags and writers those checks would read.  Without it the checks read
+    only the target (the loop returns after the first mount, 4733-4734),
+    which no host event changes: an open target still has no answer, even
+    where Linux decides EPERM or EBUSY from it alone, and only a launch
+    that names an open group reaches that case
+    ([Propagation.targets_open_closed]).  A propagation type also reads a
+    slave the change hands over and a mount whose slave list it changes;
+    only [mount_setattr_commit] reads them, once those checks pass
+    (4824-4826), so their test ([targets_open] with the type) comes after
+    the checks, before [change_type].  The flags do not change a mount's
+    group or master, so both tests read [st]. *)
 Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
     (prop : option PropType) (recursive : bool)
     (m : Model) (ctx : NsCtx) (st : NsState) (mt d : positive) : ext_outcome :=
   match find_mount (ns_mounts st) mt, path_mounted st mt d with
   | Some mount, Some true =>
       if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
-      else if targets_open st prop mt recursive then EUnmodeled
+      else if targets_open st None mt recursive then EUnmodeled
       else if mf_ro (at_set change) && setattr_writer_busy st (setattr_targets (ns_mounts st) mt recursive)
       then err reads EBUSY m ctx st
       else match mount_setattr (ns_mounts st) mt recursive change with
            | MErr e => err reads e m ctx st
            | MOk ms =>
-               mount_ok reads m ctx
-                 (match prop with
-                  | Some k => change_type k (with_mounts st ms) mt recursive
-                  | None => with_mounts st ms
-                  end)
+               match prop with
+               | Some k =>
+                   if targets_open st (Some k) mt recursive then EUnmodeled
+                   else mount_ok reads m ctx (change_type k (with_mounts st ms) mt recursive)
+               | None => mount_ok reads m ctx (with_mounts st ms)
+               end
            end
   | Some _, Some false => err reads EINVAL m ctx st
   | _, _ => EUnmodeled

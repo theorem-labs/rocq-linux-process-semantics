@@ -428,6 +428,26 @@ Example setattr_open_slave :
      = Some [(None, None); (None, None); (None, None); (Some 11%positive, None)].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** [mount_setattr_prepare]'s EPERM (fs/namespace.c:4716-4718) reads the
+    selected tree alone, and [mount_setattr_commit], which would hand
+    mount 4 over, does not run (4824-4826).  With mount 3's read-only flag
+    locked, MS_PRIVATE that clears it answers EPERM with group 11 open, as
+    with no open group. *)
+Definition st_slave9_locked : NsState :=
+  with_mounts st_slave9
+    (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_lock_flags x (mkMountFlags true false false false)
+                   else x)
+         (ns_mounts st_slave9)).
+
+Example setattr_open_slave_eperm :
+  ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PPrivate)
+                              false base_model c_admin (with_open_groups st_slave9_locked [11%positive]) 3 30)
+  = Some (-EPERM)
+  /\ ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PPrivate)
+                                 false base_model c_admin st_slave9_locked 3 30)
+     = Some (-EPERM).
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** With no open group no mount is open, so both arms answer as they did
     before the test ([Propagation.targets_open_closed]). *)
 Example targets_open_default :
