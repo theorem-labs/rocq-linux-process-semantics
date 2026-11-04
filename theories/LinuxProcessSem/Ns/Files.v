@@ -414,8 +414,9 @@ Definition has_unmapped_id (a : ObjAttr) : bool := kid_invalid (oa_uid a) || kid
 (** [inode_permission] (fs/namei.c:568-602): [sb_permission]'s EROFS for a
     write to a regular file, directory or link of a read-only superblock
     (544-554, 573-575); for a write, EACCES when the inode's uid or gid is
-    INVALID ([HAS_UNMAPPED_ID], 589-590; the tables hold no immutable
-    inode, so the EPERM of 581-582 before it never answers); then
+    INVALID ([HAS_UNMAPPED_ID], 589-590; the tables do not record
+    S_IMMUTABLE, so the EPERM of 581-582 before it is outside the model,
+    SCOPE.md); then
     [generic_permission], or [proc_fd_permission] (fs/proc/fd.c), which
     lets the task's own thread group into its fd directory.  [None]: the
     access is granted. *)

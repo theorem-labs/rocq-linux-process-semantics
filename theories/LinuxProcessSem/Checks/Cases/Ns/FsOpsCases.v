@@ -614,7 +614,8 @@ Qed.
 
 (* ---- a directory whose uid or gid is INVALID ---- *)
 
-(** [file_state] with its root directory (mode 0777) owned by [uid]:[gid].
+(** Code-path checks on a state Linux does not reach.  [file_state] with
+    its tmpfs root directory (mode 0777) owned by [uid]:[gid].
     [inode_permission] refuses every write to an inode whose uid or gid is
     INVALID (4294967295) with EACCES, before the mode bits are read
     ([HAS_UNMAPPED_ID], fs/namei.c:589-590; include/linux/fs.h:2587-2591).
@@ -622,7 +623,15 @@ Qed.
     ([may_create], fs/namei.c:3318), and so does an unlink ([may_delete],
     3274, after the victim's own INVALID test, 3267-3270, which "f",
     owned by 1000:1002, passes).  The mode grants the caller (fsuid 1000,
-    fsgid 1002) the write, so before this test each call answered 0. *)
+    fsgid 1002) the write, so before this test each call answered 0.  The
+    model creates and removes only in tmpfs, and Linux makes no tmpfs
+    inode with an INVALID owner: a tmpfs root takes the uid= and gid=
+    options, which must map (mm/shmem.c:4678, 4690), or the mounter's
+    fsuid and fsgid (5365-5366, 5155-5156); a new inode takes the
+    creator's fsuid and fsgid, or a set-group-ID parent's gid
+    ([inode_init_owner], fs/inode.c:2593-2605); chown refuses an INVALID
+    id (fs/open.c:730-752, 775-778); the model has no idmapped mount.  So
+    on every state Linux makes, these three calls answer as before. *)
 Definition unmapped_dir_state (uid gid : Z) : NsState :=
   with_tree base_state
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]

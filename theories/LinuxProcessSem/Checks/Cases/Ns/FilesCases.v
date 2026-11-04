@@ -976,81 +976,131 @@ Qed.
     whose uid or gid is INVALID (4294967295) with EACCES, after
     [sb_permission]'s EROFS and before the mode bits are read
     ([HAS_UNMAPPED_ID], fs/namei.c:589-590; include/linux/fs.h:2587-2591).
-    In tmpfs on /tmp: "u", a regular file 0666 owned by
-    4294967295:1002; "g", a regular file 0644 owned by 1000:4294967295;
-    "ud", a directory 0777 owned by 4294967295:4294967295.  On the
-    read-only mount /ro, whose superblock is writable: "u", as /tmp's.
-    The caller (fsuid 1000, fsgid 1002) has the write by the mode bits of
-    each, so before this test each write below was granted, or refused by
-    the read-only mount. *)
+    A host (local disk) file system can hold such an inode: an on-disk uid
+    or gid 0xFFFFFFFF reads as INVALID ([i_uid_write] and [i_gid_write],
+    include/linux/fs.h:1609-1617, called by ext4's [__ext4_iget],
+    fs/ext4/inode.c:5302-5303; the initial user namespace maps 0 to
+    4294967294 only, kernel/user.c:38-43, so [make_kuid] gives -1,
+    kernel/user_namespace.c:333, 425).
+    On the root's host superblock, in the directory "hd" (0755, owned by
+    1000:1002): "u", a regular file 0666 owned by 4294967295:1002, and
+    "g", a regular file 0644 owned by 1000:4294967295.  Mount 6 binds "hd"
+    on "rb", read-only, nosuid and nodev; the superblock stays writable.
+    Mount 7, on "rs", is a second host file system whose superblock is
+    read-only (SB_RDONLY); its root (0755, owned by 1000:1002) holds "u"
+    as "hd" does.  The caller (fsuid 1000, fsgid 1002) has the write by
+    the mode bits of each. *)
 Definition W_unmapped : NsState :=
-  with_tree W
+  let st := with_mounts W (ns_mounts W ++ [mnt 6 (Some 1%positive) 26 23 1 ro_nosuid_nodev;
+                                           mnt 7 (Some 1%positive) 27 60 6 no_flags]) in
+  let st := with_sbs st (ns_sbs W ++ [sb_ro 6 60 SbHost 61267]) in
+  with_tree st
     (ns_dentries W ++
-     [dent 23 2 (Some 20%positive) (bytes [117]) 23;
-      dent 24 2 (Some 20%positive) (bytes [103]) 24;
-      dent 25 2 (Some 20%positive) (bytes [117; 100]) 25;
-      dent 26 4 (Some 40%positive) (bytes [117]) 26])
-    (ns_inodes W ++ [reg 23 438 4294967295 1002; reg 24 420 1000 4294967295;
-                     dir 25 511 4294967295 4294967295; reg 26 438 4294967295 1002]).
+     [dent 23 1 (Some 1%positive) (bytes [104; 100]) 23;
+      dent 24 1 (Some 23%positive) (bytes [117]) 24;
+      dent 25 1 (Some 23%positive) (bytes [103]) 25;
+      dent 26 1 (Some 1%positive) (bytes [114; 98]) 26;
+      dent 27 1 (Some 1%positive) (bytes [114; 115]) 27;
+      dent 60 6 None [] 60;
+      dent 61 6 (Some 60%positive) (bytes [117]) 61])
+    (ns_inodes W ++ [dir 23 493 1000 1002; reg 24 438 invalid_id 1002; reg 25 420 1000 invalid_id;
+                     dir 26 493 1000 1002; dir 27 493 1000 1002; dir 60 493 1000 1002;
+                     reg 61 438 invalid_id 1002]).
 
-Definition s_tmp_u : list Z := s_tmp ++ [47; 117].                          (* /tmp/u *)
-Definition s_tmp_g : list Z := s_tmp ++ [47; 103].                          (* /tmp/g *)
-Definition s_tmp_ud_new : list Z := s_tmp ++ [47; 117; 100; 47; 110; 101; 119].  (* /tmp/ud/new *)
-Definition s_ro_u : list Z := s_ro ++ [47; 117].                            (* /ro/u *)
+Definition s_hd_u : list Z := [47; 104; 100; 47; 117].                      (* /hd/u *)
+Definition s_hd_g : list Z := [47; 104; 100; 47; 103].                      (* /hd/g *)
+Definition s_rb_u : list Z := [47; 114; 98; 47; 117].                       (* /rb/u *)
+Definition s_rs_u : list Z := [47; 114; 115; 47; 117].                      (* /rs/u *)
 
 (** An open for writing ([may_open], fs/namei.c:3565, with [ACC_MODE]'s
     MAY_WRITE): EACCES, where it gave descriptor 3; an open for reading
     asks no MAY_WRITE and still gives descriptor 3. *)
 Example openat_write_unmapped_owner :
-  ret_of (openat_fn (open_in s_tmp_u 1 0) m3 c0 W_unmapped) = Some (-13)
-  /\ ret_of (openat_fn (open_in s_tmp_u 0 0) m3 c0 W_unmapped) = Some 3.
+  ret_of (openat_fn (open_in s_hd_u 1 0) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (openat_fn (open_in s_hd_u 0 0) m3 c0 W_unmapped) = Some 3.
 Proof. split; vm_compute; reflexivity. Qed.
 
 (** The same through openat2 (one [do_filp_open] for both calls). *)
 Example openat2_write_unmapped_owner :
-  ret_of (fst (fst (openat2_fn (open2 CWD s_tmp_u 1 0 24) m3 c0 W_unmapped))) = Some (-13).
+  ret_of (fst (fst (openat2_fn (open2 CWD s_hd_u 1 0 24) m3 c0 W_unmapped))) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.
 
 (** faccessat W_OK ([do_faccessat], fs/open.c:509, mask [mode | MAY_ACCESS]):
     EACCES, where it answered 0, though the caller owns "g"; R_OK still
     answers 0. *)
 Example faccessat_write_unmapped_group :
-  ret_of (faccessat_fn (access_in s_tmp_g 2) m3 c0 W_unmapped) = Some (-13)
-  /\ ret_of (faccessat_fn (access_in s_tmp_g 4) m3 c0 W_unmapped) = Some 0.
+  ret_of (faccessat_fn (access_in s_hd_g 2) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_hd_g 4) m3 c0 W_unmapped) = Some 0.
 Proof. split; vm_compute; reflexivity. Qed.
-
-(** An O_CREAT open of a free name in "ud" ([may_o_create],
-    fs/namei.c:3622-3623, MAY_WRITE|MAY_EXEC on the directory): EACCES,
-    where it created the file and gave descriptor 3.  The walk's search of
-    "ud" asks MAY_EXEC alone and passes. *)
-Example openat_create_unmapped_dir :
-  ret_of (openat_fn (open_in s_tmp_ud_new creat_excl 438) m3 c0 W_unmapped) = Some (-13).
-Proof. vm_compute. reflexivity. Qed.
 
 (** On a read-only mount whose superblock is writable, [sb_permission]
     does not refuse (fs/namei.c:550, [sb_rdonly]), so the EACCES comes
     before the mount's EROFS: an open for writing ([may_open], 3973, runs
     before [vfs_open]'s [file_get_write_access], fs/open.c:926) and
     faccessat W_OK ([inode_permission] at fs/open.c:509, then
-    [__mnt_is_readonly] at 523-524) answer EACCES, where they answered
-    EROFS. *)
+    [__mnt_is_readonly] at 523-524) of "rb/u" answer EACCES, where they
+    answered EROFS. *)
 Example unmapped_owner_before_readonly_mount :
-  ret_of (openat_fn (open_in s_ro_u 1 0) m3 c0 W_unmapped) = Some (-13)
-  /\ ret_of (faccessat_fn (access_in s_ro_u 2) m3 c0 W_unmapped) = Some (-13).
+  ret_of (openat_fn (open_in s_rb_u 1 0) m3 c0 W_unmapped) = Some (-13)
+  /\ ret_of (faccessat_fn (access_in s_rb_u 2) m3 c0 W_unmapped) = Some (-13).
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** The /proc/sys/user branch runs the same test before
-    [proc_sys_permission] ([inode_permission], fs/namei.c:589-590, before
-    [do_inode_permission] at 593).  Linux makes those inodes root's
-    ([proc_sys_make_inode], fs/proc/proc_sysctl.c:490-493; the set's root
-    has no [set_ownership], kernel/ucount.c:58-61), so only tables that
-    hold such a file with an INVALID owner, as here, reach the refusal:
-    the open for writing and faccessat W_OK that [user_sys_permission]
-    grants with CAP_SYS_RESOURCE answer EACCES. *)
+(** On a read-only superblock, [sb_permission]'s EROFS (fs/namei.c:550-551,
+    573-575) comes before the unmapped-owner EACCES (589-590): an open for
+    writing ([may_open], 3973) and faccessat W_OK (fs/open.c:509) of
+    "rs/u" answer EROFS, as before. *)
+Example readonly_superblock_before_unmapped_owner :
+  ret_of (openat_fn (open_in s_rs_u 1 0) m3 c0 W_unmapped) = Some (-30)
+  /\ ret_of (faccessat_fn (access_in s_rs_u 2) m3 c0 W_unmapped) = Some (-30).
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** An O_CREAT write open of the existing 0666 file "st/f" in the sticky
+    world-writable "st", both on the host file system and owned by
+    INVALID, by the caller with fsuid 1000: [may_open]'s
+    [inode_permission] (3973, 589-590) refuses with EACCES, so Linux
+    answers EACCES under every protected_regular value
+    ([may_create_in_sticky], 1327-1329, or that [may_open]), and so does
+    the model ([sticky_answer]), where it gave no answer. *)
+Example openat_creat_write_sticky_unmapped_owners :
+  ret_of (openat_fn (open_in s_st_f creat_write 438) m3 c0 (W_sticky invalid_id)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A code-path check on a state Linux does not reach.  The model creates
+    a file only in tmpfs, and Linux makes no tmpfs inode with an INVALID
+    owner: a tmpfs root takes the uid= and gid= options, which must map
+    (mm/shmem.c:4678, 4690), or the mounter's fsuid and fsgid (5365-5366,
+    5155-5156); a new inode takes the creator's fsuid and fsgid, or a
+    set-group-ID parent's gid ([inode_init_owner], fs/inode.c:2593-2605);
+    chown refuses an INVALID id (fs/open.c:730-752, 775-778); the model
+    has no idmapped mount.  [W] with "ud", a tmpfs directory 0777 owned by
+    4294967295:4294967295 on /tmp: an O_CREAT open of a free name in it
+    ([may_o_create], fs/namei.c:3622-3623, MAY_WRITE|MAY_EXEC on the
+    directory) answers EACCES.  The walk's search of "ud" asks MAY_EXEC
+    alone and passes. *)
+Definition W_unmapped_tmpfs : NsState :=
+  with_tree W
+    (ns_dentries W ++ [dent 70 2 (Some 20%positive) (bytes [117; 100]) 70])
+    (ns_inodes W ++ [dir 70 511 invalid_id invalid_id]).
+
+Definition s_tmp_ud_new : list Z := s_tmp ++ [47; 117; 100; 47; 110; 101; 119].  (* /tmp/ud/new *)
+
+Example openat_create_unmapped_dir :
+  ret_of (openat_fn (open_in s_tmp_ud_new creat_excl 438) m3 c0 W_unmapped_tmpfs) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A code-path check on a state Linux does not reach.  The
+    /proc/sys/user branch runs the same test before [proc_sys_permission]
+    ([inode_permission], fs/namei.c:589-590, before [do_inode_permission]
+    at 593).  Linux makes those inodes root's ([proc_sys_make_inode],
+    fs/proc/proc_sysctl.c:490-493; the set's root has no [set_ownership],
+    kernel/ucount.c:58-61), so only tables that hold such a file with an
+    INVALID owner, as here, reach the refusal: the open for writing and
+    faccessat W_OK that [user_sys_permission] grants with CAP_SYS_RESOURCE
+    answer EACCES. *)
 Definition W_user_sys_unmapped : NsState :=
   with_tree W
     (ns_dentries W_user_sys)
-    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 4294967295 0]).
+    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 invalid_id 0]).
 
 Example user_sys_write_unmapped_owner :
   ret_of (openat_fn (open_in s_max_user_namespaces 1 0) m3 (c_caps sys_resource_caps)
