@@ -151,7 +151,7 @@ Lemma anon_entry_agrees_update : forall id af f e,
   anon_entry_agrees id (f af) (anon_entry_update id f e) = true.
 Proof.
   intros id af f e Hf H.
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o|qid qsd qst];
     try reflexivity.
   rewrite anon_entry_agrees_anon in H.
   unfold anon_entry_update. cbv beta iota.
@@ -170,7 +170,7 @@ Lemma anon_entry_agrees_update_other : forall id f id2 af2 e,
   anon_entry_agrees id2 af2 (anon_entry_update id f e) = true.
 Proof.
   intros id f id2 af2 e Hne H.
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o|qid qsd qst];
     try reflexivity.
   unfold anon_entry_update. cbv beta iota.
   destruct (bv_eqb id' id) eqn:Hid; cbv iota; [|exact H].
@@ -188,7 +188,7 @@ Lemma unlink_open_entry_agrees : forall c id data pin o r w a e,
     (unlink_open_entry c id data pin e) = true.
 Proof.
   intros c id data pin o r w a e He.
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|ob];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|ob|qid qsd qst];
     unfold unlink_open_entry; cbv beta iota.
   (* a descriptor of an unnamed file: not of [id], which was not live *)
   14: { cbn [entry_anon_id] in He. rewrite anon_entry_agrees_anon, He. reflexivity. }
@@ -205,7 +205,7 @@ Lemma unlink_open_entry_agrees_other : forall c id data pin id2 af2 e,
   anon_entry_agrees id2 af2 (unlink_open_entry c id data pin e) = true.
 Proof.
   intros c id data pin id2 af2 e Hne H.
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o];
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id' af'|o|qid qsd qst];
     unfold unlink_open_entry; cbv beta iota; try exact H.
   all: destruct (path_eqb c p); cbv iota;
          [apply anon_entry_agrees_other; exact Hne | exact H].

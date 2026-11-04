@@ -62,7 +62,7 @@ Proof. exact demo_input_valid. Qed.
 (** [State.default_kernel] with [kb_vlenb] changed and nothing else. *)
 Definition vlenb_kernel : KernelBuild :=
   mkKernelBuild false 1%N true 256%N 0%N true 3%N cache_view_absent
-                224%N 212992%N 212992%N 4194304%N 4194304%N.
+                224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable.
 
 Definition vlenb_launch : ProcInput := launch_on vlenb_kernel.
 
@@ -129,7 +129,7 @@ Qed.
     of 15 and no [CONFIG_RSEQ], and nothing else changed. *)
 Definition launch_facts_kernel : KernelBuild :=
   mkKernelBuild true 1%N false 0%N 15%N false 0%N cache_view_absent
-                224%N 212992%N 212992%N 4194304%N 4194304%N.
+                224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable.
 
 Definition launch_facts_launch : ProcInput := launch_on launch_facts_kernel.
 
@@ -182,7 +182,7 @@ Qed.
     27-pair auxv. *)
 Definition rseq_off_kernel : KernelBuild :=
   mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent
-                224%N 212992%N 212992%N 4194304%N 4194304%N.
+                224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable.
 
 Definition rseq_off_launch : ProcInput := launch_on rseq_off_kernel.
 
