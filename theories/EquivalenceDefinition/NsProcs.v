@@ -33,6 +33,7 @@ From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Clone Spec ProcsIface Step.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Fork.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExitP.
 Import ListNotations.
 
@@ -62,16 +63,32 @@ Proof.
 Qed.
 
 (** A clone environment that admits every failure of the released clone
-    (a task in the released world, a word with no namespace bit). *)
+    (a task in the released world, a clone that makes no namespace). *)
 Definition cenv_flat_ok (cenv : CloneEnv) : Prop :=
   forall f m ctx st hq e st',
-    flat_view ctx st = true -> has_ns_bits f = false -> cenv f m ctx st hq e st'.
+    flat_view ctx st = true -> makes_ns f = false -> cenv f m ctx st hq e st'.
 
 Lemma any_clone_failure_flat_ok : cenv_flat_ok any_clone_failure.
 Proof. intros f m ctx st hq e st' _ _. exact I. Qed.
 
 Lemma clone_tables_failures_flat_ok : cenv_flat_ok clone_tables_failures.
 Proof. intros f m ctx st hq e st'. apply clone_tables_failures_flat. Qed.
+
+(** THE OLD NAMESPACE PREMISE IMPLIES THE NEW ONE.  Where the word the
+    core passed before ([clone_flags_of]) has no namespace bit, the clone
+    input the core passes now ([clone_in_of]) makes no namespace: its
+    record has no namespace bit, or the argument checks refuse it
+    ([Procs.clone_in_of_ns_bits]).  So a statement whose premise reads
+    [makes_ns (clone_in_of c) = false] holds wherever the old premise
+    [has_ns_bits (clone_flags_of c) = false] held. *)
+Lemma clone_in_of_no_ns : forall c,
+  has_ns_bits (clone_flags_of c) = false -> makes_ns (clone_in_of c) = false.
+Proof.
+  intros c H. destruct (clone_in_of c) as [r|] eqn:E; [|reflexivity].
+  cbn [makes_ns]. destruct (clone_in_of_ns_bits c r H E) as [Hz | Hc].
+  - unfold has_ns_bits. rewrite Hz. reflexivity.
+  - rewrite Hc. destruct (has_ns_bits (Fork.cla_flags r)); reflexivity.
+Qed.
 
 (** IN THE RELEASED WORLD THE NAMESPACE MODEL CHANGES NO STEP: every
     process in the released world, and no pending clone that makes a
@@ -81,7 +98,7 @@ Theorem ns_flat_iff : forall cenv segs cfg p P evs r,
   cenv_flat_ok cenv ->
   (forall e, look P (pe_pid e) = Some e ->
      flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
-     /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false) ->
+     /\ makes_ns (clone_in_of (pe_cfg (pcfg_shared P) e)) = false) ->
   (pstep_x_at ns_ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
 Proof.
   intros cenv segs cfg p P evs r Hce H. apply pstep_x_at_flat_iff.
@@ -106,9 +123,11 @@ Proof.
   intros f m ctx st hq en. unfold clone_table_kept. split; [intros [_ H]; exact H|].
   intros H. split; [|exact H].
   intros child ret st' Hc. change (ext_clone ns_ext) with clone_ns in Hc.
-  unfold clone_ns in Hc.
-  destruct Hc as [Hc | (_ & e & st'' & _ & _ & Hc)]; [|discriminate Hc].
-  destruct H as [(st0 & H) | H]; rewrite H in Hc; discriminate Hc.
+  destruct f as [ra|].
+  - unfold clone_ns in Hc.
+    destruct Hc as [Hc | (_ & e & st'' & _ & _ & Hc)]; [|discriminate Hc].
+    destruct H as [(st0 & H) | H]; rewrite H in Hc; discriminate Hc.
+  - destruct H as [(st0 & H) | H]; rewrite clone_ns_exact_no_args in H; discriminate H.
 Qed.
 
 (** At the default launch (children's namespace is the active namespace),
@@ -118,7 +137,7 @@ Lemma clone_ns_exact_errno : forall f m ctx st hq e st',
   clone_ns_exact f m ctx st hq = CnErr e st' -> e = 1%Z \/ e = 22%Z \/ e = 28%Z.
 Proof.
   intros f m ctx st hq e st' Hchildren H.
-  unfold clone_ns_exact in H. rewrite Hchildren, Pos.eqb_refl in H.
+  unfold clone_ns_exact, clone_ns_answer in H. rewrite Hchildren, Pos.eqb_refl in H.
   unfold clone_creds, Userns.create_user_ns in H.
   (* Split every test but an errno's (a [Z]); then compute the errno. *)
   repeat match type of H with
@@ -154,8 +173,12 @@ Proof.
   intros cfg i m f ctx st hq en st' eff Hchildren Hsys Hret Hc.
   assert (Hcase : ~ clone_table_kept ns_ext f m ctx st hq en
                   \/ ~ spurious_refusal_cfg cfg i m eff).
-  { change (ext_clone ns_ext) with clone_ns in Hc. unfold clone_ns in Hc.
-    destruct (clone_ns_exact f m ctx st hq) as [c r s | e0 s0 |] eqn:Ex.
+  { change (ext_clone ns_ext) with clone_ns in Hc.
+    destruct f as [ra|].
+    2: { left. intros (Hno & _). apply (Hno ctx None st).
+         change (ext_clone ns_ext) with clone_ns. left. reflexivity. }
+    unfold clone_ns in Hc.
+    destruct (clone_ns_exact (Fork.CiArgs ra) m ctx st hq) as [c r s | e0 s0 |] eqn:Ex.
     - left. intros (Hno & _). apply (Hno c r s).
       change (ext_clone ns_ext) with clone_ns. unfold clone_ns. left. rewrite Ex. reflexivity.
     - destruct (Z.eq_dec en e0) as [-> | Hne].
@@ -187,7 +210,7 @@ Theorem ns_clone_fail_step_released : forall segs cfg c ctx st hq en st' evs c',
   pidns_children ctx = cx_pidns ctx ->
   clone_pending_b c = true ->
   ms_gpr (cfg_ms c') 0 = errno_ret en ->
-  ext_clone ns_ext (clone_flags_of c) (cfg_model c) ctx st hq (CnErr en st') ->
+  ext_clone ns_ext (clone_in_of c) (cfg_model c) ctx st hq (CnErr en st') ->
   (clone_fail_step ns_ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros segs cfg c ctx st hq en st' evs c' Hchildren Hcs Hret0 Hc.

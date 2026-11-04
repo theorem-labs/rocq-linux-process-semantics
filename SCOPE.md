@@ -35,6 +35,7 @@ source is not included in this repository.
 - Children's pid namespaces, allocation states, cursor/limit launch facts and their checks have not yet been translated.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
 - The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
+- The S1 namespace changes (the clone extension over the decoded clone input, the -EINVAL of the argument checks in the namespace world, and their cases) have not yet been translated.
 
 The bullets record pending translation work, not Lean code or evidence that
 the two models agree.

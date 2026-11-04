@@ -192,17 +192,13 @@ Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
     pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
 Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
 
-(** What [clone_ns] answers when the environment refuses nothing.  The
-    parent's return value is the core's pid for a caller in the released
-    world (its pid namespace is the host's, where the core's pid is the
-    child's), and [clone_ret] otherwise. *)
-Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
-  (* A task in the released world that makes no namespace: the core's own
-     clone, whatever the rest of the flag word ([Ext.ext_clone_coherent]). *)
-  if flat_view ctx st && negb (has_ns_bits f) then CnOk ctx None st
-  else if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
-  else if negb (Z.land f CSIGNAL =? Fork.SIGCHLD) then CnUnmodeled
-  else if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
+(** The tables' answer for a clone flag word [f] (the record's flags, no
+    exit signal) that the namespace mask and the SIGCHLD test of
+    [clone_ns_exact] passed.  The parent's return value is the core's pid
+    for a caller in the released world (its pid namespace is the host's,
+    where the core's pid is the child's), and [clone_ret] otherwise. *)
+Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
+  if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
   else
     match clone_creds m ctx st f with
     | NsErr 0 => CnUnmodeled
@@ -302,6 +298,36 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
           end
     end.
 
+(** What [clone_ns] answers when the environment refuses nothing, for the
+    clone's input ([Fork.CloneIn]):
+    - a task in the released world whose clone makes no namespace
+      ([Ext.makes_ns]): the core's own clone, whatever the rest of the
+      record ([Ext.ext_clone_coherent]).  A record the argument checks
+      refuse makes no namespace, so there the core's own -EINVAL stands;
+    - a call the core does not answer from a record ([Fork.CiNoArgs]:
+      among them a [clone3] whose own tests refuse its struct, or whose
+      struct cannot be copied): the core's own answer, with no namespace
+      change;
+    - otherwise the record: the namespace mask reads its flags and the
+      SIGCHLD test its exit signal, then [clone_ns_answer] its flags. *)
+Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
+    : CloneNs :=
+  if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
+  else match f with
+  | Fork.CiNoArgs => CnOk ctx None st
+  | Fork.CiArgs r =>
+      if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0) then CnUnmodeled
+      else if negb (Fork.cla_exit_signal r =? Fork.SIGCHLD) then CnUnmodeled
+      else clone_ns_answer (Fork.cla_flags r) m ctx st hq
+  end.
+
+(** A call with no record is the core's own in either world. *)
+Lemma clone_ns_exact_no_args : forall m ctx st hq,
+  clone_ns_exact Fork.CiNoArgs m ctx st hq = CnOk ctx None st.
+Proof.
+  intros m ctx st hq. unfold clone_ns_exact. destruct (flat_view ctx st); reflexivity.
+Qed.
+
 (** The namespace mask and signal tests imply the core's gate.  This is
     derived from the masks, not another test in [clone_ns_exact]. *)
 Lemma clone_ns_mask_core_gate : forall flags,
@@ -329,23 +355,49 @@ Proof.
   - right. unfold Fork.clone_ns_flags_b. rewrite Hout, Z.eqb_refl, Hns. reflexivity.
 Qed.
 
-(** Every answered word outside the released no-namespace fast path is a
-    word the core admits, including namespace-creating clones from the
-    host's namespaces.  That fast path remains unrestricted, as
-    [Ext.ext_clone_coherent] requires. *)
-Theorem clone_ns_exact_core_gate : forall flags m ctx st hq,
+(** Every answered [clone] (220) outside the released no-namespace fast
+    path whose decoded record the argument checks pass is a word the
+    core admits, including namespace-creating clones from the host's
+    namespaces.  That fast path remains unrestricted, as
+    [Ext.ext_clone_coherent] requires.  A record the checks refuse is
+    answered -EINVAL ([clone_ns_exact_arg_checks]). *)
+Theorem clone_ns_exact_core_gate : forall flags a1 a2 a3 a4 r m ctx st hq,
+  Fork.clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
+  Fork.clone_arg_checks r = false ->
   (flat_view ctx st && negb (has_ns_bits (bv_unsigned flags))) = false ->
-  clone_ns_exact (bv_unsigned flags) m ctx st hq <> CnUnmodeled ->
+  clone_ns_exact (Fork.CiArgs r) m ctx st hq <> CnUnmodeled ->
   Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true.
 Proof.
-  intros flags m ctx st hq Hfast Hanswer.
-  unfold clone_ns_exact in Hanswer. rewrite Hfast in Hanswer.
-  destruct (negb (Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0))
+  intros flags a1 a2 a3 a4 r m ctx st hq Hdec Hc Hfast Hanswer.
+  destruct (Fork.clone_args_of_clone_split _ _ _ _ _ _ Hdec) as [Hf He].
+  pose proof (Fork.clone_args_of_clone_word _ _ _ _ _ _ Hdec) as Hw.
+  destruct (Fork.flags_signal_split _ _ Hf He) as [Hfl Hes].
+  rewrite Hw in Hfl, Hes.
+  (* The core's [CSIGNAL] is this file's: 255. *)
+  match type of Hes with Z.land _ ?c = _ => change c with 255 in Hfl, Hes, He end.
+  (* With the checks passed, the record makes a namespace exactly when the
+     word has a namespace bit: those bits lie outside the signal byte. *)
+  assert (Hm : makes_ns (Fork.CiArgs r) = has_ns_bits (bv_unsigned flags)).
+  { cbn [makes_ns]. rewrite Hc. change (negb false) with true. rewrite andb_true_r.
+    unfold has_ns_bits. rewrite <- Hfl, <- Z.land_assoc.
+    replace (Z.land (Z.lnot 255) clone_ns_bits) with clone_ns_bits
+      by (vm_compute; reflexivity).
+    reflexivity. }
+  rewrite <- Hm in Hfast.
+  unfold clone_ns_exact in Hanswer. rewrite Hfast in Hanswer. cbv beta iota in Hanswer.
+  rewrite ?Hc in Hanswer.
+  destruct (negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0))
     eqn:Hmask; [exfalso; apply Hanswer; reflexivity|].
-  destruct (negb (Z.land (bv_unsigned flags) CSIGNAL =? Fork.SIGCHLD))
+  destruct (negb (Fork.cla_exit_signal r =? Fork.SIGCHLD))
     eqn:Hsignal; [exfalso; apply Hanswer; reflexivity|].
-  apply clone_ns_mask_core_gate;
-    apply negb_false_iff in Hmask, Hsignal; apply Z.eqb_eq; assumption.
+  apply negb_false_iff in Hmask, Hsignal. apply Z.eqb_eq in Hmask, Hsignal.
+  apply clone_ns_mask_core_gate.
+  - unfold CSIGNAL. rewrite <- Hw.
+    replace (Z.lnot (Z.lor 255 clone_ns_flags))
+      with (Z.land (Z.lnot clone_ns_flags) (Z.lnot 255)) by (vm_compute; reflexivity).
+    rewrite Z.land_lor_distr_l, Z.land_assoc, Hmask, Z.land_0_l, Z.lor_0_l.
+    now rewrite (Z.land_comm (Z.lnot clone_ns_flags)), Z.land_assoc, He, Z.land_0_l.
+  - unfold CSIGNAL. rewrite Hes. exact Hsignal.
 Qed.
 
 
@@ -402,24 +454,33 @@ Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
   | CnUnmodeled => false
   end.
 
-(** The answers: the tables' answer, or one of the environment's refusals
-    (an allocation failure, a namespace count of the host's user
-    namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
-    a namespace's init function).  Cursor movement requires that the
-    tables reach pid allocation.  For a closed namespace only an
-    allocation's ENOMEM or EAGAIN can have moved cursors; its final
+(** The answers for a record: the tables' answer, or one of the
+    environment's refusals (an allocation failure, a namespace count of
+    the host's user namespace, RLIMIT_NPROC, a cgroup controller, a
+    pending fatal signal, a namespace's init function).  Cursor movement
+    requires that the tables reach pid allocation.  For a closed namespace
+    only an allocation's ENOMEM or EAGAIN can have moved cursors; its final
     ENOMEM prevents reaching later failure sites (kernel/pid.c:238-303,
     Linux v6.18.46).  A partial allocation resets an empty innermost
-    namespace's cursor; freeing a completed first allocation closes it. *)
-Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
-  o = clone_ns_exact f m ctx st hq
-  \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
-      /\ exists e st', 1 <= e <= 4095
-          /\ (st' = st \/ (clone_pid_failure_can_move (clone_ns_exact f m ctx st hq) e = true
-              /\ (st' = pid_failed st (pidns_children ctx)
-                  \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (pidns_children ctx)))%nat
-                        /\ st' = pid_partial st (pidns_children ctx) k)))
-                       /\ o = CnErr e st').
+    namespace's cursor; freeing a completed first allocation closes it.
+    A call with no record ([Fork.CiNoArgs]) is the core's own: any errno,
+    with the namespace state unchanged ([Ext.released_clone]); such a call
+    fails before [copy_process] (a [clone3] struct its own tests refuse,
+    or one that cannot be copied), so before [alloc_pid]. *)
+Definition clone_ns (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
+    (o : CloneNs) : Prop :=
+  match f with
+  | Fork.CiNoArgs => released_clone ctx st o
+  | Fork.CiArgs _ =>
+      o = clone_ns_exact f m ctx st hq
+      \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
+          /\ exists e st', 1 <= e <= 4095
+              /\ (st' = st \/ (clone_pid_failure_can_move (clone_ns_exact f m ctx st hq) e = true
+                  /\ (st' = pid_failed st (pidns_children ctx)
+                      \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (pidns_children ctx)))%nat
+                            /\ st' = pid_partial st (pidns_children ctx) k)))
+                           /\ o = CnErr e st')
+  end.
 
 (** A task in the released world has no pid namespace the model made
     above it, so an undone [alloc_pid] moves no cursor. *)
@@ -508,30 +569,34 @@ Proof.
   now apply pid_partial_flat.
 Qed.
 
-(** A task in the released world that makes no namespace: the clone is
-    the core's own; the child gets the caller's context and the state is
-    unchanged. *)
+(** A task in the released world whose clone makes no namespace
+    ([Ext.makes_ns]): the clone is the core's own; the child gets the
+    caller's context and the state is unchanged. *)
 Lemma clone_ns_exact_flat_fork : forall f m ctx st hq,
-  flat_view ctx st = true -> has_ns_bits f = false ->
+  flat_view ctx st = true -> makes_ns f = false ->
   clone_ns_exact f m ctx st hq = CnOk ctx None st.
 Proof.
   intros f m ctx st hq Hf Hb. unfold clone_ns_exact. rewrite Hf, Hb. reflexivity.
 Qed.
 
 Lemma clone_ns_flat_fork_ok : forall f m ctx st hq,
-  flat_view ctx st = true -> has_ns_bits f = false ->
+  flat_view ctx st = true -> makes_ns f = false ->
   clone_ns f m ctx st hq (CnOk ctx None st).
 Proof.
-  intros f m ctx st hq Hf Hb. left. symmetry. apply clone_ns_exact_flat_fork; assumption.
+  intros f m ctx st hq Hf Hb. destruct f as [r|].
+  - left. symmetry. apply clone_ns_exact_flat_fork; assumption.
+  - left. reflexivity.
 Qed.
 
 (** [Ext.ext_clone_coherent] for [clone_ns]. *)
 Lemma clone_ns_coherent : forall f m ctx st hq o,
-  flat_view ctx st = true -> has_ns_bits f = false ->
+  flat_view ctx st = true -> makes_ns f = false ->
   (clone_ns f m ctx st hq o <-> released_clone ctx st o).
 Proof.
-  intros f m ctx st hq o Hf Hb. unfold clone_ns, released_clone.
-  rewrite (clone_ns_exact_flat_fork f m ctx st hq Hf Hb), (pid_failed_flat ctx st Hf).
+  intros f m ctx st hq o Hf Hb.
+  destruct f as [r|]; [|split; intros Ho; exact Ho].
+  unfold clone_ns, released_clone. cbv beta iota.
+  rewrite (clone_ns_exact_flat_fork (Fork.CiArgs r) m ctx st hq Hf Hb), (pid_failed_flat ctx st Hf).
   split.
   - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
     right. exists e. split; [exact He|].
@@ -560,6 +625,13 @@ Definition clone_count_undecided (f : Z) (m : Model) (ctx : NsCtx) (st : NsState
      | None => false
      end.
 
+(** The flags of a clone's input; a call with no record has none. *)
+Definition clone_in_flags (f : Fork.CloneIn) : Z :=
+  match f with
+  | Fork.CiArgs r => Fork.cla_flags r
+  | Fork.CiNoArgs => 0
+  end.
+
 (** The clone failures of a run in which THE HOST CAN MAKE THE NAMESPACES
     AND THE PROCESSES: an ENVIRONMENT PREMISE of every statement that names
     this [Ext.CloneEnv].  A clone that makes a namespace, or one by a task
@@ -572,15 +644,18 @@ Definition clone_count_undecided (f : Z) (m : Model) (ctx : NsCtx) (st : NsState
     namespace's init function, or in which a pid namespace's init has
     exited (ENOMEM from [alloc_pid]: which processes live is the core's
     table, not the namespace state), is outside such a statement.  The
-    released clone (a task in the released world, a word with no
-    namespace bit) keeps every failure the core admits. *)
+    released clone (a task in the released world, a clone that makes no
+    namespace) keeps every failure the core admits, and so does a call
+    with no record ([Fork.CiNoArgs]: the core's own failure, before
+    [copy_process]), with the namespace state unchanged. *)
 Definition clone_tables_failures : CloneEnv := fun f m ctx st hq e st' =>
-  (flat_view ctx st && negb (has_ns_bits f)) = true
+  (flat_view ctx st && negb (makes_ns f)) = true
   \/ CnErr e st' = clone_ns_exact f m ctx st hq
-  \/ (e = ENOSPC /\ st' = st /\ clone_count_undecided f m ctx st = true).
+  \/ (e = ENOSPC /\ st' = st /\ clone_count_undecided (clone_in_flags f) m ctx st = true)
+  \/ (f = Fork.CiNoArgs /\ st' = st).
 
-(** In the released world, for a word with no namespace bit, it admits
+(** In the released world, for a clone that makes no namespace, it admits
     every failure. *)
 Lemma clone_tables_failures_flat : forall f m ctx st hq e st',
-  flat_view ctx st = true -> has_ns_bits f = false -> clone_tables_failures f m ctx st hq e st'.
+  flat_view ctx st = true -> makes_ns f = false -> clone_tables_failures f m ctx st hq e st'.
 Proof. intros f m ctx st hq e st' Hf Hb. left. rewrite Hf, Hb. reflexivity. Qed.
