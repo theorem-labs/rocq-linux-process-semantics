@@ -629,3 +629,8 @@ Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
 Definition with_pidns_children (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
     (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (Some n).
+
+(** The child's active namespace is also its namespace for children. *)
+Definition with_active_pidns_children (ctx : NsCtx) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+    (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) None.

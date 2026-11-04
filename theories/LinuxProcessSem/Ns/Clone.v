@@ -272,6 +272,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let child := with_user_ns ctx (cc_user cc) in
                         let child := with_mount_ns child mntns in
                         let child := with_pid_ns child child_ns in
+                        let child := with_active_pidns_children child in
                         let child := with_net_ns child net in
                         let child := with_uts_ns child uts in
                         let child := with_pids child pids in
