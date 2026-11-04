@@ -3,8 +3,9 @@
 Read this document before you use a proof as evidence about a real program.
 It tells you which system the model describes, where the model is narrower
 than that system, which assumptions it does not check, where it is less
-precise, and where a run under QEMU user mode is not a Linux run. The
-design priorities in [README.md](README.md#design-priorities) refer to
+precise, and where a run under QEMU user mode is not a Linux run. It also
+records which parts of a separate Lean translation lag this Rocq model.
+The design priorities in [README.md](README.md#design-priorities) refer to
 this document.
 
 ## Supported systems
@@ -24,6 +25,16 @@ Each configuration choice that the model fixes is an assumption about the
 Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
 `-EINVAL` for a refused flag word and never `-ENOSYS`.
+
+## Lean translations behind the Rocq model
+
+The Lean translation of this Rocq model is maintained separately; its
+source is not included in this repository.
+
+- The namespace layer's Lean translation is pending.
+- Partial pid-allocation rollback and its failure-state checks are pending too.
+
+A list of definitions to translate is not Lean code or evidence that the two models agree.
 
 ## Where QEMU user mode differs
 
@@ -318,6 +329,7 @@ them. A proof says nothing about a program in such a case.
 | `setns` | `setns` answers `-EBADF` on a number that names no descriptor or names an O_PATH descriptor (`State.OProcPath`), and `-EINVAL` on every other descriptor except `State.ONsFile`, on which it is `unmodeled` (`SYSCALL_DEFINE2(setns)`, `kernel/nsproxy.c`; `fdget`, `fs/file.c`; v6.18.46). No descriptor of the model is a pidfd, and only an `ONsFile` may be a namespace file, so the model never joins a namespace with `setns`. The answer on fds 0, 1 and 2 rests on the assumption the Standard input and output row names. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 | Pid 1 of a model-made pid namespace | When pid 1 of a pid namespace that the namespace and mount model made exits, Linux kills every other task of that namespace (`zap_pid_ns_processes`, `kernel/pid_namespace.c`, v6.18.44). The namespace model's `exit` and `exit_group` answer as the released model does (`Ns.Pass`) and kill no other task: which tasks are in a namespace is the multi-process core's table, not the namespace state. A program that relies on pid 1's exit killing the other tasks in its pid namespace has no statement here. |
+| Partial pid-allocation failures | A failed clone may leave only an inner prefix of the model's pid cursors advanced: allocation visits the innermost namespace first, and a later level can fail (`alloc_pid`, kernel/pid.c:191-251,294-299; `idr_alloc_cyclic`, lib/idr.c:127-136, Linux v6.18.46). `Ns.Clone.pid_partial` records that prefix. Failures before allocation still keep the original state, and failures after all allocation still advance every model cursor. |
 | Parent-death signal | The multi-process core (`Procs.v`) holds each process's parent-death signal (`State.m_pdeath_signal`) but does not deliver it: when a parent exits, a child that armed `PR_SET_PDEATHSIG` is not signalled (`exit_notify` and `forget_original_parent`, `kernel/exit.c`, v6.18.44). A program that relies on its parent's death killing it has no statement here; a statement may still read the armed signal with `PR_GET_PDEATHSIG`. |
 | Namespace-model calls while another process lives | While another process lives, a task outside the released world gets the core's own numbers (`Procs.multiproc_base`: among them `clock_gettime`, whose clock the core brings up to every peer's, and `unlinkat`, which the core refuses when it removes a path a peer's descriptor or stat pin names) and the calls `Ns.Spec.ns_multiproc` lists: the calls a sandbox's setup child makes between its clone and its exec (path walks, mounts, `pivot_root`, `unshare`, `capget`, `capset`, `prctl`, `umask`, `getpid`, `sethostname`, `setsid`, `socket` and the netlink calls, `rt_sigprocmask`), each only where its answer reads and writes the namespace state (one copy, shared as Linux shares it), the task's own context, descriptor table and address space (per process after a clone without CLONE_VM: `brk`, `munmap`, `mremap`, `mprotect`, `madvise`, and `mmap` with MAP_ANONYMOUS), or nothing a peer can change: `read`, `write`, `fstat`, `fchmod`, `getdents64`, `ioctl` and the socket calls on a descriptor of the namespace model, `read` of an eventfd, `read` of an inherited descriptor that holds its offset (after a clone of either word only the child holds it), `writev` of a standard channel, `close` of an opaque descriptor, and `fcntl` F_GETFD/F_SETFD. Every other call is a model error there, never an answer: the multi-process core keeps the released file system, pipes and sockets per process. A task in the released world gets the core's own list. |
 | The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |

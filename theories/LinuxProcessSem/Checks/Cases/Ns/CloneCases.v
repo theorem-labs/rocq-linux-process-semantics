@@ -195,13 +195,86 @@ Example fork_failure_after_alloc_is_answer : forall m,
 Proof.
   intros m. right. split.
   - vm_compute. intros H. discriminate H.
-  - exists 12, (pid_advanced inside 2). split; [lia | split; [right; reflexivity | reflexivity]].
+  - exists 12, (pid_advanced inside 2). split; [lia | split; [right; left; reflexivity | reflexivity]].
 Qed.
 
 Example fork_after_failure_pid_3 : forall m,
   option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell (pid_advanced inside 2) 141))
   = Some [(2%positive, 3); (1%positive, 141)].
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Allocation visits namespace 3 before 2.  A failure at 2 leaves 3's
+    cursor advanced but 2's unchanged (kernel/pid.c:191-251,294-299). *)
+Definition nested_pids : NsState :=
+  with_pidns inside [mkPidNs 1 None 1 0 0;
+    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 1].
+Definition nested_shell : NsCtx :=
+  with_pids (with_pid_ns shell 3) [(3%positive, 1); (2%positive, 7); (1%positive, 139)].
+Definition inner_cursor_advanced : NsState :=
+  with_pidns nested_pids [mkPidNs 1 None 1 0 0;
+    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 2].
+
+Example partial_failure_state_is_new :
+  inner_cursor_advanced <> nested_pids /\
+  inner_cursor_advanced <> pid_advanced nested_pids 3.
+Proof. split; vm_compute; discriminate. Qed.
+
+Example fork_partial_allocation_is_answer : forall m,
+  clone_ns SIGCHLD m nested_shell nested_pids 140 (CnErr 12 inner_cursor_advanced).
+Proof.
+  intros m. right. split.
+  - vm_compute. intros H. discriminate H.
+  - exists 12, inner_cursor_advanced. split; [lia|]. split; [|reflexivity].
+    right. right. exists 1%nat. split; [vm_compute; lia|vm_compute; reflexivity].
+Qed.
+
+Example fork_nested_old_failure_states_remain : forall m,
+  clone_ns SIGCHLD m nested_shell nested_pids 140 (CnErr 12 nested_pids) /\
+  clone_ns SIGCHLD m nested_shell nested_pids 140 (CnErr 12 (pid_advanced nested_pids 3)).
+Proof.
+  intros m. split; right; split.
+  - vm_compute. intros H. discriminate H.
+  - exists 12, nested_pids. split; [lia|]. split; [left; reflexivity|reflexivity].
+  - vm_compute. intros H. discriminate H.
+  - exists 12, (pid_advanced nested_pids 3). split; [lia|].
+    split; [right; left; reflexivity|reflexivity].
+Qed.
+
+Example fork_single_model_level_failure_states : forall m e st',
+  clone_ns SIGCHLD m shell inside 140 (CnErr e st')
+  <-> 1 <= e <= 4095 /\ (st' = inside \/ st' = pid_advanced inside 2).
+Proof.
+  intros m e st'. unfold clone_ns. split.
+  - intros [H | (_ & en & s & He & Hstate & Ho)].
+    + pose proof (fork_inside_pid_2 m) as Hpid. rewrite <- H in Hpid. discriminate Hpid.
+    + injection Ho as -> ->. split; [exact He|].
+      destruct Hstate as [H | [H | (k & Hk & H)]].
+      * left. exact H.
+      * right. exact H.
+      * change (k < 2)%nat in Hk. destruct k as [|[|k]].
+        -- left. exact H.
+        -- right. exact H.
+        -- lia.
+  - intros [He Hstate]. right. split.
+    + pose proof (fork_inside_pid_2 m) as Hpid. intros H. rewrite H in Hpid. discriminate Hpid.
+    + exists e, st'. split; [exact He|]. split; [|reflexivity].
+      destruct Hstate as [H|H]; [left|right; left]; exact H.
+Qed.
+
+Example fork_released_failure_state_unchanged : forall m e st',
+  clone_ns SIGCHLD m caller host 140 (CnErr e st')
+  <-> 1 <= e <= 4095 /\ st' = host.
+Proof.
+  intros m e st'. rewrite clone_ns_coherent by reflexivity.
+  unfold released_clone. split.
+  - intros [H | (en & He & Ho)]; [discriminate H|]. injection Ho as -> ->. auto.
+  - intros [He ->]. right. exists e. auto.
+Qed.
+
+Print Assumptions fork_single_model_level_failure_states.
+Print Assumptions fork_released_failure_state_unchanged.
+Print Assumptions pid_partial_flat.
+Print Assumptions clone_ns_coherent.
 
 (** A pid namespace at level 32 can have no child: ENOSPC. *)
 Definition deep : NsState :=
