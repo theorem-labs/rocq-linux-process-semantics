@@ -13,6 +13,7 @@
 From Stdlib Require Import ZArith Bool List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export Syscall Uapi.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Fork.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -339,7 +340,7 @@ Definition wait4_spec (upid stat_addr options rusage : word)
             alt (ret_only (Z_to_bv 64 0))
                 (q <- choose (fun q =>
                         (pid_recorded_b q (State.m_child_pids m)
-                         && negb (w_is0 q)) = true) ;;
+                         && clone_pid_ok_b m q) = true) ;;
                  s <- choose (fun s => wait_status_okz s = true) ;;
                  modify (with_child_pids
                            (remove_pid q (State.m_child_pids m))) ;;

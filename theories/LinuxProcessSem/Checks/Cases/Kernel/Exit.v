@@ -147,3 +147,17 @@ Proof.
   repeat match goal with |- _ /\ _ => split end;
     first [vm_compute; reflexivity | check_eq].
 Qed.
+
+(** The returned pid is checked even when a raw model records an errno
+    word or a value outside the kernel pid envelope.  The valid recorded
+    pid remains answerable through the same NULL-status call. *)
+Example wait4_reap_bounds_raw_recorded_pids :
+  check_syscall (wait4_in 0 (fun _ => None))
+    (mkEffect (errno_ret ECHILD) [] [])
+    (with_child (errno_ret ECHILD) wait4_case_model) = CheckReject
+  /\ check_syscall (wait4_in 0 (fun _ => None))
+       (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       (with_child (Z_to_bv 64 PID_MAX_ENVELOPE) wait4_case_model) = CheckReject
+  /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
+       wait4_one_child = CheckOk wait4_reaped [].
+Proof. repeat split; check_eq. Qed.

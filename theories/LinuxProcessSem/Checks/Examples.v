@@ -434,19 +434,17 @@ Proof.
   rewrite Hch, Hl. reflexivity.
 Qed.
 
-(** ...and the half that names the wrong answer directly: with a child,
-    the childless answer — -ECHILD, nothing stored, the model unchanged —
-    is not admitted at all.  This is the one that fails loudly if
-    [wait4_spec]'s gate is dropped while something still sets the field.
-    The model is part of the answer named: on a model whose list holds
-    the -ECHILD word itself as a pid, a reap of that "pid" returns the
-    same word, and it is the removal from the list that tells it apart. *)
-Lemma wait4_with_a_child_admits_no_echild : forall i m evs,
+(** A caller with child history admits no -ECHILD return, regardless of
+    the effect's stores or the post-model.  The reap's own pid bound
+    excludes errno words even when a raw model records one as a pid. *)
+Lemma wait4_with_a_child_admits_no_echild : forall i eff m m' evs,
   bv_unsigned (in_sysno i) = 260%Z ->
   m_has_children m = true ->
-  ~ syscall_spec i m (Ok (mkEffect (errno_ret ECHILD) [] []) m evs).
+  eff_ret eff = errno_ret ECHILD ->
+  ~ syscall_spec i m (Ok eff m' evs).
 Proof.
-  intros i m evs Hno Hch H.
+  intros i [r ws zs us cs ins] m m' evs Hno Hch Hr H.
+  cbn [eff_ret] in Hr. subst r.
   apply check_syscall_complete_ok in H.
   rewrite (check_syscall_wait4 i _ m Hno) in H.
   unfold check_wait4 in H.
@@ -459,19 +457,18 @@ Proof.
   destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H; [discriminate|].
   destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
     [discriminate|].
+  destruct zs as [|? ?]; [|discriminate].
+  destruct us as [|? ?]; [|discriminate].
+  destruct cs as [|? ?]; [|discriminate].
+  destruct ins as [|? ?]; [|discriminate].
+  cbv iota in H.
   assert (Hz : w_is0 (errno_ret ECHILD) = false) by (vm_compute; reflexivity).
-  rewrite Hz in H. cbv iota in H.
-  destruct (pid_recorded_b (errno_ret ECHILD) (q0 :: l0)
-            && check_wait4_store (in_arg i 1) []) eqn:Hr; cbv iota in H;
-    [|discriminate].
-  apply andb_true_iff in Hr as [Hq _].
-  (* a reap of the -ECHILD word: it removed one entry, so the model moved *)
-  injection H as Hm _.
-  apply (f_equal m_child_pids) in Hm.
-  change (remove_pid (errno_ret ECHILD) (q0 :: l0) = m_child_pids m) in Hm.
-  rewrite Hl in Hm.
-  pose proof (remove_pid_length _ _ Hq) as Hlen.
-  rewrite Hm in Hlen. lia.
+  assert (Hp : clone_pid_ok_b m (errno_ret ECHILD) = false)
+    by (unfold clone_pid_ok_b; vm_compute; reflexivity).
+  rewrite Hz, Hp in H.
+  repeat rewrite andb_false_l in H.
+  repeat rewrite andb_false_r in H.
+  discriminate H.
 Qed.
 
 (** On the first [set_tid_address] call, EVERY environment choice is a

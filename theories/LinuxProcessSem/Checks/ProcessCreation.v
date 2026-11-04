@@ -923,6 +923,7 @@ Lemma wait4_answers : forall i m eff m' evs,
          /\ exists q s,
               pid_recorded_b q (m_child_pids m) = true
               /\ w_is0 q = false
+              /\ clone_pid_ok_b m q = true
               /\ wait_status_okz s = true
               /\ eff = mkEffect q (wait4_stat_store (in_arg i 1) s) []
               /\ m' = with_child_pids (remove_pid q (m_child_pids m)) m) ).
@@ -953,15 +954,17 @@ Proof.
       unfold w_is0 in H0. apply bv_eqb_eq in H0. subst ret.
       split; [reflexivity|]. right; left.
       split; [reflexivity|]. split; reflexivity.
-    + destruct (pid_recorded_b ret (q0 :: l0) && check_wait4_store (in_arg i 1) ws)
+    + destruct (pid_recorded_b ret (q0 :: l0)
+                && (clone_pid_ok_b m ret && check_wait4_store (in_arg i 1) ws))
         eqn:Hr; cbv iota in H; [|discriminate].
-      apply andb_true_iff in Hr as [Hq Hw].
+      apply andb_true_iff in Hr as [Hq Hr].
+      apply andb_true_iff in Hr as [Hp Hw].
       apply check_wait4_store_sound in Hw as (s & Hs & ->).
       injection H as <- <-.
       split; [reflexivity|]. right; right.
       split; [reflexivity|].
       exists ret, s.
-      split; [exact Hq|]. split; [exact H0|]. split; [exact Hs|].
+      split; [exact Hq|]. split; [exact H0|]. split; [exact Hp|]. split; [exact Hs|].
       split; reflexivity.
   - (* no child: -ECHILD *)
     destruct ws as [|? ?]; [|discriminate].
