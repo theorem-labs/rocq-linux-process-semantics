@@ -32,13 +32,16 @@ Definition caps_none : CapSets := mkCaps 0 0 0 0 0.
 Definition caps_admin : CapSets := mkCaps (2 ^ CAP_SYS_ADMIN) 0 0 0 0.
 
 Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsState :=
-  mkNsState
+  let st := with_mounts empty_nsstate
     [mnt 1 None 1 1 1 false false;
      mnt 2 (Some 1%positive) 2 20 2 locked unbindable;
      mnt 3 (Some 2%positive) 22 30 3 false false;
-     mnt 4 (Some 2%positive) 23 40 4 false false]
-    [user0] [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0 0] []
-    [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 SbTmpfs; sb 4 40 SbTmpfs]
+     mnt 4 (Some 2%positive) 23 40 4 false false] in
+  let st := with_userns st [user0] in
+  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_sbs st [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 SbTmpfs; sb 4 40 SbTmpfs] in
+  let st := with_tree st
     [dent 1 1 None [] 1;
      dent 2 1 (Some 1%positive) (bytes [116; 109; 112]) 2;
      dent 3 1 (Some 1%positive) (bytes [98; 105; 110; 100]) 3;
@@ -48,11 +51,11 @@ Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsStat
      dent 23 2 (Some 20%positive) (bytes [111; 116; 104; 101; 114]) 23;
      dent 30 3 None [] 30;
      dent 40 4 None [] 40]
-    [dir 1; dir 2; dir 3; dir 20; dir 21; dir 22; dir 23; dir 30; dir 40]
-    files (ns_env empty_nsstate).
+    [dir 1; dir 2; dir 3; dir 20; dir 21; dir 22; dir 23; dir 30; dir 40] in
+  with_files st files.
 
 Definition ctx (caps : CapSets) (root cwd : positive * positive) : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 1%Z)] root cwd 18 caps 0 [].
+  with_cwd (with_root (with_caps (with_pids init_nsctx [(1%positive, 1%Z)]) caps) root) cwd.
 Definition c_admin : NsCtx := ctx caps_admin (1%positive, 1%positive) (1%positive, 1%positive).
 Definition c_none : NsCtx := ctx caps_none (1%positive, 1%positive) (1%positive, 1%positive).
 Definition c_pivot : NsCtx := ctx caps_admin (2%positive, 20%positive) (3%positive, 30%positive).
@@ -273,6 +276,29 @@ Proof. vm_compute. reflexivity. Qed.
 Example setattr_permission_precedes_copy :
   ret_of (mount_setattr_fn
     (call 442 [-100; PATH; 0; 9223372036854775808; 32] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
+(** The size tests come before may_mount (fs/namespace.c:4973-4979, Linux
+    v6.18.46): an unprivileged caller with a size above PAGE_SIZE gets
+    E2BIG, and one with a size below MOUNT_ATTR_SIZE_VER0 gets EINVAL.
+    Before this correction the model answered EPERM to both. *)
+Example setattr_size_too_big_precedes_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 5000] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-E2BIG).
+Proof. vm_compute. reflexivity. Qed.
+
+Example setattr_size_too_small_precedes_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 16] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+(** At the boundary the size passes and may_mount answers. *)
+Example setattr_size_page_then_permission :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 4096] (cstr PATH s_tmp))
     base_model c_none (state false false [])) = Some (-EPERM).
 Proof. vm_compute. reflexivity. Qed.
 

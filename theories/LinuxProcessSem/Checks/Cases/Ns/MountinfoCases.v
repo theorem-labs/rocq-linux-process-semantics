@@ -29,21 +29,21 @@ Definition nsx : MountFlags := mkMountFlags false true false true.
     slave of group 4, nosuid, noexec; mount 4: in another namespace;
     mount 5: on dentry 9 of mount 4, which the root does not reach. *)
 Definition st : NsState :=
-  mkNsState
+  let w := with_mounts empty_nsstate
     [mkMount 1 1 None 1 1 1 nf nf false false None None;
      mkMount 2 1 (Some 1%positive) 2 31 3 ro3 nf false false None None;
      mkMount 3 1 (Some 1%positive) 3 40 4 nsx nf false false None (Some 4%positive);
      mkMount 4 2 None 1 1 1 nf nf false false None None;
-     mkMount 5 1 (Some 4%positive) 9 1 1 nf nf false false None None]
-    [] [] [] []
+     mkMount 5 1 (Some 4%positive) 9 1 1 nf nf false false None None] in
+  let w := with_sbs w
     [mkSb 1 SbTmpfs 1 1 false 16914836 false false false;
      mkSb 3 (SbProc 1) 1 30 false 40864 true true true;
-     mkSb 4 SbDevpts 1 40 false 7377 false false false]
+     mkSb 4 SbDevpts 1 40 false 7377 false false false] in
+  with_dentries w
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (s "proc") 2;
      mkDentry 3 1 (Some 1%positive) (s "dev pts") 3; mkDentry 9 1 (Some 1%positive) (s "x") 9;
      mkDentry 30 3 None [] 30; mkDentry 31 3 (Some 30%positive) (s "sys") 31;
-     mkDentry 40 4 None [] 40]
-    [] [] (ns_env empty_nsstate).
+     mkDentry 40 4 None [] 40].
 
 Example mountinfo_lines :
   mountinfo_text E st 1 (LDentry 1 1)

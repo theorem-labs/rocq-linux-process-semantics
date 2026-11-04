@@ -75,7 +75,12 @@ Require Extraction.
    revision/linux-only added; the image needs the two roots because
    that test reads the keys as paths and so can only be asked after
    the bytes are bytes, while the exec name's two tests are facts
-   about the integers themselves, [wmem_ranges], the writable-address
+   about the integers themselves, [inherited_shape_b], the launch
+   condition on the inherited descriptors ([Run.inherited_fds_ok] over
+   the converted list: numbers strictly increasing from 3 and below
+   [Run.nr_open_max], each file at most [Run.MAX_LFS_FILESIZE] bytes),
+   which a caller tells from a value refusal by asking [word_of_Z] and
+   [byte_of_Z] of each component, [wmem_ranges], the writable-address
    predicate a reader
    that holds ranges rather than a per-page test hands in, and
    [raw_of_effect], the way back for an effect the
@@ -122,6 +127,7 @@ Extraction "syscall_model.ml"
   execfn_shape_b
   image_shape_b
   fs_of_raw
+  inherited_shape_b
   wmem_ranges
   word_of_Z
   byte_of_Z

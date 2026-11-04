@@ -103,7 +103,7 @@ Lemma check_read_cp : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> cp_of m' = cp_of m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_urandom, check_socket_pending_error,
+  unfold check_read, check_read_file_data, check_read_urandom, check_socket_pending_error,
     check_access_ok_zero in H.
   cbv zeta in H.
   repeat (vm_step H || cp_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
@@ -1014,6 +1014,14 @@ Proof.
   unfold check_set_robust_list in H. cp_frame2 H.
 Qed.
 
+Lemma check_setns_cp : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs ->
+  cp_of m' = cp_of m.
+Proof.
+  intros fd eff m m' evs H.
+  unfold check_setns in H. cp_frame2 H.
+Qed.
+
 (** The memory-management arms build their post-models through the
     wrappers of [Sys.Mm]; two of them branch or recurse, so they get a
     lemma, and every other wrapper keeps [cp_of] by conversion. *)
@@ -1179,7 +1187,8 @@ Proof.
 Qed.
 
 (** The clone arms: the model as it was with an errno, or [with_child] of a
-    pid in the envelope. *)
+    pid in the envelope over the model the caller keeps
+    ([Kernel.Fork.forfeit_model]), for either word. *)
 Lemma clone_errno_error : forall r,
   errno_ret_in clone_errnos r = true -> addr_is_error_b r = true.
 Proof.
@@ -1200,7 +1209,8 @@ Local Ltac clone_leaf :=
 Lemma check_clone_cp : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs ->
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) m /\ clone_pid_ok_b m (eff_ret eff) = true).
+  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+      /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros flags [ret ws zs us cs ci] m m' evs H.
   unfold check_clone, check_clone_resolve, check_clone_answer,
@@ -1212,7 +1222,8 @@ Qed.
 Lemma check_clone3_cp : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) m /\ clone_pid_ok_b m (eff_ret eff) = true).
+  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+      /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
   intros i uargs size eff m m' evs H.
   unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
@@ -1233,7 +1244,8 @@ Qed.
 
 Definition clone_answer (eff : SyscallEffect) (m m' : Model) : Prop :=
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
-  \/ (m' = with_child (eff_ret eff) m /\ clone_pid_ok_b m (eff_ret eff) = true).
+  \/ (m' = with_child (eff_ret eff) (forfeit_model m)
+      /\ clone_pid_ok_b m (eff_ret eff) = true).
 
 Definition arm_cp (c : CheckedArm) : Prop :=
   forall i eff m m' evs, ca_check c i eff m = CheckOk m' evs ->
@@ -1344,6 +1356,7 @@ Proof.
         | eapply check_pipe2_cp; eassumption
         | eapply check_futex_cp; eassumption
         | eapply check_set_robust_list_cp; eassumption
+        | eapply check_setns_cp; eassumption
         | eapply check_madvise_cp; eassumption
         | eapply check_rt_sigprocmask_cp; eassumption
         | eapply check_tkill_cp; eassumption
@@ -1424,7 +1437,7 @@ Proof.
   intros eff m m' [(-> & _) | (-> & _)] Hh.
   - split; [exact Hh | exact (killed_none_of_running _ Hh)].
   - rewrite halted_with_child, killed_with_child.
-    split; [exact Hh | exact (killed_none_of_running _ Hh)].
+    split; [exact Hh | exact (killed_none_of_running m Hh)].
 Qed.
 
 (** THE STEP FACTS.  A released step that is not a successful clone keeps

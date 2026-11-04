@@ -28,11 +28,12 @@ Definition init_uns (max : Z) (sealed : bool) : UserNs :=
   mkUserNs 1 None 0 0 (Some full) (Some full) true true max sealed.
 
 Definition world (us : list UserNs) : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] us
-            [mkMntNs 1 1 1 false] [] [] [] [] [] [] (ns_env empty_nsstate).
+  let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] in
+  let w := with_userns w us in
+  with_mntns w [mkMntNs 1 1 1 false].
 
 Definition task (user : positive) (root : positive * positive) (caps : CapSets) : NsCtx :=
-  mkNsCtx user 1 1 1 [(1%positive, 2)] root root 18 caps 0 [].
+  with_caps (with_cwd (with_root (with_pids (with_user_ns init_nsctx user) [(1%positive, 2)]) root) root) caps.
 
 Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 
@@ -205,18 +206,18 @@ Proof.
 Qed.
 
 Lemma deep_filter : forall m eff,
-  ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep]) eff
+  ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep]) eff
   <-> ns_refusal_off_b forced_only_cfg (call CLONE_NEWUSER) (eff_ret eff) = true
       /\ exists eff' m' ctx' st' evs',
            ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
                    (EOk eff' m' ctx' st' evs')
            /\ ns_witness (call CLONE_NEWUSER) (eff_ret eff) (eff_ret eff') = true.
-Proof. intros m eff. apply ns_refusal_ns. vm_compute. reflexivity. Qed.
+Proof. intros m eff. apply ns_refusal_eff_ns. vm_compute. reflexivity. Qed.
 
 Example unshare_too_deep_forced_only : forall m,
-  ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
+  ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
              (mkEffect (errno_ret ENOMEM) [] [])
-  /\ ~ ns_refusal forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
+  /\ ~ ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep])
                (mkEffect (errno_ret ENOSPC) [] []).
 Proof.
   intros m. split.
@@ -234,4 +235,88 @@ Proof.
       repeat (apply orb_true_iff in He; destruct He as [He | He];
               [apply Z.eqb_eq in He; subst e; vm_compute in Hw; discriminate Hw |]).
       discriminate He.
+Qed.
+
+(** Under forced-only, an injected ENOSPC beside a success: namespace 1
+    has room under its limit, so the tables create the new namespace
+    ([unshare_creates]), and ENOSPC, although [ni_forced] lists it, is
+    filtered as ENOMEM is: the success matches no pair. *)
+Definition t_init : NsCtx := task 1 (1%positive, 1%positive) nocaps.
+Definition w_room : NsState := world [init_uns 100 true].
+
+Lemma ns_spec_room : forall m o,
+  ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_init w_room o
+  <-> unshare_exact (init_uns 100 true) false (with_creds (creds 1000) m) t_init w_room o
+      \/ env_refusal o (with_creds (creds 1000) m) t_init w_room.
+Proof.
+  intros m o. unfold ns_spec.
+  replace (flat_view t_init w_room) with false by (vm_compute; reflexivity).
+  change (lookup_ns_arm ns_table (ns_sysno (call CLONE_NEWUSER))) with (Some unshare_arm).
+  cbv beta iota.
+  apply unshare_arm_newuser; reflexivity.
+Qed.
+
+Lemma room_filter : forall m eff,
+  ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_init w_room eff
+  <-> ns_refusal_off_b forced_only_cfg (call CLONE_NEWUSER) (eff_ret eff) = true
+      /\ exists eff' m' ctx' st' evs',
+           ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_init w_room
+                   (EOk eff' m' ctx' st' evs')
+           /\ ns_witness (call CLONE_NEWUSER) (eff_ret eff) (eff_ret eff') = true.
+Proof. intros m eff. apply ns_refusal_eff_ns. vm_compute. reflexivity. Qed.
+
+Example unshare_room_enospc_forced_only : forall m,
+  ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_init w_room
+             (mkEffect (errno_ret ENOSPC) [] []).
+Proof.
+  intros m. apply (proj2 (room_filter m _)). split; [vm_compute; reflexivity|].
+  exists (mkEffect (Z_to_bv 64 0) [] []), (with_creds (creds 1000) m), (in_new_userns t_init 2),
+         (with_userns w_room [mkUserNs 2 (Some 1%positive) 1 1000 None None true false INT_MAX true;
+                              init_uns 100 true]), [].
+  split; [|vm_compute; reflexivity].
+  apply (proj2 (ns_spec_room m _)). left. vm_compute. reflexivity.
+Qed.
+
+(** Under forced-only, a forced ENOSPC is kept: namespace 2 is at its
+    limit through namespace 3, which the caller is in
+    ([unshare_limit_sealed]), so ENOSPC is the tables' answer and every
+    other answer is an environment refusal. *)
+Definition t_full : NsCtx := task 3 (1%positive, 1%positive) nocaps.
+Definition w_full : NsState := world [ns3; ns2lim; init_uns 100 true].
+
+Lemma ns_spec_full : forall m o,
+  ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_full w_full o
+  <-> unshare_exact ns3 false (with_creds (creds 1000) m) t_full w_full o
+      \/ env_refusal o (with_creds (creds 1000) m) t_full w_full.
+Proof.
+  intros m o. unfold ns_spec.
+  replace (flat_view t_full w_full) with false by (vm_compute; reflexivity).
+  change (lookup_ns_arm ns_table (ns_sysno (call CLONE_NEWUSER))) with (Some unshare_arm).
+  cbv beta iota.
+  apply unshare_arm_newuser; reflexivity.
+Qed.
+
+Lemma full_filter : forall m eff,
+  ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_full w_full eff
+  <-> ns_refusal_off_b forced_only_cfg (call CLONE_NEWUSER) (eff_ret eff) = true
+      /\ exists eff' m' ctx' st' evs',
+           ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_full w_full
+                   (EOk eff' m' ctx' st' evs')
+           /\ ns_witness (call CLONE_NEWUSER) (eff_ret eff) (eff_ret eff') = true.
+Proof. intros m eff. apply ns_refusal_eff_ns. vm_compute. reflexivity. Qed.
+
+Example unshare_limit_enospc_forced_only : forall m,
+  ~ ns_refusal_eff forced_only_cfg (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_full w_full
+               (mkEffect (errno_ret ENOSPC) [] []).
+Proof.
+  intros m H. apply (proj1 (full_filter m _)) in H.
+  destruct H as (_ & eff' & m' & ctx' & st' & evs' & Hspec & Hw).
+  apply (proj1 (ns_spec_full m _)) in Hspec.
+  destruct Hspec as [Hspec | (e & He & Hspec)].
+  - vm_compute in Hspec. injection Hspec; intros; subst. vm_compute in Hw. discriminate Hw.
+  - unfold ns_errno, ns_ret in Hspec. injection Hspec; intros; subst.
+    unfold errno_in, user_env_errnos in He. cbn [existsb] in He.
+    repeat (apply orb_true_iff in He; destruct He as [He | He];
+            [apply Z.eqb_eq in He; subst e; vm_compute in Hw; discriminate Hw |]).
+    discriminate He.
 Qed.

@@ -22,10 +22,6 @@ Definition AT_REMOVEDIR : Z := 512.
    Shared updates and names
    ========================================================================= *)
 
-Definition with_inodes (st : NsState) (ins : list Inode) : NsState :=
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) ins (ns_files st) (ns_env st).
-
 Definition set_inode_bytes (st : NsState) (i : positive) (bs : list byte) : NsState :=
   with_inodes st (map (fun ino => if Pos.eqb (ino_id ino) i
                               then mkInode (ino_id ino) (ino_kind ino) (ino_perm ino)
@@ -249,7 +245,21 @@ Definition newline : byte := Z_to_bv 8 10.
 Definition left_pad (n : nat) (bs : list byte) : list byte :=
   repeat space (n - length bs) ++ bs.
 
-Definition shown_lower (us : list UserNs) (bound : positive) (opener : IdCred) (lower : Z) : Z :=
+(** The lower id of a map line as [uid_m_show] and [gid_m_show] print it
+    (kernel/user_namespace.c:613-653, Linux v6.18.46): the namespace shown
+    is the opener's ([seq_user_ns], include/linux/seq_file.h:249-252), or
+    its parent when the opener reads its own namespace's map (620-622,
+    641-643); the id goes through that namespace's map of the file's kind,
+    [from_kuid] for uid_map and [from_kgid] for gid_map (624, 645).  An id
+    that map does not hold is [(u32) -1] ([map_id_range_up], 399; through
+    [map_id_up] 404-407, [from_kuid] 441-445, [from_kgid] 509-513), which
+    "%10u" prints as 4294967295 (626-629, 647-650).  [None]: the tables do
+    not hold the namespace shown.  Linux keeps it alive (a namespace holds
+    a reference to its parent, 133-134; the open file's credential holds
+    the opener's), so the tables, not Linux, lack its map, and the line has
+    no answer. *)
+Definition shown_lower (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
+    (lower : Z) : option Z :=
   let shown := if Pos.eqb (ic_ns opener) bound
                then match find_userns us bound with
                     | Some u => match uns_parent u with Some p => p | None => bound end
@@ -258,24 +268,42 @@ Definition shown_lower (us : list UserNs) (bound : positive) (opener : IdCred) (
                else ic_ns opener in
   match find_userns us shown with
   | Some u => match uns_parent u with
-              | None => lower
-              | Some _ => match uns_uid_map u with Some es => match map_up es lower with
-                                                   Some x => x | None => 65534 end
-                                                   | None => 65534 end
+              | None => Some lower
+              | Some _ => match the_map k u with
+                          | Some es => match map_up es lower with
+                                       | Some x => Some x
+                                       | None => Some 4294967295
+                                       end
+                          | None => Some 4294967295
+                          end
               end
-  | None => 65534
+  | None => None
   end.
 
-Definition map_line (us : list UserNs) (bound : positive) (opener : IdCred) (e : IdExtent) : list byte :=
-  left_pad 10 (decimal_bytes (ext_first e)) ++ [space]
-  ++ left_pad 10 (decimal_bytes (shown_lower us bound opener (ext_lower e))) ++ [space]
-  ++ left_pad 10 (decimal_bytes (ext_count e)) ++ [newline].
+Definition map_line (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
+    (e : IdExtent) : option (list byte) :=
+  option_map (fun lower =>
+                left_pad 10 (decimal_bytes (ext_first e)) ++ [space]
+                ++ left_pad 10 (decimal_bytes lower) ++ [space]
+                ++ left_pad 10 (decimal_bytes (ext_count e)) ++ [newline])
+             (shown_lower us bound opener k (ext_lower e)).
+
+(** The lines of [es], in order; [None] when a line has no answer. *)
+Fixpoint map_lines (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind)
+    (es : list IdExtent) : option (list byte) :=
+  match es with
+  | [] => Some []
+  | e :: r => match map_line us bound opener k e, map_lines us bound opener k r with
+              | Some l, Some t => Some (l ++ t)
+              | _, _ => None
+              end
+  end.
 
 Definition map_text (us : list UserNs) (bound : positive) (opener : IdCred) (k : MapKind) : option (list byte) :=
   match find_userns us bound with
   | None => None
   | Some u => match the_map k u with
-              | Some es => Some (flat_map (map_line us bound opener) es)
+              | Some es => map_lines us bound opener k es
               | None => Some []
               end
   end.
@@ -452,6 +480,55 @@ Definition set_user_limit (st : NsState) (bound : positive) (value : Z) : option
   | None => None
   end.
 
+(** Where a write to tmpfs inode [ino] through open file [f] at offset
+    [off] starts: at the end of the file under O_APPEND
+    ([generic_write_checks], fs/read_write.c), else at [off]. *)
+Definition tmpfs_write_start (f : NsFile) (ino : Inode) (off : Z) : Z :=
+  if has (nf_flags f) O_APPEND then Z.of_nat (length (ino_bytes ino)) else off.
+
+(** A write of [bs] at [start] to tmpfs inode [ino] through open file [h]
+    at [l]: the bytes land, the offset moves past them, and the call
+    returns their count. *)
+Definition tmpfs_wrote (m : Model) (ctx : NsCtx) (st : NsState) (h : N) (l : Loc) (ino : Inode)
+    (start : Z) (bs : list byte) : ext_outcome :=
+  let n := Z.of_nat (length bs) in
+  ans [] (Z_to_bv 64 n) [] m ctx
+      (set_file_kind (set_inode_bytes st (ino_id ino) (file_write (ino_bytes ino) (Z_to_bv 64 start) bs))
+                     h (NfFile l (start + n))).
+
+(** [f] is a file of /proc/sys/user ([user_sys_name]), whose writes go
+    through [proc_sys_call_handler] (fs/proc/proc_sysctl.c). *)
+Definition sysctl_file (st : NsState) (f : NsFile) : bool :=
+  match nf_kind f with
+  | NfUserNsFile l _ _ =>
+      match map_kind_at l with
+      | Some _ => false
+      | None => negb (setgroups_at l) && match user_sys_name st l with Some _ => true | None => false end
+      end
+  | _ => false
+  end.
+
+(** [KMALLOC_MAX_SIZE] (include/linux/slab.h): 1 << ([MAX_PAGE_ORDER] +
+    [PAGE_SHIFT]), with [MAX_PAGE_ORDER] 10 (include/linux/mmzone.h; RISC-V
+    sets no CONFIG_ARCH_FORCE_MAX_ORDER) and 4 KiB pages: 4 MiB. *)
+Definition KMALLOC_MAX_SIZE : Z := 4194304.
+
+(** [proc_sys_call_handler] (fs/proc/proc_sysctl.c:570-572) runs
+    [sysctl_perm] with MAY_WRITE on every write, not only at the open:
+    [f], a file of /proc/sys/user opened in the set of user namespace
+    [bound] (the opener's), refuses the writer's credential as it is at
+    the write, by the check the open made ([Files.sysctl_perm_ok]).
+    Through [set_permissions] (kernel/ucount.c:42-56) that is
+    CAP_SYS_RESOURCE over [bound] ([cap_capable],
+    security/commoncap.c:68-106), which a writer that has moved to a
+    child user namespace since the open no longer holds: there [bound] is
+    at a level no deeper than the writer's namespace (:88-89). *)
+Definition sysctl_write_refused (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile) : bool :=
+  match nf_kind f with
+  | NfUserNsFile _ bound _ => negb (sysctl_perm_ok (ns_userns st) (task_cred m ctx) bound MAY_WRITE)
+  | _ => false
+  end.
+
 (** [write] (64) on an [ONsFile].  Map and setgroups writes delegate their
     ordered permission checks to [map_write] and [setgroups_write].  A
     /proc/sys/user/max_user_namespaces write follows [proc_sys_call_handler]
@@ -460,12 +537,30 @@ Definition set_user_limit (st : NsState) (bound : positive) (value : Z) : option
     [shmem_file_write_iter]; kernel/user_namespace.c [proc_uid_map_write],
     [proc_gid_map_write], [proc_setgroups_write]; kernel/sysctl.c
     [proc_doulongvec_minmax], [__do_proc_doulongvec_minmax], [proc_get_long];
-    and fs/proc/proc_sysctl.c [proc_sys_call_handler].  Kind: exact on
-    tmpfs and the named procfs files, with [write_env]'s refusals; host
-    regular files and other kinds decline. *)
+    and fs/proc/proc_sysctl.c [proc_sys_call_handler], which answers, in
+    this order, EPERM when [sysctl_perm] refuses the writer
+    ([sysctl_write_refused], :570-572), then ENOMEM, before its [kvzalloc]
+    and its copy of the buffer, for a count of [KMALLOC_MAX_SIZE] or more
+    (:580-582).  [__do_proc_doulongvec_minmax] answers 0 for a count of 0
+    (kernel/sysctl.c:897-900), and at an offset other than 0 skips the
+    parse and counts the bytes written (:909-910,
+    [proc_first_pos_non_zero_ignore]).  This is the answer when the
+    environment fails nothing.  Kind ([write_arm]): on tmpfs and the named
+    procfs files, this answer, beside it [write_env]'s refusals, and on
+    tmpfs [write_short]'s short counts; over, since the arm admits
+    [write_env]'s refusals after every answer, also where Linux allocates
+    nothing first (a write of no bytes to tmpfs, a map write that
+    [map_write] refuses before [memdup_user_nul], a sysctl write that
+    [sysctl_perm] refuses).  Host regular files and other kinds decline. *)
 Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) : ext_outcome :=
   if negb (file_can_write f) then ns_errno EBADF m ctx st
+  else if sysctl_file st f && access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))
+          && sysctl_write_refused m ctx st f
+  then ns_errno EPERM m ctx st
+  else if sysctl_file st f && access_okb (in_arg i 1) (bv_unsigned (in_arg i 2))
+          && (KMALLOC_MAX_SIZE <=? rw_count_clamp (in_arg i 2))
+  then ns_errno ENOMEM m ctx st
   else match write_bytes i with
        | WFault => ns_errno EFAULT m ctx st
        | WBytesOver => EUnmodeled
@@ -476,11 +571,7 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
            | NfDir _ _ => ns_errno EISDIR m ctx st
            | NfFile l off =>
                match regular_tmpfs st l with
-               | Some ino =>
-                   let start := if has (nf_flags f) O_APPEND then Z.of_nat (length (ino_bytes ino)) else off in
-                   let st' := set_inode_bytes st (ino_id ino)
-                                     (file_write (ino_bytes ino) (Z_to_bv 64 start) bs) in
-                   ans [] (Z_to_bv 64 n) [] m ctx (set_file_kind st' h (NfFile l (start + n)))
+               | Some ino => tmpfs_wrote m ctx st h l ino (tmpfs_write_start f ino off) bs
                | None => EUnmodeled
                end
            | NfUserNsFile l bound off =>
@@ -502,7 +593,7 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
                    else match user_sys_name st l with
                         | Some name =>
                             if negb (bytes_eqb name name_max_user_namespaces) then EUnmodeled
-                            else if negb (Z.eqb off 0) then
+                            else if negb (Z.eqb off 0) || Z.eqb n 0 then
                                    ans [] (Z_to_bv 64 n) [] m ctx
                                        (set_file_kind st h (NfUserNsFile l bound (off + n)))
                             else match user_limit_value (bytes_z bs), set_user_limit st bound 0 with
@@ -526,8 +617,9 @@ Definition write_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     - a tmpfs regular file: [shmem_write_begin]'s [shmem_get_folio]
       (mm/shmem.c), ENOSPC past the size limit
       ([shmem_inode_acct_blocks]), ENOMEM for the folio, and EIO for a
-      hardware-poisoned page or a swapped-out one that cannot be read
-      back;
+      hardware-poisoned page ([shmem_write_begin], mm/shmem.c:3335-3338)
+      or a swapped-out one that cannot be read back ([shmem_swapin_folio],
+      mm/shmem.c:2306-2307 and 2402-2403);
     - a uid_map or gid_map: [map_write] (kernel/user_namespace.c), ENOMEM
       from [memdup_user_nul], [insert_extent] and [sort_idmaps];
     - /proc/sys/user/max_user_namespaces: [proc_sys_call_handler]
@@ -553,15 +645,49 @@ Definition write_env (st : NsState) (f : NsFile) (e : Z) : bool :=
      | _ => false
      end.
 
-(** [write_env]'s refusals as pairs, for the forced-only filter. *)
+(** [write_env]'s refusals as pairs, for the forced-only filter, by cause
+    ([Arm.NsInjected]): ENOMEM is an allocation (the folio, [map_write]'s
+    buffers, [kvzalloc]); ENOSPC, the tmpfs instance's size limit, and EIO,
+    a page that cannot be read back, are its state. *)
 Definition write_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM], FamAlloc); (errno_in [ENOSPC; EIO], FamFs)].
+
+(** [k] can end a short write of [n] bytes from [start]: it ends on a page
+    boundary, strictly inside the write. *)
+Definition short_count (start : Z) (n k : nat) : bool :=
+  Nat.ltb 0 k && Nat.ltb k n && ((start + Z.of_nat k) mod Z.of_nat PAGE_SIZE =? 0).
+
+(** A short write to a tmpfs regular file, Linux 6.18.44:
+    [shmem_file_write_iter]'s [generic_perform_write] (mm/filemap.c) writes
+    folio by folio, and when the [shmem_write_begin] of a later folio fails
+    (with one of [write_env]'s errnos) it returns the count it has already
+    written.  A folio of the default tmpfs mount is one page
+    ([__shmem_get_inode] allows large folios only under the mount's
+    [huge] option), and a large folio starts on a page boundary too, so
+    that count [k] is a [short_count]: the first [k] bytes land and the
+    offset moves by [k].  A count is no refusal, so the forced-only filter
+    keeps it. *)
+Definition write_short (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) (h : N)
+    (f : NsFile) (o : ext_outcome) : Prop :=
+  file_can_write f = true
+  /\ match write_bytes i, nf_kind f with
+     | WBytes bs, NfFile l off =>
+         match regular_tmpfs st l with
+         | Some ino =>
+             let start := tmpfs_write_start f ino off in
+             exists k, short_count start (length bs) k = true
+                       /\ o = tmpfs_wrote m ctx st h l ino start (firstn k bs)
+         | None => False
+         end
+     | _, _ => False
+     end.
 
 Definition write_arm : NsArm := fun i m ctx st o =>
   match ns_file_of m st (fd_word (in_arg i 0)) with
   | Some (h, f) =>
       o = write_fn i m ctx st h f
       \/ injected_after (write_env st f) (write_fn i m ctx st h f) m ctx st o
+      \/ write_short i m ctx st h f o
   | None => released i m ctx st o
   end.
 
@@ -596,14 +722,18 @@ Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
    fchmod and unlinkat
    ========================================================================= *)
 
-(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h): the
-    id no namespace maps, which [vfsuid_valid] refuses. *)
-Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
-
-(** [inode_owner_or_capable] (fs/inode.c): the fsuid owns the inode, or the
-    task has CAP_FOWNER over it ([capable_wrt_inode_uidgid]). *)
-Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
-  Z.eqb (wc_fsuid cr) (oa_uid a) || capable_over st ctx (task_eff ctx) a CAP_FOWNER.
+(** [inode_owner_or_capable] (fs/inode.c:2623-2637, Linux v6.18.46): the
+    fsuid owns the inode, or the inode's uid maps into the caller's user
+    namespace and the task has CAP_FOWNER there (2633-2635).  Only the uid
+    is tested: [capable_wrt_inode_uidgid], which also needs the gid to map
+    (kernel/capability.c:455-480), is not called here.  [None] when the
+    answer needs the mapping and the tables do not hold the caller's user
+    namespace ([uid_mapped] is [None]): every task has one, so the tables
+    do not say what Linux answers. *)
+Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : option bool :=
+  if Z.eqb (wc_fsuid cr) (oa_uid a) then Some true
+  else if negb (Z.testbit (task_eff ctx) CAP_FOWNER) then Some false
+  else uid_mapped st ctx (oa_uid a).
 
 (** [in_group_or_capable] (fs/inode.c): the fsgid or a supplementary group
     is the inode's group, or the task has CAP_FSETID over it. *)
@@ -617,6 +747,36 @@ Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
                                            (ino_empty_dir ino)
                               else ino) (ns_inodes st)).
 
+(** THE FRAME OF [fchmod]'s write: [set_inode_perm st i p] is [st] with
+    inode [i]'s mode set.  Every field but [ns_inodes] is [st]'s, every
+    other inode is found as before, and inode [i] keeps every attribute
+    but [ino_perm].  The namespace state is one copy for every process of
+    a configuration, so a peer that reads inode [i] afterwards reads [p],
+    as in Linux, and a peer that reads no part of inode [i] reads what it
+    read before. *)
+Lemma set_inode_perm_frame : forall st i p,
+  set_inode_perm st i p = with_inodes st (ns_inodes (set_inode_perm st i p))
+  /\ (forall j, j <> i -> find_inode (set_inode_perm st i p) j = find_inode st j)
+  /\ find_inode (set_inode_perm st i p) i
+     = option_map (fun ino => mkInode (ino_id ino) (ino_kind ino) p (ino_uid ino)
+                                (ino_gid ino) (ino_rdev ino) (ino_bytes ino)
+                                (ino_empty_dir ino))
+                  (find_inode st i).
+Proof.
+  intros st i p. split; [reflexivity|].
+  unfold find_inode, set_inode_perm, with_inodes. cbn [ns_inodes].
+  split.
+  - intros j Hj. induction (ns_inodes st) as [|ino r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (ino_id ino) i) eqn:Hi; cbn [ino_id];
+      destruct (Pos.eqb (ino_id ino) j) eqn:Hk; try reflexivity; try exact IH.
+    apply Pos.eqb_eq in Hi. apply Pos.eqb_eq in Hk. congruence.
+  - induction (ns_inodes st) as [|ino r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (ino_id ino) i) eqn:Hi; cbn [ino_id]; rewrite Hi;
+      [reflexivity | exact IH].
+Qed.
+
 (** [fchmod] (52): [SYSCALL_DEFINE2(fchmod)], [vfs_fchmod], [chmod_common]
     (fs/open.c:631-678); [notify_change], [may_setattr], [setattr_prepare],
     [setattr_copy] (fs/attr.c); [shmem_setattr] (mm/shmem.c:1298);
@@ -624,8 +784,11 @@ Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
     kernel order: an O_PATH file, EBADF ([fdget] skips FMODE_PATH); a
     read-only mount or superblock, EROFS ([mnt_want_write]); an inode with
     an invalid owner or group, EOVERFLOW ([notify_change]); a fsuid that
-    does not own the inode, with no CAP_FOWNER over it, EPERM
-    ([setattr_prepare]); else the new mode [mode & 07777], less S_ISGID
+    does not own the inode, when either the inode's uid does not map into
+    the caller's user namespace or the task lacks CAP_FOWNER, EPERM
+    ([setattr_prepare]); no answer when that test needs the mapping and
+    the tables do not hold the caller's user namespace; else the new mode
+    [mode & 07777], less S_ISGID
     when the inode's group is not the fsgid or a supplementary group and
     the task has no CAP_FSETID over it.  For a tmpfs file or directory
     only: the tables hold no immutable or append-only inode, no seal, no
@@ -646,10 +809,14 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
               let cr := walk_creds m in
               if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
               else if kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino) then ns_errno EOVERFLOW m ctx st
-              else if negb (owner_or_capable st ctx cr a) then ns_errno EPERM m ctx st
-              else
-                let mode' := if group_or_capable st ctx cr a then mode else Z.land mode (Z.lnot S_ISGID) in
-                ns_ret (Z_to_bv 64 0) m ctx (set_inode_perm st (ino_id ino) mode')
+              else match owner_or_capable st ctx cr a with
+                   | None => EUnmodeled
+                   | Some false => ns_errno EPERM m ctx st
+                   | Some true =>
+                       let mode' := if group_or_capable st ctx cr a then mode
+                                    else Z.land mode (Z.lnot S_ISGID) in
+                       ns_ret (Z_to_bv 64 0) m ctx (set_inode_perm st (ino_id ino) mode')
+                   end
           | _, _, _ => EUnmodeled
           end
       | _, _ => EUnmodeled
@@ -691,6 +858,33 @@ Definition set_unlinked (st : NsState) (d : positive) : NsState :=
                               then mkDentryRec (d_id x) (d_sb x) (d_parent x) (d_name x) (d_inode x) true
                               else x) (ns_dentries st))
             (ns_inodes st).
+
+(** THE FRAME OF [unlinkat]'s write: [set_unlinked st d] is [st] with
+    dentry [d] marked unlinked.  Every field but [ns_dentries] is [st]'s,
+    every other dentry is found as before, and dentry [d] keeps every
+    attribute but [d_unlinked].  As for [set_inode_perm_frame], the
+    namespace state is one copy for every process of a configuration. *)
+Lemma set_unlinked_frame : forall st d,
+  set_unlinked st d = with_tree st (ns_dentries (set_unlinked st d)) (ns_inodes st)
+  /\ (forall k, k <> d -> find_dentry (set_unlinked st d) k = find_dentry st k)
+  /\ find_dentry (set_unlinked st d) d
+     = option_map (fun x => mkDentryRec (d_id x) (d_sb x) (d_parent x) (d_name x)
+                              (d_inode x) true)
+                  (find_dentry st d).
+Proof.
+  intros st d. split; [reflexivity|].
+  unfold find_dentry, set_unlinked, with_tree, with_inodes, with_dentries. cbn [ns_dentries].
+  split.
+  - intros k Hk. induction (ns_dentries st) as [|x r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (d_id x) d) eqn:Hd; cbn [d_id];
+      destruct (Pos.eqb (d_id x) k) eqn:Hk'; try reflexivity; try exact IH.
+    apply Pos.eqb_eq in Hd. apply Pos.eqb_eq in Hk'. congruence.
+  - induction (ns_dentries st) as [|x r IH]; [reflexivity|].
+    cbn [List.map List.find].
+    destruct (Pos.eqb (d_id x) d) eqn:Hd; cbn [d_id]; rewrite Hd;
+      [reflexivity | exact IH].
+Qed.
 
 (** [do_unlinkat] (fs/namei.c:4705) after the parent walk, for a normal last
     component [name] in directory [parent]; [slash]: the path ends with a
@@ -788,25 +982,45 @@ Definition unlinkat_arm : NsArm := fun i m ctx st o => o = unlinkat_fn i m ctx s
     [security_path_unlink] nor [security_path_chmod] refuses.
     - [mkdirat] (34) and [symlinkat] (36): the parent walk's and
       [lookup_one_qstr_excl]'s ([Arm.walk_pairs]); the tmpfs create's
-      ENOSPC ([__shmem_get_inode]: [shmem_reserve_inode], or [new_inode]
-      failing, mm/shmem.c) and ENOMEM ([simple_offset_add], fs/libfs.c);
-      [shmem_symlink]'s copy of the target, ENOMEM ([kmemdup]) or, for a
-      long one, [shmem_get_folio]'s ENOSPC or ENOMEM.
+      ENOSPC and ENOMEM; [shmem_symlink]'s copy of the target, ENOMEM
+      ([kmemdup]) or, for a long one, [shmem_get_folio]'s ENOSPC (the size
+      limit) or ENOMEM.  The create's ENOSPC has two causes in
+      [__shmem_get_inode] (mm/shmem.c), so it is in two families
+      ([Arm.NsInjected]): [new_inode] failing, an allocation (FamAlloc, as
+      for a new tmpfs's root in [MountArms.mount40_injected]), and
+      [shmem_reserve_inode] at the instance's inode limit, its state
+      (FamFs).  The create's ENOMEM is [simple_offset_add]'s (fs/libfs.c).
     - [unlinkat] (35): the parent walk's and [lookup_one_qstr_excl]'s
       ([Arm.walk_pairs]); [shmem_unlink] does not fail.
-    - [write] (64): on a file of the model, [write_env]'s ([write_pairs]);
-      on a descriptor of the released model the arm answers as the
-      released arm does, so the released arm's refusals
-      ([Arm.released_pairs]), which the arm admits already.
+    - [write] (64): on a file of the model, [write_env]'s ([write_pairs]),
+      and none for [write_short]'s counts, which are no refusal.  ENOMEM
+      is also the tables' answer, for a sysctl write of [KMALLOC_MAX_SIZE]
+      bytes or more ([write_fn]), so it is in [ni_forced].  On a
+      descriptor of the released model the arm answers as the released
+      arm does, and [Spec.ns_refusal] gives it the released filter itself
+      ([Spec.released_fd_call]), so the released table's family for that
+      answer's ENOMEM (fs, [Run.injected_table]) holds there as in the
+      released world; the row is the model's own files' alone.
     - none for [fchmod] (52) (see [fchmod_fn]); its released arm injects
-      nothing. *)
+      nothing.
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]): the path copy, the walk, the call's own checks,
+    and for [write] [map_write]'s and [setgroups_write]'s, and a sysctl
+    write's EPERM ([sysctl_write_refused]). *)
 Definition create_pairs : list ((Z -> bool) * SpuriousFamily) :=
-  [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
+  [(errno_in [ENOMEM; ENOSPC], FamAlloc); (errno_in [EIO; ENOSPC], FamFs)].
 
-Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs [].
-Definition unlinkat_injected : NsInjected := mkNsInjected 35 walk_pairs [].
-Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs [].
-Definition write_injected : NsInjected := mkNsInjected 64 (released_pairs 64 ++ write_pairs) [].
+Definition create_answers : list Z :=
+  [EFAULT; ENAMETOOLONG; ENOENT; EEXIST; EPERM; EROFS; EOVERFLOW; EACCES; EBADF; ENOTDIR; ELOOP].
+
+Definition mkdirat_injected : NsInjected := mkNsInjected 34 create_pairs create_answers [].
+Definition unlinkat_injected : NsInjected :=
+  mkNsInjected 35 walk_pairs
+    [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; EISDIR; ENOTDIR; EROFS; EOVERFLOW; EACCES; EPERM; EBUSY;
+     EBADF; ELOOP] [].
+Definition symlinkat_injected : NsInjected := mkNsInjected 36 create_pairs create_answers [].
+Definition write_injected : NsInjected :=
+  mkNsInjected 64 write_pairs [EBADF; EFAULT; EISDIR; EINVAL; EPERM; ENOMEM] [ENOMEM].
 
 Definition fsops_arms : list (Z * NsArm) :=
   [(34, with_injected (ni_errno mkdirat_injected) mkdirat_arm);

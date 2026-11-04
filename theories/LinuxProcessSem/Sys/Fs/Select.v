@@ -433,9 +433,11 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                function of pending signals the model does not hold
                (fs/signalfd.c).  All read at v6.18.44; identical at
                v6.18.46; an [ONsFile]'s object is of unknown type, and
-               an alias's description is used through its partner only
-               ([State.OAlias]).  None is written as an arm, so the call
-               declines to [PsCoreGap]. *)
+               so is the file system of an inherited regular file
+               ([State.OInherited]), whose [file_operations] decide its
+               mask; an alias's description is used through its partner
+               only ([State.OAlias]). None is written as an arm, so the
+               call declines to [PsCoreGap]. *)
             end
        else true)
       && bits_all_pollable fds z k'

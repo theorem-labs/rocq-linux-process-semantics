@@ -124,7 +124,12 @@ Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInp
   match o with
   | OProcFile _ => read_proc_witness buf count i m
   | OEventFd fl => read_eventfd_witness fl buf count i m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ | OAlias _ => Unmodeled
+  | OProcPath _ => ret_outcome (errno_ret EBADF) m
+  | OProcFdDir _ _ =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m
+      else ret_outcome (errno_ret EISDIR) m
+  | ONsFile _ | OSignalFd _ _ | OInherited _ | OAlias _ => Unmodeled
   end.
 
 Lemma read_opaque_witness_ok : forall o buf count i m,
@@ -132,8 +137,13 @@ Lemma read_opaque_witness_ok : forall o buf count i m,
 Proof.
   intros. unfold read_opaque_spec, read_opaque_witness.
   destruct o; cbv beta iota;
-    [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    [ unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply read_proc_witness_ok | apply read_eventfd_witness_ok
+    | apply unmodeled_intro
+    | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota;
+        unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply unmodeled_intro
+    | apply unmodeled_intro
     | apply unmodeled_intro ].
 Qed.
 
@@ -172,14 +182,16 @@ Proof.
   - unfold ret_only, ret_outcome. apply pure_ok.
 Qed.
 
-(** [ReadWrite.write_opaque_spec]: the eventfd's witness, [Unmodeled] on
-    the other six objects. *)
+(** [ReadWrite.write_opaque_spec]: the eventfd's witness, the errno of
+    five objects, [Unmodeled] on [State.ONsFile] and [State.OAlias]. *)
 Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_witness fl buf count i m
-  | OProcPath _ | OProcFile _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _
-  | OAlias _ => Unmodeled
+  | OProcPath _ | OProcFile _ | OProcFdDir _ _ | OInherited _ =>
+      ret_outcome (errno_ret EBADF) m
+  | OSignalFd _ _ => ret_outcome (errno_ret EINVAL) m
+  | ONsFile _ | OAlias _ => Unmodeled
   end.
 
 Lemma write_opaque_witness_ok : forall o buf count i m,
@@ -187,9 +199,45 @@ Lemma write_opaque_witness_ok : forall o buf count i m,
 Proof.
   intros. unfold write_opaque_spec, write_opaque_witness.
   destruct o; cbv beta iota;
-    [ apply unmodeled_intro | apply unmodeled_intro | apply write_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
+    [ unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply write_eventfd_witness_ok
+    | apply unmodeled_intro
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
     | apply unmodeled_intro ].
+Qed.
+
+(** [ReadWrite.read_file_data]: the read of a regular file's bytes that
+    the [FdFile], [FdFileRW] and live inherited arms share.  Unwritable
+    delivered prefix: -EFAULT when not even its first byte can land,
+    else fail closed. *)
+Definition read_file_data_witness (i : SyscallInput) (m : Model) (fd buf count : word)
+    (data : list byte) (off : word) (entry : word -> FdEntry) : outcome SyscallEffect :=
+  let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
+  match read_bytes_map (in_wmem i) buf (len_word bs) with
+  | None =>
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => ret_outcome (errno_ret EFAULT) m
+      | Some _ => Unmodeled
+      end
+  | Some _ =>
+      Ok (mkEffect (len_word bs) (delivered_writes buf bs) [])
+         (with_fds (fd_insert (m_fds m) fd (entry (off + len_word bs))) m) []
+  end.
+
+Lemma read_file_data_witness_ok : forall i m fd buf count data off entry,
+  read_file_data i m fd buf count data off entry i m
+    (read_file_data_witness i m fd buf count data off entry).
+Proof.
+  intros. unfold read_file_data, read_file_data_witness. cbv zeta.
+  destruct (read_bytes_map (in_wmem i) buf
+              (len_word (file_read data off (Z_to_bv 64 (rw_count_clamp count)))))
+    as [ok|] eqn:Hw; cbv beta iota.
+  - eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
+      cbv beta iota; [apply unmodeled_intro | apply pure_ok].
 Qed.
 
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
@@ -229,23 +277,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else
       match fs_lookup (m_fs m) p with
       | None => Unmodeled
-      | Some data =>
-          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
-          match read_bytes_map (in_wmem i) buf (len_word bs) with
-          | None =>                            (* unwritable DELIVERED prefix: -EFAULT when not
-                                                  even its first byte can land, else fail closed *)
-              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-              | None => ret_outcome (errno_ret EFAULT) m
-              | Some _ => Unmodeled
-              end
-          | Some _ =>
-              let k :=
-                Ok (mkEffect (len_word bs) (delivered_writes buf bs) [])
-                   (with_fds (fd_insert (m_fds m) fd
-                                (FdFile p (off + len_word bs))) m)
-                   [] in
-              k
-          end
+      | Some data => read_file_data_witness i m fd buf count data off (FdFile p)
       end
   | Some (FdSocket sk) =>
       if negb (modeled_rw_range buf count) then Unmodeled  (* see [ReadWrite.read_spec] *)
@@ -298,23 +330,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else
       match fs_lookup (m_fs m) p with
       | None => Unmodeled
-      | Some data =>
-          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
-          match read_bytes_map (in_wmem i) buf (len_word bs) with
-          | None =>                            (* unwritable DELIVERED prefix: -EFAULT when not
-                                                  even its first byte can land, else fail closed *)
-              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-              | None => ret_outcome (errno_ret EFAULT) m
-              | Some _ => Unmodeled
-              end
-          | Some _ =>
-              let k :=
-                Ok (mkEffect (len_word bs) (delivered_writes buf bs) [])
-                   (with_fds (fd_insert (m_fds m) fd
-                                (FdFileRW p (off + len_word bs))) m)
-                   [] in
-              k
-          end
+      | Some data => read_file_data_witness i m fd buf count data off (FdFileRW p)
       end
   | Some (FdDevNull rd _) =>
       if negb rd then ret_outcome (errno_ret EBADF) m
@@ -323,7 +339,17 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
-  | Some (FdOpaque o) => read_opaque_witness o buf count i m
+  | Some (FdOpaque o) =>
+      match o with
+      | OInherited (Some (data, off)) =>
+          (* a live inherited file: the [FdFile] witness above, on the
+             bytes the entry holds *)
+          if negb (access_okb buf (bv_unsigned count))
+          then ret_outcome (errno_ret EFAULT) m   (* vfs_read's access_ok *)
+          else read_file_data_witness i m fd buf count data off
+                 (fun off' => FdOpaque (OInherited (Some (data, off'))))
+      | _ => read_opaque_witness o buf count i m
+      end
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -372,10 +398,21 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
-  9:{ (* the opaque kinds: see [read_opaque_witness] *)
+  9:{ (* the opaque kinds: a live inherited file through
+         [read_file_data_witness], every other kind through
+         [read_opaque_witness] *)
+      destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt];
+        try (eapply bind_step; [apply input_ok|]; cbv beta;
+             eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+             srw Hfd; apply read_opaque_witness_ok).
+      cbv beta iota zeta.
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+      { eapply bind_step; [apply input_ok|]. cbv beta.
+        eapply bind_step; [apply get_model_ok|].
+        cbv beta iota; srw Hfd. apply pure_ok. }
       eapply bind_step; [apply input_ok|]. cbv beta.
-      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. apply read_opaque_witness_ok. }
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply read_file_data_witness_ok. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -429,22 +466,9 @@ Proof.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota; srw Hfd. apply pure_ok. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
-    + destruct (read_bytes_map (in_wmem i) buf
-                  (len_word (file_read data off
-                               (Z_to_bv 64 (rw_count_clamp count)))))
-        as [ok|] eqn:Hw.
-      * eapply bind_step; [apply input_ok|]. cbv beta.
-        eapply bind_step; [apply get_model_ok|].
-        cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw.
-        eapply bind_step; [apply modify_ok|]. apply pure_ok.
-      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
-        -- eapply bind_step; [apply input_ok|]. cbv beta.
-           eapply bind_step; [apply get_model_ok|].
-           cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw; srw Hw1.
-           apply unmodeled_intro.
-        -- eapply bind_step; [apply input_ok|]. cbv beta.
-           eapply bind_step; [apply get_model_ok|].
-           cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw; srw Hw1. apply pure_ok.
+    + eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hfs. apply read_file_data_witness_ok.
     + eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hfs. apply unmodeled_intro.
@@ -462,22 +486,9 @@ Proof.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota; srw Hfd. apply pure_ok. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
-    + destruct (read_bytes_map (in_wmem i) buf
-                  (len_word (file_read data off
-                               (Z_to_bv 64 (rw_count_clamp count)))))
-        as [ok|] eqn:Hw.
-      * eapply bind_step; [apply input_ok|]. cbv beta.
-        eapply bind_step; [apply get_model_ok|].
-        cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw.
-        eapply bind_step; [apply modify_ok|]. apply pure_ok.
-      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
-        -- eapply bind_step; [apply input_ok|]. cbv beta.
-           eapply bind_step; [apply get_model_ok|].
-           cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw; srw Hw1.
-           apply unmodeled_intro.
-        -- eapply bind_step; [apply input_ok|]. cbv beta.
-           eapply bind_step; [apply get_model_ok|].
-           cbv beta iota zeta; srw Hfd; srw Hfs; srw Hw; srw Hw1. apply pure_ok.
+    + eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hfs. apply read_file_data_witness_ok.
     + eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hfs. apply unmodeled_intro.

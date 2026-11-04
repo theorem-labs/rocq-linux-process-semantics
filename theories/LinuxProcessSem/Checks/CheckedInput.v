@@ -106,14 +106,16 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.Riscv Require Export CheckedBv.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Run.
-(* [Run] is here for ONE launch condition, [Run.valid_execfn], which
-   [execfn_of_Z] below decides the decidable part of and
-   [execfn_of_Z_valid] is proved against.  The dependency is in the
-   PROOF and not in the extracted term: [valid_execfn] is a [Prop],
-   which extraction erases, and no root of [Checks/Extraction.v]
-   reaches [Run], so syscall_model.ml does not grow by a line.  A root
-   that DID reach [Run] would make this import a real question
-   again. *)
+(* [Run] is here for two launch conditions.  [Run.valid_execfn] is a
+   [Prop]: [execfn_of_Z] below decides the decidable part of it and
+   [execfn_of_Z_valid] is proved against it, so that dependency is in
+   the PROOF and not in the extracted term, because extraction erases a
+   [Prop].  [Run.inherited_fds_ok] is a [bool], and
+   [inherited_fds_of_raw] and [inherited_shape_b] below COMPUTE it, so
+   it and the three names it reads ([Run.inherited_numbers_ok],
+   [Run.nr_open_max] and [Run.MAX_LFS_FILESIZE]) are in
+   syscall_model.ml.  No other root of [Checks/Extraction.v] reaches
+   [Run], so nothing else of it is. *)
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 Import ListNotations.
 Open Scope bv_scope.
@@ -656,7 +658,10 @@ Record RawProcInput := mkRawProcInput {
   rpi_sigpipe_terminal : bool;            (* the launch declares the SIGPIPE death
                                              ([State.in_sigpipe_terminal]); a bool *)
   rpi_ppid : Z;                           (* the launch parent pid *)
-  rpi_cap_inheritable : Z                 (* the launch inheritable capability set *)
+  rpi_cap_inheritable : Z;                (* the launch inheritable capability set *)
+  rpi_inherited_fds : list (Z * list Z)   (* the descriptors above 2 the launch
+                                             inherits, each with its file's bytes
+                                             ([State.in_inherited_fds]) *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -915,6 +920,62 @@ Proof.
     rewrite Hex in Hnul. discriminate Hnul.
 Qed.
 
+(** THE INHERITED DESCRIPTORS, [State.in_inherited_fds]: each a
+    descriptor number above 2 and the bytes of the regular file its open
+    file description reads.  Two questions again, as for the image.  The
+    VALUE question is [runs_of_Z]'s: a number no [word] holds, or a byte
+    no [byte] holds, refuses the list.  The LAUNCH question is
+    [Run.inherited_fds_ok], the clause [Run.valid_input_inherited]
+    carries: numbers strictly increasing from 3 and below
+    [Run.nr_open_max], each file at most [Run.MAX_LFS_FILESIZE] bytes.
+    It is a [bool] over the converted list, so the boundary computes the
+    model's own clause rather than a second spelling of it.
+
+    WHY CARRY THE LIST AT ALL rather than refuse every launch that has
+    one: a trace of a launch with a descriptor at 3 has its first [open]
+    answer 4, and checked against a launch without it every such answer
+    would be judged wrong.  A reader declares the descriptors its launch
+    inherited, and the model holds them.
+
+    [inherited_shape_b] is the whole test on its own and a root of
+    [Checks/Extraction.v], as [image_shape_b] is: a caller that wants to
+    tell the value refusal from the launch refusal asks [word_of_Z] and
+    [byte_of_Z], both roots, of each component first.  It is NOT named
+    [inherited_valid_b]: [Run.valid_input] PINS the list empty, so a
+    seed with a non-empty list this accepts is a launch only
+    [Run.valid_input_inherited] covers. *)
+Definition inherited_shape_b (l : list (Z * list Z)) : bool :=
+  match runs_of_Z l with
+  | Some l' => inherited_fds_ok l'
+  | None => false
+  end.
+
+Definition inherited_fds_of_raw (l : list (Z * list Z))
+    : option (list (word * list byte)) :=
+  match runs_of_Z l with
+  | Some l' => if inherited_fds_ok l' then Some l' else None
+  | None => None
+  end.
+
+(** Every list this converts passes the clause... *)
+Theorem inherited_fds_of_raw_ok : forall l l',
+  inherited_fds_of_raw l = Some l' -> inherited_fds_ok l' = true.
+Proof.
+  intros l l' H. unfold inherited_fds_of_raw in H.
+  destruct (runs_of_Z l) as [l1|]; [|discriminate].
+  destruct (inherited_fds_ok l1) eqn:Hok; [|discriminate].
+  injection H as <-. exact Hok.
+Qed.
+
+(** ...and the published test and the conversion agree. *)
+Lemma inherited_fds_of_raw_None_shape : forall l,
+  inherited_shape_b l = false -> inherited_fds_of_raw l = None.
+Proof.
+  intros l H. unfold inherited_shape_b in H. unfold inherited_fds_of_raw.
+  destruct (runs_of_Z l) as [l1|]; [|reflexivity].
+  rewrite H. reflexivity.
+Qed.
+
 (** A NEW FIELD OF [State.ProcInput] BREAKS THIS FUNCTION, and that is
     the design working rather than a nuisance to route around.  It is
     built with [State.mkProcInput_full] for exactly that reason (see
@@ -931,8 +992,10 @@ Qed.
     [rpi_sigpipe_terminal]; those three are bools, so every value is in
     type and their check is the type itself.  The parent pid and inheritable
     set are words, so [rpi_ppid] and [rpi_cap_inheritable] are checked by
-    [word_of_Z].  The repair is a raw field and its check, never
-    [mkProcInput] and never a default. *)
+    [word_of_Z].  The inherited descriptors are a list of numbers and
+    file bytes with a launch clause, so [rpi_inherited_fds] is checked
+    by [inherited_fds_of_raw], which asks both.  The repair is a raw
+    field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
         image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
@@ -944,16 +1007,18 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
             word_of_Z (rpi_hwcap r), bytes_of_Z (rpi_urandom r),
             fs_of_raw (rpi_tmp r), kernel_of_raw (rpi_kernel r),
             execfn_of_Z (rpi_execfn r), word_of_Z (rpi_ppid r),
-            word_of_Z (rpi_cap_inheritable r) with
+            word_of_Z (rpi_cap_inheritable r),
+            inherited_fds_of_raw (rpi_inherited_fds r) with
       | Some nofile, Some sigmask, Some hwcap, Some urandom, Some tmp,
-        Some kernel, Some execfn, Some ppid, Some cap_inheritable =>
+        Some kernel, Some execfn, Some ppid, Some cap_inheritable,
+        Some inherited =>
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
                   (urandom_of_bytes urandom) tmp kernel execfn
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
-                  (rpi_sigpipe_terminal r) ppid cap_inheritable)
-      | _, _, _, _, _, _, _, _, _ => None
+                  (rpi_sigpipe_terminal r) ppid cap_inheritable inherited)
+      | _, _, _, _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
   end.
@@ -1353,6 +1418,112 @@ Proof.
   destruct (execfn_of_Z (rpi_execfn r)); [|discriminate].
   destruct (word_of_Z (rpi_ppid r)); [|discriminate].
   destruct (word_of_Z (rpi_cap_inheritable r)); [|discriminate].
+  destruct (inherited_fds_of_raw (rpi_inherited_fds r)); [|discriminate].
   injection H as <-.
   exact (image_fs_of_raw_real _ _ Himg).
+Qed.
+
+(* =========================================================================
+   The inherited descriptors, refused component by component
+   ========================================================================= *)
+
+Lemma proc_input_of_raw_None_inherited : forall r,
+  inherited_fds_of_raw (rpi_inherited_fds r) = None -> proc_input_of_raw r = None.
+Proof.
+  intros r H. unfold proc_input_of_raw. rewrite H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
+  destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
+  destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
+  destruct (word_of_Z (rpi_uid r)); [|reflexivity].
+  destruct (word_of_Z (rpi_gid r)); [|reflexivity].
+  destruct (words_of_Z (rpi_groups r)); [|reflexivity].
+  destruct (net_of_raw (rpi_net r)); [|reflexivity].
+  destruct (word_of_Z (rpi_nofile r)); [|reflexivity].
+  destruct (word_of_Z (rpi_sigmask r)); [|reflexivity].
+  destruct (word_of_Z (rpi_hwcap r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_urandom r)); [|reflexivity].
+  destruct (fs_of_raw (rpi_tmp r)); [|reflexivity].
+  destruct (kernel_of_raw (rpi_kernel r)); [|reflexivity].
+  destruct (execfn_of_Z (rpi_execfn r)); [|reflexivity].
+  destruct (word_of_Z (rpi_ppid r)); [|reflexivity].
+  now destruct (word_of_Z (rpi_cap_inheritable r)).
+Qed.
+
+(** A descriptor number no [word] holds refuses the seed... *)
+Theorem init_model_checked_refuses_out_of_range_inherited_fd :
+  forall reserved brk0 mbase sp lim r kv,
+  In kv (rpi_inherited_fds r) -> ~ (0 <= fst kv < 2 ^ 64)%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r kv Hin Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_inherited. unfold inherited_fds_of_raw.
+  assert (Hr : run_of_Z kv = None).
+  { unfold run_of_Z. rewrite (proj2 (word_of_Z_refused _) Hout). reflexivity. }
+  rewrite (runs_of_Z_elem_None _ _ Hin Hr). reflexivity.
+Qed.
+
+(** ...and so does a byte of a file no [byte] holds... *)
+Theorem init_model_checked_refuses_out_of_range_inherited_byte :
+  forall reserved brk0 mbase sp lim r kv z,
+  In kv (rpi_inherited_fds r) -> In z (snd kv) -> ~ (0 <= z < 2 ^ 8)%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r kv z Hin Hz Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_inherited. unfold inherited_fds_of_raw.
+  assert (Hr : run_of_Z kv = None).
+  { unfold run_of_Z.
+    rewrite (bytes_of_Z_elem_None _ _ Hz (proj2 (byte_of_Z_refused z) Hout)).
+    now destruct (word_of_Z (fst kv)). }
+  rewrite (runs_of_Z_elem_None _ _ Hin Hr). reflexivity.
+Qed.
+
+(** ...and so does a list of values that is no launch: a number below 3,
+    numbers not strictly increasing, a number at or above
+    [Run.nr_open_max], or a file longer than [Run.MAX_LFS_FILESIZE]. *)
+Theorem init_model_checked_refuses_inherited_shape :
+  forall reserved brk0 mbase sp lim r,
+  inherited_shape_b (rpi_inherited_fds r) = false ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r H.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_inherited.
+  now apply inherited_fds_of_raw_None_shape.
+Qed.
+
+(** And every seed the boundary DOES build passes the clause, so
+    [Run.valid_input_inherited]'s conjunct over
+    [State.in_inherited_fds] holds of it without the caller being asked
+    for a proof.  ([Run.valid_input] pins the list empty: a seed this
+    builds with a non-empty list is a launch only
+    [Run.valid_input_inherited] covers.) *)
+Theorem proc_input_of_raw_inherited_ok : forall r inp,
+  proc_input_of_raw r = Some inp ->
+  inherited_fds_ok (in_inherited_fds inp) = true.
+Proof.
+  intros r inp H. unfold proc_input_of_raw in H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|discriminate].
+  destruct (bytes_list_of_Z (rpi_envp r)); [|discriminate].
+  destruct (image_fs_of_raw (rpi_image_fs r)); [|discriminate].
+  destruct (bytes_of_Z (rpi_stdin r)); [|discriminate].
+  destruct (word_of_Z (rpi_uid r)); [|discriminate].
+  destruct (word_of_Z (rpi_gid r)); [|discriminate].
+  destruct (words_of_Z (rpi_groups r)); [|discriminate].
+  destruct (net_of_raw (rpi_net r)); [|discriminate].
+  destruct (word_of_Z (rpi_nofile r)); [|discriminate].
+  destruct (word_of_Z (rpi_sigmask r)); [|discriminate].
+  destruct (word_of_Z (rpi_hwcap r)); [|discriminate].
+  destruct (bytes_of_Z (rpi_urandom r)); [|discriminate].
+  destruct (fs_of_raw (rpi_tmp r)); [|discriminate].
+  destruct (kernel_of_raw (rpi_kernel r)); [|discriminate].
+  destruct (execfn_of_Z (rpi_execfn r)); [|discriminate].
+  destruct (word_of_Z (rpi_ppid r)); [|discriminate].
+  destruct (word_of_Z (rpi_cap_inheritable r)); [|discriminate].
+  destruct (inherited_fds_of_raw (rpi_inherited_fds r)) as [inh|] eqn:Hinh;
+    [|discriminate].
+  injection H as <-.
+  exact (inherited_fds_of_raw_ok _ _ Hinh).
 Qed.

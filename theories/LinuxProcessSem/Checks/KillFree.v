@@ -716,7 +716,7 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_access_ok_zero in H.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
           || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
@@ -1242,6 +1242,14 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+Lemma check_setns_kf : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros fd eff m m' evs H Hoff Hk.
+  unfold check_setns in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
 Lemma check_clone_kf : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1495,6 +1503,7 @@ Proof.
     | eapply check_rt_sigprocmask_kf; eassumption
     | eapply check_futex_kf; eassumption
     | eapply check_set_robust_list_kf; eassumption
+    | eapply check_setns_kf; eassumption
     | eapply check_clone_kf; eassumption
     | eapply check_clone3_kf; eassumption
     | eapply check_getsockname_kf; eassumption

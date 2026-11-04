@@ -581,7 +581,19 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
 
     It is [pholts_x_within_budget] for the lineage's run instead of the
     whole system's, from each host namespace state [host] admits, on the
-    inputs [pre] admits, with two named hypotheses:
+    inputs [pre] admits, with two named hypotheses below.  ITS INPUT
+    PREDICATE IS [Run.valid_input_inherited], not [Run.valid_input]: the
+    launch may hand the program descriptors above 2
+    ([State.in_inherited_fds]), as a sandbox launcher hands its child the
+    files it binds, and the predicate names the assumption such a launch
+    rests on.  The premise is weaker than [Run.valid_input]'s
+    ([Run.valid_input_inherited_of_valid_input]), so the statement is the
+    stronger claim; a statement that means the plain launch only takes
+    [pre := fun inp => in_inherited_fds inp = []]
+    ([Run.valid_input_of_valid_input_inherited]).  [pholts_x_within_budget]
+    keeps [Run.valid_input], because [pholts_x_within_budget_no_ext]
+    equates it with [MustExitP.pholts_within_budget], which takes that
+    predicate.  The two named hypotheses:
     - [cenv], the clone failures the run admits: an ENVIRONMENT PREMISE
       when narrower than [any_clone_failure] (for example
       [Ns.Clone.clone_tables_failures]: the host can make the namespaces
@@ -624,7 +636,7 @@ Definition lholts_ns_within_budget (cenv : CloneEnv) (pre : ProcInput -> Prop)
     (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
     valid_entry img en inp ->
-    valid_input inp ->
+    valid_input_inherited inp ->
     pre inp ->
     host st ->
     ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
@@ -691,7 +703,7 @@ Definition lholts_ns_after_clone (cenv : CloneEnv) (pre : ProcInput -> Prop)
     (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
     valid_entry img en inp ->
-    valid_input inp ->
+    valid_input_inherited inp ->
     pre inp ->
     host st ->
     ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->

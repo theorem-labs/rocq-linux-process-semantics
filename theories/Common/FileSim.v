@@ -1767,6 +1767,7 @@ Proof.
     rewrite (check_syscall_63 segs ms x8 eff model Hno). unfold check_read.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite Haok. cbn [negb]. cbv beta iota.
+    unfold check_read_file_data. cbv beta iota zeta.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned.
     rewrite Hfs. cbv beta iota zeta.
     rewrite in_wmem_si.
@@ -1811,6 +1812,7 @@ Proof.
     unfold check_read in Hs.
     rewrite Hfd32, Hfd in Hs. cbv beta iota in Hs.
     rewrite Haok in Hs. cbn [negb] in Hs. cbv beta iota in Hs.
+    unfold check_read_file_data in Hs. cbv beta iota zeta in Hs.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned in Hs.
     rewrite Hfs in Hs. cbv beta iota zeta in Hs.
     rewrite in_wmem_si in Hs.

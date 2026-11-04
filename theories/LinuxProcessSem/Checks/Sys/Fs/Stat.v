@@ -1151,7 +1151,7 @@ Definition check_fstat_opaque (i : SyscallInput) (o : OpaqueFd) (statbuf : word)
   match o with
   | OProcFdDir _ _ => check_fstat_procfd_dir i statbuf eff m
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OAlias _ => CheckUnmodeled
+  | OInherited _ | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_fstat_opaque_sound_ok : forall i o statbuf eff m m' evs,

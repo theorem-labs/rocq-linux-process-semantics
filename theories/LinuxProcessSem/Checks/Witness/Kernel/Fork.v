@@ -42,9 +42,11 @@ Qed.
     a list literal rather than a value to construct, and which leaves
     the model alone — so it is available whenever the argument gates let
     the call through.  The pid arm would have to invent an id inside an
-    envelope, and is never needed to show the spec is receptive. *)
+    envelope, and is never needed to show the spec is receptive.  The
+    gate is the one both words ask of the table the caller keeps
+    ([Kernel.Fork.forfeit_inherited]). *)
 Definition clone_resolve_witness (m : Model) : outcome SyscallEffect :=
-  if negb (clone_no_shared_file_b (m_fds m)) then Unmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then Unmodeled
   else ret_outcome (errno_ret EAGAIN) m.
 
 Lemma clone_resolve_witness_ok : forall i m,
@@ -52,20 +54,20 @@ Lemma clone_resolve_witness_ok : forall i m,
 Proof.
   intros. unfold clone_resolve, clone_resolve_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))); cbv iota;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota;
     [apply unmodeled_intro|].
   apply alt_l. eapply bind_step; [apply (choose_ok _ EAGAIN); cbn; auto|].
   apply pure_ok.
 Qed.
 
-(** The namespace word's resolution admits every errno but -EINTR, so
-    the same -EAGAIN outcome witnesses it. *)
+(** The namespace word's resolution admits every errno but -EINTR behind
+    the same gate, so the same -EAGAIN outcome witnesses it. *)
 Lemma clone_ns_resolve_witness_ok : forall i m,
   clone_ns_resolve i m (clone_resolve_witness m).
 Proof.
   intros. unfold clone_ns_resolve, clone_resolve_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (negb (clone_no_shared_file_b (m_fds m))); cbv iota;
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota;
     [apply unmodeled_intro|].
   apply alt_l. eapply bind_step.
   { apply (choose_ok _ EAGAIN). cbv beta. unfold EAGAIN, EINTR. lia. }
@@ -92,7 +94,7 @@ Qed.
     [eff_copyins] is [], so [record_copyins_ok_empty] applies directly. *)
 Definition clone3_resolve_witness (uargs : word) (m : Model)
     : outcome SyscallEffect :=
-  if negb (clone_no_shared_file_b (m_fds m)) then Unmodeled
+  if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then Unmodeled
   else Ok (with_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
              (mkEffect (errno_ret EAGAIN) [] [])) m [].
 
@@ -100,7 +102,7 @@ Lemma clone3_resolve_witness_ok : forall i uargs m,
   clone3_resolve uargs i m (clone3_resolve_witness uargs m).
 Proof.
   intros. unfold clone3_resolve, clone3_resolve_witness.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg.
+  destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg.
   - apply record_copyins_unmodeled.
     unfold clone_resolve. eapply bind_unmodeled2; [apply get_model_ok|].
     cbv beta. rewrite Hg. cbv iota. apply unmodeled_intro.

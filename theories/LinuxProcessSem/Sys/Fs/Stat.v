@@ -796,15 +796,16 @@ Definition fstat_procfd_dir_spec (statbuf : word) : Sys SyscallEffect :=
     eventfd's and a signalfd's are the anonymous inode's
     ([anon_inode_getfile_fmode]: one inode shared by every anonymous
     file, its mode set by [alloc_anon_inode]), a /proc/sys file's is the
-    sysctl inode's, and an [ONsFile]'s object is of unknown type
-    (fs/stat.c, fs/anon_inodes.c, read at v6.18.44; identical at
-    v6.18.46).  An alias's is its partner's regular file's, and its
-    description is used through the partner only ([State.OAlias]). *)
+    sysctl inode's, an [ONsFile]'s object is of unknown type, and an
+    inherited file's is the inode of a file the model holds the bytes of
+    and nothing else (fs/stat.c, fs/anon_inodes.c, read at v6.18.44;
+    identical at v6.18.46). An alias's is its partner's regular file's,
+    and its description is used through the partner only ([State.OAlias]). *)
 Definition fstat_opaque_spec (o : OpaqueFd) (statbuf : word) : Sys SyscallEffect :=
   match o with
   | OProcFdDir _ _ => fstat_procfd_dir_spec statbuf
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OAlias _ => unmodeled
+  | OInherited _ | OAlias _ => unmodeled
   end.
 
 (** THE MATCH BELOW IS TOTAL ON [FdEntry] ON PURPOSE, with no wildcard.
@@ -911,6 +912,6 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdOpaque o) => fstat_opaque_spec o statbuf
                                      (* the /proc/self/fd directory answers, S_IFDIR with
                                         0500 and the rest the environment's; the other
-                                        five objects decline (see [fstat_opaque_spec]) *)
+                                        six objects decline (see [fstat_opaque_spec]) *)
   end.
 

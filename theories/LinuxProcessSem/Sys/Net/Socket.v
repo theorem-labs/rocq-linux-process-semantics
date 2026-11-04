@@ -1133,6 +1133,11 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                           is a regular file's, whose [f_op] is not
                                           [socket_file_ops], and the answer reads the
                                           kind and nothing of the description *)
+  | Some (FdOpaque (OInherited _)) => inr ENOTSOCK
+                                       (* an inherited regular file: its [f_op]
+                                          is its file system's, not
+                                          [socket_file_ops] (net/socket.c,
+                                          [sock_from_file], v6.18.46) *)
   | Some (FdSocket sk)  => inl sk
   end.
 
