@@ -6,9 +6,11 @@
     including the next answer after the real parent exits. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import Procs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import
+  BvBase RiscvSemantics State Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ProcsChildPids.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs ProcsChildPids.
 Import ListNotations.
 Open Scope bv_scope.
 
