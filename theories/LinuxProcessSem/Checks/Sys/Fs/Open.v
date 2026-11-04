@@ -441,7 +441,7 @@ Local Definition check_openat_procfd (n flags : word) (eff : SyscallEffect)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
-  | Some (FdDgram _) | Some (FdOpaque _) => CheckUnmodeled
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) => CheckUnmodeled
   end.
 
 (** Mirrors [Open.openat_sep_spec]: the separator-bearing pathnames
@@ -502,16 +502,12 @@ Local Definition check_openat_proc (c : path) (flags : word)
   if open_path_word fl then check_proc_open_result (OProcPath c) eff m
   else if Z.eqb fl 0 && proc_sys_file_b c
   then check_proc_open_result (OProcFile c) eff m
-<<<<<<< HEAD
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
   then check_proc_open_result (OProcFdDir flags (Some (Z_to_bv 64 0))) eff m
-  else CheckUnmodeled.
-=======
   else match proc_self_fd c with
        | Some n => check_openat_procfd n flags eff m
        | None => CheckUnmodeled
        end.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -830,7 +826,7 @@ Proof.
                   || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        append_create_flags)%bool); [discriminate|].
   destruct (fd_lookup (m_fds m) n)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o|i0 sd st0]|];
     try discriminate.
   - destruct (negb (anon_agree (m_fds m) id af)); [discriminate|].
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
@@ -945,31 +941,11 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [now apply check_proc_open_result_sound_ok|].
-<<<<<<< HEAD
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [now apply check_proc_open_result_sound_ok|discriminate].
-Qed.
-
-Local Lemma check_openat_proc_sound_unmodeled : forall i c flags eff m,
-  check_openat_proc c flags eff m = CheckUnmodeled ->
-  openat_proc_spec c flags m i m Unmodeled.
-Proof.
-  intros i c flags eff m H.
-  unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
-  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
-  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
-            && proc_sys_file_b c);
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
-  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-            && path_eqb c proc_self_fd_path);
-    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)
-    |apply unmodeled_intro].
-=======
+    [now apply check_proc_open_result_sound_ok|].
   destruct (proc_self_fd c) as [n|];
     [now apply check_openat_procfd_sound_ok|discriminate].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Qed.
 
 Local Lemma check_openat_body_spec_sound_ok :
@@ -1233,7 +1209,7 @@ Proof.
                   || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        append_create_flags)%bool); [apply unmodeled_intro|].
   destruct (fd_lookup (m_fds m) n)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o|i0 sd st0]|];
     try apply unmodeled_intro.
   - destruct (negb (anon_agree (m_fds m) id af)); [apply unmodeled_intro|].
     exfalso.
@@ -1255,6 +1231,9 @@ Proof.
     [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
     [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
   destruct (proc_self_fd c) as [n|];
     [exact (check_openat_procfd_sound_unmodeled i n flags eff m H)
@@ -1758,7 +1737,7 @@ Proof.
                        append_create_flags)%bool);
     [unfold unmodeled; intro Hu; discriminate Hu|].
   destruct (fd_lookup (m_fds m) n)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o|i0 sd st0]|];
     try (unfold unmodeled; intro Hu; discriminate Hu).
   - destruct (negb (anon_agree (m_fds m) id af));
       [unfold unmodeled; intro Hu; discriminate Hu|].
@@ -1854,14 +1833,11 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [apply check_proc_open_result_complete_ok|].
-<<<<<<< HEAD
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [apply check_proc_open_result_complete_ok
-=======
+    [apply check_proc_open_result_complete_ok|].
   destruct (proc_self_fd c) as [n|];
     [apply check_openat_procfd_complete_ok
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     |unfold unmodeled; intro Hu; discriminate Hu].
 Qed.
 
@@ -2249,7 +2225,7 @@ Proof.
                   || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        append_create_flags)%bool); [reflexivity|].
   destruct (fd_lookup (m_fds m) n)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o]|];
+    as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af|o|i0 sd st0]|];
     try (intros _; reflexivity).
   - destruct (negb (anon_agree (m_fds m) id af)); [intros _; reflexivity|].
     intro H. exfalso.
@@ -2336,14 +2312,11 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
-<<<<<<< HEAD
   destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
             && path_eqb c proc_self_fd_path);
-    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)
-=======
+    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
   destruct (proc_self_fd c) as [n|];
     [apply check_openat_procfd_complete_unmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     |unfold unmodeled; intros _; reflexivity].
 Qed.
 
@@ -2539,13 +2512,10 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdSocket _) => check_ret_only eff (errno_ret EINVAL) m []
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFSOCK *)
-=======
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_ISSOCK too *)
   | Some (FdDgram _) => check_ret_only eff (errno_ret EINVAL) m []  (* and a datagram socket *)
   | Some (FdEventfd _) => check_ret_only eff (errno_ret EINVAL) m []  (* no type bits: not S_ISREG *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR again *)
@@ -2591,11 +2561,7 @@ Proof.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
@@ -2629,11 +2595,7 @@ Proof.
   unfold check_ftruncate in H. unfold ftruncate_spec.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { now apply check_ret_only_no_unmodeled in H. }
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   (* the opaque kinds: the spec declines outright *)
   all: try (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
@@ -2667,11 +2629,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-<<<<<<< HEAD
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
@@ -2691,11 +2649,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-<<<<<<< HEAD
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;

@@ -1476,7 +1476,7 @@ Definition openat_procfd_spec (n flags : word) (m : Model)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
-  | Some (FdDgram _) | Some (FdOpaque _) => unmodeled
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) => unmodeled
       (* each reopens differently, and none is needed: see above *)
   end.
 
@@ -1651,38 +1651,28 @@ Definition first_component_fd_b (p : path) : bool :=
       tested before the table is read: it is not a descriptor, and the
       test keeps the answer for a relative name from depending on what
       the table holds at the number [AT_FDCWD32].
-<<<<<<< HEAD
-    - ONE RELATIVE JOIN IS [None]: "/proc/self/fd" reached from any
-      descriptor but the one on "/proc" itself, which can only be
-      "/proc/self" with the name "fd".  An O_PATH|O_NOFOLLOW open of
-      "/proc/self" holds the symlink ([proc_setup_self] makes its inode
-      S_IFLNK, fs/proc/self.c), and [path_init]'s [d_can_lookup] test
-      answers -ENOTDIR for any name relative to it.  The model does not
-      record O_NOFOLLOW, and [openat_proc_spec] opens "/proc/self/fd" as
-      a directory the model LISTS ([State.OProcFdDir]), so the join is
-      declined for every word: "self/fd" relative to "/proc", and the
-      absolute name, are the forms answered.
-
-    fs/namei.c [path_init], fs/proc/self.c [proc_setup_self]: read at v6.18.44; identical at v6.18.46. *)
-=======
-    - ONE RELATIVE JOIN IS [None]: a name whose first component is "fd"
-      ([first_component_fd_b]) relative to an O_PATH descriptor on
-      "/proc/self".  An O_PATH|O_NOFOLLOW open of "/proc/self" holds the
-      symlink itself ([proc_setup_self] makes its inode S_IFLNK,
-      fs/proc/self.c), and for any name relative to it [path_init]'s
-      [d_can_lookup] test on a nonempty name answers -ENOTDIR.  The
-      model does not record O_NOFOLLOW, and "/proc/self/fd/N" is a name
-      [openat_proc_spec] READS through (the reopen of descriptor N,
-      [openat_procfd_spec]), so the join is declined for every word.
+    - TWO RELATIVE JOINS ARE [None].  First, "/proc/self/fd" reached
+      from any descriptor but the one on "/proc" itself, which can only
+      be "/proc/self" with the name "fd".  Second, a name whose first
+      component is "fd" ([first_component_fd_b]) relative to an O_PATH
+      descriptor on "/proc/self", which covers "fd/N" too.  An
+      O_PATH|O_NOFOLLOW open of "/proc/self" holds the symlink itself
+      ([proc_setup_self] makes its inode S_IFLNK, fs/proc/self.c), and
+      for any name relative to it [path_init]'s [d_can_lookup] test on a
+      nonempty name answers -ENOTDIR.  The model does not record
+      O_NOFOLLOW, and [openat_proc_spec] opens "/proc/self/fd" as a
+      directory the model LISTS ([State.OProcFdDir]) and READS through
+      "/proc/self/fd/N" (the reopen of descriptor N,
+      [openat_procfd_spec]), so both joins are declined for every word.
       Without O_NOFOLLOW Linux follows the link and answers the join, so
-      this is a narrowing: "fd/N" relative to "/proc", and the absolute
-      name, are the forms answered.  Every other join relative to
-      "/proc/self" gives a name only O_PATH answers, as an [OProcPath],
-      and nothing reads an [OProcPath]'s object ([openat_proc_spec]).
+      this is a narrowing: "self/fd" and "fd/N" relative to "/proc", and
+      the absolute names, are the forms answered.  Every other join
+      relative to "/proc/self" gives a name only O_PATH answers, as an
+      [OProcPath], and nothing reads an [OProcPath]'s object
+      ([openat_proc_spec]).
 
     fs/namei.c [path_init], fs/proc/self.c [proc_setup_self]: read at
     v6.18.44; identical at v6.18.46. *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
     (p : path) : option path :=
   match p with
@@ -1695,11 +1685,8 @@ Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
         | Some (FdOpaque (OProcPath q)) =>
             let c := q ++ slash_byte :: p in
             if proc_path_b c
-<<<<<<< HEAD
                && negb (path_eqb c proc_self_fd_path && negb (path_eqb q proc_root_path))
-=======
                && negb (path_eqb q proc_self_path && first_component_fd_b p)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
             then Some c else None
         | _ => None
         end
@@ -1739,7 +1726,6 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     - O_RDONLY (with [open_ignored_flags]) on either
       [proc_sys_overflowuid_path] or [proc_sys_overflowgid_path]: an
       [OProcFile c] descriptor, or an errno;
-<<<<<<< HEAD
     - a [procfd_dir_word] on [proc_self_fd_path] exactly: an
       [OProcFdDir flags (Some 0)] descriptor (the open word, and the
       position 0 [alloc_empty_file] starts every file at), or an errno.
@@ -1748,18 +1734,15 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
       that procfs's namespace, so the directory listed is always the
       caller's own descriptor table.  [proc_fd_operations] has no
       [.open], so [do_dentry_open] changes nothing the process can see.
-    Every other word and sysctl name is declined, as it was before this
-    arm, and so is every other spelling of the directory's name
-    ("/proc/self/fd/", "/proc/<pid>/fd").
-=======
     - any other word on "/proc/self/fd/N" ([proc_self_fd]):
       [openat_procfd_spec], the reopen of descriptor N, which answers
       its three access-mode words and declines the rest.  [c] is the
       name the walk reaches from the root whatever [dirfd] was
       ([proc_open_target]), so this is the same name, under the same
       procfs assumption, that [openat_procfd_spec] answers.
-    Every other word and sysctl name is declined, as it was before this arm.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    Every other word and sysctl name is declined, as it was before these
+    arms, and so is every other spelling of the directory's name
+    ("/proc/self/fd/", "/proc/<pid>/fd").
 
     KERNEL PATH, read at v6.18.44:
       fs/open.c [SYSCALL_DEFINE4(openat)], [do_sys_openat2],
@@ -1812,16 +1795,12 @@ Definition openat_proc_spec (c : path) (flags : word) (m : Model)
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
   if open_path_word fl then proc_open_result m (OProcPath c)
   else if Z.eqb fl 0 && proc_sys_file_b c then proc_open_result m (OProcFile c)
-<<<<<<< HEAD
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
   then proc_open_result m (OProcFdDir flags (Some (Z_to_bv 64 0)))
-  else unmodeled.
-=======
   else match proc_self_fd c with
        | Some n => openat_procfd_spec n flags m
        | None => unmodeled
        end.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** [openat dirfd path flags mode].  Modeled shapes (the
     [open_ignored_flags] bits are accepted and ignored in all; [mode] is
@@ -2031,7 +2010,6 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     [State.pipe_new_id]), and a reader whose end is still open still
     sees them, as it does on Linux.
 
-<<<<<<< HEAD
     THE SAME HOLDS FOR AN AF_UNIX SEQPACKET END ([State.FdSeqpacket]).
     [close] drops the file's last reference at once ([fput_close_sync],
     fs/open.c:1589, v6.18.46), so [sock_close] (net/socket.c:1454-1458)
@@ -2041,8 +2019,8 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     no end on the other side ([State.seq_peer] is [None]) and answers end
     of file ([Net.Socket.seqpacket_recvmsg]).  The end holds exactly one
     descriptor, because [dup] and [clone] decline the kind, so this close
-    is that last reference. *)
-=======
+    is that last reference.
+
     A STREAM-PAIR END ([State.FdStream]) IS KIND-BLIND TOO, by choice and
     at a price stated where it is paid.  [unix_release_sock] also writes
     into the PEER — [SHUTDOWN_MASK], and [sk_err = ECONNRESET] when this
@@ -2054,7 +2032,6 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     left is chosen by the survivor's first call that shows it and kept
     in the survivor's own entry ([State.se_reset]); [State.StreamEnd]'s
     note says how. *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
@@ -2280,13 +2257,11 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     inode is S_ISSOCK, so [do_ftruncate]'s
                                                     !S_ISREG test answers -EINVAL before FMODE_WRITE
                                                     is consulted *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => err_ret EINVAL   (* the [FdSocket] answer, from the socket inode
                                                     alone: [sock_alloc] makes every socket inode
                                                     S_IFSOCK (net/socket.c:644, v6.18.46), so
                                                     [do_ftruncate]'s !S_ISREG test answers -EINVAL
                                                     (fs/open.c:175) *)
-=======
   | Some (FdStream _ _ _) => err_ret EINVAL      (* a stream-pair end is a socket too: S_ISSOCK,
                                                     the same [!S_ISREG] -EINVAL *)
   | Some (FdDgram _) => err_ret EINVAL           (* and so is a datagram socket *)
@@ -2294,7 +2269,6 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                    at all ([alloc_anon_inode], fs/libfs.c,
                                                    v6.18.46), so it is not S_ISREG and takes the
                                                    same -EINVAL though FMODE_WRITE is set *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _) => err_ret EINVAL          (* the same answer for the same reason, on an fd
                                                     the model KNOWS is a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL       (* and on /dev/null: a character device is not

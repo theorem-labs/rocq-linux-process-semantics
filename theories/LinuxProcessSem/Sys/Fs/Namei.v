@@ -390,7 +390,8 @@ Definition unlink_open_entry (c : path) (id : word) (data : list byte)
   | FdFileA q off =>
       if path_eqb c q then FdAnon id (mkAnonFile data off false true true pin) else e
   | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdStream _ _ _ | FdEventfd _ | FdDgram _ | FdAnon _ _ | FdOpaque _ => e
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ | FdAnon _ _ | FdOpaque _
+  | FdSeqpacket _ _ _ => e
       (* none of these holds a name, as [fd_names_path] argues kind by
          kind; an opaque object reads nothing through one *)
   end.

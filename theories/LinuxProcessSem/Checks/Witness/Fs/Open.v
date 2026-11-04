@@ -34,7 +34,7 @@ Local Definition openat_procfd_witness (n flags : word) (m : Model)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
-  | Some (FdDgram _) | Some (FdOpaque _) => Unmodeled
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) => Unmodeled
   end.
 
 Local Lemma openat_procfd_witness_ok : forall n flags i m,
@@ -49,7 +49,7 @@ Proof.
                        append_create_flags)%bool);
     [apply unmodeled_intro|].
   destruct (fd_lookup (m_fds m) n)
-    as [[ch|q cur|q cur|q cur|q cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o]|];
+    as [[ch|q cur|q cur|q cur|q cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0]|];
     try apply unmodeled_intro.
   - destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
@@ -72,30 +72,21 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            else match proc_open_target (m_fds m) dirfd p with
            | Some c =>
                (* a procfs name: the errno alternative ([Syscall.errno_any]
-<<<<<<< HEAD
                   admits ENOMEM) on the three shapes [Open.openat_proc_spec]
-                  answers, the decline on the rest *)
-=======
-                  admits ENOMEM) on the two shapes [Open.openat_proc_spec]
                   answers itself, the "/proc/self/fd/N" reopen's witness,
                   and the decline on the rest *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
                if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then ret_outcome (errno_ret ENOMEM) m
                else if Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                        && proc_sys_file_b c
                then ret_outcome (errno_ret ENOMEM) m
-<<<<<<< HEAD
                else if procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        && path_eqb c proc_self_fd_path
                then ret_outcome (errno_ret ENOMEM) m
-               else Unmodeled
-=======
                else match proc_self_fd c with
                     | Some n => openat_procfd_witness n flags m
                     | None => Unmodeled
                     end
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
            | None =>
            if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled         (* unmodeled dirfd *)
            (* an O_PATH or O_NOCTTY word off procfs: declined *)
@@ -285,17 +276,13 @@ Proof.
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
-<<<<<<< HEAD
       destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                 && path_eqb c proc_self_fd_path).
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
-      apply unmodeled_intro. }
-=======
       destruct (proc_self_fd c) as [fdn|];
         [apply openat_procfd_witness_ok|apply unmodeled_intro]. }
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
     { apply unmodeled_intro. }
     destruct (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)) eqn:Hop.
@@ -506,13 +493,10 @@ Definition ftruncate_witness (fd len : word) (m : Model)
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdSocket _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK, not S_ISREG *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK, not S_ISREG *)
-=======
   | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK too *)
   | Some (FdDgram _) => ret_outcome (errno_ret EINVAL) m  (* and a datagram socket *)
   | Some (FdEventfd _) => ret_outcome (errno_ret EINVAL) m  (* no type bits: not S_ISREG *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdPipe _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR again *)
@@ -551,11 +535,7 @@ Lemma ftruncate_witness_ok : forall fd len i m,
 Proof.
   intros. unfold ftruncate_spec, ftruncate_witness.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; [apply pure_ok|].
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
     try (eapply bind_step; [apply get_model_ok|];
          cbv beta iota; srw Hfd; apply pure_ok);
     try (eapply bind_step; [apply get_model_ok|];
