@@ -205,17 +205,31 @@ Qed.
    The launch
    ========================================================================= *)
 
+Lemma fd_lookup_member_open : forall fds n e,
+  In (n, e) fds -> fd_lookup fds n <> None.
+Proof.
+  intros fds. induction fds as [|[k e] r IH]; intros n ent Hin.
+  - contradiction.
+  - cbn [fd_lookup]. destruct Hin as [H|Hin].
+    + inversion H; subst. rewrite bv_eqb_refl. discriminate.
+    + destruct (bv_eqb k n); [discriminate|exact (IH n ent Hin)].
+Qed.
+
 Lemma cloexec_keys_open_init_model : forall reserved brk0 mbase sp lim inp,
   cloexec_keys_open (init_model reserved brk0 mbase sp lim inp).
 Proof.
   intros reserved brk0 mbase sp lim inp n b Hin.
-  assert (Hf : m_fds (init_model reserved brk0 mbase sp lim inp)
-               = [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
-                   (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-                   (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]) by reflexivity.
-  rewrite Hf. rewrite m_cloexec_init_model in Hin. unfold launch_cloexec in Hin.
-  destruct Hin as [H|[H|[H|[]]]]; inversion H; subst;
-    intro Hc; vm_compute in Hc; discriminate Hc.
+  rewrite m_fds_init_model.
+  rewrite m_cloexec_init_model in Hin. unfold launch_cloexec in Hin.
+  apply in_app_or in Hin as [Hin|Hin].
+  - destruct Hin as [H|[H|[H|[]]]]; inversion H; subst;
+      intro Hc; vm_compute in Hc; discriminate Hc.
+  - apply in_map_iff in Hin as ([k bytes] & Heq & Hmem).
+    cbn [fst] in Heq. injection Heq as Hn Hb. subst n b.
+    apply (fd_lookup_member_open _ k
+      (FdOpaque (OInherited (Some (bytes, Z_to_bv 64 0))))).
+    apply in_or_app. right. unfold inherited_table.
+    apply in_map_iff. exists (k, bytes). split; [reflexivity|exact Hmem].
 Qed.
 
 (* =========================================================================

@@ -271,6 +271,56 @@ Example launch_descriptors_start_clear :
      = CheckOk cl_launch [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
+(** Inherited descriptors survived the same exec as the standard channels,
+    so their close-on-exec bits are clear too.  A gap in the inherited
+    list is still a closed descriptor, not an unknown bit. *)
+Definition cl_inherited_launch : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (with_inherited_fds [(3, [107]); (5, [101])]
+      (demo_input [] IEof)).
+
+Example inherited_launch_descriptors_start_clear :
+  check_syscall (getfd_in 3) (mkEffect 0 [] []) cl_inherited_launch
+    = CheckOk cl_inherited_launch []
+  /\ check_syscall (getfd_in 3) (mkEffect FD_CLOEXEC [] []) cl_inherited_launch
+       = CheckReject
+  /\ check_syscall (getfd_in 5) (mkEffect 0 [] []) cl_inherited_launch
+       = CheckOk cl_inherited_launch []
+  /\ check_syscall (getfd_in 5) (mkEffect FD_CLOEXEC [] []) cl_inherited_launch
+       = CheckReject
+  /\ check_syscall (getfd_in 4) (mkEffect (errno_ret EBADF) [] [])
+       cl_inherited_launch = CheckOk cl_inherited_launch [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+Example inherited_setfd_changes_only_its_descriptor :
+  answered (then_call
+    (check_syscall (setfd_in 3 FD_CLOEXEC) (mkEffect 0 [] []) cl_inherited_launch)
+    (getfd_in 3) (mkEffect FD_CLOEXEC [] [])) = true
+  /\ then_call
+       (check_syscall (setfd_in 3 FD_CLOEXEC) (mkEffect 0 [] []) cl_inherited_launch)
+       (getfd_in 3) (mkEffect 0 [] []) = CheckReject
+  /\ answered (then_call
+       (check_syscall (setfd_in 3 FD_CLOEXEC) (mkEffect 0 [] []) cl_inherited_launch)
+       (getfd_in 5) (mkEffect 0 [] [])) = true
+  /\ then_call
+       (check_syscall (setfd_in 3 FD_CLOEXEC) (mkEffect 0 [] []) cl_inherited_launch)
+       (getfd_in 5) (mkEffect FD_CLOEXEC [] []) = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+Example inherited_close_forgets_only_its_descriptor :
+  match check_syscall
+    (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) cl_inherited_launch with
+  | CheckOk m [] =>
+      cloexec_lookup (m_cloexec m) 3 = None
+      /\ check_syscall (getfd_in 3) (mkEffect (errno_ret EBADF) [] []) m
+           = CheckOk m []
+      /\ check_syscall (getfd_in 5) (mkEffect 0 [] []) m = CheckOk m []
+      /\ check_syscall (getfd_in 5) (mkEffect FD_CLOEXEC [] []) m = CheckReject
+  | _ => False
+  end.
+Proof. vm_compute. repeat split; check_eq. Qed.
+
 (** [close(4)] on [cl_known], then [eventfd2(0, EFD_CLOEXEC)], which
     takes the lowest free descriptor: 4 again. *)
 Definition closed_then_eventfd : check_result :=

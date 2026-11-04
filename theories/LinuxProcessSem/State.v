@@ -7660,16 +7660,17 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
-(** THE LAUNCH'S CLOSE-ON-EXEC BITS: descriptors 0, 1 and 2, each known
-    CLEAR.  This is a fact of [execve], not an assumption about the
-    launcher: [begin_new_exec] calls [do_close_on_exec] (fs/exec.c),
-    which zeroes every word of [fdt->close_on_exec] and closes each
-    descriptor whose bit was set (fs/file.c), so every descriptor a new
-    image starts with has its bit clear.  Read at v6.18.44; identical at
-    v6.18.46.  The bits of additional inherited descriptors remain
-    unknown. *)
-Definition launch_cloexec : list (word * bool) :=
-  [ (Z_to_bv 64 0, false); (Z_to_bv 64 1, false); (Z_to_bv 64 2, false) ].
+(** THE LAUNCH'S CLOSE-ON-EXEC BITS: descriptors 0, 1 and 2 and every
+    additional inherited descriptor, each known CLEAR.  This is a fact
+    of [execve], not an assumption about the launcher: [begin_new_exec]
+    calls [do_close_on_exec] (fs/exec.c), which zeroes every nonzero word
+    of [fdt->close_on_exec] and closes each descriptor whose bit was set
+    (fs/file.c), so every descriptor a new image starts with has its bit
+    clear.  Read from the v6.18.46 tag. *)
+Definition launch_cloexec (inherited : list (word * list byte))
+    : list (word * bool) :=
+  [ (Z_to_bv 64 0, false); (Z_to_bv 64 1, false); (Z_to_bv 64 2, false) ]
+  ++ map (fun kv => (fst kv, false)) inherited.
 (** THE INHERITED DESCRIPTORS' TABLE ENTRIES: each element of
     [ProcInput.in_inherited_fds] as a live [OInherited] at offset 0, in
     the order the list gives.  [init_model] puts them after descriptors 0,
@@ -7741,7 +7742,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (mkFdState ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
                   (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
                   (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-                ++ inherited_table (in_inherited_fds inp)) [] launch_cloexec)
+                ++ inherited_table (in_inherited_fds inp)) []
+               (launch_cloexec (in_inherited_fds inp)))
     (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
@@ -7778,7 +7780,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (with_cloexec launch_cloexec (mkModel
+    (with_cloexec (launch_cloexec (in_inherited_fds inp)) (mkModel
        ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
           (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
           (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
@@ -11420,7 +11422,8 @@ Proof. reflexivity. Qed.
 (** Every launch descriptor is known close-on-exec CLEAR; see
     [launch_cloexec]. *)
 Lemma m_cloexec_init_model : forall reserved brk0 mbase sp lim inp,
-  m_cloexec (init_model reserved brk0 mbase sp lim inp) = launch_cloexec.
+  m_cloexec (init_model reserved brk0 mbase sp lim inp)
+    = launch_cloexec (in_inherited_fds inp).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_cloexec_init_model : model.
 
