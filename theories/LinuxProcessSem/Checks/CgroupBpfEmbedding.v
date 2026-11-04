@@ -344,6 +344,35 @@ Proof.
   rewrite IH. exact (sstep_cgroup_bpf_setsockopt_kept _ _ _ _ Hs).
 Qed.
 
+(** At every reachable prefix of an embedded old launch, all syscall
+    outcomes use the source-bound pre-field table. This includes either
+    old self-kill value and every outcome, not just successful calls. *)
+Corollary embed24_prefix_dispatch_cfg :
+  forall segs cfg pc ph sp brk0 mbase rnd lim old tr c' i outcome,
+  star_cfg segs cfg
+    (init_config segs pc ph sp brk0 mbase rnd lim (embed24 old)) tr c' ->
+  (syscall_spec i (cfg_model c') outcome <->
+   dispatch spec_table_pre25 i (cfg_model c') outcome).
+Proof.
+  intros segs cfg pc ph sp brk0 mbase rnd lim old tr c' i outcome H.
+  apply syscall_spec_bpf_off_pre25.
+  rewrite (star_cfg_cgroup_bpf_setsockopt_kept _ _ _ _ _ H).
+  reflexivity.
+Qed.
+
+Corollary embed24_prefix_dispatch :
+  forall segs pc ph sp brk0 mbase rnd lim old tr c' i outcome,
+  star segs
+    (init_config segs pc ph sp brk0 mbase rnd lim (embed24 old)) tr c' ->
+  (syscall_spec i (cfg_model c') outcome <->
+   dispatch spec_table_pre25 i (cfg_model c') outcome).
+Proof.
+  intros segs pc ph sp brk0 mbase rnd lim old tr c' i outcome H.
+  apply syscall_spec_bpf_off_pre25.
+  rewrite (star_cgroup_bpf_setsockopt_kept _ _ _ _ H).
+  reflexivity.
+Qed.
+
 Print Assumptions embed24_forget24.
 Print Assumptions image_observations24.
 Print Assumptions valid_input_embeds24.
@@ -351,3 +380,5 @@ Print Assumptions valid_input_inherited_embeds24.
 Print Assumptions finite_input_embeds24.
 Print Assumptions syscall_spec_bpf_off_pre25.
 Print Assumptions star_cfg_cgroup_bpf_setsockopt_kept.
+Print Assumptions embed24_prefix_dispatch_cfg.
+Print Assumptions embed24_prefix_dispatch.
