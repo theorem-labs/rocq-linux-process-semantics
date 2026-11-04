@@ -146,16 +146,25 @@ Example mountinfo_open_group :
   mountinfo_text E (with_open_groups st2 [10%positive]) 1 (LDentry 1 1) = None.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Mount 4 of namespace 2 is on superblock 1, mount 1's.  With only
-    namespace 2 entered from outside, namespace 1 holds no open mount, but
-    an outside remount through mount 4 can make superblock 1 read-only,
-    which every line of mount 1 prints as its super options' " ro"
-    (fs/proc_namespace.c:182, Linux v6.18.46): the text of namespace 1 has
-    no answer.  Namespace 2's own text has none either. *)
+(** [st] without mount 5.  Mount 5 is a mount of namespace 1 on mount 4 of
+    namespace 2, so with namespace 2 entered the path of mount 5's line,
+    and so the text of namespace 1, has no answer for that reason alone. *)
+Definition st_sb : NsState :=
+  with_mounts st (filter (fun m => negb (Pos.eqb (mnt_id m) 5)) (ns_mounts st)).
+
+(** Mount 4 of namespace 2 is on superblock 1, mount 1's.  Without outside
+    entry the text of namespace 1 is the one of [mountinfo_lines] (the
+    root does not reach mount 5).  With only namespace 2 entered from
+    outside, namespace 1 holds no open mount, but an outside remount
+    through mount 4 can make superblock 1 read-only, which mount 1's line
+    prints as its super options' " ro" (fs/proc_namespace.c:182, Linux
+    v6.18.46): the text of namespace 1 has no answer.  Namespace 2's own
+    text has none either. *)
 Example mountinfo_shared_sb_entered :
-  mountinfo_text E (with_entered_mntns st [2%positive]) 1 (LDentry 1 1) = None
-  /\ mountinfo_text E (with_entered_mntns st [2%positive]) 2 (LDentry 4 1) = None.
-Proof. split; vm_compute; reflexivity. Qed.
+  mountinfo_text E st_sb 1 (LDentry 1 1) = mountinfo_text E st 1 (LDentry 1 1)
+  /\ mountinfo_text E (with_entered_mntns st_sb [2%positive]) 1 (LDentry 1 1) = None
+  /\ mountinfo_text E (with_entered_mntns st_sb [2%positive]) 2 (LDentry 4 1) = None.
+Proof. split; [|split]; vm_compute; reflexivity. Qed.
 
 (** Groups 10 and 11 are live in [st2]; [E] gives them distinct numbers of
     at least 1, and one number for every group breaks the rule. *)
