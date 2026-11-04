@@ -119,6 +119,31 @@ Example clone_newuser_closed_root_answers : forall m,
                               host_rootfs 138) <> None.
 Proof. intros m. vm_compute. split; [reflexivity | intros H; discriminate H]. Qed.
 
+(** Level and count ENOSPC precede the chroot test, even if its root
+    stack is open or its namespace/root record is absent. *)
+Definition user_limit (level : nat) (limit : Z) : UserNs :=
+  mkUserNs 1 None level 0 (Some full) (Some full) true true limit true.
+Definition enospc_states (p : UserNs) : list NsState :=
+  [with_userns (host_rootfs_peer7 [7%positive]) [p];
+   with_mntns (with_userns host_rootfs [p]) [];
+   with_mounts (with_userns host_rootfs [p]) []].
+Example clone_user_level_before_chroot : forall m st,
+  In st (enospc_states (user_limit 33 100)) ->
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+    = CnErr 28 st.
+Proof.
+  intros m st H. cbn [enospc_states] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; reflexivity.
+Qed.
+Example clone_user_count_before_chroot : forall m st,
+  In st (enospc_states (user_limit 0 0)) ->
+  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+    = CnErr 28 st.
+Proof.
+  intros m st H. cbn [enospc_states] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; reflexivity.
+Qed.
+
 (** The new user namespace: a child of 1 owned by kuid 65534 with no maps;
     the new pid namespace's last pid is 1; the copy of the root mount is a
     mount of the new mount namespace; the new network namespace is

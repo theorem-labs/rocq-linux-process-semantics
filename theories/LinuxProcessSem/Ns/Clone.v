@@ -144,12 +144,13 @@ Definition new_utsns (st : NsState) (ctx : NsCtx) (nid owner : positive) : UtsNs
 
 (** The child's capability sets and securebits, and its user namespace:
     with CLONE_NEWUSER a new namespace in which it holds every capability
-    ([set_cred_user_ns]); else the caller's.  No answer ([NsErr 0]) when
-    the tables do not hold the caller's user namespace, or do not decide
-    whether it is chrooted ([UserArms.current_chrooted] answers [None]:
-    its mount namespace is not in the tables, or a mount of the stack
-    from that namespace's root mount to its top can receive a mount or
-    unmount event from an open group). *)
+    ([set_cred_user_ns]); else the caller's. With CLONE_NEWUSER the level
+    and count ENOSPC checks come before the chroot test
+    (kernel/user_namespace.c:91-107, v6.18.46). No answer ([NsErr 0])
+    when the tables lack the caller's user namespace, or, after those
+    checks pass, do not decide whether it is chrooted
+    ([UserArms.current_chrooted]: absent mount namespace/root, or an open
+    mount of the root stack). *)
 Record CloneCreds := mkCloneCreds { cc_user : positive; cc_caps : CapSets; cc_secure : Z;
                                     cc_users : list UserNs }.
 
@@ -159,23 +160,27 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
   else
     let euid := bv_unsigned (cr_euid (m_creds m)) in
     let egid := bv_unsigned (cr_egid (m_creds m)) in
-    match find_userns (ns_userns st) (cx_user ctx), current_chrooted st ctx with
-    | Some p, Some chrooted =>
+    match find_userns (ns_userns st) (cx_user ctx) with
+    | Some p =>
         if Nat.ltb 32 (uns_level p) then NsErr ENOSPC
         else match ucount_check (ns_userns st) (cx_user ctx) p euid with
              | ChargeFull => NsErr ENOSPC
              | _ =>
-                 if chrooted then NsErr EPERM
-                 else if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
-                 then NsErr EPERM
-                 else match create_user_ns (ns_userns st) (cx_user ctx) euid
-                                           (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
-                      | NsOk (n, U') =>
-                          NsOk (mkCloneCreds n (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 U')
-                      | NsErr e => NsErr e
-                      end
+                 match current_chrooted st ctx with
+                 | None => NsErr 0
+                 | Some true => NsErr EPERM
+                 | Some false =>
+                     if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
+                     then NsErr EPERM
+                     else match create_user_ns (ns_userns st) (cx_user ctx) euid
+                                               (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
+                          | NsOk (n, U') =>
+                              NsOk (mkCloneCreds n (mkCaps CAP_FULL_SET CAP_FULL_SET 0 CAP_FULL_SET 0) 0 U')
+                          | NsErr e => NsErr e
+                          end
+                 end
              end
-    | _, _ => NsErr 0
+    | None => NsErr 0
     end.
 
 (** A clone that takes a task out of the released world (a flat caller,

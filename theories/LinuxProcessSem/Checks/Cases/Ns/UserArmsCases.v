@@ -89,9 +89,9 @@ Qed.
 (** Mount 1, the root of mount namespace 1, in peer group 7, which has a
     member outside the tables ([env_open_groups]): the host can mount on
     its root without a call of the model, so the tables do not decide
-    whether the task is chrooted ([current_chrooted] answers [None]) and
-    the arm has no answer.  With no open group the arm answers from the
-    tables, the task not chrooted. *)
+    whether the task is chrooted ([current_chrooted] answers [None]).
+    When the earlier ENOSPC checks pass, the tables decline; environment
+    refusals remain possible. With no open group the tables answer. *)
 Definition world_peer7 (gs : list positive) : NsState :=
   with_open_groups
     (with_mounts (world [init_uns 100 true])
@@ -100,12 +100,12 @@ Definition world_peer7 (gs : list positive) : NsState :=
 
 Example unshare_open_root_declines : forall m o,
   unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 [7%positive]) o
-  <-> o = EUnmodeled.
+  <-> o = EUnmodeled \/ env_refusal o m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 [7%positive]).
 Proof. intros m o. vm_compute. tauto. Qed.
 
 Example unshare_closed_root_answers : forall m o,
   unshare_arm (call CLONE_NEWUSER) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
-  <-> unshare_exact (init_uns 100 true) false m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
+  <-> unshare_exact (init_uns 100 true) (Some false) m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []) o
       \/ env_refusal o m (task 1 (1%positive, 1%positive) nocaps) (world_peer7 []).
 Proof. intros m o. apply unshare_arm_newuser; reflexivity. Qed.
 
@@ -204,6 +204,32 @@ Proof.
   destruct H as [H|H]; [left; vm_compute in H; exact H | right; exact H].
 Qed.
 
+(** Linux decides level/count ENOSPC before current_chrooted. This also
+    holds when the root stack is open or its namespace/root is absent. *)
+Definition enospc_worlds (p : UserNs) : list NsState :=
+  [with_userns (world_peer7 [7%positive]) [p];
+   with_mntns (world [p]) []; with_mounts (world [p]) []].
+Example unshare_level_before_chroot : forall m o st,
+  In st (enospc_worlds deep) ->
+  unshare_arm (call CLONE_NEWUSER) (with_creds (creds 1000) m)
+              (task 1 (1%positive, 1%positive) nocaps) st o
+  <-> o = ns_errno ENOSPC (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st
+      \/ env_refusal o (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st.
+Proof.
+  intros m o st H. cbn [enospc_worlds] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; tauto.
+Qed.
+Example unshare_count_before_chroot : forall m o st,
+  In st (enospc_worlds (init_uns 0 true)) ->
+  unshare_arm (call CLONE_NEWUSER) (with_creds (creds 1000) m)
+              (task 1 (1%positive, 1%positive) nocaps) st o
+  <-> o = ns_errno ENOSPC (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st
+      \/ env_refusal o (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps) st.
+Proof.
+  intros m o st H. cbn [enospc_worlds] in H.
+  destruct H as [<- | [<- | [<- | []]]]; vm_compute; tauto.
+Qed.
+
 (** The environment's refusals are listed for the forced-only filter:
     ENOMEM, ENOSPC and EAGAIN, the allocations' ([env_refusal]); ENOSPC is
     also the tables' answer ([ni_forced]). *)
@@ -218,7 +244,7 @@ Definition t_deep : NsCtx := task 1 (1%positive, 1%positive) nocaps.
 
 Lemma ns_spec_deep : forall m o,
   ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_deep (world [deep]) o
-  <-> unshare_exact deep false (with_creds (creds 1000) m) t_deep (world [deep]) o
+  <-> unshare_exact deep (Some false) (with_creds (creds 1000) m) t_deep (world [deep]) o
       \/ env_refusal o (with_creds (creds 1000) m) t_deep (world [deep]).
 Proof.
   intros m o. unfold ns_spec.
@@ -269,7 +295,7 @@ Definition w_room : NsState := world [init_uns 100 true].
 
 Lemma ns_spec_room : forall m o,
   ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_init w_room o
-  <-> unshare_exact (init_uns 100 true) false (with_creds (creds 1000) m) t_init w_room o
+  <-> unshare_exact (init_uns 100 true) (Some false) (with_creds (creds 1000) m) t_init w_room o
       \/ env_refusal o (with_creds (creds 1000) m) t_init w_room.
 Proof.
   intros m o. unfold ns_spec.
@@ -309,7 +335,7 @@ Definition w_full : NsState := world [ns3; ns2lim; init_uns 100 true].
 
 Lemma ns_spec_full : forall m o,
   ns_spec (call CLONE_NEWUSER) (with_creds (creds 1000) m) t_full w_full o
-  <-> unshare_exact ns3 false (with_creds (creds 1000) m) t_full w_full o
+  <-> unshare_exact ns3 (Some false) (with_creds (creds 1000) m) t_full w_full o
       \/ env_refusal o (with_creds (creds 1000) m) t_full w_full.
 Proof.
   intros m o. unfold ns_spec.

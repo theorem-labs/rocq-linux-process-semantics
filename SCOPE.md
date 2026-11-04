@@ -559,9 +559,10 @@ not apply.
   `fs/pnode.c:500-535`, `586-593`; `fs/namespace.c:1752-1753`,
   `1813-1819`, `993-1000`; the climb then stops there,
   `fs/d_path.c:110-125`), a `clone` or `unshare` with
-  `CLONE_NEWUSER`, which reads the topmost mount on the caller's mount
-  namespace's root mount to decide whether the caller is chrooted
-  (`Ns.UserArms.current_chrooted`; `current_chrooted`,
+  `CLONE_NEWUSER`, after the earlier level/count `ENOSPC` checks pass
+  (`kernel/user_namespace.c:91-107`), which reads the topmost mount on
+  the caller's mount namespace's root mount to decide whether the caller
+  is chrooted (`Ns.UserArms.current_chrooted`; `current_chrooted`,
   `fs/namespace.c:6118-6132`), and a `/proc/<pid>/fd` link to a
   descriptor the released model opened, whose path resolves from the
   topmost mount on the host's root mount (`Ns.Arm.host_loc`), when a
