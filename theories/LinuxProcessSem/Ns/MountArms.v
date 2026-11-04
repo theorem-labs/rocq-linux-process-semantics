@@ -403,8 +403,9 @@ Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
   end.
 
 (** The other [NMOk] choices of [new_mount] and [new_mount_shared]
-    (fs/namespace.c:3681-3731): the visibility walk may pass either
-    read-only lock that its table permits. *)
+    ([do_new_mount], fs/namespace.c:3681-3732): the visibility walk
+    ([mnt_already_visible], 6135-6193, from [mount_too_revealing],
+    6195-6216) may pass either read-only lock that its table permits. *)
 Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (o : ext_outcome) : Prop :=
   let devp := in_arg i 0 in
@@ -468,7 +469,7 @@ Definition mount_arm : NsArm := fun i m ctx st o =>
 Definition umount_valid (flags : Z) : bool :=
   Z.eqb (Z.land flags (Z.lnot (MNT_FORCE + MNT_DETACH + MNT_EXPIRE + UMOUNT_NOFOLLOW))) 0.
 
-(** [can_umount] and [path_umount] (fs/namespace.c:2016-2045), then
+(** [can_umount] and [path_umount] (fs/namespace.c:2016-2048), then
     [do_umount]'s checks (fs/namespace.c:1937-1945).  Every MNT_DETACH runs
     [umount_tree] with UMOUNT_PROPAGATE (fs/namespace.c:1948-1950), so
     [propagate_umount] gathers its candidates on the receivers of every
@@ -830,16 +831,16 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
     (SCOPE.md), so [security_sb_mount], [security_sb_umount] and
     [security_sb_pivotroot] refuse nothing.
     - [umount2] (39), [pivot_root] (41): the walks' ([Arm.walk_pairs]);
-      [pivot_root]'s ENOMEM also from [lock_mount]'s [get_mountpoint]
-      (fs/namespace.c).
+      [pivot_root]'s ENOMEM also from [do_lock_mount]'s [get_mountpoint]
+      (fs/namespace.c:4584, 2764; [get_mountpoint], 898-900).
     - [mount_setattr] (442): the walks'; with MS_SHARED, ENOMEM and ENOSPC
       from the group-id allocator ([mnt_alloc_group_id],
       fs/namespace.c:239-247, through [invent_group_ids], 4804-4808;
-      [ida_alloc_min], lib/idr.c:470, 477), an allocation, so
+      [ida_alloc_range], lib/idr.c:470, 477), an allocation, so
       FamAlloc.  The tables never answer ENOSPC for 442, so [ni_forced]
       stays empty.
     - [mount] (40): the walks'; ENOMEM also from [copy_mount_string] and
-      [copy_mount_options], from [lock_mount]'s [get_mountpoint] and
+      [copy_mount_options], from [do_lock_mount]'s [get_mountpoint] and
       [clone_mnt]'s [alloc_vfsmnt] (fs/namespace.c), and from a new
       instance's [fs_context_for_mount] (fs/fs_context.c), [sget_fc]
       (fs/super.c) and fill_super; a new tmpfs's root inode, ENOSPC when
@@ -859,7 +860,7 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       [attach_recursive_mnt], fs/namespace.c:2594-2597; [clone_mnt] with
       CL_MAKE_SHARED for a secondary, fs/namespace.c:1264-1268), ENOMEM and
       ENOSPC also from the group-id allocator ([mnt_alloc_group_id],
-      fs/namespace.c:239-247; [ida_alloc_min], lib/idr.c:391, 470, 477), an
+      fs/namespace.c:239-247; [ida_alloc_range], lib/idr.c:391, 470, 477), an
       allocation, so FamAlloc; ENOMEM from [clone_mnt]'s [alloc_vfsmnt]
       for each secondary (fs/namespace.c:1252-1254).  ENOSPC also from
       [count_mounts] of a namespace outside the tables that gets a

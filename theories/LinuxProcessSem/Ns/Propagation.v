@@ -382,6 +382,7 @@ Qed.
 
    The kernel's group number comes from one IDA for the whole system
    ([mnt_alloc_group_id], fs/namespace.c:239-247; [ida_alloc_min],
+   include/linux/idr.h:309-312, through [ida_alloc_range],
    lib/idr.c:382-478), from which mounts outside the tables also take
    numbers, so the number is the environment's ([Tables.mi_group]).  The
    model gives a new group a KEY: one above every key the state names, and
@@ -944,7 +945,7 @@ Definition rotate (l : list positive) (e : positive) : list positive :=
     group at once, and a slave in no group alone (fs/pnode.c:321-356); the
     members of a slave group are one run of their master's list
     (fs/pnode.c:199), and [next_group] enters the group at the first of
-    them (fs/pnode.c:235-236, 248-249).  A unit is its group's key, or
+    them (fs/pnode.c:233-234, 246-247).  A unit is its group's key, or
     [None] for a slave in no group, and the mount the walk enters it at. *)
 Definition units_of (T : list Mount) (l : list positive) : list (option positive * positive) :=
   fold_left
@@ -1166,8 +1167,8 @@ Definition unit_master (T : list Mount) (u : option positive * list positive) : 
 
 (** The nearest unit above unit [ui] that gets copies.  [find_master]
     (fs/pnode.c:274-297) climbs from the new secondary's mount to the first
-    master marked as the master of a mount that got one (fs/pnode.c:316-
-    317, 347-348), and returns the copy made last in the unit below it:
+    master marked as the master of a mount that got one (fs/pnode.c:317-
+    318, 347-348), and returns the copy made last in the unit below it:
     so, per position of the tree, the first secondary of a unit is a slave
     of the last copy made in the nearest unit above it that has copies,
     and the secondaries after it in the unit are its peers (CL_MAKE_SHARED,
@@ -1459,8 +1460,8 @@ Definition attach_links (st : NsState) (pairs : list (Mount * positive)) (src : 
     (2604-2607); the secondaries ([propagate_copies]) follow it in the
     table, in the order made, each tree in the source's order; a mount [q]
     already on a secondary's mount at [td] moves onto the topmost copy of
-    that secondary tree, at its root, and keeps MNT_LOCKED (2640-2650; v7.1
-    hands MNT_LOCKED over, v6.18.46 does not).  [owner] is the owner of the
+    that secondary tree, at its root, and keeps MNT_LOCKED (2640-2650:
+    [mnt_change_mountpoint] does not change its flags).  [owner] is the owner of the
     caller's mount namespace ([lock_mnt_tree], 2637-2639); [pairs] the
     source mounts' originals, for a bind. *)
 Definition attach_build (st : NsState) (below : positive -> positive -> bool) (owner : positive)

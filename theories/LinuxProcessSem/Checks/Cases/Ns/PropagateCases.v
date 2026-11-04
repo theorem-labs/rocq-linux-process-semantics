@@ -168,8 +168,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** Mount 9, MNT_LOCKED, already sits on the peer at the target dentry: it
     moves onto the secondary 11, at its root, and keeps MNT_LOCKED
-    (fs/namespace.c:2640-2650; v7.1 would hand MNT_LOCKED to the
-    secondary). *)
+    (fs/namespace.c:2640-2650). *)
 Definition st_f : NsState :=
   world [m1; m2; m3; m5; m6; mnt_with_locked (mt 9 2 (Some 6) 21 40 4) true] 1.
 
