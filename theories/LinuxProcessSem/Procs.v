@@ -948,7 +948,7 @@ Proof.
     [reflexivity|].
   rewrite Hcopy.
   destruct (clone3_pre bs) as [| |r] eqn:Hpre; [reflexivity|reflexivity|].
-  exfalso. exact (Hno r Hpre).
+  exfalso. apply (Hno r). congruence.
 Qed.
 
 (** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
