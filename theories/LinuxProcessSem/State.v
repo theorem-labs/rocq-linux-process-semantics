@@ -3686,10 +3686,14 @@ Definition cache_geometry_word (l : CacheLeaf) : Z :=
     too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
     [m_kernel] reads it.
 
-    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
-    carries no clause about this record and no consumer's destructuring
-    pattern changes.  That is what [vdso_text_pages]'s wrap below is
-    for. *)
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so the model needs no
+    validity clause about this record's fields.  That is what
+    [vdso_text_pages]'s wrap below is for.  [Run.valid_input] fixes eight
+    of the fields at [default_kernel]'s values all the same, for a
+    different reason: the published statements had one answer for each
+    of them.  It leaves [kb_thp], [kb_aslr], [kb_guard], [kb_rnd_bits]
+    and [kb_rseq] free, because they covered a range of each
+    ([Run.recorded_kernel]). *)
 Record KernelBuild := mkKernelBuild {
   kb_thp : bool
     (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
@@ -7445,10 +7449,15 @@ Record ProcInput := mkProcInput_full {
        copies it into [vmst_kernel], where [m_kernel] reads it, and
        [Sys/Mm/Mmap.linux_place] is its one consumer today.
 
-       [Run.valid_input] has NO clause naming it: every value of every
-       field names a build a launch could present.  [Run.valid_entry]
-       reads it too, to decide which stack tops, stack pointers and
-       mmap bases this launch can give *);
+       Every value of every field names a build a launch could present,
+       and the model's functions accept any of them, but
+       [Run.valid_input] and every named launch beside it fix eight of its
+       fields at [default_kernel]'s values and leave the five launch
+       facts free ([Run.recorded_kernel], [Run.valid_input_vdso] and the
+       other accessors): the published statements had one answer for
+       the eight and covered a range of the five.
+       [Run.valid_entry] reads it too, to decide which stack tops,
+       stack pointers and mmap bases this launch can give *);
   in_execfn : list byte
     (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
        Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.

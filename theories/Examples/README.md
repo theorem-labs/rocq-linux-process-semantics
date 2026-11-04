@@ -327,7 +327,18 @@ every other one sits in the context where `assumption` finds it. Where
 only one clause is wanted, take it from its accessor lemma —
 `Run.valid_input_va_size`, `Run.valid_input_abort_terminal`,
 `Run.valid_input_image_real`, `Run.valid_input_urandom`,
-`Run.valid_input_hwcap_rv64gc_word` — which no insertion can move.
+`Run.valid_input_vdso`, `Run.valid_input_hwcap_rv64gc_word` — which no
+insertion can move. The kernel accessors are the ones a start-up proof
+wants: `Run.valid_input` fixes eight fields of the build at
+`State.default_kernel`'s values (`Run.recorded_kernel`) and leaves
+`kb_thp`, `kb_aslr`, `kb_guard`, `kb_rnd_bits` and `kb_rseq` free, and
+each fixed field has its accessor — `Run.valid_input_vdso`,
+`Run.valid_input_vlenb`, `Run.valid_input_cache`, the socket numbers —
+with `Run.valid_input_cache_words`, `Run.valid_input_vdso_text_pages`
+and `Run.valid_input_min_sigframe_size` for what the auxv computes from
+them. Do not assume a value for the five free fields: a start-up proof
+covers both auxiliary-vector layouts, 27 pairs and 29, by a case split
+on `kb_rseq (in_kernel inp)`.
 
 `Run.valid_entry` has five. Its fifth, `Run.entry_launch_ok_va`, is the
 one a per-binary section needs, so a positional pattern over it has five

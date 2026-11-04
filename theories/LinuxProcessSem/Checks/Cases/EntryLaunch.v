@@ -496,8 +496,11 @@ Qed.
 Definition a1_argv : list (list byte) := [[Z_to_bv 8 97]].
 Definition a1_execfn : list byte := [Z_to_bv 8 97].
 
-(** The launch facts: no transparent huge pages, the FIRST vDSO image
-    ([kb_vdso] 0, one text page under [State.vdso_text_pages]), the
+(** The launch facts: no transparent huge pages, the vDSO image
+    [kb_vdso] 0 names, which is the one measured image
+    ([Vdso.vdso_images] is a singleton and [State.vdso_image_of] indexes
+    it modulo its length, so every value of the field names that image,
+    two text pages), the
     guard gap at its boot default of 256 pages (mm/mmap.c,
     [stack_guard_gap = 256UL << PAGE_SHIFT]), [vm.mmap_rnd_bits] at
     riscv64's ARCH_MMAP_RND_BITS_MIN of 18 ([kb_rnd_bits] 0,
