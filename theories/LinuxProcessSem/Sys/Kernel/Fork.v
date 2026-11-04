@@ -1079,6 +1079,11 @@ Record CloneArgs := mkCloneArgs {
   cla_tls : word
 }.
 
+(** What the core hands the namespace extension about a pending clone's
+    arguments: the decoded record of a call the core answers from it, or
+    nothing ([Procs.clone_in_of] says which). *)
+Inductive CloneIn := CiArgs (r : CloneArgs) | CiNoArgs.
+
 (** [clone]'s registers under [CONFIG_CLONE_BACKWARDS], which
     arch/riscv/Kconfig selects: a0 the flag word, a1 the new stack, a2
     the parent-tid pointer and also the pidfd pointer, a3 the tls, a4 the
@@ -1509,6 +1514,114 @@ Proof.
          | context [if ?b then _ else _] => destruct b; cbv iota in H
          end;
     try discriminate H; injection H as <-; reflexivity.
+Qed.
+
+(** THE TWO FIELDS STAY APART: no flag bit in the exit-signal byte, no
+    signal bit above it.  So the one word a reader builds from a record,
+    [Z.lor flags exit_signal], gives both fields back
+    ([flags_signal_split]), and no flag bit is read as part of the exit
+    signal.  Both decoders give such records
+    ([clone_args_of_clone_split], [clone3_pre_split]). *)
+Definition clone_args_split (r : CloneArgs) : Prop :=
+  Z.land (cla_flags r) CSIGNAL = 0%Z
+  /\ Z.land (cla_exit_signal r) (Z.lnot CSIGNAL) = 0%Z.
+
+Lemma flags_signal_split : forall f e : Z,
+  Z.land f CSIGNAL = 0%Z -> Z.land e (Z.lnot CSIGNAL) = 0%Z ->
+  Z.land (Z.lor f e) (Z.lnot CSIGNAL) = f /\ Z.land (Z.lor f e) CSIGNAL = e.
+Proof.
+  intros f e Hf He.
+  assert (Hf' : Z.land f (Z.lnot CSIGNAL) = f).
+  { transitivity (Z.land f (Z.lor CSIGNAL (Z.lnot CSIGNAL))).
+    - now rewrite Z.land_lor_distr_r, Hf, Z.lor_0_l.
+    - now rewrite Z.lor_lnot_diag, Z.land_m1_r. }
+  assert (He' : Z.land e CSIGNAL = e).
+  { transitivity (Z.land e (Z.lor CSIGNAL (Z.lnot CSIGNAL))).
+    - now rewrite Z.land_lor_distr_r, He, Z.lor_0_r.
+    - now rewrite Z.lor_lnot_diag, Z.land_m1_r. }
+  split.
+  - now rewrite Z.land_lor_distr_l, He, Z.lor_0_r, Hf'.
+  - now rewrite Z.land_lor_distr_l, Hf, Z.lor_0_l, He'.
+Qed.
+
+(** With the fields apart, the word is [SIGCHLD] exactly when the record
+    is a plain fork's: no flag, exit signal [SIGCHLD]. *)
+Lemma clone_args_word_sigchld : forall r, clone_args_split r ->
+  (Z.lor (cla_flags r) (cla_exit_signal r) = SIGCHLD
+   <-> cla_flags r = 0%Z /\ cla_exit_signal r = SIGCHLD).
+Proof.
+  intros r [Hf He]. split.
+  - intros H. destruct (flags_signal_split _ _ Hf He) as [H1 H2].
+    rewrite H in H1, H2.
+    change (Z.land SIGCHLD (Z.lnot CSIGNAL)) with 0%Z in H1.
+    change (Z.land SIGCHLD CSIGNAL) with SIGCHLD in H2.
+    split; symmetry; assumption.
+  - intros [-> ->]. reflexivity.
+Qed.
+
+Lemma clone_args_of_clone_split : forall a0 a1 a2 a3 a4 r,
+  clone_args_of_clone a0 a1 a2 a3 a4 = Some r -> clone_args_split r.
+Proof.
+  intros a0 a1 a2 a3 a4 r H. unfold clone_args_of_clone in H.
+  destruct (bv_unsigned a0 <? 2 ^ 32)%Z; [|discriminate H].
+  injection H as <-. unfold clone_args_split. cbn [cla_flags cla_exit_signal].
+  split.
+  - rewrite <- Z.land_assoc.
+    replace (Z.land (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) CSIGNAL) with 0%Z
+      by (vm_compute; reflexivity).
+    apply Z.land_0_r.
+  - rewrite <- Z.land_assoc.
+    replace (Z.land CSIGNAL (Z.lnot CSIGNAL)) with 0%Z by (vm_compute; reflexivity).
+    apply Z.land_0_r.
+Qed.
+
+(** For [clone] the record's word is a0 itself: a record exists only for
+    an a0 below 2^32. *)
+Lemma clone_args_of_clone_word : forall a0 a1 a2 a3 a4 r,
+  clone_args_of_clone a0 a1 a2 a3 a4 = Some r ->
+  Z.lor (cla_flags r) (cla_exit_signal r) = bv_unsigned a0.
+Proof.
+  intros a0 a1 a2 a3 a4 r H. unfold clone_args_of_clone in H.
+  destruct (bv_unsigned a0 <? 2 ^ 32)%Z eqn:Hlt; [|discriminate H].
+  injection H as <-. cbn [cla_flags cla_exit_signal].
+  rewrite <- Z.land_lor_distr_r.
+  replace (Z.lor (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) CSIGNAL) with (Z.ones 32)
+    by (vm_compute; reflexivity).
+  rewrite Z.land_ones by lia.
+  apply Z.mod_small. apply Z.ltb_lt in Hlt.
+  destruct (bv_unsigned_in_range 64 a0) as [H0 _].
+  split; [exact H0 | exact Hlt].
+Qed.
+
+Lemma clone3_pre_split : forall bs r, clone3_pre bs = CdArgs r -> clone_args_split r.
+Proof.
+  intros bs r H. unfold clone3_pre in H. cbv zeta in H.
+  repeat match type of H with
+         | context [if ?b then _ else _] =>
+             let E := fresh "E" in destruct b eqn:E; cbv iota in H
+         end.
+  all: try discriminate H.
+  all: injection H as <-; unfold clone_args_split; cbn [cla_flags cla_exit_signal].
+  all: repeat match goal with
+              | Hb : (_ || _) = false |- _ =>
+                  let H1 := fresh "Ho" in let H2 := fresh "Ho" in
+                  apply orb_false_iff in Hb as [H1 H2]
+              end.
+  all: match goal with
+       | HD : clone_has ?f (Z.lor CLONE_DETACHED _) = false,
+         HT : clone_has ?f CLONE_NEWTIME = false,
+         HE : negb (Z.eqb (Z.land ?e (Z.lnot CSIGNAL)) 0%Z) = false |- _ =>
+           unfold clone_has in HD, HT;
+           apply negb_false_iff in HD; apply Z.eqb_eq in HD;
+           apply negb_false_iff in HT; apply Z.eqb_eq in HT;
+           apply negb_false_iff in HE; apply Z.eqb_eq in HE;
+           split; [|exact HE];
+           assert (HC : CSIGNAL = Z.lor (Z.land (Z.lor CLONE_DETACHED
+                          (Z.land CSIGNAL (Z.lnot CLONE_NEWTIME))) CSIGNAL) CLONE_NEWTIME)
+             by (vm_compute; reflexivity);
+           rewrite HC at 1;
+           now rewrite Z.land_lor_distr_r, Z.land_assoc, HD, Z.land_0_l, HT, Z.lor_0_l
+       end.
 Qed.
 
 (** [clone3]'s -EINVAL, with the struct in the ledger: every test that

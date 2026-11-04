@@ -845,6 +845,169 @@ Definition clone_flags_of (c : config) : Z :=
   | None => 0%Z
   end.
 
+(** THE DECODED ARGUMENTS of a pending clone, as the namespace extension
+    is to receive them ([Fork.CloneIn]).
+    - [clone] (220): the record of its registers
+      ([Fork.clone_args_of_clone]); none for an a0 with a bit above 31.
+    - [clone3] (435): the record of its struct ([Fork.clone3_pre]), read
+      as the released step reads it ([Fork.clone3_spec]: the size test,
+      then [State.copy_bytes_map] over the pre-syscall memory, which
+      [Run.sys_input] gives as [ms_read_byte] whatever the segments,
+      [clone_in_of_input]), and only for a record [Fork.clone3_spec]
+      answers from: the fork image, or a record the argument checks
+      refuse.  A struct its own tests refuse or decline, a size or a
+      copy it declines or refuses, and a record it declines give none.
+    - Any other call, and no pending call: none.
+    No rule of the core reads it yet. *)
+Definition clone_in_of (c : config) : CloneIn :=
+  let ms := cfg_ms c in
+  match ms_svc_pending ms with
+  | Some x8 =>
+      if Z.eqb (bv_unsigned x8) 220 then
+        match clone_args_of_clone (ms_gpr ms 0) (ms_gpr ms 1) (ms_gpr ms 2)
+                (ms_gpr ms 3) (ms_gpr ms 4) with
+        | Some r => CiArgs r
+        | None => CiNoArgs
+        end
+      else if Z.eqb (bv_unsigned x8) 435 then
+        if negb (bv_eqb (ms_gpr ms 1) (Z_to_bv 64 CLONE_ARGS_SIZE)) then CiNoArgs
+        else
+          match copy_bytes_map (ms_read_byte ms) (ms_gpr ms 0) CLONE_ARGS_SIZE with
+          | Some bs =>
+              match clone3_pre bs with
+              | CdArgs r =>
+                  if clone3_fork_args_b bs || clone_arg_checks r then CiArgs r
+                  else CiNoArgs
+              | _ => CiNoArgs
+              end
+          | None => CiNoArgs
+          end
+      else CiNoArgs
+  | None => CiNoArgs
+  end.
+
+(** [clone_in_of] reads the call's arguments and memory as the released
+    step's input carries them, for any segments. *)
+Lemma clone_in_of_input : forall segs c x8,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  clone_in_of c =
+  (let i := sys_input segs (cfg_ms c) x8 in
+   if Z.eqb (bv_unsigned x8) 220 then
+     match clone_args_of_clone (in_arg i 0) (in_arg i 1) (in_arg i 2)
+             (in_arg i 3) (in_arg i 4) with
+     | Some r => CiArgs r
+     | None => CiNoArgs
+     end
+   else if Z.eqb (bv_unsigned x8) 435 then
+     if negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)) then CiNoArgs
+     else
+       match copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE with
+       | Some bs =>
+           match clone3_pre bs with
+           | CdArgs r =>
+               if clone3_fork_args_b bs || clone_arg_checks r then CiArgs r
+               else CiNoArgs
+           | _ => CiNoArgs
+           end
+       | None => CiNoArgs
+       end
+   else CiNoArgs).
+Proof.
+  intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
+Qed.
+
+(** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
+    record keeps flags and exit signal apart ([Fork.clone_args_split]), so
+    the word [Z.lor flags exit_signal] gives both back.  For [clone] that
+    word is [clone_flags_of]'s.  For [clone3], [clone_flags_of] is
+    [SIGCHLD] whatever the struct holds, and the record's word equals it
+    exactly when the record is a plain fork's: no flag, exit signal
+    [SIGCHLD]. *)
+Theorem clone_in_of_flags : forall c r,
+  clone_in_of c = CiArgs r ->
+  clone_args_split r
+  /\ exists x8, ms_svc_pending (cfg_ms c) = Some x8
+     /\ ((bv_unsigned x8 = 220%Z
+          /\ Z.lor (cla_flags r) (cla_exit_signal r) = clone_flags_of c)
+         \/ (bv_unsigned x8 = 435%Z /\ clone_flags_of c = SIGCHLD
+             /\ (Z.lor (cla_flags r) (cla_exit_signal r) = clone_flags_of c
+                 <-> cla_flags r = 0%Z /\ cla_exit_signal r = SIGCHLD))).
+Proof.
+  intros c r H. unfold clone_in_of in H. cbv zeta in H. unfold clone_flags_of.
+  destruct (ms_svc_pending (cfg_ms c)) as [x8|] eqn:Hp; cbv iota in H |- *;
+    [|discriminate H].
+  destruct (Z.eqb (bv_unsigned x8) 220) eqn:H220; cbv iota in H |- *.
+  - destruct (clone_args_of_clone (ms_gpr (cfg_ms c) 0) (ms_gpr (cfg_ms c) 1)
+                (ms_gpr (cfg_ms c) 2) (ms_gpr (cfg_ms c) 3) (ms_gpr (cfg_ms c) 4))
+      as [r0|] eqn:Hr; cbv iota in H; [|discriminate H].
+    injection H as <-.
+    split; [exact (clone_args_of_clone_split _ _ _ _ _ _ Hr)|].
+    exists x8. split; [reflexivity|]. left.
+    split; [apply Z.eqb_eq; exact H220|].
+    exact (clone_args_of_clone_word _ _ _ _ _ _ Hr).
+  - destruct (Z.eqb (bv_unsigned x8) 435) eqn:H435; cbv iota in H; [|discriminate H].
+    destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
+      cbv iota in H; [discriminate H|].
+    destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
+      as [bs|]; cbv iota in H; [|discriminate H].
+    destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
+    destruct (clone3_fork_args_b bs || clone_arg_checks r0); cbv iota in H;
+      [|discriminate H].
+    injection H as <-.
+    pose proof (clone3_pre_split _ _ Hp3) as Hs.
+    split; [exact Hs|].
+    exists x8. split; [reflexivity|]. right.
+    split; [apply Z.eqb_eq; exact H435|].
+    split; [reflexivity|].
+    exact (clone_args_word_sigchld r0 Hs).
+Qed.
+
+(** THE NAMESPACE PREMISE CARRIES OVER.  Where the word the core passes
+    today has no namespace bit ([Ns.Ext.has_ns_bits], over
+    [Ns.Ext.clone_ns_bits]), a record [clone_in_of] gives has none
+    either, or the argument checks refuse it.  The second case is
+    [clone3]'s only: its word today is [SIGCHLD] whatever the struct
+    holds, and several refusing rows need a namespace bit (CLONE_NEWNS
+    or CLONE_NEWUSER with CLONE_FS, CLONE_THREAD with CLONE_NEWUSER or
+    CLONE_NEWPID).  A refused record makes no namespace. *)
+Theorem clone_in_of_ns_bits : forall c r,
+  has_ns_bits (clone_flags_of c) = false ->
+  clone_in_of c = CiArgs r ->
+  Z.land (cla_flags r) clone_ns_bits = 0%Z \/ clone_arg_checks r = true.
+Proof.
+  intros c r Hns H.
+  destruct (clone_arg_checks r) eqn:Hc; [right; reflexivity|left].
+  unfold clone_in_of in H. cbv zeta in H. unfold clone_flags_of in Hns.
+  destruct (ms_svc_pending (cfg_ms c)) as [x8|] eqn:Hp; cbv iota in H, Hns;
+    [|discriminate H].
+  destruct (Z.eqb (bv_unsigned x8) 220) eqn:H220; cbv iota in H, Hns.
+  - destruct (clone_args_of_clone (ms_gpr (cfg_ms c) 0) (ms_gpr (cfg_ms c) 1)
+                (ms_gpr (cfg_ms c) 2) (ms_gpr (cfg_ms c) 3) (ms_gpr (cfg_ms c) 4))
+      as [r0|] eqn:Hr; cbv iota in H; [|discriminate H].
+    injection H as <-.
+    unfold has_ns_bits in Hns. apply negb_false_iff in Hns. apply Z.eqb_eq in Hns.
+    unfold clone_args_of_clone in Hr.
+    destruct (bv_unsigned (ms_gpr (cfg_ms c) 0) <? 2 ^ 32)%Z; [|discriminate Hr].
+    injection Hr as <-. cbn [cla_flags].
+    now rewrite <- Z.land_assoc,
+      (Z.land_comm (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) clone_ns_bits),
+      Z.land_assoc, Hns, Z.land_0_l.
+  - destruct (Z.eqb (bv_unsigned x8) 435) eqn:H435; cbv iota in H; [|discriminate H].
+    destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
+      cbv iota in H; [discriminate H|].
+    destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
+      as [bs|]; cbv iota in H; [|discriminate H].
+    destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
+    destruct (clone3_fork_args_b bs || clone_arg_checks r0) eqn:Hor; cbv iota in H;
+      [|discriminate H].
+    injection H as <-.
+    apply orb_true_iff in Hor as [Ha|Hc0]; [|rewrite Hc0 in Hc; discriminate Hc].
+    rewrite (clone3_pre_flags bs r0 Hp3).
+    unfold clone3_fork_args_b, w_is0 in Ha.
+    repeat (apply andb_true_iff in Ha as [Ha ?]).
+    apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity.
+Qed.
+
 (** The metadata of [p]; an absent pid reads as no stale namespace. *)
 Fixpoint meta_look (ms : list (Pid * ProcMeta)) (p : Pid) : ProcMeta :=
   match ms with
