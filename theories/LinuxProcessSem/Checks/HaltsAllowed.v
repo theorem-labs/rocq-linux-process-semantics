@@ -30,14 +30,14 @@
     on its first fetch, at a VALID entry and on a VALID input, so
     [halts_allowed_T] is refused for it at every allowed set.
 
-    THE SIGNAL ROUTE IS TWO ROUTES, AND ONLY ONE OF THEM IS FIRED ONE
+    THE SIGNAL ROUTE IS THREE ROUTES, AND ONLY ONE OF THEM IS FIRED ONE
     LEVEL DOWN.
 
     SIGABRT.  [Run.valid_input] pins [State.in_abort_terminal] to
     [false], and with the declaration off [Kernel.Signal.tkill_spec]
     declines every call, so no run this statement quantifies over can
     reach a [State.KillEv] ([Checks.KillFree.valid_input_no_kill], which
-    covers SIGPIPE too).  So that refutation
+    covers SIGPIPE and SIGKILL too).  So that refutation
     is fired where it can be — against [MustExit.must_exit_in] on
     [Checks.AbortWitness]'s killed run — and [abrt_input_not_valid_input]
     pins the reason it stops there, so a reader does not take the
@@ -58,7 +58,19 @@
     reader-less channel, and there a run that dies by signal 13 does not
     satisfy [must_exit_in]: that predicate's halted constructor requires
     [State.m_killed] to be [None], so it asks the program to end BY
-    EXIT and not merely to end. *)
+    EXIT and not merely to end.
+
+    SIGKILL.  The same shape again, through a third declaration.
+    [Kernel.Signal.kill_spec] raises signal 9 for a [kill] that names
+    the caller's own process id, but only when the launch declares the
+    death ([State.in_selfkill_terminal]); with the declaration off it
+    declines every call ([Kernel.Signal.kill_spec_off_unmodeled]), and
+    [Run.valid_input] pins that declaration [false].  So under the
+    ordinary predicate no run ends in [KillEv 9]
+    ([Checks.KillFree.valid_input_no_kill]).  No [Run.valid_input]
+    sibling turns the declaration on, so the death is fired at the call
+    itself, under a model that declares it
+    ([Checks.Cases.Kernel.Signal.kill_self_sigkill_kills]). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import

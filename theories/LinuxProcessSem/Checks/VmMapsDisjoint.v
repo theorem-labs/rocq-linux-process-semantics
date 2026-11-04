@@ -3133,6 +3133,7 @@ Proof.
     | erewrite check_sched_yield_frame by eassumption; exact Hwf
     | erewrite check_sigaltstack_frame by eassumption; exact Hwf
     | erewrite check_rt_sigaction_frame by eassumption; exact Hwf
+    | erewrite check_kill_frame by eassumption; exact Hwf
     | erewrite check_tkill_frame by eassumption; exact Hwf
     | erewrite check_tgkill_frame by eassumption; exact Hwf
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hwf

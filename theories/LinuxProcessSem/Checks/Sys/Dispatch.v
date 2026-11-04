@@ -614,6 +614,18 @@ Proof.
     eauto using check_sched_yield_sound_ok, check_sched_yield_sound_unmodeled, check_sched_yield_complete_ok, check_sched_yield_complete_unmodeled, sched_yield_witness_ok.
 Defined.
 
+(** kill (129).  As for [tkill], the checker answers [CheckUnmodeled] on
+    every shape whenever the model's self-kill declaration is clear. *)
+Definition arm_kill : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 129%Z (fun i => kill_spec (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) i))
+                       (fun i eff m => check_kill (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) eff m)
+                       (fun i m => kill_witness (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_kill_sound_ok, check_kill_sound_unmodeled, check_kill_complete_ok, check_kill_complete_unmodeled, kill_witness_ok.
+Defined.
+
 (** tkill (130).  The checker's own answer is [CheckUnmodeled] on every
     shape whenever the model's abort declaration is clear, so an arm on a
     number the task did not ask for behaves as a number with no arm. *)
@@ -1270,6 +1282,7 @@ Definition checked_table : list CheckedArm :=
   arm_sched_setscheduler ::
   arm_sched_getaffinity ::
   arm_sched_yield ::
+  arm_kill ::
   arm_tkill ::
   arm_tgkill ::
   arm_sigaltstack ::
@@ -1806,6 +1819,16 @@ Lemma ca_witness_arm_sched_yield : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_sched_yield : forall i m o,
   sa_spec (ca_arm arm_sched_yield) i m o = sched_yield_spec i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_kill : forall i eff m,
+  ca_check arm_kill i eff m = check_kill (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_kill : forall i m,
+  ca_witness arm_kill i m = kill_witness (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_kill : forall i m o,
+  sa_spec (ca_arm arm_kill) i m o = kill_spec (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_tkill : forall i eff m,
@@ -2403,6 +2426,7 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_sched_setscheduler ca_witness_arm_sched_setscheduler sa_spec_arm_sched_setscheduler : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sched_getaffinity ca_witness_arm_sched_getaffinity sa_spec_arm_sched_getaffinity : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sched_yield ca_witness_arm_sched_yield sa_spec_arm_sched_yield : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_kill ca_witness_arm_kill sa_spec_arm_kill : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_tkill ca_witness_arm_tkill sa_spec_arm_tkill : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_tgkill ca_witness_arm_tgkill sa_spec_arm_tgkill : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sigaltstack ca_witness_arm_sigaltstack sa_spec_arm_sigaltstack : arm_unfold.
@@ -2623,6 +2647,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_sched_yield : ca_no arm_sched_yield = 124%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_sched_yield : arm_unfold.
+
+Lemma ca_no_arm_kill : ca_no arm_kill = 129%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_kill : arm_unfold.
 
 Lemma ca_no_arm_sigaltstack : ca_no arm_sigaltstack = 132%Z.
 Proof. reflexivity. Qed.
