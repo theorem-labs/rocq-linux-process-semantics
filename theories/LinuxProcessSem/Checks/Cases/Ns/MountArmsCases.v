@@ -260,6 +260,14 @@ Example pivot_same_mount :
   = Some (-EBUSY).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The call of [pivot_dot_moves_root] in a mount namespace entered from
+    outside has no answer: an outside move of the new root's mount changes
+    Linux's answer (fs/namespace.c:4584-4618, v6.18.46). *)
+Example entered_pivot_dot_declines :
+  pivot_root_fn (pivot_input s_dot s_dot) base_model c_pivot
+    (with_entered_mntns (state false false []) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
 Definition path_file : NsFile := mkNsFile (NfPath (LDentry 2 20)) O_PATH (mkIdCred 1 0 0 0).
 Definition writer_file : NsFile := mkNsFile (NfFile (LDentry 2 21) 0) O_WRONLY (mkIdCred 1 0 0 0).
 Definition attr_set : Z := MOUNT_ATTR_RDONLY + MOUNT_ATTR_NOSUID + MOUNT_ATTR_NODEV.

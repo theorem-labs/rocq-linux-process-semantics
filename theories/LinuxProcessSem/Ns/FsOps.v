@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files Mountinfo.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Propagation Walk Task Files Mountinfo.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -140,6 +140,7 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
                     else if negb (fsuidgid_mapped st (sb_owner sb) cr) then Some EOVERFLOW
                     else inode_permission st ctx cr (task_eff ctx) p sb attr (MAY_WRITE + MAY_EXEC) in
                   if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+                  else if flags_open st mt then OROver
                   else match denied with
                        | Some e => ORErr e
                        | None =>
@@ -811,7 +812,8 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
           match sb_kind sb, dentry_inode st d, loc_attr m ctx st l with
           | SbTmpfs, Some ino, Some a =>
               let cr := walk_creds m in
-              if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
+              if flags_open st mt then EUnmodeled
+              else if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
               else if kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino) then ns_errno EOVERFLOW m ctx st
               else match owner_or_capable st ctx cr a with
                    | None => EUnmodeled
@@ -912,7 +914,8 @@ Definition unlink_at_parent (m : Model) (ctx : NsCtx) (st : NsState) (reads : li
   | LDentry mn d, Some (mt, sb), Some dattr =>
       match sb_kind sb with
       | SbTmpfs =>
-          if mf_ro (mnt_flags mt) || sb_rdonly sb then err reads EROFS m ctx st
+          if flags_open st mt then EUnmodeled
+          else if mf_ro (mnt_flags mt) || sb_rdonly sb then err reads EROFS m ctx st
           else if Nat.ltb NAME_MAX (length name) then err reads ENAMETOOLONG m ctx st
           else match child_dentry st d name with
                | None => err reads ENOENT m ctx st

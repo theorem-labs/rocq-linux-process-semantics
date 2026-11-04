@@ -557,9 +557,13 @@ Definition pivot_paths (st : NsState) (rt rd nr nd : positive) : option PivotPat
   | _, _, _ => None
   end.
 
-(** [pivot_root] (fs/namespace.c:4551-4633): [may_mount] precedes the two
+(** [pivot_root] (fs/namespace.c:4556-4638): [may_mount] precedes the two
     LOOKUP_FOLLOW|LOOKUP_DIRECTORY walks; [LOCK_MOUNT] supplies the top
-    mount at put_old. *)
+    mount at put_old.  Its tests read the caller's namespace's topology
+    (the new root, the old root and put_old's mounts and their parents,
+    4584-4618), which an outside task can change when that namespace is
+    open ([ns_open]): the call then declines after the walks, as
+    [bind_mount]'s does. *)
 Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   match mount_may_mount m ctx st with
   | None => EUnmodeled
@@ -590,6 +594,7 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
                       match pivot_paths st rt rd nr nd with
                       | None => EUnmodeled
                       | Some pp =>
+                          if ns_open st (cx_mount ctx) then EUnmodeled else
                           match pivot_root (ns_mounts st) (cx_mount ctx) rt nr old od pp with
                           | MErr e => err reads e m ctx st
                           | MOk ms =>

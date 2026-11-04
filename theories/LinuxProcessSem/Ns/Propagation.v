@@ -838,6 +838,28 @@ Definition ns_open (st : NsState) (n : positive) : bool :=
             existsb (fun m => Pos.eqb (mnt_ns m) n && open_reach st m) (ns_mounts st)
   end.
 
+(** The flags of [mt] and of its superblock may change outside the model:
+    some mount on the same superblock is open to outside entry or
+    propagation ([open_mount]).  An outside task that entered the namespace
+    passes [check_mnt] and can change a mount's flags ([do_mount_setattr],
+    fs/namespace.c:4781-4838, its [check_mnt] at 4816;
+    [do_reconfigure_mnt], 3211-3241) and the superblock's read-only state
+    ([do_remount], 3248-3294) (Linux v6.18.46).  Every read of [mnt_flags]
+    or [sb_rdonly] then declines ([sb_i_nodev] and [sb_i_noexec] are fixed
+    when the superblock is made).  With both uncertainty lists empty it is
+    false ([flags_open_closed]). *)
+Definition flags_open (st : NsState) (mt : Mount) : bool :=
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => existsb (fun m' => Pos.eqb (mnt_sb m') (mnt_sb mt) && open_mount st (mnt_id m'))
+                    (ns_mounts st)
+  end.
+
+Lemma flags_open_closed : forall st mt,
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  flags_open st mt = false.
+Proof. intros st mt Hg He. unfold flags_open. rewrite Hg, He. reflexivity. Qed.
+
 (** The mounts besides [m] that [change_mnt_propagation (m, k)]
     (fs/pnode.c:93-124) reads and changes, in the state [st] before the
     change.  MS_SHARED: none ([set_mnt_shared] changes [m] alone).  Else:

@@ -647,6 +647,17 @@ Proof. vm_compute. reflexivity. Qed.
 Example faccessat_bad_mode : ret_of (faccessat_fn (access_in s_file 8) m3 c0 W) = Some (-22).
 Proof. vm_compute. reflexivity. Qed.
 
+(** W_OK at "." from a cwd on the read-only mount: EROFS from the tables.
+    Once mount namespace 1 is entered from outside, an outside task may
+    change that mount's flags ([do_mount_setattr], fs/namespace.c:4781-4838,
+    v6.18.46), so the same call has no answer ([flags_open]). *)
+Definition c_ro_cwd : NsCtx := ctx_at 1 no_caps (1%positive, 1%positive) (4%positive, 40%positive).
+
+Example faccessat_dot_readonly_cwd :
+  ret_of (faccessat_fn (access_in [46] 2) m3 c_ro_cwd W) = Some (-30)
+  /\ faccessat_fn (access_in [46] 2) m3 c_ro_cwd (with_entered_mntns W [1%positive]) = EUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** Access to a 0700 directory owned by another uid: EACCES. *)
 Example faccessat_denied : ret_of (faccessat_fn (access_in s_secret 4) m3 c0 W) = Some (-13).
 Proof. vm_compute. reflexivity. Qed.

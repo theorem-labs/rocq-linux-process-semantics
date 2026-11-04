@@ -357,11 +357,16 @@ Qed.
     [below root d] is the [is_subdir] test of [need_secondary].  Any other
     answer is [new_mount]'s.  A call in a mount namespace that holds a
     mount which can receive an event from an open group declines: the
-    host can change its mount count ([count_mounts]). *)
+    host can change its mount count ([count_mounts]).  So does a call in
+    a namespace holding a mount whose flags may change outside the model
+    ([flags_open]): [mnt_already_visible] reads a procfs mount's flags and
+    its superblock's read-only state. *)
 Definition new_mount_shared (st : NsState) (ctx : NsCtx) (cred : IdCred) (fsuid fsgid : Z) (fs : NewFs)
     (mf : MountFlags) (mntns_owner tgt tgt_dentry : positive) (below : positive -> positive -> bool)
     : NewMountRes :=
-  if ns_open st (cx_mount ctx) then NMOver
+  if ns_open st (cx_mount ctx)
+     || existsb (fun mt => Pos.eqb (mnt_ns mt) (cx_mount ctx) && flags_open st mt) (ns_mounts st)
+  then NMOver
   else
     match new_mount st ctx cred fsuid fsgid fs mf mntns_owner tgt tgt_dentry with
     | NMOver =>

@@ -648,7 +648,10 @@ Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCred
   match loc_mnt_sb st l, loc_attr m ctx st l with
   | Some (mt, sb), Some a =>
       let ro := mf_ro (mnt_flags mt) || sb_rdonly sb in
+      let fo := flags_open st mt in
       let perm_then_open :=
+        (* [sb_permission]'s EROFS inside [inode_permission] reads [sb_rdonly] too *)
+        if fo && fmode_write flags && negb (special a) then OROver else
         match inode_or_sysctl_permission m ctx st cr (task_eff ctx) l sb a (Z.lor MAY_OPEN acc) with
         | Some e => ORErr e
         | None =>
@@ -665,20 +668,20 @@ Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCred
       | Some d =>
           if kind_is IDir a then ORErr EISDIR
           else let rest :=
-                 if has flags O_TRUNC && kind_is IReg a then (if ro then ORErr EROFS else OROver)
+                 if has flags O_TRUNC && kind_is IReg a then (if ro && negb fo then ORErr EROFS else OROver)
                  else match oa_kind a with
                       | ILnk => ORErr ELOOP
-                      | IChr | IBlk => if mf_nodev (mnt_flags mt) || sb_i_nodev sb then ORErr EACCES else OROver
+                      | IChr | IBlk => if sb_i_nodev sb || (negb fo && mf_nodev (mnt_flags mt)) then ORErr EACCES else OROver
                       | IFifo | ISock => OROver
                       | _ => perm_then_open
                       end in
                if sticky_undecided cr d a then sticky_answer rest else rest
       | None =>
-          if has flags O_TRUNC && kind_is IReg a then (if ro then ORErr EROFS else OROver)
+          if has flags O_TRUNC && kind_is IReg a then (if ro && negb fo then ORErr EROFS else OROver)
           else match oa_kind a with
                | ILnk => ORErr ELOOP
                | IDir => if has acc MAY_WRITE then ORErr EISDIR else perm_then_open
-               | IChr | IBlk => if mf_nodev (mnt_flags mt) || sb_i_nodev sb then ORErr EACCES else OROver
+               | IChr | IBlk => if sb_i_nodev sb || (negb fo && mf_nodev (mnt_flags mt)) then ORErr EACCES else OROver
                | IFifo | ISock => OROver
                | IReg => perm_then_open
                end
@@ -753,6 +756,7 @@ Definition create_file (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
                 else if negb (fsuidgid_mapped st (sb_owner sb) cr) then Some EOVERFLOW
                 else inode_permission st ctx cr (task_eff ctx) P sb dattr (MAY_WRITE + MAY_EXEC) in
               if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+              else if flags_open st mt then OROver
               else match create_error with
                    | Some e => ORErr e
                    | None =>
@@ -1253,8 +1257,11 @@ Definition faccessat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
         | (WOk l, _) =>
             match loc_mnt_sb st l, loc_attr m ctx st l with
             | Some (mt, sb), Some a =>
-                if has mode MAY_EXEC && kind_is IReg a && (mf_noexec (mnt_flags mt) || sb_i_noexec sb)
+                let fo := flags_open st mt in
+                let exec_reg := has mode MAY_EXEC && kind_is IReg a in
+                if exec_reg && (sb_i_noexec sb || (negb fo && mf_noexec (mnt_flags mt)))
                 then err reads EACCES m ctx st
+                else if fo && (exec_reg || (has mode MAY_WRITE && negb (special a))) then EUnmodeled
                 else match inode_or_sysctl_permission m ctx' st cr eff l sb a mode with
                      | Some e => err reads e m ctx st
                      | None =>
@@ -1285,7 +1292,8 @@ Definition held_f_flags (mt : Mount) (sb : SuperBlock) : Z :=
 (** The answer of a statfs of [l] into [buf] (the 120-byte riscv64 [struct
     statfs], include/uapi/asm-generic/statfs.h; [do_statfs_native],
     fs/statfs.c): [f_type] (offset 0) the superblock's magic, [f_flags]
-    (offset 80) [held_f_flags] with any of [ST_UNHELD]; the counts, the
+    (offset 80) [held_f_flags] with any of [ST_UNHELD], or any flags when
+    [flags_open] (an outside task may change them); the counts, the
     block sizes, [f_fsid] and [f_namelen] the environment's. *)
 Definition statfs_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (reads : list (word * nat)) (buf : word) (l : Loc) (o : ext_outcome) : Prop :=
@@ -1297,8 +1305,9 @@ Definition statfs_answer (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
       | PutPartial => o = EUnmodeled
       | PutOk =>
           exists bs, fields_match 120 [(0%nat, Z_to_le_bytes 8 (sb_magic sb))] bs = true
-                     /\ Z.eqb (Z.land (bytes_le_to_Z (firstn 8 (skipn 80 bs))) (Z.lnot ST_UNHELD))
-                              (held_f_flags mt sb) = true
+                     /\ (flags_open st mt
+                         || Z.eqb (Z.land (bytes_le_to_Z (firstn 8 (skipn 80 bs))) (Z.lnot ST_UNHELD))
+                                  (held_f_flags mt sb)) = true
                      /\ o = ans reads (Z_to_bv 64 0) [(buf, bs)] m ctx st
       end
   end.
@@ -1378,7 +1387,12 @@ Fixpoint prepend_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) 
     586-593; [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819;
     [__umount_mnt], 993-1000), so Linux's climb stops there instead
     (fs/d_path.c:110-125, v6.18.46). Outside entry can also move a private
-    start or visited mount. Check before even the equal-root stop. *)
+    start or visited mount. Check before even the equal-root stop.  That
+    first check is more conservative than Linux: when the start equals the
+    root, [__prepend_path] does not enter its loop (fs/d_path.c:107) and the
+    text is "/" whatever the topology, but a start in a listed namespace
+    still declines here.  The loss is a decline, never a wrong answer, and
+    only under a nonempty entered list. *)
 Fixpoint path_open_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) : bool :=
   match fuel with
   | O => false

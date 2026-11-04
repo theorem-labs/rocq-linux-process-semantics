@@ -36,8 +36,11 @@ source is not included in this repository.
   user-namespace ENOSPC-before-chroot checks, is pending too. Its pending
   outside-entry translation includes the mount-namespace anonymous/origin
   fields and builders, the entered-namespace and superblock-group closures,
-  clone inheritance, the five closed-launch fast paths, path printing and
-  the corresponding cases. Agreement of these additions has not been checked.
+  clone inheritance, the five closed-launch fast paths, path printing, the
+  root-stack walk's fuel of one more than the mount count
+  (`Ns.Walk.ns_top_open`), the mount-flag test (`Ns.Propagation.flags_open`)
+  and its declines, the `pivot_root` decline in an open namespace, and the
+  corresponding cases. Agreement of these additions has not been checked.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
 - The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
@@ -631,7 +634,26 @@ not apply.
   `fs/namespace.c:1949`, `1793-1794`, and `propagate_umount` gathers its
   candidates on those peers and slaves, `fs/pnode.c:505-531`), and a read
   of `/proc/<pid>/mountinfo` of a mount namespace that holds one
-  (`Ns.Mountinfo.mountinfo_text`).
+  (`Ns.Mountinfo.mountinfo_text`), and a `pivot_root` whose mount
+  namespace holds one, after both walks (`Ns.MountArms.pivot_root_fn`,
+  `Ns.Propagation.ns_open`: its tests read the new root's, the old root's
+  and put_old's mounts and parents, `fs/namespace.c:4584-4618`). Every
+  answer that reads a mount's flags or its superblock's read-only state
+  also has no answer when some mount on that superblock is such a mount
+  (`Ns.Propagation.flags_open`): an outside task in the namespace can
+  change them (`do_mount_setattr`, `fs/namespace.c:4781-4838`, its
+  `check_mnt` at 4816; `do_reconfigure_mnt`, 3211-3241; `do_remount`,
+  3248-3294). These are a write `open` or `O_TRUNC` (`EROFS`), an `open`
+  of a device (`EACCES` for nodev, unless the superblock's `SB_I_NODEV`
+  decides it), `faccessat` for `W_OK` or for `X_OK` on a regular file
+  (unless `SB_I_NOEXEC` decides it), a file, directory, node or link
+  creation after its `ENAMETOOLONG`, `fchmod`, `unlinkat`, and a new mount
+  (`mount(2)`) in a namespace that holds such a mount
+  (`Ns.NewMount.new_mount_shared`: `mnt_already_visible` reads procfs
+  mounts' flags). `statfs` and `fstatfs` then admit any `f_flags`. The
+  path-text check declines a start in an entered namespace even when the
+  start is the caller's root, where Linux prints "/" without reading
+  topology (`fs/d_path.c:107`): a decline, never a wrong answer.
 - The sysctls `kernel.overflowuid` and `kernel.overflowgid` hold 65534,
   the kernel's default (`include/linux/highuid.h:41-42`,
   `kernel/sys.c:167-168`, v6.18.46), and the host does not write them
