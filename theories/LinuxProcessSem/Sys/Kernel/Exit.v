@@ -273,11 +273,14 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
       empty lists, and a task that forks nothing before exec'ing keeps
       them.
 
-    The launch's SIGCHLD disposition is NOT assumed: the recorded-child
-    answers wait for the process's own SIG_DFL install (THE SIGCHLD
-    DISPOSITION above), so a launcher's SIG_IGN can only turn an answer
-    into a decline.  [flush_signal_handlers] clears [sa_flags] at
-    [execve], so a launcher's SA_NOCLDWAIT does not survive either.
+    This spec does NOT assume the launch's SIGCHLD disposition: the
+    recorded-child answers wait for the process's own SIG_DFL install
+    (THE SIGCHLD DISPOSITION above), so a launcher's SIG_IGN can only
+    turn an answer into a decline.  [flush_signal_handlers] clears
+    [sa_flags] at [execve], so a launcher's SA_NOCLDWAIT does not
+    survive either.  SCOPE.md still lists "At launch SIGCHLD is not at
+    SIG_IGN" for the multi-process core's own [wait4] arms in [Procs],
+    which do not read the bit yet; it is retired when they do.
 
     THE TRACEE LIST IS CLOSED BY A DECLINE.  [ptrace] (117) is the only
     route to the caller's [current->ptraced] a modeled syscall could

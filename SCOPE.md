@@ -485,6 +485,21 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- At launch SIGCHLD is not at SIG_IGN. A launcher's SIG_IGN survives
+  `execve` (`begin_new_exec` calls `flush_signal_handlers` with
+  `force_default = 0`, `fs/exec.c`, and that function keeps SIG_IGN,
+  `kernel/signal.c`), and under it Linux reaps an exiting child itself
+  (`do_notify_parent`, `kernel/signal.c`): `wait4` then answers 0 and
+  then `-ECHILD`, never the child's pid, and the model admits the pid and
+  rejects that `-ECHILD`. The model declines every SIG_IGN or
+  SA_NOCLDWAIT install for SIGCHLD that the process makes
+  (`Kernel.Signal.sigchld_dfl_install`), and `execve` clears `sa_flags`,
+  so only the launch's SIG_IGN is open (Linux v6.18.44; identical at
+  v6.18.46). `Kernel.Exit.wait4_spec` already declines a recorded child
+  until the process installs `SIG_DFL` (`State.m_sigchld_dfl`), so this
+  assumption keeps only the multi-process core's own `wait4` arms in
+  `Procs.v` honest, and it is retired when PROCS's fix of those arms
+  lands, with those arms reading the same `procst_sigchld_dfl` bit.
 - Nothing outside the process makes a signal pending for it, or wakes it
   as if one were: no other process sends it a signal; it is not frozen
   (`freeze_task`, `kernel/freezer.c`, for suspend and the cgroup v1
