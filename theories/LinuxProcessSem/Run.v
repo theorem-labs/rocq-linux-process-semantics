@@ -5608,6 +5608,14 @@ Qed.
     [valid_input_hwcap_rv64gcv], [kb_vlenb = 0] is VLENB = 16, the
     smallest vector unit, by [State.launch_vlenb]'s encoding.)
 
+    [kb_vdso] IS A PLACEMENT FACT, and it is on this side only because
+    [Vdso.vdso_images] holds ONE measured image: [State.vdso_image_of]
+    indexes the list modulo its length, so every value of the field
+    names that image and the pin removes no launch.  The day a second
+    image is measured, a build with another vDSO size becomes a launch
+    of its own, and the field belongs on the free side below, for
+    [kb_thp]'s reason: the released placement took any free address.
+
     FREE, because the released model covered a RANGE of each, and
     pinning one value would narrow a published statement:
     - [kb_rseq]: the released auxv had ten entries and no AT_RSEQ_*, and
