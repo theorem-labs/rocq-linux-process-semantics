@@ -442,7 +442,11 @@ Definition follow_mounts (st : NsState) (l : Loc) : WalkResult :=
     at an open intermediate parent. A propagated unmount can detach its
     child ([gather_candidates], fs/pnode.c:500-535, 586-593;
     [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819), changing
-    the climb even when that parent's mount point is another root. *)
+    the climb even when that parent's mount point is another root. The
+    walk-root test comes first, as in Linux (fs/namei.c:1389-1391): when the next
+    mount point is the root, a detached child (no parent) and a mount
+    tucked under it both leave the walk where it is, so an open parent
+    does not change that answer. *)
 Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : positive)
     : option (option (positive * positive)) :=
   match fuel with
@@ -454,8 +458,8 @@ Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : po
           match mnt_parent mt with
           | None => Some None
           | Some p =>
-              if open_mount st p then None else
-              if loc_eqb root (LDentry p (mnt_mountpoint mt)) then Some None
+              if loc_eqb root (LDentry p (mnt_mountpoint mt)) then Some None else
+              if open_mount st p then None
               else match find_mount (ns_mounts st) p with
                    | None => None
                    | Some pm =>
