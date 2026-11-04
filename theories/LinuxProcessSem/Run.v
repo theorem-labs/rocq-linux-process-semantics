@@ -5217,7 +5217,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_terminal inp = false.
+  /\ in_sigpipe_terminal inp = false
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
