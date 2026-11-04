@@ -2871,6 +2871,10 @@ Inductive OpaqueFd :=
     field, never inserted. *)
 Record SeqEnd := mkSeqEnd { sq_passcred : bool }.
 
+(** Change only this end's credential flag. Callers keep the old end so
+    that appending socket state does not require rebuilding it elsewhere. *)
+Definition with_sq_passcred (b : bool) (_st : SeqEnd) : SeqEnd := mkSeqEnd b.
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -3043,10 +3047,9 @@ Record SeqEnd := mkSeqEnd { sq_passcred : bool }.
       this process.  [id] names the pair (both ends carry it), [side]
       the end ([false] for the first descriptor [socketpair] stores,
       [true] for the second), and [st] this end's own socket state
-      ([SeqEnd]).  The shape follows the AF_UNIX stream-pair end of the
-      internal tree ([FdStream]): a pair id, a side bit, a per-end
-      record, the peer found through the table ([seq_peer]), and a new
-      id one above the largest live one ([seq_new_id]).  THE RECEIVE
+      ([SeqEnd]). Each pair has a fresh id; the peer is the other side
+      carrying that same id in the descriptor table ([seq_peer]). New
+      ids are one above the largest live one ([seq_new_id]). THE RECEIVE
       QUEUE IS ALWAYS EMPTY: every call that would queue a message on an
       end ([sendmsg], [sendto], [write]) declines, so the record holds
       no queue, and the peer's [sk_err] is never set, because
@@ -6120,8 +6123,7 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
 
 (* =========================================================================
    AF_UNIX SOCK_SEQPACKET pair helpers: the ends of a pair are found
-   through the table, as the internal tree's stream-pair helpers find
-   theirs ([stream_end], [stream_peer], [stream_new_id])
+   by matching both its id and its side in the descriptor table
    ========================================================================= *)
 
 (** The descriptor and state of end [(id, side)], the first entry that

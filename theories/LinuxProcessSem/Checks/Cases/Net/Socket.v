@@ -2695,7 +2695,7 @@ Definition seqp_pair_model : Model :=
 (** End 3 after [SO_PASSCRED] is set to 1. *)
 Definition seqp_passcred_model : Model :=
   with_fds (fd_insert (m_fds seqp_pair_model) 3
-              (FdSeqpacket 0 false (mkSeqEnd true))) seqp_pair_model.
+              (FdSeqpacket 0 false (with_sq_passcred true seq_fresh))) seqp_pair_model.
 
 (** End 3 alone: its peer at 4 has closed. *)
 Definition seqp_closed_model : Model :=
@@ -2795,7 +2795,7 @@ Example seqpacket_setsockopt_passcred_is_stored :
   /\ check_syscall (seqp_setsockopt_in 3 1 16 4 0)
        (mkEffectU 0 [] [] [] [] [(12288, 4%nat)]) seqp_passcred_model
      = CheckOk (with_fds (fd_insert (m_fds seqp_passcred_model) 3
-                            (FdSeqpacket 0 false (mkSeqEnd false)))
+                            (FdSeqpacket 0 false (with_sq_passcred false (with_sq_passcred true seq_fresh))))
                   seqp_passcred_model) []
   /\ check_syscall (seqp_setsockopt_in 3 1 16 4 1)
        (mkEffect (errno_ret ENOPROTOOPT) [] []) seqp_pair_model
@@ -3016,3 +3016,46 @@ Example seqpacket_recvmsg_flags_and_name_decline :
        seqp_closed_model
      = CheckUnmodeled.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** Reservations precede every destination store. At limit 4 the second
+    reservation fails; at limit 3 the first fails. Neither can succeed,
+    write a late failure, or reach the destination's EFAULT test. *)
+Example seqpacket_socketpair_limit_before_stores :
+  let m := with_nofile 4 seqp_base_model in
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret EMFILE) [] []) m = CheckOk m [] /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret ENFILE) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret ENOMEM) [] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 (Z_to_bv 64 TASK_SIZE) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) m = CheckReject /\
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect (errno_ret EMFILE) [] []) (with_nofile 3 seqp_base_model)
+    = CheckOk (with_nofile 3 seqp_base_model) [].
+Proof. cbn zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+Example seqpacket_socketpair_limit_allows_both_numbers :
+  check_syscall (seqp_socketpair_in seqp_type 0 4096 wmem_open)
+    (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
+    (with_nofile 5 seqp_base_model)
+  = CheckOk (with_nofile 5 seqp_pair_model) [].
+Proof. check_eq. Qed.
+
+(** Pair 0's peer is closed, while pair 1 still has both ends. A peer
+    lookup that ignored the pair id would incorrectly find end 6 for 3. *)
+Definition seqp_two_pairs_model : Model :=
+  with_fds (fd_insert (fd_insert (m_fds seqp_closed_model)
+               5 (FdSeqpacket 1 false seq_fresh))
+               6 (FdSeqpacket 1 true seq_fresh)) seqp_closed_model.
+
+Example seqpacket_recvmsg_matches_pair_id :
+  check_syscall (seqp_recvmsg_in seqp_recv_mem wmem_open 0)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] [] seqp_reads)
+    seqp_two_pairs_model = CheckOk seqp_two_pairs_model [] /\
+  check_syscall (mkInput 212 [5; 8192; 0; 0; 0; 0] (mem_of seqp_recv_mem) wmem_open)
+    (mkEffectU 0 [(8240, [0;0;0;0]); (8232, [0;0;0;0;0;0;0;0])] [] [] [] seqp_reads)
+    seqp_two_pairs_model = CheckUnmodeled.
+Proof. split; check_eq. Qed.

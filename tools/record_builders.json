@@ -42,6 +42,9 @@
   "theories/LinuxProcessSem/Procs.v": 1,
   "theories/LinuxProcessSem/State.v": 27
  },
+ "mkSeqEnd": {
+  "theories/LinuxProcessSem/State.v": 3
+ },
  "mkShared": {
   "theories/LinuxProcessSem/Procs.v": 6
  },

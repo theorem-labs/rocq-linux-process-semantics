@@ -1692,7 +1692,7 @@ Qed.
     rewrites the end's entry with the copied [int]'s truth value, past the
     4-byte copy-in its ledger names. *)
 Definition check_seqpacket_setsockopt (i : SyscallInput) (fd id : word)
-    (side : bool) (level optlen : word) (eff : SyscallEffect) (m : Model)
+    (side : bool) (st : SeqEnd) (level optlen : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if int32_neg optlen then check_ret_only eff (errno_ret EINVAL) m []
   else if negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET)
@@ -1705,16 +1705,16 @@ Definition check_seqpacket_setsockopt (i : SyscallInput) (fd id : word)
        | Some vbs =>
            check_ret_only_copyins [(in_arg i 3, 4%nat)] eff (Z_to_bv 64 0)
              (with_fds (fd_insert (m_fds m) fd
-                (FdSeqpacket id side (mkSeqEnd (negb (w_is0 (le_bytes_to_word vbs)))))) m)
+                (FdSeqpacket id side (with_sq_passcred (negb (w_is0 (le_bytes_to_word vbs))) st))) m)
              []
        end.
 
 Lemma check_seqpacket_setsockopt_sound_ok :
-  forall i fd id side level optlen eff m m' evs,
-  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckOk m' evs ->
-  seqpacket_setsockopt fd id side level optlen i m (Ok eff m' evs).
+  forall i fd id side st level optlen eff m m' evs,
+  check_seqpacket_setsockopt i fd id side st level optlen eff m = CheckOk m' evs ->
+  seqpacket_setsockopt fd id side st level optlen i m (Ok eff m' evs).
 Proof.
-  intros i fd id side level optlen eff m m' evs H.
+  intros i fd id side st level optlen eff m m' evs H.
   unfold check_seqpacket_setsockopt in H. unfold seqpacket_setsockopt.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
@@ -1736,11 +1736,11 @@ Proof.
 Qed.
 
 Lemma check_seqpacket_setsockopt_sound_unmodeled :
-  forall i fd id side level optlen eff m,
-  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckUnmodeled ->
-  seqpacket_setsockopt fd id side level optlen i m Unmodeled.
+  forall i fd id side st level optlen eff m,
+  check_seqpacket_setsockopt i fd id side st level optlen eff m = CheckUnmodeled ->
+  seqpacket_setsockopt fd id side st level optlen i m Unmodeled.
 Proof.
-  intros i fd id side level optlen eff m H.
+  intros i fd id side st level optlen eff m H.
   unfold check_seqpacket_setsockopt in H. unfold seqpacket_setsockopt.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
@@ -1759,11 +1759,11 @@ Proof.
 Qed.
 
 Lemma check_seqpacket_setsockopt_complete_ok :
-  forall i fd id side level optlen eff m m' evs,
-  seqpacket_setsockopt fd id side level optlen i m (Ok eff m' evs) ->
-  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckOk m' evs.
+  forall i fd id side st level optlen eff m m' evs,
+  seqpacket_setsockopt fd id side st level optlen i m (Ok eff m' evs) ->
+  check_seqpacket_setsockopt i fd id side st level optlen eff m = CheckOk m' evs.
 Proof.
-  intros i fd id side level optlen eff m m' evs H.
+  intros i fd id side st level optlen eff m m' evs H.
   unfold seqpacket_setsockopt in H. unfold check_seqpacket_setsockopt.
   apply bind_input_model_inv in H. cbv beta zeta in H.
   destruct (int32_neg optlen); cbv beta iota in H |- *.
@@ -1788,11 +1788,11 @@ Proof.
 Qed.
 
 Lemma check_seqpacket_setsockopt_complete_unmodeled :
-  forall i fd id side level optlen m eff,
-  seqpacket_setsockopt fd id side level optlen i m Unmodeled ->
-  check_seqpacket_setsockopt i fd id side level optlen eff m = CheckUnmodeled.
+  forall i fd id side st level optlen m eff,
+  seqpacket_setsockopt fd id side st level optlen i m Unmodeled ->
+  check_seqpacket_setsockopt i fd id side st level optlen eff m = CheckUnmodeled.
 Proof.
-  intros i fd id side level optlen m eff H.
+  intros i fd id side st level optlen m eff H.
   unfold seqpacket_setsockopt in H. unfold check_seqpacket_setsockopt.
   apply bind_input_model_inv in H. cbv beta zeta in H.
   destruct (int32_neg optlen); cbv beta iota in H |- *;
@@ -1832,8 +1832,8 @@ Definition check_setsockopt (i : SyscallInput) (fd level optlen : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if fd_is_ns_file (m_fds m) fd then CheckUnmodeled
   else match fd_lookup (m_fds m) fd with
-       | Some (FdSeqpacket id side _) =>
-           check_seqpacket_setsockopt i fd id side level optlen eff m
+       | Some (FdSeqpacket id side st) =>
+           check_seqpacket_setsockopt i fd id side st level optlen eff m
        | _ => check_setsockopt_core fd level optlen eff m
        end.
 
@@ -1977,7 +1977,7 @@ Proof.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hns.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;
-    first [ exact (check_seqpacket_setsockopt_sound_ok _ _ _ _ _ _ _ _ _ _ H)
+    first [ exact (check_seqpacket_setsockopt_sound_ok _ _ _ _ _ _ _ _ _ _ _ H)
           | exact (check_setsockopt_core_sound_ok _ _ _ _ _ _ _ _ H) ].
 Qed.
 Lemma check_setsockopt_sound_unmodeled : forall i fd level optlen eff m,
@@ -1991,7 +1991,7 @@ Proof.
     [apply unmodeled_intro|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;
-    first [ exact (check_seqpacket_setsockopt_sound_unmodeled _ _ _ _ _ _ _ _ H)
+    first [ exact (check_seqpacket_setsockopt_sound_unmodeled _ _ _ _ _ _ _ _ _ H)
           | exact (check_setsockopt_core_sound_unmodeled _ _ _ _ _ _ H) ].
 Qed.
 Lemma check_setsockopt_complete_ok : forall i fd level optlen eff m m' evs,
@@ -2005,7 +2005,7 @@ Proof.
     [unfold unmodeled in H; discriminate|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;
-    first [ exact (check_seqpacket_setsockopt_complete_ok _ _ _ _ _ _ _ _ _ _ H)
+    first [ exact (check_seqpacket_setsockopt_complete_ok _ _ _ _ _ _ _ _ _ _ _ H)
           | exact (check_setsockopt_core_complete_ok _ _ _ _ _ _ _ _ H) ].
 Qed.
 Lemma check_setsockopt_complete_unmodeled : forall i fd level optlen m eff,
@@ -2018,7 +2018,7 @@ Proof.
   destruct (fd_is_ns_file (m_fds m) fd); cbv beta iota in H |- *; [reflexivity|].
   destruct (fd_lookup (m_fds m) fd) as [e|]; [destruct e|];
     cbv beta iota in H |- *;
-    first [ exact (check_seqpacket_setsockopt_complete_unmodeled _ _ _ _ _ _ _ _ H)
+    first [ exact (check_seqpacket_setsockopt_complete_unmodeled _ _ _ _ _ _ _ _ _ H)
           | exact (check_setsockopt_core_complete_unmodeled _ _ _ _ _ _ H) ].
 Qed.
 
@@ -2975,11 +2975,15 @@ Definition check_socketpair_unix (i : SyscallInput) (sv : word)
   match socketpair_fds (m_fds m) with
   | None => CheckUnmodeled
   | Some (fd1, fd2) =>
-      if seq_id_live (m_fds m) (seq_new_id (m_fds m)) then CheckUnmodeled
-      else if socketpair_dest_writable (in_wmem i) sv
-      then check_socketpair_unix_written sv fd1 fd2 (seq_new_id (m_fds m)) eff m
-      else if negb (access_okb sv 4) then check_socketpair_faulted eff m
-      else CheckUnmodeled
+      match socketpair_unix_limit_errnos fd1 fd2 m with
+      | [] =>
+          if seq_id_live (m_fds m) (seq_new_id (m_fds m)) then CheckUnmodeled
+          else if socketpair_dest_writable (in_wmem i) sv
+          then check_socketpair_unix_written sv fd1 fd2 (seq_new_id (m_fds m)) eff m
+          else if negb (access_okb sv 4) then check_socketpair_faulted eff m
+          else CheckUnmodeled
+      | es => check_errno_only es eff m
+      end
   end.
 
 Lemma check_socketpair_unix_sound_ok : forall i sv eff m m' evs,
@@ -2992,6 +2996,8 @@ Proof.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
   destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
     cbv beta iota in H |- *; [|discriminate].
+  destruct (socketpair_unix_limit_errnos fd1 fd2 m) as [|e es]; cbv beta iota in H |- *.
+  2: exact (check_errno_only_sound_ok _ _ _ _ _ _ H).
   destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
     cbv beta iota in H |- *; [discriminate|].
   destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
@@ -3010,6 +3016,8 @@ Proof.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
   destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
     cbv beta iota in H |- *; [|apply unmodeled_intro].
+  destruct (socketpair_unix_limit_errnos fd1 fd2 m) as [|e es]; cbv beta iota in H |- *.
+  2: now apply check_errno_only_no_unmodeled in H.
   destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
     cbv beta iota in H |- *; [apply unmodeled_intro|].
   destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
@@ -3027,6 +3035,8 @@ Proof.
   apply bind_input_model_inv in H. cbv beta zeta in H.
   destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
     cbv beta iota in H |- *; [|unfold unmodeled in H; discriminate].
+  destruct (socketpair_unix_limit_errnos fd1 fd2 m) as [|e es]; cbv beta iota in H |- *.
+  2: exact (check_errno_only_complete_ok _ _ _ _ _ _ H).
   destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
     cbv beta iota in H |- *; [unfold unmodeled in H; discriminate|].
   destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.
@@ -3045,6 +3055,12 @@ Proof.
   apply bind_input_model_inv in H. cbv beta zeta in H.
   destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|];
     cbv beta iota in H |- *; [|reflexivity].
+  destruct (socketpair_unix_limit_errnos fd1 fd2 m) as [|e es]; cbv beta iota in H |- *.
+  2: { unfold alt, bind, errno_from, err_ret, ret_only, choose, pure in H.
+       destruct H as [[H|H]|H].
+       - destruct H as (? & _ & H); discriminate.
+       - destruct H as (? & ? & ? & _ & H); discriminate.
+       - destruct H as (? & H & _); contradiction. }
   destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m)));
     cbv beta iota in H |- *; [reflexivity|].
   destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota in H |- *.

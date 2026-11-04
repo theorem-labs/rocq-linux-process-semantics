@@ -529,7 +529,7 @@ Qed.
 (** [Net.Socket.seqpacket_setsockopt] read straight off: every arm is an
     errno, the decline, or the one store. *)
 Definition seqpacket_setsockopt_witness (i : SyscallInput) (fd id : word)
-    (side : bool) (level optlen : word) (m : Model) : outcome SyscallEffect :=
+    (side : bool) (st : SeqEnd) (level optlen : word) (m : Model) : outcome SyscallEffect :=
   if int32_neg optlen then ret_outcome (errno_ret EINVAL) m
   else if negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET)
   then ret_outcome (errno_ret EOPNOTSUPP) m
@@ -542,12 +542,12 @@ Definition seqpacket_setsockopt_witness (i : SyscallInput) (fd id : word)
            outcome_copyins [(in_arg i 3, 4%nat)]
              (ret_outcome (Z_to_bv 64 0)
                 (with_fds (fd_insert (m_fds m) fd
-                   (FdSeqpacket id side (mkSeqEnd (negb (w_is0 (le_bytes_to_word vbs)))))) m))
+                   (FdSeqpacket id side (with_sq_passcred (negb (w_is0 (le_bytes_to_word vbs))) st))) m))
        end.
 
-Lemma seqpacket_setsockopt_witness_ok : forall fd id side level optlen i m,
-  seqpacket_setsockopt fd id side level optlen i m
-    (seqpacket_setsockopt_witness i fd id side level optlen m).
+Lemma seqpacket_setsockopt_witness_ok : forall fd id side st level optlen i m,
+  seqpacket_setsockopt fd id side st level optlen i m
+    (seqpacket_setsockopt_witness i fd id side st level optlen m).
 Proof.
   intros. unfold seqpacket_setsockopt, seqpacket_setsockopt_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
@@ -568,8 +568,8 @@ Definition setsockopt_witness (i : SyscallInput) (fd level optlen : word) (m : M
     : outcome SyscallEffect :=
   if fd_is_ns_file (m_fds m) fd then Unmodeled
   else match fd_lookup (m_fds m) fd with
-       | Some (FdSeqpacket id side _) =>
-           seqpacket_setsockopt_witness i fd id side level optlen m
+       | Some (FdSeqpacket id side st) =>
+           seqpacket_setsockopt_witness i fd id side st level optlen m
        | _ => setsockopt_core_witness fd level optlen m
        end.
 Lemma setsockopt_witness_ok : forall fd level optlen i m,
@@ -839,13 +839,17 @@ Definition socketpair_witness (family type protocol sv : word)
   else if socketpair_seqpacket_b family type protocol then
     match socketpair_fds (m_fds m) with
     | None => Unmodeled
-    | Some _ =>
-        if seq_id_live (m_fds m) (seq_new_id (m_fds m)) then Unmodeled
-        else if socketpair_dest_writable (in_wmem i) sv
-        then ret_outcome (errno_ret EMFILE) m
-        else if negb (access_okb sv 4)
-        then ret_outcome (errno_ret EMFILE) m
-        else Unmodeled
+    | Some (fd1, fd2) =>
+        match socketpair_unix_limit_errnos fd1 fd2 m with
+        | [] =>
+            if seq_id_live (m_fds m) (seq_new_id (m_fds m)) then Unmodeled
+            else if socketpair_dest_writable (in_wmem i) sv
+            then ret_outcome (errno_ret EMFILE) m
+            else if negb (access_okb sv 4)
+            then ret_outcome (errno_ret EMFILE) m
+            else Unmodeled
+        | _ => ret_outcome (errno_ret EMFILE) m
+        end
     end
   else if negb (socketpair_modeled_b family type protocol) then Unmodeled
   else
@@ -873,6 +877,15 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
     destruct (socketpair_fds (m_fds m)) as [[fd1 fd2]|]; cbv beta iota;
       [|apply unmodeled_intro].
+    destruct (socketpair_unix_limit_errnos fd1 fd2 m) as [|e es] eqn:Hlim; cbv beta iota.
+    2: { assert (He : e = EMFILE).
+         { unfold socketpair_unix_limit_errnos, socketpair_reserve_errnos in Hlim.
+           cbv zeta in Hlim.
+           repeat match type of Hlim with context [if ?b then _ else _] => destruct b end;
+             inversion Hlim; reflexivity. }
+         subst e. apply alt_l.
+         eapply bind_step; [apply choose_ok; left; reflexivity|].
+         cbv beta. unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
     destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m))); cbv beta iota;
       [apply unmodeled_intro|].
     destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota.

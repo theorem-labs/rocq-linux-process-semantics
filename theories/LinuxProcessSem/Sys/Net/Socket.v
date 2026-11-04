@@ -1616,7 +1616,7 @@ Definition shutdown_core_spec (fd how : word) : Sys SyscallEffect :=
     [optname] and [optval] are read off the input (arguments 2 and 3);
     the dispatcher binds [level] and [optlen] as their low 32 bits
     ([Syscall.int32]). *)
-Definition seqpacket_setsockopt (fd id : word) (side : bool)
+Definition seqpacket_setsockopt (fd id : word) (side : bool) (st : SeqEnd)
     (level optlen : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -1632,7 +1632,7 @@ Definition seqpacket_setsockopt (fd id : word) (side : bool)
        | Some vbs =>
            record_copyins [(optval, 4%nat)]
              (set_fds (fd_insert (m_fds m) fd
-                (FdSeqpacket id side (mkSeqEnd (negb (w_is0 (le_bytes_to_word vbs)))))) ;;
+                (FdSeqpacket id side (with_sq_passcred (negb (w_is0 (le_bytes_to_word vbs))) st))) ;;
               ret_only (Z_to_bv 64 0))
        end.
 
@@ -1658,7 +1658,7 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if fd_is_ns_file (m_fds m) fd then unmodeled
   else match fd_lookup (m_fds m) fd with
-       | Some (FdSeqpacket id side _) => seqpacket_setsockopt fd id side level optlen
+       | Some (FdSeqpacket id side st) => seqpacket_setsockopt fd id side st level optlen
        | _ => setsockopt_core_spec fd level optlen
        end.
 
@@ -2734,6 +2734,29 @@ Definition socketpair_unix_written (sv fd1 fd2 id : word) : Sys SyscallEffect :=
           pure (mkEffect (errno_ret e) (socketpair_writes sv fd1 fd2) []))
          (socketpair_installed sv fd1 fd2 id)).
 
+(** The first reservation can need fdtable growth only at a capacity
+    boundary, with no live descriptor at or above that boundary. Linux's
+    capacities are multiples of BITS_PER_LONG and at least NR_OPEN_DEFAULT
+    (include/linux/fdtable.h:21-24; fs/file.c:167-197, v6.18.46).
+    Capacity itself is not stored: it may already be larger. *)
+Definition socketpair_first_may_expand (fds : list (word * FdEntry)) (fd : word) : bool :=
+  let n := bv_unsigned fd in
+  ((NR_OPEN_DEFAULT <=? n)%Z && Z.eqb (Z.modulo n NR_OPEN_DEFAULT) 0
+   && forallb (fun kv => (bv_unsigned (fst kv) <? n)%Z) fds)%bool.
+
+(** Nonempty means the pair cannot be reserved, before either put_user.
+    alloc_fd checks fd >= RLIMIT_NOFILE before expansion (fs/file.c:591-598,
+    v6.18.46), and get_unused_fd_flags supplies that limit (:615-622).
+    A first-reservation limit failure is only EMFILE. A second one is
+    EMFILE too, but an allocation failure in the first reservation can
+    precede it when that first reservation may expand the table. *)
+Definition socketpair_unix_limit_errnos (fd1 fd2 : word) (m : Model) : list Z :=
+  let lim := bv_unsigned (m_nofile m) in
+  if (lim <=? bv_unsigned fd1)%Z then [EMFILE]
+  else if (lim <=? bv_unsigned fd2)%Z then
+    if socketpair_first_may_expand (m_fds m) fd1 then socketpair_reserve_errnos else [EMFILE]
+  else [].
+
 (** The AF_UNIX SEQPACKET arm.  The destination tests are the AF_INET
     arm's, for its reasons ([socketpair_dest_writable], and the 4-byte
     test of the band where only the first store may land).  The pair id
@@ -2745,12 +2768,16 @@ Definition socketpair_unix_spec (sv : word) : Sys SyscallEffect :=
   match socketpair_fds (m_fds m) with
   | None => unmodeled   (* [State.alloc_fd]'s scan bound exhausted: fail closed *)
   | Some (fd1, fd2) =>
-      let id := seq_new_id (m_fds m) in
-      if seq_id_live (m_fds m) id then unmodeled
-      else if socketpair_dest_writable (in_wmem i) sv
-      then socketpair_unix_written sv fd1 fd2 id
-      else if negb (access_okb sv 4) then socketpair_faulted
-      else unmodeled   (* destination neither known-writable nor known-refused *)
+      match socketpair_unix_limit_errnos fd1 fd2 m with
+      | [] =>
+          let id := seq_new_id (m_fds m) in
+          if seq_id_live (m_fds m) id then unmodeled
+          else if socketpair_dest_writable (in_wmem i) sv
+          then socketpair_unix_written sv fd1 fd2 id
+          else if negb (access_okb sv 4) then socketpair_faulted
+          else unmodeled   (* destination neither known-writable nor known-refused *)
+      | es => alt (e <- errno_from es ;; err_ret e) (choose (fun _ => False))
+      end
   end.
 
 (** [socketpair family type protocol usockvec].
