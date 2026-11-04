@@ -692,18 +692,11 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          the environment's choice whatever the offset
                          ([ReadWrite.read_proc_spec]), so no answer the
                          model gives depends on it.
-<<<<<<< HEAD
-                       - an eventfd ([OEventFd]) shares one counter, and
-                         the model already holds that counter as the
-                         environment's: a read answers any nonzero value
-                         or -EAGAIN, and a write 8 or -EAGAIN, whatever
-                         another writer has done
-                         ([ReadWrite.read_eventfd_spec],
-                         [ReadWrite.write_eventfd_spec]).  The child is
-                         one more such writer.  It also shares
-                         [f_flags], whose O_NONBLOCK those two arms read
-                         ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
-                         no other holder changes it.
+                       - an eventfd an earlier clone shared ([OEventFd],
+                         made by [share_eventfds] below) shares one
+                         counter, and every arm that would read or move
+                         it (read, write, select, poll, epoll) declines
+                         on this kind.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
@@ -752,17 +745,6 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        keeps [State.seq_peer] exact: each end has one
                        descriptor, in this process. *)
                     | FdSeqpacket _ _ _ => false
-=======
-                       - an eventfd an earlier clone shared ([OEventFd],
-                         made by [share_eventfds] below) shares one
-                         counter, and every arm that would read or move
-                         it (read, write, select, poll, epoll) declines
-                         on this kind.
-                       - a namespace and mount model file ([ONsFile]) shares an [f_pos]
-                         and [f_flags], and nothing modeled reads either:
-                         every arm but close, close_range and fcntl's
-                         F_SETFD/F_GETFD declines on this kind. *)
-                    | FdOpaque _ => true
                     (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
                        the pipe's reason: the child's copy names the same
                        socket, so a child that reads drains the parent's
@@ -796,7 +778,6 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        process's entries alone.  SCOPE.md states that an
                        unnamed file is this process's only. *)
                     | FdAnon _ _ => false
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -818,7 +799,6 @@ Definition clone_pid_ok_b (m : Model) (r : word) : bool :=
   (0 <? bv_unsigned r)%Z && (bv_unsigned r <? PID_MAX_ENVELOPE)%Z &&
   (match m_tid m with None => true | Some t0 => negb (bv_eqb r t0) end).
 
-<<<<<<< HEAD
 (** THE PARENT GIVES UP THE OFFSET OF EACH INHERITED DESCRIPTOR at a
     clone of either word.
 
@@ -849,6 +829,17 @@ Definition inherited_live_b (e : FdEntry) : bool :=
   | _ => false
   end.
 
+(** THE FUTURE-CONSTRUCTOR OBLIGATION, stated here and beside
+    [eventfd_shared_entry].  A successful clone applies this function
+    and [eventfd_shared_entry] to the caller's table, and no kind that
+    exists today is changed by both ([forfeit_share_entry_comm] checks
+    every one).  Both functions end in a wildcard arm, so a new
+    [FdEntry] or [OpaqueFd] constructor does not stop the build here.
+    Whoever adds one that both Linux effects reach (a description
+    whose offset the model holds AND whose state two tasks would
+    share) gives it both effects in both functions, or makes the clone
+    gate [clone_no_shared_file_b] decline it.  This is a duty of the
+    author who adds the constructor, not a premise on any input. *)
 Definition forfeit_entry (e : FdEntry) : FdEntry :=
   match e with
   | FdOpaque (OInherited (Some _)) => FdOpaque (OInherited None)
@@ -858,20 +849,23 @@ Definition forfeit_entry (e : FdEntry) : FdEntry :=
 Definition forfeit_inherited (fds : list (word * FdEntry)) : list (word * FdEntry) :=
   map (fun kv => (fst kv, forfeit_entry (snd kv))) fds.
 
-(** The caller's model after a successful clone of either word, before
-    the child is recorded. *)
+(** The caller's model after a successful clone of either word with
+    only the forfeit applied: the table [clone_child_made] starts from
+    before it shares the eventfds. *)
 Definition forfeit_model (m : Model) : Model :=
   with_fds (forfeit_inherited (m_fds m)) m.
 
 Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = false.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
+    try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
 Qed.
 
 Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st] H; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st] H;
+    try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   discriminate H.
 Qed.
@@ -919,7 +913,7 @@ Proof.
   intros fds H. unfold clone_no_shared_file_b in H.
   rewrite forallb_forall in H. apply forallb_forall.
   intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
-  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st];
+  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
     try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   cbn in H. discriminate H.
@@ -933,7 +927,7 @@ Qed.
 
 (** ...and a model whose table the gate passes is its own
     [forfeit_model]: on every table that holds no live inherited
-    descriptor, either word records the child in the model as it was. *)
+    descriptor, the forfeit leaves the model as it was. *)
 Lemma forfeit_model_gate : forall m,
   clone_no_shared_file_b (m_fds m) = true -> forfeit_model m = m.
 Proof.
@@ -941,35 +935,20 @@ Proof.
   destruct m as [[t p] vm io fs pr lim tm]. reflexivity.
 Qed.
 
-(** The resolution both entry points share, once the arguments are known
-    to describe a plain fork.  The caller's identity, descriptors, file
-    system and clock are all untouched in Linux by its own [clone]; the
-    model's copy of its table forfeits each live inherited descriptor
-    ([forfeit_model], above).  The child is not a thing this model
-    holds — but the FACT that a child now
-    exists is, because [Kernel.Exit.wait4_spec] answers -ECHILD only
-    while no child has been created.  So the success branch, and only
-    the success branch, records it with [State.with_child]: the child
-    bit [State.with_children] sets, and the returned pid appended to
-    [State.procst_child_pids], the list a reap reads and removes from.
-    The errno alternative created nothing and forfeits nothing, so a
-    failed clone leaves every inherited offset where it was, and the
-    [clone_no_shared_file_b] decline never reaches a resolution at all.
-    That gate is asked of the table the caller KEEPS
-    ([forfeit_inherited]), as the namespace word's is.
-=======
 (** THE EVENTFDS A SUCCESSFUL CLONE SHARES.
 
     [copy_files] gives the child a second reference to every open
     [struct file] (kernel/fork.c [copy_process], [dup_fd] in fs/file.c,
     Linux v6.18.46), so an eventfd open at the clone has one
-    [eventfd_ctx] that two tasks can read and write.  The model holds
-    one of the two tasks.  So the success branch of each clone
-    resolution turns every [State.FdEventfd] in the table into
-    [State.FdOpaque (State.OEventFd w)], and the arms that read or change
-    the counter (read, write, select, poll, epoll) decline on that kind.
-    The table this model holds is the parent's; the child is not run
-    (SCOPE.md, "Threads"), so there is no second table to convert here.
+    [eventfd_ctx] that two tasks can read and write.  So the success
+    branch of each clone resolution turns every [State.FdEventfd] in the
+    caller's table into [State.FdOpaque (State.OEventFd w)], and the arms
+    that read or change the counter (read, write, select, poll, epoll)
+    decline on that kind.  The child's table, built by the multi-process
+    core's [Procs.child_entry] from the caller's table before the call,
+    gets the same conversion and nothing else: it shares the counter
+    too, and it keeps each live inherited offset ([forfeit_inherited]
+    applies to the caller alone).
 
     [w] is the part of the file's flag word the model keeps, rebuilt
     from the context: [EFD_SEMAPHORE] when [ef_semaphore], and
@@ -983,6 +962,17 @@ Definition eventfd_shared_flags (c : EventfdCtx) : word :=
   Z_to_bv 64 (Z.lor (if ef_semaphore c then EFD_SEMAPHORE else 0%Z)
                     (if ef_nonblock c then O_NONBLOCK else 0%Z)).
 
+(** THE FUTURE-CONSTRUCTOR OBLIGATION, stated here and beside
+    [forfeit_entry].  A successful clone applies this function and
+    [forfeit_entry] to the caller's table, and no kind that exists
+    today is changed by both ([forfeit_share_entry_comm] checks every
+    one).  Both functions end in a wildcard arm, so a new [FdEntry] or
+    [OpaqueFd] constructor does not stop the build here.  Whoever adds
+    one that both Linux effects reach (state two tasks would share AND
+    an offset the model holds) gives it both effects in both functions,
+    or makes the clone gate [clone_no_shared_file_b] decline it.  This
+    is a duty of the author who adds the constructor, not a premise on
+    any input. *)
 Definition eventfd_shared_entry (e : FdEntry) : FdEntry :=
   match e with
   | FdEventfd c => FdOpaque (OEventFd (eventfd_shared_flags c))
@@ -995,10 +985,16 @@ Fixpoint share_eventfds (fds : list (word * FdEntry)) : list (word * FdEntry) :=
   | (k, e) :: r => (k, eventfd_shared_entry e) :: share_eventfds r
   end.
 
-(** The model after a successful clone: the child recorded
-    ([State.with_children]) and the eventfds shared ([share_eventfds]). *)
-Definition clone_child_made (m : Model) : Model :=
-  with_children (with_fds (share_eventfds (m_fds m)) m).
+(** The caller's model after a successful clone that returned [pid]:
+    each live inherited offset forfeited ([forfeit_inherited]), every
+    eventfd shared ([share_eventfds]), and the child recorded, its bit
+    and its pid ([State.with_child]).  The child's own table is the
+    caller's table BEFORE the call with only [share_eventfds] applied
+    ([Procs.child_entry]), never this one: it keeps each live inherited
+    offset. *)
+Definition clone_child_made (pid : word) (m : Model) : Model :=
+  with_child pid
+    (with_fds (share_eventfds (forfeit_inherited (m_fds m))) m).
 
 (** NO [FdEventfd] IS LEFT after the conversion, under any descriptor
     number: the post-clone table holds the counter nowhere. *)
@@ -1022,21 +1018,173 @@ Proof.
     + exact (IH k c Hin).
 Qed.
 
-Lemma clone_child_made_no_eventfd : forall m fd c,
-  fd_lookup (m_fds (clone_child_made m)) fd <> Some (FdEventfd c).
-Proof. intros m fd c. exact (share_eventfds_no_eventfd (m_fds m) fd c). Qed.
+Lemma clone_child_made_no_eventfd : forall pid m fd c,
+  fd_lookup (m_fds (clone_child_made pid m)) fd <> Some (FdEventfd c).
+Proof.
+  intros pid m fd c.
+  exact (share_eventfds_no_eventfd (forfeit_inherited (m_fds m)) fd c).
+Qed.
 
+(** NEITHER CONVERSION OVERRIDES THE OTHER, entry by entry.  An eventfd
+    is not a live inherited file and a shared eventfd is not one either,
+    so [forfeit_entry] fixes both; a live inherited file is not an
+    eventfd and its forfeited form is not one either, so
+    [eventfd_shared_entry] fixes both; every other entry is fixed by
+    each.  The case split below runs over every constructor of [FdEntry]
+    and [OpaqueFd]; see the future-constructor obligation above
+    [forfeit_entry] for why that is not automatic. *)
+Lemma forfeit_share_entry_comm : forall e,
+  eventfd_shared_entry (forfeit_entry e) = forfeit_entry (eventfd_shared_entry e).
+Proof.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
+    try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
+Qed.
+
+Lemma share_eventfds_map : forall fds,
+  share_eventfds fds = map (fun kv => (fst kv, eventfd_shared_entry (snd kv))) fds.
+Proof.
+  induction fds as [|[k e] r IH]; [reflexivity|].
+  cbn [share_eventfds map fst snd]. rewrite IH. reflexivity.
+Qed.
+
+(** The table equation: on every raw table, duplicate numbers included,
+    sharing after the forfeit is the forfeit after sharing. *)
+Lemma share_forfeit_comm : forall fds,
+  share_eventfds (forfeit_inherited fds) = forfeit_inherited (share_eventfds fds).
+Proof.
+  intros fds. rewrite !share_eventfds_map. unfold forfeit_inherited.
+  rewrite !map_map. apply map_ext. intros [k e]. cbn [fst snd].
+  rewrite forfeit_share_entry_comm. reflexivity.
+Qed.
+
+(** Sharing keeps every descriptor number, in its place. *)
+Lemma share_eventfds_keys : forall fds, map fst (share_eventfds fds) = map fst fds.
+Proof.
+  intros fds. rewrite share_eventfds_map, map_map. reflexivity.
+Qed.
+
+Lemma share_eventfds_length : forall fds, length (share_eventfds fds) = length fds.
+Proof.
+  intros fds. rewrite share_eventfds_map. apply length_map.
+Qed.
+
+Lemma fd_lookup_share_eventfds : forall fds k,
+  fd_lookup (share_eventfds fds) k = option_map eventfd_shared_entry (fd_lookup fds k).
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k; [reflexivity|].
+  cbn [share_eventfds fd_lookup].
+  destruct (bv_eqb k0 k); [reflexivity|]. exact (IH k).
+Qed.
+
+(** THE CALLER'S TABLE AFTER A SUCCESSFUL CLONE, descriptor by
+    descriptor, under [fd_lookup]'s first match. *)
+Lemma fd_lookup_clone_parent : forall fds k,
+  fd_lookup (share_eventfds (forfeit_inherited fds)) k
+  = option_map (fun e => eventfd_shared_entry (forfeit_entry e)) (fd_lookup fds k).
+Proof.
+  intros fds k. rewrite fd_lookup_share_eventfds, fd_lookup_forfeit_inherited.
+  destruct (fd_lookup fds k); reflexivity.
+Qed.
+
+(** An absent descriptor stays absent. *)
+Lemma fd_lookup_clone_parent_none : forall fds k,
+  fd_lookup fds k = None ->
+  fd_lookup (share_eventfds (forfeit_inherited fds)) k = None.
+Proof.
+  intros fds k H. rewrite fd_lookup_clone_parent, H. reflexivity.
+Qed.
+
+(** Where the forfeit changes nothing, the caller's entry is the one the
+    eventfd conversion alone gives... *)
+Lemma clone_parent_agrees_share : forall fds k e,
+  fd_lookup fds k = Some e -> forfeit_entry e = e ->
+  fd_lookup (share_eventfds (forfeit_inherited fds)) k = fd_lookup (share_eventfds fds) k.
+Proof.
+  intros fds k e Hl Hf.
+  rewrite fd_lookup_clone_parent, fd_lookup_share_eventfds, Hl.
+  cbn [option_map]. rewrite Hf. reflexivity.
+Qed.
+
+(** ...and where the eventfd conversion changes nothing, it is the one
+    the forfeit alone gives. *)
+Lemma clone_parent_agrees_forfeit : forall fds k e,
+  fd_lookup fds k = Some e -> eventfd_shared_entry e = e ->
+  fd_lookup (share_eventfds (forfeit_inherited fds)) k = fd_lookup (forfeit_inherited fds) k.
+Proof.
+  intros fds k e Hl Hs.
+  rewrite fd_lookup_clone_parent, fd_lookup_forfeit_inherited, Hl.
+  cbn [option_map]. rewrite forfeit_share_entry_comm, Hs. reflexivity.
+Qed.
+
+(** The caller keeps no live inherited offset after either conversion
+    order. *)
+Lemma clone_parent_no_live : forall fds,
+  forallb (fun kv => negb (inherited_live_b (snd kv)))
+          (share_eventfds (forfeit_inherited fds)) = true.
+Proof.
+  intros fds. rewrite share_forfeit_comm. apply forfeit_inherited_no_live.
+Qed.
+
+(** The child's table keeps each live inherited entry exactly, bytes and
+    offset. *)
+Lemma clone_child_keeps_inherited : forall fds k live,
+  fd_lookup fds k = Some (FdOpaque (OInherited (Some live))) ->
+  fd_lookup (share_eventfds fds) k = Some (FdOpaque (OInherited (Some live))).
+Proof.
+  intros fds k live H. rewrite fd_lookup_share_eventfds, H. reflexivity.
+Qed.
+
+(** THE GATE IS BLIND TO THE SHARING: a concrete eventfd and its shared
+    form both pass, and every other entry is unchanged.  So no admission
+    condition is added or removed by [share_eventfds]. *)
+Lemma share_eventfds_gate : forall fds,
+  clone_no_shared_file_b (share_eventfds fds) = clone_no_shared_file_b fds.
+Proof.
+  intros fds. rewrite share_eventfds_map. unfold clone_no_shared_file_b.
+  induction fds as [|[k e] r IH]; [reflexivity|].
+  cbn [map forallb fst snd]. rewrite IH. f_equal.
+  destruct e as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
+    reflexivity.
+Qed.
+
+(** On a table the gate passes, the caller's new table is the sharing
+    alone: the forfeit has nothing left to change. *)
+Lemma clone_child_made_gate : forall pid m,
+  clone_no_shared_file_b (m_fds m) = true ->
+  clone_child_made pid m = with_child pid (with_fds (share_eventfds (m_fds m)) m).
+Proof.
+  intros pid m Hg. unfold clone_child_made. rewrite (forfeit_inherited_gate _ Hg).
+  reflexivity.
+Qed.
+
+(** The conversion changes the table and the child record and nothing
+    else: [clone_child_made] is [State.with_child] over the caller's
+    [forfeit_model] with its eventfds shared. *)
+Lemma clone_child_made_forfeit_model : forall pid m,
+  clone_child_made pid m
+  = with_child pid (with_fds (share_eventfds (m_fds (forfeit_model m))) (forfeit_model m)).
+Proof. reflexivity. Qed.
 (** The resolution both entry points share, once the arguments are known
     to describe a plain fork.  The caller's identity, file system and
-    clock are all untouched by its own [clone], and the child is not a
-    thing this model holds — but the FACT that a child now exists is,
-    because [Kernel.Exit.wait4_spec] answers -ECHILD only while no child
-    has been created, and so is the sharing of every open eventfd
+    clock are all untouched in Linux by its own [clone], and the child
+    is not a thing this model holds — but the FACT that a child now
+    exists is, because [Kernel.Exit.wait4_spec] answers -ECHILD only
+    while no child has been created, and so is the model's copy of the
+    caller's table: each live inherited descriptor is forfeited
+    ([forfeit_inherited]) and every open eventfd is shared
     ([share_eventfds]).  So the success branch, and only the success
-    branch, applies [clone_child_made], which records the child with
-    [State.with_children]: the errno alternative created nothing, and the
-    [clone_no_shared_file_b] decline never reaches a resolution at all.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    branch, applies [clone_child_made], which does both to the table
+    and records the child with [State.with_child]: the child bit
+    [State.with_children] sets, and the returned pid appended to
+    [State.procst_child_pids], the list a reap reads and removes from.
+    The errno alternative created nothing and converts nothing, so a
+    failed clone leaves every inherited offset and every eventfd
+    counter where it was, and the [clone_no_shared_file_b] decline
+    never reaches a resolution at all.  That gate is asked of the table
+    the caller KEEPS ([forfeit_inherited]), as the namespace word's is;
+    [share_eventfds] leaves its answer unchanged
+    ([share_eventfds_gate]).
 
     Without this call the pair is unsound in a way neither side's proofs
     can see — [wait4] would answer -ECHILD for a caller that has a
@@ -1050,11 +1198,7 @@ Definition clone_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_from clone_errnos ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-<<<<<<< HEAD
-         modify (fun m0 => with_child pid (forfeit_model m0)) ;;
-=======
-         modify clone_child_made ;;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+         modify (clone_child_made pid) ;;
          ret_only pid).
 
 (* =========================================================================
@@ -1130,31 +1274,22 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       in its own namespace, and the caller still sees an ordinary pid of
       its own namespace.  So the admitted pids are exactly
       [clone_resolve]'s: [clone_pid_ok_b], never 0.  And the caller now
-<<<<<<< HEAD
-      has a child, so the success branch records it with
-      [State.with_child] (the child bit and the pid), which
-      [Kernel.Exit.wait4_spec]'s -ECHILD reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
-      No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
-      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces
-      and [fs_struct] are not touched: [copy_creds], [copy_namespaces]
-      and [copy_fs] act on the new task [p].  Its descriptor table is
-      not touched in Linux either, but the model's copy of it is: each
-      live inherited descriptor becomes [OInherited None]
-      ([forfeit_model], above), because the description it names was
-      made before the clone and its offset now lives in the child's
-      entry alone.
-=======
       has a child, so the success branch applies [clone_child_made]: it
-      records the child with [State.with_children], which
-      [Kernel.Exit.wait4_spec]'s -ECHILD reads
+      records the child with [State.with_child] (the child bit and the
+      pid), which [Kernel.Exit.wait4_spec]'s -ECHILD reads
       ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]),
       and it turns each open eventfd into the shared kind
       ([share_eventfds]), for [clone_resolve]'s reason.
       No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
       [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces
       and [fs_struct] are not touched: [copy_creds], [copy_namespaces]
-      and [copy_fs] act on the new task [p].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+      and [copy_fs] act on the new task [p].  Its descriptor table is
+      not touched in Linux either, but the model's copy of it is: each
+      live inherited descriptor becomes [OInherited None]
+      ([forfeit_inherited], above), because the description it names was
+      made before the clone and its offset now lives in the child's
+      entry alone; and each open eventfd becomes the shared kind
+      ([share_eventfds], above).
     - FAILURE: EVERY ERRNO FROM 1 TO 4095 BUT -EINTR ([Syscall.errno_any]).  The
       failures of this word run through everything a plain fork's do
       ([clone_errnos]) and then through [create_user_ns] (-ENOSPC past 32
@@ -1193,11 +1328,7 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
   else
     alt (e <- errno_any ;; err_ret e)
         (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
-<<<<<<< HEAD
-         modify (fun m0 => with_child pid (forfeit_model m0)) ;;
-=======
-         modify clone_child_made ;;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+         modify (clone_child_made pid) ;;
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to
