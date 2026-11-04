@@ -232,7 +232,7 @@ Proof.
   - assert (Hunlink : match ms_svc_pending (pe_ms e) with
       | Some n => bv_unsigned n = 35%Z | None => False end)
       by (rewrite Hs; exact H35).
-    pose proof (sstep_unlinkat_tid _ _ _ _ _ Hunlink Hstep) as Htid.
+    pose proof (sstep_unlinkat_tid segs cfg (pe_cfg (pcfg_shared P) e) evs c' Hunlink Hstep) as Htid.
     change (m_tid (cfg_model c') = m_tid (pe_model e)) in Htid.
     destruct (absorb_keeps_other_tid_stable P e c' q f (fun E => Hne (eq_sym E)) Hf Htid)
       as (f' & Hf' & Hm & _).
