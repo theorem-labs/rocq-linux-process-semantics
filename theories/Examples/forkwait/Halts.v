@@ -537,7 +537,8 @@ Lemma absorb_procs_length : forall P e c',
   = List.length (pcfg_procs P).
 Proof.
   intros P e c'. unfold absorb. cbn [pcfg_procs].
-  rewrite orphan_at_exit_length. apply replace_in_length.
+  rewrite orphan_at_exit_length, replace_in_length.
+  apply first_root_pin_children_length.
 Qed.
 
 (** And a clone's successor has exactly one more entry: [clone_result]
@@ -692,7 +693,7 @@ Proof.
   - (* the clock sync replaces the caller's entry and nothing else *)
     left. unfold sync_result. cbn [pcfg_procs]. apply replace_in_length.
   - (* the root pin replaces the root's entry and nothing else *)
-    left. unfold pin_root. cbn [pcfg_procs]. apply replace_in_length.
+    left. apply pin_root_procs_length.
 Qed.
 
 (** [absorb] keeps the table's shape at a one-entry configuration: the
@@ -708,7 +709,7 @@ Lemma absorb_one_entry : forall P e c',
 Proof.
   intros P e c' Hp Hr.
   unfold absorb, look. cbn [pcfg_procs pcfg_root].
-  rewrite Hp. cbn [replace_in fst].
+  rewrite Hp, first_root_pin_children_single. cbn [replace_in fst].
   rewrite bv_eqb_same, orphan_at_exit_single.
   split; [reflexivity|]. split; [exact Hr|].
   cbn [look_in fst snd]. rewrite bv_eqb_same. reflexivity.
@@ -2270,6 +2271,11 @@ Lemma fw_entry_left_parent_blind : forall x,
   fw_entry_left (with_parent x None) = fw_entry_left x.
 Proof. intros x. reflexivity. Qed.
 
+Lemma fw_entry_left_ppid_blind : forall x t,
+  fw_entry_left (mkEntry (pe_pid x) (pe_parent x) (pe_ms x)
+    (with_ppid t (pe_model x)) (pe_ofd x) (pe_nsctx x)) = fw_entry_left x.
+Proof. intros x t. reflexivity. Qed.
+
 Definition fw_mu (P : pconfig) : nat := pmeasure fw_entry_left P.
 
 Lemma fw_ms_left_of : forall ms k msf x8,
@@ -2374,7 +2380,8 @@ Lemma fw_mu_absorb_one_lt : forall P e c' n,
   (n < fw_entry_left e)%nat ->
   (fw_mu (absorb P e c') < fw_mu P)%nat.
 Proof.
-  intros P e c' n Hp Ha Hn. unfold fw_mu. apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind).
+  intros P e c' n Hp Ha Hn. unfold fw_mu.
+  apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind).
   - unfold look. rewrite Hp. cbn [look_in fst snd].
     rewrite bv_eqb_same. reflexivity.
   - lia.
@@ -2463,7 +2470,7 @@ Proof.
     by (unfold look; rewrite Hp; cbn [look_in fst snd];
         rewrite bv_eqb_same; reflexivity).
   split;
-    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
        [ exact Hlook
        | exact (fw_entry_left_lt_step e Q ms' model' HQp
                   (fw_model_ok_halted _ Hh) Hsv Hrem Hmstep Hhal) ] ].
@@ -2499,15 +2506,20 @@ Proof.
   pose proof (fw_look_two_parent P ep ec Hp) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ep) P evs P' ep
               Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
+  assert (Htid : m_tid model' = m_tid (pe_model ep)).
+  { pose proof (mi_account_step_model_frame _ _ _ _ _ Hmstep)
+      as (_ & _ & _ & _ & _ & Hproc & _).
+    unfold m_tid. rewrite Hproc. reflexivity. }
   subst P'.
   split;
-    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
        [ exact Hl
        | exact (fw_entry_left_lt_step ep fw_q_wait4 ms' model'
                   fw_q_wait4_pending (fw_model_ok_halted _ Hh) Hsv Hrem
                   Hmstep Hhal) ] ].
   exists (pe_absorb ep (mkCfg ms' model')), ec.
   unfold absorb. cbn [pcfg_procs pcfg_root].
+  rewrite first_root_pin_children_same_tid by exact Htid.
   rewrite Hp, fw_two_replace_parent.
   rewrite orphan_at_exit_running
     by (cbn [cfg_model]; rewrite Hhal; exact (fw_model_ok_halted _ Hh)).
@@ -2545,15 +2557,20 @@ Proof.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ec) P evs P' ec
               Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
+  assert (Htid : m_tid model' = m_tid (pe_model ec)).
+  { pose proof (mi_account_step_model_frame _ _ _ _ _ Hmstep)
+      as (_ & _ & _ & _ & _ & Hproc & _).
+    unfold m_tid. rewrite Hproc. reflexivity. }
   subst P'.
   split;
-    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
        [ exact Hl
        | exact (fw_entry_left_lt_step ec fw_q_exit7 ms' model'
                   fw_q_exit7_pending (fw_model_ok_halted _ Hh) Hsv Hrem
                   Hmstep Hhal) ] ].
   exists ep, (pe_absorb ec (mkCfg ms' model')).
   unfold absorb. cbn [pcfg_procs pcfg_root].
+  rewrite first_root_pin_children_same_tid by exact Htid.
   rewrite Hp, (fw_two_replace_child ep ec _ Hne).
   rewrite fw_orphan_two_child by exact Hppar.
   split; [reflexivity|].
@@ -2619,7 +2636,7 @@ Proof.
     by (unfold look; rewrite Hp; cbn [look_in fst snd];
         rewrite bv_eqb_same; reflexivity).
   split;
-    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
        [ exact Hlook
        | rewrite (fw_entry_left_halted (pe_absorb e cex))
            by (cbn [pe_model pe_absorb cfg_model];
@@ -2661,7 +2678,7 @@ Proof.
              Hl Hsv fw_ninety_four Hstep).
   rewrite Ha0, fw_and_seven.
   split;
-    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
        [ exact Hl
        | rewrite (fw_entry_left_halted
                     (pe_absorb ec (mkCfg (pe_ms ec)
@@ -2678,6 +2695,7 @@ Proof.
           (with_halted (Z_to_bv 64 7)
              (cfg_model (pe_cfg (pcfg_shared P) ec))))).
   unfold absorb. cbn [pcfg_procs pcfg_root].
+  rewrite first_root_pin_children_same_tid by reflexivity.
   rewrite Hp, (fw_two_replace_child ep ec _ Hne).
   rewrite fw_orphan_two_child by exact Hppar.
   split; [reflexivity|].

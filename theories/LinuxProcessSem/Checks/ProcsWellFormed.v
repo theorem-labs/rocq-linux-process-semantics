@@ -337,6 +337,19 @@ Proof.
       rewrite (In_unique _ _ _ _ Hnd (look_in_In _ _ _ Hf) Hf'). exact Hr'.
 Qed.
 
+Lemma pconfig_wf_first_root_pin : forall P e m',
+  pconfig_wf P ->
+  pconfig_wf (mkPCfg
+    (first_root_pin_children P e m' (pcfg_procs P))
+    (pcfg_root P) (pcfg_shared P)).
+Proof.
+  intros P e m' Hwf. apply wf_iff in Hwf. apply wf_iff.
+  cbn [pcfg_procs pcfg_root]. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+    (m_tid (pe_model e)), (m_tid m'); try exact Hwf;
+    apply tbl_root_children_ppid; tauto.
+Qed.
+
 (* =========================================================================
    The three table shapes a producing arm builds
    ========================================================================= *)

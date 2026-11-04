@@ -92,6 +92,54 @@ Proof.
     destruct (is_child_of k (a, x)); cbn [List.map fst]; rewrite IH; reflexivity.
 Qed.
 
+Lemma root_child_ppid_one_child : forall root t k kv,
+  is_child_of k (root_child_ppid_one root t kv) = is_child_of k kv.
+Proof.
+  intros root t k [q f]. unfold is_child_of.
+  pose proof (root_child_ppid_one_fields root t q f) as (_ & Hp & _).
+  rewrite Hp. reflexivity.
+Qed.
+
+Lemma children_keys_root_children_ppid : forall root t ps k,
+  children_keys (root_children_ppid root t ps) k = children_keys ps k.
+Proof.
+  intros root t ps k. unfold root_children_ppid.
+  induction ps as [|kv ps IH]; [reflexivity|].
+  unfold children_keys in IH |- *. cbn [List.map List.filter].
+  rewrite root_child_ppid_one_child.
+  destruct (is_child_of k kv); cbn [List.map];
+    rewrite ?root_child_ppid_one_fst, IH; reflexivity.
+Qed.
+
+Lemma child_pids_ok_root_children_ppid : forall P root t,
+  child_pids_ok P ->
+  child_pids_ok (mkPCfg (root_children_ppid root t (pcfg_procs P))
+    (pcfg_root P) (pcfg_shared P)).
+Proof.
+  intros P root t Hok k f Hk Hfh.
+  unfold look in Hk. cbn [pcfg_procs] in Hk |- *.
+  rewrite look_in_root_children_ppid in Hk.
+  destruct (look_in (pcfg_procs P) k) as [g|] eqn:Hg;
+    cbn [option_map] in Hk; [|discriminate Hk].
+  injection Hk as <-.
+  pose proof (root_child_ppid_one_fields root t k g)
+    as (_ & _ & _ & _ & _ & Hhalt & Hcp).
+  rewrite Hhalt in Hfh. rewrite Hcp, children_keys_root_children_ppid.
+  exact (Hok _ _ Hg Hfh).
+Qed.
+
+Lemma child_pids_ok_first_root_pin : forall P e m',
+  child_pids_ok P ->
+  child_pids_ok (mkPCfg
+    (first_root_pin_children P e m' (pcfg_procs P))
+    (pcfg_root P) (pcfg_shared P)).
+Proof.
+  intros P e m' Hok. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+    (m_tid (pe_model e)), (m_tid m'); try exact Hok;
+    apply child_pids_ok_root_children_ppid; exact Hok.
+Qed.
+
 Lemma orphan_one_fst : forall p kv, fst (orphan_one p kv) = fst kv.
 Proof.
   intros p [a x]. unfold orphan_one. cbn [fst snd].
@@ -248,30 +296,52 @@ Lemma child_pids_ok_absorb : forall P e c',
   child_pids_ok (absorb P e c').
 Proof.
   intros P e c' Hwf Hok Hl Hh Hcp k f Hk Hfh.
-  assert (Hrep : forall k', children_keys (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')) k'
-                            = children_keys (pcfg_procs P) k')
-    by (intros k'; apply children_keys_replace; intros x Hx;
-        rewrite (same_key P _ _ _ Hwf Hl Hx); reflexivity).
+  set (Q := mkPCfg
+    (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+    (pcfg_root P) (pcfg_shared P)).
+  assert (HQwf : pconfig_wf Q)
+    by exact (pconfig_wf_first_root_pin P e (cfg_model c') Hwf).
+  assert (HQok : child_pids_ok Q)
+    by exact (child_pids_ok_first_root_pin P e (cfg_model c') Hok).
+  assert (HQl : look Q (pe_pid e) = Some e).
+  { unfold Q, look. cbn [pcfg_procs].
+    apply look_in_first_root_pin_children_self. exact Hl. }
+  assert (Hkeys : forall k', children_keys (pcfg_procs Q) k'
+    = children_keys (pcfg_procs P) k').
+  { intros k'. unfold Q. cbn [pcfg_procs]. unfold first_root_pin_children.
+    destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+      (m_tid (pe_model e)), (m_tid (cfg_model c')); try reflexivity;
+      apply children_keys_root_children_ppid. }
+  assert (Hrep : forall k', children_keys (replace_in (pcfg_procs Q) (pe_pid e) (pe_absorb e c')) k'
+                            = children_keys (pcfg_procs P) k').
+  { intros k'. transitivity (children_keys (pcfg_procs Q) k'); [|apply Hkeys].
+    apply children_keys_replace. intros x Hx.
+    rewrite (same_key Q _ _ _ HQwf HQl Hx). reflexivity. }
   destruct (bv_eqb k (pe_pid e)) eqn:Ek.
   - apply bv_eqb_true_eq in Ek. subst k.
     rewrite (look_absorb_self P e c' Hl) in Hk. injection Hk as <-.
     change (m_halted (cfg_model c') = None) in Hfh.
-    unfold absorb. cbn [pcfg_procs].
+    change (m_child_pids (cfg_model c') = children_keys
+      (orphan_at_exit (cfg_model c') (pe_pid e)
+        (replace_in (pcfg_procs Q) (pe_pid e) (pe_absorb e c'))) (pe_pid e)).
     rewrite orphan_at_exit_running by exact Hfh. rewrite Hrep.
     change (cp_of (cfg_model c') = children_keys (pcfg_procs P) (pe_pid e)).
     rewrite Hcp. exact (Hok _ _ Hl Hh).
   - assert (Hne : k <> pe_pid e) by (intros E; subst; rewrite bv_eqb_same in Ek; discriminate Ek).
-    unfold look, absorb in Hk. cbn [pcfg_procs] in Hk.
+    change (look_in (orphan_at_exit (cfg_model c') (pe_pid e)
+      (replace_in (pcfg_procs Q) (pe_pid e) (pe_absorb e c'))) k = Some f) in Hk.
     rewrite orphan_at_exit_map, look_in_orphan, look_in_replace_other in Hk by exact Hne.
-    destruct (look_in (pcfg_procs P) k) as [f0|] eqn:Hf0; cbn [option_map] in Hk; [|discriminate Hk].
+    destruct (look_in (pcfg_procs Q) k) as [f0|] eqn:Hf0; cbn [option_map] in Hk; [|discriminate Hk].
     injection Hk as Hk.
     assert (Hm : pe_model f = pe_model f0)
       by (destruct (orphan_slot_orphaned (cfg_model c') (pe_pid e) k f0) as [E | (_ & E)];
           rewrite <- Hk, E; reflexivity).
     rewrite Hm in Hfh |- *.
-    unfold absorb. cbn [pcfg_procs].
+    change (m_child_pids (pe_model f0) = children_keys
+      (orphan_at_exit (cfg_model c') (pe_pid e)
+        (replace_in (pcfg_procs Q) (pe_pid e) (pe_absorb e c'))) k).
     rewrite children_keys_orphan by exact Hne. rewrite Hrep.
-    exact (Hok _ _ Hf0 Hfh).
+    rewrite (HQok _ _ Hf0 Hfh). apply Hkeys.
 Qed.
 
 (** Replacing an entry by one with the same parent, list and halt state
@@ -293,6 +363,29 @@ Proof.
     injection Hk as <-. rewrite Hh in Hfh. rewrite Hcp. exact (Hok _ _ Hl Hfh).
   - assert (Hne : k <> p) by (intros E; subst; rewrite bv_eqb_same in Ek; discriminate Ek).
     rewrite look_in_replace_other in Hk by exact Hne. exact (Hok _ _ Hk Hfh).
+Qed.
+
+Lemma child_pids_ok_pin_root : forall P r t,
+  pconfig_wf P -> child_pids_ok P -> look P (pcfg_root P) = Some r ->
+  child_pids_ok (pin_root P r t).
+Proof.
+  intros P r t Hwf Hok Hl. unfold pin_root.
+  destruct (m_tid (pe_model r)).
+  - apply (child_pids_ok_replace P (pcfg_root P) r); try assumption; reflexivity.
+  - set (Q := mkPCfg (root_children_ppid (pcfg_root P) t (pcfg_procs P))
+      (pcfg_root P) (pcfg_shared P)).
+    assert (HQwf : pconfig_wf Q).
+    { unfold Q. apply wf_iff. cbn [pcfg_procs pcfg_root].
+      apply tbl_root_children_ppid; apply wf_iff in Hwf; tauto. }
+    assert (HQok : child_pids_ok Q)
+      by (apply child_pids_ok_root_children_ppid; exact Hok).
+    assert (HQl : look Q (pcfg_root P) = Some r).
+    { unfold Q, look. cbn [pcfg_procs].
+      rewrite look_in_root_children_ppid_root. exact Hl. }
+    change (child_pids_ok (mkPCfg (replace_in (pcfg_procs Q) (pcfg_root P)
+      (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
+        (pe_ofd r) (pe_nsctx r))) (pcfg_root P) (pcfg_shared P))).
+    apply (child_pids_ok_replace Q (pcfg_root P) r); try assumption; reflexivity.
 Qed.
 
 Lemma cp_sync_entry : forall P e,
@@ -443,11 +536,7 @@ Proof.
         [reflexivity | apply cp_sync_entry | apply sync_entry_halted]
     end.
   - (* the root pin *)
-    unfold pin_root.
-    match goal with
-    | Hlr : look ?Q (pcfg_root ?Q) = Some ?r |- _ =>
-        apply (child_pids_ok_replace Q (pcfg_root Q) r); try assumption; reflexivity
-    end.
+    eapply child_pids_ok_pin_root; eassumption.
 Qed.
 
 (** THE LAUNCH: one entry, whose list is its model's. *)

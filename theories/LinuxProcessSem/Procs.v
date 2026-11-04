@@ -1052,6 +1052,23 @@ Proof.
   apply List.map_ext. intros kv. apply root_child_ppid_one_fst.
 Qed.
 
+Lemma root_children_ppid_length : forall root t ps,
+  List.length (root_children_ppid root t ps) = List.length ps.
+Proof.
+  intros root t ps. unfold root_children_ppid.
+  induction ps as [|kv ps IH]; [reflexivity|].
+  cbn [List.map List.length]. rewrite IH. reflexivity.
+Qed.
+
+Lemma first_root_pin_children_length : forall P e m' ps,
+  List.length (first_root_pin_children P e m' ps) = List.length ps.
+Proof.
+  intros P e m' ps. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+    (m_tid (pe_model e)), (m_tid m'); try reflexivity;
+    apply root_children_ppid_length.
+Qed.
+
 Lemma root_child_ppid_one_fields : forall root t q f,
   let f' := snd (root_child_ppid_one root t (q, f)) in
   pe_pid f' = pe_pid f /\ pe_parent f' = pe_parent f /\ pe_ms f' = pe_ms f

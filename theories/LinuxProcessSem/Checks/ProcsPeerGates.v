@@ -253,7 +253,14 @@ Proof.
     destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:Er;
       [cbn [negb] in Hrp; rewrite andb_false_r in Hrp; discriminate Hrp|].
     unfold look, pin_root in Hl'. cbn [pcfg_procs] in Hl'.
-    rewrite look_in_replace_other in Hl'
-      by (intros E; rewrite E, bv_eqb_same in Er; discriminate Er).
-    unfold look in Hl. rewrite Hl in Hl'. injection Hl' as <-. contradiction.
+    destruct (m_tid (pe_model r));
+      rewrite look_in_replace_other in Hl'
+        by (intros E; rewrite E, bv_eqb_same in Er; discriminate Er);
+      unfold look in Hl.
+    + rewrite Hl in Hl'. injection Hl' as <-. contradiction.
+    + rewrite look_in_root_children_ppid, Hl in Hl'. cbn [option_map] in Hl'.
+      injection Hl' as <-.
+      pose proof (root_child_ppid_one_fields (pcfg_root P) t (pe_pid e) e)
+        as (_ & _ & _ & _ & _ & Hhalt & _).
+      rewrite Hhalt in Hh'. contradiction.
 Qed.
