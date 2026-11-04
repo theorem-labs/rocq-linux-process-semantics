@@ -1377,16 +1377,17 @@ Fixpoint prepend_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) 
     that parent ([gather_candidates], fs/pnode.c:500-535, [trim_one],
     586-593; [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819;
     [__umount_mnt], 993-1000), so Linux's climb stops there instead
-    (fs/d_path.c:110-125, v6.18.46). The start mount alone does not change
-    an upward step. Follow [prepend_fuel]'s roots, dentries and fuel. *)
+    (fs/d_path.c:110-125, v6.18.46). Outside entry can also move a private
+    start or visited mount. Check before even the equal-root stop. *)
 Fixpoint path_open_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive) : bool :=
   match fuel with
   | O => false
   | S f =>
-      if loc_eqb (LDentry m d) root then false
-      else match find_mount (ns_mounts st) m with
+      match find_mount (ns_mounts st) m with
            | None => false
            | Some mt =>
+               if mem (mnt_ns mt) (entered_closure st) then true else
+               if loc_eqb (LDentry m d) root then false else
                if Pos.eqb d (mnt_root mt)
                then match mnt_parent mt with
                     | Some p => open_mount st p || path_open_fuel f st root p (mnt_mountpoint mt)
@@ -1404,18 +1405,20 @@ Fixpoint path_open_fuel (fuel : nat) (st : NsState) (root : Loc) (m d : positive
 
 (** No traversal is needed under the default, closed launch. *)
 Definition path_open (st : NsState) (root : Loc) (m d : positive) : bool :=
-  match env_open_groups (ns_env st) with
-  | [] => false
-  | _ => path_open_fuel (S (length (ns_mounts st) + length (ns_dentries st))) st root m d
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => path_open_fuel (S (length (ns_mounts st) + length (ns_dentries st))) st root m d
   end.
 
 Theorem path_open_closed : forall st root m d,
-  env_open_groups (ns_env st) = [] -> path_open st root m d = false.
-Proof. intros st root m d H. unfold path_open. rewrite H. reflexivity. Qed.
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  path_open st root m d = false.
+Proof. intros st root m d H E. unfold path_open. rewrite H, E. reflexivity. Qed.
 
 (** [prepend_path] (fs/d_path.c): the escaped case starts again empty, and
-    an empty name is "/". *)
+    an empty name is "/". All callers decline uncertain topology here. *)
 Definition prepend_path (st : NsState) (root : Loc) (m d : positive) : option (Z * list byte) :=
+  if path_open st root m d then None else
   match prepend_fuel (S (length (ns_mounts st) + length (ns_dentries st))) st root m d [] with
   | Some (code, acc) =>
       let acc' := if Z.eqb code 3 then [] else acc in
@@ -1431,7 +1434,6 @@ Definition prepend_path (st : NsState) (root : Loc) (m d : positive) : option (Z
 Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
   match l with
   | LDentry m d =>
-      if path_open st (ctx_root_loc ctx) m d then None else
       let deleted := match find_dentry st d with
                      | Some x => if d_unlinked x then ascii [32; 40; 100; 101; 108; 101; 116; 101; 100; 41] else []
                      | None => []
@@ -1444,7 +1446,6 @@ Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
           match find_sb st (mnt_sb mt) with
           | None => None
           | Some s =>
-              if path_open st (ctx_root_loc ctx) m (sb_root s) then None else
               match prepend_path st (ctx_root_loc ctx) m (sb_root s) with
               | None => None
               | Some (_, base) =>
@@ -1556,13 +1557,12 @@ Definition unreachable_prefix : list byte :=
     is not under the root, and its NUL; ENAMETOOLONG past PATH_MAX, ERANGE
     when it does not fit, EFAULT; the length with the NUL. No cwd of the
     tables is unlinked (ENOENT): the model unlinks only non-directories
-    ([FsOps.unlinkat_fn]). Kind: exact; declines when a parent the path
-    climbs into can receive an event from an open group ([path_open]):
-    every answer reads that climb (fs/d_path.c:424-443, v6.18.46). *)
+    ([FsOps.unlinkat_fn]). Kind: exact; declines if a visited mount is
+    entered or a parent receives an open-group event ([path_open]): every
+    answer reads that climb (fs/d_path.c:424-443, v6.18.46). *)
 Definition getcwd_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let buf := in_arg i 0 in
   let size := bv_unsigned (in_arg i 1) in
-  if path_open st (ctx_root_loc ctx) (fst (cx_cwd ctx)) (snd (cx_cwd ctx)) then EUnmodeled else
   match prepend_path st (ctx_root_loc ctx) (fst (cx_cwd ctx)) (snd (cx_cwd ctx)) with
   | None => EUnmodeled
   | Some (code, s) =>

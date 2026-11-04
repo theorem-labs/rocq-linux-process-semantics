@@ -33,7 +33,11 @@ source is not included in this repository.
 
 - The namespace layer's Lean translation is pending.
 - Mount propagation, including the open-parent path guards and the
-  user-namespace ENOSPC-before-chroot checks, is pending too.
+  user-namespace ENOSPC-before-chroot checks, is pending too. Its pending
+  outside-entry translation includes the mount-namespace anonymous/origin
+  fields and builders, the entered-namespace and superblock-group closures,
+  clone inheritance, the five closed-launch fast paths, path printing and
+  the corresponding cases. Agreement of these additions has not been checked.
 
 A list of definitions to translate is not Lean code or evidence that
 the two models agree.
@@ -556,18 +560,35 @@ not apply.
   namespace model does not give.
 - No host mount event reaches a mount namespace of the namespace model,
   under the default launch. A peer group that the tables hold and that
-  also has a member in a mount namespace outside the tables is open: a
-  mount or unmount at that outside member propagates to every member in
-  the tables and to every slave below them (`propagate_mnt`,
-  `propagate_umount`, `fs/pnode.c`, v6.18.46), at any time and without a
-  call of the model. The launch names its open groups in the launch value
-  `Ns.Tables.env_open_groups`, measured from the host's
-  `/proc/<pid>/mountinfo` files. Its default, in `Ns.Tables.empty_nsenv`,
-  is the empty list: under it no host mount event reaches a namespace of
-  the model (`Ns.Propagation.closed_no_outside_event`). A statement that
-  wants the case where such events can happen names a non-empty
-  `env_open_groups`. With a non-empty list, a call whose answer reads a
-  mount that can receive such an event has no answer: a path walk that
+  also has a member outside the tables is open: a mount or unmount at that
+  outside member propagates to every member in the tables and to every
+  slave below them (`propagate_mnt`, `propagate_umount`, `fs/pnode.c`,
+  v6.18.46), at any time and without a call of the model. The launch names
+  these groups in `Ns.Tables.env_open_groups`. Host
+  `/proc/<pid>/mountinfo` files reveal namespace-held peers, but not
+  detached trees: mountinfo alone cannot establish that no host process
+  holds a detached copy of a mount of a model group. The default empty
+  group list assumes that no such host-held detached copy exists either.
+  The separate launch value `Ns.Tables.env_entered_mntns` names namespaces
+  an outside task may enter or alter through a path or descriptor. Its
+  default `[]` means: no process outside the model enters or changes a
+  model mount namespace, including a detached tree held by a model task,
+  or changes mounts through a path or descriptor into such a tree
+  (`setns`, `kernel/nsproxy.c:536-569`; `mntns_install`,
+  `fs/namespace.c:6261-6274`; `may_change_propagation`, `2823-2834`).
+  Both-empty defaults keep the exact successful and error cases unchanged.
+  Named nondefault uncertainty declines rather than claiming stale topology.
+  `Ns.Propagation.entered_closure` also includes anonymous trees whose
+  originating real namespace is listed, and every origin-None anonymous
+  tree under any nonempty entered list, including records added later.
+  `open_groups` adds every peer group on a superblock represented in this
+  closure, even in an unlisted namespace: an outside `SET_GROUP` can join
+  a private listed mount to such a group (`fs/namespace.c:3328-3355`).
+  `CLONE_NEWNS` adds the copied real namespace when the source is listed;
+  `CLONE_NEWNS` through unshare remains unsupported. With both lists empty
+  no outside event reaches a model namespace
+  (`Ns.Propagation.closed_no_outside_event`). Otherwise a call whose answer
+  reads uncertain topology has no answer: a path walk that
   enters such a mount or whose ".." climbs through such a parent mount
   (`Ns.Walk.follow_mounts_fuel`, `Ns.Walk.choose_mountpoint_fuel`,
   `Ns.Propagation.open_mount`), `getcwd` and the text of a procfs
@@ -575,7 +596,9 @@ not apply.
   (`Ns.Files.path_open`: a host unmount can detach the child below it,
   `fs/pnode.c:500-535`, `586-593`; `fs/namespace.c:1752-1753`,
   `1813-1819`, `993-1000`; the climb then stops there,
-  `fs/d_path.c:110-125`), a `clone` or `unshare` with
+  `fs/d_path.c:110-125`), or whose start or visited mount belongs to an
+  entered namespace (an outside move can change even a private cwd mount's
+  path), a `clone` or `unshare` with
   `CLONE_NEWUSER`, after the earlier level/count `ENOSPC` checks pass
   (`kernel/user_namespace.c:91-107`), which reads the topmost mount on
   the caller's mount namespace's root mount to decide whether the caller

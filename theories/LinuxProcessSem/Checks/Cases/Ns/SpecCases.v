@@ -45,7 +45,7 @@ Definition world (host : bool) : NsState :=
   let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None] in
   let w := with_userns w [mkUserNs 1 None 0 0 None None true true 100 false;
                           mkUserNs 2 (Some 1%positive) 1 0 None None true true 100 true] in
-  let w := with_mntns w [mkMntNs 1 1 1 host] in
+  let w := with_mntns w [mk_mntns 1 1 1 host] in
   let w := with_sbs w [mkSb 1 SbHost 1 1 false 0 false false false] in
   let w := with_dentries w [mkDentry 1 1 None [] 1] in
   with_inodes w [mkInode 1 IDir 493 0 0 0 [] false].
@@ -240,7 +240,7 @@ Definition rootfs_world : NsState :=
   let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None;
                                       mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None] in
   let w := with_userns w [mkUserNs 1 None 0 0 None None true true 100 false] in
-  let w := with_mntns w [mkMntNs 1 1 1 true] in
+  let w := with_mntns w [mk_mntns 1 1 1 true] in
   let w := with_sbs w [mkSb 1 SbHost 1 1 false 0 false false false; mkSb 2 SbHost 2 1 false 0 false false false] in
   let w := with_dentries w [mkDentry 1 1 None [] 1; mkDentry 2 2 None [] 2;
                             mkDentry 3 2 (Some 2%positive) [Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99] 3] in

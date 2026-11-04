@@ -11,7 +11,7 @@
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import
-  Tables Ext Arm Mount Propagation Userns Walk Clone MountArms.
+  Tables Ext Arm Mount Propagation Userns Walk Clone Files MountArms.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Ns Require MountArmsCases CloneCases.
 Import ListNotations.
 
@@ -48,7 +48,7 @@ Definition world (ms : list Mount) (owner2 : positive) : NsState :=
   let base := MountArmsCases.state false false [] in
   let st := with_mounts empty_nsstate ms in
   let st := with_userns st (ns_userns base) in
-  let st := with_mntns st [mkMntNs 1 1 1 false; mkMntNs 2 owner2 5 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false; mk_mntns 2 owner2 5 false] in
   let st := with_pidns st (ns_pidns base) in
   let st := with_sbs st [MountArmsCases.sb 1 1 SbHost; MountArmsCases.sb 2 20 SbTmpfs;
                          MountArmsCases.sb 3 30 SbTmpfs; MountArmsCases.sb 4 40 SbTmpfs] in
@@ -274,7 +274,7 @@ Proof. split; vm_compute; reflexivity. Qed.
 Definition clone_world : NsState :=
   let st := with_mounts empty_nsstate [m1; m2; shared 7 (mt 6 1 (Some 1) 4 20 2)] in
   let st := with_userns st (ns_userns CloneCases.inside) in
-  let st := with_mntns st [mkMntNs 1 2 1 false] in
+  let st := with_mntns st [mk_mntns 1 2 1 false] in
   let st := with_pidns st (ns_pidns CloneCases.inside) in
   with_netns st (ns_netns CloneCases.inside).
 
@@ -285,3 +285,142 @@ Example clone_newns_copy_after_original : forall m,
                                       clone_world 140))
   = Some (Some [2; 8; 6; 9]).
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** An outside task can change even private mounts of namespace 1. No
+    outside peer group is needed for this uncertainty. *)
+Definition entered_a : NsState := with_entered_mntns st_a [1].
+
+Eval vm_compute in (env_open_groups (ns_env entered_a),
+                    open_mount entered_a 1, ns_open entered_a 1,
+                    targets_open entered_a (Some PPrivate) 1 false,
+                    MountArmsCases.ret_of (bind_out entered_a bind_flags)).
+
+Example entered_bind_declines : bind_out entered_a bind_flags = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example entered_private_mount_and_namespace :
+  (open_mount entered_a 1, ns_open entered_a 1,
+   targets_open entered_a (Some PPrivate) 1 false,
+   ns_top_open entered_a m1) = (true, true, true, true).
+Proof. vm_compute. reflexivity. Qed.
+
+(** Private A can be put into B's shared group through SET_GROUP: its
+    superblock, not only its current peer field, exposes B's group. *)
+Definition set_group_world (same_sb : bool) : NsState :=
+  with_entered_mntns
+    (world [m1; mt 2 1 (Some 1) 2 20 2; m5;
+            shared 11 (mt 6 2 (Some 5) 2 20 (if same_sb then 2 else 3))] 1) [1].
+
+Example entered_set_group_source_uncertainty :
+  (open_reach (set_group_world true) (shared 11 (mt 6 2 (Some 5) 2 20 2)),
+   is_open (set_group_world true) 11,
+   open_mount (set_group_world true) 6,
+   open_mount (set_group_world false) 6) = (true, true, true, false).
+Proof. vm_compute. reflexivity. Qed.
+
+Example entered_group_rejects_ring :
+  prop_okb (with_ns_prop (set_group_world true)
+                         (pl_with_rings empty_prop [(11, [6])])) = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Definition anonymous (id : positive) (origin : option positive) : MntNs :=
+  mntns_with_origin (mntns_with_anon (mk_mntns id 1 id false) true) origin.
+
+(** Add the anonymous records AFTER choosing the launch environment. *)
+Definition anonymous_world (entered : list positive) : NsState :=
+  let st := with_entered_mntns (world [m1; m5] 1) entered in
+  let st := with_mntns st (ns_mntns st ++
+              [anonymous 3 (Some 1); anonymous 4 (Some 2); anonymous 7 None]) in
+  with_mounts st (ns_mounts st ++ [mt 3 3 None 30 30 3;
+                                  mt 4 4 None 40 40 4; mt 7 7 None 20 20 2]).
+
+Example anonymous_origin_controls :
+  map (open_mount (anonymous_world [1])) [3; 4; 7] = [true; false; true]
+  /\ map (open_mount (anonymous_world [2])) [3; 4; 7] = [false; true; true]
+  /\ map (open_mount (anonymous_world [9])) [3; 4; 7] = [false; false; true]
+  /\ map (open_mount (anonymous_world [])) [3; 4; 7] = [false; false; false].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example clone_entered_namespace_copy : forall m,
+  option_map (fun s => (env_entered_mntns (ns_env s),
+                        open_mount s 7, open_mount s 8,
+                        pl_find 7 (pl_rings (ns_prop s))))
+    (CloneCases.st_of (clone_ns_exact (Z.lor CLONE_NEWNS CloneCases.SIGCHLD)
+          (with_creds (CloneCases.creds 65534) m) CloneCases.shell
+          (with_entered_mntns clone_world [1]) 140))
+  = Some ([2; 1], true, true, None).
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example clone_preserves_other_uncertainty : forall m,
+  option_map (fun s => (env_entered_mntns (ns_env s), open_mount s 8))
+    (CloneCases.st_of (clone_ns_exact (Z.lor CLONE_NEWNS CloneCases.SIGCHLD)
+          (with_creds (CloneCases.creds 65534) m) CloneCases.shell
+          (with_open_groups (with_entered_mntns clone_world [9]) [7]) 140))
+  = Some ([9], true).
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Print Assumptions entered_bind_declines.
+Print Assumptions anonymous_origin_controls.
+Print Assumptions clone_entered_namespace_copy.
+
+Example entered_list_survives_environment_setters : forall e,
+  map env_entered_mntns
+    [env_with_mount_max e 12; env_with_proc_entries e [];
+     env_with_net_fallback e []; env_with_mountinfo e default_mi_env;
+     env_with_nl_link_max e 42; env_with_host_absent e [];
+     env_with_foreign_pgroups e true; env_with_open_groups e [9];
+     env_with_overflow_ids e None]
+  = repeat (env_entered_mntns e) 9.
+Proof. reflexivity. Qed.
+
+Example anonymous_setters_preserve_other_facts : forall n,
+  (mntns_id (mntns_with_anon n true), mntns_owner (mntns_with_anon n true),
+   mntns_root (mntns_with_anon n true), mntns_released (mntns_with_anon n true),
+   mntns_origin (mntns_with_anon n true))
+  = (mntns_id n, mntns_owner n, mntns_root n, mntns_released n, mntns_origin n)
+  /\ (mntns_id (mntns_with_origin n (Some 9)), mntns_owner (mntns_with_origin n (Some 9)),
+      mntns_root (mntns_with_origin n (Some 9)), mntns_released (mntns_with_origin n (Some 9)),
+      mntns_anon (mntns_with_origin n (Some 9)))
+     = (mntns_id n, mntns_owner n, mntns_root n, mntns_released n, mntns_anon n).
+Proof. split; reflexivity. Qed.
+
+(** The launch list precedes the anonymous tree and a possible host
+    attachment on its "d" child. A held descriptor must not make the
+    old topology an exact answer. A normal component crosses mounts;
+    "." does not (Linux v6.18.46, fs/namei.c:2096-2157). *)
+Definition anonymous_fd_world (entered : list positive) (attached : bool) : NsState :=
+  let st := anonymous_world entered in
+  let st := if attached then with_mounts st (ns_mounts st ++ [mt 8 7 (Some 7) 21 30 3])
+            else st in
+  with_files st [(7%N, mkNsFile (NfPath (LDentry 7 20)) O_PATH (mkIdCred 1 0 0 0))].
+
+Example anonymous_fd_host_attachment_declines : forall attached,
+  walk_from (MountArmsCases.model_fd 3 7%N) MountArmsCases.c_admin
+    (anonymous_fd_world [9] attached) (walk_creds MountArmsCases.base_model)
+    3 n_d
+    (mkWalkFlags true false false false false) = (WOver, false).
+Proof. intros []; vm_compute; reflexivity. Qed.
+
+Example anonymous_fd_closed_controls :
+  walk_from (MountArmsCases.model_fd 3 7%N) MountArmsCases.c_admin
+    (anonymous_fd_world [] false) (walk_creds MountArmsCases.base_model)
+    3 n_d
+    (mkWalkFlags true false false false false) = (WOk (LDentry 7 21), false)
+  /\ walk_from (MountArmsCases.model_fd 3 7%N) MountArmsCases.c_admin
+    (anonymous_fd_world [] true) (walk_creds MountArmsCases.base_model)
+    3 n_d
+    (mkWalkFlags true false false false false) = (WOk (LDentry 8 30), false).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Print Assumptions closed_no_outside_event.
+Print Assumptions targets_open_closed.
+Print Assumptions ns_top_open_closed.
+Print Assumptions prop_okb_ok.
+Print Assumptions entered_list_survives_environment_setters.
+Print Assumptions anonymous_setters_preserve_other_facts.
+Print Assumptions anonymous_fd_host_attachment_declines.
+Print Assumptions entered_set_group_source_uncertainty.
+Print Assumptions entered_group_rejects_ring.
+Print Assumptions clone_preserves_other_uncertainty.
+Print Assumptions entered_private_mount_and_namespace.
+Print Assumptions anonymous_fd_closed_controls.

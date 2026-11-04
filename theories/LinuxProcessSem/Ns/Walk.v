@@ -177,23 +177,18 @@ Fixpoint topmost_open_fuel (fuel : nat) (st : NsState) (m : Mount) : bool :=
            | None => false
            end
   end.
-
-(** A mount of the stack [ns_top] climbs from [r] can receive such an
-    event.  Computed only when the launch names an open group, as
-    [Propagation.open_mount]. *)
-Definition ns_top_open (st : NsState) (r : Mount) : bool :=
-  match env_open_groups (ns_env st) with
-  | [] => false
-  | _ => topmost_open_fuel (length (ns_mounts st)) st r
+(** With both launch lists empty, topmost mounts cannot be changed from
+    outside; otherwise account for every mount that the root walk reads. *)
+Definition ns_top_open (st : NsState) (root_m : Mount) : bool :=
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => topmost_open_fuel (S (length (ns_mounts st))) st root_m
   end.
 
-(** With no open group, the default launch, no mount of the stack is open:
-    [ns_top] is the top. *)
 Theorem ns_top_open_closed : forall st r,
-  env_open_groups (ns_env st) = [] -> ns_top_open st r = false.
-Proof.
-  intros st r H. unfold ns_top_open. rewrite H. reflexivity.
-Qed.
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  ns_top_open st r = false.
+Proof. intros st r H E. unfold ns_top_open. rewrite H, E. reflexivity. Qed.
 
 (* =========================================================================
    Path text

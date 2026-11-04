@@ -14,8 +14,9 @@ tools/record_builders.json.  A count above the recorded one, or a file not
 recorded, FAILS: write the new code through the accessors and setters.  A
 place that must build the record by position (the record's own setters, a
 fixture that pins every field) is recorded by running this script with
---update in the same change, where a reviewer sees the new count.  A name in
-square brackets (a coqdoc reference, [mkProcState]) is not counted.
+--update in the same change, where a reviewer sees the new count. A bare
+name in square brackets (a coqdoc reference, [mkProcState]) is not counted;
+an application at the start of a list is counted.
 
   check_record_builders.py            check (CI)
   check_record_builders.py --update   rewrite tools/record_builders.json
@@ -34,9 +35,10 @@ CONSTRUCTORS = [
     "mkNsState",         # Ns.Tables.NsState
     "mkNsEnv",           # Ns.Tables.NsEnv
     "mkNsCtx",           # Ns.Tables.NsCtx
+    "mkMntNs",           # Ns.Tables.MntNs
 ]
 BASELINE = "tools/record_builders.json"
-PATTERN = re.compile(r"(?<![\[A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?![A-Za-z0-9_'\]])")
+PATTERN = re.compile(r"(?<![A-Za-z0-9_'.])(" + "|".join(CONSTRUCTORS) + r")(?![A-Za-z0-9_'\]])")
 
 
 def counts():

@@ -38,7 +38,7 @@ Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsStat
      mnt 3 (Some 2%positive) 22 30 3 false false;
      mnt 4 (Some 2%positive) 23 40 4 false false] in
   let st := with_userns st [user0] in
-  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false] in
   let st := with_pidns st [mkPidNs 1 None 1 0 0] in
   let st := with_sbs st [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 SbTmpfs; sb 4 40 SbTmpfs] in
   let st := with_tree st
@@ -455,6 +455,45 @@ Example targets_open_default :
   /\ targets_open (state false false []) (Some PPrivate) 1 true = false
   /\ targets_open (state false false []) None 1 true = false.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** Only the entered list is nonempty; private targets reached through a
+    descriptor must not bypass the topology guard. *)
+Example entered_private_setattr_declines :
+  mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+    (with_entered_mntns (state false false [(7%N, path_file)]) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example entered_private_propagation_declines :
+  mount_fn (mount_input s_root s_root MS_PRIVATE) base_model c_admin
+    (with_entered_mntns (state false false []) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example both_uncertainty_lists_default :
+  (env_open_groups (ns_env (state false false [])),
+   env_entered_mntns (ns_env (state false false []))) = ([], []).
+Proof. reflexivity. Qed.
+
+(** With only an entered receiver, the selected mount is closed. A
+    propagation change still reads the receiver through change_type_reads. *)
+Definition st_entered_slave : NsState :=
+  with_entered_mntns
+    (with_mounts st_slave9
+      (map (fun x => if Pos.eqb (mnt_id x) 4 then mnt_with_ns x 2 else x)
+           (ns_mounts st_slave9))) [2%positive].
+
+Example entered_slave_change_reads :
+  (open_mount st_entered_slave 3, targets_open st_entered_slave None 3 false,
+   targets_open st_entered_slave (Some PPrivate) 3 false) = (false, false, true)
+  /\ mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin st_entered_slave
+     = EUnmodeled
+  /\ mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE)
+       base_model c_admin st_entered_slave = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions entered_private_setattr_declines.
+Print Assumptions entered_private_propagation_declines.
+Print Assumptions entered_slave_change_reads.
+Print Assumptions both_uncertainty_lists_default.
 
 (** Row 442 admits the group-id allocator's ENOSPC, and still satisfies
     the rule of a row ([Arm.ni_forced_ok]). *)

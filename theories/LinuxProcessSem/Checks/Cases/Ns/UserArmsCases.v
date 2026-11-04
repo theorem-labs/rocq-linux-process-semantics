@@ -30,7 +30,7 @@ Definition init_uns (max : Z) (sealed : bool) : UserNs :=
 Definition world (us : list UserNs) : NsState :=
   let w := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] in
   let w := with_userns w us in
-  with_mntns w [mkMntNs 1 1 1 false].
+  with_mntns w [mk_mntns 1 1 1 false].
 
 Definition task (user : positive) (root : positive * positive) (caps : CapSets) : NsCtx :=
   with_caps (with_cwd (with_root (with_pids (with_user_ns init_nsctx user) [(1%positive, 2)]) root) root) caps.
