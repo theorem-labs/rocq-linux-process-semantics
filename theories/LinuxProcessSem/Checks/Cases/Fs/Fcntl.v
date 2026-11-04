@@ -460,7 +460,6 @@ Proof.
     split; [vm_compute; reflexivity|check_eq]]].
 Qed.
 
-<<<<<<< HEAD
 (** F_GETFL ON THE /proc/self/fd DIRECTORY ([State.OProcFdDir]).  musl's
     [fdopendir] reads the flag word to refuse an O_PATH descriptor.
     Linux answers the open word with O_LARGEFILE forced on a 64-bit
@@ -470,10 +469,19 @@ Qed.
     is rejected.
 
     THE CONTROL is answered alike by the old text and the new: F_GETFL
-    on an eventfd ([State.OEventFd]) at the same number declines. *)
+    on a signalfd ([State.OSignalFd]) at the same number declines.  A
+    shared eventfd ([State.OEventFd]) at that number is no control: it
+    answers F_GETFL from its word ([Fcntl.oeventfd_f_flags]), O_RDWR
+    plus the O_NONBLOCK bit, 0x802 for the word 0x80800, so the
+    0x80802 below is rejected rather than declined. *)
 Definition procfd_fcntl_model : Model :=
   with_fds (fd_insert (m_fds fcntl_model) 9
               (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+    fcntl_model.
+
+Definition sigfd_fcntl_model : Model :=
+  with_fds (fd_insert (m_fds fcntl_model) 9
+              (FdOpaque (OSignalFd (Z_to_bv 64 0) (Z_to_bv 64 0x80800))))
     fcntl_model.
 
 Definition efd_fcntl_model : Model :=
@@ -488,9 +496,14 @@ Example fcntl_getfl_proc_self_fd_directory :
        (mkEffect 0x98900 [] []) procfd_fcntl_model = CheckReject
   (* the control *)
   /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0x80802 [] []) efd_fcntl_model = CheckUnmodeled.
+       (mkEffect 0x80802 [] []) sigfd_fcntl_model = CheckUnmodeled
+  (* the shared eventfd: answered, and not with this word *)
+  /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0x80802 [] []) efd_fcntl_model = CheckReject
+  /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0x802 [] []) efd_fcntl_model = CheckOk efd_fcntl_model [].
 Proof. repeat split; check_eq. Qed.
-=======
+
 (* ===================================== F_GETFL / F_SETFL on a stream-pair end
 
    The one kind whose F_SETFL CHANGES the model: the end records its
@@ -560,4 +573,3 @@ Example fcntl_setfl_on_a_stream_end_declines_other_bits :
   /\ check_syscall (mkInput 25 [3; 4; 2048; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) fcntl_pair_model = CheckReject.
 Proof. split; [|split]; vm_compute; reflexivity. Qed.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492

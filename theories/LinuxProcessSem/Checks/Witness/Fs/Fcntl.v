@@ -128,12 +128,14 @@ Proof.
         -- (* one arm per fd kind: the stream-pair end's [stream_setfl],
               the eventfd's [eventfd_setfl], the shared eventfd's
               [oeventfd_setfl], every other kind's [setfl_noop_on] *)
-           destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+           destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0];
              (eapply bind_step; [apply get_model_ok|]); cbv beta iota; srw Hfd;
              [ .. | apply stream_setfl_witness_ok | apply eventfd_setfl_witness_ok
                   | idtac | idtac
-                  | destruct o as [q|q|w|h]; cbv beta iota;
-                    [ idtac | idtac | apply oeventfd_setfl_witness_ok | idtac ] ];
+                  | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota;
+                    [ idtac | idtac | apply oeventfd_setfl_witness_ok
+                    | idtac | idtac | idtac | idtac ]
+                  | idtac ];
              match goal with
              | |- context [setfl_noop_on ?e arg] =>
                  destruct (setfl_noop_on e arg); cbv beta iota;

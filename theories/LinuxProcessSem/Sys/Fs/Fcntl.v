@@ -269,23 +269,19 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
       (* FAIL-CLOSED.  On an O_PATH descriptor F_SETFL is not in
          [check_fcntl_cmd]'s allow-list, so [SYSCALL_DEFINE3(fcntl)]
          answers -EBADF before [setfl] runs (fs/fcntl.c, read at
-<<<<<<< HEAD
-         v6.18.44; identical at v6.18.46); an eventfd's, a /proc/sys
-         file's and a signalfd's [f_flags] word is not on the entry, and
-         the /proc/self/fd directory's is, but [F_GETFL] reads it there
-         ([getfl_f_flags]), so a write to it would have to be recorded.
-         None of the answers is written. *)
+         v6.18.44; identical at v6.18.46); a /proc/sys file's and a
+         signalfd's [f_flags] word is not on the entry, and the
+         /proc/self/fd directory's is, but [F_GETFL] reads it there
+         ([getfl_f_flags]), so a write to it would have to be recorded;
+         an [ONsFile]'s object is of unknown type.  None of the answers
+         is written.  A shared eventfd ([State.OEventFd]) never asks this
+         predicate: [fcntl_spec] answers its F_SETFL through
+         [oeventfd_setfl]. *)
   | FdSeqpacket _ _ _ => false
       (* DECLINED.  The end's [f_flags] is known to be [O_RDWR]:
          [socketpair] declines SOCK_NONBLOCK and this arm declines
          F_SETFL.  [sock_alloc_file] sets the word (net/socket.c:483-485,
          v6.18.46).  The [setfl] cases for this kind are not written. *)
-=======
-         v6.18.44; identical at v6.18.46); a /proc/sys file's [f_flags]
-         word is not on the entry, and an [ONsFile]'s object is of
-         unknown type.  Neither answer is written.  A shared eventfd
-         ([State.OEventFd]) never asks this predicate: [fcntl_spec]
-         answers its F_SETFL through [oeventfd_setfl]. *)
   | FdStream _ _ _ => false
       (* NOT A NO-OP QUESTION AT ALL: a stream-pair end records the one
          bit [setfl] can change on it, so [fcntl_spec] answers its
@@ -316,7 +312,6 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          [modeled_open_flags_clear_of_setfl] covers, and the [FdFileRW]
          rule holds; with O_APPEND it is the [FdFileA] case, whose
          decline and reason are above *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -496,7 +491,6 @@ Remark socket_f_flags_clear_of_setfl :
   Z.land socket_f_flags setfl_acted_on = 0%Z.
 Proof. vm_compute. reflexivity. Qed.
 
-<<<<<<< HEAD
 (** [f_flags] of a /proc/self/fd directory opened with the word [fl]
     ([State.OProcFdDir]).  [SYSCALL_DEFINE4(openat)] adds O_LARGEFILE
     ([force_o_largefile] holds on riscv64), [build_open_how] keeps the
@@ -518,7 +512,6 @@ Proof. vm_compute. reflexivity. Qed.
       fs/fcntl.c [do_fcntl]: read at v6.18.44; identical at v6.18.46. *)
 Definition procfd_dir_f_flags (fl : word) : Z :=
   Z.ldiff (Z.lor (bv_unsigned fl) O_LARGEFILE) (O_CLOEXEC + O_NOCTTY).
-=======
 (** THE WHOLE OF A STREAM-PAIR END'S [f_flags]: [socket_f_flags] plus
     O_NONBLOCK exactly when the end is non-blocking.
 
@@ -636,7 +629,6 @@ Definition oeventfd_setfl (fd w arg : word) (m : Model) : Sys SyscallEffect :=
                                         (Z.testbit (bv_unsigned arg) 11))))) ;;
        ret_only (Z_to_bv 64 0)
   else unmodeled.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** What [F_GETFL] answers, per fd kind: [Some w] where the model can
     derive [filp->f_flags] exactly, [None] where it cannot.
@@ -784,38 +776,28 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          rest on the entry rather than on the sole shape pipe2 currently
          admits, and this arm and [setfl_noop_on]'s should move
          together when it does. *)
-<<<<<<< HEAD
   | FdOpaque (OProcFdDir fl _) => Some (Z_to_bv 64 (procfd_dir_f_flags fl))
       (* ANSWERED: the /proc/self/fd directory records the open word, and
          [procfd_dir_f_flags] derives [f_flags] from it.  musl's
          [fdopendir] (src/dirent/fdopendir.c, musl 1.2.6) reads it with
          [fcntl(fd, F_GETFL)] to refuse an O_PATH descriptor before it
          lists the directory, so bubblewrap's [fdwalk] needs it *)
-  | FdOpaque _ => None
-      (* DECLINED.  F_GETFL is in [check_fcntl_cmd]'s allow-list, so an
-         O_PATH descriptor answers its [f_flags] (O_PATH and the bits
-         [build_open_how] kept); an eventfd's word is [O_RDWR] plus the
-         EFD_ bits [do_eventfd] passes on; a signalfd's is [O_RDWR] plus
-         the SFD_NONBLOCK bit [do_signalfd4] passes on; a /proc/sys
-         file's is the open word; an [ONsFile]'s depends on its unknown
-         object.  The entry records none of the five words exactly
-         (fs/fcntl.c, fs/open.c, fs/eventfd.c, fs/signalfd.c, read at
-         v6.18.44; identical at v6.18.46). *)
-  | FdSeqpacket _ _ _ => None
-      (* DECLINED.  [setfl_noop_on]'s invariant fixes the word at
-         [O_RDWR] ([sock_alloc_file], net/socket.c:483-485, v6.18.46).
-         This answer has not been implemented for this kind. *)
-=======
   | FdOpaque (OEventFd w) => Some (Z_to_bv 64 (oeventfd_f_flags w))
       (* a shared eventfd: the eventfd's word, its O_NONBLOCK bit kept in
          [w]: see [oeventfd_f_flags] *)
   | FdOpaque _ => None
       (* DECLINED.  F_GETFL is in [check_fcntl_cmd]'s allow-list, so an
          O_PATH descriptor answers its [f_flags] (O_PATH and the bits
-         [build_open_how] kept); a /proc/sys file's is the open word; an
-         [ONsFile]'s depends on its unknown object.  The entry records
-         none of the three words exactly (fs/fcntl.c, fs/open.c, read at
-         v6.18.44; identical at v6.18.46). *)
+         [build_open_how] kept); a signalfd's is [O_RDWR] plus the
+         SFD_NONBLOCK bit [do_signalfd4] passes on; a /proc/sys file's is
+         the open word; an [ONsFile]'s depends on its unknown object.
+         The entry records none of the four words exactly (fs/fcntl.c,
+         fs/open.c, fs/signalfd.c, read at v6.18.44; identical at
+         v6.18.46). *)
+  | FdSeqpacket _ _ _ => None
+      (* DECLINED.  [setfl_noop_on]'s invariant fixes the word at
+         [O_RDWR] ([sock_alloc_file], net/socket.c:483-485, v6.18.46).
+         This answer has not been implemented for this kind. *)
   end.
 
 (** The one kind on which [F_GETFD] DECLINES: a shared eventfd
@@ -835,22 +817,15 @@ Definition getfd_declines (e : FdEntry) : bool :=
   match e with
   | FdOpaque (OEventFd _) => true
   | _ => false
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on
     every other one.  Three of the four are answered on every fd kind —
     [F_GETFD] with BOTH of the answers Linux can give, because the model
-<<<<<<< HEAD
-    does not record the bit it reports; the fourth, [F_GETFL], is
-    answered on the kinds whose flag word is a function of the entry,
-    and [getfl_f_flags] above holds that argument.
-=======
     does not record the bit it reports, and declined on a shared eventfd
-    ([getfd_declines]); the fourth, [F_GETFL], is
-    answered on the one kind whose flag word is a function of the
-    constructor, and [getfl_f_flags] above holds that argument.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    ([getfd_declines]); the fourth, [F_GETFL], is answered on the kinds
+    whose flag word is a function of the entry, and [getfl_f_flags]
+    above holds that argument.
 
     Dropbear is the reason this exists.  It is the only fcntl caller in
     reach: this repository's own reference binaries are static,
@@ -984,22 +959,14 @@ Definition getfd_declines (e : FdEntry) : bool :=
     EVERY OTHER COMMAND DECLINES, as does [F_GETFL] on the kinds it
     cannot answer:
 
-<<<<<<< HEAD
-    - [F_GETFL] is answered on [State.FdSocket] and on the /proc/self/fd
-      directory ([State.OProcFdDir]), and declined on every
-      other fd kind.  [getfl_f_flags] above carries the whole argument
-      — the derivation of a socket's flag word, why a channel's is the
-      environment's, and why the [openat] kinds lose the answer to
-      an ignored O_NONBLOCK — so it is not restated here.
-=======
     - [F_GETFL] is answered on [State.FdSocket], [State.FdStream],
-      [State.FdEventfd], [State.FdDgram] and a shared eventfd
-      ([State.OEventFd]) and declined on every other
+      [State.FdEventfd], [State.FdDgram], a shared eventfd
+      ([State.OEventFd]) and the /proc/self/fd directory
+      ([State.OProcFdDir]), and declined on every other
       fd kind.  [getfl_f_flags] above carries the whole argument — the
       derivation of a socket's and an eventfd's flag word, why a
       channel's is the environment's, and why the [openat] kinds lose
       the answer to an ignored O_NONBLOCK — so it is not restated here.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     - [F_DUPFD] / [F_DUPFD_CLOEXEC] are [dup] in disguise: they mint a
       second descriptor onto one open file description, which the fd
       table cannot express (an [FdEntry] carries its own offset, so two
