@@ -116,7 +116,7 @@ Definition alloc_pids (chain : list PidNs) (hq : Z)
             let p := pidns_last x + 1 in
             if PID_MAX <=? p then None
             else Some ((pidns_id x, p) :: ps,
-                       mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x) (pidns_level x) p :: ns)
+                       pidns_with_last x p :: ns)
         | None => Some ((pidns_id x, hq) :: ps, ns)
         end
     end) (Some ([], [])) chain.
@@ -231,7 +231,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                       if negb (in_userns U (pidns_owner par) (cc_user cc)) then inl EINVAL
                       else if Nat.leb 32 (pidns_level par) then inl ENOSPC
                       else let nid := Pos.succ (max_pidns_id st) in
-                           inr (nid, [mkPidNs nid (Some active) (cc_user cc) (S (pidns_level par)) 0])
+                           inr (nid, [mk_pidns nid (Some active) (cc_user cc) (S (pidns_level par)) 0])
                   | None => inl 0
                   end
                 else inr (active, []) in
@@ -288,8 +288,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
 Definition pid_advanced (st : NsState) (active : positive) : NsState :=
   let chain := pidns_chain (length (ns_pidns st)) st active in
   let bumped := flat_map (fun x => match pidns_parent x with
-                                   | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-                                                        (pidns_level x) (pidns_last x + 1)]
+                                   | Some _ => [pidns_with_last x (pidns_last x + 1)]
                                    | None => []
                                    end) chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
@@ -315,8 +314,7 @@ Proof.
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
   unfold pid_advanced.
   assert (Hb : flat_map (fun x => match pidns_parent x with
-                                  | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-                                                       (pidns_level x) (pidns_last x + 1)]
+                                  | Some _ => [pidns_with_last x (pidns_last x + 1)]
                                   | None => []
                                   end)
                         (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).

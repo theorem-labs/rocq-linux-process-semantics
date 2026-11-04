@@ -36,7 +36,7 @@ Definition host : NsState :=
   let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 nf nf false false None None] in
   let st := with_userns st [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false] in
   let st := with_mntns st [mkMntNs 1 1 1 true] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   with_netns st [mkNetNs 1 1 [] false].
 
 (** bubblewrap's parent: pid 136 of the host, uid 65534, no capability. *)
