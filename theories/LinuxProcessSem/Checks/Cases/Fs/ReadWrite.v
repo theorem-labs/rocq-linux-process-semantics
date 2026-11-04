@@ -276,12 +276,13 @@ Proof.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
-     too, and so does a pipe READ end, an O_RDWR file, a /proc/sys file
-     ([State.OProcFile]) and an eventfd ([State.OEventFd]), so each gets a
-     bullet rather than a one-line
+     too, and so does a pipe READ end, a stream-pair end, an O_RDWR file,
+     a /proc/sys file ([State.OProcFile]) and a shared eventfd
+     ([State.OEventFd]), so each gets a bullet rather than a one-line
      dismissal.  The two write-only kinds ([FdFileW] and the append
      [FdFileA]) are the -EBADF pair. *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -296,8 +297,24 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* stream-pair end: the range verdict, the zero count, then a
+           delivery of [pipe_take] of the queue at the clamped count *)
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec) | ];
+        destruct (w_is0 count); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec)
+          | exact (check_stream_read_delivery_clamped
+                     _ _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* eventfd: the range verdict, then the eight bytes of the count *)
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec)
+          | exact (check_eventfd_read_delivery_clamped
+                     _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* datagram socket: declined, never an [Ok] *)
+        discriminate Hspec
+      |
       | (* the opaque kinds: a /proc/sys file delivers at most [count]
-           bytes under the count gate, an eventfd 8 *)
+           bytes under the count gate, a shared eventfd 8 *)
         exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws)
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
@@ -467,6 +484,39 @@ Proof.
                     <= Z.max 0 (rw_count_clamp count))%Z).
     { rewrite <- Hdel. apply pipe_take_length. }
     pose proof (rw_count_clamp_range count). lia.
+  - (* unnamed file: the O_RDWR bullet above, on the entry's own
+       contents and offset, and the same [file_read] bound *)
+    destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in Hspec;
+      [discriminate Hspec|].
+    destruct (negb (af_rd af)); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
+    destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
+    cbv zeta in Hspec.
+    destruct (file_read (af_data af) (af_off af) (Z_to_bv 64 (rw_count_clamp count)))
+      as [|b bsr] eqn:Hbs; cbv iota in Hspec.
+    + destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)));
+        cbv iota in Hspec.
+      * now destruct (Hro _ _ _ Hspec).
+      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
+          cbv iota in Hspec;
+          [discriminate|now destruct (Hro _ _ _ Hspec)].
+    + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)));
+        cbv iota in Hspec.
+      2: { destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
+             cbv iota in Hspec;
+             [discriminate|now destruct (Hro _ _ _ Hspec)]. }
+      destruct eff as [ret ws zs us cs copyins]. cbn in Hws. subst ws.
+      destruct zs; destruct us; destruct cs; destruct copyins;
+        cbv iota in Hspec; try discriminate Hspec.
+      destruct (bv_eqb a buf && listN_eqb bs (b :: bsr)
+                && bv_eqb ret (len_word (b :: bsr))) eqn:Hcond;
+        cbv iota in Hspec; [|discriminate Hspec].
+      apply andb_true_iff in Hcond as [Hcond _].
+      apply andb_true_iff in Hcond as [_ Hbs'].
+      apply listN_eqb_eq in Hbs'. subst bs.
+      pose proof (file_read_clamped_len (af_data af) (af_off af) count) as Hl.
+      rewrite Hbs in Hl. exact Hl.
 Qed.
 
 (** ...and the rejecting direction: the specific lie no kernel in scope
@@ -2626,10 +2676,11 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
-  (* the opaque kinds, fifth of the survivors: [CheckUnmodeled] *)
-  5: discriminate.
+  (* the opaque kinds, sixth of the survivors (after the unnamed file):
+     [CheckUnmodeled] *)
+  6: discriminate.
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two
      TRANSFERRING kinds -- the O_WRONLY and O_RDWR descriptions, which
@@ -2645,6 +2696,36 @@ Proof.
          [now destruct (Hro _ _ _ H)|].
        destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;
          now destruct (Hro _ _ _ H). }
+  (* the unnamed file: the transferring arm on the descriptor's own
+     contents, whose ledger is the same [write_source] prefix *)
+  3: { destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H; [discriminate H|].
+       destruct (negb (af_wr af)); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+       destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+         [now destruct (Hro _ _ _ H)|].
+       destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;
+         [now destruct (Hro _ _ _ H)|].
+       cbv zeta in H.
+       destruct (negb (w_is0 count)
+                 && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
+         cbv iota in H.
+       { destruct (af_append af); cbv iota in H.
+         - apply check_ret_only_copyins_ok_iff in H.
+           destruct H as (-> & _ & _). cbn in Hc. discriminate.
+         - unfold check_anon_fault_extend in H.
+           destruct (negb (modeled_zero_fill (bv_unsigned pos) (af_data af)));
+             cbv iota in H; [discriminate|].
+           apply check_ret_only_copyins_ok_iff in H.
+           destruct H as (-> & _ & _). cbn in Hc. discriminate. }
+       destruct (negb (modeled_file_gap (af_data af)
+                         (if af_append af then len_word (af_data af) else pos)
+                         (write_source (in_mem i) buf count)));
+         cbv iota in H; [discriminate|].
+       destruct (w_is0 count); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+       apply check_ret_only_copyins_ok_iff in H.
+       destruct H as (-> & _ & _).
+       cbn in Hc. injection Hc as Ha Hn. subst n.
+       eapply Z.le_trans; [apply write_source_length_le|].
+       apply (proj2 (rw_count_clamp_range count)). }
   all: destruct (negb (access_okb buf (bv_unsigned count)));
        [now destruct (Hro _ _ _ H)|].
   all: destruct (rw_pos_einvalb pos (bv_unsigned count));
@@ -2823,14 +2904,16 @@ Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 (** The launch of [demo_input] with THE READER GONE: the far end of
     descriptors 1 and 2 is a pipe or a socket nothing reads any more,
     which is `prog | head -1` once [head] has had its line.  Everything
-    else is [demo_input]'s.  [Run.valid_input] pins the reader present
-    and so does not admit this launch; [Run.valid_input_channel_closed]
-    is the predicate that names it. *)
+    else is [demo_input]'s, except that this launch DECLARES the
+    SIGPIPE death (the last field, [State.in_sigpipe_terminal]), as
+    [Run.valid_input_channel_closed] -- the predicate that names it --
+    pins it.  [Run.valid_input] pins the reader present and the death
+    declined, and so does not admit this launch. *)
 Definition noreader_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   false true.
+                   false true true.
 
 (** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
@@ -2844,7 +2927,7 @@ Definition noreader_ignored_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   false false.
+                   false false false.
 
 Definition noreader_model : Model :=
   init_model [] 0 0 demo_sp demo_limit noreader_input.
@@ -2918,23 +3001,32 @@ Qed.
 
 (** A pipe whose READ END HAS BEEN CLOSED: fd 4 is the write end and no
     descriptor of pipe 0 is open for reading, which is what
-    [State.pipe_end_live _ 0 false] asks. *)
+    [State.pipe_end_live _ 0 false] asks.  Built on [State.mkModel],
+    which seeds SIGPIPE at SIG_DFL and the death NOT declared -- the
+    ordinary launch. *)
 Definition pipe_reader_gone_model : Model :=
   with_pipes [(0, (@nil byte, 0%Z))]
     (mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
               (4, FdPipe 0 true)]
        (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
 
-(** PAIR 3 — A WRITE TO A PIPE WITH NO READER IS ANSWERED, WHERE IT
-    USED TO BE REFUSED, AND THE PIPE'S OTHER ANSWERS ARE UNCHANGED.
+(** The same pipe on a launch that declares the SIGPIPE death, the
+    world [Run.valid_input_sigpipe_kills] names. *)
+Definition pipe_reader_gone_kills_model : Model :=
+  with_sigpipe_terminal true pipe_reader_gone_model.
+
+(** PAIR 3 — A WRITE TO A PIPE WITH NO READER IS ANSWERED ON A LAUNCH
+    THAT DECLARES THE DEATH, AND THE PIPE'S OTHER ANSWERS ARE UNCHANGED.
 
     This arm used to answer [unmodeled], on the argument that the model
     had no signals and no death that is not [exit].  It has both now,
-    so the call is judged: signal 13 and -EPIPE, fs/pipe.c
-    [anon_pipe_write] :460-465, repeated at the top of each loop
-    iteration at :501-506.
+    so on a launch that declares the death the call is judged: signal
+    13 and -EPIPE, fs/pipe.c [anon_pipe_write] :460-465, repeated at
+    the top of each loop iteration at :501-506.  On the ordinary launch
+    it still declines; [Checks.Cases.Fs.SigpipeLaunch] is that pair, on
+    launches proved valid and a pipe the program made with [pipe2].
 
-    The first conjunct is the new answer.  The second is the ordering
+    The first conjunct is the answer.  The second is the ordering
     that makes it sound, and it is not a stylistic one: the no-reader
     test is STRICTLY ABOVE the page allocation at :515 and its
     [ret = -ENOMEM] at :517-519, so a reader-less pipe can never answer
@@ -2948,14 +3040,14 @@ Definition pipe_reader_gone_model : Model :=
     end open the write delivers. *)
 Example write_pipe_no_reader_is_answered :
   check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
-  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_model) []
+    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_kills_model
+  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_kills_model) []
   /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-       (mkEffect (errno_ret ENOMEM) [] []) pipe_reader_gone_model
+       (mkEffect (errno_ret ENOMEM) [] []) pipe_reader_gone_kills_model
      = CheckReject
   /\ check_syscall (mkInput 64 [4; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
-       (mkEffect 0 [] []) pipe_reader_gone_model
-     = CheckOk pipe_reader_gone_model []
+       (mkEffect 0 [] []) pipe_reader_gone_kills_model
+     = CheckOk pipe_reader_gone_kills_model []
   /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
        (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) pipe_empty_model
      = CheckOk (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model) [].
@@ -2999,11 +3091,11 @@ Proof. vm_compute. discriminate. Qed.
 Example write_pipe_no_reader_wrapping_buffer_is_efault :
   check_syscall (mkInput 64 [4; pipe_noreader_wrap_buf; 2; 0; 0; 0]
                    pipe_noreader_wrap_mem (fun _ => None))
-    (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_model
-  = CheckOk pipe_reader_gone_model []
+    (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_kills_model
+  = CheckOk pipe_reader_gone_kills_model []
   /\ check_syscall (mkInput 64 [4; pipe_noreader_wrap_buf; 2; 0; 0; 0]
                       pipe_noreader_wrap_mem (fun _ => None))
-       (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
+       (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_kills_model
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -3013,11 +3105,11 @@ Proof. split; check_eq. Qed.
 Example write_pipe_no_reader_at_the_top_still_dies :
   check_syscall (mkInput 64 [4; pipe_noreader_top_buf; 2; 0; 0; 0]
                    pipe_noreader_top_mem (fun _ => None))
-    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
-  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_model) []
+    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_kills_model
+  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_kills_model) []
   /\ check_syscall (mkInput 64 [4; pipe_noreader_top_buf; 2; 0; 0; 0]
                       pipe_noreader_top_mem (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_model
+       (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_kills_model
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -3402,25 +3494,40 @@ Example read_proc_sys_partly_writable_declines :
 Proof. repeat split; check_eq. Qed.
 
 (* =========================================================================
-   read (63) and write (64) on an eventfd ([State.OEventFd])
+   read (63) and write (64) on an eventfd a clone shared ([State.OEventFd])
 
-   Before these arms the model declined both calls on every eventfd.
-   bubblewrap's monitor process writes 1 to its BLOCKING eventfd
-   (made with [EFD_CLOEXEC], 0x80000) and reads 8 bytes from its
-   NON-BLOCKING one (made with [EFD_CLOEXEC|EFD_NONBLOCK], 0x80800).
-   The counter is the environment's ([ReadWrite.read_eventfd_spec],
+   Before these arms the model declined both calls on the shared kind.
+   bubblewrap's monitor process, the parent after its namespace clone,
+   writes 1 to its BLOCKING eventfd (made with [EFD_CLOEXEC], 0x80000)
+   and reads 8 bytes from its NON-BLOCKING one (made with
+   [EFD_CLOEXEC|EFD_NONBLOCK], 0x80800).  The clone has turned both into
+   the shared kind ([Kernel.Fork.share_eventfds]), on which the counter
+   is the environment's ([ReadWrite.read_eventfd_spec],
    [ReadWrite.write_eventfd_spec]).
    ========================================================================= *)
 
-(** fd 3 an O_PATH descriptor on "/proc", fd 4 a non-blocking eventfd,
-    fd 5 a blocking one, fd 6 a non-blocking semaphore eventfd. *)
-Definition efd_rw_model : Model :=
+(** The table before the clone: fd 3 an O_PATH descriptor on "/proc",
+    fd 4 a non-blocking eventfd, fd 5 a blocking one, fd 6 a non-blocking
+    semaphore eventfd, each with its counter ([State.FdEventfd]). *)
+Definition efd_rw_pre : Model :=
   let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
   with_fds (fd_insert (fd_insert (fd_insert (fd_insert (m_fds m)
               3 (FdOpaque (OProcPath [47; 112; 114; 111; 99])))
-              4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800))))
-              5 (FdOpaque (OEventFd (Z_to_bv 64 0x80000))))
-              6 (FdOpaque (OEventFd (Z_to_bv 64 (0x80800 + EFD_SEMAPHORE))))) m.
+              4 (FdEventfd (mkEventfdCtx 0 false true)))
+              5 (FdEventfd (mkEventfdCtx 0 false false)))
+              6 (FdEventfd (mkEventfdCtx 0 true true))) m.
+
+(** The state after a successful clone ([Kernel.Fork.clone_child_made]):
+    the three eventfds are the shared kind, with the words the clone
+    keeps (O_NONBLOCK 0x800, 0, and EFD_SEMAPHORE|O_NONBLOCK 0x801). *)
+Definition efd_rw_model : Model := clone_child_made efd_rw_pre.
+
+Example efd_rw_model_holds_the_shared_kind :
+  fd_lookup (m_fds efd_rw_model) 4 = Some (FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)))
+  /\ fd_lookup (m_fds efd_rw_model) 5 = Some (FdOpaque (OEventFd (Z_to_bv 64 0)))
+  /\ fd_lookup (m_fds efd_rw_model) 6
+     = Some (FdOpaque (OEventFd (Z_to_bv 64 (EFD_SEMAPHORE + O_NONBLOCK)))).
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** [read(fd, 0x10000, count)] into the 4079 writable bytes at 0x10000. *)
 Definition efd_read_in (fd count : word) : SyscallInput :=

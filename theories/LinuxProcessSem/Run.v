@@ -29,8 +29,8 @@
     source everywhere, so that its equivalence claim cannot be satisfied
     by a semantics too weak to follow the binary. *)
 
-From Stdlib Require Import ZArith NArith List.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From Stdlib Require Import ZArith NArith List String.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -243,8 +243,92 @@ Definition segment_reservation (s : Segment) : word * word :=
   let hi := page_round_up_Z (Z.of_N (seg_base s) + Z.of_N (seg_size s)) in
   (Z_to_bv 64 lo, Z_to_bv 64 (hi - lo)).
 
+(** The LOADER's reservations only.  [run] puts the kernel's own vDSO
+    text and vvar pages into the same segment list (see
+    [MemImageType.seg_kernel_map] and [vdso_segments] below), and they
+    are reserved by [State.init_reserved], from the ledger's own
+    [State.vdso_reserved].  Counting them here as well would put the
+    pair's top — which is just below [mm->mmap_base] — into
+    [valid_brk]'s [reserved_top], and no Linux break is up there. *)
 Definition segments_reserved (segs : list Segment) : list (word * word) :=
-  map segment_reservation segs.
+  map segment_reservation (filter (fun s => negb (seg_kernel_map s)) segs).
+
+(** ** The pair [execve] installs
+
+    Linux maps the vDSO text directly below [mm->mmap_base] and the
+    four vvar data pages directly below the text
+    ([__setup_additional_pages], arch/riscv/kernel/vdso.c, reached
+    through [ARCH_SETUP_ADDITIONAL_PAGES] in [load_elf_binary],
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The ledger
+    reserves exactly that range ([State.vdso_reserved] at
+    [State.vdso_top]); these are the same two ranges as SEGMENTS, so
+    that a load, a store and a fetch there are answered by the rules
+    every other address is answered by.
+
+    The TEXT carries the chosen image's bytes and is READABLE, so a
+    libc's lookup reads the ELF header, the program headers, the
+    dynamic section and the symbol, string and version tables with
+    ordinary machine loads.  It is marked WITHOUT 'x', although Linux
+    maps it PROT_READ|PROT_EXEC: the model's 'x' flag says "the model
+    fetches and executes these bytes", and of the vDSO's bytes it does
+    not — [Run.sstep]'s vDSO arm answers a call to an exported entry
+    with the system call's own specification, and
+    [RiscvSemantics.fetch_failure] answers every other address of the
+    text [MachineUnmodeled].  SCOPE.md names the difference.
+
+    The VVAR pages are readable and carry NO bytes, which is the
+    model's statement that it has the pages but not their contents.
+    Neither mapping is writable: the kernel maps both without
+    [VM_WRITE], so a store into either is the SIGSEGV
+    [RiscvSemantics.store_ok] delivers.
+
+    The pair is EMPTY when the ledger reserves nothing — a stack
+    pointer and a base so low that the pair would run off the bottom of
+    the address space, which [State.vdso_reserved] declines.  Such a
+    launch is not one Linux makes, and the entry premises exclude it;
+    the model simply has no pair there. *)
+Definition vdso_segments (kb : KernelBuild) (sp mbase : word) : list Segment :=
+  let top := page_round_down_Z
+               (Z.min (bv_unsigned mbase)
+                      (page_round_down_Z (bv_unsigned sp - stack_max_size))) in
+  let base := (top - vdso_len kb)%Z in
+  if (base <? page_size)%Z then []
+  else
+    let im := vdso_image_of kb in
+    let tbase := (top - vdso_text_pages kb * page_size)%Z in
+    [ {| seg_base  := Z.to_N base;
+         seg_size  := Z.to_N (vdso_vvar_pages * page_size);
+         seg_perms := "r--"%string;
+         seg_bytes := []; seg_kind := SegVdsoVvar |}
+    ; {| seg_base  := Z.to_N tbase;
+         seg_size  := Z.to_N (vdso_text_pages kb * page_size);
+         seg_perms := "r--"%string;
+         seg_bytes := vi_bytes im; seg_kind := SegVdsoText |} ].
+
+(** OPAQUE TO REDUCTION, and that is a performance decision with a
+    measured cause.  The text segment carries the whole measured image
+    — 5704 bytes in twelve chunks — so a [vm_compute] of any term that
+    mentions the run's segment list normalizes those bytes, even when
+    the address it is asking about lies in the binary's own segments
+    and [find_segment] answers before it reaches the pair.  One
+    [Example] of [Checks.Omni] ran for 59 minutes that way.
+
+    Opaque, the pair is one symbol: [find_segment] tests the binary's
+    segments, which come first, answers there, and never forces it.
+    Every fixture that is not ABOUT the vDSO therefore computes as it
+    did before the pair existed.  A proof that IS about the vDSO —
+    [Checks.Cases.Kernel.Vdso] — writes [Local Transparent
+    vdso_segments] and pays the cost once. *)
+Global Opaque vdso_segments.
+
+(** The segment list a RUN is read against: the binary's LOAD segments
+    and the pair above.  [Run.run] and every variant beside it use
+    this, and nothing else does, so the binary's own list stays what
+    [valid_brk] and [Equivalence.image_phdrs_readable] read. *)
+Definition run_segments (segs : list Segment) (inp : ProcInput)
+    (sp mbase : word) : list Segment :=
+  segs ++ vdso_segments (in_kernel inp) sp mbase.
+
 
 (** Where a step can go: on to another configuration, or the explicit
     error transition. *)
@@ -458,6 +542,129 @@ Definition sys_input (ms : machine_state) (x8 : word) : SyscallInput :=
   mkInput x8 (syscall_args ms) (ms_read_byte ms)
           (ms_writable_byte mi_loaded_segments ms).
 
+(* -------------------------------------------------------------------------
+   A vDSO call
+   ------------------------------------------------------------------------- *)
+
+(** Read the caller-saved registers, in [Vdso.vdso_caller_saved]'s
+    order, and write them back from a draw's answer.  A register the
+    draw's list is too short for keeps its value: a draw is a function
+    into [VdsoLeftovers] and nothing types its list's LENGTH, so the
+    model takes what the draw gives and no more. *)
+Definition vdso_read_regs (ms : machine_state) : list word :=
+  map (fun r => ms_reg ms (Z_to_bv 5 r)) vdso_caller_saved.
+
+Fixpoint vdso_write_regs (ms : machine_state) (rs : list Z) (vs : list word)
+    : machine_state :=
+  match rs, vs with
+  | r :: rs', v :: vs' =>
+      vdso_write_regs (set_reg ms (Z_to_bv 5 r) v) rs' vs'
+  | _, _ => ms
+  end.
+
+(** The frame's bytes before the call.  A byte the process has not
+    mapped reads 0 here rather than making the whole read fail: this is
+    an ARGUMENT to the draw, not an access the program made, and a draw
+    that is handed 0 for an unmapped byte still gives back a value the
+    write below declines to store.  Nothing the program can observe
+    turns on it. *)
+Fixpoint vdso_read_frame (m : word -> option byte) (a : word) (n : nat)
+    : list byte :=
+  match n with
+  | O => []
+  | S n' =>
+      (match m a with Some b => b | None => Z_to_bv 8 0 end)
+      :: vdso_read_frame m (a + 1) n'
+  end.
+
+(** Store the draw's frame bytes, skipping every address the process
+    has not mapped WRITABLE.  Skipping rather than faulting, and
+    skipping rather than creating a mapping, because the leftovers are
+    not a store the program made: on Linux the vDSO writes its own
+    frame inside the stack VMA, and a model that let them create
+    mappings below the stack window would answer a later load from an
+    address Linux faults on. *)
+Fixpoint vdso_write_frame (m : word -> option byte) (a : word)
+    (bs : list byte) : word -> option byte :=
+  match bs with
+  | [] => m
+  | b :: rest =>
+      let m' := match wview mi_loaded_segments m a with
+                | Some _ => fun x => if bv_eqb x a then Some b else m x
+                | None => m
+                end in
+      vdso_write_frame m' (a + 1) rest
+  end.
+
+Definition vdso_with_mem (ms : machine_state) (m : word -> option byte)
+    : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
+     ms_pc_val := ms_pc_val ms;
+     ms_svc_pending := ms_svc_pending ms;
+     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := m; ms_rom := ms_rom ms |}.
+
+Definition vdso_set_pc (ms : machine_state) (pc : word) : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
+     ms_pc_val := pc;
+     ms_svc_pending := None;
+     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := ms_mem ms; ms_rom := ms_rom ms |}.
+
+(** THE MACHINE STATE AFTER A vDSO CALL.
+
+    In the order the design states it: the draw's leftovers go into the
+    caller-saved registers and into [[sp - F, sp)]; then the system
+    call's own effect — its return value in a0 and the bytes it wrote
+    into the caller's buffers — goes on top, so the RESULT is the
+    specification's and not the draw's; then pc becomes ra.
+
+    sp, gp, tp and s0-s11 are untouched, because they are not in
+    [Vdso.vdso_caller_saved] and neither [apply_effect] nor this
+    function writes a register outside it and a0.  That is the psABI's
+    requirement on a compiled function, which the vDSO's functions are,
+    and [measure]'s step-5 report checks it against each image's
+    disassembly before the image joins the list. *)
+Definition vdso_post (ms : machine_state) (model : Model) (f : N)
+    (eff : SyscallEffect) : machine_state :=
+  let ra := ms_reg ms 1 in
+  let lo := ms_sp ms - Z_to_bv 64 (Z.of_N f) in
+  let left := vdr_draw (m_vdso model) (vdr_calls (m_vdso model))
+                       (vdso_read_regs ms)
+                       (vdso_read_frame (ms_read_byte ms) lo (N.to_nat f))
+                       (eff_ret eff) in
+  let ms1 := vdso_write_regs ms vdso_caller_saved (vl_regs left) in
+  let ms2 := vdso_with_mem ms1
+               (vdso_write_frame (ms_mem ms1) lo (vl_frame left)) in
+  vdso_set_pc (apply_effect ms2 eff) ra.
+
+(** WHERE THE MODEL DECLINES A CALL, with the reason each case is a
+    decline rather than an answer:
+
+    - no system call number ([__vdso_getrandom], [__vdso_rt_sigreturn]
+      — see [Vdso.vdso_fn_sysno]);
+    - the specification itself declines, which is every number this
+      development has no arm for, and every argument shape the arm it
+      does have declines;
+    - the outcome returns [-EFAULT].  The vDSO writes the result
+      ITSELF, with an ordinary store through the caller's pointer, so a
+      bad pointer kills the process there; only its FALLBACK to the
+      system call turns a bad pointer into [-EFAULT].  Which of the two
+      a given call takes depends on the clock source, which this model
+      does not carry, so it covers neither;
+    - the outcome halts the process.  No arm of a mapped number can,
+      and a model that let one halt through this arm would have to say
+      what the vDSO's own exit path is. *)
+Definition vdso_call_unmodeled (ms : machine_state) (model : Model)
+    (fn : VdsoFn) : Prop :=
+  vdso_fn_sysno fn = None
+  \/ (exists n, vdso_fn_sysno fn = Some n
+       /\ syscall_spec (sys_input ms (Z_to_bv 64 n)) model Unmodeled)
+  \/ (exists n eff model' evs,
+        vdso_fn_sysno fn = Some n
+        /\ syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs)
+        /\ (eff_ret eff = errno_ret EFAULT \/ m_halted model' <> None)).
+
 (** One transition. *)
 Inductive sstep : config -> list event -> step_to -> Prop :=
 | sstep_instr : forall ms model ms' model',
@@ -470,10 +677,70 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     ms_svc_pending ms = None ->
     mi_account_step ms model = MachineFault ->
     sstep (mkCfg ms model) [] SError
+(** The MODEL gave up on the instruction at pc.
+
+    The vDSO's text is not one of those places, which is what the last
+    premise says.  [RiscvSemantics.step_accesses] answers
+    [MachineUnmodeled] for EVERY pc in the text — the model does not
+    run the vDSO's instructions — and at the ENTRY of an exported
+    symbol the three arms below say what the step is instead.  Without
+    this premise both would fire, and every program that reads the
+    clock through its libc would reach the error transition. *)
 | sstep_instr_unmodeled : forall ms model,
     m_halted model = None ->
     ms_svc_pending ms = None ->
     mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = None ->
+    sstep (mkCfg ms model) [] SError
+(** A CALL TO AN EXPORTED vDSO ENTRY: one step, with the system call's
+    own specification applied to a0-a5.
+
+    The vDSO answers from the same clocks the system call reads and
+    falls back to the system call for everything else
+    ([__cvdso_clock_gettime_common], lib/vdso/gettimeofday.c, Linux
+    v6.18.46, commit 1f99e9ab748f), so the return value, the bytes it
+    writes and the model it leaves are the system call's.  Handing
+    [Specs.syscall_spec] the number rather than copying the
+    specification is what makes the two routes agree by construction:
+    see [Checks.Cases.Kernel.Vdso]'s agreement lemma, which is then a
+    statement about [sys_input] alone. *)
+| sstep_vdso_call : forall ms model fn n eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep (mkCfg ms model) evs
+          (SNext (mkCfg (vdso_post ms model (vdso_frame mi_loaded_segments) eff)
+                        (with_vdso_bump model'')))
+(** The backed-memory budget refuses what the call would touch, exactly
+    as it can refuse a system call's ([sstep_syscall_materialization_fault]). *)
+| sstep_vdso_materialization_fault : forall ms model fn n eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep (mkCfg ms model) [] SError
+(** The model does not cover this call; [vdso_call_unmodeled] says
+    which case and why.  Together with the two arms above, every
+    resolution of [Specs.syscall_spec] at an exported entry has an arm,
+    so no such configuration is STUCK. *)
+| sstep_vdso_unmodeled : forall ms model fn,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_call_unmodeled ms model fn ->
     sstep (mkCfg ms model) [] SError
 | sstep_syscall : forall ms model x8 eff model' model'' evs,
     m_halted model = None ->
@@ -507,15 +774,15 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     requires to be [None].
 
     THE DECLARATION IS NOT A PREMISE HERE.  For SIGABRT it is one
-    inside [Kernel.Signal.tkill_spec]; for SIGPIPE there is none at
-    all, because [Sys.Fs.ReadWrite.write_spec]'s three write arms raise
-    it from ordinary modeled state.  Putting a declaration here as well
-    would make this rule unable to fire on an outcome the spec layer
-    produced -- which is a STUCK configuration, not a decline, and
-    [sstep_cfg_progress] below would be false.  What carries the
-    abort-compatibility claim instead is [decl_off_frame] above, stated
-    once and consumed by [sstep_off_no_kill], and it is a claim about
-    SIGABRT alone. *)
+    inside [Kernel.Signal.tkill_spec]; for SIGPIPE it is one inside
+    [Sys.Fs.ReadWrite.sigpipe_write], which declines the write while
+    [State.m_sigpipe_terminal] is clear.  Putting a declaration here as
+    well would make this rule unable to fire on an outcome the spec
+    layer produced -- which is a STUCK configuration, not a decline,
+    and [sstep_cfg_progress] below would be false.  What carries the
+    claim that no kill is reachable while the declarations are clear is
+    [kill_frame] below, consumed by [sstep_kill_off] and proved by
+    [Checks.KillFree.kill_frame_holds]. *)
 | sstep_killed : forall ms model x8 eff model' evs sig,
     m_halted model = None ->
     ms_svc_pending ms = Some x8 ->
@@ -574,98 +841,72 @@ Proof.
 Qed.
 
 (* =========================================================================
-   The declaration off adds no behavior: what that rests on
+   No kill while every kill gate is closed: the frame and its consequences
    ========================================================================= *)
 
-(** THE FRAME THE COMPATIBILITY CLAIM RESTS ON, NAMED RATHER THAN
-    ASSUMED SILENTLY.
+(** THE FOUR GATES, all closed.  A [State.KillEv] enters a trace only
+    through [sstep_killed], which needs a spec outcome whose model has
+    [State.m_killed] set, and [State.with_killed] is called from exactly
+    four places in the spec layer, each behind one of these fields:
 
-    [State.in_abort_terminal] is meant to be inert when it is [false]: a
-    run whose task did not declare the abort path should produce exactly
-    the traces, errors and uncovered points it would produce if 130 and
-    131 had no arms.  Two of the three things that has to mean are facts
-    about the SPEC LAYER rather than about this file — that no syscall
-    arm turns the declaration on, that none records a SIGABRT kill under
-    it, and that none emits a [State.KillEv] of its own — and this
-    development has no lemma quantified over the arms of
-    [Sys.SyscallTable.spec_table] to prove them with.  The arms are not
-    counted here on purpose: a number in prose is the part that goes
-    stale, which is the rule [Checks.Cases.Kernel.Signal]'s
-    [sig_mask_windows] header states and the reason it names its
-    syscalls instead.
+    - [Sys.Fs.ReadWrite.raise_sigpipe] (signal 13), reached only through
+      [Sys.Fs.ReadWrite.sigpipe_write], which declines at SIG_DFL while
+      [State.m_sigpipe_terminal] is clear and, at SIG_IGN, leaves the
+      model alone;
+    - [Kernel.Signal.sigmask_deliver_model]'s SIGPIPE branch, which needs
+      [State.m_sigpipe_pending], set only by [raise_sigpipe]'s blocked
+      branch;
+    - its SIGABRT branch, which needs [State.m_sigabrt_pending], set only
+      by [Kernel.Signal.send_sigabrt];
+    - [Kernel.Signal.send_sigabrt] itself, reached only through
+      [tkill]/[tgkill], which decline while [State.m_abort_terminal] is
+      clear.
 
-    IT IS ABOUT SIGABRT AND NOT ABOUT KILLS.  [State.with_killed] has a
-    second signal, SIGPIPE, raised by the three write arms of
-    [Sys.Fs.ReadWrite.write_spec] from ordinary modeled state, and NOTHING
-    gates those on a declaration — a pipe whose read end the program
-    closed is state the program made, not a stance a task took.  So "no
-    kill with the declaration off" is FALSE, and the frame says what is
-    true instead: no kill CARRYING SIGABRT.  A reader who wants the
-    stronger reading will not find it here, and [sstep_off_no_kill] says
-    in as many words what it no longer rules out.
+    The two declarations are written only by [State.init_model], and the
+    two pending bits only behind the declarations, so the four together
+    are an invariant.  NEITHER PAIR ALONE IS ONE: a pending bit set with
+    its declaration clear is directly constructible, and the
+    [rt_sigprocmask] that uncovers it kills
+    ([Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted]). *)
+Definition kill_off (m : Model) : Prop :=
+  m_abort_terminal m = false /\ m_sigabrt_pending m = false
+  /\ m_sigpipe_terminal m = false /\ m_sigpipe_pending m = false.
 
-    So they are a hypothesis with a name.  [decl_off_frame] states
-    exactly what the abort path's code establishes BY
-    INSPECTION: [State.with_abort_terminal] has one caller
-    ([State.init_model]); [State.with_killed]'s SIGABRT callers are two,
-    [Kernel.Signal.send_sigabrt] and [Kernel.Signal.sigmask_deliver_model]'s
-    SIGABRT branch;
-    and no spec emits any event but [State.ReadEv] and [State.WriteEv].
-    Every other setter carries the three fields across, which is what the
-    [m_killed_with_*], [m_sigabrt_pending_with_*] and
-    [m_abort_terminal_with_*] blocks in
-    theories/LinuxProcessSem/State.v say, one [reflexivity] each.
+(** A list of events carries no death by a signal. *)
+Definition no_kill (evs : list event) : Prop :=
+  forall sig fs, ~ In (KillEv sig fs) evs.
 
-    IT IS AN INVARIANT AND NOT A ONE-SIDED FRAME, and the second
-    hypothesis is the whole reason.  Of those two callers only the first
-    is behind [State.m_abort_terminal]:
-    [Kernel.Signal.sigmask_deliver_model] branches on
-    [State.m_sigabrt_pending] instead, because a signal already pending
-    has to be delivered by the mask install that uncovers it whatever
-    the task declared.  So the declaration ALONE does not keep a kill
-    out — a model with the declaration clear and the pending bit set is
-    directly constructible, and an ordinary
-    [rt_sigprocmask(SIG_UNBLOCK, {SIGABRT})] kills it.
-    [Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted] is
-    that model, and it refutes the one-sided form.
+(** THE FRAME, over every arm of the spec table: from a RUNNING model
+    with all four gates closed, an outcome keeps them closed, records no
+    kill and emits no [State.KillEv].
 
-    What IS true is the pair moving together: with both bits clear no
-    arm can set either, because the only writer of the pending bit is
-    [Kernel.Signal.send_sigabrt], which IS behind the declaration.  That
-    is why the hypothesis carries [m_sigabrt_pending] and the conclusion
-    re-establishes it, and why [State.init_model] — which clears both —
-    is the base case the run-level consequence starts from.
+    IT IS PROVED, NOT ASSUMED: [Checks.KillFree.kill_frame_holds] proves
+    it arm by arm over [Checks.Sys.Dispatch.checked_table] and carries it
+    to [Specs.syscall_spec] through [Checks.ExecutableSpecs.check_syscall_ok_iff].
+    It is stated here, and consumed as a premise by the run-level lemmas
+    below, only because this file cannot import the checker.
 
-    This is the same standing [State.with_children]'s note describes for
-    [procst_children]: a property maintained by every construction site
-    and documented at the setter, which a new setter can break without
-    breaking any proof.  Writing it as a hypothesis is one step better
-    than that note — the consequences below are mechanized, and the day
-    a table-wide frame lemma exists it is discharged rather than
-    assumed. *)
-(** The signal the abort path sends, as the word a [State.KillEv] and
-    [State.m_killed] carry.  Named here because the frame below and its
-    two lemmas are claims about THIS SIGNAL and not about kills in
-    general; see the paragraph above them. *)
-Definition sigabrt_word : word := Z_to_bv 64 SIGABRT.
-
-Definition decl_off_frame : Prop :=
+    THE RUNNING PREMISE IS LOAD-BEARING.  Without [m_halted m = None] a
+    model a signal has already killed meets the other premises, and any
+    arm that carries [State.ProcState] across hands its [m_killed] back;
+    the frame this one replaced, [decl_off_frame], lacked it and was
+    false, in the published model too.  Every [sstep] rule that consumes
+    a spec outcome requires the model to be running, so the premise
+    costs the consumers below nothing. *)
+Definition kill_frame : Prop :=
   forall i m eff m' evs,
     syscall_spec i m (Ok eff m' evs) ->
-    m_abort_terminal m = false ->
-    m_sigabrt_pending m = false ->
-    m_abort_terminal m' = false
-    /\ m_sigabrt_pending m' = false
-    /\ m_killed m' <> Some sigabrt_word
-    /\ (forall sig fs, ~ In (KillEv sig fs) evs).
+    m_halted m = None ->
+    kill_off m ->
+    kill_off m' /\ m_killed m' = None /\ no_kill evs.
 
-(** The form this had before, kept ONLY so that
+(** The ONE-SIDED form, which guards with the abort declaration alone.
+    It is FALSE, and kept ONLY so that
     [Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted] has
-    something to refute.  Nothing may consume it: it is FALSE, and a
-    theorem stated with it as a hypothesis is vacuous.  It is the shape
-    a reader reaches for first — the declaration is the switch, so surely
-    the declaration is the guard — and the refutation is what says why
-    that reading is wrong. *)
+    something to refute: it is the shape a reader reaches for first --
+    the declaration is the switch, so surely the declaration is the
+    guard -- and the refutation says why that reading is wrong.  Nothing
+    may consume it. *)
 Definition decl_off_frame_one_sided : Prop :=
   forall i m eff m' evs,
     syscall_spec i m (Ok eff m' evs) ->
@@ -674,104 +915,86 @@ Definition decl_off_frame_one_sided : Prop :=
     /\ m_killed m' = None
     /\ (forall sig fs, ~ In (KillEv sig fs) evs).
 
-Lemma m_abort_terminal_proc : forall m1 m2,
-  m_proc m1 = m_proc m2 -> m_abort_terminal m1 = m_abort_terminal m2.
-Proof. intros m1 m2 H. unfold m_abort_terminal. now rewrite H. Qed.
-
-Lemma m_sigabrt_pending_proc : forall m1 m2,
-  m_proc m1 = m_proc m2 -> m_sigabrt_pending m1 = m_sigabrt_pending m2.
-Proof. intros m1 m2 H. unfold m_sigabrt_pending. now rewrite H. Qed.
-
-(** One step, with the declaration off and nothing pending: BOTH bits
-    stay clear, and the events the step contributes carry no SIGABRT
-    kill.  The pending bit is carried for the reason the frame carries
-    it — see [decl_off_frame] — and dropping it from either side makes
-    this lemma's hypothesis the false one.
-
-    WHAT IT NO LONGER RULES OUT, said once so that nobody reads "no
-    kill" where this says "no SIGABRT kill": a step MAY contribute a
-    [State.KillEv] carrying SIGPIPE (13) with both abort bits clear and
-    the declaration off, because the three write arms of
-    [Sys.Fs.ReadWrite.write_spec] raise that signal from ordinary
-    modeled state — a pipe whose read end the program closed, a socket
-    with no connection, a channel the launch says has no reader — and
-    none of those is behind the abort declaration.  This lemma is about
-    the abort path's inertness and about nothing else. *)
-Lemma sstep_off_no_kill : decl_off_frame ->
-  forall ms model evs c',
-    m_abort_terminal model = false ->
-    m_sigabrt_pending model = false ->
-    sstep (mkCfg ms model) evs (SNext c') ->
-    m_abort_terminal (cfg_model c') = false
-    /\ m_sigabrt_pending (cfg_model c') = false
-    /\ (forall fs, ~ In (KillEv sigabrt_word fs) evs).
+(** The four gates are fields of [State.ProcState], so a step that keeps
+    [State.m_proc] keeps them. *)
+Lemma kill_off_proc : forall m1 m2,
+  m_proc m1 = m_proc m2 -> kill_off m2 -> kill_off m1.
 Proof.
-  intros Hframe ms model evs c' Hoff Hpend Hstep.
+  intros m1 m2 H.
+  unfold kill_off, m_abort_terminal, m_sigabrt_pending, m_sigpipe_terminal,
+    m_sigpipe_pending.
+  rewrite H. exact (fun x => x).
+Qed.
+
+(** One step from a model with the gates closed: they stay closed, and
+    the step's events carry no kill. *)
+Lemma sstep_kill_off : kill_frame ->
+  forall ms model evs c',
+    kill_off model ->
+    sstep (mkCfg ms model) evs (SNext c') ->
+    kill_off (cfg_model c') /\ no_kill evs.
+Proof.
+  intros Hframe ms model evs c' Hoff Hstep.
   inversion Hstep; subst.
   - (* instruction: accounting keeps [State.m_proc] fixed *)
     match goal with
     | [ H : mi_account_step _ _ = MachineOk (_, _) |- _ ] =>
         destruct (mi_account_step_model_frame _ _ _ _ H) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| intros fs []]].
-    + rewrite <- Hoff. apply m_abort_terminal_proc. exact Hp.
-    + rewrite <- Hpend. apply m_sigabrt_pending_proc. exact Hp.
-  - (* a syscall that materializes: the frame, then materialization,
-       which keeps [State.m_proc] fixed too *)
+    cbn [cfg_model]. split; [exact (kill_off_proc _ _ Hp Hoff) | intros sig fs []].
+  - (* a vDSO call: the syscall frame, then materialization, then the
+       call count -- and none of the last two touches [State.m_proc] *)
     match goal with
-    | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
+    | [ Hs : syscall_spec _ ?m0 (Ok _ ?m1 _), Hh : m_halted ?m0 = None,
         Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
-        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev);
+        destruct (Hframe _ _ _ _ _ Hs Hh Hoff) as (Hoff' & _ & Hev);
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model].
-    split; [| split; [| intros fs Hin; exact (Hev _ _ Hin)]].
-    + rewrite <- Hoff'. apply m_abort_terminal_proc. exact Hp.
-    + rewrite <- Hpend'. apply m_sigabrt_pending_proc. exact Hp.
-  - (* exit: the effect is discarded, so the post-model is the spec's *)
+    cbn [cfg_model]. split; [| exact Hev].
+    eapply kill_off_proc; [| exact Hoff'].
+    rewrite m_proc_with_vdso_bump. exact Hp.
+  - (* a syscall that materializes: the frame, then materialization *)
     match goal with
-    | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
-        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev)
+    | [ Hs : syscall_spec _ ?m0 (Ok _ ?m1 _), Hh : m_halted ?m0 = None,
+        Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
+        destruct (Hframe _ _ _ _ _ Hs Hh Hoff) as (Hoff' & _ & Hev);
+        destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
     end.
-    split; [exact Hoff' | split; [exact Hpend' |]].
-    intros fs Hin. apply in_app_or in Hin.
+    cbn [cfg_model]. split; [exact (kill_off_proc _ _ Hp Hoff') | exact Hev].
+  - (* exit: the post-model is the spec's, and the appended event is an
+       [ExitEv] *)
+    match goal with
+    | [ Hs : syscall_spec _ ?m0 (Ok _ _ _), Hh : m_halted ?m0 = None |- _ ] =>
+        destruct (Hframe _ _ _ _ _ Hs Hh Hoff) as (Hoff' & _ & Hev)
+    end.
+    split; [exact Hoff' |].
+    intros sig fs Hin. apply in_app_or in Hin.
     destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) | discriminate].
-  - (* kill: the frame says no arm records a SIGABRT kill from a state
-       with both bits clear, so the appended event carries some OTHER
-       signal, and the two bits come across unchanged *)
+  - (* kill: the frame says the outcome records no kill, which this rule
+       needs *)
     match goal with
-    | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
-        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & Hk & Hev)
+    | [ Hs : syscall_spec _ ?m0 (Ok _ _ _), Hh : m_halted ?m0 = None |- _ ] =>
+        destruct (Hframe _ _ _ _ _ Hs Hh Hoff) as (_ & Hk & _)
     end.
-    split; [exact Hoff' | split; [exact Hpend' |]].
-    intros fs Hin. apply in_app_or in Hin.
-    destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) |].
-    apply Hk. injection Hin as Hsig Hfs. congruence.
+    congruence.
 Qed.
 
-(** In a whole execution, the same.  [State.init_model] clears both bits
-    ([State.m_sigabrt_pending_init_model], and
-    [State.m_abort_terminal_init_model] reads the declaration off the
-    input), so a run whose task did not declare the abort path meets
-    this lemma's hypotheses at its first configuration.  It says NO
-    SIGABRT KILL and not "no kill"; see [sstep_off_no_kill]. *)
-Lemma star_off_no_kill : decl_off_frame ->
+(** A whole execution from a configuration with the gates closed. *)
+Lemma star_kill_off : kill_frame ->
   forall c tr c',
-    m_abort_terminal (cfg_model c) = false ->
-    m_sigabrt_pending (cfg_model c) = false ->
+    kill_off (cfg_model c) ->
     star c tr c' ->
-    forall fs, ~ In (KillEv sigabrt_word fs) tr.
+    kill_off (cfg_model c') /\ no_kill tr.
 Proof.
-  intros Hframe c tr c' Hoff Hpend Hstar.
-  revert Hoff Hpend.
-  induction Hstar as [c | c1 evs c2 tr c3 Hstep Hstar IH];
-    intros Hoff Hpend; [intros fs []|].
-  destruct c1 as [ms model]. cbn [cfg_model] in Hoff, Hpend.
-  destruct (sstep_off_no_kill Hframe _ _ _ _ Hoff Hpend Hstep)
-    as (Hoff' & Hpend' & Hev).
-  intros fs Hin. apply in_app_or in Hin.
-  destruct Hin as [Hin | Hin];
-    [ exact (Hev fs Hin) | exact (IH Hoff' Hpend' fs Hin) ].
+  intros Hframe c tr c' Hoff Hstar. revert Hoff.
+  induction Hstar as [c | c1 evs c2 tr c3 Hstep Hstar IH]; intros Hoff.
+  - split; [exact Hoff | intros sig fs []].
+  - destruct c1 as [ms model]. cbn [cfg_model] in Hoff.
+    destruct (sstep_kill_off Hframe _ _ _ _ Hoff Hstep) as (Hoff' & Hev).
+    destruct (IH Hoff') as (Hoff'' & Htr).
+    split; [exact Hoff'' |].
+    intros sig fs Hin. apply in_app_or in Hin.
+    destruct Hin as [Hin | Hin]; [exact (Hev sig fs Hin) | exact (Htr sig fs Hin)].
 Qed.
 
 Lemma in_is_prefix {A} : forall (x : A) l1 l2,
@@ -781,6 +1004,16 @@ Proof.
     cbn in *; try contradiction.
   destruct Hp as (-> & Hp). destruct Hin as [-> | Hin]; [now left|].
   right. exact (IH l2 Hp Hin).
+Qed.
+
+(** Every observed trace prefix from a configuration with the gates
+    closed is free of kills. *)
+Lemma obs_trace_kill_off : kill_frame ->
+  forall c0 tr, kill_off (cfg_model c0) -> obs_trace c0 tr -> no_kill tr.
+Proof.
+  intros Hframe c0 tr Hoff (tr' & c & Hstar & Hp) sig fs Hin.
+  destruct (star_kill_off Hframe _ _ _ Hoff Hstar) as (_ & Htr).
+  exact (Htr sig fs (in_is_prefix _ _ _ Hp Hin)).
 Qed.
 
 (** The run can take the explicit error transition. *)
@@ -915,11 +1148,11 @@ Definition reaches_error (c0 : config) : Prop :=
     so the inherited disposition decides the OUTCOME of those calls and
     not merely a returned number.
 
-    Nothing a modeled run does can move it:
-    [Kernel.Signal.rt_sigaction_spec] declines EVERY install for signal
-    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15,
-    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6, and
-    [Kernel.Signal.sigchld_dfl_install] only signal 17).  What
+    A modeled run moves it only through
+    [Kernel.Signal.rt_sigaction_sigpipe], an install of SIG_DFL or
+    SIG_IGN over SIGPIPE's stored action; a run that installs nothing
+    keeps the launch's handler, and before that arm every install for
+    signal 13 was [unmodeled].  What
     the LAUNCH did is the live question, by the same
     [flush_signal_handlers] argument: SIG_IGN survives execve, and
     `signal(SIGPIPE, SIG_IGN)` before exec is COMMON -- commoner than
@@ -933,17 +1166,43 @@ Definition reaches_error (c0 : config) : Prop :=
     world it is about rather than assuming one, and the other world has
     its own predicate, [valid_input_sigpipe_ignored], under which
     [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
-    arm can end the run.  The alternative considered and rejected was
-    declining every write once the launch could have ignored the
-    signal, which gives back exactly the coverage this revision bought.
-    BLOCKING is a third, independent matter and was already modeled: a
-    launch whose [in_sigmask] blocks signal 13 is a valid input, the
-    write answers -EPIPE, and [State.procst_sigpipe_pending] carries
-    the signal to the [rt_sigprocmask] that uncovers it. *)
+    arm kills the process.  If the program itself installs SIG_DFL, a
+    later write that would raise the signal declines (an error step,
+    not a death), because that launch pins [State.in_sigpipe_terminal]
+    to [false] too.
+
+    WHETHER THE MODEL FOLLOWS THE DEATH is a second declared field,
+    [State.in_sigpipe_terminal], and [valid_input] pins it to [false]:
+    at SIG_DFL a write that would raise the signal DECLINES, whatever
+    the mask, so it lands HERE, in [unmodeled_at], and no run under
+    [valid_input] ends in [KillEv 13] -- the reading every error-free
+    statement in this tree was written under.  The launch that follows
+    the death is [valid_input_sigpipe_kills].  BLOCKING is a third,
+    independent matter: on that launch a blocked signal 13 makes the
+    write answer -EPIPE, and [State.procst_sigpipe_pending] carries the
+    signal to the [rt_sigprocmask] that uncovers it. *)
+(** THE vDSO SPLITS THIS PREDICATE'S FIRST SHAPE IN TWO, and the split
+    is the whole point of the arm that answers a call.
+    [RiscvSemantics.step_accesses] answers [MachineUnmodeled] for every
+    pc in the vDSO text, so without the extra premise here every call a
+    program makes would be reported as a place the model gave up — when
+    it is a place the model has an answer for.  So the first shape asks
+    that pc is NOT an exported entry, and the second says what makes a
+    call at one uncovered after all ([vdso_call_unmodeled]).
+
+    (Restored from revision/vdso; the merge that brought the vDSO
+    segments here resolved this comment's hunk to the head and dropped
+    it, leaving the code it describes unchanged.) *)
 Definition unmodeled_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-       mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled)
+       mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+       vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = None)
+    \/ (ms_svc_pending (cfg_ms c) = None /\
+        mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+        (exists fn,
+           vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = Some fn /\
+           vdso_call_unmodeled (cfg_ms c) (cfg_model c) fn))
     \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
                    syscall_spec (sys_input (cfg_ms c) x8) (cfg_model c) Unmodeled) ).
 
@@ -959,8 +1218,11 @@ Definition reaches_unmodeled (c0 : config) : Prop :=
 Lemma unmodeled_at_sstep_error : forall c,
   unmodeled_at c -> exists evs, sstep c evs SError.
 Proof.
-  intros [ms model] (Hh & [(Hsvc & Hstep) | (x8 & Hsvc & Hspec)]); cbn in *.
+  intros [ms model]
+    (Hh & [(Hsvc & Hstep & Hv) | [(Hsvc & Hacc & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
+    cbn in *.
   - exists []. apply sstep_instr_unmodeled; assumption.
+  - exists []. eapply sstep_vdso_unmodeled; eassumption.
   - exists []. eapply sstep_syscall_unmodeled; eassumption.
 Qed.
 
@@ -994,11 +1256,12 @@ Lemma reaches_unmodeled_intro : forall ms model,
   m_halted model = None ->
   ms_svc_pending ms = None ->
   mi_account_step ms model = MachineUnmodeled ->
+  vdso_entry_fn mi_loaded_segments (ms_pc ms) = None ->
   reaches_unmodeled (mkCfg ms model).
 Proof.
-  intros ms model Hh Hsvc Hstep.
+  intros ms model Hh Hsvc Hstep Hv.
   exists [], (mkCfg ms model). split; [apply star_refl|].
-  split; [exact Hh|]. left. split; assumption.
+  split; [exact Hh|]. left. split; [|split]; assumption.
 Qed.
 
 (* =========================================================================
@@ -1337,11 +1600,17 @@ Definition init_machine_state (inp : ProcInput) : machine_state :=
        end |}.
 
 (** The initial configuration for one run of THIS image on the
-    caller-supplied inputs [inp]. *)
+    caller-supplied inputs [inp].
+
+    [with_vdso] copies the launch's vDSO draw out of the entry's draw
+    and starts the call count at zero.  It is the ONE writer of that
+    field: the draw is a fact of the launch, and [Run.sstep]'s vDSO arm
+    only bumps the count. *)
 Definition init_config (inp : ProcInput) : config :=
   mkCfg (init_machine_state inp)
-        (init_model (segments_reserved mi_loaded_segments) mi_init_brk
-                    mi_mmap_base mi_init_sp mi_alloc_limit inp).
+        (with_vdso (vdso_run_init (ed_vdso mi_draw))
+           (init_model (segments_reserved mi_loaded_segments) mi_init_brk
+                       mi_mmap_base mi_init_sp mi_alloc_limit inp)).
 
 End WithMemImage.
 
@@ -1405,16 +1674,48 @@ Record ExecEntry := mkEntry {
     The [ProcInput] is passed whole and read by projections, which
     reduce, so [cbn [run …]] reaches [init_config] for a variable [inp]
     too. *)
+(** The same list, named from an [Image] and an [ExecEntry], for the
+    statements that quantify a predicate over the run's segments
+    ([OmniRun.covered] and its dual). *)
+Definition image_run_segments (img : Image) (en : ExecEntry) (inp : ProcInput)
+    : list Segment :=
+  run_segments (img_segments img) inp (en_sp en) (en_mmap_base en).
+
 Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     : behavior :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    let c0 := init_config segs pc ph sp brk0 mbase rnd lim inp in
-    {| bh_traces := obs_trace segs c0;
-       bh_errors := reaches_error segs c0;
-       bh_all_errors := all_traces_error segs c0;
-       bh_unmodeled := reaches_unmodeled segs c0 |}
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace vsegs c0;
+       bh_errors := reaches_error vsegs c0;
+       bh_all_errors := all_traces_error vsegs c0;
+       bh_unmodeled := reaches_unmodeled vsegs c0 |}
   end.
+
+(** A run whose launch leaves both kill declarations clear never dies by
+    a signal, given [kill_frame]: [State.init_model] reads the two
+    declarations off the input and starts both pending bits clear, and
+    [obs_trace_kill_off] carries that through every observed prefix.
+    [Checks.KillFree] discharges the frame, and states the result for
+    [valid_input] and its siblings without it. *)
+Lemma run_kill_off : kill_frame ->
+  forall img lim en inp tr,
+    in_abort_terminal inp = false ->
+    in_sigpipe_terminal inp = false ->
+    bh_traces (run img lim en inp) tr ->
+    no_kill tr.
+Proof.
+  intros Hframe [segs pc ph] lim [sp brk0 mbase rnd] inp tr Ha Hs H.
+  cbn [run bh_traces] in H.
+  eapply obs_trace_kill_off; [exact Hframe | | exact H].
+  unfold init_config. cbn [cfg_model]. unfold kill_off.
+  split; [| split; [| split]].
+  - transitivity (in_abort_terminal inp); [reflexivity | exact Ha].
+  - reflexivity.
+  - transitivity (in_sigpipe_terminal inp); [reflexivity | exact Hs].
+  - reflexivity.
+Qed.
 
 (* =========================================================================
    Spurious environment failures, per family: [SpuriousCfg] and [run_scfg]
@@ -1471,8 +1772,8 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
             getcwd, getdents64, write     (write's is the page an empty
                                           pipe's write must allocate)
      fd     dup, pipe2, socket,           no free descriptor (two for
-            socketpair, accept, clone     pipe2 and socketpair; accept
-                                          also when [Socket.conn_ix_exhausted]);
+            socketpair, accept, clone,    pipe2 and socketpair; accept
+            eventfd2                      also when [Socket.conn_ix_exhausted]);
                                           clone: never
      net    bind, listen                  never
      cred   setuid, setgid, setresuid,    never; setsid's -EPERM after a
@@ -1604,7 +1905,11 @@ Record InjectedArm := mkInjectedArm {
     injected by a bare [alt] rather than through a named list, so their
     lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec].
+    [Fs.Open.access_exists_spec].  [socket] draws from three lists
+    ([Net.Socket.socket_errnos], [socket_alloc_errnos] and
+    [socket_dgram_errnos]); the row names the widest,
+    [socket_dgram_errnos AF_INET6], which is [socket_errnos] plus
+    [inet6_create]'s -ENOBUFS and contains the other two.
 
     NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
     DECISION rather than an oversight — it is written here because the
@@ -1629,6 +1934,7 @@ Record InjectedArm := mkInjectedArm {
     only outcome at that state, so it is kept under both readings. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
+  (* eventfd2   *) mkInjectedArm  19%Z FamFd    eventfd2_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
   (* unlinkat   *) mkInjectedArm  35%Z FamFs    unlinkat_errnos ::
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
@@ -1642,7 +1948,7 @@ Definition injected_table : list InjectedArm :=
   (* setresuid  *) mkInjectedArm 147%Z FamCred  (setid_errnos true) ::
   (* setresgid  *) mkInjectedArm 149%Z FamCred  (setid_errnos true) ::
   (* setsid     *) mkInjectedArm 157%Z FamCred  [EPERM] ::
-  (* socket     *) mkInjectedArm 198%Z FamFd    socket_errnos ::
+  (* socket     *) mkInjectedArm 198%Z FamFd    (socket_dgram_errnos AF_INET6) ::
   (* socketpair *) mkInjectedArm 199%Z FamFd    (socketpair_reserve_errnos ++ socketpair_create_errnos) ::
   (* bind       *) mkInjectedArm 200%Z FamNet   bind_errnos ::
   (* listen     *) mkInjectedArm 201%Z FamNet   listen_errnos ::
@@ -2105,6 +2411,45 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
     m_halted model = None ->
     ms_svc_pending ms = None ->
     mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = None ->
+    sstep_cfg cfg (mkCfg ms model) [] SError
+(** The three vDSO arms, mirrored from [sstep] with NO filter premise.
+    The filter removes a syscall outcome that an INJECTED environment
+    failure produced ([spurious_refusal_cfg]); the vDSO's own numbers
+    carry no injected family, so at an exported entry the two relations
+    already coincide and a premise would only be one more thing to
+    discharge. *)
+| sstep_cfg_vdso_call : forall ms model fn n eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep_cfg cfg (mkCfg ms model) evs
+          (SNext (mkCfg (vdso_post segs ms model (vdso_frame segs) eff)
+                        (with_vdso_bump model'')))
+| sstep_cfg_vdso_materialization_fault : forall ms model fn n eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep_cfg cfg (mkCfg ms model) [] SError
+| sstep_cfg_vdso_unmodeled : forall ms model fn,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_call_unmodeled segs ms model fn ->
     sstep_cfg cfg (mkCfg ms model) [] SError
 | sstep_cfg_syscall : forall ms model x8 eff model' model'' evs,
     m_halted model = None ->
@@ -2151,6 +2496,8 @@ Lemma sstep_cfg_sub : forall cfg c evs r,
 Proof.
   intros cfg c evs r H; destruct H;
     [ eapply sstep_instr | eapply sstep_instr_fault | eapply sstep_instr_unmodeled
+    | eapply sstep_vdso_call | eapply sstep_vdso_materialization_fault
+    | eapply sstep_vdso_unmodeled
     | eapply sstep_syscall | eapply sstep_syscall_materialization_fault
     | eapply sstep_exit | eapply sstep_killed | eapply sstep_syscall_unmodeled ];
     eauto.
@@ -2164,6 +2511,8 @@ Proof.
   - destruct H;
       [ eapply sstep_cfg_instr | eapply sstep_cfg_instr_fault
       | eapply sstep_cfg_instr_unmodeled
+      | eapply sstep_cfg_vdso_call | eapply sstep_cfg_vdso_materialization_fault
+      | eapply sstep_cfg_vdso_unmodeled
       | eapply sstep_cfg_syscall | eapply sstep_cfg_syscall_materialization_fault
       | eapply sstep_cfg_exit | eapply sstep_cfg_killed
       | eapply sstep_cfg_syscall_unmodeled ];
@@ -2180,6 +2529,8 @@ Proof.
   intros cfg1 cfg2 c evs r Hle H; destruct H;
     [ eapply sstep_cfg_instr | eapply sstep_cfg_instr_fault
     | eapply sstep_cfg_instr_unmodeled
+    | eapply sstep_cfg_vdso_call | eapply sstep_cfg_vdso_materialization_fault
+    | eapply sstep_cfg_vdso_unmodeled
     | eapply sstep_cfg_syscall | eapply sstep_cfg_syscall_materialization_fault
     | eapply sstep_cfg_exit | eapply sstep_cfg_killed
     | eapply sstep_cfg_syscall_unmodeled ];
@@ -2204,6 +2555,9 @@ Proof.
   - eexists _, _. eapply sstep_cfg_instr; eassumption.
   - eexists _, _. eapply sstep_cfg_instr_fault; eassumption.
   - eexists _, _. eapply sstep_cfg_instr_unmodeled; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_call; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_materialization_fault; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_unmodeled; eassumption.
   - (* a syscall outcome that materializes *)
     match goal with
     | [ Hsvc : ms_svc_pending ms = Some ?x8 |- _ ] =>
@@ -2357,10 +2711,13 @@ Qed.
 Lemma reaches_unmodeled_cfg_reaches_error_cfg : forall cfg c0,
   reaches_unmodeled_cfg cfg c0 -> reaches_error_cfg cfg c0.
 Proof.
-  intros cfg c0 (tr & [ms model] & Hstar & Hh & [(Hsvc & Hacc) | (x8 & Hsvc & Hspec)]);
+  intros cfg c0 (tr & [ms model] & Hstar & Hh &
+                 [(Hsvc & Hacc & Hv) | [(Hsvc & Hacc2 & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
     cbn [cfg_ms cfg_model] in *.
   - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
     apply sstep_cfg_instr_unmodeled; assumption.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    apply (sstep_cfg_vdso_unmodeled cfg ms model fn); assumption.
   - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
     apply (sstep_cfg_syscall_unmodeled cfg ms model x8); assumption.
 Qed.
@@ -2386,11 +2743,12 @@ Definition run_scfg (cfg : SpuriousCfg) (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : behavior :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    let c0 := init_config segs pc ph sp brk0 mbase rnd lim inp in
-    {| bh_traces := obs_trace_cfg segs cfg c0;
-       bh_errors := reaches_error_cfg segs cfg c0;
-       bh_all_errors := all_traces_error_cfg segs cfg c0;
-       bh_unmodeled := reaches_unmodeled_cfg segs cfg c0 |}
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace_cfg vsegs cfg c0;
+       bh_errors := reaches_error_cfg vsegs cfg c0;
+       bh_all_errors := all_traces_error_cfg vsegs cfg c0;
+       bh_unmodeled := reaches_unmodeled_cfg vsegs cfg c0 |}
   end.
 
 (** Two behaviors that agree observation by observation.  [behavior]
@@ -2506,6 +2864,108 @@ Proof.
 Qed.
 
 (* =========================================================================
+   No vDSO call touches the lazy ledger
+   =========================================================================
+
+   The numbers [Vdso.vdso_fn_sysno] hands [Specs.syscall_spec] are
+   gettimeofday (169), clock_gettime (113), clock_getres (114) and three
+   with no arm today (168, 258, 259).  None of the three specifications
+   maps memory: each reads the input and the model and at most records a
+   clock reading ([State.with_clock]).  So every admitted outcome of a
+   vDSO call leaves [State.m_vm_lazy] as it was, which is what lets the
+   budget mark's vDSO clause be discharged on a run with no lazy mapping
+   ([budget_refused_at_no_lazy_instr]). *)
+
+Lemma syscall_spec_unarmed : forall i m eff m' evs,
+  LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.lookup_arm
+    LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable.spec_table
+    (bv_unsigned (in_sysno i)) = None ->
+  ~ syscall_spec i m (Ok eff m' evs).
+Proof.
+  intros i m eff m' evs E H.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch in H.
+  rewrite E in H. cbv beta iota delta [unmodeled] in H. discriminate H.
+Qed.
+
+Lemma syscall_spec_at_113 : forall i m o,
+  in_sysno i = Z_to_bv 64 113 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_114 : forall i m o,
+  in_sysno i = Z_to_bv 64 114 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+     (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+Lemma syscall_spec_at_169 : forall i m o,
+  in_sysno i = Z_to_bv 64 169 ->
+  (syscall_spec i m o <->
+   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec
+     (in_arg i 0) (in_arg i 1) i m o).
+Proof.
+  intros i m o E.
+  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  rewrite E. reflexivity.
+Qed.
+
+(** Unfold a specification's monadic chain in [H] and take every branch;
+    each surviving branch leaves the model as it was or with a new clock
+    reading, and [m_vm_lazy] reads through both. *)
+Local Ltac keeps_lazy_in H :=
+  cbv beta iota delta [bind pure input get_model choose unmodeled alt modify set_clock
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.err_ret
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.ret_only
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_result_spec
+    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec] in H;
+  repeat match goal with
+  | H0 : _ /\ _ |- _ => destruct H0
+  | H0 : exists _, _ |- _ => destruct H0
+  | H0 : _ \/ _ |- _ => destruct H0
+  | H0 : Ok _ _ _ = Ok _ _ _ |- _ => inversion H0; clear H0; subst
+  | H0 : Ok _ _ _ = Unmodeled |- _ => discriminate H0
+  | H0 : Unmodeled = Ok _ _ _ |- _ => discriminate H0
+  | H0 : context [match ?x with _ => _ end] |- _ =>
+      destruct x eqn:?; cbv beta iota in H0
+  end;
+  reflexivity.
+
+Lemma vdso_spec_keeps_lazy : forall segs ms model fn n eff model' evs,
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  m_vm_lazy model' = m_vm_lazy model.
+Proof.
+  intros segs ms model fn n eff model' evs Hn H.
+  destruct fn; cbn in Hn; try discriminate Hn; injection Hn as <-;
+    first
+    [ exfalso; refine (syscall_spec_unarmed _ _ _ _ _ _ H); reflexivity
+    | pose proof (proj1 (syscall_spec_at_113 (sys_input segs ms (Z_to_bv 64 113)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_114 (sys_input segs ms (Z_to_bv 64 114)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1
+    | pose proof (proj1 (syscall_spec_at_169 (sys_input segs ms (Z_to_bv 64 169)) model
+                           (Ok eff model' evs) eq_refl) H) as H1;
+      clear H; keeps_lazy_in H1 ].
+Qed.
+
+(* =========================================================================
    The budget mark: where a run is refused for exceeding its budget
    =========================================================================
 
@@ -2521,7 +2981,7 @@ Qed.
    Nothing above this section changes.
 
    A configuration is budget-refused when the run is about to be
-   declined for exceeding [State.vm_limit], in one of three ways:
+   declined for exceeding [State.vm_limit], in one of four ways:
 
    - the pending INSTRUCTION touches a lazy page the budget cannot back:
      the interpreter answers [MachineOk] (the access itself is fine) and
@@ -2541,16 +3001,21 @@ Qed.
      this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
-     back — the [sstep_syscall_materialization_fault] premises.
+     back — the [sstep_syscall_materialization_fault] premises;
+   - a CALL TO AN EXPORTED vDSO ENTRY has an admissible outcome whose
+     effect touches a lazy page the budget cannot back — exactly the
+     premises of [sstep_vdso_materialization_fault], which refuses the
+     call as [sstep_syscall_materialization_fault] refuses a syscall.
 
-   The first and third are premises of an [SError] transition
-   ([budget_fault_instr_sstep_error], [budget_fault_syscall_sstep_error]);
-   the second is not an error at all — the program is answered -ENOMEM
-   or the old break and goes on — which is why the premise is a
+   Three kinds are first-touch faults, premises of an [SError]
+   transition ([budget_fault_instr_sstep_error],
+   [budget_fault_syscall_sstep_error], [budget_fault_vdso_sstep_error]);
+   the grant clause is not an error at all — the program is answered
+   -ENOMEM or the old break and goes on — which is why the premise is a
    separate observable rather than a reading of [bh_errors].
 
    On a run with no MAP_NORESERVE mapping — every plain musl build —
-   [State.m_vm_lazy] is empty at every reachable state and the two
+   [State.m_vm_lazy] is empty at every reachable state and the three
    first-touch clauses are false ([materialize_model_accesses_no_lazy]),
    so discharging the premise is the grant clause at each ecall
    ([budget_refused_at_no_lazy_instr], [budget_refused_at_no_lazy_syscall]).
@@ -2562,9 +3027,18 @@ Variable segs : list Segment.
 Definition budget_refused_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_budget_refused_b (sys_input segs (cfg_ms c) x8) (cfg_model c) = true
        \/ exists eff model' evs,
@@ -2611,6 +3085,32 @@ Proof.
   intros. eapply sstep_syscall_materialization_fault; eassumption.
 Qed.
 
+Lemma budget_fault_vdso_sstep_error : forall ms model fn n eff model' evs,
+  m_halted model = None ->
+  ms_svc_pending ms = None ->
+  mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = Some fn ->
+  vdso_fn_sysno fn = Some n ->
+  syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+  eff_ret eff <> errno_ret EFAULT ->
+  m_halted model' = None ->
+  materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+  sstep segs (mkCfg ms model) [] SError.
+Proof.
+  intros. eapply sstep_vdso_materialization_fault; eassumption.
+Qed.
+
+(** The vDSO clause's [MachineUnmodeled] is the interpreter's own: the
+    accounting never turns an answered step into an unmodeled one. *)
+Lemma mi_account_step_unmodeled_inv : forall ms model,
+  mi_account_step segs ms model = MachineUnmodeled ->
+  RiscvSemantics.step_accesses segs ms = MachineUnmodeled.
+Proof.
+  intros ms model H. unfold mi_account_step in H.
+  destruct (RiscvSemantics.step_accesses segs ms) as [r| |]; [|discriminate H|reflexivity].
+  destruct (materialize_model_accesses model _); discriminate H.
+Qed.
+
 (** Discharging the premise: an invariant of the reachable
     configurations that excludes the mark. *)
 Lemma star_invariant : forall (I : config -> Prop),
@@ -2634,16 +3134,25 @@ Qed.
 
 (** With no lazy mapping, an instruction configuration is never
     budget-refused: the first-touch clause needs [None] where
-    [materialize_model_accesses_no_lazy] answers [Some], and the other
-    two need a pending syscall. *)
+    [materialize_model_accesses_no_lazy] answers [Some], the grant and
+    effect clauses need a pending syscall, and the vDSO clause needs an
+    outcome of the call materialized against a lazy mapping, which no
+    vDSO call creates ([vdso_spec_keeps_lazy]). *)
 Lemma budget_refused_at_no_lazy_instr : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
   ~ budget_refused_at (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc (_ & [(_ & report & _ & Hmat) | (x8 & Hx8 & _)]);
+  intros ms model Hlazy Hsvc
+    (_ & [(_ & [(report & _ & Hmat)
+               | (_ & fn & n & eff & model' & evs & _ & Hn & Hspec & _ & _ & Hmat)])
+         | (x8 & Hx8 & _)]);
     cbn [cfg_ms cfg_model] in *.
   - rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat. discriminate Hmat.
+  - assert (Hl : m_vm_lazy model' = []).
+    { rewrite (vdso_spec_keeps_lazy segs ms model fn n eff model' evs Hn Hspec). exact Hlazy. }
+    rewrite (materialize_model_accesses_no_lazy model' _ Hl) in Hmat.
+    discriminate Hmat.
   - congruence.
 Qed.
 
@@ -2679,6 +3188,9 @@ Qed.
     an outcome the configured run never takes — an over-approximation
     of "the configured run is about to be refused", in the safe
     direction (the premise is false more often, never true wrongly).
+    Its vDSO clause is exact under every configuration: it is the
+    premise list of [sstep_cfg_vdso_materialization_fault], which, like
+    the other vDSO arms of [sstep_cfg], carries no filter premise.
     What the configuration changes otherwise is WHICH configurations
     the run reaches: fewer, never more ([reaches_budget_refused_cfg_sub]),
     so the unfiltered premise discharges the configured one, and at
@@ -2726,7 +3238,8 @@ Definition run_budget_refused (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_refused segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_refused vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 (** The configured run's form, the [match] of [run_scfg]. *)
@@ -2734,21 +3247,22 @@ Definition run_scfg_budget_refused (cfg : SpuriousCfg) (img : Image) (lim : Z)
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_refused_cfg segs cfg (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_refused_cfg vsegs cfg (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_scfg_budget_refused_sub : forall cfg img lim en inp,
   run_scfg_budget_refused cfg img lim en inp -> run_budget_refused img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_refused_cfg_sub segs cfg _ H).
+  exact (reaches_budget_refused_cfg_sub (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_refused_may_fail : forall img lim en inp,
   run_budget_refused img lim en inp <-> run_scfg_budget_refused may_fail_cfg img lim en inp.
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  exact (reaches_budget_refused_cfg_may_fail segs _).
+  exact (reaches_budget_refused_cfg_may_fail (run_segments segs inp sp mbase) _).
 Qed.
 
 (* =========================================================================
@@ -3292,9 +3806,10 @@ Definition stack_rnd_max : Z := 0x3ffff000%Z.
     to 0x3ffff, when PF_RANDOMIZE is set, and nothing otherwise.
     [arch_align_stack] (arch/riscv/kernel/process.c) subtracts [r]
     from 0 to 4095 and clears the low four bits; from a page-aligned
-    [T] that gives [T] again for [r] in 0..4094 and [T - 4096] for
-    [r = 4095], because [(T - 4095) & ~0xf = T - 4096].  PAGE_ALIGN
-    then rounds the first case back up to [T].
+    [T] that gives a value above [T - 4096] for [r] in 0..4080, and
+    [T - 4096] for [r] in 4081..4095, because [T - 4096] is the only
+    16-aligned value in [[T - 4095, T - 4081]].  PAGE_ALIGN then rounds
+    the first case back up to [T].
 
     So the end is page-aligned, and it is [T0 - 4096 * k] for [k] in
     [0, 0x40000] with randomization, or [T0] or [T0 - 4096] without.
@@ -3472,9 +3987,7 @@ Qed.
     choice of [StackLayout.ed_vdso] — a vDSO function that writes only
     its result is one Linux can run — and the one a proof that does not
     care about the leftovers names. *)
-Definition vdso_keeps_all
-    : nat -> list word -> list byte -> word -> (list word * list byte) :=
-  fun _ regs frame _ => (regs, frame).
+Definition vdso_keeps_all : VdsoDraw := Vdso.vdso_draw_keep.
 
 (** THE WITNESS ENTRY, and the lemma that makes repairing a consumer
     cheap.
@@ -3501,7 +4014,7 @@ Definition vdso_keeps_all
     ([Equivalence.image_brk_witness] does). *)
 Definition launch_entry_va (v : VaSize) (inp : ProcInput) (brk : word)
     (rnd : bv 128)
-    (vd : nat -> list word -> list byte -> word -> (list word * list byte))
+    (vd : VdsoDraw)
     : ExecEntry :=
   let top := Z_to_bv 64 (va_stack_top v) in
   mkEntry (Z_to_bv 64 (launch_sp_hi top inp))
@@ -4273,11 +4786,12 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4299,24 +4813,32 @@ Definition valid_input (inp : ProcInput) : Prop :=
     WHY [valid_input] IS THE ONE THAT PINS [false].  Every statement in
     this tree written before the abort path had an arm quantifies over
     [valid_input], and pinning the field there is what keeps those
-    statements saying what they said: with the declaration off, no
-    reachable model has [State.m_abort_terminal] set, so
-    [Kernel.Signal.tkill_spec] declines every call and no
-    [State.KillEv] CARRYING SIGABRT can appear in any trace
-    ([sstep_off_no_kill]).
+    statements saying what they said: with the declaration off,
+    [Kernel.Signal.tkill_spec] declines every call, and together with
+    the SIGPIPE declaration below no [State.KillEv] can appear in any
+    trace of a run under this predicate
+    ([Checks.KillFree.valid_input_no_kill], a closed theorem).
 
-    THE SIGPIPE DECLARATION IS PINNED HERE TOO, and the two are
-    independent stances rather than one.  [State.in_sigpipe_default] is
-    [true] under this predicate: the launch left signal 13 at SIG_DFL,
-    so a write whose far end has no reader ENDS THE PROCESS and a run
-    under [valid_input] can carry [KillEv 13] -- see
-    [Sys.Fs.ReadWrite.write_spec] and [Sys.Fs.ReadWrite.raise_sigpipe].
-    It is pinned rather than left open because that is the world every
-    statement in this tree was written under, and because the other
-    world is not a different number but a different OUTCOME: with
-    SIG_IGN the same write returns -EPIPE and the program runs on.  A
-    task that wants either other reading asks for it by name
-    ([valid_input_abort], [valid_input_sigpipe_ignored]).
+    THE SIGPIPE DECLARATIONS ARE PINNED HERE TOO, and they are
+    independent stances from the abort one.  [State.in_sigpipe_default]
+    is [true] under this predicate: the launch left signal 13 at
+    SIG_DFL, the world every statement in this tree was written under;
+    with SIG_IGN the same write would return -EPIPE and the program run
+    on, a different OUTCOME and not a different number.
+    [State.in_sigpipe_terminal] is [false]: a write that would raise
+    SIGPIPE at SIG_DFL DECLINES, on every descriptor and under every
+    mask ([Sys.Fs.ReadWrite.sigpipe_write]), as [tkill] declines with
+    the abort declaration off.  So NO run under [valid_input] carries a
+    [KillEv] -- a closed theorem, [Checks.KillFree.valid_input_no_kill],
+    proved over every arm of the dispatcher -- nor ever holds a pending
+    signal ([star_kill_off] with [Checks.KillFree.kill_frame_holds]), and
+    a statement that concludes
+    [Equivalence.error_free] does not weaken: the reader-less write is an
+    error here, as it was before the write arms could raise the signal
+    ([Checks.KillFree.valid_input_error_free_unkilled_iff]).  A task that
+    wants another reading asks for it by name
+    ([valid_input_abort], [valid_input_sigpipe_ignored],
+    [valid_input_sigpipe_kills]).
 
     THE READER DECLARATION IS PINNED HERE TOO, at [true].
     [State.in_channel_reader] says whether anything still reads
@@ -4336,11 +4858,12 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4357,11 +4880,12 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4393,14 +4917,17 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
@@ -4411,14 +4938,20 @@ Qed.
     ran `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
     survived it, so [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal
     and a write to a far end with no reader is -EPIPE with the process
-    STILL RUNNING.  Every other clause is [valid_input]'s, the abort
-    declaration included.
+    STILL RUNNING.  If the program itself installs SIG_DFL
+    ([Kernel.Signal.rt_sigaction_sigpipe]), a later such write declines,
+    because [State.in_sigpipe_terminal] is pinned [false] here as in
+    [valid_input]: that decline is an error step, not a death, and no
+    run under this launch dies
+    ([Checks.KillFree.valid_input_sigpipe_ignored_no_kill]).  Every
+    other clause is [valid_input]'s, the abort declaration included.
 
     WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  It is the
     reading a program that handles -EPIPE itself was written for -- a
     daemon, a filter under a service manager -- and under it no write
-    arm can end the run, so a halts statement is not refuted by a
-    reader-less channel.  It is NOT the safer predicate: it asserts
+    arm ends the run while the handler stays SIG_IGN, so a halts
+    statement is not refuted by a reader-less channel for a program that
+    keeps it so.  It is NOT the safer predicate: it asserts
     something about the launch that the ordinary one does not, and a
     proof made under it says nothing about the ordinary launch. *)
 Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
@@ -4428,11 +4961,12 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = false
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4447,10 +4981,11 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4474,14 +5009,24 @@ Lemma valid_input_sigpipe_either_splits : forall inp,
   valid_input_sigpipe_either inp ->
   valid_input inp \/ valid_input_sigpipe_ignored inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
+  (* The hypotheses are taken apart and the goal is rebuilt BY SPLITTING,
+     not by naming a position.  An explicit [conj] chain hard-codes the
+     order of the conjunction it builds, so moving a conjunct silently
+     puts a proof of one fact where another is expected — which is what
+     this very lemma did when the two signal-death pins moved to the end,
+     and it is the proof-side twin of the consumer peels this reorder
+     exists to protect.  [repeat split] does not care about the order,
+     and [assumption] cannot pick a wrong one: the two pins differ in
+     their bool, so only the branch's own [Hsp] matches. *)
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_sigpipe_default inp) eqn:Hsp.
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
+  - left.  unfold valid_input.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
+  - right. unfold valid_input_sigpipe_ignored.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * THE READER DECLARATION: PINNED PRESENT, AND THE OTHER WORLD NAMED
@@ -4498,25 +5043,30 @@ Qed.
 
     WHY THE PIN RATHER THAN BOTH READINGS.  With the field unpinned
     every ordinary statement would also be a claim about a run whose
-    first write to standard output KILLS IT (signal 13 at SIG_DFL,
-    which [valid_input] pins as well), so a halts statement or a
-    trace statement would silently have to cover a death the task
-    never meant to describe.  The pin says which launch the tree is
-    about; the predicates below say the other one.
+    first write to standard output raises signal 13, so a halts
+    statement or a trace statement would silently have to cover an
+    ending the task never meant to describe.  The pin says which launch
+    the tree is about; the predicates below say the other one.
 
     [valid_input_channel_closed] is the reader-GONE launch named, in
     the shape [valid_input_abort] has for the abort declaration: every
-    clause of [valid_input] with the reader pinned to [false].  It is
-    NOT the safer predicate -- it asserts something about the launch
-    that [valid_input] does not, and a proof made under it says nothing
+    clause of [valid_input] with the reader pinned to [false] -- AND
+    THE SIGPIPE DEATH FOLLOWED ([State.in_sigpipe_terminal] [true]),
+    because that death is the whole point of the launch; with it
+    declined every write to standard output would decline.  It is NOT
+    the safer predicate -- it asserts something about the launch that
+    [valid_input] does not, and a proof made under it says nothing
     about a run whose output is read.  What it buys is a world where
     [Sys.Fs.ReadWrite.write_spec]'s channel arm takes the reader-less
     branch, which is what [Common.CatSimSigpipe] proves a whole run of.
 
-    [valid_input_channel_either] pins neither value, the twin of
+    [valid_input_channel_either] pins neither reader value, the twin of
     [valid_input_either]: a statement quantified over it is the
     CONJUNCTION of the two readings, which is what makes forgetting to
-    choose the safe failure rather than the dangerous one. *)
+    choose the safe failure rather than the dangerous one.  It ties the
+    SIGPIPE-death declaration to the reader
+    ([State.in_sigpipe_terminal] is [negb] of [State.in_channel_reader])
+    so that its two halves are exactly the two named launches. *)
 Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4524,11 +5074,12 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = false
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = false
+  /\ in_sigpipe_terminal inp = true.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4539,10 +5090,11 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp).
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -4553,7 +5105,10 @@ Proof.
      [valid_urandom], which is coinductive. *)
   intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hr : in_channel_reader _ = _ |- _ =>
+              rewrite Hr; cbn [negb]; assumption end ].
 Qed.
 
 Lemma valid_input_channel_either_of_valid_input_channel_closed : forall inp,
@@ -4561,7 +5116,10 @@ Lemma valid_input_channel_either_of_valid_input_channel_closed : forall inp,
 Proof.
   intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hr : in_channel_reader _ = _ |- _ =>
+              rewrite Hr; cbn [negb]; assumption end ].
 Qed.
 
 (** The exhaustiveness the paragraph above claims, as a lemma rather
@@ -4572,10 +5130,10 @@ Lemma valid_input_channel_either_splits : forall inp,
   valid_input_channel_either inp ->
   valid_input inp \/ valid_input_channel_closed inp.
 Proof.
-  intros inp H.
-  destruct (in_channel_reader inp) eqn:Hcr; [left | right];
-    red in H |- *;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp H. red in H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  destruct (in_channel_reader inp) eqn:Hcr; cbn [negb] in *; [left | right];
+    red;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
@@ -4628,7 +5186,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -4673,6 +5232,72 @@ Proof.
   assumption.
 Qed.
 
+(** THE SIGPIPE-DEATH DECLARATION under each named reading, as an
+    accessor for the same reason. *)
+Lemma valid_input_sigpipe_terminal : forall inp,
+  valid_input inp -> in_sigpipe_terminal inp = false.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_channel_closed_sigpipe_terminal : forall inp,
+  valid_input_channel_closed inp -> in_sigpipe_terminal inp = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** * THE SIGPIPE-DEATH DECLARATION: the launch that follows the death
+
+    [State.in_sigpipe_terminal] says whether the model follows a SIGPIPE
+    at SIG_DFL into the death it causes.  [valid_input] pins it to
+    [false]: a write that would raise the signal there DECLINES
+    ([Sys.Fs.ReadWrite.sigpipe_write]), on every descriptor and under
+    every mask, as [tkill] declines with [State.in_abort_terminal]
+    clear.  So no run under [valid_input] carries [KillEv 13]
+    ([Checks.KillFree.valid_input_no_kill], which proves it for every
+    signal), none holds a pending SIGPIPE ([star_kill_off] with
+    [Checks.KillFree.kill_frame_holds]), and every statement quantified over it
+    that concludes [Equivalence.error_free] keeps the meaning it had
+    before the write arms could raise the signal: the reader-less write
+    is an error there, as it was when the arms declined it.
+
+    [valid_input_sigpipe_kills] is the other world named, the twin of
+    [valid_input_abort]: every clause of [valid_input] with the field
+    pinned to [true].  What it ADDS is the death: a write to a pipe the
+    program left unread, or to a socket with no connection, ends the
+    run in [KillEv 13] at SIG_DFL with signal 13 open, and leaves it
+    pending with the signal blocked.  It is NOT the safer predicate: a
+    statement over it that asks [Equivalence.error_free] alone does not
+    see that death, which is why the statements that quantify over a
+    death-following launch ask [Equivalence.error_free_unkilled].
+    [valid_input_channel_closed] above follows the death too, on
+    descriptors 1 and 2, because its whole point is that death. *)
+Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = true.
+
+Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
+  valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
 (** * The address-space declaration: the same predicate per size
 
     Separate definitions rather than a parameter, for the reason the
@@ -4698,11 +5323,12 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv39
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4711,11 +5337,12 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv57
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4724,10 +5351,11 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
+  /\ valid_urandom inp
+  /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
-  /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -4839,13 +5467,10 @@ Qed.
 
 (** THE ABORT DECLARATION, as an accessor rather than as a position.
     [valid_input] pins [State.in_abort_terminal] to [false] — that is
-    what makes [Kernel.Signal.tkill_spec] decline every call under it,
-    and therefore what makes a [State.KillEv] CARRYING SIGABRT
-    unreachable for every statement quantified over this predicate
-    ([sstep_off_no_kill]).  A SIGPIPE kill is a separate declaration,
-    [valid_input_sigpipe_default] above, which this predicate pins the
-    other way round: under [valid_input] signal 13 IS at SIG_DFL and a
-    reader-less write ends the run; see [Sys.Fs.ReadWrite.write_spec].
+    what makes [Kernel.Signal.tkill_spec] decline every call under it.
+    With the SIGPIPE declaration ([valid_input_sigpipe_terminal]),
+    it is what makes a [State.KillEv] unreachable for every statement
+    quantified over this predicate ([Checks.KillFree.valid_input_no_kill]).
     Consumers want that one clause and nothing else.
 
     NAMED, BECAUSE THE POSITION MOVES.  This predicate grows a conjunct
@@ -4947,17 +5572,21 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
+  intros inp Hin. red in Hin.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -5016,11 +5645,12 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5029,11 +5659,12 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5042,17 +5673,21 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -5065,13 +5700,11 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -5121,11 +5754,12 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5134,39 +5768,53 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
+(** The three proofs below take the conjuncts BY SHAPE, never by
+    position.  A positional pattern ([intros inp (a & b & ... & L)])
+    names each conjunct by where it sits, so appending or reordering
+    one silently rebinds every name after it, and the proof fails with
+    "No such assumption" at a line that has nothing wrong with it.
+    That is what these three did before: fourteen binders against
+    fifteen conjuncts.  [red] then [repeat destruct] takes whatever is
+    there, in whatever order, and [repeat split; assumption] puts it
+    back, so a later conjunct costs these proofs nothing. *)
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
+(** The hwcap disjunction is found by shape too, rather than by sitting
+    ninth in the pattern. *)
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
@@ -5337,16 +5985,25 @@ Proof.
 Qed.
 
 (** [budget_refused_at] with the grant disjunct narrowed to
-    [alloc_refuse_reason i m = Some RefuseBudget]; the two first-touch
+    [alloc_refuse_reason i m = Some RefuseBudget]; the three first-touch
     clauses are unchanged.  It implies [budget_refused_at], so
     [~ run_budget_only_refused] admits every input [~ run_budget_refused]
     admits, and also those whose only refusal is oversize. *)
 Definition budget_only_refused_at (segs : list Segment) (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-     exists report,
-       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
-       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     ( (exists report,
+          RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+          materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+     \/ (mi_account_step segs (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+         exists fn n eff model' evs,
+           vdso_entry_fn segs (ms_pc (cfg_ms c)) = Some fn
+           /\ vdso_fn_sysno fn = Some n
+           /\ syscall_spec (sys_input segs (cfg_ms c) (Z_to_bv 64 n)) (cfg_model c)
+                (Ok eff model' evs)
+           /\ eff_ret eff <> errno_ret EFAULT
+           /\ m_halted model' = None
+           /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)))
   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
        ( alloc_refuse_reason (sys_input segs (cfg_ms c) x8) (cfg_model c) = Some RefuseBudget
        \/ exists eff model' evs,
@@ -5379,7 +6036,8 @@ Definition run_budget_only_refused (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_only_refused segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_only_refused vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_budget_only_refused_implies : forall img lim en inp,
@@ -5426,8 +6084,9 @@ Definition run_scfg_budget_only_refused (cfg : SpuriousCfg) (img : Image) (lim :
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_only_refused_cfg segs cfg
-      (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_only_refused_cfg vsegs cfg
+      (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_scfg_budget_only_refused_implies : forall cfg img lim en inp,
@@ -5435,7 +6094,7 @@ Lemma run_scfg_budget_only_refused_implies : forall cfg img lim en inp,
   run_scfg_budget_refused cfg img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_only_refused_cfg_implies segs cfg _ H).
+  exact (reaches_budget_only_refused_cfg_implies (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_only_refused_sub : forall cfg img lim en inp,
@@ -5443,7 +6102,7 @@ Lemma run_scfg_budget_only_refused_sub : forall cfg img lim en inp,
   run_budget_only_refused img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_only_refused_cfg_sub segs cfg _ H).
+  exact (reaches_budget_only_refused_cfg_sub (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_only_refused_may_fail : forall img lim en inp,
@@ -5451,5 +6110,5 @@ Lemma run_scfg_budget_only_refused_may_fail : forall img lim en inp,
   <-> run_scfg_budget_only_refused may_fail_cfg img lim en inp.
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  exact (reaches_budget_only_refused_cfg_may_fail segs _).
+  exact (reaches_budget_only_refused_cfg_may_fail (run_segments segs inp sp mbase) _).
 Qed.

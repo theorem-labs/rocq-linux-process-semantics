@@ -35,13 +35,17 @@ Definition two_outcomes (bf : list (list byte)) (cf : word)
     nodes need one (a reader-gone write KILLS the process). *)
 Lemma alloc_mmap_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
-  to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
+  to_outcomes (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          rlim inp))
     (two_outcomes bf cf bs cs) ->
-  tmw target_segs
-    (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
+  tmw (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -58,7 +62,8 @@ Proof.
   - intro tr. cbn.
     rewrite (alloc_obs_iff source_segs rpc rph rsp rbrk rmb rrnd rlim inp
                (two_outcomes bf cf bs cs) Hsource tr).
-    rewrite (mmap_obs_iff_te target_segs apc aph asp abrk amb arnd alim inp
+    rewrite (mmap_obs_iff_te (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd
+               alim inp
                bf cf bs cs Htarget Hbf Hbs Hr tr).
     unfold two_traces, two_outcomes, outcome_trace.
     split.
@@ -66,7 +71,8 @@ Proof.
     + intros [Hp | Hp]; [exists (bf, cf) | exists (bs, cs)];
         cbn [fst snd]; auto.
   - cbn.
-    apply (mmap_no_error_run_te target_segs apc aph asp abrk amb arnd alim inp
+    apply (mmap_no_error_run_te (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd
+             alim inp
              bf cf bs cs Htarget Hbf Hbs Hr).
 Qed.
 
@@ -74,13 +80,17 @@ Qed.
     target with the same two outcomes, at the two role budgets. *)
 Lemma alloc_mmap_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
-  to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
+  to_outcomes (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          source_alloc_limit inp))
     (two_outcomes bf cf bs cs) ->
-  tmw target_segs
-    (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+  tmw (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (StackLayout.ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
