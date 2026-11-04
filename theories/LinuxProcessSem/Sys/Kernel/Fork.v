@@ -750,6 +750,18 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _
                                 | OInherited None) => true
                     | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)) => false
+                    (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe
+                       reason: the child's second reference names the
+                       same socket, whose peer and queue both copies
+                       share, and a close in one process does not release
+                       it (the socket's [sock_close], net/socket.c:1454-1458,
+                       runs only when the last reference goes: [fput],
+                       fs/file_table.c:579-583, v6.18.46), so the
+                       peer's end of file would depend on a reference
+                       count the model does not hold.  It is also what
+                       keeps [State.seq_peer] exact: each end has one
+                       descriptor, in this process. *)
+                    | FdSeqpacket _ _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
@@ -817,13 +829,13 @@ Definition forfeit_model (m : Model) : Model :=
 
 Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = false.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
 Qed.
 
 Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
 Proof.
-  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o] H; try reflexivity.
+  intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st] H; try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   discriminate H.
 Qed.
@@ -871,7 +883,7 @@ Proof.
   intros fds H. unfold clone_no_shared_file_b in H.
   rewrite forallb_forall in H. apply forallb_forall.
   intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
-  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o];
+  destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st];
     try reflexivity.
   destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
   cbn in H. discriminate H.
@@ -1067,8 +1079,13 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
     The flags and the exit signal are two fields, as in Linux: legacy
     [clone] splits [lower_32_bits(clone_flags)] into [.flags] without
     [CSIGNAL] and [.exit_signal] with only [CSIGNAL] (fork.c:2742-2750),
-    and [clone3] copies the two struct fields (fork.c:2802-2813), so no
-    reader of the record sees a flag bit in the signal byte. *)
+    and [clone3] copies the two struct fields (fork.c:2802-2813).  No
+    record of this model has a flag bit in the signal byte, but for
+    [clone3] that takes more than the copy: Linux lets CLONE_NEWTIME
+    (0x80), which lies inside the signal byte, through
+    [clone3_args_valid] (fork.c:2864-2865), and [clone3_pre] refuses
+    every other signal-byte flag and declines that one
+    ([clone3_pre_split]). *)
 Record CloneArgs := mkCloneArgs {
   cla_flags : Z;
   cla_exit_signal : Z;
@@ -1080,8 +1097,11 @@ Record CloneArgs := mkCloneArgs {
 }.
 
 (** What the core hands the namespace extension about a pending clone's
-    arguments: the decoded record of a call the core answers from it, or
-    nothing ([Procs.clone_in_of] says which). *)
+    arguments: the decoded record of the call, or nothing.  A record is
+    not a promise that the core answers the call, nor that any rule
+    reads the record — a [clone] (220) word the core declines still has
+    one, and the admitted words are still gated on the raw register.
+    [Procs.clone_in_of] says exactly which calls have one. *)
 Inductive CloneIn := CiArgs (r : CloneArgs) | CiNoArgs.
 
 (** [clone]'s registers under [CONFIG_CLONE_BACKWARDS], which
@@ -1297,7 +1317,10 @@ Definition clone_spec (flags : word) : Sys SyscallEffect :=
     [exit_signal = SIGCHLD], but with
     [CLONE_CLEAR_SIGHAND | CLONE_VM | CLONE_VFORK] in its BASE flag word
     — a spawn asking for a cgroup or a pidfd sets more — so it is
-    declined on the flags field whichever it is.  riscv64 has the [clone3] wrapper, so it
+    declined on the flags field whichever it is when its stack range
+    and its cgroup field are valid (-EINVAL when [access_ok] refuses
+    the stack range, or when it asks for a cgroup above INT_MAX).
+    riscv64 has the [clone3] wrapper, so it
     really executes here.  musl issues no clone3 at all.  So this arm, like the legacy one, is
     reached by a RAW syscall.
 

@@ -272,6 +272,7 @@ Definition urandom_path : path :=
     generates only unistd_32.h and unistd_64.h — so every constant here
     is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
+Definition AF_UNIX   : Z := 1%Z.    (* include/linux/socket.h:191 *)
 Definition AF_INET   : Z := 2%Z.
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
 
@@ -348,6 +349,10 @@ Definition SOCKADDR_IN_SIZE      : Z := 16%Z.
     the other is exactly how a model gets [shutdown]'s validation
     backwards. *)
 Definition SOL_SOCKET : Z := 1%Z.
+(** [SO_PASSCRED], the one [SOL_SOCKET] option the model answers on an
+    AF_UNIX SEQPACKET end (include/uapi/asm-generic/socket.h:29,
+    v6.18.46). *)
+Definition SO_PASSCRED : Z := 16%Z.
 Definition SHUT_RD    : Z := 0%Z.
 Definition SHUT_WR    : Z := 1%Z.
 Definition SHUT_RDWR  : Z := 2%Z.

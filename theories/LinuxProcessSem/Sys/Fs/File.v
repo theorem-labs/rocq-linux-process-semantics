@@ -167,6 +167,16 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      An [ONsFile] is declined so that no arm of this model mints one.
      None of the exact cases is needed, so none is written. *)
   | FdOpaque _ => false
+  (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe reason.  [dup]'s
+     [get_file] and [do_dup2]'s add a second reference to the one socket
+     (fs/file.c:1480, :1303, v6.18.46), and the socket is released only
+     when the LAST reference goes ([fput], fs/file_table.c:579-583;
+     [__fput] calls [sock_close] at :504-505; net/socket.c:1454-1458), so
+     closing one of two fds must NOT set the peer's RCV_SHUTDOWN.
+     [State.seq_peer] reads the peer off the table, which is exact only
+     while each end has one descriptor; [dup] is the operation that would
+     make it wrong. *)
+  | FdSeqpacket _ _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

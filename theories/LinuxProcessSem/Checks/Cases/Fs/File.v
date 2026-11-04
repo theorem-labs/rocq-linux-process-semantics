@@ -434,3 +434,77 @@ Example ns_file_blocks_unlinkat :
      | _ => False
      end.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(* =========================================================================
+   [State.FdSeqpacket]: one end of an AF_UNIX SOCK_SEQPACKET pair.  As for
+   [State.ONsFile] above, these examples span the descriptor-level calls,
+   because what they pin is the KIND's rule: an end answers what a socket
+   answers from the socket inode and [socket_file_ops] alone, and every
+   call whose answer would need more of the end (its queue, a second
+   reference to it) declines.
+   ========================================================================= *)
+
+(** fd 3 and fd 4 are the two ends of pair 0, fd 5 the directory.  The
+    lowest free fd is 6. *)
+Definition seqp_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+           (3, FdSeqpacket 0 false seq_fresh); (4, FdSeqpacket 0 true seq_fresh);
+           (5, FdDir)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** D1.  DUP AND DUP3 OF AN END DECLINE ([File.dup_modeled_entry]): the
+    socket is released only when its LAST reference goes, so after a dup
+    a close of one descriptor must not end the peer's reads, and the
+    model keeps one descriptor per end.  THE CONTROL: dup of the
+    directory at 5 installs a copy at 6. *)
+Example seqpacket_end_dup_declines :
+  check_syscall (fd_call 23 3 0 0) (mkEffect 6 [] []) seqp_model = CheckUnmodeled
+  /\ check_syscall (fd_call 23 4 0 0) (mkEffect 6 [] []) seqp_model = CheckUnmodeled
+  /\ check_syscall (fd_call 24 3 7 0) (mkEffect 7 [] []) seqp_model = CheckUnmodeled
+  /\ check_syscall (fd_call 23 5 0 0) (mkEffect 6 [] []) seqp_model
+     = CheckOk (with_fds (fd_insert (m_fds seqp_model) 6 FdDir) seqp_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** DECLINED on an end: read, write, fstat, fcntl(F_GETFL),
+    ioctl(TIOCGWINSZ) and lseek(SEEK_SET), whatever errno the kernel
+    claims. *)
+Example seqpacket_end_declines_the_kind_dependent_calls :
+  check_syscall (fd_call 63 3 0x10000 16) (mkEffect (errno_ret EBADF) [] []) seqp_model
+  = CheckUnmodeled
+  /\ check_syscall (fd_call 64 3 0x10000 16) (mkEffect (errno_ret EBADF) [] []) seqp_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 80 3 0x10000 0) (mkEffect (errno_ret EBADF) [] []) seqp_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 25 3 F_GETFL 0) (mkEffect 2 [] []) seqp_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 29 3 TIOCGWINSZ 0x10000) (mkEffect (errno_ret ENOTTY) [] [])
+       seqp_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 62 3 0 0) (mkEffect (errno_ret ESPIPE) [] []) seqp_model
+     = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
+
+(** ANSWERED on an end, each the answer an AF_INET socket gets: ftruncate
+    is -EINVAL (the inode is S_IFSOCK, net/socket.c:644, and
+    [do_ftruncate] tests S_ISREG first, fs/open.c:175, v6.18.46); fsync is
+    -EINVAL ([socket_file_ops], net/socket.c:156, has no [.fsync]:
+    fs/sync.c:183-184); getdents64 is -ENOTDIR (nor an [.iterate_shared]).
+    And the kind-blind calls: fcntl(F_SETFD) is 0, close is 0 and removes
+    the entry.  THE CONTROLS: 0 for each of the three errnos. *)
+Example seqpacket_end_answers_the_socket_errnos :
+  check_syscall (fd_call 46 3 0 0) (mkEffect (errno_ret EINVAL) [] []) seqp_model
+  = CheckOk seqp_model []
+  /\ check_syscall (fd_call 46 3 0 0) (mkEffect 0 [] []) seqp_model = CheckReject
+  /\ check_syscall (fd_call 82 3 0 0) (mkEffect (errno_ret EINVAL) [] []) seqp_model
+     = CheckOk seqp_model []
+  /\ check_syscall (fd_call 82 3 0 0) (mkEffect 0 [] []) seqp_model = CheckReject
+  /\ check_syscall (fd_call 61 3 0x10000 4096) (mkEffect (errno_ret ENOTDIR) [] [])
+       seqp_model
+     = CheckOk seqp_model []
+  /\ check_syscall (fd_call 61 3 0x10000 4096) (mkEffect 0 [] []) seqp_model
+     = CheckReject
+  /\ check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) seqp_model
+     = CheckOk seqp_model []
+  /\ check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) seqp_model
+     = CheckOk (with_fds (fd_remove (m_fds seqp_model) 3) seqp_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

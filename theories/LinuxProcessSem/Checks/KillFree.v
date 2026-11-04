@@ -1280,11 +1280,11 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_setsockopt_kf : forall fd level optlen eff m m' evs,
-  check_setsockopt fd level optlen eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_setsockopt_kf : forall i fd level optlen eff m m' evs,
+  check_setsockopt i fd level optlen eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd level optlen eff m m' evs H Hoff Hk.
-  unfold check_setsockopt, check_setsockopt_core in H.
+  intros i fd level optlen eff m m' evs H Hoff Hk.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1324,9 +1324,11 @@ Lemma check_socketpair_kf : forall i family type protocol sv eff m m' evs,
   check_socketpair i family type protocol sv eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i family type protocol sv eff m m' evs H Hoff Hk.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
+    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
   kf_frame H m Hoff Hk.
 Qed.
+Print Assumptions check_socketpair_kf.
 
 Lemma check_recvfrom_kf : forall i fd buf size eff m m' evs,
   check_recvfrom i fd buf size eff m = CheckOk m' evs -> kill_post m m' evs.
@@ -1336,11 +1338,12 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_recvmsg_kf : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_recvmsg_kf : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd flags eff m m' evs H Hoff Hk.
-  unfold check_recvmsg, check_recv_fd_answer in H.
+  intros i fd flags eff m m' evs H Hoff Hk.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 

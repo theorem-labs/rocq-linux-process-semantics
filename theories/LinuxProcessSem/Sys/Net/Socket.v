@@ -479,6 +479,11 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          v6.18.44; identical at v6.18.46).  The eventfd and /proc/sys
          objects would take the -ENOTSOCK, and an [ONsFile] may be a
          socket; the split is not written. *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED, and the second open kind the wildcard below would
+         answer WRONGLY: an AF_UNIX SEQPACKET end IS a socket
+         ([sock_alloc_file], net/socket.c:476-501, v6.18.46), whose bind is
+         [unix_bind]; not written *)
   | Some _ => err_ret ENOTSOCK
       (* AN OPEN FD THAT IS NOT A SOCKET, and that [fdget] accepts.  This
          arm is a wildcard on purpose: [sock_from_file] is one comparison
@@ -590,6 +595,7 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
                ret_only (Z_to_bv 64 0))
       end
   | Some (FdOpaque _) => unmodeled   (* an O_PATH file is [fdget]'s -EBADF: see [bind_spec] *)
+  | Some (FdSeqpacket _ _ _) => unmodeled   (* a socket: [unix_listen], not written; see [bind_spec] *)
   | Some _ => err_ret ENOTSOCK
   end.
 
@@ -721,6 +727,9 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
                                                  (* [inet_csk_accept]: not TCP_LISTEN, or one
                                                     of the allocation errnos that precede it *)
           end
+      | FdSeqpacket _ _ _ => unmodeled
+          (* a socket, so not the -ENOTSOCK below: [unix_accept] on a pair
+             end is not written *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then unmodeled
                (* Linux v6.18.46 (commit 1f99e9ab748f), fs/file.c [alloc_fd]
@@ -1035,6 +1044,7 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      then err_ret EAFNOSUPPORT   (* [tcp_v4_connect], NOT -EINVAL *)
                      else unmodeled              (* the attempt itself: the environment's *)
                  end
+           | FdSeqpacket _ _ _ => unmodeled      (* a socket: [unix_stream_connect], not written *)
            | _ => err_ret ENOTSOCK               (* [sock_from_file], AFTER the copy *)
            end)
       end
@@ -1134,6 +1144,12 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                           [socket_file_ops] (net/socket.c,
                                           [sock_from_file], v6.18.46) *)
   | Some (FdSocket sk)  => inl sk
+  | Some (FdSeqpacket _ _ _) => inr ENOTSOCK
+                                       (* never consulted, for the [ONsFile] reason:
+                                          each of the five calls tests this kind
+                                          first ([fd_is_seqpacket_end]); an AF_UNIX
+                                          end IS a socket, so the -ENOTSOCK here
+                                          would be wrong *)
   end.
 
 (** An [State.ONsFile] descriptor: its object may be a socket or not
@@ -1142,6 +1158,17 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
 Definition fd_is_ns_file (fds : list (word * FdEntry)) (fd : word) : bool :=
   match fd_lookup fds fd with
   | Some (FdOpaque (ONsFile _)) => true
+  | _ => false
+  end.
+
+(** An AF_UNIX SEQPACKET end ([State.FdSeqpacket]).  The five calls below
+    test it ahead of [sock_fd], as they test [fd_is_ns_file]:
+    [setsockopt_spec] answers [SO_PASSCRED] on it ([seqpacket_setsockopt])
+    and the other four decline it. *)
+Definition fd_is_seqpacket_end (fds : list (word * FdEntry)) (fd : word)
+    : bool :=
+  match fd_lookup fds fd with
+  | Some (FdSeqpacket _ _ _) => true
   | _ => false
   end.
 
@@ -1565,31 +1592,107 @@ Definition shutdown_core_spec (fd how : word) : Sys SyscallEffect :=
         end
   end.
 
+(** [setsockopt] on an AF_UNIX SEQPACKET end [fd], the end [(id, side)].
+
+    [__sys_setsockopt] (net/socket.c:2372-2387, v6.18.46) resolves the
+    descriptor and calls [do_sock_setsockopt] (:2328-2366), which tests
+    [optlen < 0] first (-EINVAL, :2335-2336), and then, for [SOL_SOCKET],
+    calls [sock_setsockopt] (:2356-2357): the SEQPACKET socket does not
+    set SOCK_CUSTOM_SOCKOPT, which [unix_create] sets for SOCK_STREAM
+    only (net/unix/af_unix.c:1161-1162).  Any other level reaches
+    [ops->setsockopt], which [unix_seqpacket_ops] does not have
+    (af_unix.c:1029-1050), so it is -EOPNOTSUPP (socket.c:2358-2359).
+    [sk_setsockopt] (net/core/sock.c:1186-1674) tests [SO_BINDTODEVICE]
+    first (:1201-1202), then [optlen < sizeof(int)] (-EINVAL, :1204-1205),
+    then copies the [int] (-EFAULT, :1207-1208; nothing is stored, since
+    the four bytes go into a kernel variable), and for [SO_PASSCRED]
+    stores [val != 0] into [sk_scm_credentials] (:1551-1556:
+    [sk_may_scm_recv] holds for AF_UNIX, include/net/sock.h:2917-2922)
+    and answers 0.  Every option but [SO_PASSCRED] is declined, ahead of
+    the length test, so the order of the answered tests is Linux's.  Of
+    the hooks between (net/socket.c:2338-2351), the LSM hook is the
+    [sock_fd] note's assumption (no active policy denies), and a
+    cgroup-BPF hook is the launch value [setsockopt_spec] tests first:
+    with it present every setsockopt declines.
+
+    [optname] and [optval] are read off the input (arguments 2 and 3);
+    the dispatcher binds [level] and [optlen] as their low 32 bits
+    ([Syscall.int32]). *)
+Definition seqpacket_setsockopt (fd id : word) (side : bool) (st : SeqEnd)
+    (level optlen : word) : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let optname := bv_unsigned (abi_low32 (in_arg i 2)) in
+  let optval := in_arg i 3 in
+  if int32_neg optlen then err_ret EINVAL
+  else if negb (Z.eqb (bv_unsigned (abi_low32 level)) SOL_SOCKET)
+  then err_ret EOPNOTSUPP
+  else if negb (Z.eqb optname SO_PASSCRED) then unmodeled
+  else if (bv_unsigned optlen <? 4)%Z then err_ret EINVAL
+  else match copy_bytes_map (in_mem i) optval 4 with
+       | None => err_ret EFAULT
+       | Some vbs =>
+           record_copyins [(optval, 4%nat)]
+             (set_fds (fd_insert (m_fds m) fd
+                (FdSeqpacket id side (with_sq_passcred (negb (w_is0 (le_bytes_to_word vbs))) st))) ;;
+              ret_only (Z_to_bv 64 0))
+       end.
+
 (** The five calls as the dispatcher sees them: each declines an
     [State.ONsFile] descriptor ([fd_is_ns_file]), whose object may be a
-    socket or may not, ahead of [sock_fd], and is the [*_core_spec]
-    above for every other descriptor. *)
+    socket or may not, ahead of [sock_fd]; each then tests for an AF_UNIX
+    SEQPACKET end ([fd_is_seqpacket_end]), which [setsockopt] answers
+    ([seqpacket_setsockopt]) and the other four decline; and each is the
+    [*_core_spec] above for every other descriptor. *)
 Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
-  if fd_is_ns_file (m_fds m) fd then unmodeled else getsockname_core_spec fd.
+  if fd_is_ns_file (m_fds m) fd then unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then unmodeled
+  else getsockname_core_spec fd.
 
 Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
-  if fd_is_ns_file (m_fds m) fd then unmodeled else getpeername_core_spec fd.
+  if fd_is_ns_file (m_fds m) fd then unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then unmodeled
+  else getpeername_core_spec fd.
 
-Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+Definition setsockopt_no_cgroup_bpf_spec (fd level optlen : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if fd_is_ns_file (m_fds m) fd then unmodeled
-  else setsockopt_core_spec fd level optlen.
+  else match fd_lookup (m_fds m) fd with
+       | Some (FdSeqpacket id side st) => seqpacket_setsockopt fd id side st level optlen
+       | _ => setsockopt_core_spec fd level optlen
+       end.
+
+(** A cgroup-BPF setsockopt hook can replace option bytes, change the
+    level/name/length, or bypass the handler with success
+    (do_sock_setsockopt, net/socket.c:2342-2363, v6.18.46). Its presence
+    is a launch value, not an errno-only failure choice. *)
+Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if m_cgroup_bpf_setsockopt m then unmodeled
+  else setsockopt_no_cgroup_bpf_spec fd level optlen.
+
+Lemma setsockopt_no_cgroup_bpf : forall fd level optlen i m o,
+  m_cgroup_bpf_setsockopt m = false ->
+  (setsockopt_spec fd level optlen i m o <->
+   setsockopt_no_cgroup_bpf_spec fd level optlen i m o).
+Proof.
+  intros fd level optlen i m o H.
+  unfold setsockopt_spec. rewrite bind_get_model, H. reflexivity.
+Qed.
 
 Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if fd_is_ns_file (m_fds m) fd then unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then unmodeled
   else getsockopt_core_spec fd level optlenp.
 
 Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
   m <- get_model ;;
-  if fd_is_ns_file (m_fds m) fd then unmodeled else shutdown_core_spec fd how.
+  if fd_is_ns_file (m_fds m) fd then unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then unmodeled
+  else shutdown_core_spec fd how.
 
 (* =========================================================================
    The socket write path: sendto (206), sendmsg (211)
@@ -2026,6 +2129,8 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
            (readable_bytes (in_mem i) buf count) m
      | Some (FdOpaque _) => unmodeled            (* an O_PATH file is [fdget]'s -EBADF: see
                                                     [bind_spec] *)
+     | Some (FdSeqpacket _ _ _) => unmodeled     (* a socket: no send on an end
+                                                    ([State.FdSeqpacket]) *)
      | Some _ => err_ret ENOTSOCK                (* not a socket: real -ENOTSOCK *)
      end).
 
@@ -2147,6 +2252,10 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
          an O_PATH file, the eventfd and /proc/sys objects take -ENOTSOCK,
          and an [ONsFile] may be a socket (net/socket.c, read at
          v6.18.44; identical at v6.18.46); the split is not written *)
+  | Some (FdSeqpacket _ _ _) => unmodeled
+      (* FAIL-CLOSED: an AF_UNIX SEQPACKET end is a socket, and the model
+         sends no message on one, so its receive queue stays empty
+         ([State.FdSeqpacket]) *)
   | Some (FdSocket sk) =>
   (* THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
      [State.access_okb]-then-walk pair [socketpair_dest_writable] below
@@ -2328,6 +2437,10 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
          (net/socket.c, read at v6.18.44; identical at v6.18.46); the
          split is not written *)
   | Some (FdSocket _) => None
+  | Some (FdSeqpacket _ _ _) => None
+      (* a socket, so not -ENOTSOCK.  [recvfrom] declines it here;
+         [recvmsg_spec] tests the kind before it reaches this function
+         and answers it ([seqpacket_recvmsg]) *)
   end.
 
 (** That answer as a spec: the errno, or the decline a socket takes.
@@ -2365,11 +2478,13 @@ Definition socketpair_base_type (type : word) : Z :=
     [sock1->ops->socketpair] and both are the -EOPNOTSUPP below.
 
     Everything else is [unmodeled], and each exclusion is a kernel fact
-    rather than a shrug.  AF_UNIX SUCCEEDS and would hand back a PAIR of
+    rather than a shrug.  AF_UNIX SUCCEEDS and hands back a PAIR of
     sockets connected to each other, which [State.SockState] cannot
     express: its [SkConnected] names one peer and one channel, and
     nothing in it stands for a second socket in this same process on the
-    other end.
+    other end.  The AF_UNIX SOCK_SEQPACKET pair is the arm
+    [socketpair_seqpacket_b] picks out before this one; the other AF_UNIX
+    types stay declined here.
     SOCK_RAW reaches [inet_create]'s CAP_NET_RAW test and so depends on
     the process's capabilities, which the model does not track.  A
     nonzero protocol reaches [inet_create]'s own range test and then its
@@ -2578,6 +2693,113 @@ Proof.
       [lia|reflexivity].
 Qed.
 
+(** THE AF_UNIX SOCK_SEQPACKET PAIR.  [__sys_socketpair] (net/socket.c:1769-1859,
+    v6.18.46) runs the same steps as for AF_INET: the [type] flag test
+    (:1776-1778, [socketpair_flags_ok]), two descriptor reservations
+    (:1788-1796, [socketpair_reserve_errnos]), the two [put_user]s
+    (:1798-1804, [socketpair_writes]), then the two [sock_create]s
+    (:1811-1819), [security_socket_socketpair] (:1821),
+    [ops->socketpair] (:1828), the two [sock_alloc_file]s (:1835-1847) and
+    the two [fd_install]s (:1851-1852), answering 0.  For AF_UNIX
+    [ops->socketpair] is [unix_socketpair] (net/unix/af_unix.c:1826-1855),
+    which joins the two sockets and SUCCEEDS, where AF_INET's is
+    -EOPNOTSUPP.
+
+    THE TRIPLE: AF_UNIX, SOCK_SEQPACKET (with or without SOCK_CLOEXEC),
+    protocol 0.  [unix_create] takes protocol 0 or PF_UNIX and answers
+    -EPROTONOSUPPORT for any other (af_unix.c:1155-1156), and gives a
+    SOCK_SEQPACKET socket [unix_seqpacket_ops] (:1175-1177); another
+    protocol and the other AF_UNIX types stay declined.  SOCK_CLOEXEC sets
+    only the descriptors' close-on-exec mark, which no answer of this model
+    reads, as [socket_spec] argues.  SOCK_NONBLOCK declines: an end carries
+    no O_NONBLOCK ([State.SeqEnd]).  The model assumes CONFIG_UNIX=y
+    (SCOPE.md): AF_UNIX is registered, so [__sock_create] never answers
+    -EAFNOSUPPORT for it (net/socket.c:1586-1594). *)
+Definition socketpair_seqpacket_b (family type protocol : word) : bool :=
+  (Z.eqb (bv_unsigned (abi_low32 family)) AF_UNIX
+   && Z.eqb (socketpair_base_type type) SOCK_SEQPACKET
+   && Z.eqb (bv_unsigned (abi_low32 protocol)) 0
+   && Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_NONBLOCK) 0)%bool.
+
+(** The errnos an AF_UNIX pair can answer AFTER both [put_user]s, so with
+    both numbers stored and nothing installed (the [out:] label,
+    net/socket.c:1855-1858): -ENFILE from [sock_alloc] (:1570-1573), from
+    [unix_create1]'s socket count (net/unix/af_unix.c:1102-1103) and from
+    [alloc_empty_file] under [sock_alloc_file] (fs/file_table.c:248-255,
+    :278); -ENOMEM from [sk_alloc] (af_unix.c:1110-1113), from
+    [pidfs_register_pid] under [prepare_peercred] (fs/pidfs.c:918-920;
+    af_unix.c:762, :1832-1840) and from [alloc_empty_file] and
+    [alloc_path_pseudo] (fs/file_table.c:259-260, :400-402); all v6.18.46.
+    Neither condition is one this model tracks, so both are environment
+    choices.  [pidfs_register_pid]'s -ESRCH (fs/pidfs.c:913-914) needs the
+    caller's own pid to be dead, which a running caller's is not.  The
+    LSM hooks are not admitted, as [socketpair_create_errnos] says. *)
+Definition socketpair_unix_errnos : list Z := [ENFILE; ENOMEM].
+
+(** Both ends installed: [fd1] (the first number stored) is side [false],
+    [fd2] side [true], both fresh ([State.seq_fresh]), and the call answers
+    0 with both stores. *)
+Definition socketpair_installed (sv fd1 fd2 id : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  set_fds (fd_insert (fd_insert (m_fds m) fd1 (FdSeqpacket id false seq_fresh))
+                     fd2 (FdSeqpacket id true seq_fresh)) ;;
+  pure (mkEffect (Z_to_bv 64 0) (socketpair_writes sv fd1 fd2) []).
+
+(** The outcome once the 8-byte destination is known writable: a
+    reservation errno with nothing stored, a late errno with both stores,
+    or the pair. *)
+Definition socketpair_unix_written (sv fd1 fd2 id : word) : Sys SyscallEffect :=
+  alt (e <- errno_from socketpair_reserve_errnos ;; err_ret e)
+    (alt (e <- errno_from socketpair_unix_errnos ;;
+          pure (mkEffect (errno_ret e) (socketpair_writes sv fd1 fd2) []))
+         (socketpair_installed sv fd1 fd2 id)).
+
+(** The first reservation can need fdtable growth only at a capacity
+    boundary, with no live descriptor at or above that boundary. Linux's
+    capacities are multiples of BITS_PER_LONG and at least NR_OPEN_DEFAULT
+    (include/linux/fdtable.h:21-24; fs/file.c:167-197, v6.18.46).
+    Capacity itself is not stored: it may already be larger. *)
+Definition socketpair_first_may_expand (fds : list (word * FdEntry)) (fd : word) : bool :=
+  let n := bv_unsigned fd in
+  ((NR_OPEN_DEFAULT <=? n)%Z && Z.eqb (Z.modulo n NR_OPEN_DEFAULT) 0
+   && forallb (fun kv => (bv_unsigned (fst kv) <? n)%Z) fds)%bool.
+
+(** Nonempty means the pair cannot be reserved, before either put_user.
+    alloc_fd checks fd >= RLIMIT_NOFILE before expansion (fs/file.c:591-598,
+    v6.18.46), and get_unused_fd_flags supplies that limit (:615-622).
+    A first-reservation limit failure is only EMFILE. A second one is
+    EMFILE too, but an allocation failure in the first reservation can
+    precede it when that first reservation may expand the table. *)
+Definition socketpair_unix_limit_errnos (fd1 fd2 : word) (m : Model) : list Z :=
+  let lim := bv_unsigned (m_nofile m) in
+  if (lim <=? bv_unsigned fd1)%Z then [EMFILE]
+  else if (lim <=? bv_unsigned fd2)%Z then
+    if socketpair_first_may_expand (m_fds m) fd1 then socketpair_reserve_errnos else [EMFILE]
+  else [].
+
+(** The AF_UNIX SEQPACKET arm.  The destination tests are the AF_INET
+    arm's, for its reasons ([socketpair_dest_writable], and the 4-byte
+    test of the band where only the first store may land).  The pair id
+    is [State.seq_new_id]; a live id there (the id space wrapped) declines
+    rather than aliases. *)
+Definition socketpair_unix_spec (sv : word) : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  match socketpair_fds (m_fds m) with
+  | None => unmodeled   (* [State.alloc_fd]'s scan bound exhausted: fail closed *)
+  | Some (fd1, fd2) =>
+      match socketpair_unix_limit_errnos fd1 fd2 m with
+      | [] =>
+          let id := seq_new_id (m_fds m) in
+          if seq_id_live (m_fds m) id then unmodeled
+          else if socketpair_dest_writable (in_wmem i) sv
+          then socketpair_unix_written sv fd1 fd2 id
+          else if negb (access_okb sv 4) then socketpair_faulted
+          else unmodeled   (* destination neither known-writable nor known-refused *)
+      | es => alt (e <- errno_from es ;; err_ret e) (choose (fun _ => False))
+      end
+  end.
+
 (** [socketpair family type protocol usockvec].
 
     THE WHOLE POINT: for AF_INET this call ALWAYS FAILS, and it writes
@@ -2592,6 +2814,7 @@ Qed.
     already stored in the caller's array. *)
 Definition socketpair_spec (family type protocol sv : word) : Sys SyscallEffect :=
   if negb (socketpair_flags_ok type) then err_ret EINVAL
+  else if socketpair_seqpacket_b family type protocol then socketpair_unix_spec sv
   else if negb (socketpair_modeled_b family type protocol) then unmodeled
   else
   i <- input ;;
@@ -2702,6 +2925,121 @@ Definition recvfrom_spec (fd buf size : word) : Sys SyscallEffect :=
   m <- get_model ;;
   access_ok_zero buf size (recv_fd_answer (m_fds m) fd).
 
+(** One [__put_user] store of [n] bytes at [a], tested on the writable
+    map: it LANDS when every byte is writable, and it FAULTS with nothing
+    stored when no byte is.  A range that is partly writable is neither,
+    and the arm that asks declines there.  [__put_user] makes no
+    [access_ok] test of its own (arch/riscv/include/asm/uaccess.h); the
+    one caller asks about bytes of a header [copy_from_user] has already
+    accepted. *)
+Definition put_user_lands (mp : word -> option byte) (a : word) (n : Z) : bool :=
+  match read_bytes_map mp a (Z_to_bv 64 n) with
+  | Some _ => true
+  | None => false
+  end.
+
+Fixpoint bytes_unwritable (mp : word -> option byte) (a : word) (n : nat)
+    : bool :=
+  match n with
+  | O => true
+  | S k => match mp a with
+           | Some _ => false
+           | None => bytes_unwritable mp (a + Z_to_bv 64 1) k
+           end
+  end.
+
+(** The end of file on an AF_UNIX SEQPACKET end: [sock_recvmsg] answers
+    0, and [____sys_recvmsg] (net/socket.c:2825-2879, v6.18.46) then
+    writes back [msg_flags] (a 4-byte [unsigned int] at offset 48), which
+    is [flags & (MSG_CMSG_CLOEXEC|MSG_CMSG_COMPAT)] = 0 (:2840, :2864-2867),
+    and then [msg_controllen] (8 bytes at offset 40), which is
+    [msg_control - cmsg_ptr] = 0, since no control message was placed
+    (:2872-2875).  With [msg_name] NULL there is no address to write back
+    (:2857-2863).  Each store faults on its own: the first faulting means
+    -EFAULT and nothing stored, the second faulting means -EFAULT with the
+    first stored.  A store whose range is partly writable declines
+    ([put_user_lands], [bytes_unwritable]).  [reads] is the copy-in
+    ledger of the header and the iovec. *)
+Definition recvmsg_eof_writes (reads : list (word * nat)) (msg : word)
+    : Sys SyscallEffect :=
+  i <- input ;;
+  let a1 := msg + Z_to_bv 64 48 in
+  let a2 := msg + Z_to_bv 64 40 in
+  let w1 := (a1, word_le4 (Z_to_bv 64 0)) in
+  let w2 := (a2, word_le8 (Z_to_bv 64 0)) in
+  if put_user_lands (in_wmem i) a1 4 then
+    if put_user_lands (in_wmem i) a2 8
+    then record_copyins reads (pure (mkEffect (Z_to_bv 64 0) [w1; w2] []))
+    else if bytes_unwritable (in_wmem i) a2 8
+    then record_copyins reads (pure (mkEffect (errno_ret EFAULT) [w1] []))
+    else unmodeled
+  else if bytes_unwritable (in_wmem i) a1 4
+  then record_copyins reads (err_ret EFAULT)
+  else unmodeled.
+
+(** [recvmsg] on an AF_UNIX SEQPACKET end, the end [(id, side)], once the
+    descriptor has resolved (net/socket.c:2918-2924, v6.18.46).  The checks
+    keep Linux's order:
+    - flags: only 0 is answered; MSG_OOB, MSG_DONTWAIT, MSG_PEEK and the
+      rest are declined ([flags] is an [unsigned int]: its low 32 bits);
+    - the header: [copy_from_user] of the 56-byte [struct user_msghdr]
+      (-EFAULT, :2561-2562); a non-NULL [msg_name] is declined (the
+      [msg_namelen] tests and the address write-back are not written); a
+      NULL one forces [msg_namelen] to 0 (:2519-2521), so its value is read
+      by nothing; [msg_iovlen] past UIO_MAXIOV is -EMSGSIZE (:2545-2546),
+      on the full 64-bit [__kernel_size_t]; any count but 1 declines;
+    - the iovec: [import_iovec] with one segment ([State.import_iovecs]:
+      -EFAULT for an unreadable descriptor or a refused buffer, -EINVAL
+      for a negative length; lib/iov_iter.c);
+    - the protocol: [unix_seqpacket_recvmsg] (net/unix/af_unix.c:2567-2576).
+      Its -ENOTCONN (:2572-2573) cannot fire on a pair end:
+      [unix_socketpair] sets both ends TCP_ESTABLISHED (:1850-1851) and
+      [unix_release_sock] never changes the PEER's state (:697-713).  The
+      receive queue is always empty ([State.FdSeqpacket]).  While the peer
+      is open, [__unix_dgram_recvmsg] waits for a message no process of the
+      run can send (:2605-2623, with no timeout: the file has no
+      O_NONBLOCK), so the arm declines.  Once the peer has closed, its
+      [unix_release_sock] has set this end's RCV_SHUTDOWN (:705-707) and no
+      [sk_err] (:708-709: the closed end's own queue was empty).  The
+      blocking [__skb_wait_for_more_packets] exits on RCV_SHUTDOWN with
+      [err = 0] (net/core/datagram.c:106-108,132-135, v6.18.46), so the
+      call answers 0 with the write-back of [recvmsg_eof_writes]. *)
+Definition seqpacket_recvmsg (id : word) (side : bool) (flags : word)
+    : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let msg := in_arg i 1 in
+  if negb (Z.eqb (bv_unsigned (abi_low32 flags)) 0) then unmodeled
+  else
+  match copy_bytes_map (in_mem i) msg MSGHDR_SIZE with
+  | None => err_ret EFAULT     (* copy_from_user of the header *)
+  | Some _ =>
+      match read_u64 (in_mem i) msg,
+            read_u64 (in_mem i) (msg + Z_to_bv 64 16),
+            read_u64 (in_mem i) (msg + Z_to_bv 64 24) with
+      | Some name, Some iov, Some iovlen =>
+          if negb (w_is0 name) then unmodeled
+          else if (IOV_MAX <? bv_unsigned iovlen)%Z
+          then record_copyins [(msg, Z.to_nat MSGHDR_SIZE)] (err_ret EMSGSIZE)
+          else if negb (bv_eqb iovlen (Z_to_bv 64 1)) then unmodeled
+          else
+          let reads := [(msg, Z.to_nat MSGHDR_SIZE)]
+                       ++ import_iovecs_accesses (in_mem i) iov iovlen in
+          match import_iovecs (in_mem i) iov iovlen with
+          | ImpFault => record_copyins reads (err_ret EFAULT)
+          | ImpInval => record_copyins reads (err_ret EINVAL)
+          | ImpOk _ =>
+              match seq_peer (m_fds m) id side with
+              | Some _ => unmodeled
+              | None => recvmsg_eof_writes reads msg
+              end
+          end
+      | _, _, _ =>
+          record_copyins [(msg, Z.to_nat MSGHDR_SIZE)] (err_ret EFAULT)
+          (* unreachable: the whole header read above *)
+      end
+  end.
+
 (* ---- recvmsg (212) ------------------------------------------------------ *)
 
 (** [recvmsg fd msg flags].
@@ -2720,8 +3058,9 @@ Definition recvfrom_spec (fd buf size : word) : Sys SyscallEffect :=
     [recvmsg(-1, <kernel address>, 0)] is -EBADF and
     [recvmsg(<open file>, <kernel address>, 0)] is -ENOTSOCK, with the
     56-byte [struct user_msghdr] never touched.  This model therefore
-    does not read the [msg] pointer at all, and the dispatcher does not
-    even bind it.
+    reads the [msg] pointer (argument 1, off the input) only for an
+    AF_UNIX SEQPACKET end ([seqpacket_recvmsg]), after the descriptor
+    has resolved; the dispatcher does not bind it.
 
     Compare [recvfrom_spec], which imports its buffer first.  The two
     orders are opposite, and the pair of them is what these arms state.
@@ -2738,17 +3077,16 @@ Definition recvfrom_spec (fd buf size : word) : Sys SyscallEffect :=
 
     [msg_control], [msg_iovlen] and the iovec array behind [msg_iov] are
     all read by [copy_msghdr_from_user], which is downstream of the
-    descriptor and so unreachable here.  Their validation — -EINVAL for
-    a negative [msg_namelen], -EMSGSIZE past UIO_MAXIOV, the
-    [import_iovec] errors — becomes live with the first socket fd kind,
-    and so does the write-back of [msg_namelen], [msg_flags] and
-    [msg_controllen] that a successful recvmsg performs.  musl's DNS
-    resolver depends on two of those.  The socket arm here is [unmodeled]
-    when it lands — for the reason [recvfrom_spec] gives, which applies
-    to this entry point equally. *)
+    descriptor.  On an AF_UNIX SEQPACKET end they are read and tested
+    ([seqpacket_recvmsg]); on an AF_INET socket the arm is [unmodeled],
+    for the reason [recvfrom_spec] gives, which applies to this entry
+    point equally. *)
 Definition recvmsg_spec (fd flags : word) : Sys SyscallEffect :=
   if negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) MSG_CMSG_COMPAT) 0)
   then unmodeled   (* CONFIG_COMPAT decides this one: fail closed *)
   else
   m <- get_model ;;
-  recv_fd_answer (m_fds m) fd.
+  match fd_lookup (m_fds m) fd with
+  | Some (FdSeqpacket id side _) => seqpacket_recvmsg id side flags
+  | _ => recv_fd_answer (m_fds m) fd
+  end.

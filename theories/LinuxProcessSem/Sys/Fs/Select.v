@@ -437,6 +437,10 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                ([State.OInherited]), whose [file_operations] decide its
                mask.  None is written as an arm, so the call declines to
                [PsCoreGap]. *)
+            | Some (FdSeqpacket _ _ _) => false
+            (* FAIL-CLOSED: an AF_UNIX end's mask is [unix_dgram_poll]'s
+               (net/unix/af_unix.c, v6.18.46), not [DEFAULT_POLLMASK];
+               not written *)
             end
        else true)
       && bits_all_pollable fds z k'
@@ -1038,6 +1042,8 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [signalfd_poll] off its pending signals, and an
               [ONsFile]'s object is of unknown type; none of the six is
               written *)
+       | Some (FdSeqpacket _ _ _) => None
+           (* FAIL-CLOSED: [unix_dgram_poll]'s mask is not written *)
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))

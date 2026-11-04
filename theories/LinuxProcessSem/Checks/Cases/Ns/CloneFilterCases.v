@@ -1,6 +1,6 @@
 (** * LinuxProcessSem.Checks.Cases.Ns.CloneFilterCases — the forced-only filter of a failed clone
 
-    The check cases of P11 (b): which errno answers of a clone the filter
+    These check cases show which errno answers of a clone the filter
     keeps ([Procs.clone_kept]) and which it removes
     ([Procs.clone_removed]), under [Ns.Spec.ns_ext] and under
     [Ns.Ext.no_ext], for callers in the namespace world or words with a

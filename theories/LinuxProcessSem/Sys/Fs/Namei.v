@@ -250,6 +250,9 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        when its procfs name is a link to a modeled file
        ("/proc/self/cwd/f"), so removing the key changes no answer it
        gives *)
+  | (_, FdSeqpacket _ _ _) :: r => fd_names_path r p
+    (* exact, like the pipe end: a [socketpair] end is an anonymous
+       sockfs inode, so it names no path [unlinkat] can reach *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

@@ -677,6 +677,9 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
   | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
   | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom | FdOpaque _ => None
+  | FdSeqpacket _ _ _ => None
+    (* unreachable: the clone gate declines while an end is open
+       ([Kernel.Fork.clone_no_shared_file_b]) *)
   end.
 
 (** PROMOTE one descriptor out of a private table into the shared one, with
@@ -794,7 +797,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps).
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
@@ -810,11 +813,25 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     [SIGCHLD] for [clone3] (435), the word of the one image it resolves.
 
     KNOWN GAP until the namespace extension takes the decoded argument
-    record ([Fork.CloneArgs]) and answers [CnErr EINVAL] where
-    [Fork.clone_arg_checks] fires.  The released step now answers -EINVAL
-    for a word the argument checks refuse (and, for [clone3], a struct
-    its own tests refuse: [Fork.clone3_einval_b]), while the extension
-    still sees this word, so:
+    record ([Fork.CloneIn]) in place of this word.  Closing it takes two
+    answers of the extension, not one.  The first is [CnErr EINVAL]
+    where [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record.  It
+    does not reach every call the core now answers: a [clone3] struct
+    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose struct
+    range [access_ok] refuses (-EFAULT) have no record at all
+    ([clone_in_of] gives [Fork.CiNoArgs]), so no rule over a record can
+    run for them.  The second answer covers those: for a caller in the
+    NAMESPACE world whose [clone_in_of] is [Fork.CiNoArgs] while the
+    released step answers, [CnUnmodeled].  For a caller in the released
+    world the extension keeps [Ns.Ext.released_clone], which has no
+    [CnUnmodeled] (Ns/Ext.v) and which [NsProcs.ns_flat_iff] rests on;
+    there these calls keep today's released answer.  (A struct whose own
+    tests pass and whose record the argument checks refuse is not in
+    this class: [clone_in_of] gives its record, and the first answer
+    reaches it.)  The released step now answers -EINVAL for a word the
+    argument checks refuse (and, for [clone3], a struct its own tests
+    refuse: [Fork.clone3_einval_b]), while the extension still sees this
+    word, so:
     - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
       extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
       whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
@@ -853,10 +870,14 @@ Definition clone_flags_of (c : config) : Z :=
       as the released step reads it ([Fork.clone3_spec]: the size test,
       then [State.copy_bytes_map] over the pre-syscall memory, which
       [Run.sys_input] gives as [ms_read_byte] whatever the segments,
-      [clone_in_of_input]), and only for a record [Fork.clone3_spec]
-      answers from: the fork image, or a record the argument checks
-      refuse.  A struct its own tests refuse or decline, a size or a
-      copy it declines or refuses, and a record it declines give none.
+      [clone_in_of_input]), and only for a record whose call
+      [Fork.clone3_spec] takes further: the fork image, which it takes
+      to [Fork.clone3_resolve] off the raw struct
+      ([Fork.clone3_fork_args_b]), whether or not that resolution then
+      declines, or a record the argument checks refuse, which it
+      answers -EINVAL.  A struct its own tests refuse or decline, a
+      size or a copy it declines or refuses, and any other record give
+      none.
     - Any other call, and no pending call: none.
     No rule of the core reads it yet. *)
 Definition clone_in_of (c : config) : CloneIn :=
@@ -914,6 +935,38 @@ Lemma clone_in_of_input : forall segs c x8,
    else CiNoArgs).
 Proof.
   intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
+Qed.
+
+(** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
+    the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
+    [clone3] has no record, whatever the released step answers for it.
+    The [Fork.CdErr] half is the second answer the namespace extension
+    owes a NAMESPACE-WORLD caller: at [Fork.CLONE_ARGS_SIZE] the core
+    answers -EINVAL ([Fork.clone3_einval_b]) while the call's
+    [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of 65 in
+    [Checks.Cases.Kernel.Fork.clone3_einval_words]; at any other size
+    the core declines ([Checks.ProcessCreation.clone3_other_size_unmodeled]),
+    and the lemma holds there too.  The [Fork.CdDecline] half owes
+    nothing: the core declines there, as
+    [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
+    CLONE_NEWTIME image. *)
+Lemma clone_in_of_no_record : forall c bs x8,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = 435%Z ->
+  copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE = Some bs ->
+  (forall r, clone3_pre bs <> CdArgs r) ->
+  clone_in_of c = CiNoArgs.
+Proof.
+  intros c bs x8 Hp H435 Hcopy Hno. unfold clone_in_of. cbv zeta. rewrite Hp.
+  cbv iota. rewrite H435.
+  replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
+  replace (Z.eqb 435%Z 435%Z) with true by reflexivity.
+  cbv iota.
+  destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
+    [reflexivity|].
+  rewrite Hcopy.
+  destruct (clone3_pre bs) as [| |r] eqn:Hpre; [reflexivity|reflexivity|].
+  exfalso. apply (Hno r). congruence.
 Qed.
 
 (** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
