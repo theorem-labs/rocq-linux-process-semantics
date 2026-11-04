@@ -62,7 +62,7 @@ Definition world : NsState :=
   state
     [mnt 1 None 1 1 1; mnt 2 (Some 1%positive) 3 20 2; mnt 3 (Some 1%positive) 9 30 3]
     [root_user]
-    [mkMntNs 1 1 1 false]
+    [mk_mntns 1 1 1 false]
     [mkPidNs 1 None 1 0 0]
     [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 (SbProc 1)]
     [dent 1 1 None [] 1;
@@ -126,6 +126,25 @@ Example walk_dotdot_across_mount :
   = (WOk (LDentry 1 1), false).
 Proof. vm_compute. reflexivity. Qed.
 
+(** Mount 4 covers mount 2's root. An outside unmount received by mount
+    2 can detach mount 4, so ".." must not skip that open intermediate
+    parent merely because its mount point is another mount root. *)
+Definition dotdot_world (gs : list positive) : NsState :=
+  with_open_groups
+    (with_mounts world
+      (map (fun mt => if Pos.eqb (mnt_id mt) 2 then mnt_with_peer mt (Some 7%positive) else mt)
+           (ns_mounts world) ++ [mnt 4 (Some 2%positive) 20 20 2])) gs.
+Example walk_dotdot_open_intermediate :
+  walk (dotdot_world [7%positive]) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+       (bytes [46; 46]) f_follow = (WOver, false).
+Proof. vm_compute. reflexivity. Qed.
+Example walk_dotdot_closed_intermediate :
+  walk (dotdot_world []) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+       (bytes [46; 46]) f_follow = (WOk (LDentry 1 1), false)
+  /\ walk (dotdot_world [8%positive]) (ctx 1 no_caps) creds no_fd (LDentry 4 20)
+          (bytes [46; 46]) f_follow = (WOk (LDentry 1 1), false).
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** ".." at the task's root stays there. *)
 Example walk_dotdot_at_root :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [46; 46]) f_follow
@@ -140,6 +159,22 @@ Example walk_dotdot_stops_at_root_mountpoint :
        (bytes [46; 46]) f_follow
   = (WOk (LDentry 2 20), false).
 Proof. vm_compute. reflexivity. Qed.
+
+(** The walk-root test comes before the open-parent test, as in Linux
+    (fs/namei.c:1389-1391): with mount 1 open, ".." at the root of mount 2
+    still stays there when mount 2's mount point is the task's root, and
+    gives no answer when it is not. *)
+Definition root_parent_open_world : NsState :=
+  with_open_groups
+    (with_mounts world
+      (map (fun mt => if Pos.eqb (mnt_id mt) 1 then mnt_with_peer mt (Some 7%positive) else mt)
+           (ns_mounts world))) [7%positive].
+Example walk_dotdot_root_mountpoint_open_parent :
+  walk root_parent_open_world (ctx_at 1 no_caps (1%positive, 3%positive)) creds no_fd
+       (LDentry 2 20) (bytes [46; 46]) f_follow = (WOk (LDentry 2 20), false)
+  /\ walk root_parent_open_world (ctx 1 no_caps) creds no_fd (LDentry 2 20)
+       (bytes [46; 46]) f_follow = (WOver, false).
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** A covered directory shows the root of the mount on it. *)
 Example walk_covered_directory :
@@ -360,8 +395,7 @@ Proof. vm_compute. reflexivity. Qed.
     and a listed dentry still wins over a stale record of its name. *)
 Definition s_probe : list byte := bytes [112; 114; 111; 98; 101].
 Definition absent_world : NsState :=
-  with_env world (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)] false
-                          (Some (65534, 65534))).
+  with_env world (env_with_host_absent empty_nsenv [(1%positive, s_probe); (1%positive, s_home)]).
 Example walk_host_absent :
   walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
   = (WErr ENOENT, false)
@@ -372,3 +406,12 @@ Example walk_host_absent :
   /\ walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_home) f_follow
      = (WOk (LDentry 1 2), false).
 Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example entered_private_walk_declines :
+  walk (with_entered_mntns world [1%positive]) (ctx 1 no_caps) creds no_fd
+       (LDentry 1 1) (bytes [47] ++ s_home) f_follow = (WOver, false)
+  /\ walk (with_entered_mntns world [9%positive]) (ctx 1 no_caps) creds no_fd
+       (LDentry 1 1) (bytes [47] ++ s_home) f_follow = (WOk (LDentry 1 2), false).
+Proof. split; vm_compute; reflexivity. Qed.
+
+Print Assumptions entered_private_walk_declines.
