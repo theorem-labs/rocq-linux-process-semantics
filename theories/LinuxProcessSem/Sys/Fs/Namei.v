@@ -284,6 +284,37 @@ Definition modeled_unlink_flags (flags : word) : bool :=
 Definition unlink_rmdir (flags : word) : bool :=
   Z.eqb (bv_unsigned (flag32 flags)) AT_REMOVEDIR.
 
+(** THE REFUSALS LINUX REACHES BEFORE IT TESTS THE VICTIM'S TYPE, in the
+    order it reaches them (fs/namei.c, Linux v6.18.46):
+
+    - -EROFS from [mnt_want_write], on a read-only mount or superblock.
+      [do_rmdir] (4595-4597) and [do_unlinkat] (4724-4726) both call it
+      before the lookup;
+    - -ENOMEM from the lookup: [lookup_one_qstr_excl] allocates the
+      dentry when the cache misses (1701-1703);
+    - then [may_delete] (3255-3296), the first thing [vfs_rmdir] (4532)
+      and [vfs_unlink] (4658) do: -EOVERFLOW for a victim whose uid or
+      gid has no mapping (3267-3270); -EACCES from [inode_permission] on
+      the parent for write and search (3274-3276; it can also answer
+      -EROFS and -EPERM, both already here); -EPERM for an append-only
+      parent (3277-3278); and -EPERM for a sticky parent the caller may
+      not delete from, or for an append-only, immutable or swap victim,
+      or one with an unmapped id (3280-3283).
+
+    Only then does [may_delete] test the type: -ENOTDIR for a victim
+    that is not a directory when AT_REMOVEDIR asked for one (3284-3286),
+    and -EISDIR for a directory when it did not (3289-3290).  The model
+    tracks none of the mount's flags, the parent's permission, the
+    entries' owners or their inode flags, so these five stand BESIDE the
+    type answer in [unlink_found_spec] and [unlinkat_tmp_spec], and never
+    replace it.
+
+    This is not [unlinkat_errnos]: it has [may_delete]'s -EOVERFLOW, and
+    it does not have the -EBUSY of a mount point, which [vfs_rmdir] and
+    [vfs_unlink] raise only after [may_delete] has passed. *)
+Definition unlink_before_type_errnos : list Z :=
+  [EROFS; ENOMEM; EOVERFLOW; EACCES; EPERM].
+
 (** THE REMOVAL ITSELF, once the key has been found: shared by the
     working-directory arm and the /tmp arm below so that the two
     provably do the same thing to the same key.  [p] is the pathname as
@@ -292,11 +323,15 @@ Definition unlink_rmdir (flags : word) : bool :=
 
     The AT_REMOVEDIR answer sits here rather than at each caller because
     it is the same answer for both: a model file is never a directory,
-    so [may_delete]'s -ENOTDIR is what Linux returns.  The /tmp arm
-    never reaches it, having declined AT_REMOVEDIR above. *)
+    so [may_delete]'s -ENOTDIR is what Linux returns once the refusals
+    it reaches first ([unlink_before_type_errnos]) have passed, and those
+    refusals stand beside it.  The /tmp arm never reaches it, having
+    declined AT_REMOVEDIR above. *)
 Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
-  if unlink_rmdir flags then err_ret ENOTDIR  (* a model file is never a directory *)
+  if unlink_rmdir flags then
+    alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
+        (err_ret ENOTDIR)  (* a model file is never a directory *)
   else if path_trailing_slash p then err_ret ENOTDIR  (* do_unlinkat's [slashes:] *)
   else if fd_names_path (m_fds m) c then unmodeled
   else
@@ -400,7 +435,11 @@ Definition unlink_open_tmp_spec (p c : path) (data : list byte) (m : Model)
     directory in [may_delete], which [vfs_unlink] calls before it
     removes anything, and the refusal is unconditional on the
     filesystem — [d_is_dir] on the victim with [isdir] clear is
-    -EISDIR.  This is the one answer here that is LINUX-SPECIFIC rather
+    -EISDIR.  [may_delete] tests that only after its own -EOVERFLOW,
+    -EACCES and -EPERM, and [do_unlinkat] calls [vfs_unlink] only after
+    [mnt_want_write]'s -EROFS and the lookup's -ENOMEM, so those five
+    stand beside the -EISDIR ([unlink_before_type_errnos] has the kernel
+    lines).  This is the one answer here that is LINUX-SPECIFIC rather
     than POSIX's: POSIX lets unlink of a directory be -EPERM, and Linux
     chose -EISDIR.  Every supported implementation is a Linux, and
     qemu-user's `unlinkat` is the host kernel's, so the intersection
@@ -408,18 +447,24 @@ Definition unlink_open_tmp_spec (p c : path) (data : list byte) (m : Model)
     -EISDIR is right for a trailing-separator spelling too, by a
     different route: "/tmp/a/" strips to the same [c], and Linux reaches
     [do_unlinkat]'s [slashes:] label, whose [d_is_dir] test answers
-    -EISDIR for a directory.  All fs/namei.c, Linux v6.18.46;
-    [may_delete]'s test was read again in v6.12.1, where it stands
-    unchanged, so the answer does not turn on the version.
+    -EISDIR for a directory.  [may_delete] never runs on that route, so
+    its refusals do not stand beside that spelling's -EISDIR.  The
+    -EROFS and the -ENOMEM do come before [slashes:], and that spelling
+    leaves them out exactly as the other two [slashes:] answers
+    ([unlink_found_spec], [unlink_open_tmp_spec]) do; the note above
+    [unlinkat_body_spec] says what each arm leaves out.  All
+    fs/namei.c, Linux v6.18.46; [may_delete]'s test was read again in
+    v6.12.1, where it stands unchanged, so the answer does not turn on
+    the version.
 
     WHY AN ANSWER AND NOT A DECLINE, which is the [Open.openat_create_spec]
-    argument moved one syscall over: the answer is deterministic, it
-    does not depend on which filesystem /tmp is on, and it leaves the
-    model unchanged, so one image drives a source and a target into the
-    same branch.  The guard runs BEFORE the lookup, and because it
-    answers, the order is load-bearing rather than tidy: an implied
-    directory is not a key the run holds, so the -ENOENT below would
-    claim the name is absent where Linux says it is a directory.
+    argument moved one syscall over: the type answer does not depend on
+    which filesystem /tmp is on, no answer here changes the model, and
+    the image alone picks the branch, so one image drives a source and a
+    target into the same branch.  The guard runs BEFORE the lookup, and
+    because it answers, the order is load-bearing rather than tidy: an
+    implied directory is not a key the run holds, so the -ENOENT below
+    would claim the name is absent where Linux says it is a directory.
     [Checks.Cases.Fs.Namei.unlinkat_tmp_implied_directory_precedes_not_held]
     pins exactly that.  What the order also covers is the unrealizable
     image [Fs.valid_fs] admits, where "/tmp/a" and "/tmp/a/b" are both
@@ -505,7 +550,10 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
   if unlink_rmdir flags then unmodeled
   else if Nat.ltb NAME_MAX (length n) then unmodeled
-  else if fs_under (m_fs m) c then err_ret EISDIR  (* may_delete's -EISDIR *)
+  else if fs_under (m_fs m) c then
+    (if path_trailing_slash p then err_ret EISDIR  (* do_unlinkat's [slashes:]: no may_delete *)
+     else alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
+              (err_ret EISDIR))  (* may_delete's -EISDIR *)
   else
     match fs_lookup (m_fs m) c with
     | None => err_ret ENOENT     (* absent from the run's own /tmp: real -ENOENT *)
@@ -802,16 +850,19 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     are the ones still carrying ND_JUMPED, and the LAST_NORM arms that do
     consult one are the arms that cleared it.
 
-    Past those, the arms differ in what ELSE they preempt, because they
-    sit at different depths.  The AT_REMOVEDIR -ENOTDIR comes out of
-    [may_delete], so it also preempts the -EACCES and -EPERM that
-    function reaches first.  The trailing-separator -ENOTDIR does not:
+    Past those, the arms differ in what ELSE comes before their answer,
+    because they sit at different depths.  The AT_REMOVEDIR -ENOTDIR
+    comes out of [may_delete], so the -EOVERFLOW, -EACCES and -EPERM
+    that function reaches FIRST come before it, and so do [do_rmdir]'s
+    -EROFS and the lookup's -ENOMEM.  That arm admits all five beside its
+    -ENOTDIR ([unlink_before_type_errnos]), as the /tmp arm's -EISDIR
+    does for the same reason when the name has no trailing separator.
+    The trailing-separator -ENOTDIR does not come out of [may_delete]:
     [do_unlinkat] jumps to [slashes:] from ABOVE [vfs_unlink], so
-    [may_delete] never runs on that path.  What does precede it is
-    [lookup_one_qstr_excl].  That answers -ENOENT for a working directory
-    already removed ([IS_DEADDIR]), and -ENOMEM when it cannot allocate
-    the dentry.
-    Each of these arms admits one answer and no [unlinkat_errnos]
+    [may_delete] never runs on that path.  What does precede it is the
+    -EROFS above and [lookup_one_qstr_excl].  That answers -ENOENT for a
+    working directory already removed ([IS_DEADDIR]), and -ENOMEM when
+    it cannot allocate the dentry.  That arm admits one answer and no
     alternative, which narrows the spec rather than widening it.
 
     So LAST_ROOT escapes the first and the third, and is behind

@@ -23,7 +23,9 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
     does, so it never has to build the removed file system. *)
 (** Mirrors [Fs.Namei.unlink_found_spec]: the removal is witnessed by
     the [alt]'s LEFT branch, so the witness never builds the removed
-    file system. *)
+    file system.  AT_REMOVEDIR is witnessed by the -ENOTDIR on its
+    [alt]'s RIGHT branch, the answer that needs no refusal from the
+    environment. *)
 Local Definition unlink_found_witness (p c : path) (flags : word) (m : Model)
     : outcome SyscallEffect :=
   if unlink_rmdir flags then ret_outcome (errno_ret ENOTDIR) m
@@ -40,7 +42,10 @@ Local Definition unlink_open_tmp_witness (p : path) (m : Model)
   else if anon_id_live (m_fds m) (anon_new_id (m_fds m)) then Unmodeled
   else ret_outcome (errno_ret witness_errno) m.
 
-(** Mirrors [Fs.Namei.unlinkat_tmp_spec]. *)
+(** Mirrors [Fs.Namei.unlinkat_tmp_spec].  A name some key lives under
+    is witnessed by its -EISDIR, which both spellings admit: the
+    trailing-separator one alone, the plain one on its [alt]'s RIGHT
+    branch. *)
 Local Definition unlinkat_tmp_witness (n p c : path) (flags : word) (m : Model)
     : outcome SyscallEffect :=
   if unlink_rmdir flags then Unmodeled
@@ -107,7 +112,7 @@ Local Lemma unlink_found_witness_ok : forall p c flags i m,
   unlink_found_spec p c flags m i m (unlink_found_witness p c flags m).
 Proof.
   intros. unfold unlink_found_spec, unlink_found_witness.
-  destruct (unlink_rmdir flags); [apply pure_ok|].
+  destruct (unlink_rmdir flags); [apply alt_r; apply pure_ok|].
   destruct (path_trailing_slash p); [apply pure_ok|].
   destruct (fd_names_path (m_fds m) c); [apply unmodeled_intro|].
   apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
@@ -129,7 +134,8 @@ Proof.
   intros. unfold unlinkat_tmp_spec, unlinkat_tmp_witness.
   destruct (unlink_rmdir flags); [apply unmodeled_intro|].
   destruct (Nat.ltb NAME_MAX (length n)); [apply unmodeled_intro|].
-  destruct (fs_under (m_fs m) c); [apply pure_ok|].
+  destruct (fs_under (m_fs m) c).
+  { destruct (path_trailing_slash p); [apply pure_ok|apply alt_r; apply pure_ok]. }
   destruct (fs_lookup (m_fs m) c) as [data|]; [|apply pure_ok].
   destruct (fd_names_path (m_fds m) c);
     [apply unlink_open_tmp_witness_ok|apply unlink_found_witness_ok].

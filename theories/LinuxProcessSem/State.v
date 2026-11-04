@@ -603,6 +603,7 @@ Definition EBUSY  : Z := 16%Z.
 Definition ENFILE : Z := 23%Z.
 Definition EMFILE : Z := 24%Z.
 Definition EROFS  : Z := 30%Z.
+Definition EOVERFLOW : Z := 75%Z.
 
 (** Other Errno values *)
 (* Injected on exactly one shape: a credential setter that moves the REAL

@@ -203,6 +203,39 @@ Example unlinkat_root_enoent_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
+(* ------------------------------------ what comes before a type answer
+
+   [may_delete] answers on the victim's TYPE only after its own
+   refusals, and its callers only reach it after theirs.  The model
+   tracks the conditions behind none of them, so they stand beside the
+   type answer ([Fs.Namei.unlink_before_type_errnos]).  This case and
+   [unlinkat_tmp_directory_admits_earlier_refusals] below pin that for
+   the two type answers: the old answer is still admitted, the earlier
+   refusals are admitted beside it, and what Linux reaches only later is
+   refused. *)
+
+(** AT_REMOVEDIR ON A MODEL FILE.  [do_rmdir] reaches [may_delete]'s
+    -ENOTDIR only after [mnt_want_write]'s -EROFS, the lookup's -ENOMEM
+    and [may_delete]'s own -EOVERFLOW, -EACCES and -EPERM, and the model
+    tracks none of the conditions behind those: a file "a" in a working
+    directory the caller may not write is -EACCES on Linux.  So the
+    -ENOTDIR is still admitted, and an -EACCES and an -EOVERFLOW are
+    admitted beside it, each leaving the file where it was.  A success
+    is still refused, and so is the -EBUSY of a mount point, which
+    [vfs_rmdir] raises only after [may_delete] has passed.  (fs/namei.c,
+    Linux v6.18.46.) *)
+Example unlinkat_removedir_file_admits_earlier_refusals :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [104])] IEof) in
+  let call eff := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; 512; 0; 0; 0]   (* AT_REMOVEDIR *) mem_name_a (fun _ => None))
+        (with_copyins [(8192, 2%nat)] eff) m0 in
+  call (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk m0 []
+  /\ call (mkEffect (errno_ret EACCES) [] []) = CheckOk m0 []
+  /\ call (mkEffect (errno_ret EOVERFLOW) [] []) = CheckOk m0 []
+  /\ call (mkEffect 0 [] []) = CheckReject
+  /\ call (mkEffect (errno_ret EBUSY) [] []) = CheckReject.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (* ------------------------------------------ an absolute name under /tmp
 
    A program may write a temporary file and then unlink it by an
@@ -355,9 +388,9 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     declaration names "d/f", so a key lives under "/tmp/d" and
     [Fs.Namei.fs_under] sees it there.  Linux refuses to unlink a
     directory in [may_delete], which [vfs_unlink] calls before it
-    removes anything, so the answer is -EISDIR and the model does not
-    move.  The removal a flat map would have performed is refused
-    beside it.
+    removes anything, so the type answer is -EISDIR and the model does
+    not move.  The removal a flat map would have performed is refused
+    beside it.  (What else that spelling admits is the next case.)
 
     THE TRAILING-SEPARATOR SPELLING IS THE SAME ANSWER BY A DIFFERENT
     ROUTE, which is why it is worth pinning next to the plain one: the
@@ -377,6 +410,33 @@ Example unlinkat_tmp_implied_directory_is_eisdir :
   /\ call dir 7%nat (mkEffect 0 [] []) = CheckReject
   /\ call dir_slash 8%nat (mkEffect (errno_ret EISDIR) [] []) = CheckOk m0 []
   /\ call dir_slash 8%nat (mkEffect 0 [] []) = CheckReject.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** WHAT COMES BEFORE THAT -EISDIR, spelling by spelling.  On the plain
+    spelling [vfs_unlink] reaches [may_delete]'s -EISDIR only after
+    [do_unlinkat]'s -EROFS, the lookup's -ENOMEM and [may_delete]'s own
+    -EOVERFLOW, -EACCES and -EPERM: the -EISDIR is still admitted, an
+    -EACCES and an -EOVERFLOW are admitted beside it, each leaving the
+    model as it was, and the -EBUSY of a mount point, which
+    [vfs_unlink] raises only after [may_delete] has passed, is refused.
+    The trailing-separator spelling reaches its -EISDIR at
+    [do_unlinkat]'s [slashes:] label, where [may_delete] never runs, so
+    there the -EISDIR is admitted and the -EACCES is refused.
+    (fs/namei.c, Linux v6.18.46.) *)
+Example unlinkat_tmp_directory_admits_earlier_refusals :
+  let m0 := init_model [] 0 0 demo_sp demo_limit
+              (demo_input_tmp [] [([100; 47; 102], [104])] IEof) in
+  let call mem n eff := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem (fun _ => None))
+        (with_copyins [(8192, n)] eff) m0 in
+  let dir := bytes_at 8192 ([47; 116; 109; 112; 47; 100] ++ [0]) in
+  let dir_slash := bytes_at 8192 ([47; 116; 109; 112; 47; 100; 47] ++ [0]) in
+  call dir 7%nat (mkEffect (errno_ret EISDIR) [] []) = CheckOk m0 []
+  /\ call dir 7%nat (mkEffect (errno_ret EACCES) [] []) = CheckOk m0 []
+  /\ call dir 7%nat (mkEffect (errno_ret EOVERFLOW) [] []) = CheckOk m0 []
+  /\ call dir 7%nat (mkEffect (errno_ret EBUSY) [] []) = CheckReject
+  /\ call dir_slash 8%nat (mkEffect (errno_ret EISDIR) [] []) = CheckOk m0 []
+  /\ call dir_slash 8%nat (mkEffect (errno_ret EACCES) [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** THE ORDER OF THE TWO /tmp RULES, which is the whole of what keeps
