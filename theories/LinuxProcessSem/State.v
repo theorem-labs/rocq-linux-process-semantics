@@ -4633,7 +4633,9 @@ Record ProcState := mkProcState {
                                     one, otherwise the parent's key in the
                                     process table, which the first root-tid
                                     pin resolves ([Procs.child_entry],
-                                    [Procs.pin_root]); [Procs.child_proc]
+                                    [Procs.first_root_pin_children], called
+                                    by [Procs.pin_root], [Procs.absorb] and
+                                    [Procs.absorb_x]); [Procs.child_proc]
                                     installs it.  Kernel citations, read at
                                     v6.18.44 and identical at v6.18.46:
                                     kernel/sys.c [getppid],
@@ -5581,10 +5583,11 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
             (m_lim m) (m_time m).
 
 (** Install the current parent pid, the window bits unchanged.  Its
-    callers are [init_model]'s setter chain and
+    model callers are [init_model]'s setter chain and
     [Procs.root_child_ppid_one], which resolves a root child's provisional
-    parent pid at the first root-tid pin; [getppid] writes the field
-    through [with_ppid_answered].  See [procst_ppid]. *)
+    parent pid at the first root-tid pin; check fixtures use it too.
+    [getppid] writes the field through [with_ppid_answered].  See
+    [procst_ppid]. *)
 Definition with_ppid (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
