@@ -10,7 +10,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics State Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  ExecutableSpecs ProcsChildPids.
+  ExecutableSpecs ProcsChildPids ProcsSharedFrame ProcsSyncOnce.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -32,6 +32,37 @@ Check child_pids_ok_one_proc.
 Check child_pids_reachable.
 Check owned_wait4_answers_child.
 Goal True. idtac "PARENT_PID_CONTRACTS_END". exact I. Qed.
+
+Goal True. idtac "ROOT_PARENT_CLOSURE_BEGIN". exact I. Qed.
+Check pstep_single_next.
+Print Assumptions pstep_single_next.
+Check pstep_single_err.
+Print Assumptions pstep_single_err.
+Check pstep_x_at_agree_iff.
+Print Assumptions pstep_x_at_agree_iff.
+Check pstep_x_at_released_iff.
+Print Assumptions pstep_x_at_released_iff.
+Check pstep_x_at_flat_iff.
+Print Assumptions pstep_x_at_flat_iff.
+Check pstep_at_no_ext_iff.
+Print Assumptions pstep_at_no_ext_iff.
+Check child_pids_ok_absorb.
+Print Assumptions child_pids_ok_absorb.
+Check pstep_at_preserves_child_pids.
+Print Assumptions pstep_at_preserves_child_pids.
+Check child_pids_reachable.
+Print Assumptions child_pids_reachable.
+Check ProcsPrivateFrame.syscall_spec_private_shared.
+Print Assumptions ProcsPrivateFrame.syscall_spec_private_shared.
+Check ProcsPrivateFrame.pstep_at_private_frame.
+Print Assumptions ProcsPrivateFrame.pstep_at_private_frame.
+Check ProcsSharedFrame.syscall_spec_shared_frame.
+Print Assumptions ProcsSharedFrame.syscall_spec_shared_frame.
+Check ProcsSharedFrame.pstep_at_shared_frame.
+Print Assumptions ProcsSharedFrame.pstep_at_shared_frame.
+Check ProcsSyncOnce.other_step_keeps_entry.
+Print Assumptions ProcsSyncOnce.other_step_keeps_entry.
+Goal True. idtac "ROOT_PARENT_CLOSURE_END". exact I. Qed.
 
 Definition pp_launch : Model :=
   init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).

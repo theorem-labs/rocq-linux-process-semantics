@@ -1483,7 +1483,7 @@ Qed.
 (** NO CALL PENDING: an ordinary step of the entry named, and the clone
     and reap arms cannot fire because both need one.  What the caller
     gets is the MACHINE step, [Run.mi_account_step_projects] having
-    dropped the accounting, which is what a segment lemma speaks. *)
+    dropped the accounting, and the accounted step's unchanged tid. *)
 Lemma fw_entry_instr_step : forall segs cfg p P evs P' e,
   look P p = Some e ->
   ms_svc_pending (pe_ms e) = None ->
@@ -1493,7 +1493,8 @@ Lemma fw_entry_instr_step : forall segs cfg p P evs P' e,
     RiscvSemantics.step segs (pe_ms e) = MachineOk ms'
     /\ m_halted model' = m_halted (pe_model e)
     /\ (fw_model_ok (pe_model e) -> fw_model_ok model')
-    /\ P' = absorb P e (mkCfg ms' model').
+    /\ P' = absorb P e (mkCfg ms' model')
+    /\ m_tid model' = m_tid (pe_model e).
 Proof.
   intros segs cfg p P evs P' e Hl Hs Hnv Hp.
   inversion Hp; subst;
@@ -1519,7 +1520,8 @@ Proof.
     split.
     + intros Hok. apply (fw_model_ok_frame (pe_model e));
         [exact Hproc | exact Hlz | exact Hfd | exact Hok].
-    + rewrite Hc'. reflexivity.
+    + split; [rewrite Hc'; reflexivity|].
+      unfold m_tid. rewrite Hproc. reflexivity.
   - (* pstep_clone: a successful clone needs a pending call *)
     exfalso.
     match goal with
@@ -2462,7 +2464,7 @@ Proof.
   destruct (pstep_at_not_halted _ _ _ _ _ _ Hstep) as (e0 & Hl0 & _).
   destruct (fw_look_one P e p e0 Hp Hl0) as (He0 & _). subst e0.
   destruct (fw_entry_instr_step forkwait_segs cfg p P evs P' e Hl0 Hsv (fw_no_vdso _) Hstep)
-    as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
+    as (ms' & model' & Hmstep & Hhal & Hfrm & HP' & _).
   destruct (absorb_one_entry P e (mkCfg ms' model') Hp Hr)
     as (Hp' & Hr' & _).
   subst P'.
@@ -2505,11 +2507,8 @@ Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hh Hrem Hsv Hch Hstep.
   pose proof (fw_look_two_parent P ep ec Hp) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ep) P evs P' ep
-              Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
-  assert (Htid : m_tid model' = m_tid (pe_model ep)).
-  { pose proof (mi_account_step_model_frame _ _ _ _ _ Hmstep)
-      as (_ & _ & _ & _ & _ & Hproc & _).
-    unfold m_tid. rewrite Hproc. reflexivity. }
+              Hl Hsv (fw_no_vdso _) Hstep)
+    as (ms' & model' & Hmstep & Hhal & Hfrm & HP' & Htid).
   subst P'.
   split;
     [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);
@@ -2556,11 +2555,8 @@ Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hpar Hh Hrem Hsv Hstep.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ec) P evs P' ec
-              Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
-  assert (Htid : m_tid model' = m_tid (pe_model ec)).
-  { pose proof (mi_account_step_model_frame _ _ _ _ _ Hmstep)
-      as (_ & _ & _ & _ & _ & Hproc & _).
-    unfold m_tid. rewrite Hproc. reflexivity. }
+              Hl Hsv (fw_no_vdso _) Hstep)
+    as (ms' & model' & Hmstep & Hhal & Hfrm & HP' & Htid).
   subst P'.
   split;
     [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind fw_entry_left_ppid_blind);

@@ -327,7 +327,7 @@ Proof.
         destruct (m_tid (pe_model f)); [|rewrite look_in_root_children_ppid_root];
           unfold look in Hf; rewrite <- Erp in Hf; rewrite Hf; discriminate.
       * split; [reflexivity|right; left; eexists; reflexivity].
-    + match goal with
+    + lazymatch goal with
       | Hlr : look P (pcfg_root P) = Some ?r |- context [pin_root P r ?t] =>
         destruct (m_tid (pe_model r)) eqn:Et;
         [ exists f; split; [|split; [reflexivity|left; reflexivity]];
@@ -339,7 +339,8 @@ Proof.
           [ unfold look, pin_root; cbn [pcfg_procs]; rewrite Et;
             rewrite look_in_replace_other
               by (intros E; rewrite E, bv_eqb_same in Erp; discriminate Erp);
-            rewrite look_in_root_children_ppid, Hf; reflexivity
+            rewrite look_in_root_children_ppid;
+            unfold look in Hf; rewrite Hf; reflexivity
           | pose proof (root_child_ppid_one_fields (pcfg_root P) t p f)
               as (_ & _ & Hms & _);
             split; [exact Hms|];
