@@ -40,10 +40,17 @@ Definition uns (i : positive) (parent : option positive) (level : nat)
 Definition state (mounts : list Mount) (users : list UserNs) (mntns : list MntNs)
     (pidns : list PidNs) (sbs : list SuperBlock) (dentries : list Dentry) (inodes : list Inode)
     : NsState :=
-  mkNsState mounts users mntns pidns [] sbs dentries inodes [] (ns_env empty_nsstate).
+  let w := with_mounts empty_nsstate mounts in
+  let w := with_userns w users in
+  let w := with_mntns w mntns in
+  let w := with_pidns w pidns in
+  let w := with_sbs w sbs in
+  let w := with_dentries w dentries in
+  with_inodes w inodes.
 
 Definition ctx_at (u : positive) (caps : CapSets) (root : positive * positive) : NsCtx :=
-  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root (1%positive, 2%positive) 18 caps 0 [].
+  with_cwd (with_root (with_caps (with_pids (with_user_ns init_nsctx u) [(1%positive, 42%Z)]) caps) root)
+           (1%positive, 2%positive).
 
 Definition root_user : UserNs := uns 1 None 0 None None.
 
@@ -353,9 +360,8 @@ Proof. vm_compute. reflexivity. Qed.
     and a listed dentry still wins over a stale record of its name. *)
 Definition s_probe : list byte := bytes [112; 114; 111; 98; 101].
 Definition absent_world : NsState :=
-  mkNsState (ns_mounts world) (ns_userns world) (ns_mntns world) (ns_pidns world) (ns_netns world)
-            (ns_sbs world) (ns_dentries world) (ns_inodes world) (ns_files world)
-            (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)]).
+  with_env world (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)] false
+                          (Some (65534, 65534))).
 Example walk_host_absent :
   walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
   = (WErr ENOENT, false)

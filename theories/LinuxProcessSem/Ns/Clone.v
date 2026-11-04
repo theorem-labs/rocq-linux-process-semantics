@@ -19,8 +19,22 @@
     CLONE_CHILD_CLEARTID (the form a C library's [fork] uses), whose
     effects on the child's memory are the core's ([copy_process] stores
     the child's pid in its own pid namespace, [CnOk]'s first pid); any
-    other flag declines.  The UTS and IPC namespaces are not in the
-    tables: no modelled call reads them.
+    other flag declines.  The IPC namespace is not in the tables: no
+    modelled call reads it.
+
+    With CLONE_NEWUTS the child gets a new UTS namespace (Linux v6.18.46:
+    [copy_utsname], kernel/utsname.c:79-94, called by
+    [create_new_namespaces] at kernel/nsproxy.c:84, and [clone_uts_ns],
+    kernel/utsname.c:36-71).  Its owner is the child's user namespace
+    ([copy_namespaces] passes the child's [task_cred_xxx(tsk, user_ns)],
+    kernel/nsproxy.c:150 and :175, which is the new one when CLONE_NEWUSER
+    is set too; kernel/utsname.c:60), and it holds the caller's UTS
+    namespace's names as they are ([clone_uts_ns] copies the whole
+    [ns->name], kernel/utsname.c:59): a name still the pin's stays so.  Its
+    failures, ENOSPC from [inc_uts_namespaces] (:43-46), ENOMEM (:48-51)
+    and [ns_common_init]'s (:53-55), are among the environment's refusals
+    below.  Without CLONE_NEWUTS the child shares the caller's UTS
+    namespace ([copy_utsname], :87-88).
 
     The child's pid in each pid namespace from its own outwards: in a
     namespace a modelled call made, the next after the namespace's last
@@ -116,6 +130,17 @@ Definition max_mntns_id (st : NsState) : positive :=
   fold_left (fun acc x => Pos.max acc (mntns_id x)) (ns_mntns st) 1%positive.
 Definition max_netns_id (st : NsState) : positive :=
   fold_left (fun acc x => Pos.max acc (netns_id x)) (ns_netns st) 1%positive.
+Definition max_utsns_id (st : NsState) : positive :=
+  fold_left (fun acc x => Pos.max acc (utsns_id x)) (ns_utsns st) 1%positive.
+
+(** The new UTS namespace [nid] a clone with CLONE_NEWUTS makes for a
+    child in user namespace [owner]: the caller's UTS namespace's names,
+    the pin's ([None]) where the tables do not hold it. *)
+Definition new_utsns (st : NsState) (ctx : NsCtx) (nid owner : positive) : UtsNs :=
+  match find_utsns st (cx_uts ctx) with
+  | Some u => mkUtsNs nid owner (utsns_nodename u) (utsns_domainname u)
+  | None => mkUtsNs nid owner None None
+  end.
 
 (** The child's capability sets and securebits, and its user namespace:
     with CLONE_NEWUSER a new namespace in which it holds every capability
@@ -215,8 +240,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
               | inl e => CnErr e st
               | inr (child_ns, new_pidns) =>
                   let st_p := ns_pidns st ++ new_pidns in
-                  let chain := pidns_chain (length st_p)
-                                 (mkNsState [] [] [] st_p [] [] [] [] [] (ns_env st)) child_ns in
+                  let chain := pidns_chain (length st_p) (with_pidns st st_p) child_ns in
                   match alloc_pids chain hq with
                   | None => CnUnmodeled
                   | Some (pids, updated) =>
@@ -227,15 +251,31 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                             let nid := Pos.succ (max_netns_id st) in
                             (nid, [new_netns nid (cc_user cc) (env_net_fallback (ns_env st))])
                           else (cx_net ctx, []) in
-                        let child :=
-                          mkNsCtx (cc_user cc) mntns child_ns net pids
-                                  (where_ (fst (cx_root ctx)), snd (cx_root ctx))
-                                  (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx))
-                                  (cx_umask ctx) (cc_caps cc) (cc_secure cc) (cx_cloexec ctx) in
-                        CnOk child (if flat_view ctx st then None else clone_ret ctx child)
-                             (mkNsState T' U (ns_mntns st ++ new_mntns) pidns' (ns_netns st ++ new_net)
-                                        (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st)
-                                        (ns_env st))
+                        (* the UTS namespace *)
+                        let '(uts, new_uts) :=
+                          if has_flag f CLONE_NEWUTS then
+                            let nid := Pos.succ (max_utsns_id st) in
+                            (nid, [new_utsns st ctx nid (cc_user cc)])
+                          else (cx_uts ctx, []) in
+                        (* the child's context: the caller's, with what the
+                           clone changes *)
+                        let child := with_user_ns ctx (cc_user cc) in
+                        let child := with_mount_ns child mntns in
+                        let child := with_pid_ns child child_ns in
+                        let child := with_net_ns child net in
+                        let child := with_uts_ns child uts in
+                        let child := with_pids child pids in
+                        let child := with_root child (where_ (fst (cx_root ctx)), snd (cx_root ctx)) in
+                        let child := with_cwd child (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx)) in
+                        let child := with_caps child (cc_caps cc) in
+                        let child := with_securebits child (cc_secure cc) in
+                        let st' := with_mounts st T' in
+                        let st' := with_userns st' U in
+                        let st' := with_mntns st' (ns_mntns st ++ new_mntns) in
+                        let st' := with_pidns st' pidns' in
+                        let st' := with_netns st' (ns_netns st ++ new_net) in
+                        let st' := with_utsns st' (ns_utsns st ++ new_uts) in
+                        CnOk child (if flat_view ctx st then None else clone_ret ctx child) st'
                   end
               end
           end
@@ -252,8 +292,7 @@ Definition pid_advanced (st : NsState) (active : positive) : NsState :=
                                                         (pidns_level x) (pidns_last x + 1)]
                                    | None => []
                                    end) chain in
-  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (fold_left replace_pidns bumped (ns_pidns st))
-            (ns_netns st) (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+  with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
@@ -272,6 +311,7 @@ Lemma pid_advanced_flat : forall ctx st,
   flat_view ctx st = true -> pid_advanced st (cx_pidns ctx) = st.
 Proof.
   intros ctx st H. unfold flat_view in H.
+  apply andb_true_iff in H as [H _].
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
   unfold pid_advanced.
   assert (Hb : flat_map (fun x => match pidns_parent x with

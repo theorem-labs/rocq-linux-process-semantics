@@ -473,8 +473,7 @@ Definition move_pivot_refs (ctx : NsCtx) (old_root new_root : positive * positiv
               then new_root else cx_root ctx in
   let cwd := if Pos.eqb (fst (cx_cwd ctx)) (fst old_root) && Pos.eqb (snd (cx_cwd ctx)) (snd old_root)
              then new_root else cx_cwd ctx in
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) root cwd
-          (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+  with_cwd (with_root ctx root) cwd.
 
 (** [pivot_root]'s facts on the paths: the new root's dentry is unlinked
     ([d_unlinked]), and each of the root and the new root is the root of its
@@ -556,19 +555,33 @@ Definition attr_word (bs : list byte) (off : nat) : Z :=
 
 Definition byte_zero (b : byte) : bool := bv_eqb b (Z_to_bv 8 0).
 
-(** [copy_struct_from_user] (lib/struct.c), as called by
-    [wants_mount_setattr] (fs/namespace.c:4965-4988). *)
+(** The size tests of [wants_mount_setattr] (fs/namespace.c:4973-4976,
+    Linux v6.18.46): E2BIG above PAGE_SIZE, EINVAL below
+    MOUNT_ATTR_SIZE_VER0.  They come before [may_mount] (4978-4979). *)
+Definition attr_size_err (usize : Z) : option Z :=
+  if 4096 <? usize then Some E2BIG
+  else if usize <? MOUNT_ATTR_SIZE_VER0 then Some EINVAL
+  else None.
+
+(** [copy_struct_from_user] (include/linux/uaccess.h:389-411, Linux
+    v6.18.46), as called by [wants_mount_setattr] (fs/namespace.c:4981).
+    The size tests come first on purpose: they are [wants_mount_setattr]'s
+    (4973-4976), and [mount_setattr_fn] runs them before [may_mount], so
+    from that caller they never fire here; they keep this function's
+    answer whole for any caller. *)
 Definition copy_mount_attr (i : SyscallInput) (p : word) (usize : Z) : AttrCopy :=
-  if 4096 <? usize then ACerr [] E2BIG
-  else if usize <? MOUNT_ATTR_SIZE_VER0 then ACerr [] EINVAL
-  else if negb (access_okb p usize) then ACerr [(p, Z.to_nat usize)] EFAULT
+  match attr_size_err usize with
+  | Some e => ACerr [] e
+  | None =>
+  if negb (access_okb p usize) then ACerr [(p, Z.to_nat usize)] EFAULT
   else match read_bytes_map (in_mem i) p (Z_to_bv 64 usize) with
        | None => ACover
        | Some bs =>
            if negb (forallb byte_zero (skipn (Z.to_nat MOUNT_ATTR_SIZE_VER0) bs)) then ACerr [(p, Z.to_nat usize)] E2BIG
            else ACok [(p, Z.to_nat usize)]
                   (mkMountAttr (attr_word bs 0) (attr_word bs 8) (attr_word bs 16) (attr_word bs 24))
-       end.
+       end
+  end.
 
 Inductive AttrBuild := ABok (change : AttrChange) | ABerr (e : Z) | ABover.
 
@@ -648,10 +661,11 @@ Definition mount_setattr_apply (reads : list (word * nat)) (change : AttrChange)
   | _, _ => EUnmodeled
   end.
 
-(** [mount_setattr] (fs/namespace.c:4993-5030): flag and struct validation,
-    [may_mount], and path resolution precede [do_mount_setattr].  Kind:
-    exact for the stated basic attribute subset; all other accepted ABI
-    forms decline. *)
+(** [mount_setattr] (fs/namespace.c:4998-5038, Linux v6.18.46) and
+    [wants_mount_setattr] (4965-4996): flag validation, then the size tests
+    (E2BIG, EINVAL), then [may_mount] (EPERM), then the struct copy, then
+    path resolution and [do_mount_setattr].  Kind: exact for the stated
+    basic attribute subset; all other accepted ABI forms decline. *)
 Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     : ext_outcome :=
   let dfd := in_arg i 0 in
@@ -661,7 +675,10 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
   let usize := bv_unsigned (in_arg i 4) in
   if negb (mount_setattr_flags_valid flags) then ns_errno EINVAL m ctx st
   else if negb (mount_setattr_handled_flags flags) then EUnmodeled
-  else match mount_may_mount m ctx st with
+  else match attr_size_err usize with
+  | Some e => err [] e m ctx st
+  | None =>
+  match mount_may_mount m ctx st with
        | None => EUnmodeled
        | Some false => ns_errno EPERM m ctx st
        | Some true =>
@@ -691,7 +708,8 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                      end
                end
            end
-       end.
+       end
+  end.
 
 Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn i m ctx st.
 
@@ -710,15 +728,28 @@ Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn
       (fs/super.c) and fill_super; a new tmpfs's root inode, ENOSPC when
       [new_inode] fails ([__shmem_get_inode], mm/shmem.c); a new instance's
       anonymous device number, EMFILE when [get_anon_bdev] (fs/super.c) has
-      none left.  The tables also answer ENOSPC, at the mount limit
-      ([Mount.bind_mount], [NewMount.new_mount]: [count_mounts]), so ENOSPC
-      is in [ni_forced]. *)
+      none left.  The root inode's ENOSPC is an allocation, so FamAlloc as
+      in a tmpfs create's rows ([Files.open_pairs], [FsOps.create_pairs]);
+      [shmem_reserve_inode]'s inode limit, FamFs there, cannot refuse it:
+      [shmem_fill_super] gives the new instance room for at least one
+      inode (mm/shmem.c:5092-5093).  The tables also answer ENOSPC, at the
+      mount limit ([Mount.bind_mount], [NewMount.new_mount]:
+      [count_mounts]), so ENOSPC is in [ni_forced].
+    Each row also lists the errnos its arm answers from the tables
+    ([Arm.ni_answers]): the path copies, the walks and the call's own
+    checks. *)
 Definition mount40_injected : NsInjected :=
   mkNsInjected 40 [(errno_in [ENOMEM; ENOSPC; EMFILE], FamAlloc); (errno_in [EIO], FamFs)]
+               [EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EPERM; ENOSPC]
                [ENOSPC].
 
 Definition mount_injected : list NsInjected :=
-  mount40_injected :: map (fun n => mkNsInjected n walk_pairs []) [39; 41; 442].
+  [mount40_injected;
+   mkNsInjected 39 walk_pairs [EINVAL; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EPERM] [];
+   mkNsInjected 41 walk_pairs
+     [EPERM; EFAULT; ENAMETOOLONG; ENOENT; ENOTDIR; EACCES; ELOOP; EINVAL; EBUSY] [];
+   mkNsInjected 442 walk_pairs
+     [EINVAL; EPERM; E2BIG; EFAULT; ENAMETOOLONG; EBADF; ENOENT; ENOTDIR; EACCES; ELOOP; EBUSY] []].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=

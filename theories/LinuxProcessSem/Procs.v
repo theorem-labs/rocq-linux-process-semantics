@@ -389,7 +389,17 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     [Fork.clone_no_shared_file_b] lets through a clone because no modeled
     arm reads state the copy shares, and every file, socket or pipe
     descriptor was made after the last clone, so pipes and sockets are
-    private here.  Two class-(A) calls are admitted with a gate as well.
+    private here.  The one descriptor made BEFORE a clone that a peer
+    can share is an inherited file ([State.OInherited]), and its offset
+    is live in exactly one entry of the configuration: a clone of either
+    word leaves the caller [OInherited None], which holds no offset, and
+    the child the live entry ([Fork.forfeit_inherited]), and no modeled
+    call copies an opaque descriptor within one table
+    ([File.dup_modeled_entry]).  So no peer's call moves the offset a
+    call here reads.  setns (268) reads only the kind of the caller's
+    descriptor (an O_PATH file, a namespace model descriptor, or any
+    other), which no process changes, and answers an errno that changes
+    nothing.  Two class-(A) calls are admitted with a gate as well.
     flock (32) grants a lock when no descriptor of the CALLER names the
     file, and no lock state exists, so it is refused while another entry
     has a descriptor on the same path ([peer_refused_b]).  prctl (167)
@@ -407,7 +417,12 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     a peer holds that names [m_fsys] is a file descriptor ([FdFile p off]
     and its three siblings: a path and an offset of its own, opened after
     the last clone, so its own open file description as in Linux) and a
-    stat pin (fstat's, which holds no size or time).  Both stay valid
+    stat pin (fstat's, which holds no size or time).  An inherited file
+    ([State.OInherited]) names no path of [m_fsys]: it holds its bytes and
+    its offset in the entry, it was opened before the clone, and its offset
+    is live in exactly one entry of the configuration (class (A) above), so
+    a [read] through it moves an offset no peer holds.  The descriptors
+    and pins stay valid
     because no (B) call removes a path from [m_fsys]: the writers insert or
     replace ([Fs.fs_set]), and removal is unlinkat's, which is (C).  A
     truncation (openat's O_TRUNC, ftruncate) under a peer's offset past the
@@ -505,7 +520,7 @@ Definition multiproc_private_sysnos : list Z :=
     73;  74;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 130; 131;
    132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
    175; 176; 177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209;
-   210; 211; 212; 214; 215; 216; 222; 226; 233; 278; 436]%Z.
+   210; 211; 212; 214; 215; 216; 222; 226; 233; 268; 278; 436]%Z.
 
 Definition multiproc_shared_sysnos : list Z :=
   [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
@@ -2526,8 +2541,10 @@ Qed.
     ([Ns.Ext.ExtSpec]): a pending call the extension CLAIMS is answered by
     [ext_spec] on the SPLICED model ([pe_cfg], never [pe_model], whose file
     system and I/O are blank), the entry's namespace context and the shared
-    namespace state, filtered by [ext_refusal] as the released step is by
-    [Run.spurious_refusal_cfg]; the context and state it returns are
+    namespace state, filtered by [ext_refusal] on the whole [EOk] outcome
+    as the released step is by [Run.spurious_refusal_cfg] on the effect
+    (an [EUnmodeled] outcome and a step that ends the process get no
+    filter, as in the released step); the context and state it returns are
     written into [pe_nsctx] and [sh_ns].  An unclaimed call is the released
     step, unchanged.  A clone is the released clone, and [ext_clone] says
     what it does to the namespace model: the child's context and the next
@@ -2577,7 +2594,7 @@ Inductive xsstep (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ms_svc_pending ms = Some x8 ->
     ext_claims ext (sys_input segs ms x8) = true ->
     ext_spec ext (sys_input segs ms x8) model ctx st (EOk eff model' ctx' st' evs) ->
-    ~ ext_refusal ext cfg (sys_input segs ms x8) model ctx st eff ->
+    ~ ext_refusal ext cfg (sys_input segs ms x8) model ctx st (EOk eff model' ctx' st' evs) ->
     m_halted model' = None ->
     materialize_model_accesses model' (syscall_effect_accesses eff) = Some model'' ->
     xsstep ext segs cfg ctx st (mkCfg ms model) evs
@@ -2587,7 +2604,7 @@ Inductive xsstep (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ms_svc_pending ms = Some x8 ->
     ext_claims ext (sys_input segs ms x8) = true ->
     ext_spec ext (sys_input segs ms x8) model ctx st (EOk eff model' ctx' st' evs) ->
-    ~ ext_refusal ext cfg (sys_input segs ms x8) model ctx st eff ->
+    ~ ext_refusal ext cfg (sys_input segs ms x8) model ctx st (EOk eff model' ctx' st' evs) ->
     m_halted model' = None ->
     materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
     xsstep ext segs cfg ctx st (mkCfg ms model) [] SError ctx st
@@ -3044,8 +3061,9 @@ Qed.
 
 (** In the released world an extension's step IS the released step: a
     claimed call has the released outcomes ([Ext.ext_coherent]), filtered
-    as the released step filters them ([Ext.ext_refusal_coherent]), and the
-    namespace context and state do not change. *)
+    as the released step filters their effects
+    ([Ext.ext_refusal_released]), and the namespace context and state do
+    not change. *)
 Lemma xsstep_flat : forall ext segs cfg ctx st c evs r ctx' st',
   flat_view ctx st = true ->
   (xsstep ext segs cfg ctx st c evs r ctx' st'
@@ -3064,15 +3082,15 @@ Proof.
       destruct Hsp as (-> & -> & Hsp).
       split; [|split; reflexivity].
       apply sstep_cfg_syscall with (x8 := x8) (model' := model'); try assumption.
-      intros Hc. apply Hrf. apply (proj2 (ext_refusal_coherent ext cfg _ _ _ _ eff Hf Hcl)).
-      exact Hc.
+      intros Hc. apply Hrf.
+      exact (proj2 (ext_refusal_released ext cfg _ _ _ _ eff _ _ _ _ Hf Hcl) Hc).
     + apply (proj1 (ext_coherent ext _ _ _ _ Hf Hcl _)) in Hsp.
       destruct Hsp as (_ & _ & Hsp).
       split; [|split; reflexivity].
       apply sstep_cfg_syscall_materialization_fault
         with (x8 := x8) (eff := eff) (model' := model') (evs := evs0); try assumption.
-      intros Hc. apply Hrf. apply (proj2 (ext_refusal_coherent ext cfg _ _ _ _ eff Hf Hcl)).
-      exact Hc.
+      intros Hc. apply Hrf.
+      exact (proj2 (ext_refusal_released ext cfg _ _ _ _ eff _ _ _ _ Hf Hcl) Hc).
     + apply (proj1 (ext_coherent ext _ _ _ _ Hf Hcl _)) in Hsp.
       destruct Hsp as (-> & -> & Hsp).
       split; [|split; reflexivity].
@@ -3103,15 +3121,15 @@ Proof.
     + apply xs_ok with (x8 := x8) (model' := model'); try assumption.
       * apply (proj2 (ext_coherent ext _ _ _ _ Hf Hcl _)).
         exact (conj eq_refl (conj eq_refl Hsp)).
-      * intros Hc. apply Hrf. apply (proj1 (ext_refusal_coherent ext cfg _ _ _ _ eff Hf Hcl)).
-        exact Hc.
+      * intros Hc. apply Hrf.
+        exact (proj1 (ext_refusal_released ext cfg _ _ _ _ eff _ _ _ _ Hf Hcl) Hc).
     + apply xs_materialization_fault
         with (x8 := x8) (eff := eff) (model' := model') (ctx' := ctx) (st' := st) (evs := evs0);
         try assumption.
       * apply (proj2 (ext_coherent ext _ _ _ _ Hf Hcl _)).
         exact (conj eq_refl (conj eq_refl Hsp)).
-      * intros Hc. apply Hrf. apply (proj1 (ext_refusal_coherent ext cfg _ _ _ _ eff Hf Hcl)).
-        exact Hc.
+      * intros Hc. apply Hrf.
+        exact (proj1 (ext_refusal_released ext cfg _ _ _ _ eff _ _ _ _ Hf Hcl) Hc).
     + apply xs_exit with (x8 := x8) (eff := eff); try assumption.
       apply (proj2 (ext_coherent ext _ _ _ _ Hf Hcl _)).
       exact (conj eq_refl (conj eq_refl Hsp)).

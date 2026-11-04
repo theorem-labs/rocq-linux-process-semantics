@@ -34,8 +34,7 @@ Definition call (n : Z) (args : list Z) (mm : word -> option byte) : SyscallInpu
 
 (** A task with pid 2 in namespace 1 and the given sets; [t0] names it
     by its sets alone. *)
-Definition task (c : CapSets) : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 2)] (1%positive, 1%positive) (1%positive, 1%positive) 18 c 0 [].
+Definition task (c : CapSets) : NsCtx := with_caps (with_pids init_nsctx [(1%positive, 2)]) c.
 Definition t0 (c : CapSets) : NsCtx := task c.
 
 Definition U : NsState :=

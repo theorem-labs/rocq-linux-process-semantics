@@ -272,6 +272,14 @@ Proof.
   unfold check_set_robust_list in H. sh_frame2 H.
 Qed.
 
+Lemma check_setns_sh : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros fd eff m m' evs H.
+  unfold check_setns in H. sh_frame2 H.
+Qed.
+
 Lemma check_clock_getres_sh : forall i clkid tp eff m m' evs,
   check_clock_getres i clkid tp eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
@@ -725,6 +733,7 @@ Proof.
       | eapply check_capset_sh; eassumption
       | eapply check_futex_sh; eassumption
       | eapply check_set_robust_list_sh; eassumption
+      | eapply check_setns_sh; eassumption
       | eapply check_clock_getres_sh; eassumption
       | eapply check_sched_setscheduler_sh; eassumption
       | eapply check_sched_getaffinity_sh; eassumption

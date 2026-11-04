@@ -2,9 +2,10 @@
 
     The arm type and the helpers every arm uses: an answer that only sets
     the return register, the open file a descriptor names, a fresh handle,
-    the task's pid, the context setters, and what a path walk needs from
-    the process ([walk_creds], [fd_loc_of]).  The released answer an arm
-    falls back to is [Ext.released]. *)
+    the task's pid, and what a path walk needs from the process
+    ([walk_creds], [fd_loc_of]).  The context and state setters are in
+    [Ns.Tables].  The released answer an arm falls back to is
+    [Ext.released]. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -48,7 +49,7 @@ Definition fd_entry_handle (e : FdEntry) : option N :=
 
 (** One of the opaque objects ([State.FdOpaque]): an O_PATH or /proc/sys
     file, an eventfd, an open file of the namespace model, the
-    /proc/self/fd directory, or a signalfd. *)
+    /proc/self/fd directory, a signalfd, or an inherited file. *)
 Definition fd_entry_opaque (e : FdEntry) : bool :=
   match e with FdOpaque _ => true | _ => false end.
 
@@ -100,8 +101,9 @@ Definition host_loc (st : NsState) (p : list byte) : option Loc :=
           let r := ns_top st r0 in
           let root := (mnt_id r, mnt_root r) in
           let full := (2 ^ 41 - 1)%Z in
-          let hctx := mkNsCtx (uns_id u) (mntns_id n) (cx_pidns init_nsctx) (cx_net init_nsctx) []
-                              root root (cx_umask init_nsctx) (mkCaps full full 0 full 0) 0 [] in
+          let hctx := with_caps (with_cwd (with_root (with_mount_ns (with_user_ns init_nsctx (uns_id u))
+                                                                    (mntns_id n)) root) root)
+                                (mkCaps full full 0 full 0) in
           match walk st hctx (mkWalkCreds 0 0 []) (fun _ => None) (LDentry (fst root) (snd root)) p
                      (mkWalkFlags true false false false false) with
           | (WOk l, _) => Some l
@@ -169,15 +171,6 @@ Definition s32 (w : word) : Z :=
   let v := Z.land (bv_unsigned w) 4294967295 in
   if (v <? 2147483648)%Z then v else (v - 4294967296)%Z.
 
-Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
-
-(** The descriptors marked close-on-exec replaced by [l]. *)
-Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l.
-
 (** Descriptor [fd] marked close-on-exec when [on], unmarked otherwise. *)
 Definition set_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=
   let l := List.filter (fun x => negb (Z.eqb x fd)) (cx_cloexec ctx) in
@@ -206,17 +199,38 @@ Definition release_handle (fds' : list (word * FdEntry)) (st : NsState) (h : N) 
 Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
   find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
 
-(** The environment's refusals of one call number: a list of pairs, each an
-    errno predicate and the family that injects it, and [ni_forced], the
-    errnos of those pairs that the tables can also force for that call (the
-    count limits' ENOSPC of [unshare] and [mount]).  An answer the tables
-    force is the answer [Spec.ns_refusal] needs to remove a refusal the
-    state did not force; one in [ni_forced] is such an answer for a refusal
-    whose errno is not in [ni_forced]. *)
+(** The environment's refusals of one call number, and what its tables
+    answer:
+    - [ni_pairs]: a list of pairs, each an errno predicate and the family
+      that injects it.  A pair's family is its failure's kernel cause: an
+      allocation that fails is FamAlloc; a file system's state (a tmpfs
+      instance's inode or size limit, a page that cannot be read back, a
+      host disk's I/O error) is FamFs; a count limit of the file table
+      ([alloc_empty_file]'s system-wide limit, ENFILE, fs/file_table.c) is
+      FamFd, the family of the released table's [pipe2], [socket],
+      [socketpair] and [accept] rows; a netlink table's state
+      ([netlink_insert]'s EOVERFLOW) is FamNet.  An errno that two causes
+      return is in the pairs of both families: a tmpfs create's ENOSPC is
+      [new_inode]'s allocation (FamAlloc) or [shmem_reserve_inode]'s inode
+      limit (FamFs), mm/shmem.c [__shmem_get_inode]; [socket]'s ENFILE is
+      [sock_alloc]'s allocation (FamAlloc) or a file limit (FamFd).
+    - [ni_answers]: every errno the call's arm answers from the tables, so
+      when the environment refuses nothing.  Nothing ties this list to the
+      arm's code: an arm that comes to answer another errno from the tables
+      needs it added here.
+    - [ni_forced]: the errnos of [ni_answers] that some pair matches (the
+      count limits' ENOSPC of [unshare] and [mount], the ENOMEM of a large
+      sysctl write).
+    An answer the tables force is the answer [Spec.ns_refusal] needs to
+    remove a refusal the state did not force; one in [ni_forced] is such an
+    answer for a refusal whose errno is not in [ni_forced].  That needs
+    [ni_forced] to hold every errno of [ni_answers] a pair matches:
+    [ni_forced_ok]. *)
 Record NsInjected := mkNsInjected {
-  ni_no     : Z;
-  ni_pairs  : list ((Z -> bool) * SpuriousFamily);
-  ni_forced : list Z
+  ni_no      : Z;
+  ni_pairs   : list ((Z -> bool) * SpuriousFamily);
+  ni_answers : list Z;
+  ni_forced  : list Z
 }.
 
 (** [e] is one of [es]. *)
@@ -230,6 +244,14 @@ Definition pairs_errno (ps : list ((Z -> bool) * SpuriousFamily)) (e : Z) : bool
     deterministic answer ([with_injected]). *)
 Definition ni_errno (r : NsInjected) : Z -> bool := pairs_errno (ni_pairs r).
 
+(** The rule of a row: its [ni_forced] is exactly the errnos of its
+    [ni_answers] that some pair matches.  [Spec.ns_injected_forced] checks
+    it of every row of [Spec.ns_injected_table], so a row that breaks it
+    does not compile. *)
+Definition ni_forced_ok (r : NsInjected) : bool :=
+  forallb (fun e => negb (ni_errno r e) || errno_in (ni_forced r) e) (ni_answers r)
+  && forallb (fun e => ni_errno r e && errno_in (ni_answers r) e) (ni_forced r).
+
 (** The environment's refusals of a path walk ([Walk.walk]) and the name it
     reads, Linux 6.18.44: ENOMEM from [getname_flags] (fs/namei.c:
     [__getname], or [kzalloc] for a long name) and from [d_alloc_parallel]
@@ -239,15 +261,6 @@ Definition ni_errno (r : NsInjected) : Z -> bool := pairs_errno (ni_pairs r).
     for such a name and which reads the directory from the host's disk. *)
 Definition walk_pairs : list ((Z -> bool) * SpuriousFamily) :=
   [(errno_in [ENOMEM], FamAlloc); (errno_in [EIO], FamFs)].
-
-(** The released arm's injected refusals of call [n] ([Run.injected_arm]),
-    as one pair: the refusals an arm that gives a descriptor of the
-    released model the released answer admits for that descriptor. *)
-Definition released_pairs (n : Z) : list ((Z -> bool) * SpuriousFamily) :=
-  match injected_arm n with
-  | Some a => [(errno_in (ia_errnos a), ia_family a)]
-  | None => []
-  end.
 
 (** A failure chosen by the environment after a deterministic arm has
     reached its operation.  It keeps the copy-ins already made, writes
