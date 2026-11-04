@@ -3011,7 +3011,7 @@ Qed.
     filter under [no_ext] ([clone_fail_step_unchanged]), and those are the
     only extensions today.  A future [ExtSpec] must re-prove that equality
     for itself, or state how it differs. *)
-Definition clone_table_kept (ext : ExtSpec) (f : Z) (m : Model) (ctx : NsCtx)
+Definition clone_table_kept (ext : ExtSpec) (f : CloneIn) (m : Model) (ctx : NsCtx)
     (st : NsState) (hq en : Z) : Prop :=
   (forall child ret st', ~ ext_clone ext f m ctx st hq (CnOk child ret st'))
   /\ ((exists st', Ns.Clone.clone_ns_exact f m ctx st hq = CnErr en st')
@@ -3026,13 +3026,13 @@ Definition clone_fail_step (ext : ExtSpec) (segs : list Segment) (cfg : Spurious
     (c' : config) : Prop :=
   sstep_cfg segs cfg c evs (SNext c')
   \/ (sstep_cfg segs may_fail_cfg c evs (SNext c')
-      /\ clone_table_kept ext (clone_flags_of c) (cfg_model c) ctx st hq en).
+      /\ clone_table_kept ext (clone_in_of c) (cfg_model c) ctx st hq en).
 
 (** Where the extension's clone admits a success, the filter is the
     released one. *)
 Lemma clone_fail_step_success_iff : forall ext segs cfg c ctx st hq en evs c',
   (exists child ret st',
-     ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq (CnOk child ret st')) ->
+     ext_clone ext (clone_in_of c) (cfg_model c) ctx st hq (CnOk child ret st')) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext segs cfg c ctx st hq en evs c' (child & ret & st' & Hok). split.
@@ -3043,7 +3043,7 @@ Qed.
 
 (** ... so it is wherever the extension's clone is the released clone. *)
 Lemma clone_fail_step_released_clone : forall ext segs cfg c ctx st hq en evs c',
-  (forall o, ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq o
+  (forall o, ext_clone ext (clone_in_of c) (cfg_model c) ctx st hq o
              <-> released_clone ctx st o) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
@@ -3056,7 +3056,7 @@ Qed.
     [px_clone_fail] is the released step under the run's configuration, as
     it was before the filter above. *)
 Theorem clone_fail_step_unchanged : forall ext segs cfg c ctx st hq en evs c',
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits (clone_flags_of c) = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns (clone_in_of c) = false) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext segs cfg c ctx st hq en evs c' H. apply clone_fail_step_released_clone.
@@ -3091,11 +3091,11 @@ Qed.
     which are not decidable in general, so each case states the one it
     proves. *)
 Definition clone_kept (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
-    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+    (f : CloneIn) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
   ~ spurious_refusal_cfg cfg i m eff \/ clone_table_kept ext f m ctx st hq en.
 
 Definition clone_removed (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
-    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+    (f : CloneIn) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
   spurious_refusal_cfg cfg i m eff /\ ~ clone_table_kept ext f m ctx st hq en.
 
 Lemma clone_kept_not_removed : forall ext cfg i m f ctx st hq en eff,
@@ -3111,7 +3111,7 @@ Lemma clone_fail_step_kept : forall ext segs cfg ms model x8 eff model' model'' 
   syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
   m_halted model' = None ->
   materialize_model_accesses model' (syscall_effect_accesses eff) = Some model'' ->
-  clone_kept ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+  clone_kept ext cfg (sys_input segs ms x8) model (clone_in_of (mkCfg ms model))
     ctx st hq en eff ->
   clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
     (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
@@ -3126,7 +3126,7 @@ Qed.
 Lemma clone_fail_step_removed : forall ext segs cfg ms model x8 eff evs model''
                                        ctx st hq en,
   ms_svc_pending ms = Some x8 ->
-  clone_removed ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+  clone_removed ext cfg (sys_input segs ms x8) model (clone_in_of (mkCfg ms model))
     ctx st hq en eff ->
   ~ clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
       (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
@@ -3179,7 +3179,7 @@ Proof. intros ext cfg i m f ctx st hq en eff Hr. left. exact (spurious_refusal_n
     has no namespace bit, the extension's clone admits a success, so the
     tables keep nothing and both decisions are the released filter's. *)
 Lemma clone_success_unchanged : forall ext f m ctx st hq,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   ext_clone ext f m ctx st hq (CnOk ctx None st).
 Proof.
   intros ext f m ctx st hq H.
@@ -3189,7 +3189,7 @@ Proof.
 Qed.
 
 Lemma clone_kept_unchanged : forall ext cfg i m f ctx st hq en eff,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   (clone_kept ext cfg i m f ctx st hq en eff <-> ~ spurious_refusal_cfg cfg i m eff).
 Proof.
   intros ext cfg i m f ctx st hq en eff H. split; [|intros Hn; left; exact Hn].
@@ -3198,7 +3198,7 @@ Proof.
 Qed.
 
 Lemma clone_removed_unchanged : forall ext cfg i m f ctx st hq en eff,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   (clone_removed ext cfg i m f ctx st hq en eff <-> spurious_refusal_cfg cfg i m eff).
 Proof.
   intros ext cfg i m f ctx st hq en eff H. split; [intros (Hs & _); exact Hs|].
@@ -3240,7 +3240,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     child_pid_core c' q ->
     look P q = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child ret st') ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs
@@ -3261,10 +3261,10 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
     ms_gpr (cfg_ms c') 0 = errno_ret en ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq (CnErr en st') ->
-    cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st' ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' (pe_nsctx e) st'))
 | px_clone_unmodeled : forall P e evs c' hq,
@@ -3273,7 +3273,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
     clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq CnUnmodeled ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
@@ -3672,12 +3672,12 @@ Definition ext_agrees (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (P
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ multiproc_ok ext segs P e = multiproc_allowed P (pe_cfg (pcfg_shared P) e)
     /\ (forall hq o,
-          ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
@@ -3829,12 +3829,12 @@ Definition ext_released_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segmen
   forall e, look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false
     /\ (forall hq o,
-          ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Lemma ext_released_agrees : forall ext cenv segs P,
@@ -3866,14 +3866,14 @@ Definition ext_flat_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (
     : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
-    /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false
+    /\ makes_ns (clone_in_of (pe_cfg (pcfg_shared P) e)) = false
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true ->
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Lemma ext_flat_agrees : forall ext cenv segs P,
@@ -3952,11 +3952,11 @@ Qed.
 (** A one-process system is in the released world ([one_proc] uses
     [init_nsctx] and [empty_nsstate]). *)
 Lemma ext_flat_one : forall ext cenv segs c,
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   ext_flat_at ext cenv segs (one_proc c).
 Proof.
   intros ext cenv segs c Hns Hcp Hwt Hce e Hl.
@@ -3970,12 +3970,12 @@ Qed.
     pending clone makes no namespace, is left to the core, and may fail as
     the core's own clone does. *)
 Theorem pstep_x_single_next : forall ext cenv segs cfg c evs P',
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs (PNext P')
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
@@ -3991,11 +3991,11 @@ Proof.
 Qed.
 
 Theorem pstep_x_single_err : forall ext cenv segs cfg c evs,
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError
    <-> sstep_cfg segs cfg c evs SError).
 Proof.
@@ -4012,8 +4012,11 @@ Qed.
 
 (** At an instruction nothing is pending, so nothing is claimed and no
     clone makes a namespace: the extended relation is the released step. *)
-Lemma no_ns_bits_instr : forall c, at_instruction c -> has_ns_bits (clone_flags_of c) = false.
-Proof. intros c H. unfold at_instruction, clone_flags_of in *. rewrite H. reflexivity. Qed.
+Lemma no_ns_bits_instr : forall c, at_instruction c -> makes_ns (clone_in_of c) = false.
+Proof.
+  intros c H. unfold at_instruction in H. unfold clone_in_of. cbv zeta.
+  rewrite H. reflexivity.
+Qed.
 
 Lemma clone_pending_instr : forall c, at_instruction c -> clone_pending_b c = false.
 Proof. intros c H. unfold at_instruction, clone_pending_b in *. rewrite H. reflexivity. Qed.
