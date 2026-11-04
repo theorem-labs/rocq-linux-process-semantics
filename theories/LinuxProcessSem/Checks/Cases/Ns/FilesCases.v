@@ -344,6 +344,156 @@ Example openat_mountinfo_binds_namespace_root :
   mountinfo_binding (openat_fn (open_in s_mountinfo 0 0) m3 c0 W) = Some (3, 42, 1, 1, 1, 0).
 Proof. vm_compute. reflexivity. Qed.
 
+(* ---- the owners in a sticky directory ---------------------------------- *)
+
+(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h:50-51). *)
+Definition invalid_id : Z := 4294967295.
+
+(** [W] with the sticky world-writable directory "st" (01777) owned by uid
+    and gid [downer], and the regular file "st/f" (mode [fmode]) and the
+    link "st/l" (to "/file") owned by uid and gid [fowner]. *)
+Definition W_sticky_at (downer fowner fmode : Z) : NsState :=
+  with_tree W
+    (ns_dentries W ++
+     [dent 11 1 (Some 1%positive) (bytes [115; 116]) 11;
+      dent 12 1 (Some 11%positive) (bytes [102]) 12;
+      dent 13 1 (Some 11%positive) (bytes [108]) 13])
+    (ns_inodes W ++
+     [dir 11 1023 downer downer; reg 12 fmode fowner fowner;
+      mkInode 13 ILnk 511 fowner fowner 0 (bytes [47; 102; 105; 108; 101]) false]).
+
+(** The same with "st/f" of mode 0666 and all three owned by [owner]. *)
+Definition W_sticky (owner : Z) : NsState := W_sticky_at owner owner 438.
+
+Definition s_st_f : list Z := [47; 115; 116; 47; 102].                    (* /st/f *)
+Definition s_st_l : list Z := [47; 115; 116; 47; 108].                    (* /st/l *)
+
+(** A caller with fsuid and fsgid 2000, no supplementary group. *)
+Definition uid2000 : Creds :=
+  mkCreds (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000) (Z_to_bv 64 2000)
+          (Z_to_bv 64 2000) [].
+
+(** [may_create_in_sticky] (fs/namei.c:1304-1347, Linux v6.18.46) compares
+    the file's owner with the directory's by [vfsuid_eq] (1321), which is
+    false when the left one is INVALID (include/linux/mnt_idmapping.h:65-68).
+    An O_CREAT open of the existing 0666 file "st/f", in the sticky
+    world-writable "st", both owned by INVALID, by the caller with fsuid
+    1000, which owns neither: Linux answers EACCES with protected_regular 1
+    (1327-1329) and opens with protected_regular 0 (1313-1314); the tables
+    do not hold the sysctl, so the model has no answer.  Both owned by 1000
+    and a caller with fsuid 2000: the owners match (1321-1322) and the open
+    gives descriptor 3. *)
+Example openat_creat_sticky_invalid_owners :
+  openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky invalid_id) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example openat_creat_sticky_same_owner :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) (with_creds uid2000 m3) c0 (W_sticky 1000)) = Some 3.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Where the open's later steps refuse with EACCES, Linux answers EACCES
+    under every sysctl value, and so does the model ([sticky_answer]).
+    The 0600 file "st/f", both owners INVALID, opened for reading with
+    O_CREAT by the caller with fsuid 1000, which is in the file's other
+    class: EACCES with protected_regular 1 (1327-1329), and from
+    [may_open] (3973; [generic_permission]) with protected_regular 0.
+    The model answered EACCES before the correction too. *)
+Example openat_creat_sticky_invalid_owners_denied :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at invalid_id invalid_id 384))
+  = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** The same rule for two valid owners that differ: "st" owned by 3000 and
+    the 0600 file "st/f" by 2000, the same open by the caller with fsuid
+    1000: EACCES, where the model gave no answer before. *)
+Example openat_creat_sticky_other_owners_denied :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at 3000 2000 384)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** One owner INVALID and the other valid: the owners differ for
+    [vfsuid_eq] and for the old plain comparison alike, so the model
+    declined before.  Now, as for two valid owners that differ, a denied
+    open of "st/f" (0600) by the caller with fsuid 1000 answers EACCES,
+    which Linux gives under every protected_regular value (1327-1329, or
+    [may_open]'s [inode_permission], 3973): the directory owned by 3000
+    and the file by INVALID, then the directory owned by INVALID and the
+    file by 2000. *)
+Example openat_creat_sticky_mixed_owners_denied :
+  ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at 3000 invalid_id 384)) = Some (-13)
+  /\ ret_of (openat_fn (open_in s_st_f O_CREAT 438) m3 c0 (W_sticky_at invalid_id 2000 384))
+     = Some (-13).
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** [W] with the sticky world-writable directory "ro/st" (01777) on the
+    read-only mount 4, holding the regular file "ro/st/f" (0666), both
+    owned by uid and gid [owner]. *)
+Definition W_sticky_ro (owner : Z) : NsState :=
+  with_tree W
+    (ns_dentries W ++
+     [dent 17 4 (Some 40%positive) (bytes [115; 116]) 17;
+      dent 18 4 (Some 17%positive) (bytes [102]) 18])
+    (ns_inodes W ++ [dir 17 1023 owner owner; reg 18 438 owner owner]).
+
+Definition s_ro_st_f : list Z := [47; 114; 111; 47; 115; 116; 47; 102].  (* /ro/st/f *)
+Definition creat_trunc_write : Z := 1 + O_CREAT + O_TRUNC.
+
+(** An O_CREAT|O_TRUNC write open of "ro/st/f", both owners INVALID, by
+    the caller with fsuid 1000: Linux answers EACCES with protected_regular
+    1 (1327-1329) and EROFS from [mnt_want_write] (3967-3970) with
+    protected_regular 0, so the model has no answer; it answered EROFS
+    before the correction.  Both owned by 1000 and a caller with fsuid
+    2000: the owners match (1321-1322) and the answer is EROFS. *)
+Example openat_creat_trunc_sticky_invalid_owners_readonly :
+  openat_fn (open_in s_ro_st_f creat_trunc_write 438) m3 c0 (W_sticky_ro invalid_id) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example openat_creat_trunc_sticky_same_owner_readonly :
+  ret_of (openat_fn (open_in s_ro_st_f creat_trunc_write 438) (with_creds uid2000 m3) c0 (W_sticky_ro 1000))
+  = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A superblock with SB_RDONLY, built as [sb] builds the others. *)
+Definition sb_ro (i root : positive) (k : SbKind) (magic : Z) : SuperBlock :=
+  mkSb i k 1 root true magic false false false.
+
+(** [W_sticky_ro] with the superblock of mount 4 read-only too. *)
+Definition W_sticky_rosb (owner : Z) : NsState :=
+  with_sbs (W_sticky_ro owner)
+    [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
+     sb_ro 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836].
+
+Definition creat_write : Z := 1 + O_CREAT.
+
+(** An O_CREAT write open without O_TRUNC of "ro/st/f" on the read-only
+    superblock, both owners INVALID, by the caller with fsuid 1000: Linux
+    answers EACCES with protected_regular 1 (1327-1329) and EROFS from
+    [sb_permission] in [may_open]'s [inode_permission] (550-551, 3973)
+    with protected_regular 0, so the model has no answer; it answered
+    EROFS before the correction.  Both owned by 1000 and a caller with
+    fsuid 2000: the owners match (1321-1322) and the answer is EROFS. *)
+Example openat_creat_write_sticky_invalid_owners_rosb :
+  openat_fn (open_in s_ro_st_f creat_write 438) m3 c0 (W_sticky_rosb invalid_id) = EUnmodeled
+  /\ ret_of (openat_fn (open_in s_ro_st_f creat_write 438) (with_creds uid2000 m3) c0
+               (W_sticky_rosb 1000)) = Some (-30).
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** [may_follow_link] (fs/namei.c:1168-1196) lets a follower that does not
+    own a last-component link in a sticky world-writable directory follow
+    it only when the directory's owner is valid and owns the link (1187).
+    The link "st/l" and "st" both owned by INVALID, followed by the caller
+    with fsuid 1000: Linux answers EACCES with protected_symlinks 1
+    (1187-1195) and follows with protected_symlinks 0 (1173-1174); the
+    model has no answer.  Both owned by 1000 and a caller with fsuid 2000:
+    the link is followed (1187-1188) and the open gives "/file". *)
+Example openat_follow_sticky_invalid_owners :
+  openat_fn (open_in s_st_l 0 0) m3 c0 (W_sticky invalid_id) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example openat_follow_sticky_same_owner :
+  new_file (openat_fn (open_in s_st_l 0 0) (with_creds uid2000 m3) c0 (W_sticky 1000))
+  = Some (2, (1, 4, []), O_LARGEFILE).
+Proof. vm_compute. reflexivity. Qed.
+
 (* ---- openat2 ----------------------------------------------------------- *)
 
 Definition how_mem (flags mode resolve : Z) : word -> option byte :=
