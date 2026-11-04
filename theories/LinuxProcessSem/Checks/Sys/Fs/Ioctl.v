@@ -190,14 +190,11 @@ Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
       else CheckUnmodeled
   | Some FdUrandom => CheckUnmodeled
   | Some (FdOpaque _) => CheckUnmodeled   (* declined on every request: [Ioctl.ioctl_spec] *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* declined: [Ioctl.ioctl_spec] *)
-=======
   | Some (FdDgram _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else if bv_eqb req SIOCGIFINDEX then check_siocgifindex (in_arg i 2) i eff m
       else CheckUnmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 Lemma check_ioctl_sound_ok : forall fd req eff m m' evs i,

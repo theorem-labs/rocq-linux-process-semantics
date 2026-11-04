@@ -374,13 +374,11 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          has not read for the eight requests, and an [ONsFile]'s object
          is of unknown type (fs/ioctl.c and fs/file.c, read at v6.18.44;
          identical at v6.18.46). *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED, on every request: an AF_UNIX socket's
          [.unlocked_ioctl] is [sock_ioctl] (net/socket.c), which hands
          the request to [unix_ioctl] (net/unix/af_unix.c); that path is
          not written *)
-=======
   | Some (FdDgram _) =>
       if tty_only_request req then err_ret ENOTTY
         (* the socket answer above, reached through [unix_ioctl] (AF_UNIX)
@@ -390,5 +388,4 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
       else if bv_eqb req SIOCGIFINDEX then
         (i <- input ;; siocgifindex_spec (in_arg i 2) i)
       else unmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.

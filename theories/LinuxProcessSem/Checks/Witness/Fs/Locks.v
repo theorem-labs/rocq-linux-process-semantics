@@ -69,13 +69,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [| eapply bind_step; [apply get_model_ok|];
        cbv beta iota; srw Hfd; apply pure_ok ].
-<<<<<<< HEAD
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st].
-  11: { (* the opaque kinds, declined ahead of the unlock *)
-=======
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o].
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd sst|ctx|fam|aid af|o|i0 sd st].
   15: { (* the opaque kinds, declined ahead of the unlock *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
         eapply bind_step; [apply get_model_ok|]. cbv beta iota.
         srw Hfd. apply unmodeled_intro. }
   all: destruct (flock_unlock_b cmd) eqn:Hun;
@@ -107,9 +102,6 @@ Proof.
   - (* /dev/urandom: declined *)
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
-<<<<<<< HEAD
-  - (* an AF_UNIX SEQPACKET end: declined *)
-=======
   - (* a stream-pair end: declined, the [FdSocket] case *)
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
@@ -120,7 +112,9 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - (* an unnamed file: declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. apply unmodeled_intro.
+  - (* an AF_UNIX SEQPACKET end: declined *)
     eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
 Qed.

@@ -71,14 +71,11 @@ Definition ioctl_witness (fd req : word) (i : SyscallInput) (m : Model)
       else Unmodeled
   | Some FdUrandom => Unmodeled
   | Some (FdOpaque _) => Unmodeled   (* declined on every request *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled   (* declined on every request *)
-=======
   | Some (FdDgram _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else if bv_eqb req SIOCGIFINDEX then siocgifindex_witness (in_arg i 2) i m
       else Unmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 Lemma ioctl_witness_ok : forall fd req i m, ioctl_spec fd req i m (ioctl_witness fd req i m).
