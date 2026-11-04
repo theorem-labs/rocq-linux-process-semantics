@@ -309,16 +309,17 @@ Proof.
   - right. unfold Fork.clone_ns_flags_b. rewrite Hout, Z.eqb_refl, Hns. reflexivity.
 Qed.
 
-(** Every answered word outside the released world is a word the core
-    admits.  The released no-namespace fast path remains unrestricted,
-    as [Ext.ext_clone_coherent] requires. *)
+(** Every answered word outside the released no-namespace fast path is a
+    word the core admits, including namespace-creating clones from the
+    host's namespaces.  That fast path remains unrestricted, as
+    [Ext.ext_clone_coherent] requires. *)
 Theorem clone_ns_exact_core_gate : forall flags m ctx st hq,
-  flat_view ctx st = false ->
+  (flat_view ctx st && negb (has_ns_bits (bv_unsigned flags))) = false ->
   clone_ns_exact (bv_unsigned flags) m ctx st hq <> CnUnmodeled ->
   Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true.
 Proof.
-  intros flags m ctx st hq Hflat Hanswer.
-  unfold clone_ns_exact in Hanswer. rewrite Hflat in Hanswer. cbn [andb] in Hanswer.
+  intros flags m ctx st hq Hfast Hanswer.
+  unfold clone_ns_exact in Hanswer. rewrite Hfast in Hanswer.
   destruct (negb (Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0))
     eqn:Hmask; [exfalso; apply Hanswer; reflexivity|].
   destruct (negb (Z.land (bv_unsigned flags) CSIGNAL =? Fork.SIGCHLD))
