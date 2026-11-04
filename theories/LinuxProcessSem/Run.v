@@ -1726,7 +1726,12 @@ Record InjectedArm := mkInjectedArm {
     ([Net.Socket.socket_errnos], [socket_alloc_errnos] and
     [socket_dgram_errnos]); the row names the widest,
     [socket_dgram_errnos AF_INET6], which is [socket_errnos] plus
-    [inet6_create]'s -ENOBUFS and contains the other two.
+    [inet6_create]'s -ENOBUFS and contains the other two.  [unlinkat]
+    draws from three lists: [Fs.Namei.unlinkat_errnos] beside removal,
+    [Fs.Namei.unlink_before_type_errnos] beside [may_delete]'s type
+    answer, and [Fs.Namei.unlink_before_slashes_errnos] beside
+    [slashes:].  The two shorter lists are subsets of the first; the
+    row names all three so a later change cannot make them drift.
 
     NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
     DECISION rather than an oversight — it is written here because the
@@ -1753,7 +1758,7 @@ Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* eventfd2   *) mkInjectedArm  19%Z FamFd    eventfd2_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
-  (* unlinkat   *) mkInjectedArm  35%Z FamFs    unlinkat_errnos ::
+  (* unlinkat   *) mkInjectedArm  35%Z FamFs    (unlinkat_errnos ++ unlink_before_type_errnos ++ unlink_before_slashes_errnos) ::
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
   (* openat     *) mkInjectedArm  56%Z FamFs    openat_errnos ::
   (* pipe2      *) mkInjectedArm  59%Z FamFd    pipe2_errnos ::
