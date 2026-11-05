@@ -1202,7 +1202,7 @@ Proof. check_eq. Qed.
 Example touch_on_spent_budget_is_budget_refused :
   budget_refused_at touch_segments (mkCfg touch_ms (touch_model 0)).
 Proof.
-  split; [vm_compute; reflexivity |]. left. split; [reflexivity |].
+  split; [vm_compute; reflexivity |]. left. split; [reflexivity |]. left.
   pose proof touch_store_reports_the_page as H. unfold touch_accesses in H.
   destruct (RiscvSemantics.step_accesses touch_segments touch_ms) as [r | |] eqn:E;
     try discriminate H.
@@ -1227,10 +1227,13 @@ Qed.
 Example touch_within_budget_is_not_budget_refused :
   ~ budget_refused_at touch_segments (mkCfg touch_ms (touch_model page_size)).
 Proof.
-  intros (_ & [(_ & r & E & Hmat) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
+  intros (_ & [(_ & [(r & E & Hmat) | (HU & _)]) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
   - pose proof touch_store_reports_the_page as H. unfold touch_accesses in H.
     rewrite E in H. injection H as Hr. rewrite Hr in Hmat.
     vm_compute in Hmat. discriminate Hmat.
+  - apply mi_account_step_unmodeled_inv in HU.
+    pose proof touch_store_reports_the_page as H. unfold touch_accesses in H.
+    rewrite HU in H. discriminate H.
   - discriminate Hx8.
 Qed.
 
@@ -1241,9 +1244,12 @@ Qed.
 Example ebreak_fault_is_not_budget_refused : forall lim,
   ~ budget_refused_at ebreak_rsegs (mkCfg ebreak_ms (ebreak_model lim)).
 Proof.
-  intros lim (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
+  intros lim (_ & [(_ & [(r & E & _) | (HU & _)]) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
   - pose proof (drop_step_accesses ebreak_rsegs ebreak_ms) as Hd.
     rewrite E, ebreak_faults in Hd. discriminate Hd.
+  - apply mi_account_step_unmodeled_inv in HU.
+    pose proof (drop_step_accesses ebreak_rsegs ebreak_ms) as Hd.
+    rewrite HU, ebreak_faults in Hd. discriminate Hd.
   - assert (Hnone : ms_svc_pending ebreak_ms = None) by reflexivity.
     congruence.
 Qed.
@@ -2039,9 +2045,12 @@ Qed.
 Lemma ebreak_fault_is_not_budget_refused_any : forall model,
   ~ budget_refused_at ebreak_rsegs_abort (mkCfg ebreak_ms_abort model).
 Proof.
-  intros model (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
+  intros model (_ & [(_ & [(r & E & _) | (HU & _)]) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
   - pose proof (drop_step_accesses ebreak_rsegs_abort ebreak_ms_abort) as Hd.
     rewrite E, ebreak_faults_abort in Hd. discriminate Hd.
+  - apply mi_account_step_unmodeled_inv in HU.
+    pose proof (drop_step_accesses ebreak_rsegs_abort ebreak_ms_abort) as Hd.
+    rewrite HU, ebreak_faults_abort in Hd. discriminate Hd.
   - assert (Hnone : ms_svc_pending ebreak_ms_abort = None)
       by (vm_compute; reflexivity).
     congruence.

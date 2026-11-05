@@ -498,6 +498,13 @@ Proof.
          end.
   all: first
     [ left; exact Hd
+    | (* the SIGPIPE arm: its install carries the SIGCHLD bit *)
+      (match type of H with
+       | check_rt_sigaction_sigpipe _ _ _ _ _ = CheckOk _ _ =>
+           destruct (check_rt_sigaction_sigpipe_model _ _ _ _ _ _ _ H)
+             as [-> | (a & ->)];
+           left; exact Hd
+       end)
     | (unfold sigchld_install_model in Hd;
        rewrite m_sigchld_dfl_with_sigchld_dfl in Hd;
        destruct (m_sigchld_dfl m); [left; reflexivity|];

@@ -839,12 +839,17 @@ Proof.
   rewrite E, andb_false_r. cbn [negb andb]. apply IH. exact Hl.
 Qed.
 
-(** The page-rounded disjunct of [growable], for the shape every example
-    grow site has: a page-aligned established break [r] sitting above
-    every reservation, grown by a positive [t] that fits under both the
-    physical ceiling and the budget.  On a page-aligned [r] the rounded
-    interval starts at [r] itself, so the whole free-region check reduces
-    to [region_free_above_top].  All five hypotheses are what a grow site
+(** The ceiling and free-region test of [growable]'s second disjunct,
+    beside a budget test on the RAW growth [t <= lim], for the shape every
+    example grow site has: a page-aligned established break [r] sitting
+    above every reservation, grown by a positive [t] that fits under both
+    the physical ceiling and the budget.  The budget conjunct here is not
+    [growable]'s: [growable] tests the page-rounded growth
+    [Z.max 0 (page_round_up_Z (r + t) - page_round_up_Z r) <= lim], so
+    this lemma does not discharge [growable]; [growable_aligned_grow_rounded]
+    below does.  On a page-aligned [r] the rounded interval starts at [r]
+    itself, so the whole free-region check reduces to
+    [region_free_above_top].  All five hypotheses are what a grow site
     already holds — alignment and the reservation-top bound from its
     initial-state facts, the rest from its own arithmetic on [t].  The
     ceiling bound is stated on [r + t + page_size - 1], the largest value
@@ -880,6 +885,38 @@ Proof.
   apply andb_true_iff. split; [apply andb_true_iff; split|].
   - apply Z.leb_le. lia.
   - rewrite Z_to_bv_bv_unsigned. apply region_free_above_top. exact Htop.
+  - apply Z.leb_le. exact Hlim.
+Qed.
+
+(** The page-rounded disjunct of [growable], exactly as [growable] states
+    it, for the same grow-site shape as [growable_aligned_grow]: the
+    budget hypothesis is [growable]'s own page-rounded test. *)
+Lemma growable_aligned_grow_rounded : forall reserved lim top (t r : word),
+  (bv_unsigned r mod page_size = 0)%Z ->
+  (reserved_top reserved <= bv_unsigned r)%Z ->
+  (0 < bv_unsigned t)%Z ->
+  (bv_unsigned r + bv_unsigned t + page_size - 1 <= top)%Z ->
+  (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+            - page_round_up_Z (bv_unsigned r)) <= lim)%Z ->
+  ((if (page_round_up_Z (bv_unsigned r)
+        <? page_round_up_Z (bv_unsigned r + bv_unsigned t))%Z
+    then (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+          <=? top)%Z
+         && region_free reserved
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned r)))
+              (Z_to_bv 64 (page_round_up_Z
+                             (bv_unsigned r + bv_unsigned t)
+                            + page_size - page_round_up_Z (bv_unsigned r)))
+    else true)
+   && (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+                - page_round_up_Z (bv_unsigned r)) <=? lim)%Z)%bool = true.
+Proof.
+  intros reserved lim top t r Halign Htop Hpos Hceil Hlim.
+  apply andb_true_iff. split.
+  - pose proof (growable_aligned_grow reserved
+                  (bv_unsigned t) top t r Halign Htop Hpos Hceil
+                  (Z.le_refl _)) as Hg.
+    apply andb_true_iff in Hg as [Hg _]. exact Hg.
   - apply Z.leb_le. exact Hlim.
 Qed.
 

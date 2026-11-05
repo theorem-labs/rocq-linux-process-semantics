@@ -1014,7 +1014,8 @@ Qed.
     [CLONE_SYSVSEM] and the tid bits were admitted, verbatim: the
     caller's successor with a0 = 0 and, for [clone] with a non-zero a1,
     sp = a1 (the earlier [clone_child_sp] inlined), and the caller's own
-    record as the child's model. *)
+    record as the child's model, with each eventfd shared
+    ([Kernel.Fork.share_eventfds]). *)
 Definition child_ms_before (c c' : config) : machine_state :=
   let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
   match match ms_svc_pending (cfg_ms c) with
@@ -1033,7 +1034,8 @@ Definition child_entry_before (e : ProcessEntry) (c c' : config) (q : Pid)
   mkEntry q (Some (pe_pid e)) (child_ms_before c c')
           (clear_shared (with_proc (child_proc
              (match m_tid (pe_model e) with Some t => t | None => pe_pid e end)
-             (m_proc (pe_model e))) (pe_model e)))
+             (m_proc (pe_model e)))
+             (with_fds (share_eventfds (m_fds (pe_model e))) (pe_model e))))
           (pe_ofd e) (pe_nsctx e).
 
 (** THE WORDS ADMITTED BEFORE [CLONE_SYSVSEM] AND THE TID BITS KEEP THEIR
