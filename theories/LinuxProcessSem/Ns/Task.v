@@ -93,10 +93,14 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     own [setsid], which sets the leader bit and so answers EPERM at the
     first test.  [setpgid] (154) has no arm, in [Spec.ns_table] or in the
     released table, so no modelled process makes such a group.  A process
-    outside the model can only after the caller's modelled parent exits:
-    the caller is then reparented to a reaper the environment owns, and
-    that reaper, in the caller's session, may call [setpgid(caller,
-    caller)] before the caller execs (kernel/sys.c:1143-1149).  The
+    outside the model can only when the caller is pid 1 of the namespace
+    and its modelled parent exits: the caller is then reparented to a
+    reaper the environment owns, and that reaper, in the caller's session,
+    may call [setpgid(caller, caller)] before the caller execs
+    (kernel/sys.c:1144-1150).  Another task of the namespace whose parent
+    exits goes to the namespace's pid 1 or to a child subreaper at its
+    level ([find_new_reaper], kernel/exit.c:642-675), a modelled process,
+    and [setpgid] has no arm.  The
     launch value [Tables.env_foreign_pgroups] names that event: under its
     default [false] the test is false and the arm is exact; under [true]
     EPERM is admitted beside the success.  If [setpgid] is ever modelled,
@@ -109,8 +113,7 @@ Definition pidns_made (st : NsState) (p : positive) : bool :=
     session and group ids become the caller's pid; no call of the
     namespace model reads them ([getsid] 156 and [getpgid] 155 have no
     arm here).  [m_tid] is not written: it holds the host's numbering,
-    and a pid of another namespace must not go there (the multi-process
-    core's owner, 2026-11-03).
+    and a pid of another namespace must not go there.
     Kind: exact in a pid namespace the tables made while
     [env_foreign_pgroups] is [false]; over in the host's pid namespace or
     under [true]; a task with no pid in its own namespace declines. *)

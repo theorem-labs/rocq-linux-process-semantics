@@ -4797,9 +4797,13 @@ Record ProcState := mkProcState {
        modeled, [Net.Socket.setsockopt_spec] declines when it is present.
        [init_model] seeds this from [in_cgroup_bpf_setsockopt]; every
        transition and a child's construction retain the launch value. *);
-  procst_sigchld_dfl : bool      (* WHETHER THIS PROCESS HAS ITSELF INSTALLED
-                                    SIG_DFL FOR SIGCHLD with SA_NOCLDWAIT
-                                    clear.  [false] at launch ([mkModel],
+  procst_sigchld_dfl : bool      (* WHETHER THIS PROCESS INSTALLED SIG_DFL
+                                    FOR SIGCHLD with SA_NOCLDWAIT clear
+                                    while it had no recorded child, so the
+                                    bit is set only if every child the
+                                    process has was cloned while SIGCHLD was
+                                    SIG_DFL.
+                                    [false] at launch ([mkModel],
                                     [init_model]); set by the one SIGCHLD
                                     install the model answers
                                     ([Kernel.Signal.sigchld_dfl_install] in
@@ -5049,10 +5053,11 @@ Definition m_selfkill_terminal (m : Model) : bool :=
   procst_selfkill_terminal (m_proc m).
 Definition m_cgroup_bpf_setsockopt (m : Model) : bool :=
   procst_cgroup_bpf_setsockopt (m_proc m).
-(** Whether this process has itself installed SIG_DFL for SIGCHLD with
-    SA_NOCLDWAIT clear, which [Kernel.Exit.wait4_spec] reads before it
-    answers a caller with a recorded child.  [false] at launch; see
-    [procst_sigchld_dfl]. *)
+(** Whether this process installed SIG_DFL for SIGCHLD with SA_NOCLDWAIT
+    clear while it had no recorded child, so the bit is set only if every
+    child the process has was cloned while SIGCHLD was SIG_DFL.
+    [Kernel.Exit.wait4_spec] reads it before it answers a caller with a
+    recorded child.  [false] at launch; see [procst_sigchld_dfl]. *)
 Definition m_sigchld_dfl (m : Model) : bool :=
   procst_sigchld_dfl (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=

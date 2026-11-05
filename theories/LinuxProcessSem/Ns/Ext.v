@@ -55,7 +55,7 @@
     core takes it as an explicit argument, a [CloneEnv], which a statement
     names.  [any_clone_failure] admits every failure the core and the
     extension give.  A narrower one is an environment premise of the
-    statement that names it (the LPS owner's decision, 2026-11-01).
+    statement that names it.
 
     [ext_multiproc] names the claimed calls the extension answers soundly
     while other processes are live: those whose answer reads and writes

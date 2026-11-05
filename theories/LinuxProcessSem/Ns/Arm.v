@@ -86,7 +86,12 @@ Definition nsfile_loc (f : NsFile) : option Loc :=
     ([Walk.ns_top]; on Linux, "/" mounted on rootfs), as the released arm
     resolved it when it checked the open.  No task of the model changes the
     host's mount namespace (a task in it is in the released world, whose
-    mount arm declines), so the walk now is the walk then.  The walk runs
+    mount arm declines), so the walk now is the walk then.  The host can
+    still change it through a peer group with a member outside the tables
+    ([Tables.env_open_groups]): a walk that enters a mount such a group
+    reaches answers [WOver] ([Walk.follow_mounts_fuel]), and when a mount
+    of the stack from the root mount to the top is one, the top is not the
+    tables' ([Walk.ns_top_open]) and the path gives [None].  The walk runs
     with every capability of the initial user namespace, since the
     released arm already checked the opener's permission, and with no pid,
     so a path through procfs [self] does not resolve; a relative path, and
@@ -99,6 +104,7 @@ Definition host_loc (st : NsState) (p : list byte) : option Loc :=
   | true, Some n, Some u =>
       match find_mount (ns_mounts st) (mntns_root n) with
       | Some r0 =>
+          if ns_top_open st r0 then None else
           let r := ns_top st r0 in
           let root := (mnt_id r, mnt_root r) in
           let full := (2 ^ 41 - 1)%Z in

@@ -1,14 +1,14 @@
 (** * LinuxProcessSem.Ns.Walk — path resolution in a namespace and mount tree
 
     A pure path walk over the data of [Ns.Tables], in the order of the
-    Linux 6.18.44 lookup code.  It resolves listed dentries, crosses mounts
+    Linux 6.18.46 lookup code.  It resolves listed dentries, crosses mounts
     in both directions, follows symbolic links, synthesizes the procfs
     entries of the calling task, and checks search permission before each
     component.  Where the answer depends on state the tables do not hold
     (another task's procfs directory, an nsfs object, a sysctl), the walk
     answers [WOver] and never an errno.
 
-    Linux 6.18.44 sources:
+    Linux 6.18.46 sources:
     - the empty path and the PATH_MAX limit: [getname_flags], fs/namei.c;
     - the start and the root of a walk: [path_init], fs/namei.c;
     - one component after another: [link_path_walk], [walk_component],
@@ -33,7 +33,7 @@
 
 From Stdlib Require Import List PArith ZArith Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Userns.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Propagation Userns.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -145,8 +145,8 @@ Definition mount_on (st : NsState) (parent point : positive) : option Mount :=
           | None => false
           end) (ns_mounts st).
 
-(** [topmost_overmount] (fs/namespace.c): from mount [m], the mount on its
-    root dentry, and so on up. *)
+(** [topmost_overmount] (fs/mount.h:243-248): from mount [m], the mount on
+    its root dentry, and so on up. *)
 Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
   match fuel with
   | O => m
@@ -162,6 +162,33 @@ Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
     "/"'s mount, not rootfs. *)
 Definition ns_top (st : NsState) (r : Mount) : Mount :=
   topmost_fuel (length (ns_mounts st)) st r.
+
+(** A mount of the stack that [topmost_fuel] climbs from [m], [m] and the
+    top included, can receive a mount or unmount event from a peer group
+    with a member outside the tables ([Propagation.open_mount]): the host
+    can mount on its root dentry, or unmount the mount that covers it,
+    without a call of the model, so the top is not the tables'. *)
+Fixpoint topmost_open_fuel (fuel : nat) (st : NsState) (m : Mount) : bool :=
+  open_mount st (mnt_id m) ||
+  match fuel with
+  | O => false
+  | S f => match mount_on st (mnt_id m) (mnt_root m) with
+           | Some m' => topmost_open_fuel f st m'
+           | None => false
+           end
+  end.
+(** With both launch lists empty, topmost mounts cannot be changed from
+    outside; otherwise account for every mount that the root walk reads. *)
+Definition ns_top_open (st : NsState) (root_m : Mount) : bool :=
+  match env_open_groups (ns_env st), env_entered_mntns (ns_env st) with
+  | [], [] => false
+  | _, _ => topmost_open_fuel (S (length (ns_mounts st))) st root_m
+  end.
+
+Theorem ns_top_open_closed : forall st r,
+  env_open_groups (ns_env st) = [] -> env_entered_mntns (ns_env st) = [] ->
+  ns_top_open st r = false.
+Proof. intros st r H E. unfold ns_top_open. rewrite H, E. reflexivity. Qed.
 
 (* =========================================================================
    Path text
@@ -385,17 +412,21 @@ Definition may_exec_dir (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (l : Loc) 
 
 (** [traverse_mounts] (fs/namei.c): while a mount covers the dentry, go to
     that mount's root.  The fuel bounds the chain by the table; a cycle in a
-    malformed table answers [WOver]. *)
+    malformed table answers [WOver].  So does a mount that can receive a
+    mount or unmount event from a peer group with a member outside the
+    tables ([Propagation.open_mount]): the host can mount on any of its
+    dentries, or unmount what covers one, without a call of the model. *)
 Fixpoint follow_mounts_fuel (fuel : nat) (st : NsState) (l : Loc) : WalkResult :=
   match fuel with
   | O => WOver
   | S f =>
       match l with
       | LDentry m d =>
-          match mount_on st m d with
-          | Some child => follow_mounts_fuel f st (LDentry (mnt_id child) (mnt_root child))
-          | None => WOk l
-          end
+          if open_mount st m then WOver
+          else match mount_on st m d with
+               | Some child => follow_mounts_fuel f st (LDentry (mnt_id child) (mnt_root child))
+               | None => WOk l
+               end
       | LProcTask _ _ _ | LProcSelf _ _ => WOk l
       end
   end.
@@ -403,11 +434,19 @@ Fixpoint follow_mounts_fuel (fuel : nat) (st : NsState) (l : Loc) : WalkResult :
 Definition follow_mounts (st : NsState) (l : Loc) : WalkResult :=
   follow_mounts_fuel (S (length (ns_mounts st))) st l.
 
-(** [choose_mountpoint_rcu] (fs/namei.c): from mount [m], climb to the
-    parent mounts until a mount point that is not the root of its mount.
-    [Some (Some (mnt, dentry))]: found; [Some None]: none, either because
-    the mount has no parent or because the next mount point is the walk
-    root; [None]: the tables do not decide. *)
+(** [choose_mountpoint_rcu] (fs/namei.c:1382-1399, v6.18.46): from mount
+    [m], climb to the parent mounts until a mount point that is not the
+    root of its mount. [Some (Some (mnt, dentry))]: found; [Some None]:
+    none, either because the mount has no parent or because the next
+    mount point is the walk root; [None]: the tables do not decide, also
+    at an open intermediate parent. A propagated unmount can detach its
+    child ([gather_candidates], fs/pnode.c:500-535, 586-593;
+    [disconnect_mount], fs/namespace.c:1752-1753, 1813-1819), changing
+    the climb even when that parent's mount point is another root. The
+    walk-root test comes first, as in Linux (fs/namei.c:1389-1391): when the next
+    mount point is the root, a detached child (no parent) and a mount
+    tucked under it both leave the walk where it is, so an open parent
+    does not change that answer. *)
 Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : positive)
     : option (option (positive * positive)) :=
   match fuel with
@@ -419,7 +458,8 @@ Fixpoint choose_mountpoint_fuel (fuel : nat) (st : NsState) (root : Loc) (m : po
           match mnt_parent mt with
           | None => Some None
           | Some p =>
-              if loc_eqb root (LDentry p (mnt_mountpoint mt)) then Some None
+              if loc_eqb root (LDentry p (mnt_mountpoint mt)) then Some None else
+              if open_mount st p then None
               else match find_mount (ns_mounts st) p with
                    | None => None
                    | Some pm =>
