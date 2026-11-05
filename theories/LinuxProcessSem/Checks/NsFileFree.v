@@ -921,7 +921,11 @@ Proof. intros fd eff m m' evs H. unfold check_fsync in H. nf_frame H. Qed.
 
 Lemma check_getdents64_nf : forall i fd dirent count eff m m' evs,
   check_getdents64 i fd dirent count eff m = CheckOk m' evs -> ns_post m m'.
-Proof. intros i fd dirent count eff m m' evs H. unfold check_getdents64 in H. nf_frame H. Qed.
+Proof.
+  intros i fd dirent count eff m m' evs H.
+  unfold check_getdents64, check_getdents64_opaque, check_procfd_getdents in H.
+  nf_frame H.
+Qed.
 
 Lemma check_flock_nf : forall fd cmd eff m m' evs,
   check_flock fd cmd eff m = CheckOk m' evs -> ns_post m m'.

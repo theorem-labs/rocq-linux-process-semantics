@@ -432,7 +432,8 @@ Lemma check_getsockname_sh : forall i fd eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H. sh_frame2 H.
+  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_getpeername_sh : forall i fd eff m m' evs,
@@ -440,7 +441,8 @@ Lemma check_getpeername_sh : forall i fd eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H. sh_frame2 H.
+  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_send_on_socket_sh :

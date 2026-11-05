@@ -910,7 +910,8 @@ Lemma check_getsockname_cp : forall i fd eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H. cp_frame2 H.
+  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H.
+  cbv zeta in H. cp_frame2 H.
 Qed.
 
 Lemma check_getpeername_cp : forall i fd eff m m' evs,
@@ -918,7 +919,8 @@ Lemma check_getpeername_cp : forall i fd eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H. cp_frame2 H.
+  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H.
+  cbv zeta in H. cp_frame2 H.
 Qed.
 
 Lemma check_setsockopt_cp : forall i fd level optlen eff m m' evs,
