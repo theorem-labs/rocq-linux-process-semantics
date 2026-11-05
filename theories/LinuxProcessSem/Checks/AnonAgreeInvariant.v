@@ -314,9 +314,9 @@ Proof.
            | discriminate Hunlink ]
          end; fail).
   (* FdAnon case *)
-  - cbn [entry_anon_id] in *.
+  - unfold entry_anon_id in Hunlink. cbv beta iota in Hunlink.
     match type of Hunlink with
-    | context [bv_eqb ?a id] => destruct (bv_eqb a id) eqn:Eid'
+    | context [bv_eqb ?a ?b] => destruct (bv_eqb a b) eqn:Eid'
     end.
     + exfalso. unfold anon_id_live in Hlive.
       apply bv_eqb_eq in Eid'. subst.
