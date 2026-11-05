@@ -190,7 +190,7 @@ Proof.
     assert (id0 = id') by congruence. subst id0.
     assert (af0 = af') by congruence. subst af0.
     apply (anon_agree_update_other fds id f id' af').
-    + intros E. rewrite E, (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
+    + intros E. subst id'. rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
       discriminate Eid.
     + exact (Hall _ _ _ Hin').
 Qed.
@@ -272,14 +272,14 @@ Proof.
     + injection Heq as _ Heq. discriminate Heq.
     + pose proof (In_filter_In _ _ _ Hfilt) as HinInner.
       destruct (In_fd_insert_inv _ _ _ _ HinInner) as [Heq2 | Hfilt2].
-      * injection Heq2 as <- Heq2. subst e.
+      * assert (e = FdAnon id af) by congruence. subst e.
         pose proof (fd_lookup_In _ _ _ Hlook) as HinOld.
         pose proof (Hall _ _ _ HinOld) as Hagr.
-        eapply (anon_agree_dup3_fds fds oldfd newfd (FdAnon id af) _ id af Hlook _ Hagr).
+        eapply anon_agree_dup3_fds; [exact Hlook | | exact Hagr].
         unfold dup3_fds. rewrite Edm, Emoves. reflexivity.
       * pose proof (In_filter_In _ _ _ Hfilt2) as Hin0.
         pose proof (Hall _ _ _ Hin0) as Hagr.
-        eapply (anon_agree_dup3_fds fds oldfd newfd e _ id af Hlook _ Hagr).
+        eapply anon_agree_dup3_fds; [exact Hlook | | exact Hagr].
         unfold dup3_fds. rewrite Edm, Emoves. reflexivity.
 Qed.
 
@@ -302,9 +302,9 @@ Proof.
            destruct (path_eqb a b) eqn:Epc; cbv iota in Hunlink;
            [ (* converted to FdAnon *)
              assert (id0 = id) by congruence; subst id0;
-             rewrite (anon_agree_congr _ id af0
-                 (mkAnonFile data (af_off af0) (af_rd af0) (af_wr af0) (af_append af0) pin)
-                 ltac:(congruence) ltac:(congruence));
+             assert (Haf : af0 = ltac:(match type of Hunlink with
+               _ = FdAnon _ ?x => exact x end)) by congruence;
+             subst af0;
              apply anon_agree_unlink_open; exact Hlive
            | discriminate Hunlink ]
          end; fail).
@@ -460,8 +460,8 @@ Qed.
    ========================================================================= *)
 
 (** The initial model has no [FdAnon] entries. *)
-Theorem anon_agree_init : forall segs pc ph sp brk0 mb lim draw inp,
-  anon_agree_holds (init_config segs pc ph sp brk0 mb lim draw inp).
+Theorem anon_agree_init : forall segs pc ph sp brk0 mb draw lim inp,
+  anon_agree_holds (init_config segs pc ph sp brk0 mb draw lim inp).
 Proof.
   intros. unfold anon_agree_holds, anon_agree_all, init_config. cbn [cfg_model].
   intros fd id af Hin.
@@ -471,13 +471,13 @@ Qed.
 
 (** One transition preserves [anon_agree_holds]. *)
 Lemma sstep_preserves_anon_agree : forall segs c evs c',
-  sstep segs c evs (SNext c') ->
-  anon_agree_holds c -> anon_agree_holds c'.
+  anon_agree_holds c -> sstep segs c evs (SNext c') -> anon_agree_holds c'.
 Proof.
-  intros segs [ms model] evs c' Hstep Hinv.
+  intros segs [ms model] evs c' Hinv Hstep.
   unfold anon_agree_holds in *. cbn [cfg_model] in *.
   inversion Hstep; subst; cbn [cfg_model].
-  - match goal with
+  - (* sstep_instr *)
+    match goal with
     | [ H : mi_account_step _ _ _ = RiscvSemantics.MachineOk (_, _) |- _ ] =>
         destruct (mi_account_step_model_frame _ _ _ _ _ H) as (Hfd & _)
     end.
@@ -485,18 +485,19 @@ Proof.
     assert (Hfds : m_fds model' = m_fds model)
       by (unfold m_fds; rewrite Hfd; reflexivity).
     rewrite Hfds in Hin |- *. exact (Hinv fd id af Hin).
-  - match goal with
+  - (* sstep_vdso_call *)
+    match goal with
     | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
         Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (Hfd2 & _);
-        assert (Hfds : m_fds (with_vdso_bump m2) = m_fds m1)
-          by (unfold m_fds, with_vdso_bump, with_vdso; cbn [m_fd mkModelOf];
-              rewrite Hfd2; reflexivity);
+        assert (Hfds : m_fds (with_vdso_bump m2) = m_fds m1);
+        [ unfold m_fds; unfold with_vdso_bump, with_vdso; rewrite Hfd2; reflexivity |];
         unfold anon_agree_all in *; intros fd id af Hin;
         rewrite Hfds in Hin |- *;
         exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv fd id af Hin)
     end.
-  - match goal with
+  - (* sstep_syscall *)
+    match goal with
     | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
         Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (Hfd2 & _);
@@ -506,11 +507,13 @@ Proof.
         rewrite Hfds in Hin |- *;
         exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv fd id af Hin)
     end.
-  - match goal with
+  - (* sstep_exit *)
+    match goal with
     | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
         exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv)
     end.
-  - match goal with
+  - (* sstep_killed *)
+    match goal with
     | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
         exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv)
     end.
@@ -525,11 +528,11 @@ Proof.
 Qed.
 
 (** The invariant holds at every reachable configuration. *)
-Theorem anon_agree_reachable : forall segs pc ph sp brk0 mb lim draw inp tr c,
-  star segs (init_config segs pc ph sp brk0 mb lim draw inp) tr c ->
+Theorem anon_agree_reachable : forall segs pc ph sp brk0 mb draw lim inp tr c,
+  star segs (init_config segs pc ph sp brk0 mb draw lim inp) tr c ->
   anon_agree_holds c.
 Proof.
-  intros segs pc ph sp brk0 mb lim draw inp tr c Hstar.
-  exact (star_preserves_anon_agree segs _ _ _  Hstar
-           (anon_agree_init segs pc ph sp brk0 mb lim draw inp)).
+  intros segs pc ph sp brk0 mb draw lim inp tr c Hstar.
+  exact (star_preserves_anon_agree segs _ _ _ Hstar
+           (anon_agree_init segs pc ph sp brk0 mb draw lim inp)).
 Qed.
