@@ -275,8 +275,15 @@ Ltac rw_walk := intros; repeat (cbn beta zeta iota; first [rw_step | vdso_step])
     not specific to the write arms — any specification that chooses a
     continuation by a lookup meets the same shape — and carrying two tactic
     names through the rest of the table would say they are two kinds of
-    walk when they are one. *)
-Ltac vdso_walk ::= rw_walk.
+    walk when they are one.
+
+    This goes through [VdsoCommute.v]'s declared hook rather than
+    redefining [vdso_walk]: a redefinition cannot be [Local], so it would
+    change what [vdso_walk] means for every later importer, and an importer
+    of this file would see a different walk from one that imported only
+    [VdsoCommute].  The hook is the one name whose purpose is to be
+    redefined. *)
+Ltac vdso_extra_step ::= rw_step.
 
 Lemma vc_write_spec : forall fd buf count,
   vdso_commutes (write_spec fd buf count).
@@ -535,19 +542,12 @@ Proof.
   rewrite with_vmmaps_with_vdso, forget_vm_ranges_with_vdso. reflexivity.
 Qed.
 
-(** The walk's model equations, with the memory constructions added. *)
-Ltac vdso_model_eq ::=
-  repeat first
-    [ reflexivity
-    | progress (rewrite ?with_brk_next_with_vdso, ?forget_vm_ranges_with_vdso)
-    | progress vdso_unwrap
-    | match goal with
-      | |- ?lhs = _ => let h := vdso_head lhs in progress unfold h
-      | |- _ = ?rhs => let h := vdso_head rhs in progress unfold h
-      | |- context [if ?b then _ else _] => destruct b
-      | |- context [match ?x with _ => _ end] => destruct x
-      end ];
-  reflexivity.
+(** The memory constructions, through [VdsoCommute.v]'s other declared
+    hook.  [vdso_model_eq] consults it before it starts unfolding, so a
+    fold whose frame is an induction is rewritten rather than unfolded
+    past. *)
+Ltac vdso_extra_eq ::=
+  rewrite ?with_brk_next_with_vdso, ?forget_vm_ranges_with_vdso.
 
 Lemma vc_brk_spec : forall req, vdso_commutes (brk_spec req).
 Proof. intros; unfold brk_spec; vdso_walk_dep. Qed.
@@ -595,17 +595,14 @@ Proof.
   reflexivity.
 Qed.
 
-Ltac vdso_unwrap ::=
-  repeat first
-    [ progress (rewrite ?mmap_fixed_rw_budget_ok_with_vdso,
-                        ?mmap_fixed_rw_span_budget_ok_with_vdso)
-    | match goal with
-      | |- context [?r (with_vdso ?v ?m)] =>
-          lazymatch r with
-          | with_vdso => fail
-          | _ => change (r (with_vdso v m)) with (r m)
-          end
-      end ].
+(** The budget gates join the same hook.  They are NOT conversions — the
+    gate rebuilds a whole post-state through [with_mmap_replacement], which
+    goes through the [forget_vm_ranges] fold — so [vdso_unwrap] cannot
+    reach them with [change] and consults the hook instead. *)
+Ltac vdso_extra_eq ::=
+  rewrite ?with_brk_next_with_vdso, ?forget_vm_ranges_with_vdso,
+          ?mmap_fixed_rw_budget_ok_with_vdso,
+          ?mmap_fixed_rw_span_budget_ok_with_vdso.
 
 Lemma vc_mmap_spec : forall addr len prot flags fd off,
   vdso_commutes (mmap_spec addr len prot flags fd off).

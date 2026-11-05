@@ -230,7 +230,8 @@ Definition step_to_with_vdso (v : VdsoRun) (st : step_to) : step_to :=
   | SError  => SError
   end.
 
-(** THE STEP-LAYER STATEMENT, per state.
+(** THE STEP-LAYER STATEMENT, per state.  [Run.sstep] has eleven arms;
+    three are ruled out by the premise and the other eight are proved.
 
     THE HYPOTHESIS IS NOT A CONVENIENCE.  At an exported vDSO entry the
     conclusion is FALSE: [Run.sstep_vdso_call] leaves [with_vdso_bump
@@ -238,7 +239,9 @@ Definition step_to_with_vdso (v : VdsoRun) (st : step_to) : step_to :=
     not the wrapper, and [Run.vdso_post] reads the draw itself, so even the
     machine state differs.  The three vDSO arms all require
     [vdso_entry_fn … = Some fn]; this premise rules out exactly those
-    three. *)
+    three, and it rules out nothing else: the only other arm that mentions
+    [vdso_entry_fn] is [Run.sstep_instr_unmodeled], whose own premise is
+    [= None] and which is proved rather than excluded. *)
 Theorem sstep_with_vdso : forall segs v ms model evs st,
   vdso_entry_fn segs (ms_pc ms) = None ->
   sstep segs (mkCfg ms model) evs st ->
@@ -305,12 +308,45 @@ Corollary sstep_cfg_with_vdso : forall segs v c evs st,
   sstep segs (cfg_with_vdso v c) evs (step_to_with_vdso v st).
 Proof. intros segs v [ms model] evs st. apply sstep_with_vdso. Qed.
 
+(** THE INVERSE, which is the direction a [realizes]-style consumer needs:
+    [Common.ShapeAlg]'s [node_ok] quantifies over EVERY successor of the
+    configuration, so transporting it across the wrapper asks what a step
+    of the WRAPPED configuration came from.  Free, by the same two
+    identities as [VdsoCommute.vdso_commutes_inv]: the draw put back is the
+    bare model's own. *)
+Theorem sstep_with_vdso_inv : forall segs v ms model evs st,
+  vdso_entry_fn segs (ms_pc ms) = None ->
+  sstep segs (mkCfg ms (with_vdso v model)) evs st ->
+  sstep segs (mkCfg ms model) evs (step_to_with_vdso (m_vdso model) st).
+Proof.
+  intros segs v ms model evs st Hnv Hstep.
+  pose proof (sstep_with_vdso segs (m_vdso model) ms (with_vdso v model)
+                evs st Hnv Hstep) as H.
+  rewrite with_vdso_idem, with_vdso_same in H. exact H.
+Qed.
+
+Corollary sstep_cfg_with_vdso_inv : forall segs v c evs st,
+  vdso_entry_fn segs (ms_pc (cfg_ms c)) = None ->
+  sstep segs (mkCfg (cfg_ms c) (with_vdso v (cfg_model c))) evs st ->
+  sstep segs c evs (step_to_with_vdso (m_vdso (cfg_model c)) st).
+Proof.
+  intros segs v [ms model] evs st Hnv Hstep.
+  exact (sstep_with_vdso_inv segs v ms model evs st Hnv Hstep).
+Qed.
+
 (** MANY STEPS.  The premise is carried by an INVARIANT the caller supplies,
     which is how a plan discharges it node by node: [P] is what the caller
     knows about the configurations its plan visits, and the two premises say
     that [P] keeps the pc away from a vDSO entry and survives a step.  A
     caller that knows its plan's pcs outright instantiates [P] with exactly
-    that. *)
+    that.
+
+    NOTE WHAT THE SECOND PREMISE ASKS.  [P] must survive EVERY [sstep]
+    successor, not only the one this star takes.  That is the right shape
+    for a [node_ok]-style consumer, whose own clause already quantifies
+    over every successor, and it is a real obligation for a caller holding
+    one trace: such a caller wants [P] to be a property of the segment list
+    and the pc rather than of the trace. *)
 Theorem star_with_vdso : forall segs v (P : config -> Prop),
   (forall c, P c -> vdso_entry_fn segs (ms_pc (cfg_ms c)) = None) ->
   (forall c evs c', P c -> sstep segs c evs (SNext c') -> P c') ->
@@ -330,9 +366,13 @@ Qed.
    ========================================================================= *)
 
 (** A run whose segments carry no vDSO text has no exported entry at any pc.
-    This is the per-tree corollary: cheap where it applies, and it does NOT
-    apply to a run whose segment list is [Run.run_segments], which appends
-    [Run.vdso_segments]. *)
+    This is the per-tree corollary, and it is cheap where it applies.
+
+    It does NOT apply to a run whose segment list is [Run.run_segments]:
+    that appends [Run.vdso_segments], and the pair is empty only for a
+    launch [Run.vdso_segments] declines (Run.v:290-295), which Run.v:285-289
+    says Linux does not make.  A consumer over [run_segments] wants
+    [vdso_entry_fn_none_below_base] instead. *)
 Lemma vdso_entry_fn_none_of_no_text : forall segs pc,
   vdso_text_seg segs = None -> vdso_entry_fn segs pc = None.
 Proof.

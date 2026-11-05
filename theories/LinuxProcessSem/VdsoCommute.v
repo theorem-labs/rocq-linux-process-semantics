@@ -1,11 +1,14 @@
 (** * LinuxProcessSem.VdsoCommute — the vDSO draw is a frame of the syscall layer
 
     [State.with_vdso] installs the launch's vDSO draw and its call count.
-    NOTHING in the syscall layer reads either: the only reader in the whole
-    development is [Run.vdso_post], which is the vDSO arm of the step relation
-    and not a syscall specification.  So every [Specs.syscall_spec] outcome
-    survives the wrapper, with the wrapper carried through to the outcome's
-    model.
+    NOTHING IN THE SYSCALL LAYER READS EITHER: a grep of [m_vdso],
+    [vdr_draw] and [vdr_calls] over [LinuxProcessSem/Sys/] has no hit.  The
+    two readers in the development are both in the step relation —
+    [Run.vdso_post], which answers a vDSO call from the draw, and
+    [State.with_vdso_bump], which that arm uses to advance the count — and
+    neither is a syscall specification.  So every [Specs.syscall_spec]
+    outcome survives the wrapper, with the wrapper carried through to the
+    outcome's model.
 
     That fact is not statable once and for all.  [Monad.Sys A] is
     [SyscallInput -> Model -> outcome A -> Prop]: a shallow RELATIONAL monad,
@@ -550,28 +553,33 @@ Qed.
    Add the shape rather than proving the arm by hand.
    ========================================================================= *)
 
+(** THE TWO EXTENSION POINTS.  [VdsoCommuteArms.v] meets model constructions
+    this file cannot name — [Sys.Mm.Mmap]'s [forget_vm_ranges] is a fold, so
+    its frame is an induction rather than a conversion — and the tactics
+    below have to reach them.  Rather than redefine the tactics themselves,
+    which would change what a name means for every later importer, the two
+    hooks are named and are the ONLY things a consumer redefines.  Each
+    fails by default, so the base walk is exactly what this file says. *)
+Ltac vdso_extra_eq := fail.
+Ltac vdso_extra_step := fail.
+
 (** Pull the wrapper out from under a field reader.  [change] checks
     convertibility, so a SETTER under the wrapper — which does not commute
-    with it this way — is skipped rather than rewritten wrongly. *)
+    with it this way — is skipped rather than rewritten wrongly.  That check
+    is the whole of the protection: the pattern cannot match [with_vdso]
+    itself, whose first argument is a [VdsoRun] and not a [Model].
+
+    A reader whose frame is NOT a conversion — a test that rebuilds a whole
+    post-state, as [Sys.Mm.Mmap]'s budget gates do — comes in through
+    [vdso_extra_eq]. *)
 Ltac vdso_unwrap :=
-  repeat match goal with
-  | |- context [?r (with_vdso ?v ?m)] =>
-      lazymatch r with
-      | with_vdso => fail
-      | _ => change (r (with_vdso v m)) with (r m)
-      end
-  end.
+  repeat first
+    [ progress vdso_extra_eq
+    | match goal with
+      | |- context [?r (with_vdso ?v ?m)] =>
+          change (r (with_vdso v m)) with (r m)
+      end ].
 
-(** Writing a field.  Every [Monad.set_*] is a [modify] of a [State.with_*],
-    so one tactic closes all of them, and its side condition is the setter
-    frame proved above.
-
-    A [modify] whose function BRANCHES on the model — [raise_sigpipe], which
-    looks at the disposition and the mask before it chooses between pending
-    and killed — is not closed by conversion alone: the wrapper sits outside
-    the match on one side and inside it on the other.  Unwrapping the
-    readers first makes the two scrutinees one term, and then the branch
-    splits on both sides at once. *)
 (** The head constant of an application. *)
 Ltac vdso_head c :=
   match c with
@@ -586,6 +594,7 @@ Ltac vdso_head c :=
 Ltac vdso_model_eq :=
   repeat first
     [ reflexivity
+    | progress vdso_extra_eq
     | progress vdso_unwrap
     | match goal with
       | |- ?lhs = _ => let h := vdso_head lhs in progress unfold h
@@ -595,6 +604,16 @@ Ltac vdso_model_eq :=
       end ];
   reflexivity.
 
+(** Writing a field.  Every [Monad.set_*] is a [modify] of a [State.with_*],
+    so one tactic closes all of them, and its side condition is the setter
+    frame proved above.
+
+    A [modify] whose function BRANCHES on the model — [raise_sigpipe], which
+    looks at the disposition and the mask before it chooses between pending
+    and killed — is not closed by conversion alone: the wrapper sits outside
+    the match on one side and inside it on the other.  Unwrapping the
+    readers first makes the two scrutinees one term, and then the branch
+    splits on both sides at once. *)
 Ltac vdso_setter := apply vc_modify; intros; vdso_model_eq.
 
 (** The two-program walk, for a specification that captures the model it
@@ -701,5 +720,12 @@ Ltac vdso_step :=
   end.
 
 (** The walk.  [unfold] the specification first; [vdso_walk] takes it from
-    there, unfolding the helpers it meets. *)
-Ltac vdso_walk := intros; repeat (cbn beta zeta iota; vdso_step).
+    there, unfolding the helpers it meets.
+
+    [vdso_extra_step] is tried FIRST, which is what makes the hook usable:
+    the last case below unfolds the head constant, and a consumer's shape is
+    usually a constant this file would unfold past.  It fails by default, so
+    with no consumer the walk is exactly the cases above. *)
+Ltac vdso_walk :=
+  intros;
+  repeat (cbn beta zeta iota; first [ vdso_extra_step | vdso_step ]).

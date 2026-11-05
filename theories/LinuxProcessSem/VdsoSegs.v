@@ -22,9 +22,13 @@ Open Scope bv_scope.
 
 Local Transparent vdso_segments.
 
-(** Neither mapping of the pair is executable: a jump into the vvar pages
-    or into the text is an NX fault, and [Run.sstep]'s vDSO arms answer at
-    an exported ENTRY rather than by fetching the image's instructions. *)
+(** Neither mapping of the pair is executable.  A jump into the VVAR pages
+    is an NX fault; a jump into the TEXT is not, and the difference matters:
+    [RiscvSemantics.fetch_failure] tests [vdso_text_at] ahead of any
+    permission (RiscvSemantics.v:1158-1170) and answers [MachineUnmodeled],
+    the model declining, rather than [MachineFault].  [Run.sstep]'s vDSO
+    arms override that at an exported ENTRY.  So this lemma is about the
+    PERMISSION the pair carries, not about what a fetch there does. *)
 Lemma vdso_segments_nx : forall kb (sp mbase : word) s,
   In s (vdso_segments kb sp mbase) -> seg_executable s = false.
 Proof.
