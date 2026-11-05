@@ -11,16 +11,17 @@
   "tools/placement_conformance/log_to_rocq.py": 1,
   "tools/placement_conformance/start_state_to_rocq.py": 1
  },
+ "mkMntNs": {
+  "theories/LinuxProcessSem/Ns/Tables.v": 4
+ },
  "mkNsCtx": {
   "theories/LinuxProcessSem/Ns/Tables.v": 16
  },
  "mkNsEnv": {
-  "theories/LinuxProcessSem/Checks/Cases/Ns/NewMountCases.v": 2,
-  "theories/LinuxProcessSem/Checks/Cases/Ns/WalkCases.v": 1,
-  "theories/LinuxProcessSem/Ns/Tables.v": 5
+  "theories/LinuxProcessSem/Ns/Tables.v": 13
  },
  "mkNsState": {
-  "theories/LinuxProcessSem/Ns/Tables.v": 13
+  "theories/LinuxProcessSem/Ns/Tables.v": 14
  },
  "mkProcInput_full": {
   "theories/Common/AsanPlanCore.v": 1,
@@ -40,7 +41,7 @@
  },
  "mkProcState": {
   "theories/LinuxProcessSem/Procs.v": 1,
-  "theories/LinuxProcessSem/State.v": 29
+  "theories/LinuxProcessSem/State.v": 30
  },
  "mkSeqEnd": {
   "theories/LinuxProcessSem/State.v": 3
@@ -49,6 +50,7 @@
   "theories/LinuxProcessSem/Procs.v": 6
  },
  "mkVmState": {
+  "theories/Common/WfInvariant.v": 1,
   "theories/LinuxProcessSem/State.v": 7
  }
 }

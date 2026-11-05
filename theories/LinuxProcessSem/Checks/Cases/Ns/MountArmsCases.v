@@ -7,7 +7,7 @@
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files MountArms.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Propagation Userns Walk Task Files MountArms.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -38,7 +38,7 @@ Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsStat
      mnt 3 (Some 2%positive) 22 30 3 false false;
      mnt 4 (Some 2%positive) 23 40 4 false false] in
   let st := with_userns st [user0] in
-  let st := with_mntns st [mkMntNs 1 1 1 false] in
+  let st := with_mntns st [mk_mntns 1 1 1 false] in
   let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 SbTmpfs; sb 4 40 SbTmpfs] in
   let st := with_tree st
@@ -196,6 +196,39 @@ Example mount_private_nonroot :
                    (state false false [])) = Some (-EINVAL).
 Proof. vm_compute. reflexivity. Qed.
 
+(** [do_change_type] (fs/namespace.c:2856-2887): MS_SHARED with MS_REC gives
+    each mount of the subtree a new group of its own (2877-2881, 2453-2456);
+    a propagation flag with another flag of the low 32 bits is EINVAL
+    (2845-2846), as are two propagation flags (2848-2849); bits 32 to 63 do
+    not reach the test (2856: [int ms_flags]); with no CAP_SYS_ADMIN over the
+    owner of the mount's namespace, EPERM (2831-2832). *)
+Example mount_shared_recursive :
+  option_map (map mnt_peer) (mounts_of
+    (mount_fn (mount_input s_root s_root (MS_SHARED + MS_REC)) base_model c_admin
+              (state false false [])))
+  = Some [Some 2%positive; Some 3%positive; Some 4%positive; Some 5%positive].
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_private_rdonly :
+  ret_of (mount_fn (mount_input s_root s_root (MS_PRIVATE + MS_RDONLY)) base_model c_admin
+                   (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_shared_slave :
+  ret_of (mount_fn (mount_input s_root s_root (MS_SHARED + MS_SLAVE)) base_model c_admin
+                   (state false false [])) = Some (-EINVAL).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_private_high_bit :
+  ret_of (mount_fn (mount_input s_root s_root (MS_PRIVATE + 2 ^ 40)) base_model c_admin
+                   (state false false [])) = Some 0.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mount_change_no_admin :
+  ret_of (mount_change_type [] (mount_input s_root s_root MS_PRIVATE) base_model c_none
+                            (state false false []) 1 1 MS_PRIVATE) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
 (** May_mount checks CAP_SYS_ADMIN over the mount namespace's owner. *)
 Example mount_needs_admin :
   ret_of (mount_fn (mount_input s_src s_bind MS_BIND) base_model c_none
@@ -227,6 +260,14 @@ Example pivot_same_mount :
   = Some (-EBUSY).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The call of [pivot_dot_moves_root] in a mount namespace entered from
+    outside has no answer: an outside move of the new root's mount changes
+    Linux's answer (fs/namespace.c:4584-4618, v6.18.46). *)
+Example entered_pivot_dot_declines :
+  pivot_root_fn (pivot_input s_dot s_dot) base_model c_pivot
+    (with_entered_mntns (state false false []) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
 Definition path_file : NsFile := mkNsFile (NfPath (LDentry 2 20)) O_PATH (mkIdCred 1 0 0 0).
 Definition writer_file : NsFile := mkNsFile (NfFile (LDentry 2 21) 0) O_WRONLY (mkIdCred 1 0 0 0).
 Definition attr_set : Z := MOUNT_ATTR_RDONLY + MOUNT_ATTR_NOSUID + MOUNT_ATTR_NODEV.
@@ -251,6 +292,223 @@ Example setattr_writer_busy :
   ret_of (mount_setattr_fn (setattr_input (-100) s_tmp 0 MOUNT_ATTR_RDONLY) base_model c_admin
                            (state false false [(8%N, writer_file)])) = Some (-EBUSY).
 Proof. vm_compute. reflexivity. Qed.
+
+(** [do_mount_setattr] with [attr.propagation] (fs/namespace.c:4781-4838):
+    MS_SHARED with AT_RECURSIVE gives each mount of the tree a group of its
+    own ([invent_group_ids], 4804-4805); flags and propagation on one mount
+    are both applied ([mount_setattr_commit], 4766-4774); a change that
+    clears a locked flag is EPERM ([mount_setattr_prepare], 4715-4718) and
+    makes no group ([cleanup_group_ids], 4831-4833). *)
+Definition attr_prop_bytes (set_bits prop : Z) : list byte :=
+  Z_to_le_bytes 8 set_bits ++ Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 prop ++ Z_to_le_bytes 8 0.
+Definition setattr_prop_input (dfd : Z) (path : list Z) (flags set_bits prop : Z) : SyscallInput :=
+  call 442 [dfd; PATH; flags; ATTR; 32]
+    (join_mem (cstr PATH path) (byte_mem ATTR (attr_prop_bytes set_bits prop))).
+
+Example setattr_shared_recursive :
+  option_map (map mnt_peer) (mounts_of
+    (mount_setattr_fn (setattr_prop_input (-100) s_tmp AT_RECURSIVE 0 MS_SHARED) base_model c_admin
+                      (state false false [])))
+  = Some [None; Some 2%positive; Some 3%positive; Some 4%positive].
+Proof. vm_compute. reflexivity. Qed.
+
+Example setattr_flags_and_shared :
+  option_map (map (fun x => (mf_ro (mnt_flags x), mnt_peer x))) (mounts_of
+    (mount_setattr_fn (setattr_prop_input (-100) s_tmp 0 MOUNT_ATTR_RDONLY MS_SHARED) base_model c_admin
+                      (state false false [])))
+  = Some [(false, None); (true, Some 2%positive); (false, None); (false, None)].
+Proof. vm_compute. reflexivity. Qed.
+
+Definition ro_locked_state : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 2 then mnt_with_lock_flags x (mkMountFlags true false false false)
+                                else x) (ns_mounts st)).
+
+Example setattr_shared_locked :
+  ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PShared)
+                              false base_model c_admin ro_locked_state 2 20) = Some (-EPERM)
+  /\ option_map (map mnt_peer) (mounts_of
+       (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PShared)
+                            false base_model c_admin ro_locked_state 2 20))
+     = Some [None; None; None; None].
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Open groups ([Propagation.targets_open]).  Mount 1, the root, is the
+    only member of peer group 9 that the tables hold, with no master, and
+    group 9 is open: it has a member outside the tables.  MS_SLAVE|MS_REC
+    on "/" makes the root a slave of that member and leaves group 9's
+    slaves with the group ([change_mnt_propagation], fs/pnode.c:101-116),
+    which the tables cannot name: no answer.  The walk of "/" crosses no
+    mount, so the test is the arm's.  With no open group the root is the
+    last member of group 9 and becomes private ([Mount.change_one]). *)
+Definition st_root9 : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 1 then mnt_with_peer x (Some 9%positive) else x)
+                      (ns_mounts st)).
+
+Example change_type_open_root :
+  ret_of (mount_fn (mount_input s_root s_root (MS_SLAVE + MS_REC)) base_model c_admin
+                   (with_open_groups st_root9 [9%positive])) = None
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_fn (mount_input s_root s_root (MS_SLAVE + MS_REC)) base_model c_admin st_root9))
+     = Some [(None, None); (None, None); (None, None); (None, None)].
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** Mount 3, below /tmp/src, is in the open group 9; /tmp (mount 2) is in
+    no group.  A recursive change of /tmp, by [mount] with MS_REC or by
+    [mount_setattr] with AT_RECURSIVE, reaches mount 3: no answer.  The
+    same change without MS_REC or AT_RECURSIVE changes mount 2 alone and
+    answers 0. *)
+Definition st_sub9 : NsState :=
+  let st := state false false [] in
+  with_open_groups
+    (with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_peer x (Some 9%positive) else x)
+                         (ns_mounts st)))
+    [9%positive].
+
+Example change_type_open_descendant :
+  ret_of (mount_fn (mount_input s_tmp s_tmp (MS_PRIVATE + MS_REC)) base_model c_admin st_sub9) = None
+  /\ ret_of (mount_fn (mount_input s_tmp s_tmp MS_PRIVATE) base_model c_admin st_sub9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example setattr_open_descendant :
+  ret_of (mount_setattr_fn (setattr_prop_input (-100) s_tmp AT_RECURSIVE 0 MS_PRIVATE) base_model c_admin
+                           st_sub9) = None
+  /\ ret_of (mount_setattr_fn (setattr_prop_input (-100) s_tmp 0 0 MS_PRIVATE) base_model c_admin
+                              st_sub9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** AT_EMPTY_PATH starts at the descriptor's mount and crosses no mount:
+    with /tmp (mount 2) in the open group 9, a change of its flags has no
+    answer; with no open group it answers 0. *)
+Definition st_tmp9 : NsState :=
+  let st := state false false [(7%N, path_file)] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 2 then mnt_with_peer x (Some 9%positive) else x)
+                      (ns_mounts st)).
+
+Example setattr_empty_path_open :
+  ret_of (mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+                           (with_open_groups st_tmp9 [9%positive])) = None
+  /\ ret_of (mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+                              st_tmp9) = Some 0.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** A slave outside the selected tree.  Mount 3 (/tmp/src/under) is the
+    only member of peer group 9, which is not open, with no master; mount
+    4 (/tmp/other), beside it, is a slave of group 9 and the only member
+    of peer group 11.  MS_PRIVATE on /tmp/src/under ends group 9 and hands
+    mount 4 to mount 3's master, none ([transfer_propagation],
+    fs/pnode.c:74-88): the change reads and sets mount 4's master, with or
+    without MS_REC.  With group 11 open, mount 4 can receive an event from
+    outside the tables, so neither [mount] nor [mount_setattr] has an
+    answer ([Propagation.change_reads]); a change of the flags alone does
+    not read mount 4 and answers 0.  With no open group both calls answer
+    0, and mount 4 keeps group 11 with no master. *)
+Definition s_under : list Z := [47; 116; 109; 112; 47; 115; 114; 99; 47; 117; 110; 100; 101; 114].
+
+Definition st_slave9 : NsState :=
+  let st := state false false [] in
+  with_mounts st (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_peer x (Some 9%positive)
+                                else if Pos.eqb (mnt_id x) 4
+                                then mnt_with_master (mnt_with_peer x (Some 11%positive)) (Some 9%positive)
+                                else x)
+                      (ns_mounts st)).
+
+Example change_type_open_slave :
+  prop_okb (with_open_groups st_slave9 [11%positive]) = true
+  /\ ret_of (mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin
+                      (with_open_groups st_slave9 [11%positive])) = None
+  /\ ret_of (mount_fn (mount_input s_under s_under (MS_PRIVATE + MS_REC)) base_model c_admin
+                      (with_open_groups st_slave9 [11%positive])) = None
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin st_slave9))
+     = Some [(None, None); (None, None); (None, None); (Some 11%positive, None)].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example setattr_open_slave :
+  ret_of (mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE) base_model c_admin
+                           (with_open_groups st_slave9 [11%positive])) = None
+  /\ ret_of (mount_setattr_fn (setattr_input (-100) s_under 0 attr_set) base_model c_admin
+                              (with_open_groups st_slave9 [11%positive])) = Some 0
+  /\ option_map (map (fun x => (mnt_peer x, mnt_master x)))
+       (mounts_of (mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE) base_model
+                                    c_admin st_slave9))
+     = Some [(None, None); (None, None); (None, None); (Some 11%positive, None)].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** [mount_setattr_prepare]'s EPERM (fs/namespace.c:4716-4718) reads the
+    selected tree alone, and [mount_setattr_commit], which would hand
+    mount 4 over, does not run (4824-4826).  With mount 3's read-only flag
+    locked, MS_PRIVATE that clears it answers EPERM with group 11 open, as
+    with no open group. *)
+Definition st_slave9_locked : NsState :=
+  with_mounts st_slave9
+    (map (fun x => if Pos.eqb (mnt_id x) 3 then mnt_with_lock_flags x (mkMountFlags true false false false)
+                   else x)
+         (ns_mounts st_slave9)).
+
+Example setattr_open_slave_eperm :
+  ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PPrivate)
+                              false base_model c_admin (with_open_groups st_slave9_locked [11%positive]) 3 30)
+  = Some (-EPERM)
+  /\ ret_of (mount_setattr_apply [] (mkAttr no_flags (mkMountFlags true false false false)) (Some PPrivate)
+                                 false base_model c_admin st_slave9_locked 3 30)
+     = Some (-EPERM).
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** With no open group no mount is open, so both arms answer as they did
+    before the test ([Propagation.targets_open_closed]). *)
+Example targets_open_default :
+  env_open_groups (ns_env (state false false [])) = []
+  /\ targets_open (state false false []) (Some PPrivate) 1 true = false
+  /\ targets_open (state false false []) None 1 true = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** Only the entered list is nonempty; private targets reached through a
+    descriptor must not bypass the topology guard. *)
+Example entered_private_setattr_declines :
+  mount_setattr_fn (setattr_input 3 [] AT_EMPTY_PATH attr_set) (model_fd 3 7%N) c_admin
+    (with_entered_mntns (state false false [(7%N, path_file)]) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example entered_private_propagation_declines :
+  mount_fn (mount_input s_root s_root MS_PRIVATE) base_model c_admin
+    (with_entered_mntns (state false false []) [1%positive]) = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example both_uncertainty_lists_default :
+  (env_open_groups (ns_env (state false false [])),
+   env_entered_mntns (ns_env (state false false []))) = ([], []).
+Proof. reflexivity. Qed.
+
+(** With only an entered receiver, the selected mount is closed. A
+    propagation change still reads the receiver through change_type_reads. *)
+Definition st_entered_slave : NsState :=
+  with_entered_mntns
+    (with_mounts st_slave9
+      (map (fun x => if Pos.eqb (mnt_id x) 4 then mnt_with_ns x 2 else x)
+           (ns_mounts st_slave9))) [2%positive].
+
+Example entered_slave_change_reads :
+  (open_mount st_entered_slave 3, targets_open st_entered_slave None 3 false,
+   targets_open st_entered_slave (Some PPrivate) 3 false) = (false, false, true)
+  /\ mount_fn (mount_input s_under s_under MS_PRIVATE) base_model c_admin st_entered_slave
+     = EUnmodeled
+  /\ mount_setattr_fn (setattr_prop_input (-100) s_under 0 0 MS_PRIVATE)
+       base_model c_admin st_entered_slave = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions entered_private_setattr_declines.
+Print Assumptions entered_private_propagation_declines.
+Print Assumptions entered_slave_change_reads.
+Print Assumptions both_uncertainty_lists_default.
+
+(** Row 442 admits the group-id allocator's ENOSPC, and still satisfies
+    the rule of a row ([Arm.ni_forced_ok]). *)
+Example mount442_row :
+  ni_errno mount442_injected ENOSPC = true /\ ni_errno mount442_injected ENOMEM = true
+  /\ ni_forced_ok mount442_injected = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** can_umount checks may_mount before the path's mount-root check. *)
 Example umount_needs_admin_first :
