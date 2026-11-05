@@ -426,109 +426,93 @@ Local Ltac aa_close :=
   end.
 
 (* Sub-checker handling: when kf_step gets stuck on a sub-checker call,
-   try unfolding it or applying aa_close through it. *)
+   unfold it and let kf_step + aa_close handle the result. *)
 Local Ltac aa_done H :=
-  first
-  [ (* check_efault_or *)
-    (eapply check_efault_or_ok_iff in H; destruct H as (_ & H & _); subst; aa_close)
-  | (* check_sigpipe_write *)
-    match type of H with
-    | check_sigpipe_write _ _ = CheckOk _ _ =>
-      unfold check_sigpipe_write in H;
-      destruct (sigpipe_declines _); cbv iota in H; [discriminate H|];
-      apply check_ret_only_ok_iff in H; destruct H as (_ & H & _); subst; aa_close
-    end
-  | (* check_sigpipe_writev *)
-    match type of H with
-    | check_sigpipe_writev _ _ _ = CheckOk _ _ =>
-      unfold check_sigpipe_writev in H;
-      destruct (sigpipe_declines _); cbv iota in H; [discriminate H|];
-      apply check_ret_only_copyins_ok_iff in H; destruct H as (_ & H & _); subst; aa_close
-    end
-  | (* check_stream_read and similar — unfold and continue *)
-    match type of H with
-    | check_stream_read _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_stream_read_empty _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_stream_read_empty, check_stream_read_reset in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_stream_write _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_stream_write, check_stream_send in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_stream_send _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_stream_send in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_eventfd_read _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_eventfd_read in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_eventfd_write _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_eventfd_write in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_open_result _ _ _ = CheckOk _ _ =>
-      unfold check_open_result, check_new_fd_result in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_new_fd_result _ _ _ = CheckOk _ _ =>
-      unfold check_new_fd_result in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_readv_imported _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_readv_imported in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_read_file_data _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_read_file_data in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_read_proc _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_read_proc, check_read_proc_bare in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_read_opaque _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_read_opaque in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_recv_fd_answer _ _ _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_recv_fd_answer in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | check_access_ok_zero _ _ _ _ _ = CheckOk _ _ =>
-      unfold check_access_ok_zero in H;
-      cbv beta iota zeta in H
-    end
-  | match type of H with
-    | Prelude.check_copyins_after _ _ _ = CheckOk _ _ =>
-      apply check_copyins_after_model in H
-    end
-  | match type of H with
-    | check_copyin_prefix _ _ _ = CheckOk _ _ =>
-      apply check_copyin_prefix_model in H
-    end
-  | match type of H with
-    | check_copyins _ _ _ = CheckOk _ _ =>
-      apply check_copyins_model in H
-    end
-  ].
+  match type of H with
+  | context [check_efault_or] => unfold check_efault_or in H
+  | context [check_sigpipe_write] => unfold check_sigpipe_write in H
+  | context [check_sigpipe_writev] => unfold check_sigpipe_writev in H
+  | context [check_stream_read] =>
+      unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H
+  | context [check_stream_write] => unfold check_stream_write, check_stream_send in H
+  | context [check_stream_send] => unfold check_stream_send in H
+  | context [check_stream_read_empty] =>
+      unfold check_stream_read_empty, check_stream_read_reset in H
+  | context [check_eventfd_read] => unfold check_eventfd_read in H
+  | context [check_eventfd_write] => unfold check_eventfd_write in H
+  | context [check_open_result] => unfold check_open_result, check_new_fd_result in H
+  | context [check_new_fd_result] => unfold check_new_fd_result in H
+  | context [check_readv_imported] => unfold check_readv_imported in H
+  | context [check_read_file_data] => unfold check_read_file_data in H
+  | context [check_read_proc] => unfold check_read_proc, check_read_proc_bare in H
+  | context [check_read_opaque] => unfold check_read_opaque in H
+  | context [check_recv_fd_answer] => unfold check_recv_fd_answer in H
+  | context [check_access_ok_zero] => unfold check_access_ok_zero in H
+  | context [check_socket_pending_error] =>
+      unfold check_socket_pending_error, check_access_ok_zero in H
+  | context [check_read_urandom] => unfold check_read_urandom in H
+  | context [check_anon_write_fault] => unfold check_anon_write_fault in H
+  | context [check_anon_fault_extend] => unfold check_anon_fault_extend in H
+  | context [check_write_fault_extend] => unfold check_write_fault_extend in H
+  | context [check_write_oset] => unfold check_write_oset in H
+  | context [check_write_oset_copyins] => unfold check_write_oset_copyins in H
+  | context [pipe2_model] => unfold pipe2_model in H
+  | context [check_fstat_deliver_by] => unfold check_fstat_deliver_by in H
+  | context [check_fstat_deliver] => unfold check_fstat_deliver in H
+  | context [check_fstat_anon_deliver] => unfold check_fstat_anon_deliver in H
+  | context [check_ifreq_writeback] => unfold check_ifreq_writeback in H
+  | context [check_siocgifindex] => unfold check_siocgifindex, check_ifreq_writeback in H
+  | context [check_errno_or_list] => unfold check_errno_or_list in H
+  | context [check_errno_or_success] => unfold check_errno_or_success in H
+  | context [check_errno_only] => unfold check_errno_only in H
+  | context [check_ret_writes] => unfold check_ret_writes in H
+  | context [check_ret_writes_copyins] => unfold check_ret_writes_copyins in H
+  | context [check_getrandom_zero] => unfold check_getrandom_zero in H
+  | context [check_pid_choice] => unfold check_pid_choice in H
+  | context [check_uname_copy] => unfold check_uname_copy in H
+  | context [check_rlim64_read] => unfold check_rlim64_read in H
+  | context [check_pselect_answer] => unfold check_pselect_answer in H
+  | context [check_procfd_getdents] => unfold check_procfd_getdents in H
+  | context [check_getdents64_opaque] => unfold check_getdents64_opaque in H
+  | context [check_send_on_socket] => unfold check_send_on_socket in H
+  | context [check_clone_ns_resolve] =>
+      unfold check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H
+  | context [check_clone3_einval] => unfold check_clone3_einval in H
+  | context [check_setid_result] => unfold check_setid_result in H
+  | context [check_tkill_self] => unfold check_tkill_self, check_send_sigabrt in H
+  | context [check_kill_self] => unfold check_kill_self in H
+  | context [check_shutdown_core] =>
+      unfold check_shutdown_core, check_stream_shutdown in H
+  | context [check_setsockopt_core] =>
+      unfold check_setsockopt_core, check_stream_setsockopt, check_seqpacket_setsockopt in H
+  | context [Open.check_openat_read] => unfold Open.check_openat_read in H
+  | context [Open.check_openat_create] => unfold Open.check_openat_create in H
+  | context [Open.check_openat_dir] => unfold Open.check_openat_dir in H
+  | context [Open.check_openat_localtime] => unfold Open.check_openat_localtime in H
+  | context [Open.check_open_devnull] => unfold Open.check_open_devnull in H
+  | context [Open.check_openat_devnull] => unfold Open.check_openat_devnull in H
+  | context [Open.check_open_urandom] => unfold Open.check_open_urandom in H
+  | context [Open.check_openat_urandom] => unfold Open.check_openat_urandom in H
+  | context [Open.check_proc_open_result] => unfold Open.check_proc_open_result in H
+  | context [Open.check_openat_procfd] => unfold Open.check_openat_procfd in H
+  | context [Open.check_openat_proc] => unfold Open.check_openat_proc in H
+  | context [check_create_wronly] => unfold check_create_wronly in H
+  | context [check_open_append] => unfold check_open_append in H
+  | context [check_open_rdwr] => unfold check_open_rdwr in H
+  | context [check_mmap_fixed_overflow] => unfold check_mmap_fixed_overflow in H
+  | context [Namei.check_unlink_open_tmp] =>
+      unfold Namei.check_unlink_open_tmp, check_unlink_open_result, check_unlink_type_result in H
+  | context [check_dup_result] => unfold check_dup_result in H
+  | context [check_newfstatat_proc_errno] => unfold check_newfstatat_proc_errno in H
+  | context [check_newfstatat_proc] => unfold check_newfstatat_proc in H
+  | context [check_capget_copy] => unfold check_capget_copy in H
+  | context [check_futex_wake_private] =>
+      unfold check_futex_wake_private, check_futex_wait_private in H
+  | context [Prelude.check_copyins_after] => apply check_copyins_after_model in H
+  | context [check_copyin_prefix] => apply check_copyin_prefix_model in H
+  | context [check_copyins] => apply check_copyins_model in H
+  | _ => cbv beta iota zeta in H
+  end.
 
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
