@@ -2390,7 +2390,7 @@ Proof.
            | exfalso; unfold unmodeled in H; discriminate H ].
        exists bs, r. split; [reflexivity|]. split; [reflexivity|].
        split; [right; unfold clone_class_fork_b; rewrite Hcl; reflexivity|].
-       split; [reflexivity | exact Hne]. }
+       split; [exact Hp | exact Hne]. }
   pose proof (clone3_fork_args_pre_args bs Ha) as Hpre.
   destruct (clone3_pre bs) as [| |r] eqn:Hp;
     [ exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
@@ -2398,5 +2398,5 @@ Proof.
     | ].
   pose proof (clone3_fork_args_no_einval bs Ha) as Hne.
   unfold clone3_einval_b in Hne. rewrite Hp in Hne.
-  exists bs, r. repeat split; try assumption. left. reflexivity.
+  exists bs, r. repeat split; try assumption. left. exact Ha.
 Qed.
