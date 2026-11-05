@@ -529,7 +529,9 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
-  all: aa_frame H.
+  all: try (aa_frame H; fail).
+  all: fail 1
+    "checked_table_preserves_aa has no case for this dispatcher arm".
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
