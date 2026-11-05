@@ -321,7 +321,14 @@ Lemma check_rt_sigaction_sh : forall i sig act oact ss eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i sig act oact ss eff m m' evs H.
-  unfold check_rt_sigaction in H. sh_frame2 H.
+  unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [sh_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { (* the SIGPIPE arm: [check_rt_sigaction_sigpipe] is opaque to the
+       cascade, and its install rebuilds [ProcState] alone *)
+    destruct (check_rt_sigaction_sigpipe_model _ _ _ _ _ _ _ H) as [-> | (a & ->)];
+      reflexivity. }
+  sh_frame2 H.
 Qed.
 
 Lemma check_setid_sh : forall get put user v eff m m' evs,

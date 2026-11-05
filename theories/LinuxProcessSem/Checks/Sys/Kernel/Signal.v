@@ -524,6 +524,33 @@ Proof.
   apply check_sigpipe_oact_write_model in H. subst m'. reflexivity.
 Qed.
 
+(** The SIGPIPE arm's post-model, for every frame statement at once: the
+    model it was handed, or that model with one SIGPIPE action installed
+    ([State.with_sigpipe_install]), which rebuilds [ProcState] alone and
+    carries every field but the action and the pending bit.  A frame
+    proof whose generic cascade does not reduce through this file's
+    acceptors closes the SIGPIPE arm with this and [reflexivity]. *)
+Lemma check_rt_sigaction_sigpipe_model : forall i act oact eff m m' evs,
+  check_rt_sigaction_sigpipe i act oact eff m = CheckOk m' evs ->
+  m' = m \/ exists a, m' = with_sigpipe_install a m.
+Proof.
+  intros i act oact eff m m' evs H.
+  unfold check_rt_sigaction_sigpipe in H. cbv zeta in H.
+  destruct (w_is0 act); cbv beta iota in H.
+  { apply check_sigpipe_oact_write_model in H. left. exact H. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|]; cbv beta iota in H.
+  2:{ apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _).
+      left. reflexivity. }
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool);
+    cbv beta iota in H; [discriminate|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool;
+    cbv beta iota in H; [discriminate|].
+  apply check_copyins_after_ok_iff in H. destruct H as (_ & H).
+  apply check_sigpipe_oact_write_model in H. right. eexists. exact H.
+Qed.
+
 (** The SIGPIPE arm accepts at most one effect: every answer it gives is
     fixed by the input and the model.  [Checks.AbortWitness]'s
     determinism lemma for rt_sigaction reaches this arm through the

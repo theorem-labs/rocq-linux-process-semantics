@@ -892,7 +892,14 @@ Lemma check_rt_sigaction_cp : forall i sig act oact ss eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i sig act oact ss eff m m' evs H.
-  unfold check_rt_sigaction in H. cp_frame2 H.
+  unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [cp_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { (* the SIGPIPE arm: [check_rt_sigaction_sigpipe] is opaque to the
+       cascade, and its install carries the list and the declarations *)
+    destruct (check_rt_sigaction_sigpipe_model _ _ _ _ _ _ _ H) as [-> | (a & ->)];
+      reflexivity. }
+  cp_frame2 H.
 Qed.
 
 Lemma check_getsockname_cp : forall fd eff m m' evs,
