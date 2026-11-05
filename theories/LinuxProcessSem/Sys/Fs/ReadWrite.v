@@ -447,7 +447,6 @@ Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
       end
   end.
 
-<<<<<<< HEAD
 (* =========================================================================
    read (63) and write (64) on an eventfd ([State.OEventFd])
    ========================================================================= *)
@@ -617,8 +616,13 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
   match o with
   | OProcFile _ => read_proc_spec buf count
       (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
-  | OEventFd fl => read_eventfd_spec fl buf count
-      (* an eventfd: see [read_eventfd_spec] *)
+  | OEventFd _ => unmodeled
+      (* FAIL-CLOSED: a shared eventfd ([State.OEventFd], made by a clone,
+         [Kernel.Fork.share_eventfds]) has one counter that two tasks now
+         add to and drain, and the entry keeps none of it; [eventfd_read]
+         (fs/eventfd.c, v6.18.46) answers from that counter.  An eventfd no
+         clone shared is [State.FdEventfd] and is answered by
+         [eventfd_read].  [read_eventfd_spec] above is no longer reached *)
   | OProcPath _ => err_ret EBADF
       (* [fdget_pos] is [fdget], that is [__fget_light(fd, FMODE_PATH)],
          which gives an empty [struct fd] for an O_PATH file, so
@@ -657,12 +661,14 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
 (** [write] on an opaque descriptor ([State.OpaqueFd]).  [ksys_write]
     takes the descriptor with [CLASS(fd_pos, f)], and [vfs_write] then
     tests FMODE_WRITE, FMODE_CAN_WRITE and [access_ok] in that order
-    (fs/read_write.c:727-732, :670-675, v6.18.46), so every answer below
-    but the eventfd's comes before the buffer is looked at. *)
+    (fs/read_write.c:727-732, :670-675, v6.18.46), so every errno below
+    comes before the buffer is looked at. *)
 Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
-  | OEventFd fl => write_eventfd_spec fl buf count
-      (* an eventfd: see [write_eventfd_spec] *)
+  | OEventFd _ => unmodeled
+      (* FAIL-CLOSED, for [read_opaque_spec]'s reason: [eventfd_write]
+         answers by the shared counter's room, which the entry does not
+         keep.  [write_eventfd_spec] above is no longer reached *)
   | OProcPath _ => err_ret EBADF
       (* [fdget_pos] refuses an O_PATH file, as in [read_opaque_spec]
          (fs/read_write.c:727-732; fs/file.c:1169-1170, :1225-1227) *)
@@ -728,7 +734,6 @@ Definition read_file_data (i : SyscallInput) (m : Model) (fd buf count : word)
          this body is all Linux checked on it *)
   end.
 
-=======
 (** THE SURVIVOR'S EMPTY READ, from what the end has shown of its error
     ([State.ResetState]): nothing yet ([RsUnknown]) is a CHOICE shown in
     the return value, -ECONNRESET or end of file, and either way the
@@ -910,7 +915,6 @@ Definition eventfd_read (fd : word) (ctx : EventfdCtx) (buf count : word)
         | Some _ => unmodeled                 (* partially writable destination: fail closed *)
         end
     end.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -1274,7 +1278,6 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  queue [word_to_nat count] would have left *)
           end
       end
-<<<<<<< HEAD
   | Some (FdOpaque o) =>
       match o with
       | OInherited (Some (data, off)) =>
@@ -1300,19 +1303,6 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
          [sock_read_iter] -> [unix_seqpacket_recvmsg] (net/socket.c,
          net/unix/af_unix.c, v6.18.46); only [recvmsg] on the kind is
          written ([Net.Socket.recvmsg_spec]) *)
-=======
-  | Some (FdOpaque (OProcFile _)) => read_proc_spec buf count
-      (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
-  | Some (FdOpaque (OProcPath _)) => unmodeled
-      (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
-         file (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46), which is
-         -EBADF; not written *)
-  | Some (FdOpaque (OEventFd _)) => unmodeled
-      (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44; identical at v6.18.46)
-         answers from the counter, which the model does not hold *)
-  | Some (FdOpaque (ONsFile _)) => unmodeled
-      (* FAIL-CLOSED: the object behind the handle may be of any type,
-         and a read's answer depends on it ([State.ONsFile]) *)
   | Some (FdStream id side st) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_read]'s [access_ok] on the count the call NAMED, ahead of
@@ -1366,7 +1356,6 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
           set_fds (fd_insert (m_fds m) fd (FdAnon id (af_set_off af (af_off af + len_word bs)))) ;;
           pure (mkEffect (len_word bs) (delivered_writes buf bs) [])
       end
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** [write fd buf count].
@@ -2495,20 +2484,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            The whole source IS read, so the range goes in the copy-in
            ledger exactly as the channel and file arms record theirs *)
       end
-<<<<<<< HEAD
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* the eventfd answers, five objects answer an errno, and
-         [State.ONsFile] declines: see [write_opaque_spec] *)
+      (* five objects answer an errno, and a shared eventfd and
+         [State.ONsFile] decline: see [write_opaque_spec] *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED: the model sends no message on an end, so its
          receive queue stays empty ([State.FdSeqpacket]) *)
-=======
-  | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
-         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_write]'s
-         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
-         model does not hold (fs/read_write.c, fs/file.c, fs/eventfd.c,
-         read at v6.18.44; identical at v6.18.46).  None is written. *)
   | Some (FdStream id side st) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_write]'s [access_ok] on the count the call NAMED, after
@@ -2549,7 +2530,6 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          write_file_tail (in_mem i) buf count
            (anon_write_fault (m_fds m) id af)
            (anon_write_place (m_fds m) fd id af))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -2990,10 +2970,8 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the six answers
          is written *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED, as [pread64_spec]'s arm *)
-=======
   | Some (FdAnon id af) =>
       if negb (anon_agree (m_fds m) id af) then unmodeled
         (* the replicas of this file disagree: [State.anon_agree] *)
@@ -3036,7 +3014,6 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       if w_is0 count
       then ret_only (len_word bs)
       else record_copyins [(buf, length bs)] (ret_only (len_word bs))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** [IOV_MAX] (= Linux UIO_MAXIOV) and [MAX_RW_COUNT] are in State.v,
@@ -3376,7 +3353,6 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
         end)
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [do_writev]'s [CLASS(fd_pos, f)]
-<<<<<<< HEAD
          -EBADF, a /proc/sys file opened O_RDONLY and the /proc/self/fd
          directory are [vfs_writev]'s FMODE_WRITE -EBADF, an eventfd's
          vectored write runs [eventfd_write] once per segment through
@@ -3386,11 +3362,6 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          v6.18.46).  None is written. *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED: no send on an end, as [write_spec]'s arm *)
-=======
-         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_writev]'s
-         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
-         model does not hold (fs/read_write.c, fs/eventfd.c, read at
-         v6.18.44; identical at v6.18.46).  None is written. *)
   | Some (FdStream id side st) =>
       record_copyins
         (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -3532,9 +3503,8 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
-  | Some (FdDgram _) | Some (FdOpaque _) => unmodeled
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) => unmodeled
       (* DECLINED: no target writes any other kind with this call *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 
@@ -3700,16 +3670,14 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        [None] branch, through [State.fd_is_opaque], because [None] here means
        [vfs_readv]'s -EBADF and that is the kernel's answer only for the
        O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
-<<<<<<< HEAD
-       v6.18.44; identical at v6.18.46); a /proc/sys file, an eventfd,
-       the /proc/self/fd directory and a signalfd are open for reading *)
+      v6.18.44; identical at v6.18.46); a /proc/sys file, a shared
+      eventfd, the /proc/self/fd directory and a signalfd are open for
+      reading *)
   | FdSeqpacket _ _ _ => None
     (* NOT AN -EBADF either: an AF_UNIX end is open O_RDWR
        ([sock_alloc_file], net/socket.c:483-485, v6.18.46), and
        [readv_spec] declines it in its [None] branch through
        [State.fd_is_seqpacket] *)
-=======
-       v6.18.44; identical at v6.18.46); a /proc/sys file and an eventfd are open for reading *)
   | FdStream id side st => Some (RdStream id side st)
     (* a socket file: [sock_alloc_file] opens it O_RDWR, so FMODE_READ
        is set, and turning it away here would be [RdSocket]'s false
@@ -3723,7 +3691,6 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
   | FdAnon _ af => if af_rd af then Some RdAnon else None
     (* the access mode the open granted IS FMODE_READ, so the gate is
        exact in both directions, as for /dev/null *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -4361,7 +4328,6 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              [.llseek = default_llseek] over a size the model does not hold
              (fs/read_write.c [ksys_lseek], fs/eventfd.c [eventfd_fops],
              fs/proc/proc_sysctl.c [proc_sys_file_operations]: read at
-<<<<<<< HEAD
              v6.18.44; identical at v6.18.46); the /proc/self/fd directory's
              [proc_fd_operations] has [.llseek = generic_file_llseek], which
              would move the position the listing reads, and a signalfd's
@@ -4371,9 +4337,6 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              written. *)
       | FdSeqpacket _ _ _ => unmodeled
           (* FAIL-CLOSED: a seek on an AF_UNIX end is not written *)
-=======
-             v6.18.44; identical at v6.18.46); an [ONsFile]'s object is of
-             unknown type.  None of the four answers is written. *)
       | FdAnon id af =>
           if negb (anon_agree (m_fds m) id af) then unmodeled
             (* the replicas of this file disagree: [State.anon_agree] *)
@@ -4396,6 +4359,5 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                   ret_only r
               end
           end
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
       end
   end.
