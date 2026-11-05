@@ -4847,19 +4847,20 @@ Proof. reflexivity. Qed.
 (** THE LAUNCH IS ON THE KERNEL OF RECORD, in the fields the published
     statements had one answer for.  [recorded_kernel kb] is
     [State.default_kernel] with [kb]'s five LAUNCH facts -- [kb_thp],
-    [kb_aslr], [kb_guard], [kb_rnd_bits] and [kb_rseq] -- copied in, so
-    the clause [in_kernel inp = recorded_kernel (in_kernel inp)], the
-    LAST of this predicate and of every named launch beside it, fixes the
-    other eight fields at [default_kernel]'s values and leaves those five
-    free.  The section that [valid_input_recorded_kernel] opens below
-    says why the line falls there. *)
+    [kb_aslr], [kb_guard], [kb_rnd_bits] and [kb_rseq] -- and its
+    fs.suid_dumpable mode [kb_suid_dumpable] copied in, so the clause
+    [in_kernel inp = recorded_kernel (in_kernel inp)], the LAST of this
+    predicate and of every named launch beside it, fixes the other eight
+    fields at [default_kernel]'s values and leaves those six free.  The
+    section that [valid_input_recorded_kernel] opens below says why the
+    line falls there. *)
 Definition recorded_kernel (kb : KernelBuild) : KernelBuild :=
   mkKernelBuild (kb_thp kb) (kb_vdso default_kernel) (kb_aslr kb)
                 (kb_guard kb) (kb_rnd_bits kb) (kb_rseq kb)
                 (kb_vlenb default_kernel) (kb_cache default_kernel)
                 (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
                 (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
-                (kb_rmem_max default_kernel).
+                (kb_rmem_max default_kernel) (kb_suid_dumpable kb).
 
 Definition valid_input (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4874,13 +4875,11 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4976,13 +4975,11 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -5005,13 +5002,11 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -5093,13 +5088,11 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = false
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -5119,13 +5112,11 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -5220,13 +5211,11 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
   /\ in_sigpipe_terminal inp = true
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -5242,13 +5231,11 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5341,14 +5328,12 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-<<<<<<< HEAD
+  /\ valid_launch inp
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
-  /\ in_sigpipe_terminal inp = false.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -5461,13 +5446,11 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = true
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5508,13 +5491,11 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5529,13 +5510,11 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5549,13 +5528,11 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5852,13 +5829,11 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5873,13 +5848,11 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5975,13 +5948,11 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5996,13 +5967,11 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
-<<<<<<< HEAD
+  /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
-=======
+  /\ in_cgroup_bpf_setsockopt inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -6062,7 +6031,6 @@ Proof.
   assumption.
 Qed.
 
-<<<<<<< HEAD
 (** * THE INHERITED DESCRIPTORS: PINNED EMPTY, AND THE LAUNCH THAT HAS THEM NAMED
 
     [State.in_inherited_fds] lists the descriptors above 2 that the
@@ -6109,12 +6077,73 @@ Definition valid_input_inherited (inp : ProcInput) : Prop :=
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ inherited_fds_ok (in_inherited_fds inp) = true
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 (** THE PIN, as an accessor rather than as a position. *)
 Lemma valid_input_no_inherited : forall inp,
   valid_input inp -> in_inherited_fds inp = [].
-=======
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_no_cgroup_bpf_setsockopt : forall inp,
+  valid_input inp -> in_cgroup_bpf_setsockopt inp = false.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_inherited_ok : forall inp,
+  valid_input_inherited inp -> inherited_fds_ok (in_inherited_fds inp) = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The plain launch is one of them: the empty list passes
+    [inherited_fds_ok]. *)
+Lemma valid_input_inherited_of_valid_input : forall inp,
+  valid_input inp -> valid_input_inherited inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hn : in_inherited_fds _ = [] |- _ =>
+              rewrite Hn; reflexivity end ].
+Qed.
+
+(** ...and exactly the ones whose list is empty and whose self-kill
+    declaration is clear: so a statement over [valid_input_inherited]
+    with the premises [in_inherited_fds inp = []] and
+    [in_selfkill_terminal inp = false] is a statement over
+    [valid_input]. *)
+Lemma valid_input_of_valid_input_inherited : forall inp,
+  valid_input_inherited inp -> in_inherited_fds inp = [] ->
+  in_selfkill_terminal inp = false -> valid_input inp.
+Proof.
+  intros inp H Hn Hs. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+(** A plain launch given a list [inherited_fds_ok] accepts
+    ([State.with_inherited_fds] changes that field alone) is a keyed
+    launch [valid_input_inherited] admits. *)
+Lemma valid_input_inherited_with_inherited_fds : forall l inp,
+  valid_input inp -> inherited_fds_ok l = true ->
+  valid_input_inherited (with_inherited_fds l inp).
+Proof.
+  intros l inp H Hl. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
 (** * The kernel build: the fields the published statements had one answer for
 
     [State.in_kernel] entered [State.ProcInput] after the statements
@@ -6166,6 +6195,11 @@ Lemma valid_input_no_inherited : forall inp,
     - [kb_thp]: the released placement took any free address, the
       2 MiB-aligned ones a [CONFIG_TRANSPARENT_HUGEPAGE] kernel gives
       included.
+    - [kb_suid_dumpable]: the field entered [State.KernelBuild] with no
+      clause on it, so the statements written over it (the dumpable
+      mode [commit_creds] installs, [Kernel.Sys.commit_id_creds])
+      covered all three values of fs.suid_dumpable; pinning one would
+      narrow them.
 
     Each pinned field is read back by an accessor rather than by
     position, for the reason [valid_input_abort_terminal] gives: one per
@@ -6173,7 +6207,7 @@ Lemma valid_input_no_inherited : forall inp,
     start-up proof computes from them ([launch_cache_words],
     [vdso_text_pages], [min_sigframe_size]).  [Checks.Cases.KernelPin]
     holds a build with a vector unit, refused by every predicate here,
-    a launch that changes all five free fields, admitted, and the
+    a launch that changes all five launch facts, admitted, and the
     rseq-off launch at the stack pointer only that layout gives. *)
 
 Lemma recorded_kernel_default : recorded_kernel default_kernel = default_kernel.
@@ -6185,17 +6219,12 @@ Proof. reflexivity. Qed.
 
 Lemma valid_input_recorded_kernel : forall inp,
   valid_input inp -> in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-<<<<<<< HEAD
-Lemma valid_input_no_cgroup_bpf_setsockopt : forall inp,
-  valid_input inp -> in_cgroup_bpf_setsockopt inp = false.
-=======
 Lemma valid_input_vdso : forall inp,
   valid_input inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_recorded_kernel inp Hv)). Qed.
@@ -6245,17 +6274,12 @@ Qed.
 
 Lemma valid_input_abort_recorded_kernel : forall inp,
   valid_input_abort inp -> in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-<<<<<<< HEAD
-Lemma valid_input_inherited_ok : forall inp,
-  valid_input_inherited inp -> inherited_fds_ok (in_inherited_fds inp) = true.
-=======
 Lemma valid_input_abort_vdso : forall inp,
   valid_input_abort inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_abort_recorded_kernel inp Hv)). Qed.
@@ -6305,52 +6329,12 @@ Qed.
 
 Lemma valid_input_either_recorded_kernel : forall inp,
   valid_input_either inp -> in_kernel inp = recorded_kernel (in_kernel inp).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
 Qed.
 
-<<<<<<< HEAD
-(** The plain launch is one of them: the empty list passes
-    [inherited_fds_ok]. *)
-Lemma valid_input_inherited_of_valid_input : forall inp,
-  valid_input inp -> valid_input_inherited inp.
-Proof.
-  intros inp H. red in H |- *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end;
-    first [ assumption
-          | match goal with Hn : in_inherited_fds _ = [] |- _ =>
-              rewrite Hn; reflexivity end ].
-Qed.
-
-(** ...and exactly the ones whose list is empty and whose self-kill
-    declaration is clear: so a statement over [valid_input_inherited]
-    with the premises [in_inherited_fds inp = []] and
-    [in_selfkill_terminal inp = false] is a statement over
-    [valid_input]. *)
-Lemma valid_input_of_valid_input_inherited : forall inp,
-  valid_input_inherited inp -> in_inherited_fds inp = [] ->
-  in_selfkill_terminal inp = false -> valid_input inp.
-Proof.
-  intros inp H Hn Hs. red in H |- *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
-Qed.
-
-(** A plain launch given a list [inherited_fds_ok] accepts
-    ([State.with_inherited_fds] changes that field alone) is a keyed
-    launch [valid_input_inherited] admits. *)
-Lemma valid_input_inherited_with_inherited_fds : forall l inp,
-  valid_input inp -> inherited_fds_ok l = true ->
-  valid_input_inherited (with_inherited_fds l inp).
-Proof.
-  intros l inp H Hl. red in H |- *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
-=======
 Lemma valid_input_either_vdso : forall inp,
   valid_input_either inp -> kb_vdso (in_kernel inp) = 1%N.
 Proof. intros inp Hv. exact (f_equal kb_vdso (valid_input_either_recorded_kernel inp Hv)). Qed.
@@ -7056,7 +7040,16 @@ Lemma valid_input_abort_hwcap_rv64gcv_min_sigframe_size : forall inp h,
 Proof.
   intros inp h Hv.
   exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+Qed.
+
+(** The launch with inherited descriptors ends with the same clause; a
+    field of it is read back through this lemma and [f_equal], as above. *)
+Lemma valid_input_inherited_recorded_kernel : forall inp,
+  valid_input_inherited inp -> in_kernel inp = recorded_kernel (in_kernel inp).
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
 Qed.
 
 (* =========================================================================
