@@ -774,10 +774,6 @@ Definition child_ms (c c' : config) : machine_state :=
     [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
     a child cloned before its parent's first [getpid] would otherwise start
     at 0.  The inheritable capability set copies with the credentials.
-    The host's clone refusers ([procst_clone_refusers]) are copied: a
-    child inherits the inheritable perf events ([perf_event_init_task]),
-    and a BPF [task_alloc] program and a sched_ext scheduler are the
-    host's, not the task's.
     [procst_sigchld_dfl] is copied: [copy_sighand] (kernel/fork.c) gives
     the child a [memcpy] of its parent's signal actions, since the
     released clone arms admit neither CLONE_SIGHAND nor
