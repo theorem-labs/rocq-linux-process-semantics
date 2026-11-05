@@ -313,13 +313,18 @@ Proof.
              apply anon_agree_unlink_open; exact Hlive
            | discriminate Hunlink ]
          end; fail).
-  (* FdAnon case *)
-  - unfold entry_anon_id in Hunlink. cbv beta iota in Hunlink.
-    match type of Hunlink with
-    | context [bv_eqb ?a ?b] => destruct (bv_eqb a b) eqn:Eid'
-    end.
-    + exfalso. unfold anon_id_live in Hlive.
-      apply bv_eqb_eq in Eid'. subst.
+  (* FdAnon case: unlink_open_entry returns the entry unchanged *)
+  - (* Hunlink : FdAnon id' af' = FdAnon id0 af0, so id0 = id', af0 = af' *)
+    assert (id0 = ltac:(match type of Hunlink with FdAnon ?x _ = _ => exact x end))
+      by congruence.
+    assert (af0 = ltac:(match type of Hunlink with FdAnon _ ?x = _ => exact x end))
+      by congruence.
+    subst.
+    (* Now need: anon_agree on the mapped table for this entry *)
+    destruct (bv_eqb id0 id) eqn:Eid0.
+    + (* id0 = id: contradicts anon_id_live *)
+      apply bv_eqb_eq in Eid0. subst id0. exfalso.
+      unfold anon_id_live in Hlive.
       assert (existsb (fun p => match entry_anon_id (snd p) with
                                 | Some id' => bv_eqb id' id
                                 | None => false end) fds = true) as Htrue.
@@ -327,18 +332,10 @@ Proof.
         eexists; split; [exact Hin'|]; cbn;
         rewrite (proj2 (bv_eqb_eq id id) eq_refl); reflexivity. }
       rewrite Htrue in Hlive. discriminate Hlive.
-    + (* id' ≠ id: entry unchanged as FdAnon id' af' *)
-      destruct (bv_eqb id0 id) eqn:Eid0.
-      * apply bv_eqb_eq in Eid0. subst id0. exfalso.
-        match type of Hunlink with (FdAnon ?x _) = _ =>
-          assert (x = id) by congruence end.
-        match goal with H : ?x = id |- _ =>
-          rewrite H, (proj2 (bv_eqb_eq id id) eq_refl) in Eid'; discriminate Eid' end.
-      * apply anon_agree_unlink_open_other.
-        -- intros E; subst; rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid0; discriminate.
-        -- match type of Hunlink with (FdAnon ?x ?y) = FdAnon id0 af0 =>
-             assert (id0 = x /\ af0 = y) as [<- <-] by (split; congruence) end.
-           exact (Hall _ _ _ Hin').
+    + (* id0 ≠ id *)
+      apply anon_agree_unlink_open_other.
+      * intros E; subst; rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid0; discriminate.
+      * exact (Hall _ _ _ Hin').
 Qed.
 
 (** Reopen with same data/pin. *)
