@@ -624,15 +624,13 @@ Record RawKernelBuild := mkRawKernelBuild {
   rkb_rseq     : bool;  (* CONFIG_RSEQ *)
   rkb_vlenb    : Z;     (* the vector unit's VLENB CSR *)
   rkb_cache    : RawCacheView;
-<<<<<<< HEAD
-  rkb_suid_dumpable : SuidDump  (* fs.suid_dumpable; one constructor per value *)
-=======
+  rkb_cache    : RawCacheView;
   rkb_skb_head     : Z;  (* sizeof(struct sk_buff), in bytes *)
   rkb_wmem_default : Z;  (* net.core.wmem_default *)
   rkb_rmem_default : Z;  (* net.core.rmem_default *)
   rkb_wmem_max     : Z;  (* net.core.wmem_max *)
-  rkb_rmem_max     : Z   (* net.core.rmem_max *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  rkb_rmem_max     : Z;  (* net.core.rmem_max *)
+  rkb_suid_dumpable : SuidDump  (* fs.suid_dumpable; one constructor per value *)
 }.
 
 (** It is built with [State.mkProcInput_full], the record's own
@@ -837,23 +835,16 @@ Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
 (** [State.KernelBuild]'s own comment says that EVERY VALUE OF EVERY
     FIELD NAMES A REAL BUILD — [vdso_text_pages], [mmap_rnd_bits],
     [stack_guard_gap_pages] and [launch_vlenb] each wrap their field
-<<<<<<< HEAD
-    into the range the kernel admits, and [SuidDump] has one constructor
-    per value — so [Run.valid_input] carries no clause about this record
-    and there is no launch condition to decide here.  What is left to
-    check is the one invariant extraction erases: an [N] is not
-    negative. *)
-=======
-    into the range the kernel admits, and [skb_head_bytes] and the four
-    [sysctl_*] accessors do the same for the five socket numbers — so
-    the model has no validity condition on the record to decide here.
+    into the range the kernel admits, [skb_head_bytes] and the four
+    [sysctl_*] accessors do the same for the five socket numbers, and
+    [SuidDump] has one constructor per value — so the model has no
+    validity condition on the record to decide here.
     [Run.valid_input] does fix eight of its fields at
     [State.default_kernel]'s values ([Run.recorded_kernel]), but that is
     a choice of which launch the statements are about, like
     [in_va_size] and the SIGPIPE declarations, and the boundary converts
     those without deciding them too.  What is left to check is the one
     invariant extraction erases: an [N] is not negative. *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
   match n_of_Z (rkb_vdso k), n_of_Z (rkb_guard k), n_of_Z (rkb_rnd_bits k),
         n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k),
@@ -864,14 +855,9 @@ Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
     Some skb_head, Some wmem_default, Some rmem_default, Some wmem_max,
     Some rmem_max =>
       Some (mkKernelBuild (rkb_thp k) vdso (rkb_aslr k) guard rnd_bits
-<<<<<<< HEAD
-              (rkb_rseq k) vlenb cache (rkb_suid_dumpable k))
-  | _, _, _, _, _ => None
-=======
               (rkb_rseq k) vlenb cache skb_head wmem_default rmem_default
-              wmem_max rmem_max)
+              wmem_max rmem_max (rkb_suid_dumpable k))
   | _, _, _, _, _, _, _, _, _, _ => None
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   end.
 
 (** THE EXEC FILE NAME, [bprm->filename] without its NUL (fs/exec.c,
@@ -1405,13 +1391,10 @@ Definition raw_of_kernel (kb : KernelBuild) : RawKernelBuild :=
   mkRawKernelBuild (kb_thp kb) (Z.of_N (kb_vdso kb)) (kb_aslr kb)
     (Z.of_N (kb_guard kb)) (Z.of_N (kb_rnd_bits kb)) (kb_rseq kb)
     (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
-<<<<<<< HEAD
-    (kb_suid_dumpable kb).
-=======
+    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
     (Z.of_N (kb_skb_head kb)) (Z.of_N (kb_wmem_default kb))
     (Z.of_N (kb_rmem_default kb)) (Z.of_N (kb_wmem_max kb))
-    (Z.of_N (kb_rmem_max kb)).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    (Z.of_N (kb_rmem_max kb)) (kb_suid_dumpable kb).
 
 Lemma cache_leaf_of_raw_of_leaf : forall l,
   cache_leaf_of_raw (raw_of_cache_leaf l) = Some l.
@@ -1434,12 +1417,8 @@ Theorem kernel_of_raw_of_kernel : forall kb,
 Proof.
   intros kb. unfold kernel_of_raw, raw_of_kernel.
   cbn [rkb_thp rkb_vdso rkb_aslr rkb_guard rkb_rnd_bits rkb_rseq rkb_vlenb
-<<<<<<< HEAD
-       rkb_cache rkb_suid_dumpable].
-=======
        rkb_cache rkb_skb_head rkb_wmem_default rkb_rmem_default
-       rkb_wmem_max rkb_rmem_max].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+       rkb_wmem_max rkb_rmem_max rkb_suid_dumpable].
   rewrite !n_of_Z_total, cache_view_of_raw_of_view.
   destruct kb; reflexivity.
 Qed.
