@@ -477,7 +477,7 @@ Proof.
 Qed.
 
 (** A struct shorter than 88: zero-filled, with the caller's bytes in the
-    ledger ([Fork.clone3_copy], include/linux/uaccess.h:402-403, 408). *)
+    ledger ([Fork.clone3_copy], include/linux/uaccess.h:400-401, 408-409). *)
 Lemma clone3_short_struct : forall uargs size i m o bs,
   (CLONE_ARGS_SIZE_VER0 <= bv_unsigned size < CLONE_ARGS_SIZE)%Z ->
   copy_bytes_map (in_mem i) uargs (bv_unsigned size) = Some bs ->
@@ -491,7 +491,7 @@ Proof.
 Qed.
 
 (** A struct longer than 88 whose tail is zero: the 88-byte copy, after
-    the tail's reads ([Fork.clone3_copy], include/linux/uaccess.h:404-409). *)
+    the tail's reads ([Fork.clone3_copy], include/linux/uaccess.h:402-409). *)
 Lemma clone3_long_struct : forall uargs size i m o bs,
   (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
   clone3_tail_ok uargs (bv_unsigned size) = true ->
@@ -739,13 +739,18 @@ Qed.
     them), and the one decline left before the struct is judged is the
     head copy's: [copy_from_user] of [min size 88] bytes over a range
     [access_ok] admits that the memory does not wholly back, the tail
-    (if any) having passed.  Linux answers -EFAULT there, having read
-    whatever bytes riscv64's copy routine moved before it faulted
-    ([__asm_copy_from_user], arch/riscv/lib/uaccess.S), a count the
-    ledger cannot state; the 88-byte call declines it for the same
-    reason ([Kernel.Sys.prlimit64_spec]).  The tail's word walk is
-    different: its reads are [check_zeroed_user]'s own aligned words, so
-    its -EFAULT is answered with the words read. *)
+    (if any) having passed.  Linux answers -EFAULT there.  THIS IS A
+    KNOWN GAP, NOT A CLASS THE MODEL CANNOT ANSWER: on a memory mapped in
+    whole pages (the premise [Fork.clone3_tail_words] uses for the tail)
+    riscv64's scalar copy ([__asm_copy_from_user], arch/riscv/lib/uaccess.S)
+    reads upward, so -EFAULT with the readable prefix in the ledger would
+    charge exactly the pages Linux touched.  The 88-byte call has always
+    declined it ([Kernel.Sys.prlimit64_spec]'s reason), and answering it
+    changes the 88-byte relation, which stays as it was
+    ([clone3_spec_88_unchanged]); so every size declines it alike, and
+    answering it at every size is a separate change.  The tail's word
+    walk is answered: its reads are [check_zeroed_user]'s own aligned
+    words, so its -EFAULT carries the words read. *)
 Lemma clone3_other_size_unmodeled : forall uargs size i m,
   let usize := bv_unsigned size in
   (CLONE_ARGS_SIZE_VER0 <= usize <= page_size)%Z ->

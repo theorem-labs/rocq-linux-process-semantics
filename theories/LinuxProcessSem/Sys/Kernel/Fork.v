@@ -1650,9 +1650,9 @@ Definition CLONE_ARGS_SIZE_VER0 : Z := 64.
     v6.18.46), over the bytes of the caller's struct past the kernel's
     88.  Linux reads the tail in aligned 8-byte words, in address order:
     the first word with the bytes below the tail masked off (59-61), the
-    last with the bytes past it (72-73).  It stops at the first word it
-    cannot read (-EFAULT) or the first word with a non-zero tail byte
-    (-E2BIG, and no later word is read: 63-64, 77-78).  So within one
+    last with the bytes past it (73-74).  It stops at the first word it
+    cannot read (-EFAULT, 79-81) or the first word with a non-zero tail
+    byte (-E2BIG, and no later word is read: 63-65, 76-78).  So within one
     word the fault comes first: a word is read, or faults, as a whole.
 
     [clone3_tail_words] groups the tail bytes ([State.in_mem] at each
@@ -1725,10 +1725,19 @@ Inductive Clone3Copy :=
 (** [copy_from_user] of the whole struct, the step the 88-byte call
     takes alone and a longer call takes after its tail test.  The range
     test comes before the walk ([State.copy_bytes_map]): a range
-    [access_ok] refuses is -EFAULT having read nothing.  A range it
-    admits that the memory does not wholly back declines, for the reason
-    [Kernel.Sys.prlimit64_spec] gives: which bytes Linux read before it
-    faulted is not something the ledger can state. *)
+    [access_ok] refuses is -EFAULT having read nothing.
+
+    A KNOWN GAP: a range [access_ok] admits that the memory does not
+    wholly back declines, where Linux answers -EFAULT.  It is answerable
+    on a memory mapped in whole pages, the premise the tail walk below
+    uses: riscv64's scalar copy ([__asm_copy_from_user],
+    arch/riscv/lib/uaccess.S) reads upward, so the readable prefix,
+    [(uargs, k)], charges exactly the pages Linux touched.  The 88-byte
+    call has always declined it, and answering it changes the 88-byte
+    relation, which this model's size work left unchanged
+    ([Checks.ProcessCreation.clone3_spec_88_unchanged]); so every size
+    declines it alike, and answering it at every size is a separate
+    change. *)
 Definition clone3_copy_full (mem : word -> option byte) (uargs : word) : Clone3Copy :=
   match copy_bytes_map mem uargs CLONE_ARGS_SIZE with
   | Some bs => C3Struct [(uargs, CLONE_ARGS_SIZE_nat)] false bs
@@ -1762,15 +1771,15 @@ Definition clone3_tail_test (mem : word -> option byte) (uargs : word) (usize : 
     1. [usize > PAGE_SIZE]: -E2BIG; [usize < CLONE_ARGS_SIZE_VER0]:
        -EINVAL (2772-2775).  Nothing is read.
     2. [usize < CLONE_ARGS_SIZE]: the kernel's bytes past [usize] are
-       zeroed (uaccess.h:402-403), then [copy_from_user] of [usize] bytes
+       zeroed (uaccess.h:400-401), then [copy_from_user] of [usize] bytes
        (408-409): a range [access_ok] refuses is -EFAULT having read
        nothing, one it admits that the memory does not wholly back
        declines, as for 88 ([clone3_copy_full]).  The struct is the
        caller's [usize] bytes and zeros.
     3. [usize = CLONE_ARGS_SIZE]: [clone3_copy_full].
-    4. [usize > CLONE_ARGS_SIZE]: the tail test runs FIRST (404-406).
+    4. [usize > CLONE_ARGS_SIZE]: the tail test runs FIRST (402-405).
        [check_zeroed_user] widens the tail down to its word
-       ([from -= align; size += align], usercopy.c:52-53) and asks
+       ([from -= align; size += align], usercopy.c:53-54) and asks
        [access_ok] of that range before it reads a word
        ([user_read_access_begin], 56-57, riscv64's
        [user_access_begin]): refused, -EFAULT having read nothing.
