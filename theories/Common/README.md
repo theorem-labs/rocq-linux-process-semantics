@@ -162,9 +162,15 @@ The method:
    `munmap` of exactly one tracked entry is `PMunmap2`: its first child is
    the refusal (`-ENOMEM`, nothing else changes), its second child the cut.
 2. Run the checker to get the result:
-   `Eval vm_compute in AP.check SEGS IT A nx0 LIMIT HS bfuel fuel cs plan.`
+   `Eval vm_compute in AP.check SEGS IT A nx0 LIMIT CEIL r XN XE XB HS KC bfuel fuel lc cs plan.`
    A good result is `COk shape`. `CErr` names the node and the state that
-   failed.
+   failed. `r` is the run's CONFIG_RSEQ flag as a number: 1 if the kernel
+   has it, 0 if not (`APC.rseq_z`). It sets the size of the auxiliary
+   vector (`APC.AUXSZ r`: 464 or 432 bytes), so every stack address above
+   that vector depends on it. The start state is `AP.init_acs_of r A CEIL`,
+   and `AsanInit.init_cs_ok` proves it for `r = rseq_z (kb_rseq kb)`. A
+   certificate is for one value of `r`. To cover both kernel builds, check
+   the plan once for each value.
 3. State the lemma `AP.check ... = COk shape`, with the shape from step 2,
    and prove it with `CertRefl.cert_refl_vm constr:(COk shape).` Put
    `From Ltac2 Require Import Ltac2.` before `Require Import CertRefl`.
@@ -220,6 +226,7 @@ function and one section hypothesis in `AsanPlanSound`.
 | `ShapeLaws` | Equalities of shapes (`t_eq`). |
 | `TargetCover` | Prove a range of lengths from proofs for intervals that cover it. |
 | `PlacementSearch` | A search for a free gap in the mapping ledger, proved sound and complete. |
+| `AsanWindow` | Where a NULL-hint `mmap` of a mapping family (for example, the ASan secondary chunks) can land: a window below `mmap_top` whose depth depends only on the family's mapped bytes, its smallest entry, the largest request and a cover of the other maps. `AsanWindowCases` checks it on concrete ledgers. |
 | `ListFacts` | General list lemmas. |
 
 ## Import the system call checker with care

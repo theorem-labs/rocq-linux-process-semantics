@@ -196,8 +196,10 @@ Proof.
 Qed.
 
 (** Is [p] the path of an open file fd?  A file fd records the PATH it
-    was opened on ([FdFile]/[FdFileW]), not an inode, so the model cannot
-    represent Linux's unlinked-but-still-open file — see [unlinkat_spec].
+    was opened on ([FdFile]/[FdFileW]), not an inode, so the removal of
+    a name such an fd holds has to change the fd: [unlink_open_tmp_spec]
+    turns it into a [State.FdAnon] on the /tmp arm, and the
+    working-directory arm declines (see [unlinkat_spec]).
 
     THE NON-FILE ENTRIES ARE ENUMERATED rather than swept up by a
     [| _ :: r =>] catch-all, and the difference is invisible until an
@@ -239,20 +241,49 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
     (* the same for /dev/urandom, for the same reason *)
   | (_, FdOpaque (ONsFile _)) :: r => true
     (* NAMES EVERY PATH, conservatively: the object behind the handle may
-       be any open file ([State.ONsFile]), so [unlinkat_spec] declines
-       while one is open *)
+       be any open file ([State.ONsFile]), so the working-directory arm of
+       [unlinkat_spec] declines while one is open.  The /tmp arm takes
+       [unlink_open_tmp_spec] instead, which leaves the handle as it is
+       ([unlink_open_entry]): it reads nothing through the name, so the
+       removal changes no answer it gives *)
   | (_, FdOpaque _) :: r => fd_names_path r p
-    (* exact for the other three, and the reason is about the model, not
-       the name: Linux's unlink does not depend on which files are open,
-       and [unlinkat_spec] declines on a naming descriptor only because a
-       file kind reads its bytes through the path key the unlink would
-       remove.  An opaque descriptor reads nothing through a key, even
-       when its procfs name is a link to a modeled file
+    (* exact for the other opaque objects, and the reason is about the
+       model, not the name: Linux's unlink does not depend on which files
+       are open, and [unlinkat_spec] declines on a naming descriptor only
+       because a file kind reads its bytes through the path key the unlink
+       would remove.  An opaque descriptor reads nothing through a key,
+       even when its procfs name is a link to a modeled file
        ("/proc/self/cwd/f"), so removing the key changes no answer it
-       gives *)
+       gives.  An alias ([State.OAlias]) reads nothing either.  While its
+       partner lives, the partner's file entry names the path above.
+       When the alias DANGLES and is the last holder of a /tmp file, an
+       unlink is answered and the model drops the key, where Linux keeps
+       the inode alive, unnamed, until the alias closes ([vfs_unlink]
+       drops the name and [iput] keeps the inode while the open file
+       holds it, fs/namei.c and fs/inode.c, read at v6.18.44; identical
+       at v6.18.46).  Nothing the alias answers can tell the two apart:
+       [close], [close_range] and [F_GETFD]/[F_SETFD] read neither the
+       name nor the bytes; a new file at the same name is a new inode on
+       Linux as in the model; and the two arms that could show the inode
+       through the alias, [fstat] and an open of "/proc/self/fd/<alias>",
+       decline it *)
   | (_, FdSeqpacket _ _ _) :: r => fd_names_path r p
     (* exact, like the pipe end: a [socketpair] end is an anonymous
        sockfs inode, so it names no path [unlinkat] can reach *)
+  | (_, FdStream _ _ _) :: r => fd_names_path r p
+    (* exact: a [socketpair] end is a sockfs inode made by
+       [sock_alloc_file]'s [alloc_file_pseudo], unbound, so it names no
+       path at all *)
+  | (_, FdDgram _) :: r => fd_names_path r p
+    (* exact for the same reason: [sock_alloc_file]'s pseudo file, and
+       [socket] binds nothing, so it names no path *)
+  | (_, FdEventfd _) :: r => fd_names_path r p
+    (* exact: [alloc_file_pseudo] on the anonymous-inode mount
+       (fs/anon_inodes.c), which no path in [Fs.Fs] reaches *)
+  | (_, FdAnon _ _) :: r => fd_names_path r p
+    (* exact: an unnamed file's last name is gone -- that is what made
+       it one -- and a file created later under that name is another
+       inode, so it names no path [unlinkat] can reach *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does
@@ -266,11 +297,10 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
     lookup), and a mount point over the entry (EBUSY, from
     [vfs_unlink]'s [is_local_mountpoint] — the one member that needs
     more than an ordinary entry, since the victim has to be a bind-mount
-    target in the caller's namespace)
-    (Linux fs/namei.c, [may_delete] / [vfs_unlink], both byte-identical
-    v6.10 through v6.16).
+    target in the caller's namespace), and an unmapped victim uid or gid
+    (EOVERFLOW, from [may_delete], Linux v6.18.46 fs/namei.c:3267-3270).
     ENOENT is NOT injectable: file existence IS tracked. *)
-Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EBUSY].
+Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EBUSY; EOVERFLOW].
 
 (** The flag words [unlinkat_spec] interprets: 0 and AT_REMOVEDIR, which
     is every word the kernel accepts.  Unlike [modeled_open_flags] this
@@ -284,6 +314,45 @@ Definition modeled_unlink_flags (flags : word) : bool :=
 Definition unlink_rmdir (flags : word) : bool :=
   Z.eqb (bv_unsigned (flag32 flags)) AT_REMOVEDIR.
 
+(** THE REFUSALS LINUX REACHES BEFORE IT TESTS THE VICTIM'S TYPE, in the
+    order it reaches them (fs/namei.c, Linux v6.18.46):
+
+    - -EROFS from [mnt_want_write], on a read-only mount or superblock.
+      [do_rmdir] (4595-4597) and [do_unlinkat] (4724-4726) both call it
+      before the lookup;
+    - -ENOMEM from the lookup: [lookup_one_qstr_excl] allocates the
+      dentry when the cache misses (1701-1703);
+    - then [may_delete] (3255-3296), the first thing [vfs_rmdir] (4532)
+      and [vfs_unlink] (4658) do: -EOVERFLOW for a victim whose uid or
+      gid has no mapping (3267-3270); -EACCES from [inode_permission] on
+      the parent for write and search (3274-3276; it can also answer
+      -EROFS and -EPERM, both already here); -EPERM for an append-only
+      parent (3277-3278); and -EPERM for a sticky parent the caller may
+      not delete from, or for an append-only, immutable or swap victim,
+      or one with an unmapped id (3280-3283).
+
+    Only then does [may_delete] test the type: -ENOTDIR for a victim
+    that is not a directory when AT_REMOVEDIR asked for one (3284-3286),
+    and -EISDIR for a directory when it did not (3289-3290).  The model
+    tracks none of the mount's flags, the parent's permission, the
+    entries' owners or their inode flags, so these five stand BESIDE the
+    type answer in [unlink_found_spec] and [unlinkat_tmp_spec], and never
+    replace it.
+
+    Every member is also in [unlinkat_errnos], which additionally has
+    the -EBUSY of a mount point, raised only after [may_delete] has
+    passed. *)
+Definition unlink_before_type_errnos : list Z :=
+  [EROFS; ENOMEM; EOVERFLOW; EACCES; EPERM].
+
+(** The refusals before [do_unlinkat]'s [slashes:] answer (Linux
+    v6.18.46 fs/namei.c): [mnt_want_write]'s -EROFS (4724-4726), then
+    [lookup_one_qstr_excl] (4729-4730), whose dentry allocation may
+    return -ENOMEM (1701-1703).  The jump at 4734-4735 reaches
+    [slashes:] (4767-4772) before [vfs_unlink], so [may_delete]'s
+    -EOVERFLOW, -EACCES and -EPERM do not belong to this list. *)
+Definition unlink_before_slashes_errnos : list Z := [EROFS; ENOMEM].
+
 (** THE REMOVAL ITSELF, once the key has been found: shared by the
     working-directory arm and the /tmp arm below so that the two
     provably do the same thing to the same key.  [p] is the pathname as
@@ -292,16 +361,111 @@ Definition unlink_rmdir (flags : word) : bool :=
 
     The AT_REMOVEDIR answer sits here rather than at each caller because
     it is the same answer for both: a model file is never a directory,
-    so [may_delete]'s -ENOTDIR is what Linux returns.  The /tmp arm
-    never reaches it, having declined AT_REMOVEDIR above. *)
+    so [may_delete]'s -ENOTDIR is what Linux returns once the refusals
+    it reaches first ([unlink_before_type_errnos]) have passed, and those
+    refusals stand beside it.  The /tmp arm never reaches it, having
+    declined AT_REMOVEDIR above. *)
 Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
-  if unlink_rmdir flags then err_ret ENOTDIR  (* a model file is never a directory *)
-  else if path_trailing_slash p then err_ret ENOTDIR  (* do_unlinkat's [slashes:] *)
+  if unlink_rmdir flags then
+    alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
+        (err_ret ENOTDIR)  (* a model file is never a directory *)
+  else if path_trailing_slash p then
+    alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
+        (err_ret ENOTDIR)  (* do_unlinkat's [slashes:] *)
   else if fd_names_path (m_fds m) c then unmodeled
   else
     alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
         (set_fs (fs_remove (m_fs m) c) ;; ret_only (Z_to_bv 64 0)).
+
+(** The entry a descriptor holding the name [c] becomes once the name is
+    gone: a descriptor of the unnamed file [id], with the file's contents
+    [data] and pin [pin], and with what the descriptor's own
+    [struct file] carries kept as it was -- its [f_pos], its access mode
+    (FMODE_READ and FMODE_WRITE from the open) and its O_APPEND.
+    [vfs_unlink] (fs/namei.c, Linux v6.18.46) touches no [struct file]:
+    it drops the inode's link count and the dentry, and every open file
+    keeps its [f_path] on the now unhashed dentry and its own
+    [f_pos], [f_mode] and [f_flags].
+
+    ENUMERATED, for [fd_names_path]'s reason: a later file kind holding
+    a path must decide here what its descriptors become. *)
+Definition unlink_open_entry (c : path) (id : word) (data : list byte)
+    (pin : option (list byte)) (e : FdEntry) : FdEntry :=
+  match e with
+  | FdFile q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off true false false pin) else e
+  | FdFileW q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off false true false pin) else e
+  | FdFileRW q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off true true false pin) else e
+  | FdFileA q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off false true true pin) else e
+  | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ | FdAnon _ _ | FdOpaque _
+  | FdSeqpacket _ _ _ => e
+      (* none of these holds a name, as [fd_names_path] argues kind by
+         kind; an opaque object reads nothing through one *)
+  end.
+
+(** THE REMOVAL OF A /tmp NAME OPEN DESCRIPTORS HOLD (R14 of
+    dispatch://OSSV-287/spec): the name goes, and the file stays for
+    the descriptors, as an UNNAMED FILE ([State.FdAnon]).  musl's
+    [tmpfile()] (src/stdio/tmpfile.c) does exactly this to the file it
+    has just created with O_RDWR|O_CREAT|O_EXCL.  [p] is the pathname as
+    the program spelled it, [c] the key, [data] the file's contents.
+
+    LINUX, v6.18.46: [do_unlinkat] (fs/namei.c) finds the dentry and
+    calls [vfs_unlink], which runs [may_delete] and the filesystem's
+    [->unlink] ([shmem_unlink] on tmpfs, mm/shmem.c: [drop_nlink], then
+    [dput]), and [d_delete] then only unhashes the dentry, since the open
+    files still hold references to it.  The inode lives until the last
+    [fput]; every [struct file] on it keeps its contents, its offset,
+    its access mode and its O_APPEND ([unlink_open_entry]).
+
+    THE ANSWERS, in order:
+
+    - a trailing separator admits -EROFS and -ENOMEM before -ENOTDIR
+      at [do_unlinkat]'s [slashes:] label, as [unlink_found_spec] does
+      (AT_REMOVEDIR is declined before this arm is reached);
+    - the id a new unnamed file would take is one a live descriptor
+      already carries: declined.  [State.anon_new_id] wraps to 0 only
+      past a live id of 2^64 - 1, and no run makes 2^64 files;
+    - otherwise the [unlinkat_errnos] alternatives, each leaving the
+      name and the file as they were, or the removal: every descriptor
+      holding [c] becomes a descriptor of the new file, the key leaves
+      [m_fs], and the file is not in the file system the exit event
+      carries, as on Linux.
+
+    THE PIN MOVES WITH THE INODE.  The name's stat pin, if an [fstat]
+    made one, becomes the pin of every descriptor of the unnamed file,
+    with [st_nlink] set to 0 ([Uapi.stat_pin_unlinked]); [State.with_fs]
+    then drops it from the name, so a file created later under the same
+    name, which is another inode, starts without one.
+
+    ONLY THE /tmp ARM ANSWERS THIS (dispatch://OSSV-287/spec, decision
+    "Only the /tmp arm answers the removal of an open file"): the run's
+    /tmp is private to it ([State.in_tmp]), and only those files are
+    needed.  The working-directory arm keeps [unlink_found_spec]'s
+    decline. *)
+Definition unlink_open_tmp_spec (p c : path) (data : list byte) (m : Model)
+    : Sys SyscallEffect :=
+  if path_trailing_slash p then
+    alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
+        (err_ret ENOTDIR)  (* do_unlinkat's [slashes:] *)
+  else
+  let id := anon_new_id (m_fds m) in
+  if anon_id_live (m_fds m) id then unmodeled   (* the id wrapped: see above *)
+  else
+  let pin := match statpin_lookup (m_statpins m) c with
+             | Some b => Some (stat_pin_unlinked b)
+             | None => None
+             end in
+  alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
+      (set_fds (map (fun q => (fst q, unlink_open_entry c id data pin (snd q)))
+                    (m_fds m)) ;;
+       set_fs (fs_remove (m_fs m) c) ;;
+       ret_only (Z_to_bv 64 0)).
 
 (** THE /tmp ARM: removing a file the run HOLDS in its own private
     temporary directory ([tmp_name], [State.in_tmp]).  It sits inside
@@ -314,7 +478,11 @@ Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     directory in [may_delete], which [vfs_unlink] calls before it
     removes anything, and the refusal is unconditional on the
     filesystem — [d_is_dir] on the victim with [isdir] clear is
-    -EISDIR.  This is the one answer here that is LINUX-SPECIFIC rather
+    -EISDIR.  [may_delete] tests that only after its own -EOVERFLOW,
+    -EACCES and -EPERM, and [do_unlinkat] calls [vfs_unlink] only after
+    [mnt_want_write]'s -EROFS and the lookup's -ENOMEM, so those five
+    stand beside the -EISDIR ([unlink_before_type_errnos] has the kernel
+    lines).  This is the one answer here that is LINUX-SPECIFIC rather
     than POSIX's: POSIX lets unlink of a directory be -EPERM, and Linux
     chose -EISDIR.  Every supported implementation is a Linux, and
     qemu-user's `unlinkat` is the host kernel's, so the intersection
@@ -322,18 +490,23 @@ Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     -EISDIR is right for a trailing-separator spelling too, by a
     different route: "/tmp/a/" strips to the same [c], and Linux reaches
     [do_unlinkat]'s [slashes:] label, whose [d_is_dir] test answers
-    -EISDIR for a directory.  All fs/namei.c, Linux v6.18.46;
-    [may_delete]'s test was read again in v6.12.1, where it stands
-    unchanged, so the answer does not turn on the version.
+    -EISDIR for a directory.  [may_delete] never runs on that route, so
+    its refusals do not stand beside that spelling's -EISDIR.  The
+    -EROFS and -ENOMEM that precede [slashes:] do stand beside it
+    ([unlink_before_slashes_errnos]), as on the two -ENOTDIR routes.
+    The note above [unlinkat_body_spec] names the remaining omissions. All
+    fs/namei.c, Linux v6.18.46; [may_delete]'s test was read again in
+    v6.12.1, where it stands unchanged, so the answer does not turn on
+    the version.
 
     WHY AN ANSWER AND NOT A DECLINE, which is the [Open.openat_create_spec]
-    argument moved one syscall over: the answer is deterministic, it
-    does not depend on which filesystem /tmp is on, and it leaves the
-    model unchanged, so one image drives a source and a target into the
-    same branch.  The guard runs BEFORE the lookup, and because it
-    answers, the order is load-bearing rather than tidy: an implied
-    directory is not a key the run holds, so the -ENOENT below would
-    claim the name is absent where Linux says it is a directory.
+    argument moved one syscall over: the type answer does not depend on
+    which filesystem /tmp is on, no answer here changes the model, and
+    the image alone picks the branch, so one image drives a source and a
+    target into the same branch.  The guard runs BEFORE the lookup, and
+    because it answers, the order is load-bearing rather than tidy: an
+    implied directory is not a key the run holds, so the -ENOENT below
+    would claim the name is absent where Linux says it is a directory.
     [Checks.Cases.Fs.Namei.unlinkat_tmp_implied_directory_precedes_not_held]
     pins exactly that.  What the order also covers is the unrealizable
     image [Fs.valid_fs] admits, where "/tmp/a" and "/tmp/a/b" are both
@@ -404,6 +577,11 @@ Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     the only distinction left for this arm to make is the one
     [unlink_rmdir] makes.
 
+    A NAME OPEN DESCRIPTORS HOLD IS REMOVED, and the file stays for them
+    as an unnamed file: [unlink_open_tmp_spec].  A name no descriptor
+    holds takes [unlink_found_spec], the working-directory arm's
+    removal.
+
     [dirfd] is not tested here, and does not have to be: the caller
     below has already required AT_FDCWD.  Linux would ignore any dirfd
     for a path of this shape — [filename_parentat] hands an absolute
@@ -414,11 +592,18 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
   if unlink_rmdir flags then unmodeled
   else if Nat.ltb NAME_MAX (length n) then unmodeled
-  else if fs_under (m_fs m) c then err_ret EISDIR  (* may_delete's -EISDIR *)
+  else if fs_under (m_fs m) c then
+    (if path_trailing_slash p then
+       alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
+           (err_ret EISDIR)  (* do_unlinkat's [slashes:]: no may_delete *)
+     else alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
+              (err_ret EISDIR))  (* may_delete's -EISDIR *)
   else
     match fs_lookup (m_fs m) c with
     | None => err_ret ENOENT     (* absent from the run's own /tmp: real -ENOENT *)
-    | Some _ => unlink_found_spec p c flags m
+    | Some data =>
+        if fd_names_path (m_fds m) c then unlink_open_tmp_spec p c data m
+        else unlink_found_spec p c flags m
     end.
 
 (** [unlinkat dirfd path flags]: remove a directory entry.  This is the
@@ -663,23 +848,26 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     file fds record a PATH ([FdFile]/[FdFileW]), not an inode, so after a
     removal they would name nothing — and the read, write, readv and
     writev specs all rest on "an [FdFile] always points into the fs".
-    Rather than weaken that invariant in four places, unlinking a path
-    some fd still names is [unmodeled] here.  Closing the fd first, which
-    is what a program that publishes a file atomically does, stays inside
-    the model.
+    Rather than weaken that invariant in four places, unlinking a
+    working-directory path some fd still names is [unmodeled] here.
+    Closing the fd first, which is what a program that publishes a file
+    atomically does, stays inside the model.  A /tmp name some fd still
+    names is ANSWERED instead, by turning each such fd into a
+    [State.FdAnon] that carries the contents itself
+    ([unlink_open_tmp_spec]), so no [FdFile] is left pointing at a
+    removed key on that arm either.
 
     APPROXIMATION, the same one [openat_spec] carries, in two forms.
 
-    First, and on EVERY deterministic arm: they are deterministic, so
-    they exclude [getname_flags]'s own -ENOMEM, which it returns from
-    [__getname] before it copies a byte and which is therefore a real
-    answer to the empty path, to ".", to "..", to an unreadable pointer
-    and to an over-long one.  That is the same shape as [openat_spec]'s
-    pre-resolution -EMFILE.
+    First, the deterministic arms exclude [getname_flags]'s own
+    -ENOMEM, which it returns from [__getname] before it copies a byte
+    and which is therefore a real answer to the empty path, to ".", to
+    "..", to an unreadable pointer and to an over-long one.  That is
+    the same shape as [openat_spec]'s pre-resolution -EMFILE.
 
-    Second, three untracked conditions sit ahead of these arms, and which
-    one reaches which arm follows the last component's TYPE rather than
-    the answer:
+    Second, three untracked conditions sit ahead of path resolution;
+    which one reaches which arm follows the last component's TYPE
+    rather than the answer (some later arms admit these refusals):
 
     - [may_lookup]'s -EACCES: [link_path_walk] calls it at the TOP of the
       component loop, before it hashes anything, so it precedes any arm
@@ -705,17 +893,22 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     are the ones still carrying ND_JUMPED, and the LAST_NORM arms that do
     consult one are the arms that cleared it.
 
-    Past those, the arms differ in what ELSE they preempt, because they
-    sit at different depths.  The AT_REMOVEDIR -ENOTDIR comes out of
-    [may_delete], so it also preempts the -EACCES and -EPERM that
-    function reaches first.  The trailing-separator -ENOTDIR does not:
-    [do_unlinkat] jumps to [slashes:] from ABOVE [vfs_unlink], so
-    [may_delete] never runs on that path.  What does precede it is
-    [lookup_one_qstr_excl].  That answers -ENOENT for a working directory
-    already removed ([IS_DEADDIR]), and -ENOMEM when it cannot allocate
-    the dentry.
-    Each of these arms admits one answer and no [unlinkat_errnos]
-    alternative, which narrows the spec rather than widening it.
+    Past those, the arms differ in what ELSE comes before their answer,
+    because they sit at different depths.  The AT_REMOVEDIR -ENOTDIR
+    comes out of [may_delete], so the -EOVERFLOW, -EACCES and -EPERM
+    that function reaches FIRST come before it, and so do [do_rmdir]'s
+    -EROFS and the lookup's -ENOMEM.  That arm admits all five beside its
+    -ENOTDIR ([unlink_before_type_errnos]), as the /tmp arm's -EISDIR
+    does for the same reason when the name has no trailing separator.
+    The three trailing-separator answers do not come out of
+    [may_delete]: [do_unlinkat] jumps to [slashes:] from ABOVE
+    [vfs_unlink], so [may_delete] never runs on that path.  They admit
+    -EROFS and the lookup's -ENOMEM beside -ENOTDIR (a file) or -EISDIR
+    (an implied /tmp directory), using [unlink_before_slashes_errnos].
+    They still omit [may_lookup]'s -EACCES above and the lookup's
+    -ENOENT for an already removed parent ([IS_DEADDIR], 1698-1699).
+    The absent-name -ENOENT arms also omit the -EROFS and -ENOMEM
+    that can precede lookup's -ENOENT.  These omissions narrow the spec.
 
     So LAST_ROOT escapes the first and the third, and is behind
     [complete_walk] alone.  "The answer to \"/\" is unconditional" would

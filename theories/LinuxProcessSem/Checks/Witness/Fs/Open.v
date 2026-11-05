@@ -16,6 +16,50 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude Fs.ReadWrite.
 
+(** The witness for [Open.openat_procfd_spec], "/proc/self/fd/N": a
+    reopen of an unnamed file whose descriptors agree takes the
+    env-failure branch, so the witness builds no new descriptor. *)
+Local Definition openat_procfd_witness (n flags : word) (m : Model)
+    : outcome SyscallEffect :=
+  let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
+  if negb (Z.eqb fl 0 || Z.eqb fl wr_create_flags
+           || Z.eqb fl append_create_flags)%bool then Unmodeled
+  else
+  match fd_lookup (m_fds m) n with
+  | None => ret_outcome (errno_ret ENOENT) m
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then Unmodeled
+      else ret_outcome (errno_ret witness_errno) m
+  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
+  | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
+  | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) => Unmodeled
+  end.
+
+Local Lemma openat_procfd_witness_ok : forall n flags i m,
+  openat_procfd_spec n flags m i m (openat_procfd_witness n flags m).
+Proof.
+  intros n flags i m.
+  unfold openat_procfd_spec, openat_procfd_witness, open_result_spec. cbv zeta.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       wr_create_flags
+                  || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       append_create_flags)%bool);
+    [apply unmodeled_intro|].
+  destruct (fd_lookup (m_fds m) n)
+    as [[ch|q cur|q cur|q cur|q cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st0]|];
+    try apply unmodeled_intro.
+  - destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
+      [|destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    wr_create_flags)];
+      (apply alt_l; eapply bind_step;
+       [apply errno_head_witness|apply pure_ok]).
+  - apply pure_ok.
+Qed.
+
 Local Definition openat_core_witness (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
@@ -27,10 +71,13 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m  (* empty pathname *)
            else match proc_open_target (m_fds m) dirfd p with
            | Some c =>
-               (* a procfs name: the errno alternative ([Syscall.errno_any]
+               (* a procfs name: the decline through an alias's descriptor
+                  link, then the errno alternative ([Syscall.errno_any]
                   admits ENOMEM) on the three shapes [Open.openat_proc_spec]
-                  answers, the decline on the rest *)
-               if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  answers itself, the "/proc/self/fd/N" reopen's witness,
+                  and the decline on the rest *)
+               if proc_fd_alias_b (m_fds m) c then Unmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then ret_outcome (errno_ret ENOMEM) m
                else if Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                        && proc_sys_file_b c
@@ -38,7 +85,10 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
                else if procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        && path_eqb c proc_self_fd_path
                then ret_outcome (errno_ret ENOMEM) m
-               else Unmodeled
+               else match proc_self_fd c with
+                    | Some n => openat_procfd_witness n flags m
+                    | None => Unmodeled
+                    end
            | None =>
            if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled         (* unmodeled dirfd *)
            (* an O_PATH or O_NOCTTY word off procfs: declined *)
@@ -91,24 +141,32 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
                    else if is_excl_append_create fl then ret_outcome (errno_ret EEXIST) m
                    else Unmodeled
                end
-             else match tmp_name p with
-                  | Some n =>
-                      if Nat.ltb NAME_MAX (length n) then Unmodeled
-                      else
-                      let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
-                      if Z.eqb fl 0 then
-                        (if fs_under (m_fs m) p then Unmodeled
-                         else match fs_lookup (m_fs m) p with
-                              | None => Unmodeled
-                              | Some _ => ret_outcome (errno_ret witness_errno) m
-                              end)
-                      else if Z.eqb fl wr_create_flags then
-                        (if path_is_dirref p || fs_under (m_fs m) p
-                         then ret_outcome (errno_ret EISDIR) m
-                         else ret_outcome (errno_ret witness_errno) m)
-                      else Unmodeled
-                  | None => Unmodeled
-                  end
+             else
+             match tmp_name p with
+             | Some n =>
+                 if Nat.ltb NAME_MAX (length n) then Unmodeled
+                 else
+                 let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
+                 if Z.eqb fl 0 then
+                   (if fs_under (m_fs m) p then Unmodeled
+                    else match fs_lookup (m_fs m) p with
+                         | None => Unmodeled
+                         | Some _ => ret_outcome (errno_ret witness_errno) m
+                         end)
+                 else if Z.eqb fl wr_create_flags then
+                   (if path_is_dirref p || fs_under (m_fs m) p
+                    then ret_outcome (errno_ret EISDIR) m
+                    else ret_outcome (errno_ret witness_errno) m)
+                 else if Z.eqb fl rdwr_excl_create_flags then
+                   (if path_is_dirref p || fs_under (m_fs m) p
+                    then ret_outcome (errno_ret EEXIST) m
+                    else match fs_lookup (m_fs m) p with
+                         | Some _ => ret_outcome (errno_ret EEXIST) m
+                         | None => ret_outcome (errno_ret witness_errno) m
+                         end)
+                 else Unmodeled
+             | None => Unmodeled
+             end
            else
            let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
            if Z.eqb fl 0 then
@@ -184,11 +242,20 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            end
        end.
 
-Definition openat_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
-    : outcome SyscallEffect :=
+Definition openat_table_witness (dirfd pathp flags : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
   outcome_copyins
     [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_witness dirfd pathp flags i m).
+
+(** [openat_table_witness], then [Open.openat_spec]'s close-on-exec step
+    on whatever it answered. *)
+Definition openat_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
+    : outcome SyscallEffect :=
+  match openat_table_witness dirfd pathp flags i m with
+  | Ok eff m' evs => Ok eff (open_cloexec_model flags (eff_ret eff) m') evs
+  | Unmodeled => Unmodeled
+  end.
 
 Local Lemma openat_core_witness_ok : forall dirfd pathp flags i m,
   openat_core_spec dirfd pathp flags i m
@@ -211,6 +278,7 @@ Proof.
     { apply pure_ok. }
     destruct (proc_open_target (m_fds m) dirfd p) as [c|] eqn:Hpt.
     { unfold openat_proc_spec, proc_open_result. cbv zeta.
+      destruct (proc_fd_alias_b (m_fds m) c); [apply unmodeled_intro|].
       destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
@@ -225,7 +293,8 @@ Proof.
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
-      apply unmodeled_intro. }
+      destruct (proc_self_fd c) as [fdn|];
+        [apply openat_procfd_witness_ok|apply unmodeled_intro]. }
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
     { apply unmodeled_intro. }
     destruct (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)) eqn:Hop.
@@ -244,7 +313,8 @@ Proof.
       destruct (path_eqb p devnull_path).
       2:{ destruct (path_eqb p urandom_path).
           2:{ destruct (tmp_name p) as [n|]; [|apply unmodeled_intro].
-              unfold openat_tmp_spec, openat_read_spec, openat_create_spec.
+              unfold openat_tmp_spec, openat_read_spec, openat_create_spec,
+                openat_rdwr_excl_spec.
               cbv zeta.
               destruct (Nat.ltb NAME_MAX (length n)); [apply unmodeled_intro|].
               destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
@@ -254,9 +324,17 @@ Proof.
                   (apply alt_l; eapply bind_step;
                    [apply errno_head_witness|apply pure_ok]). }
               destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
-                          wr_create_flags); [|apply unmodeled_intro].
+                          wr_create_flags).
+              { destruct (path_is_dirref p || fs_under (m_fs m) p).
+                { apply pure_ok. }
+                apply alt_l. eapply bind_step; [apply errno_head_witness|].
+                apply pure_ok. }
+              (* musl's [tmpfile()] word *)
+              destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                          rdwr_excl_create_flags); [|apply unmodeled_intro].
               destruct (path_is_dirref p || fs_under (m_fs m) p).
               { apply pure_ok. }
+              destruct (fs_lookup (m_fs m) p); [apply pure_ok|].
               apply alt_l. eapply bind_step; [apply errno_head_witness|].
               apply pure_ok. }
           destruct (fs_lookup (m_fs m) urandom_path); [apply unmodeled_intro|].
@@ -385,13 +463,26 @@ Proof.
                  apply unmodeled_intro.
 Qed.
 
-Lemma openat_witness_ok : forall dirfd pathp flags i m,
-  openat_spec dirfd pathp flags i m (openat_witness dirfd pathp flags i m).
+Lemma openat_table_witness_ok : forall dirfd pathp flags i m,
+  openat_table_spec dirfd pathp flags i m (openat_table_witness dirfd pathp flags i m).
 Proof.
-  intros. unfold openat_spec, openat_witness.
+  intros. unfold openat_table_spec, openat_table_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   apply record_copyins_outcome.
   apply openat_core_witness_ok.
+Qed.
+
+Lemma openat_witness_ok : forall dirfd pathp flags i m,
+  openat_spec dirfd pathp flags i m (openat_witness dirfd pathp flags i m).
+Proof.
+  intros. pose proof (openat_table_witness_ok dirfd pathp flags i m) as Ht.
+  unfold openat_witness. revert Ht.
+  destruct (openat_table_witness dirfd pathp flags i m) as [eff m' evs|];
+    intro Ht; unfold openat_spec.
+  - eapply witness_bind_ok_eq; [exact Ht| |].
+    + eapply bind_step; [apply modify_ok|]. apply pure_ok.
+    + rewrite app_nil_r. reflexivity.
+  - apply bind_unmodeled1. exact Ht.
 Qed.
 
 (* =========================================================================
@@ -401,7 +492,9 @@ Qed.
 Definition close_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
-  | Some _ => ret_outcome (Z_to_bv 64 0) (with_fds (fd_remove (m_fds m) fd) m)
+  | Some _ => ret_outcome (Z_to_bv 64 0)
+                (with_cloexec (cloexec_forget (m_cloexec m) fd)
+                   (with_fds (fd_remove (m_fds m) fd) m))
   end.
 
 Lemma close_witness_ok : forall fd i m, close_spec fd i m (close_witness fd m).
@@ -428,6 +521,9 @@ Definition ftruncate_witness (fd len : word) (m : Model)
   | Some (FdChannel _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdSocket _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK, not S_ISREG *)
   | Some (FdSeqpacket _ _ _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK, not S_ISREG *)
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK too *)
+  | Some (FdDgram _) => ret_outcome (errno_ret EINVAL) m  (* and a datagram socket *)
+  | Some (FdEventfd _) => ret_outcome (errno_ret EINVAL) m  (* no type bits: not S_ISREG *)
   | Some (FdPipe _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR again *)
@@ -451,6 +547,14 @@ Definition ftruncate_witness (fd len : word) (m : Model)
           else ret_outcome (Z_to_bv 64 0)
                  (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
       end
+  | Some (FdAnon id af) =>
+      (* declined unless the file's descriptors agree; then a regular
+         file: see [Open.ftruncate_spec]'s unnamed-file arm *)
+      if negb (anon_agree (m_fds m) id af) then Unmodeled
+      else if negb (af_wr af) then ret_outcome (errno_ret EINVAL) m
+      else if negb (modeled_truncate_gap (af_data af) len) then Unmodeled
+      else ret_outcome (Z_to_bv 64 0)
+             (with_fds (anon_set_data (m_fds m) id (file_truncate (af_data af) len)) m)
   end.
 
 Lemma ftruncate_witness_ok : forall fd len i m,
@@ -458,11 +562,18 @@ Lemma ftruncate_witness_ok : forall fd len i m,
 Proof.
   intros. unfold ftruncate_spec, ftruncate_witness.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0]|] eqn:Hfd;
     try (eapply bind_step; [apply get_model_ok|];
          cbv beta iota; srw Hfd; apply pure_ok);
     try (eapply bind_step; [apply get_model_ok|];
          cbv beta iota; srw Hfd; apply unmodeled_intro).
+  (* the unnamed file *)
+  4: { eapply bind_step; [apply get_model_ok|]; cbv beta iota; srw Hfd.
+       destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
+       destruct (negb (af_wr af)); [apply pure_ok|].
+       destruct (negb (modeled_truncate_gap (af_data af) len));
+         [apply unmodeled_intro|].
+       eapply bind_step; [apply modify_ok|]. apply pure_ok. }
   all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
        [ destruct (negb (modeled_truncate_gap data len)) eqn:Hgap;
          [ eapply bind_step; [apply get_model_ok|];

@@ -283,7 +283,22 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
   match e with
   | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
   | FdDir => Some false
+  | FdAnon _ _ => Some false
+      (* an unnamed file is a regular file on the run's /tmp, under the
+         same obligation as the file kinds: its table carries no
+         [.poll] ([shmem_file_operations], mm/shmem.c, v6.18.46, on a
+         tmpfs /tmp) *)
   | FdSocket _ | FdPipe _ _ => Some true
+  | FdStream _ _ _ => Some true
+      (* a socket file like [FdSocket]'s: [sock_alloc_file] gives every
+         address family [socket_file_ops], whose [.poll] is [sock_poll] *)
+  | FdDgram _ => Some true
+      (* the same [socket_file_ops], whose [.poll] is [sock_poll] *)
+  | FdEventfd _ => Some true
+      (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has [.poll =
+         eventfd_poll], and the model minted the file itself in
+         [Fs.EventFd.eventfd2_spec], so there is no far end to be unsure
+         about *)
   | FdChannel _ => None
   | FdDevNull _ _ => None
       (* FAIL-CLOSED, though the answer is exact and this file already
@@ -308,8 +323,9 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          /proc/self/fd directory's [proc_fd_operations] (fs/proc/fd.c)
          has no [.poll], so [file_can_poll] is false and ADD is -EPERM.
          All read at v6.18.44; identical at v6.18.46.  An [ONsFile]'s
-         answer depends on an object of unknown type.  None of the six
-         answers is written. *)
+         answer depends on an object of unknown type, and an alias's
+         description is used through its partner only ([State.OAlias]).
+         None of the seven answers is written. *)
   | FdSeqpacket _ _ _ => None
       (* DECLINED.  The socket file has [.poll = sock_poll]
          (net/socket.c [socket_file_ops], v6.18.46), so [file_can_poll]
@@ -344,7 +360,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)
@@ -532,8 +548,9 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
            fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an
            eventfd, a /proc/sys file, the /proc/self/fd directory or a
            signalfd goes on to the target as any non-epoll file does.
-           The split is not written, and an [ONsFile]'s object is of
-           unknown type, so all six decline. *)
+           The split is not written, an [ONsFile]'s object is of
+           unknown type, and an alias ([State.OAlias]) is used through
+           its partner only, so all seven decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)

@@ -177,7 +177,7 @@ Definition getdents64_opaque_witness (fd : word) (o : OpaqueFd) (dirent count : 
   match o with
   | OProcFdDir fl pos => procfd_getdents_witness fd fl pos dirent count i m
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => Unmodeled
+  | OInherited _ | OAlias _ => Unmodeled
   end.
 
 Lemma getdents64_opaque_witness_ok : forall fd o dirent count i m,
@@ -206,9 +206,13 @@ Definition getdents64_witness (fd dirent count : word) (i : SyscallInput) (m : M
   | Some (FdPipe _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdSocket _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdSeqpacket _ _ _) => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdDgram _)   => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdEventfd _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdOpaque o) => getdents64_opaque_witness fd o dirent count i m
+  | Some (FdAnon _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some FdDir =>
       if getdents64_no_room count
       then ret_outcome (errno_ret EINVAL) m

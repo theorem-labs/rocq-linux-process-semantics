@@ -6,11 +6,16 @@
     the cgroup-BPF setsockopt field. [embed24] appends false, the
     host's clone refusers (field 26) at [State.no_clone_refusers] and
     the SIGCHLD launch disposition (field 27) at [true], SIG_DFL;
-    [forget24] drops fields 25 to 27, and [embeds24] carries the frames
-    and pins of fields 26 and 27 beside field 25's. No self-kill stance is lost: true and false
+    [forget24] drops fields 25 to 27, and [embeds24] carries field 26's
+    pin and field 27's frame and pin after field 25's. No self-kill stance is lost: true and false
     both embed. Ordinary input predicates additionally pin self-kill
-    false, as they did before field 25. [SelfkillEmbedding] composes
-    both pins against its mechanically checked 604b5c371ed0 copies.
+    false, as they did before field 25. The launch predicates of [Run]
+    also restrict the launch to the kernel of record, which the pre-field
+    copies do not, so they satisfy [embeds24_recorded]: [embeds24] with
+    [in_kernel inp = recorded_kernel (in_kernel inp)] as one more
+    conjunct of its own ([SelfkillEmbedding.embeds_recorded] says why).
+    [SelfkillEmbedding] composes both pins against its mechanically
+    checked 604b5c371ed0 copies.
 
     [spec_table_pre25] retains the current arms, replacing only 208
     by its body without the hook guard. The predicate and option-body
@@ -132,25 +137,30 @@ Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
 
 Definition embeds24 (V V24 : ProcInput -> Prop) : Prop :=
   (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
-  /\ (forall inp r, V24 (input_with_clone_refusers r inp) <-> V24 inp)
   /\ (forall inp b, V24 (input_with_sigchld_default b inp) <-> V24 inp)
   /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
+                            /\ in_clone_refusers inp = no_clone_refusers
+                            /\ in_sigchld_default inp = true).
+
+(** [embeds24] with #38's kernel clause as its own conjunct: the shape of
+    every launch predicate of [Run] ([SelfkillEmbedding.embeds_recorded]).
+    Field 27's frame and pin sit where [embeds24] has them. *)
+Definition embeds24_recorded (V V24 : ProcInput -> Prop) : Prop :=
+  (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
+  /\ (forall inp b, V24 (input_with_sigchld_default b inp) <-> V24 inp)
+  /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
+                            /\ in_kernel inp = recorded_kernel (in_kernel inp)
                             /\ in_clone_refusers inp = no_clone_refusers
                             /\ in_sigchld_default inp = true).
 
 Lemma embeds24_of_embeds : forall V V_pre,
   embeds V V_pre -> embeds24 V (pre24 V_pre).
 Proof.
-  intros V V_pre [_ [Hframe [Hcframe [Hsframe HV]]]]. split; [|split; [|split]].
+  intros V V_pre [_ [Hframe [Hsframe HV]]]. split; [|split].
   - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
     + exact (proj1 (Hframe inp b) Hp).
     + exact Hsk.
     + exact (proj2 (Hframe inp b) Hp).
-    + exact Hsk.
-  - intros inp r. unfold pre24. split; intros [Hp Hsk]; split.
-    + exact (proj1 (Hcframe inp r) Hp).
-    + exact Hsk.
-    + exact (proj2 (Hcframe inp r) Hp).
     + exact Hsk.
   - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
     + exact (proj1 (Hsframe inp b) Hp).
@@ -165,51 +175,96 @@ Proof.
       exact (conj Hp (conj Hsk (conj Hbp (conj Hcrf Hscd)))).
 Qed.
 
-Corollary valid_input_embeds24 : embeds24 valid_input (pre24 valid_input_pre).
-Proof. apply embeds24_of_embeds, valid_input_embeds. Qed.
+Lemma embeds24_recorded_of_embeds_recorded : forall V V_pre,
+  embeds_recorded V V_pre -> embeds24_recorded V (pre24 V_pre).
+Proof.
+  intros V V_pre [_ [Hframe [Hsframe HV]]]. split; [|split].
+  - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
+    + exact (proj1 (Hframe inp b) Hp).
+    + exact Hsk.
+    + exact (proj2 (Hframe inp b) Hp).
+    + exact Hsk.
+  - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
+    + exact (proj1 (Hsframe inp b) Hp).
+    + exact Hsk.
+    + exact (proj2 (Hsframe inp b) Hp).
+    + exact Hsk.
+  - intros inp. unfold pre24. split; intros H.
+    + destruct (proj1 (HV inp) H) as [Hp [Hsk [Hbp [Hk [Hcrf Hscd]]]]].
+      exact (conj (conj Hp Hsk) (conj Hbp (conj Hk (conj Hcrf Hscd)))).
+    + destruct H as [[Hp Hsk] [Hbp [Hk [Hcrf Hscd]]]].
+      exact (proj2 (HV inp)
+               (conj Hp (conj Hsk (conj Hbp (conj Hk (conj Hcrf Hscd)))))).
+Qed.
+
+Corollary valid_input_embeds24 :
+  embeds24_recorded valid_input (pre24 valid_input_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_embeds. Qed.
 Corollary valid_input_abort_embeds24 :
-  embeds24 valid_input_abort (pre24 valid_input_abort_pre).
-Proof. apply embeds24_of_embeds, valid_input_abort_embeds. Qed.
+  embeds24_recorded valid_input_abort (pre24 valid_input_abort_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_abort_embeds. Qed.
 Corollary valid_input_either_embeds24 :
-  embeds24 valid_input_either (pre24 valid_input_either_pre).
-Proof. apply embeds24_of_embeds, valid_input_either_embeds. Qed.
+  embeds24_recorded valid_input_either (pre24 valid_input_either_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_either_embeds. Qed.
 Corollary valid_input_sigpipe_ignored_embeds24 :
-  embeds24 valid_input_sigpipe_ignored (pre24 valid_input_sigpipe_ignored_pre).
-Proof. apply embeds24_of_embeds, valid_input_sigpipe_ignored_embeds. Qed.
+  embeds24_recorded valid_input_sigpipe_ignored (pre24 valid_input_sigpipe_ignored_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_sigpipe_ignored_embeds.
+Qed.
 Corollary valid_input_sigpipe_either_embeds24 :
-  embeds24 valid_input_sigpipe_either (pre24 valid_input_sigpipe_either_pre).
-Proof. apply embeds24_of_embeds, valid_input_sigpipe_either_embeds. Qed.
+  embeds24_recorded valid_input_sigpipe_either (pre24 valid_input_sigpipe_either_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_sigpipe_either_embeds.
+Qed.
 Corollary valid_input_channel_closed_embeds24 :
-  embeds24 valid_input_channel_closed (pre24 valid_input_channel_closed_pre).
-Proof. apply embeds24_of_embeds, valid_input_channel_closed_embeds. Qed.
+  embeds24_recorded valid_input_channel_closed (pre24 valid_input_channel_closed_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_channel_closed_embeds.
+Qed.
 Corollary valid_input_channel_either_embeds24 :
-  embeds24 valid_input_channel_either (pre24 valid_input_channel_either_pre).
-Proof. apply embeds24_of_embeds, valid_input_channel_either_embeds. Qed.
+  embeds24_recorded valid_input_channel_either (pre24 valid_input_channel_either_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_channel_either_embeds.
+Qed.
 Corollary valid_input_paths_embeds24 :
-  embeds24 valid_input_paths (pre24 valid_input_paths_pre).
-Proof. apply embeds24_of_embeds, valid_input_paths_embeds. Qed.
+  embeds24_recorded valid_input_paths (pre24 valid_input_paths_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_paths_embeds. Qed.
 Corollary valid_input_sigpipe_kills_embeds24 :
-  embeds24 valid_input_sigpipe_kills (pre24 valid_input_sigpipe_kills_pre).
-Proof. apply embeds24_of_embeds, valid_input_sigpipe_kills_embeds. Qed.
-Corollary valid_input_sv39_embeds24 : embeds24 valid_input_sv39 (pre24 valid_input_sv39_pre).
-Proof. apply embeds24_of_embeds, valid_input_sv39_embeds. Qed.
-Corollary valid_input_sv57_embeds24 : embeds24 valid_input_sv57 (pre24 valid_input_sv57_pre).
-Proof. apply embeds24_of_embeds, valid_input_sv57_embeds. Qed.
+  embeds24_recorded valid_input_sigpipe_kills (pre24 valid_input_sigpipe_kills_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_sigpipe_kills_embeds.
+Qed.
+Corollary valid_input_sv39_embeds24 :
+  embeds24_recorded valid_input_sv39 (pre24 valid_input_sv39_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_sv39_embeds. Qed.
+Corollary valid_input_sv57_embeds24 :
+  embeds24_recorded valid_input_sv57 (pre24 valid_input_sv57_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_sv57_embeds. Qed.
 Corollary valid_input_va_any_embeds24 :
-  embeds24 valid_input_va_any (pre24 valid_input_va_any_pre).
-Proof. apply embeds24_of_embeds, valid_input_va_any_embeds. Qed.
+  embeds24_recorded valid_input_va_any (pre24 valid_input_va_any_pre).
+Proof. apply embeds24_recorded_of_embeds_recorded, valid_input_va_any_embeds. Qed.
 Corollary valid_input_hwcap_rv64gc_embeds24 :
-  embeds24 valid_input_hwcap_rv64gc (pre24 valid_input_hwcap_rv64gc_pre).
-Proof. apply embeds24_of_embeds, valid_input_hwcap_rv64gc_embeds. Qed.
+  embeds24_recorded valid_input_hwcap_rv64gc (pre24 valid_input_hwcap_rv64gc_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_hwcap_rv64gc_embeds.
+Qed.
 Corollary valid_input_hwcap_rv64gcv_embeds24 :
-  embeds24 valid_input_hwcap_rv64gcv (pre24 valid_input_hwcap_rv64gcv_pre).
-Proof. apply embeds24_of_embeds, valid_input_hwcap_rv64gcv_embeds. Qed.
+  embeds24_recorded valid_input_hwcap_rv64gcv (pre24 valid_input_hwcap_rv64gcv_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_hwcap_rv64gcv_embeds.
+Qed.
 Corollary valid_input_abort_hwcap_rv64gc_embeds24 :
-  embeds24 valid_input_abort_hwcap_rv64gc (pre24 valid_input_abort_hwcap_rv64gc_pre).
-Proof. apply embeds24_of_embeds, valid_input_abort_hwcap_rv64gc_embeds. Qed.
+  embeds24_recorded valid_input_abort_hwcap_rv64gc
+    (pre24 valid_input_abort_hwcap_rv64gc_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_abort_hwcap_rv64gc_embeds.
+Qed.
 Corollary valid_input_abort_hwcap_rv64gcv_embeds24 :
-  embeds24 valid_input_abort_hwcap_rv64gcv (pre24 valid_input_abort_hwcap_rv64gcv_pre).
-Proof. apply embeds24_of_embeds, valid_input_abort_hwcap_rv64gcv_embeds. Qed.
+  embeds24_recorded valid_input_abort_hwcap_rv64gcv
+    (pre24 valid_input_abort_hwcap_rv64gcv_pre).
+Proof.
+  apply embeds24_recorded_of_embeds_recorded, valid_input_abort_hwcap_rv64gcv_embeds.
+Qed.
 Corollary finite_input_embeds24 : embeds24 finite_input (pre24 finite_input_pre).
 Proof. apply embeds24_of_embeds, finite_input_embeds. Qed.
 
@@ -230,10 +285,9 @@ Definition valid_input_inherited_pre24 (inp : ProcInput) : Prop :=
   /\ inherited_fds_ok (in_inherited_fds inp) = true.
 
 Lemma valid_input_inherited_embeds24 :
-  embeds24 valid_input_inherited valid_input_inherited_pre24.
+  embeds24_recorded valid_input_inherited valid_input_inherited_pre24.
 Proof.
   split; [intros inp b; split; intros H; exact H|].
-  split; [intros inp r; split; intros H; exact H|].
   split; [intros inp b; split; intros H; exact H|].
   intros inp. unfold valid_input_inherited, valid_input_inherited_pre24.
   embeds_conj.
@@ -242,7 +296,7 @@ Qed.
 Corollary embeds24_image : forall V V24, embeds24 V V24 ->
   forall o, V (embed24 o) <-> V24 (embed24 o).
 Proof.
-  intros V V24 [_ [_ [_ HV]]] o. split.
+  intros V V24 [_ [_ HV]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
   - intros H. apply (proj2 (HV (embed24 o))).
     split; [exact H | split; [reflexivity | split; reflexivity]].
@@ -251,16 +305,78 @@ Qed.
 Corollary embeds24_excludes : forall V V24, embeds24 V V24 ->
   forall inp, in_cgroup_bpf_setsockopt inp = true -> ~ V inp.
 Proof.
-  intros V V24 [_ [_ [_ HV]]] inp Ht Hv.
+  intros V V24 [_ [_ HV]] inp Ht Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
 Corollary embeds24_covers_images : forall V V24, embeds24 V V24 ->
   forall inp, V inp -> inp = embed24 (forget24 inp).
 Proof.
-  intros V V24 [_ [_ [_ HV]]] inp Hv.
+  intros V V24 [_ [_ HV]] inp Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf [Hc Hs]]].
   symmetry. exact (embed24_forget24 inp Hf Hc Hs).
+Qed.
+
+(** A launch predicate's 24-layer embedding is an [embeds24] whose old
+    side carries the kernel clause, so the corollaries above carry over. *)
+Lemma embeds24_of_embeds24_recorded : forall V V24, embeds24_recorded V V24 ->
+  embeds24 V (fun inp => V24 inp /\ in_kernel inp = recorded_kernel (in_kernel inp)).
+Proof.
+  intros V V24 [Hbp [Hsc HV]]. split; [|split].
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hbp inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hbp inp b) Hp).
+    + exact Hk.
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hsc inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hsc inp b) Hp).
+    + exact Hk.
+  - intros inp. split; intros H.
+    + destruct (proj1 (HV inp) H) as [Hp [Hb [Hk [Hc Hd]]]].
+      exact (conj (conj Hp Hk) (conj Hb (conj Hc Hd))).
+    + destruct H as [[Hp Hk] [Hb [Hc Hd]]].
+      exact (proj2 (HV inp) (conj Hp (conj Hb (conj Hk (conj Hc Hd))))).
+Qed.
+
+(** On the image of a 24-field input whose kernel is of record, a launch
+    predicate holds iff its pre-field copy did. *)
+Corollary embeds24_recorded_image : forall V V24, embeds24_recorded V V24 ->
+  forall o, p24_kernel o = recorded_kernel (p24_kernel o) ->
+  V (embed24 o) <-> V24 (embed24 o).
+Proof.
+  intros V V24 [_ [_ HV]] o Hk. split.
+  - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
+  - intros H. apply (proj2 (HV (embed24 o))).
+    split; [exact H |]. split; [reflexivity |]. split; [exact Hk |].
+    split; reflexivity.
+Qed.
+
+Corollary embeds24_recorded_excludes : forall V V24, embeds24_recorded V V24 ->
+  forall inp, in_cgroup_bpf_setsockopt inp = true -> ~ V inp.
+Proof.
+  intros V V24 Hr. exact (embeds24_excludes _ _ (embeds24_of_embeds24_recorded _ _ Hr)).
+Qed.
+
+Corollary embeds24_recorded_excludes_kernel : forall V V24, embeds24_recorded V V24 ->
+  forall inp, in_kernel inp <> recorded_kernel (in_kernel inp) -> ~ V inp.
+Proof.
+  intros V V24 [_ [_ HV]] inp Hk Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [_ [Hr _]]]. exact (Hk Hr).
+Qed.
+
+(** Every input a launch predicate admits is the image of a 24-field
+    input whose kernel is of record. *)
+Corollary embeds24_recorded_covers_images : forall V V24, embeds24_recorded V V24 ->
+  forall inp, V inp ->
+  inp = embed24 (forget24 inp)
+  /\ p24_kernel (forget24 inp) = recorded_kernel (p24_kernel (forget24 inp)).
+Proof.
+  intros V V24 Hr inp Hv. split.
+  - exact (embeds24_covers_images _ _ (embeds24_of_embeds24_recorded _ _ Hr) inp Hv).
+  - destruct Hr as [_ [_ HV]].
+    destruct (proj1 (HV inp) Hv) as [_ [_ [Hk _]]]. exact Hk.
 Qed.
 
 Lemma finite_input_bpf_default : forall f,

@@ -135,12 +135,13 @@ Example uname_unterminated_release_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Once pinned, a later uname must repeat it exactly.  The defector
-    below is itself well-formed — [uts_demo_b] would have been accepted
-    as the FIRST answer — so it is refused for disagreeing with the
-    record, not for being a bad name.  That is the whole content of "a
-    machine has one kernel for the life of a process", and it is the
-    conjunct a per-call [choose] would have dropped. *)
+(** Once pinned, a later uname must repeat the pin's [release] and
+    [version].  The defector below is itself well-formed — [uts_demo_b]
+    would have been accepted as the FIRST answer — so it is refused for
+    disagreeing with the record about the release, not for being a bad
+    name.  That is the whole content of "a machine has one kernel for
+    the life of a process", and it is the conjunct a per-call [choose]
+    would have dropped. *)
 
 Example uname_pinned_copy_repeats :
   check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
@@ -153,6 +154,37 @@ Example uname_pinned_copy_defector_rejected :
     (mkEffect 0 [(4096, uts_demo_b)] []) uts_pinned
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
+
+(** The pin holds [version] too: the same release with version "#1" is
+    refused, so [uts_kernel_agree] compares member 3 and not member 2
+    twice. *)
+
+Example uname_pinned_copy_other_version_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_name_of [] uts_release_a [35; 49]%Z [])] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …and a later answer must still be a name Linux can hold: "Linuy" has
+    the pin's release and version, so only the [utsname_wf] conjunct of
+    [Kernel.Sys.uts_repeat_ok] refuses it. *)
+
+Example uname_pinned_copy_wrong_sysname_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_bad_sysname)] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …but [nodename] and [domainname] are NOT held to the pin: another
+    process in the same UTS namespace may rename the machine between two
+    calls of this one ([Kernel.Sys.uts_kernel_agree]), so the renamed
+    name is a repeat the pin admits, and the pin itself does not change. *)
+
+Example uname_pinned_copy_renamed_host :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_demo_renamed)] []) uts_pinned
+  = CheckOk uts_pinned [].
+Proof. check_eq. Qed.
 
 (** …and the defector is refused for THAT reason and no other: offered as
     a first answer it is accepted, and pins itself. *)
@@ -809,39 +841,166 @@ Example prctl_capbset_read_assumed_caps_and_bound :
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================
-   getppid (173): a fresh choice on every call
+   getppid (173): the held parent pid, with one move per reparent window
    ========================================================================= *)
 
 Definition getppid_in : SyscallInput :=
   mkInput 173 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
 
-(** Any pid below [Fork.PID_MAX_ENVELOPE] is admitted, 0 (a parent in
-    an ancestor pid namespace) included, and the model comes back
-    UNCHANGED: two different answers are both admissible on the same
-    model, which is the "no pin" half of the spec.  The envelope bound
-    and an errno are refused.  The model before this arm declined every
-    [getppid]. *)
-Example getppid_answers_any_pid_in_the_envelope :
-  check_syscall getppid_in (mkEffect 4242 [] []) demo_model
-    = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect 1 [] []) demo_model
-       = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect 0 [] []) demo_model
-       = CheckOk demo_model []
-  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
-       demo_model = CheckReject
-  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) demo_model
+(** The launch's parent is 77, and the window is open: the parent-death
+    signal is 0. *)
+Definition ppid_open_model : Model := with_ppid 77 demo_model.
+
+(** A SHUT window: the launcher installed SIGKILL (over 0, which leaves
+    the window open until the next answer), and that answer showed 77. *)
+Definition ppid_shut_model : Model :=
+  with_ppid_answered 77 (with_pdeath_signal 9 ppid_open_model).
+
+(** SHUT: the held pid and nothing else.  The model before this arm
+    admitted 78 here too (a fresh choice per call); now it is refused,
+    with every other pid.  THE CONTROL, refused before and after: an
+    errno. *)
+Example getppid_shut_answers_the_held_pid :
+  check_syscall getppid_in (mkEffect 77 [] []) ppid_shut_model
+    = CheckOk ppid_shut_model []
+  /\ check_syscall getppid_in (mkEffect 78 [] []) ppid_shut_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect 0 [] []) ppid_shut_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) ppid_shut_model
        = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
+(** OPEN, NOTHING MOVED: the held pid, or ONE other pid in the envelope
+    (the reaper), which is stored.  0 (a reaper in an ancestor pid
+    namespace) is a pid too.  The envelope bound and an errno are
+    refused, before and after this arm. *)
+Example getppid_open_moves_once :
+  check_syscall getppid_in (mkEffect 77 [] []) ppid_open_model
+    = CheckOk (with_ppid_answered 77 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect 1 [] []) ppid_open_model
+       = CheckOk (with_ppid_answered 1 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect 0 [] []) ppid_open_model
+       = CheckOk (with_ppid_answered 0 ppid_open_model) []
+  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       ppid_open_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) ppid_open_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** ...AND NEVER BACK, NOR TWICE: after the move to 1 the window is still
+    open (the signal is 0), but the pid has moved, so 1 is the only
+    answer: neither the old parent 77 nor a second reaper 2. *)
+Example getppid_moves_never_back :
+  let m1 := with_ppid_answered 1 ppid_open_model in
+  check_syscall getppid_in (mkEffect 1 [] []) m1
+    = CheckOk (with_ppid_answered 1 m1) []
+  /\ check_syscall getppid_in (mkEffect 77 [] []) m1 = CheckReject
+  /\ check_syscall getppid_in (mkEffect 2 [] []) m1 = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** A DEATH BEFORE THE SIGNAL SHOWS AFTER IT: SIGKILL installed over 0,
+    and no answer since, keeps the window open, so the reaper is still
+    admitted. *)
+Example getppid_death_before_the_signal :
+  let m1 := with_pdeath_signal 9 ppid_open_model in
+  check_syscall getppid_in (mkEffect 1 [] []) m1
+    = CheckOk (with_ppid_answered 1 m1) [].
+Proof. check_eq. Qed.
+
+(** A NEW WINDOW: the signal set back to 0 after the window shut gives
+    one new move, so a second reaper is admitted there. *)
+Example getppid_new_window_moves_again :
+  let m1 := with_ppid_answered 1 (with_pdeath_signal 9
+              (with_ppid_answered 1 ppid_open_model)) in
+  let m2 := with_pdeath_signal 0 m1 in
+  check_syscall getppid_in (mkEffect 2 [] []) m1 = CheckReject
+  /\ check_syscall getppid_in (mkEffect 2 [] []) m2
+       = CheckOk (with_ppid_answered 2 m2) [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE REPARENT KILLS NOTHING: the answer that moves the pid leaves the
+    process running and unkilled, the gates [Checks.KillFree] reads. *)
+Example getppid_reparent_kills_nothing :
+  match check_syscall getppid_in (mkEffect 1 [] []) ppid_open_model with
+  | CheckOk m' [] => m_halted m' = None /\ m_killed m' = None
+  | _ => False
+  end.
+Proof. vm_compute. split; reflexivity. Qed.
+
 (** THE CONTROL, which the model before this arm passed too: [getpid]
     on the same model is untouched by the new number -- it still pins
-    the tid at its first answer, where [getppid] pins nothing. *)
+    the tid at its first answer. *)
 Example getppid_leaves_getpid_alone :
   check_syscall (mkInput 172 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 4242 [] []) demo_model
   = CheckOk (with_tid 4242 demo_model) [].
 Proof. check_eq. Qed.
+
+(* =========================================================================
+   The parent's death at any moment: [Run.parent_may_die]
+   ========================================================================= *)
+
+(** The launch of [ppid_open_model] with a parent-death signal [s]. *)
+Definition pdeath_model (s : Z) : Model :=
+  with_pdeath_signal (Z_to_bv 64 s) ppid_open_model.
+
+(** SIGKILL: the parent's death kills the process, with the event a
+    death by signal gives ([State.KillEv]). *)
+Example parent_death_sigkill_kills : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms (pdeath_model 9))
+    [KillEv SIGKILL_W (m_fs (with_killed SIGKILL_W (pdeath_model 9)))]
+    (SNext (mkCfg ms (with_killed SIGKILL_W (pdeath_model 9))))
+  /\ m_killed (with_killed SIGKILL_W (pdeath_model 9)) = Some SIGKILL_W.
+Proof.
+  intros segs cfg ms. split.
+  - apply sstep_pcfg_parent_kill; vm_compute; reflexivity.
+  - vm_compute. reflexivity.
+Qed.
+
+(** Any other signal: the model delivers none, so the death is the error
+    transition, an uncovered point of the configured run. *)
+Example parent_death_other_signal_errors : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms (pdeath_model 15)) [] SError
+  /\ unmodeled_pat segs parent_may_die (mkCfg ms (pdeath_model 15)).
+Proof.
+  intros segs cfg ms.
+  assert (H0 : bv_unsigned (m_pdeath_signal (pdeath_model 15)) <> 0%Z)
+    by (intro Hc; vm_compute in Hc; discriminate Hc).
+  assert (H9 : bv_unsigned (m_pdeath_signal (pdeath_model 15)) <> 9%Z)
+    by (intro Hc; vm_compute in Hc; discriminate Hc).
+  assert (Hh : m_halted (pdeath_model 15) = None) by (vm_compute; reflexivity).
+  split.
+  - apply sstep_pcfg_parent_signal; [reflexivity | exact Hh | exact H0 | exact H9].
+  - right. cbn [cfg_model]. split; [reflexivity |]. split; [exact Hh |].
+    split; [exact H0 | exact H9].
+Qed.
+
+(** No signal: the death kills nothing and moves the parent to a reaper,
+    which the next [getppid] shows, and after which the pid has moved:
+    the old parent 77 is refused. *)
+Example parent_death_with_no_signal_reparents : forall segs cfg ms,
+  sstep_pcfg segs cfg parent_may_die (mkCfg ms ppid_open_model) []
+    (SNext (mkCfg ms (with_ppid_answered 1 ppid_open_model)))
+  /\ m_killed (with_ppid_answered 1 ppid_open_model) = None
+  /\ check_syscall getppid_in (mkEffect 1 [] []) (with_ppid_answered 1 ppid_open_model)
+     = CheckOk (with_ppid_answered 1 (with_ppid_answered 1 ppid_open_model)) []
+  /\ check_syscall getppid_in (mkEffect 77 [] []) (with_ppid_answered 1 ppid_open_model)
+     = CheckReject.
+Proof.
+  intros segs cfg ms. split; [| split; [vm_compute; reflexivity | split; check_eq]].
+  apply sstep_pcfg_reparent;
+    [reflexivity | vm_compute; reflexivity | vm_compute; reflexivity
+    | vm_compute; reflexivity |].
+  intro Hc. apply (f_equal bv_unsigned) in Hc. vm_compute in Hc. discriminate Hc.
+Qed.
+
+(** THE CONTROL: under the default [Run.parent_lives] the configured run
+    is the run of every statement before this environment existed,
+    observation by observation, so none of the three steps above is
+    offered there. *)
+Example parent_lives_is_the_old_run : forall cfg img lim en inp,
+  behavior_equiv (run_pcfg cfg parent_lives img lim en inp)
+                 (run_scfg cfg img lim en inp).
+Proof. exact run_pcfg_lives. Qed.
 
 (* =========================================================================
    getresuid (148) / getresgid (150): three stores, in order
@@ -1063,7 +1222,10 @@ Definition suid2_kernel : KernelBuild :=
   mkKernelBuild (kb_thp default_kernel) (kb_vdso default_kernel)
                 (kb_aslr default_kernel) (kb_guard default_kernel)
                 (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
-                (kb_vlenb default_kernel) (kb_cache default_kernel) SuidDumpRoot.
+                (kb_vlenb default_kernel) (kb_cache default_kernel)
+                (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+                (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+                (kb_rmem_max default_kernel) SuidDumpRoot.
 Definition suid2_root_model : Model := with_kernel suid2_kernel root_model.
 Example dumpable_reset_to_suid_dumpable :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]

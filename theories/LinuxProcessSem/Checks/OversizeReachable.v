@@ -128,8 +128,12 @@ Qed.
 Lemma mm_never_bor_c7 : mm_never_bor (mkCfg mm_ms7 mm_model).
 Proof.
   apply mm_never_bor_intro.
-  - intros (_ & [(_ & report & Hacc & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
+  - intros (_ & [(_ & [(report & Hacc & _) | (HU & _)]) | (x8 & Hx8 & _)]);
+      cbn [cfg_ms cfg_model] in *.
     + exact (mm_ms7_accesses_fault report Hacc).
+    + apply mi_account_step_unmodeled_inv in HU.
+      pose proof (drop_step_accesses mm_rsegs mm_ms7) as Hd.
+      rewrite HU, mm_ms7_faults in Hd. discriminate Hd.
     + rewrite mm_ms7_svc in Hx8. discriminate Hx8.
   - intros evs c2 Hss.
     destruct (sstep_fault_only mm_rsegs mm_ms7 mm_model eq_refl mm_ms7_svc

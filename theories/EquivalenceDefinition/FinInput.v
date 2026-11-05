@@ -533,7 +533,13 @@ Record FinProcInput := mkFinProcInput {
        booted with is a fact about the launch, not about the bytes the
        program is asked to process -- and it is finite by typing (four
        bools, four [N]s and four cache leaves), so it adds no clause to
-       [finite_input].  It is NOT part of [fin_core] *);
+       [finite_input].  It is NOT part of [fin_core].  A FIELD RATHER
+       THAN A PIN for [fin_channel_reader]'s reason: [Run.valid_input]
+       fixes eight of its fields at [State.default_kernel]'s values
+       ([Run.recorded_kernel]) and leaves the five launch facts free, so
+       [valid_fin_input] does the same, and [finite_input_surjection]
+       stays exact because a launch on another build is as finite as one
+       on the default *);
   fin_execfn : list byte
     (* the exec file name, mirroring [State.in_execfn].  It is on the
        ENVIRONMENT side too, and that is the decision worth stating,
@@ -621,10 +627,11 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
     one [getname_flags] or [alloc_bprm] can produce and that the whole
     launch fit under the E2BIG limit [bprm_stack_limits] computes --
     fs/exec.c and fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f),
-    and says nothing whatever about
+    and [fin_kernel] (via [Run.recorded_kernel]: eight fields are
+    [State.default_kernel]'s, the five launch facts are free), and says
+    nothing whatever about
     [fin_stdin] ([valid_fin_input_stdin_irrelevant]), [fin_urandom]
-    ([valid_fin_input_urandom_irrelevant]), [fin_groups], [fin_net] or
-    [fin_kernel].
+    ([valid_fin_input_urandom_irrelevant]), [fin_groups] or [fin_net].
 
     [fin_sigmask] CARRIES A REAL VALUE rather than being pinned to 0,
     and the reason is the rule this record is built on: a classifier

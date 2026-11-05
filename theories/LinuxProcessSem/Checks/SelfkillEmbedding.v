@@ -15,18 +15,27 @@
     [tools/check_pre_copies.py] checks those copies and the table-number
     list against that immutable source. [embeds] composes the four
     layers: V inp iff V_pre inp /\ selfkill=false /\ cgroup_bpf=false
-    /\ clone_refusers=no_clone_refusers /\ sigchld_default=true. No
-    copied body or mechanical comparison is changed by composition.
+    /\ clone_refusers=no_clone_refusers /\ sigchld_default=true. The
+    launch predicates of [Run] also restrict the launch to the kernel of
+    record, which the 604b5c371ed0 copies do not, so they satisfy
+    [embeds_recorded]: the same iff with [in_kernel inp =
+    recorded_kernel (in_kernel inp)] as one more conjunct of its own.
+    [FinInput.finite_input] has no kernel clause and satisfies [embeds].
+    No copied body or mechanical comparison is changed by composition.
     [embeds_excludes], [embeds_excludes_clone_refusers] and
     [embeds_excludes_sigchld_ignored] exclude the inputs fields 24, 26
     and 27 add; [embeds_covers_images] says every admitted input is an
-    image.
+    image; the [embeds_recorded_*] corollaries say the same for the
+    launch predicates and that their images are the ones on a recorded
+    kernel.
 
     [spec_table_pre] removes row 129 from the current table. The run
     lemmas below establish that the self-kill declaration is initialized
     from the input and retained by every successful step, and that 129
     with it off declines just as an absent row did. This table is not
-    a snapshot of later socket features: [CgroupBpfEmbedding] gives the
+    a snapshot of later features: it keeps C1's pwritev2 arm 287, which
+    604b5c371ed0 did not have ([spec_table_pre_numbers]), and
+    [CgroupBpfEmbedding] gives the
     separate false-field setsockopt table equivalence. Rows 220 and 435
     read field 26 ([Kernel.Fork.clone_refusable]): at its default, the
     value every image carries and no step changes
@@ -460,10 +469,28 @@ Definition finite_input_pre (inp : ProcInput) : Prop :=
 Definition embeds (V V_pre : ProcInput -> Prop) : Prop :=
   (forall inp b, V_pre (input_with_selfkill_terminal b inp) <-> V_pre inp)
   /\ (forall inp b, V_pre (input_with_cgroup_bpf_setsockopt b inp) <-> V_pre inp)
-  /\ (forall inp r, V_pre (input_with_clone_refusers r inp) <-> V_pre inp)
   /\ (forall inp b, V_pre (input_with_sigchld_default b inp) <-> V_pre inp)
   /\ (forall inp, V inp <-> V_pre inp /\ in_selfkill_terminal inp = false
                                       /\ in_cgroup_bpf_setsockopt inp = false
+                                      /\ in_clone_refusers inp = no_clone_refusers
+                                      /\ in_sigchld_default inp = true).
+
+(** The launch predicates' shape.  The merge of #38 restricts every
+    launch predicate of [Run] to the kernel of record: the clause
+    [in_kernel inp = recorded_kernel (in_kernel inp)] fixes eight fields
+    of the build at [State.default_kernel]'s values and leaves the launch
+    facts free.  The 604b5c371ed0 predicates had no such clause, so an
+    old statement covered every build and the current one covers only
+    builds of record.  Besides the defaults of fields 24 to 27 this is
+    the only change, and the kernel clause is its own conjunct below.
+    It is needed: [Checks.Cases.KernelPin.plain_launch_refuses_vlenb]. *)
+Definition embeds_recorded (V V_pre : ProcInput -> Prop) : Prop :=
+  (forall inp b, V_pre (input_with_selfkill_terminal b inp) <-> V_pre inp)
+  /\ (forall inp b, V_pre (input_with_cgroup_bpf_setsockopt b inp) <-> V_pre inp)
+  /\ (forall inp b, V_pre (input_with_sigchld_default b inp) <-> V_pre inp)
+  /\ (forall inp, V inp <-> V_pre inp /\ in_selfkill_terminal inp = false
+                                      /\ in_cgroup_bpf_setsockopt inp = false
+                                      /\ in_kernel inp = recorded_kernel (in_kernel inp)
                                       /\ in_clone_refusers inp = no_clone_refusers
                                       /\ in_sigchld_default inp = true).
 
@@ -483,133 +510,139 @@ Ltac embeds_conj :=
 Ltac embeds_frame :=
   intros inp b; split; intros H; exact H.
 
-Lemma valid_input_embeds : embeds valid_input valid_input_pre.
+Lemma valid_input_embeds : embeds_recorded valid_input valid_input_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input, valid_input_pre. embeds_conj.
 Qed.
 
-Lemma valid_input_abort_embeds : embeds valid_input_abort valid_input_abort_pre.
+Lemma valid_input_abort_embeds :
+  embeds_recorded valid_input_abort valid_input_abort_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_abort, valid_input_abort_pre. embeds_conj.
 Qed.
 
-Lemma valid_input_either_embeds : embeds valid_input_either valid_input_either_pre.
+Lemma valid_input_either_embeds :
+  embeds_recorded valid_input_either valid_input_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_either, valid_input_either_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sigpipe_ignored_embeds :
-  embeds valid_input_sigpipe_ignored valid_input_sigpipe_ignored_pre.
+  embeds_recorded valid_input_sigpipe_ignored valid_input_sigpipe_ignored_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_ignored, valid_input_sigpipe_ignored_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_sigpipe_either_embeds :
-  embeds valid_input_sigpipe_either valid_input_sigpipe_either_pre.
+  embeds_recorded valid_input_sigpipe_either valid_input_sigpipe_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_either, valid_input_sigpipe_either_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_channel_closed_embeds :
-  embeds valid_input_channel_closed valid_input_channel_closed_pre.
+  embeds_recorded valid_input_channel_closed valid_input_channel_closed_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_channel_closed, valid_input_channel_closed_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_channel_either_embeds :
-  embeds valid_input_channel_either valid_input_channel_either_pre.
+  embeds_recorded valid_input_channel_either valid_input_channel_either_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_channel_either, valid_input_channel_either_pre.
   embeds_conj.
 Qed.
 
-Lemma valid_input_paths_embeds : embeds valid_input_paths valid_input_paths_pre.
+Lemma valid_input_paths_embeds :
+  embeds_recorded valid_input_paths valid_input_paths_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_paths, valid_input_paths_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sigpipe_kills_embeds :
-  embeds valid_input_sigpipe_kills valid_input_sigpipe_kills_pre.
+  embeds_recorded valid_input_sigpipe_kills valid_input_sigpipe_kills_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_kills, valid_input_sigpipe_kills_pre.
   embeds_conj.
 Qed.
 
-Lemma valid_input_sv39_embeds : embeds valid_input_sv39 valid_input_sv39_pre.
+Lemma valid_input_sv39_embeds :
+  embeds_recorded valid_input_sv39 valid_input_sv39_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sv39, valid_input_sv39_pre. embeds_conj.
 Qed.
 
-Lemma valid_input_sv57_embeds : embeds valid_input_sv57 valid_input_sv57_pre.
+Lemma valid_input_sv57_embeds :
+  embeds_recorded valid_input_sv57 valid_input_sv57_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sv57, valid_input_sv57_pre. embeds_conj.
 Qed.
 
-Lemma valid_input_va_any_embeds : embeds valid_input_va_any valid_input_va_any_pre.
+Lemma valid_input_va_any_embeds :
+  embeds_recorded valid_input_va_any valid_input_va_any_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_va_any, valid_input_va_any_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_hwcap_rv64gc_embeds :
-  embeds valid_input_hwcap_rv64gc valid_input_hwcap_rv64gc_pre.
+  embeds_recorded valid_input_hwcap_rv64gc valid_input_hwcap_rv64gc_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gc, valid_input_hwcap_rv64gc_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_hwcap_rv64gcv_embeds :
-  embeds valid_input_hwcap_rv64gcv valid_input_hwcap_rv64gcv_pre.
+  embeds_recorded valid_input_hwcap_rv64gcv valid_input_hwcap_rv64gcv_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gcv, valid_input_hwcap_rv64gcv_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_embeds :
-  embeds valid_input_abort_hwcap_rv64gc valid_input_abort_hwcap_rv64gc_pre.
+  embeds_recorded valid_input_abort_hwcap_rv64gc valid_input_abort_hwcap_rv64gc_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gc, valid_input_abort_hwcap_rv64gc_pre.
   embeds_conj.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gcv_embeds :
-  embeds valid_input_abort_hwcap_rv64gcv valid_input_abort_hwcap_rv64gcv_pre.
+  embeds_recorded valid_input_abort_hwcap_rv64gcv valid_input_abort_hwcap_rv64gcv_pre.
 Proof.
-  unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  unfold embeds_recorded; split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gcv, valid_input_abort_hwcap_rv64gcv_pre.
   embeds_conj.
@@ -618,7 +651,7 @@ Qed.
 Lemma finite_input_embeds : embeds finite_input finite_input_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold finite_input, finite_input_pre. embeds_conj.
 Qed.
 
@@ -626,7 +659,7 @@ Qed.
 Corollary embeds_image : forall V V_pre, embeds V V_pre ->
   forall o, V (embed o) <-> V_pre (embed o).
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] o. split.
+  intros V V_pre [_ [_ [_ HV]]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed o)) H)).
   - intros H. apply (proj2 (HV (embed o))).
     split; [exact H | split; [reflexivity | split; [reflexivity | split; reflexivity]]].
@@ -636,7 +669,7 @@ Qed.
 Corollary embeds_excludes : forall V V_pre, embeds V V_pre ->
   forall inp, in_selfkill_terminal inp = true -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Ht Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Ht Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
@@ -644,7 +677,7 @@ Qed.
 Corollary embeds_excludes_clone_refusers : forall V V_pre, embeds V V_pre ->
   forall inp, in_clone_refusers inp <> no_clone_refusers -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hc Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hc Hv.
   destruct (proj1 (HV inp) Hv) as [_ [_ [_ [Hd _]]]]. exact (Hc Hd).
 Qed.
 
@@ -652,7 +685,7 @@ Qed.
 Corollary embeds_excludes_sigchld_ignored : forall V V_pre, embeds V V_pre ->
   forall inp, in_sigchld_default inp = false -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hf Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hf Hv.
   destruct (proj1 (HV inp) Hv) as [_ [_ [_ [_ Ht]]]]. rewrite Hf in Ht.
   discriminate Ht.
 Qed.
@@ -661,9 +694,97 @@ Qed.
 Corollary embeds_covers_images : forall V V_pre, embeds V V_pre ->
   forall inp, V inp -> inp = embed (forget inp).
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hsk [Hbp [Hcrf Hscd]]]].
   symmetry. exact (embed_forget inp Hsk Hbp Hcrf Hscd).
+Qed.
+
+(** A launch predicate's embedding is an [embeds] whose old side carries
+    the kernel clause, so the corollaries above carry over. *)
+Lemma embeds_of_embeds_recorded : forall V V_pre, embeds_recorded V V_pre ->
+  embeds V (fun inp => V_pre inp /\ in_kernel inp = recorded_kernel (in_kernel inp)).
+Proof.
+  intros V V_pre [Hsk [Hbp [Hsc HV]]]. split; [| split; [| split]].
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hsk inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hsk inp b) Hp).
+    + exact Hk.
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hbp inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hbp inp b) Hp).
+    + exact Hk.
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hsc inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hsc inp b) Hp).
+    + exact Hk.
+  - intros inp. split; intros H.
+    + destruct (proj1 (HV inp) H) as [Hp [Hs [Hb [Hk [Hc Hd]]]]].
+      exact (conj (conj Hp Hk) (conj Hs (conj Hb (conj Hc Hd)))).
+    + destruct H as [[Hp Hk] [Hs [Hb [Hc Hd]]]].
+      exact (proj2 (HV inp) (conj Hp (conj Hs (conj Hb (conj Hk (conj Hc Hd)))))).
+Qed.
+
+(** On the image of an old input whose kernel is of record, a launch
+    predicate holds iff its old copy did. *)
+Corollary embeds_recorded_image : forall V V_pre, embeds_recorded V V_pre ->
+  forall o, p23_kernel o = recorded_kernel (p23_kernel o) ->
+  V (embed o) <-> V_pre (embed o).
+Proof.
+  intros V V_pre [_ [_ [_ HV]]] o Hk. split.
+  - intros H. exact (proj1 (proj1 (HV (embed o)) H)).
+  - intros H. apply (proj2 (HV (embed o))).
+    split; [exact H |].
+    split; [reflexivity |]. split; [reflexivity |]. split; [exact Hk |].
+    split; reflexivity.
+Qed.
+
+(** A launch predicate excludes every input field 24 adds, ... *)
+Corollary embeds_recorded_excludes : forall V V_pre, embeds_recorded V V_pre ->
+  forall inp, in_selfkill_terminal inp = true -> ~ V inp.
+Proof.
+  intros V V_pre Hr. exact (embeds_excludes _ _ (embeds_of_embeds_recorded _ _ Hr)).
+Qed.
+
+(** ... every input with a clone refuser present, ... *)
+Corollary embeds_recorded_excludes_clone_refusers : forall V V_pre,
+  embeds_recorded V V_pre ->
+  forall inp, in_clone_refusers inp <> no_clone_refusers -> ~ V inp.
+Proof.
+  intros V V_pre Hr.
+  exact (embeds_excludes_clone_refusers _ _ (embeds_of_embeds_recorded _ _ Hr)).
+Qed.
+
+(** ... every input launched with SIGCHLD at SIG_IGN, ... *)
+Corollary embeds_recorded_excludes_sigchld_ignored : forall V V_pre,
+  embeds_recorded V V_pre ->
+  forall inp, in_sigchld_default inp = false -> ~ V inp.
+Proof.
+  intros V V_pre Hr.
+  exact (embeds_excludes_sigchld_ignored _ _ (embeds_of_embeds_recorded _ _ Hr)).
+Qed.
+
+(** ... and every launch on a kernel not of record. *)
+Corollary embeds_recorded_excludes_kernel : forall V V_pre, embeds_recorded V V_pre ->
+  forall inp, in_kernel inp <> recorded_kernel (in_kernel inp) -> ~ V inp.
+Proof.
+  intros V V_pre [_ [_ [_ HV]]] inp Hk Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [_ [_ [Hr _]]]]. exact (Hk Hr).
+Qed.
+
+(** Every input a launch predicate admits is the image of an old input
+    whose kernel is of record. *)
+Corollary embeds_recorded_covers_images : forall V V_pre, embeds_recorded V V_pre ->
+  forall inp, V inp ->
+  inp = embed (forget inp)
+  /\ p23_kernel (forget inp) = recorded_kernel (p23_kernel (forget inp)).
+Proof.
+  intros V V_pre Hr inp Hv. split.
+  - exact (embeds_covers_images _ _ (embeds_of_embeds_recorded _ _ Hr) inp Hv).
+  - destruct Hr as [_ [_ [_ HV]]].
+    destruct (proj1 (HV inp) Hv) as [_ [_ [_ [Hk _]]]]. exact Hk.
 Qed.
 
 (* =========================================================================
@@ -674,11 +795,14 @@ Qed.
 Definition spec_table_pre : list SpecArm :=
   List.filter (fun a => negb (Z.eqb (sa_no a) 129%Z)) spec_table.
 
-(** It is commit 604b5c371ed0's table, number for number: the list below
-    is that commit's [Sys.SyscallTable.spec_table], read off
-    [git show 604b5c3:theories/LinuxProcessSem/Sys/SyscallTable.v], and
-    [tools/check_pre_copies.py] holds it to that file. *)
-Lemma spec_table_pre_numbers : arm_numbers spec_table_pre = [17; 19; 20; 21; 22; 23; 24; 25; 29; 32; 35; 46; 48; 56; 57; 59; 61; 62; 63; 64; 65; 66; 67; 68; 72; 73; 74; 78; 79; 80; 82; 83; 85; 90; 91; 93; 94; 96; 98; 99; 101; 113; 114; 119; 123; 124; 130; 131; 132; 134; 135; 144; 146; 147; 148; 149; 150; 156; 157; 158; 159; 160; 167; 169; 172; 173; 174; 175; 176; 177; 178; 198; 199; 200; 201; 202; 203; 204; 205; 206; 207; 208; 209; 210; 211; 212; 214; 215; 216; 220; 222; 226; 233; 242; 260; 261; 268; 278; 435; 436; 439]%Z.
+(** It is commit 604b5c371ed0's table, number for number, plus C1's
+    pwritev2 arm 287: besides 129, that arm is the one difference between
+    the current table and 604b5c371ed0's.  The list below is that
+    commit's [Sys.SyscallTable.spec_table], read off
+    [git show 604b5c3:theories/LinuxProcessSem/Sys/SyscallTable.v], with
+    287 at its place in table order, and [tools/check_pre_copies.py]
+    holds it to that file after removing the one 287. *)
+Lemma spec_table_pre_numbers : arm_numbers spec_table_pre = [17; 19; 20; 21; 22; 23; 24; 25; 29; 32; 35; 46; 48; 56; 57; 59; 61; 62; 63; 64; 65; 66; 67; 68; 72; 73; 74; 78; 79; 80; 82; 83; 85; 90; 91; 93; 94; 96; 98; 99; 101; 113; 114; 119; 123; 124; 130; 131; 132; 134; 135; 144; 146; 147; 148; 149; 150; 156; 157; 158; 159; 160; 167; 169; 172; 173; 174; 175; 176; 177; 178; 198; 199; 200; 201; 202; 203; 204; 205; 206; 207; 208; 209; 210; 211; 212; 214; 215; 216; 220; 222; 226; 233; 242; 260; 261; 268; 278; 287; 435; 436; 439]%Z.
 Proof. reflexivity. Qed.
 
 (** Removing the rows of one number changes no lookup of another. *)

@@ -39,7 +39,7 @@ Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsStat
      mnt 4 (Some 2%positive) 23 40 4 false false] in
   let st := with_userns st [user0] in
   let st := with_mntns st [mk_mntns 1 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 SbTmpfs; sb 4 40 SbTmpfs] in
   let st := with_tree st
     [dent 1 1 None [] 1;

@@ -47,7 +47,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly EntryLaunch EntryWitness
   Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
-  Fs.EventPoll Fs.Signalfd Fs.OpaqueAnswers
+  Fs.EventPoll Fs.Signalfd Fs.Cloexec Fs.OpaqueAnswers
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
   Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls
@@ -498,6 +498,13 @@ Proof.
          end.
   all: first
     [ left; exact Hd
+    | (* the SIGPIPE arm: its install carries the SIGCHLD bit *)
+      (match type of H with
+       | check_rt_sigaction_sigpipe _ _ _ _ _ = CheckOk _ _ =>
+           destruct (check_rt_sigaction_sigpipe_model _ _ _ _ _ _ _ H)
+             as [-> | (a & ->)];
+           left; exact Hd
+       end)
     | (unfold sigchld_install_model in Hd;
        rewrite m_sigchld_dfl_with_sigchld_dfl in Hd;
        destruct (m_sigchld_dfl m); [left; reflexivity|];

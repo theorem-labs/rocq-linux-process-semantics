@@ -31,6 +31,8 @@ Variable A : atable.
 Variable nx0 : nat.     (** variables below nx0 are the INITIAL ones (splits / shapes may only mention those) *)
 Variable LIMIT : Z.     (** the run's backing budget (vm_limit): target_alloc_limit *)
 Variable CEIL : Z.      (** the run's allocation ceiling: [page_round_down_Z (alloc_top (m_vmmaps model))] *)
+Variable rz : Z.        (** the run's CONFIG_RSEQ flag as 0 or 1 ([APC.rseq_z]), which fixes the auxv size
+                            [APC.AUXSZ rz]; a certificate is checked at one literal value *)
 
 (* ######################################################################### *)
 (** * 7. Plans                                                                *)
@@ -131,8 +133,8 @@ Definition node_x (x : xnode) (args : list expr) (cs : acs) : option acs :=
   | XMemcpy => summary_copy segs A nx0 cs (x_memcpy A)
   | XMemIsZero => summary_miz A nx0 cs
   | XEnvScan => node_envscan A cs
-  | XPnScan => node_pnscan A nx0 cs
-  | XLayout => node_layout cs args
+  | XPnScan => node_pnscan A nx0 rz cs
+  | XLayout => node_layout rz cs args
   | XIStrncpy => summary_istrncpy A nx0 cs
   | XPopFree => summary_popfree A nx0 cs args
   | XSniff => summary_sniff segs A nx0 cs
@@ -163,7 +165,7 @@ Variable bfuel : nat.              (** executor fuel per block *)
     of [PMmapIn]); code 6 = shapes differ, 3 = empty list *)
 Definition check_all (chk : acs -> plan -> cres) (k : plan) (css : list acs) : cres :=
   match css with
-  | [] => CErr 3 k (init_acs_of A CEIL)
+  | [] => CErr 3 k (init_acs_of rz A CEIL)
   | cs0 :: rest =>
       match chk cs0 k with
       | COk s0 =>

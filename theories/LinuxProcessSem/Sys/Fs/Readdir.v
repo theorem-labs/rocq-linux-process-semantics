@@ -318,11 +318,13 @@ Definition getdents64_opaque_spec (fd : word) (o : OpaqueFd) (dirent count : wor
   match o with
   | OProcFdDir fl pos => procfd_getdents_spec fd fl pos dirent count
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => unmodeled
+  | OInherited _ | OAlias _ => unmodeled
       (* FAIL-CLOSED: [CLASS(fd_pos, f)] refuses an O_PATH file (-EBADF);
          the two sysctl files, an eventfd, a signalfd and an inherited
          regular file have no [.iterate_shared] (-ENOTDIR); an [ONsFile]'s
-         object is of unknown type.  None of these is written (fs/readdir.c,
+         object is of unknown type, and an alias's description is used
+         through its partner only ([State.OAlias]). None of these is
+         written (fs/readdir.c,
          fs/file.c, fs/eventfd.c, fs/proc/proc_sysctl.c, fs/signalfd.c,
          read at v6.18.44; identical at v6.18.46). *)
   end.
@@ -481,6 +483,9 @@ Definition getdents64_spec (fd dirent count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
+  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
+                                              file is still a regular file, whose
+                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
   | Some (FdSeqpacket _ _ _) => err_ret ENOTDIR
@@ -488,6 +493,10 @@ Definition getdents64_spec (fd dirent count : word) : Sys SyscallEffect :=
                                               [socket_file_ops] alone: it has no
                                               [.iterate_shared] (net/socket.c:156,
                                               v6.18.46) *)
+  | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
+  | Some (FdDgram _)   => err_ret ENOTDIR    (* nor for a datagram socket's file *)
+  | Some (FdEventfd _) => err_ret ENOTDIR    (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
+                                                [.iterate_shared] either *)
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)

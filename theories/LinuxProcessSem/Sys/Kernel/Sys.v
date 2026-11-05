@@ -76,12 +76,19 @@ Open Scope sys_scope.
     thread, yet its [PIDTYPE_TGID] pid is still the dead leader's while
     its [thread_pid] is its own, so [getpid] and [gettid] disagree
     there.  The model admits no such process.  It DOES have [clone]
-    (220) and [clone3] (435), but only for a flag word that shares
-    nothing -- [Fork.clone_fork_flags_b] admits [SIGCHLD] alone, and
-    [Checks.ProcessCreation.clone_sharing_flags_unmodeled] proves any
-    bit of [clone_sharing_bits] forces [Unmodeled], [CLONE_THREAD] and
-    [CLONE_SIGHAND] among them.  So no task this model describes was
-    ever created with [CLONE_THREAD], and
+    (220) and [clone3] (435), but they give a child only for a flag word
+    that shares nothing -- [Fork.clone_fork_flags_b] admits [SIGCHLD]
+    alone, and the clone statements of [Checks.ProcessCreation]
+    ([clone_sharing_flags_unmodeled], [clone_arg_checks_einval],
+    [clone_high_bits_unmodeled], [clone_open_file_unmodeled], and for
+    [clone3] [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
+    [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
+    [clone3_other_size_unmodeled]) prove that a word with any bit of
+    [clone_sharing_bits], [CLONE_THREAD] and [CLONE_SIGHAND] among them,
+    declines or answers -EINVAL (a [clone3] struct the copy does not read
+    answers -EFAULT or declines), and none of these makes a child.  So no
+    task this
+    model describes was ever created with [CLONE_THREAD], and
     [current == current->group_leader] holds throughout.  The premise
     rests on the flag word, not on the syscall NUMBER,
     and widening [clone_fork_flags_b] breaks that proof rather than
@@ -153,11 +160,19 @@ Definition getpid_spec : Sys SyscallEffect := set_tid_address_spec.
     task.  A second task would need a tid of its own, and [gettid] is
     the syscall that would report it — [getpid] would not, answering the
     shared tgid.  So the fail-closed obligation that keeps this arm
-    honest is the clone one: [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
-    proves any bit of [clone_sharing_bits] forces [Unmodeled],
-    [CLONE_THREAD] among them, so no run this model describes ever has a
-    second task to ask.  A change that gave the model threads owes
-    [gettid] a per-task tid before it owes [getpid] anything.
+    honest is the clone one: the clone statements of
+    [Checks.ProcessCreation] ([clone_sharing_flags_unmodeled],
+    [clone_arg_checks_einval], [clone_high_bits_unmodeled],
+    [clone_open_file_unmodeled], and for [clone3]
+    [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
+    [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
+    [clone3_other_size_unmodeled]) prove that a word with any bit of
+    [clone_sharing_bits], [CLONE_THREAD] among them, declines or answers
+    -EINVAL (a [clone3] struct the copy does not read answers -EFAULT or
+    declines), and none of these makes a child, so no run this model
+    describes ever has a second task to ask.  A change that gave the
+    model threads owes [gettid] a per-task tid before it owes [getpid]
+    anything.
 
     Which of the three calls happens first is not observable, for the
     reason given above: whichever runs first pins the identity and the
@@ -295,6 +310,12 @@ Definition getsid_pid_ok (pid : word) (tid : option word) : bool :=
                 | None => false
                 end)%bool.
 
+(** A fresh pid in [[0, Fork.PID_MAX_ENVELOPE)], the model unchanged:
+    [getsid_spec]'s answer before a setsid. *)
+Definition pid_choice_spec : Sys SyscallEffect :=
+  sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;
+  ret_only sid.
+
 (** [getsid pid] (156): the session id of the caller, or of the task
     [pid] names, as the caller's own pid namespace numbers it.
 
@@ -407,9 +428,7 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
                                     task back into the released world, and a child starts
                                     with the bit clear *)
     end
-  else
-    sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;
-    ret_only sid.
+  else pid_choice_spec.
 
 (** [getppid] (173): the thread-group id of the caller's PARENT, as the
     caller's own pid namespace numbers it.  No argument and no failure
@@ -439,34 +458,61 @@ Definition getsid_spec (pid : word) : Sys SyscallEffect :=
     caller's own tid: a task always has a number in its own active
     namespace, its parent need not.
 
-    A FRESH CHOICE ON EVERY CALL, AND NO PIN.  The parent is the one
-    process fact this model cannot hold still.  When the parent exits,
-    [forget_original_parent] rewrites the caller's [real_parent] to a
-    subreaper or to the namespace's init, at a moment no input of this
-    model names, so two calls can answer two different values.  A
-    choice recorded once, the way [Fork.set_tid_address_spec] records
-    the tid, would forbid that run; an unconstrained choice per call
-    admits it, and that is the honest model.
+    THE ANSWER IS THE CURRENT PARENT, [State.m_ppid], with ONE MOVE PER
+    REPARENT WINDOW.  When the parent exits, [forget_original_parent]
+    rewrites the caller's [real_parent] to a subreaper or to the
+    namespace's init ([find_new_reaper]), at a moment no input of this
+    model names, and sends the caller its parent-death signal
+    ([group_send_sig_info(t->pdeath_signal, ...)]) when one is set.
+    Under [Run.valid_input] the environment's parent dies only while that
+    signal is 0, so its death kills nothing and is seen only here: the
+    model makes the move at the [getppid] that shows it.
 
-    A PROGRAM CAN TOLERATE IT.  What a fresh choice costs is that the
-    model never says WHICH parent: a statement that needs [getppid] to
-    name a particular process has to take that as a premise about the
-    environment.  What it does not cost is the program that CHECKS:
-    a sandbox launcher may be handed the pid of the process that started
-    it, compare [getppid]'s answer with it, and stop if they differ.  A
-    proof about that program quantifies over the answer, reads it from
-    the call log ([Run.star_calls]: [sc_no = 173], [sc_ret]) and covers
-    both branches, which is exactly what a per-call choice supports.
+    - THE WINDOW ([reparent_open]) is open while the signal is 0, and
+      after a signal installed over 0 until the next answer
+      ([State.m_reparent_unseen]): a death before the signal was set
+      shows at that answer.  While it is shut the answer is
+      [State.m_ppid] and nothing else.
+    - IN AN OPEN WINDOW the answer is [State.m_ppid], or, if the pid has
+      not moved in this window ([State.m_reparent_moved]), one other pid
+      in the range above: the reaper.  The answer is stored
+      ([State.with_ppid_answered]), so the parent never moves back and a
+      second move needs a new window.
 
-    No argument register is read and no model state is read or written:
-    the riscv [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec]
-    covers this number too, as does its residual error-injection
-    infidelity.  The four credential READERS -- [getuid] (174),
-    [geteuid] (175), [getgid] (176), [getegid] (177) -- and five setters
-    are in the credentials section below. *)
+    This assumes at most one reparenting per window.  The model does not
+    check that assumption: Linux can reparent again when a subreaper dies,
+    which this arm does not cover in the same window.  [Run.run] and
+    [Run.run_pcfg] use this arm; statements over those runs, including
+    [Equivalence.strong_equiv] and [Equivalence.strong_universal_T], inherit
+    the limit.  SCOPE.md lists it among unchecked environment assumptions.
+
+    The parent's death at ANY moment, and the kill its signal then sends,
+    are not this arm's: they are steps of the configured run
+    [Run.sstep_pcfg] under the named environment [Run.parent_may_die],
+    which records the reaper through the same setter.
+
+    No argument register is read and no memory is touched: the riscv
+    [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec] covers this
+    number too, as does its residual error-injection infidelity.  The
+    four credential READERS -- [getuid] (174), [geteuid] (175), [getgid]
+    (176), [getegid] (177) -- and five setters are in the credentials
+    section below. *)
+Definition reparent_open (m : Model) : bool :=
+  (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0 || m_reparent_unseen m)%bool.
+
+(** An answer [p] an open window admits: the held pid, or, before the
+    pid has moved in this window, any pid in the range. *)
+Definition getppid_answer_ok (m : Model) (p : word) : bool :=
+  (bv_eqb p (m_ppid m)
+   || (negb (m_reparent_moved m) && Z.ltb (bv_unsigned p) PID_MAX_ENVELOPE))%bool.
+
 Definition getppid_spec : Sys SyscallEffect :=
-  ppid <- choose (fun p : word => (bv_unsigned p < PID_MAX_ENVELOPE)%Z) ;;
-  ret_only ppid.
+  m <- get_model ;;
+  if reparent_open m then
+    ppid <- choose (fun p : word => getppid_answer_ok m p = true) ;;
+    modify (with_ppid_answered ppid) ;;
+    ret_only ppid
+  else ret_only (m_ppid m).
 
 (* ------------------------------------------------------------- prlimit64 *)
 
@@ -957,14 +1003,12 @@ Definition commit_id_creds (old_eff new_eff : word) (c : Creds) (m : Model)
     process as root.
 
     [getppid] (173) is NOT one of these readers, although it sits beside
-    them in kernel/sys.c.  The parent's pid is a function of no input and
-    of no model state, and it CHANGES under the kernel -- when the parent
-    exits, [find_new_reaper] reparents the process to a subreaper or to
-    the namespace's init -- at a moment the model cannot predict.  So the
-    treatment [Kernel.Fork.set_tid_address_spec] gives the tid, one
-    choice recorded once, does not transfer.  [getppid_spec] above makes
-    a fresh choice on every call instead, and says why a program can be
-    proved to tolerate that. *)
+    them in kernel/sys.c.  The parent's pid is seeded by the launch, but
+    it CHANGES under the kernel -- when the parent exits,
+    [find_new_reaper] reparents the process to a subreaper or to the
+    namespace's init -- at a moment the model cannot predict.  So
+    [getppid_spec] above answers the held pid, and admits that one move
+    inside the reparent window it describes. *)
 Definition getid_spec (sel : Creds -> word) : Sys SyscallEffect :=
   m <- get_model ;;
   ret_only (sel (m_creds m)).
@@ -1347,6 +1391,34 @@ Definition utsname_wf (bs : list byte) : bool :=
    && bv_eqb (nth 64 (uts_field 3 bs) uts_nul) uts_nul
    && bv_eqb (nth 64 (uts_field 5 bs) uts_nul) uts_nul)%bool.
 
+(** WHAT A LATER [uname] MUST REPEAT, given the name [b0] the first one
+    pinned: [release] (member 2) and [version] (member 3), byte for
+    byte.  [sysname] and [machine] need no comparison, since
+    [utsname_wf] already fixes both to their literals.  [nodename]
+    (member 1) and [domainname] (member 5) are NOT repeated: another
+    process that shares this process's UTS namespace (the host's, or a
+    sandbox's) may change them at any time during the run, by
+    [sethostname] (161) or [setdomainname] (162) when it holds
+    CAP_SYS_ADMIN over the user namespace that owns that UTS namespace
+    ([ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN)],
+    kernel/sys.c:1419-1443, 1424, 1473-1497, 1478, Linux v6.18.46), or by
+    a write to /proc/sys/kernel/hostname or /proc/sys/kernel/domainname
+    (mode 0644, kernel/utsname_sysctl.c:107-122).  The next [uname] of
+    this process copies the new member out.  That is an event of the
+    environment, which the model may not assume away. *)
+Definition uts_kernel_agree (b0 bs : list byte) : bool :=
+  (uts_eqb (uts_field 2 bs) (uts_field 2 b0)
+   && uts_eqb (uts_field 3 bs) (uts_field 3 b0))%bool.
+
+(** The names a [uname] may deliver once [b0] is pinned: a name inside
+    [utsname_wf] whose kernel members agree with [b0]'s.  A pin outside
+    [utsname_wf] is never written by [uname_spec] (it pins only a name
+    [utsname_wf] admits); a model built with one by hand keeps the old
+    exact repeat, so that this predicate is never empty. *)
+Definition uts_repeat_ok (b0 bs : list byte) : Prop :=
+  if utsname_wf b0 then utsname_wf bs = true /\ uts_kernel_agree b0 bs = true
+  else bs = b0.
+
 (** [uname name] — syscall 160, which riscv64 routes to [sys_newuname]
     (include/uapi/asm-generic/unistd.h, [__NR_uname 160],
     [__SYSCALL(__NR_uname, sys_newuname)], Linux v6.18.46, commit
@@ -1401,14 +1473,18 @@ Definition utsname_wf (bs : list byte) : bool :=
       for the same reason, and this one is worse, because the prefix may
       end anywhere in 390 bytes rather than at one of two fields.
 
-    WHICH UTSNAME: the environment's, recorded once.  On the first
-    [uname] of a run the model CHOOSES any buffer [utsname_wf] admits and
-    pins it in [State.procst_utsname]; every later [uname] must deliver
-    exactly those bytes.  That pin is the whole reason this spec is not a
-    per-call [choose]: two calls that disagreed about the running kernel
-    would be a trace no Linux machine produces.  [State.procst_utsname]
-    argues the mechanism and the note above [State.Model] compares it
-    against the two alternatives.
+    WHICH UTSNAME: the environment's.  On the first [uname] of a run the
+    model CHOOSES any buffer [utsname_wf] admits and pins it in
+    [State.procst_utsname].  Every later [uname] delivers a name inside
+    [utsname_wf] whose [release] and [version] are the pin's
+    ([uts_repeat_ok]): those two, with [sysname] and [machine], are the
+    running kernel's and no call changes them, so two calls that
+    disagreed about them would be a trace no Linux machine produces.
+    [nodename] and [domainname] are CHOSEN AGAIN at each call: another
+    process that shares this process's UTS namespace may change them
+    between two calls of this one ([uts_kernel_agree]'s note).  [State.procst_utsname] argues the
+    mechanism and the note above [State.Model] compares it against the
+    two alternatives.
 
     WHAT IS NOT MODELED, and it is one thing rather than a list: a
     program that DEPENDS ON THE CONTENT of [nodename], [release],
@@ -1428,7 +1504,9 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     | None => unmodeled       (* a partial [copy_to_user] then -EFAULT *)
     | Some _ =>
         match m_utsname m with
-        | Some bs => pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
+        | Some b0 =>
+            bs <- choose (uts_repeat_ok b0) ;;
+            pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
         | None =>
             bs <- choose (fun bs : list byte => utsname_wf bs = true) ;;
             set_utsname bs ;;
@@ -1578,9 +1656,10 @@ Definition capbset_assumed (cap : Z) : bool :=
     covers ([PR_CAPBSET_DROP] (24) is declined, and nothing else
     modeled writes the set), so a real process reads the same bit each
     time, which the model does not promise.  No modeled arm decides its
-    answer by one of those bits: [Kernel.Capability.capget_spec]
-    declines the one caller whose sets [cap_bset] reaches, a caller
-    with a uid 0.
+    answer by one of those bits: [Kernel.Capability.capget_spec] and
+    [Kernel.Capability.capset_spec] decline the one caller whose sets
+    [cap_bset] reaches, a caller with a uid 0, and for every other caller
+    [capset_spec]'s bounding-set test follows from its first test.
 
     -EINVAL IS A VERSION CLAIM, and the only one here.  [CAP_LAST_CAP]
     is 40 at the cited commit and has been since v5.9; a kernel that

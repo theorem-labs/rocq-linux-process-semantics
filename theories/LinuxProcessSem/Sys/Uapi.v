@@ -37,7 +37,8 @@ Definition O_TRUNC   : Z := 512%Z.
 Definition O_CLOEXEC : Z := 524288%Z.
 (** musl's syscall layer ORs O_LARGEFILE into EVERY open it issues
     (src/internal/syscall.h); it is meaningless on a 64-bit ABI, so it
-    is accepted and ignored like O_CLOEXEC. *)
+    is accepted and ignored.  (O_CLOEXEC is accepted too, and recorded
+    as the new descriptor's close-on-exec bit: [Open.open_cloexec_b].) *)
 Definition O_LARGEFILE : Z := 32768%Z.
 
 (** O_NONBLOCK: 2048.  riscv64 takes the asm-generic ABI
@@ -46,7 +47,7 @@ Definition O_LARGEFILE : Z := 32768%Z.
     riscv supplies no asm/fcntl.h of its own to override it — checked at
     v5.10 and v6.17, and only meaningful from v4.15, which is where
     arch/riscv first exists.  Accepted and IGNORED like
-    O_CLOEXEC and O_LARGEFILE, but for a reason that is a property of
+    O_LARGEFILE, but for a reason that is a property of
     this model's FILE SYSTEM rather than of the flag, so it is spelled
     out here and has to be re-checked whenever that file system grows.
     [Open.open_ignored_flags] is the mask that carries it.
@@ -73,11 +74,12 @@ Definition O_LARGEFILE : Z := 32768%Z.
 
     - READ THE FLAG WORD BACK, which means fcntl(F_GETFL).  fcntl (25)
       is modeled and F_GETFL IS one of the commands it answers — but
-      only on the fd kind whose flag word the model can derive, which is
-      [State.FdSocket] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
+      only on the fd kinds whose flag word the model can derive, which
+      are [State.FdSocket], [State.FdStream], [State.FdEventfd] and
+      [State.FdDgram] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
       mints one: the fd this bullet is about is an [FdFile], [FdFileW],
-      [FdFileA], [FdFileRW], [FdDir], [FdDevNull] or [FdUrandom], and F_GETFL
-      declines on every one of them FOR THE
+      [FdFileA], [FdFileRW], [FdDir], [FdDevNull], [FdUrandom] or
+      [FdAnon], and F_GETFL declines on every one of them FOR THE
       REASON THIS BULLET IS ABOUT — the ignored bit is part of the answer, so the
       read fails closed inside the spec rather than at the dispatch.
       The two facts moved together on purpose: [Fcntl.getfl_f_flags]
@@ -272,8 +274,9 @@ Definition urandom_path : path :=
     generates only unistd_32.h and unistd_64.h — so every constant here
     is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
-Definition AF_UNIX   : Z := 1%Z.    (* include/linux/socket.h:191 *)
+Definition AF_UNIX   : Z := 1%Z.    (* = AF_LOCAL, include/linux/socket.h:191 *)
 Definition AF_INET   : Z := 2%Z.
+Definition AF_INET6  : Z := 10%Z.   (* include/linux/socket.h *)
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
 
 Definition SOCK_STREAM    : Z := 1%Z.
@@ -328,6 +331,9 @@ Definition IPPROTO_MAX   : Z := 263%Z.
 Definition SOCKADDR_STORAGE_SIZE : Z := 128%Z.
 Definition SA_FAMILY_SIZE        : Z := 2%Z.
 Definition SOCKADDR_IN_SIZE      : Z := 16%Z.
+(** [sizeof(struct sockaddr_un)]: a 2-byte [sun_family] and a 108-byte
+    [sun_path] (include/uapi/linux/un.h, UNIX_PATH_MAX 108). *)
+Definition SOCKADDR_UN_SIZE      : Z := 110%Z.
 
 (** The three option LEVELS an AF_INET/SOCK_STREAM socket has a handler
     for, and [shutdown]'s three directions.
@@ -357,6 +363,16 @@ Definition SHUT_RD    : Z := 0%Z.
 Definition SHUT_WR    : Z := 1%Z.
 Definition SHUT_RDWR  : Z := 2%Z.
 
+(** The two SOL_SOCKET options the stream pair answers, from
+    include/uapi/asm-generic/socket.h, which riscv64 uses unchanged. *)
+Definition SO_SNDBUF : Z := 7%Z.
+Definition SO_RCVBUF : Z := 8%Z.
+
+(** [MSG_DONTWAIT] (include/linux/socket.h): a per-call O_NONBLOCK.
+    [__sys_sendto] and [__sys_recvfrom] OR it in themselves when the
+    file has O_NONBLOCK, so the protocol sees one flag either way. *)
+Definition MSG_DONTWAIT : Z := 64%Z.
+
 Definition SEEK_SET : Z := 0%Z.
 Definition SEEK_CUR : Z := 1%Z.
 Definition SEEK_END : Z := 2%Z.
@@ -366,6 +382,14 @@ Definition SEEK_END : Z := 2%Z.
     BEFORE [vfs_llseek], so the -EINVAL for a whence past it precedes
     every per-file-kind answer — including a pipe's -ESPIPE. *)
 Definition SEEK_MAX : Z := 4%Z.
+
+(** [RWF_NOAPPEND] (include/uapi/linux/fs.h:425, Linux v6.18.46): the
+    per-call negation of O_APPEND that [pwritev2]'s [rwf_t] flags may
+    carry.  [kiocb_set_rw_flags] (include/linux/fs.h:3890-3894) clears
+    IOCB_APPEND from the request when it is set, so the bytes land at
+    the position the call names.  The one [rwf_t] bit the model reads;
+    see [Fs.ReadWrite.pwritev2_spec]. *)
+Definition RWF_NOAPPEND : Z := 32%Z.
 
 (** mmap prot/flags ABI constants (asm-generic, as on riscv64:
     include/uapi/asm-generic/mman-common.h, Linux v6.18.46, commit
@@ -444,6 +468,31 @@ Definition TIOCSWINSZ  : word := Z_to_bv 64 21524.  (* 0x5414 *)
 Definition TIOCNOTTY   : word := Z_to_bv 64 21538.  (* 0x5422 *)
 Definition TIOCGPTN    : word := Z_to_bv 64 2147767344.  (* 0x80045430 *)
 Definition TIOCSPTLCK  : word := Z_to_bv 64 1074025521.  (* 0x40045431 *)
+
+(** [SIOCGIFINDEX], the socket ioctl that maps an interface name to its
+    index (include/uapi/linux/sockios.h, Linux v6.18.46): [0x8933], in
+    the [SOCK_IOC_TYPE] (0x89) range that [is_socket_ioctl_cmd]
+    (include/linux/netdevice.h) admits.  musl's [if_nametoindex] issues
+    it on an AF_UNIX datagram socket. *)
+Definition SIOCGIFINDEX : word := Z_to_bv 64 35123.  (* 0x8933 *)
+
+(** The layout of [struct ifreq] on riscv64 (include/uapi/linux/if.h,
+    Linux v6.18.46): [ifr_name], [IFNAMSIZ] = 16 bytes, at offset 0,
+    then the [ifr_ifru] union at offset 16, whose [int ifru_ivalue] is
+    [ifr_ifindex].  The union's largest member is [struct ifmap] (two
+    [unsigned long]s, a [short] and three [char]s: 21 bytes padded to
+    24 at 8-byte alignment), so [sizeof(struct ifreq)] is 40, the count
+    [get_user_ifreq] and [put_user_ifreq] (net/socket.c) copy whole. *)
+Definition IFNAMSIZ : Z := 16%Z.
+Definition IFREQ_SIZE : Z := 40%Z.
+
+(** [LOOPBACK_IFINDEX] (include/net/flow.h:25, Linux v6.18.46): the
+    index every network namespace's loopback device has.
+    [loopback_net_init] (drivers/net/loopback.c) allocates the device
+    under the name "lo", registers it, and stops the kernel
+    ([BUG_ON(dev->ifindex != LOOPBACK_IFINDEX)], :222) if it got any
+    other index. *)
+Definition LOOPBACK_IFINDEX : Z := 1%Z.
 
 (** The fcntl commands, from [include/uapi/asm-generic/fcntl.h] — riscv64
     supplies no arch override, so these are its values.  [F_GETLK] and
@@ -919,6 +968,24 @@ Definition sigpipe_mask : Z := 4096%Z.
 Definition sigpipe_blocked (mask : word) : bool :=
   negb (w_is0 (bv_and mask (Z_to_bv 64 sigpipe_mask))).
 
+(** The two handler values a [struct sigaction] can carry that run no
+    code: SIG_DFL and SIG_IGN, [((__force __sighandler_t)0)] and [1]
+    (include/uapi/asm-generic/signal-defs.h, Linux v6.18.46).  Any other
+    value is the address of a handler. *)
+Definition SIG_DFL : Z := 0%Z.
+Definition SIG_IGN : Z := 1%Z.
+
+(** [UAPI_SA_FLAGS] (include/linux/signal_types.h, Linux v6.18.46):
+    [SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_ONSTACK | SA_RESTART |
+    SA_NODEFER | SA_RESETHAND | SA_EXPOSE_TAGBITS | __ARCH_UAPI_SA_FLAGS],
+    = 0x1 | 0x2 | 0x4 | 0x08000000 | 0x10000000 | 0x40000000 | 0x80000000
+    | 0x800 (include/uapi/asm-generic/signal-defs.h), with
+    [__ARCH_UAPI_SA_FLAGS] 0 because riscv defines no SA_RESTORER.  So
+    0xD8000807.  [do_sigaction] ANDs every installed and every reported
+    flag word with it ([act->sa.sa_flags &= UAPI_SA_FLAGS], and the same
+    for [oact]). *)
+Definition UAPI_SA_FLAGS : Z := 0xD8000807%Z.
+
 (** [WNOHANG], the one wait4 option this model accepts
     (include/uapi/linux/wait.h, whose [W*] macro block is byte-identical
     in mainline from v3.10 — the oldest tag that still fetches — through
@@ -1033,15 +1100,32 @@ Definition MAX_RT_PRIO : Z := 100%Z.
     space (include/uapi/linux/sched.h, Linux v6.18.46, commit
     1f99e9ab748f).
 
-    Named here for ONE reader, and it is not in [Sys/]: it is the bit
-    [Kernel.Futex.Syscalls]'s empty-waiter-set argument depends on
-    nobody ever granting, and
-    [Checks.Cases.Kernel.Futex.Syscalls] turns that dependency into a
-    compile-time fact over every clone gate.  [Kernel.Fork] names the
-    flag in prose throughout and needs no constant: the fork gate is an
-    equality on the whole word, and the namespace gate below admits only
-    [SIGCHLD] and the [CLONE_NEW*] bits. *)
+    Named here first for [Kernel.Futex.Syscalls]'s empty-waiter-set
+    argument, which depends on nobody ever granting it, and which
+    [Checks.Cases.Kernel.Futex.Syscalls] turns into a compile-time fact
+    over every clone gate.  [Kernel.Fork]'s argument checks
+    ([Kernel.Fork.clone_arg_checks]) read it too, with the bits below. *)
 Definition CLONE_VM : Z := 256%Z.
+
+(** The other bits of a clone flag word that [Kernel.Fork]'s argument
+    decoding and checks read ([clone_args_of_clone], [clone3_pre],
+    [clone_arg_checks]; include/uapi/linux/sched.h, Linux v6.18.46).  [CSIGNAL]
+    is the exit-signal byte of legacy [clone]'s register.
+    [CLONE_CLEAR_SIGHAND] and [CLONE_INTO_CGROUP] are [clone3]'s own,
+    above bit 31.  [CLONE_LEGACY_FLAGS] is
+    include/linux/sched/task.h's, the low 32 bits. *)
+Definition CSIGNAL             : Z := 0x000000ff%Z.
+Definition CLONE_NEWTIME       : Z := 0x00000080%Z.
+Definition CLONE_FS            : Z := 0x00000200%Z.
+Definition CLONE_SIGHAND       : Z := 0x00000800%Z.
+Definition CLONE_PIDFD         : Z := 0x00001000%Z.
+Definition CLONE_PARENT        : Z := 0x00008000%Z.
+Definition CLONE_THREAD        : Z := 0x00010000%Z.
+Definition CLONE_PARENT_SETTID : Z := 0x00100000%Z.
+Definition CLONE_DETACHED      : Z := 0x00400000%Z.
+Definition CLONE_CLEAR_SIGHAND : Z := 0x100000000%Z.
+Definition CLONE_INTO_CGROUP   : Z := 0x200000000%Z.
+Definition CLONE_LEGACY_FLAGS  : Z := 0xffffffff%Z.
 
 (** The seven namespace bits of [clone]'s flag word that
     [Kernel.Fork.clone_ns_flags_b] admits beside [SIGCHLD]
@@ -1236,6 +1320,7 @@ Definition STAT_SIZE : Z := 128%Z.
     written inline because three of them are read twice, and because a
     layout error is the one mistake a reader cannot see in a numeral. *)
 Definition ST_MODE_OFF : nat := 16%nat.
+Definition ST_NLINK_OFF : nat := 20%nat.
 Definition ST_RDEV_OFF : nat := 32%nat.
 Definition ST_PAD1_OFF : nat := 40%nat.
 Definition ST_SIZE_OFF : nat := 48%nat.
@@ -1444,9 +1529,17 @@ Proof. intro l. apply stat_bytes_eqb_eq. reflexivity. Qed.
     arm for the permission bits, no [chown] arm for the ids, no
     [link]/[linkat] arm for the link count, and a type, an inode number,
     a device and a block size do not change at all while the inode
-    lives.  [unlinkat] (35) IS modeled and DOES drop [st_nlink], but it
-    also removes the key, and [Fs.Stat.fstat_spec] declines a descriptor
-    whose path [Fs] no longer holds, so no [fstat] observes the drop.
+    lives.  [unlinkat] (35) IS modeled and DOES drop [st_nlink]
+    ([vfs_unlink] -> the filesystem's [->unlink], [shmem_unlink]'s
+    [drop_nlink] on tmpfs; fs/namei.c, mm/shmem.c, Linux v6.18.46).  The
+    working-directory arm removes only a name no descriptor holds, so no
+    [fstat] observes that drop.  The /tmp arm also removes a name open
+    descriptors hold, and there the drop is observable: it moves the pin
+    off the name and into the unnamed file with [st_nlink] set to 0
+    ([stat_pin_unlinked], [Fs.Namei.unlink_open_tmp_spec]), so the pin
+    later [fstat]s are compared against already carries the dropped
+    count.  That is the one place a pinned member moves, and it moves
+    once, with the name.
 
     WHAT IS DELIBERATELY LEFT FREE: [st_size] (which [write] and
     [ftruncate] move, and which [stat_size_ok] constrains instead),
@@ -1468,6 +1561,25 @@ Lemma stat_stable_eqb_refl : forall b, stat_stable_eqb b b = true.
 Proof.
   intro b. unfold stat_stable_eqb. now rewrite !stat_bytes_eqb_refl.
 Qed.
+
+(** [st_nlink] of a delivered [struct stat] is 0: the answer Linux
+    gives for a file whose last name is gone, since [drop_nlink] took
+    [i_nlink] from 1 to 0 and [generic_fillattr] (fs/stat.c, Linux
+    v6.18.46) copies [i_nlink] into [nlink]. *)
+Definition stat_nlink_zero (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_NLINK_OFF 4 bs) 0.
+
+(** A file's stat pin once its name is gone: the same bytes with
+    [st_nlink] (four bytes at [ST_NLINK_OFF]) set to 0.  A pin taken
+    while the file had its name records the link count the environment
+    chose then; after the removal Linux reports 0, because every file
+    [Fs.Namei.unlink_open_tmp_spec] turns into an unnamed one has
+    exactly one name -- in the run's private /tmp, and no [link] or
+    [linkat] arm exists in [Sys.SyscallTable.spec_table] to give it a
+    second -- and [drop_nlink] takes that one away.  Every other member
+    is the inode's and stays. *)
+Definition stat_pin_unlinked (bs : list byte) : list byte :=
+  firstn ST_NLINK_OFF bs ++ Z_to_le_bytes 4 0 ++ skipn (ST_NLINK_OFF + 4) bs.
 
 (** TWO SLICES OF A DELIVERED [struct stat] READ THE SAME out of two
     buffers that agree on the region they fall in: wholly inside the
