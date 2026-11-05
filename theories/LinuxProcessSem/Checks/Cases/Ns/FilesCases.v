@@ -50,7 +50,7 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
      mnt 5 (Some 1%positive) 10 50 5 noexec_flags] in
   let st := with_userns st users in
   let st := with_mntns st [mk_mntns 1 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st
     [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
      sb 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836] in

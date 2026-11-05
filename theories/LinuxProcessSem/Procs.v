@@ -2899,15 +2899,13 @@ Qed.
     outcome when its errno is in the clone's refusal list
     ([Fork.clone_errnos]), the clone's family is forced-only in the run's
     configuration, and the released spec admits a non-refusal at the same
-    input.  That filter cannot see the namespace state, so once an errno
-    the namespace tables decide is in the refusal list (a closed pid
-    namespace's ENOMEM, which the tables do not answer yet) it can remove
-    an answer the tables force, and then [px_clone_fail] has no step to
-    match the extension's answer.  Today no [CnErr] errno of
-    [clone_ns_exact] (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], and
-    where [clone_ns_exact] is [CnUnmodeled], [Ns.Spec.ns_ext]'s clone admits
-    no failure; so under [ns_ext] the premise of [px_clone_fail] is the
-    released step for every failure [ns_ext] admits
+    input.  That filter cannot see the namespace state: it would remove
+    a closed children's pid namespace's forced ENOMEM.  The tables now
+    answer that errno after advancing the pid cursors, and
+    [clone_table_kept] keeps it.  At the default launch, where the
+    children's namespace is the active namespace, [clone_ns_exact]
+    answers only EPERM, EINVAL and ENOSPC, none in [Fork.clone_errnos].
+    There [ns_ext]'s failed-clone premise is still the released step
     ([NsProcs.ns_clone_fail_step_released], over
     [NsProcs.clone_ns_exact_errno]).
 

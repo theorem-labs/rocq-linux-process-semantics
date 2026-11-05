@@ -192,17 +192,53 @@ Definition mntns_with_anon (n : MntNs) (b : bool) : MntNs :=
 Definition mntns_with_origin (n : MntNs) (o : option positive) : MntNs :=
   mkMntNs (mntns_id n) (mntns_owner n) (mntns_root n) (mntns_released n) (mntns_anon n) o.
 
-(** A pid namespace: its parent, owner and level, and the last pid
-    allocated in it ([pid_ns->idr], which [alloc_pid] walks cyclically
-    from the last one).  A namespace with no parent is the host's, whose
-    pids the environment chooses. *)
+(** Allocation state of the namespace's first process.  [PaInit] means
+    that its init group is in the model's process table; an outside init
+    or unknown launch is [PaUnknown]. *)
+Inductive PidAlloc := PaEmpty | PaInit | PaClosed | PaUnknown.
+
+(** A pid namespace, its allocation state, measured limit, and launch
+    fact that no pid above the cursor and below the limit is reserved.
+    A namespace with no parent is the host's; the core chooses its pid.
+    Linux v6.18.46: kernel/pid.c:191-252,276-303; lib/idr.c:127-136. *)
 Record PidNs := mkPidNs {
   pidns_id     : positive;
   pidns_parent : option positive;
   pidns_owner  : positive;
   pidns_level  : nat;
-  pidns_last   : Z
+  pidns_last   : Z;
+  pidns_alloc  : PidAlloc;
+  pidns_max    : Z;
+  pidns_cursor_clear : bool
 }.
+
+(** Launch defaults: unknown init, Linux's new-namespace pid limit, and
+    the explicit assumption of a clear range above the cursor. *)
+Definition mk_pidns (id : positive) (parent : option positive) (owner : positive)
+    (level : nat) (last : Z) : PidNs :=
+  mkPidNs id parent owner level last PaUnknown 4194304 true.
+
+Definition pidns_with_last (p : PidNs) (last : Z) : PidNs :=
+  mkPidNs (pidns_id p) (pidns_parent p) (pidns_owner p) (pidns_level p) last
+    (pidns_alloc p) (pidns_max p) (pidns_cursor_clear p).
+Definition pidns_with_alloc (p : PidNs) (a : PidAlloc) : PidNs :=
+  mkPidNs (pidns_id p) (pidns_parent p) (pidns_owner p) (pidns_level p) (pidns_last p)
+    a (pidns_max p) (pidns_cursor_clear p).
+Definition pidns_with_max (p : PidNs) (limit : Z) : PidNs :=
+  mkPidNs (pidns_id p) (pidns_parent p) (pidns_owner p) (pidns_level p) (pidns_last p)
+    (pidns_alloc p) limit (pidns_cursor_clear p).
+Definition pidns_with_cursor_clear (p : PidNs) (clear : bool) : PidNs :=
+  mkPidNs (pidns_id p) (pidns_parent p) (pidns_owner p) (pidns_level p) (pidns_last p)
+    (pidns_alloc p) (pidns_max p) clear.
+
+(** Allocation and its rollback change cursor and allocation state
+    together, without constructing an intermediate namespace record. *)
+Definition pidns_with_last_alloc (p : PidNs) (last : Z) (a : PidAlloc) : PidNs :=
+  mkPidNs (pidns_id p) (pidns_parent p) (pidns_owner p) (pidns_level p) last
+    a (pidns_max p) (pidns_cursor_clear p).
+
+Definition fresh_pidns (id parent owner : positive) (level : nat) : PidNs :=
+  mkPidNs id (Some parent) owner level 0 PaEmpty 4194304 true.
 
 (** What file system a superblock is.  The contents of a host file system
     are the host's, given as listed dentries and inodes like any other;
@@ -481,62 +517,81 @@ Record NsEnv := mkNsEnv {
   env_foreign_pgroups : bool;
   env_open_groups     : list positive;
   env_overflow_ids    : option (Z * Z);
-  env_entered_mntns   : list positive
+  env_entered_mntns   : list positive;
+  env_outside_pids    : bool
 }.
 
 (** The launch values of a system the namespace model knows nothing of:
     Linux's default mount limit (100000), no procfs entry, no fallback
     device, [default_mi_env], a link-message bound of 65536 bytes, no name
     known absent, no foreign process group, no open peer group, the
-    default overflow ids (65534, 65534) and no outside namespace entry. *)
+    default overflow ids (65534, 65534), no outside namespace entry and no
+    outside pid allocation. *)
 Definition empty_nsenv : NsEnv :=
-  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false [] (Some (65534, 65534)%Z) [].
+  mkNsEnv 100000%Z [] [] default_mi_env 65536%Z [] false [] (Some (65534, 65534)%Z) [] false.
 
 (** The setters of [NsEnv], one per field: with [empty_nsenv], the only
     places that apply [mkNsEnv] to every field. *)
 Definition env_with_mount_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv v (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_proc_entries (e : NsEnv) (v : list ProcEntry) : NsEnv :=
   mkNsEnv (env_mount_max e) v (env_net_fallback e) (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_net_fallback (e : NsEnv) (v : list NetIf) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) v (env_mountinfo e) (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_mountinfo (e : NsEnv) (v : MiEnv) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) v (env_nl_link_max e)
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_nl_link_max (e : NsEnv) (v : Z) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e) v
-          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_host_absent (e : NsEnv) (v : list (positive * list byte)) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) v (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_nl_link_max e) v (env_foreign_pgroups e) (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_foreign_pgroups (e : NsEnv) (b : bool) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) b (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e).
+          (env_nl_link_max e) (env_host_absent e) b (env_open_groups e) (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 Definition env_with_open_groups (e : NsEnv) (v : list positive) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) v (env_overflow_ids e) (env_entered_mntns e).
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) v (env_overflow_ids e) (env_entered_mntns e)
+          (env_outside_pids e).
 
 (** The same environment with [env_overflow_ids] set to [o]. *)
 Definition env_with_overflow_ids (e : NsEnv) (o : option (Z * Z)) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
-          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) o (env_entered_mntns e).
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e) o (env_entered_mntns e)
+          (env_outside_pids e).
 
 (** Namespaces whose mounts an outside task may alter, including through a
     path or descriptor into a detached tree. *)
 Definition env_with_entered_mntns (e : NsEnv) (ns : list positive) : NsEnv :=
   mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
           (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e)
-          (env_overflow_ids e) ns.
+          (env_overflow_ids e) ns (env_outside_pids e).
+
+(** [false] assumes no outside allocation or write of ns_last_pid or
+    pid_max in any namespace whose cursor the model holds, for the whole
+    run.  It makes no assertion about occupancy or pre-launch events. *)
+Definition env_with_outside_pids (e : NsEnv) (b : bool) : NsEnv :=
+  mkNsEnv (env_mount_max e) (env_proc_entries e) (env_net_fallback e) (env_mountinfo e)
+          (env_nl_link_max e) (env_host_absent e) (env_foreign_pgroups e) (env_open_groups e)
+          (env_overflow_ids e) (env_entered_mntns e) b.
 
 (** The order the kernel keeps of mount propagation, beyond each mount's
     peer group and master group ([Ns.Propagation]; Linux v6.18.46):
@@ -597,6 +652,8 @@ Record NsState := mkNsState {
   ns_env      : NsEnv
 }.
 
+Definition ns_outside_pids (st : NsState) : bool := env_outside_pids (ns_env st).
+
 (** The five capability sets of a task, as 64-bit masks. *)
 Record CapSets := mkCaps {
   cap_effective   : Z;
@@ -627,8 +684,13 @@ Record NsCtx := mkNsCtx {
   cx_umask        : Z;
   cx_caps         : CapSets;
   cx_securebits   : Z;
-  cx_cloexec      : list Z
+  cx_cloexec      : list Z;
+  cx_pidns_children : option positive
 }.
+
+(** Linux's pid_ns_for_children; the default follows the active namespace. *)
+Definition pidns_children (ctx : NsCtx) : positive :=
+  match cx_pidns_children ctx with Some n => n | None => cx_pidns ctx end.
 
 (** The pid of the task in pid namespace [pidns] ([task_tgid_nr_ns]), from
     its pids [cx_pids], innermost first. *)
@@ -722,55 +784,66 @@ Definition set_utsns (st : NsState) (u : UtsNs) : NsState :=
     umask to 022. *)
 Definition init_nsctx : NsCtx :=
   mkNsCtx 1%positive 1%positive 1%positive 1%positive host_uts [] (1%positive, 1%positive)
-          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [].
+          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] None.
 
 (** The setters of [NsCtx], one per field: with [init_nsctx], the only
     places that apply [mkNsCtx] to every field. *)
 Definition with_user_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx n (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_mount_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) n (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_pid_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) n (cx_net ctx) (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_net_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) n (cx_uts ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_uts_ns (ctx : NsCtx) (n : positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) n (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_pids (ctx : NsCtx) (ps : list (positive * Z)) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) ps (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_root (ctx : NsCtx) (r : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx) r
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_root ctx) c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_root ctx) (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_caps (ctx : NsCtx) (c : CapSets) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx).
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx) (cx_pidns_children ctx).
 
 Definition with_securebits (ctx : NsCtx) (b : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) b (cx_cloexec ctx).
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) b (cx_cloexec ctx) (cx_pidns_children ctx).
 
 (** The descriptors marked close-on-exec replaced by [l]. *)
 Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
-          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l.
+          (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l (cx_pidns_children ctx).
+
+(** A measured children's namespace, distinct from the active one if the
+    launcher unshared or joined it before exec. *)
+Definition with_pidns_children (ctx : NsCtx) (n : positive) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+    (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) (Some n).
+
+(** The child's active namespace is also its namespace for children. *)
+Definition with_active_pidns_children (ctx : NsCtx) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_uts ctx) (cx_pids ctx)
+    (cx_root ctx) (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx) None.

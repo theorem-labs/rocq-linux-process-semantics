@@ -236,7 +236,8 @@ Definition mount_line (E : MiEnv) (st : NsState) (root : Loc) (m : Mount) : opti
     state an outside task may change ([Propagation.flags_open]): each line
     prints [sb_rdonly] as its super options' " ro" or " rw"
     ([show_mountinfo], fs/proc_namespace.c:182, Linux v6.18.46), and a
-    remount through a mount of a listed namespace changes it for every
+    remount through a mount of a listed namespace, or a reconfiguration
+    through [fspick] (see [Propagation.flags_open]), changes it for every
     mount of the superblock.  The per-mount " ro" or " rw" is the mount's
     own MNT_READONLY (155), which only a task in the mount's own namespace
     can change. *)
