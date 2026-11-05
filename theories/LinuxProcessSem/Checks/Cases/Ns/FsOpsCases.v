@@ -338,6 +338,44 @@ Example symlinkat_devpts_missing_operation_is_eperm :
   ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
 Proof. vm_compute. reflexivity. Qed.
 
+(** The devpts superblock of [devpts_state] is mounted a second time, as
+    mount 2 of mount namespace 2.  The caller creates through mount 1 of
+    namespace 1.  With namespace 2 entered from outside, namespace 1 holds
+    no open mount and the walk answers, but an outside task in namespace 2
+    can make superblock 1 read-only through mount 2 ([do_reconfigure_mnt],
+    fs/namespace.c:3211-3241, Linux v6.18.46), and [filename_create]'s
+    deferred [mnt_want_write] then answers EROFS (fs/namei.c:4223,
+    4236-4237).  So no answer is given ([Propagation.flags_open]).  The
+    control enters only namespace 9, which holds no mount on superblock 1,
+    and keeps the EPERM. *)
+Definition devpts_shared_state (entered : list positive) : NsState :=
+  let st := devpts_state no_flags 511 in
+  let st := with_mounts st (ns_mounts st ++
+              [mkMount 2 2 None 1 1 1 no_flags no_flags false false None None]) in
+  let st := with_mntns st (ns_mntns st ++ [mk_mntns 2 1 2 false]) in
+  with_entered_mntns st entered.
+
+Example devpts_create_shared_sb_entered_declines :
+  mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_shared_state [2%positive]) = EUnmodeled
+  /\ mkdirat_fn (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+       base_model base_ctx (devpts_shared_state [2%positive]) = EUnmodeled
+  /\ symlinkat_fn symlink_in base_model base_ctx (devpts_shared_state [2%positive])
+     = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example devpts_create_shared_sb_other_entered_answers :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_shared_state [9%positive])) = Some (-1)
+  /\ ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_shared_state [9%positive]))
+     = Some (-1)
+  /\ ret_of (symlinkat_fn (symlink_to (47 :: repeat 120 256)) base_model base_ctx
+       (devpts_shared_state [2%positive])) = Some (-36).
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions devpts_create_shared_sb_entered_declines.
+Print Assumptions devpts_create_shared_sb_other_entered_answers.
+
 Print Assumptions mkdirat_tmpfs_trailing_slash_creates_directory.
 Print Assumptions mkdirat_devpts_trailing_slash_readonly.
 Print Assumptions mkdirat_devpts_trailing_slash_unmapped_before_permission.

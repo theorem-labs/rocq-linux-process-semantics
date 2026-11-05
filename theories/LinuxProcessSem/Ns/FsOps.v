@@ -121,8 +121,11 @@ Inductive CreatedKind := CDir | CLink (target : list byte).
     table; incomplete root/task listings decline. Devpts has a negative
     lookup, then the deferred EROFS, [may_create]'s EOVERFLOW and write
     permission (3315-3318), before the absent operation's EPERM
-    ([vfs_mkdir], 4444-4446; [vfs_symlink], 4814-4815). A host directory
-    declines. Tmpfs creation keeps its existing decision. *)
+    ([vfs_mkdir], 4444-4446; [vfs_symlink], 4814-4815). Devpts, like
+    tmpfs, declines after its NAME_MAX test when an outside task may
+    change the mount's or the superblock's read-only state
+    ([Propagation.flags_open]): every later answer depends on it. A host
+    directory declines. Tmpfs creation keeps its existing decision. *)
 Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (p : Loc) (name : list byte) (mode : Z) (ck : CreatedKind) : OpenRes :=
   match loc_mnt_sb st p with
@@ -151,6 +154,7 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
               match find_dentry st d, dentry_inode st d with
               | Some dx, Some parent =>
                   if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+                  else if flags_open st mt then OROver
                   else if mf_ro (mnt_flags mt) || sb_rdonly sb then ORErr EROFS
                   else if negb (fsuidgid_mapped st (sb_owner sb) cr) then ORErr EOVERFLOW
                   else let attr := mkObj (ino_kind parent) (ino_perm parent) (ino_uid parent)
