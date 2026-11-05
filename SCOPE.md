@@ -590,10 +590,13 @@ not apply.
   or changes mounts through a path or descriptor into such a tree
   (`setns`, `kernel/nsproxy.c:536-569`; `mntns_install`,
   `fs/namespace.c:6261-6274`; `may_change_propagation`, `2823-2834`), nor
-  reconfigures the superblock of a model mount through a mount the tables
-  do not hold (`fspick` with `FSCONFIG_CMD_RECONFIGURE` needs no
-  `check_mnt`, only `may_mount` and `CAP_SYS_ADMIN` over the superblock's
-  user namespace: `fs/fsopen.c:163-194, 251-268, 296-297`).
+  reconfigures the superblock of a model mount, through any mount or path,
+  except through a mount of a listed namespace, which the mount-flag test
+  below covers (`fspick` with `FSCONFIG_CMD_RECONFIGURE` needs no
+  `check_mnt`, only `may_mount`, a path to the root of some mount of the
+  superblock, such as one under `/proc/<pid>/root` of a model task or a
+  descriptor it holds, and `CAP_SYS_ADMIN` over the superblock's user
+  namespace: `fs/fsopen.c:163-194, 251-268, 296-297`).
   Both-empty defaults keep the exact successful and error cases unchanged.
   Named nondefault uncertainty declines rather than claiming stale topology.
   `Ns.Propagation.entered_closure` also includes anonymous trees whose

@@ -848,8 +848,11 @@ Definition ns_open (st : NsState) (n : positive) : bool :=
     [FSCONFIG_CMD_RECONFIGURE] reconfigures a superblock from the root of
     any of its mounts without [check_mnt] (fs/fsopen.c:163-194, 251-268,
     296-297): through a mount of a listed namespace in the tables this
-    test holds, and through a mount the tables do not hold the launch
-    assumption of [Tables.env_entered_mntns] (SCOPE.md) rules it out.
+    test holds; through any other mount or path, a mount the tables do
+    not hold or a mount of an unlisted namespace reached by path (under
+    [/proc/<pid>/root] of a model task, or through a descriptor), the
+    launch assumption of [Tables.env_entered_mntns] (SCOPE.md) rules it
+    out.
     Every read of [mnt_flags] or [sb_rdonly] then declines ([sb_i_nodev]
     and [sb_i_noexec] are fixed when the superblock is made).  With both
     uncertainty lists empty it is false ([flags_open_closed]). *)
