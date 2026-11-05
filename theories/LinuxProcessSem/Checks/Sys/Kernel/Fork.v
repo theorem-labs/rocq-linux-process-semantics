@@ -372,32 +372,32 @@ Proof.
     hall Hg; inv_ok; reflexivity.
 Qed.
 
-Lemma check_clone3_einval_sound_ok : forall uargs eff m m' evs i,
-  check_clone3_einval uargs eff m = CheckOk m' evs ->
-  clone3_einval uargs i m (Ok eff m' evs).
+Lemma check_clone3_einval_sound_ok : forall reads eff m m' evs i,
+  check_clone3_einval reads eff m = CheckOk m' evs ->
+  clone3_einval reads i m (Ok eff m' evs).
 Proof.
-  intros uargs eff m m' evs i H. unfold check_clone3_einval in H.
+  intros reads eff m m' evs i H. unfold check_clone3_einval in H.
   apply check_ret_only_copyins_ok_iff in H as (-> & -> & ->).
   unfold clone3_einval.
   apply record_copyins_ok_empty; [reflexivity|].
   unfold err_ret, ret_only. apply pure_ok.
 Qed.
 
-Lemma check_clone3_einval_complete_ok : forall uargs eff m m' evs i,
-  clone3_einval uargs i m (Ok eff m' evs) ->
-  check_clone3_einval uargs eff m = CheckOk m' evs.
+Lemma check_clone3_einval_complete_ok : forall reads eff m m' evs i,
+  clone3_einval reads i m (Ok eff m' evs) ->
+  check_clone3_einval reads eff m = CheckOk m' evs.
 Proof.
-  intros uargs eff m m' evs i H. unfold clone3_einval in H.
+  intros reads eff m m' evs i H. unfold clone3_einval in H.
   apply record_copyins_ok_inv in H as (core & Hc & ->).
   unfold err_ret, ret_only, pure in Hc. injection Hc as -> -> ->.
   cbn [eff_copyins]. rewrite app_nil_r.
   unfold check_clone3_einval. exact (check_ret_only_copyins_refl _ _ _ _).
 Qed.
 
-Lemma clone3_einval_not_unmodeled : forall uargs i m,
-  ~ clone3_einval uargs i m Unmodeled.
+Lemma clone3_einval_not_unmodeled : forall reads i m,
+  ~ clone3_einval reads i m Unmodeled.
 Proof.
-  intros uargs i m H. unfold clone3_einval in H.
+  intros reads i m H. unfold clone3_einval in H.
   apply record_copyins_unmodeled_inv in H.
   unfold err_ret, ret_only, pure in H. discriminate H.
 Qed.
@@ -831,23 +831,23 @@ Proof.
 Qed.
 
 (** The same four for [clone3]'s, which carries the copy's ledger
-    ([uargs] here). *)
-Lemma check_clone3_stores_sound_ok : forall i uargs r eff m m' evs,
-  check_clone3_stores i uargs r eff m = CheckOk m' evs ->
-  clone3_with_stores uargs r i m (Ok eff m' evs).
+    ([reads]). *)
+Lemma check_clone3_stores_sound_ok : forall i reads r eff m m' evs,
+  check_clone3_stores i reads r eff m = CheckOk m' evs ->
+  clone3_with_stores reads r i m (Ok eff m' evs).
 Proof.
-  intros i uargs r eff m m' evs H. unfold check_clone3_stores in H.
+  intros i reads r eff m m' evs H. unfold check_clone3_stores in H.
   apply check_copyins_after_ok_iff in H as [Hci H].
   unfold clone3_with_stores. apply record_copyins_clear_ok; [exact Hci|].
   apply (check_with_stores_sound_ok clone_resolve check_clone_resolve); [|exact H].
   intros e m1 evs1 He. now apply check_clone_resolve_sound_ok.
 Qed.
 
-Lemma check_clone3_stores_sound_unmodeled : forall i uargs r eff m,
-  check_clone3_stores i uargs r eff m = CheckUnmodeled ->
-  clone3_with_stores uargs r i m Unmodeled.
+Lemma check_clone3_stores_sound_unmodeled : forall i reads r eff m,
+  check_clone3_stores i reads r eff m = CheckUnmodeled ->
+  clone3_with_stores reads r i m Unmodeled.
 Proof.
-  intros i uargs r eff m H. unfold check_clone3_stores in H.
+  intros i reads r eff m H. unfold check_clone3_stores in H.
   apply check_copyins_after_unmodeled in H.
   unfold clone3_with_stores. apply record_copyins_unmodeled.
   apply (check_with_stores_sound_unmodeled clone_resolve check_clone_resolve i r
@@ -855,11 +855,11 @@ Proof.
   intros e He. now apply check_clone_resolve_sound_unmodeled with (eff := e).
 Qed.
 
-Lemma check_clone3_stores_complete_ok : forall i uargs r eff m m' evs,
-  clone3_with_stores uargs r i m (Ok eff m' evs) ->
-  check_clone3_stores i uargs r eff m = CheckOk m' evs.
+Lemma check_clone3_stores_complete_ok : forall i reads r eff m m' evs,
+  clone3_with_stores reads r i m (Ok eff m' evs) ->
+  check_clone3_stores i reads r eff m = CheckOk m' evs.
 Proof.
-  intros i uargs r eff m m' evs H. unfold clone3_with_stores in H.
+  intros i reads r eff m m' evs H. unfold clone3_with_stores in H.
   apply record_copyins_ok_inv in H as (core & Hcore & ->).
   assert (Hci : eff_copyins core = []).
   { pose proof Hcore as Hc0.
@@ -870,7 +870,7 @@ Proof.
     cbn [eff_copyins]. exact Hci0. }
   unfold check_clone3_stores. apply check_copyins_after_ok_iff. split.
   - unfold with_copyins. cbn [eff_copyins]. rewrite Hci, app_nil_r. reflexivity.
-  - replace (clear_copyins (with_copyins (uargs ++ eff_copyins core) core)) with core.
+  - replace (clear_copyins (with_copyins (reads ++ eff_copyins core) core)) with core.
     + apply (check_with_stores_complete_ok clone_resolve); [| |exact Hcore].
       * intros e m1 evs1 He. now apply check_clone_resolve_complete_ok with (i := i).
       * intros e m1 evs1 He. exact (proj1 (check_clone_resolve_no_writes _ _ _ _ He)).
@@ -878,11 +878,11 @@ Proof.
       reflexivity.
 Qed.
 
-Lemma check_clone3_stores_complete_unmodeled : forall i uargs r eff m,
-  clone3_with_stores uargs r i m Unmodeled ->
-  check_clone3_stores i uargs r eff m = CheckUnmodeled.
+Lemma check_clone3_stores_complete_unmodeled : forall i reads r eff m,
+  clone3_with_stores reads r i m Unmodeled ->
+  check_clone3_stores i reads r eff m = CheckUnmodeled.
 Proof.
-  intros i uargs r eff m H. unfold clone3_with_stores in H.
+  intros i reads r eff m H. unfold clone3_with_stores in H.
   apply record_copyins_unmodeled_inv in H.
   unfold check_clone3_stores.
   rewrite (check_with_stores_complete_unmodeled clone_resolve check_clone_resolve i r

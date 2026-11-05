@@ -171,8 +171,8 @@ Definition clone3_resolve_witness (reads : list (word * nat)) (m : Model)
   if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then Unmodeled
   else Ok (with_copyins reads (mkEffect (errno_ret EAGAIN) [] [])) m [].
 
-Lemma clone3_resolve_witness_ok : forall i uargs m,
-  clone3_resolve uargs i m (clone3_resolve_witness uargs m).
+Lemma clone3_resolve_witness_ok : forall i reads m,
+  clone3_resolve reads i m (clone3_resolve_witness reads m).
 Proof.
   intros. unfold clone3_resolve, clone3_resolve_witness.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg.
@@ -191,10 +191,10 @@ Definition clone3_stores_witness (i : SyscallInput) (reads : list (word * nat))
   if clone_stores_ok i m r
   then clone3_resolve_witness reads m else Unmodeled.
 
-Lemma clone3_stores_witness_ok : forall i uargs r m,
-  clone3_with_stores uargs r i m (clone3_stores_witness i uargs r m).
+Lemma clone3_stores_witness_ok : forall i reads r m,
+  clone3_with_stores reads r i m (clone3_stores_witness i reads r m).
 Proof.
-  intros i uargs r m. unfold clone3_with_stores, clone3_stores_witness.
+  intros i reads r m. unfold clone3_with_stores, clone3_stores_witness.
   destruct (clone_stores_ok i m r) eqn:Hok; cbv iota.
   - unfold clone3_resolve_witness.
     destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg; cbv iota.

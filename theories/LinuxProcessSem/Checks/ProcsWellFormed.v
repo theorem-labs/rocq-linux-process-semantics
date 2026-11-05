@@ -522,10 +522,10 @@ Proof.
   apply check_ret_only_ok_iff in H as (_ & -> & _). reflexivity.
 Qed.
 
-Lemma check_clone3_einval_halted : forall uargs eff m m' evs,
-  check_clone3_einval uargs eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Lemma check_clone3_einval_halted : forall reads eff m m' evs,
+  check_clone3_einval reads eff m = CheckOk m' evs -> m_halted m' = m_halted m.
 Proof.
-  intros uargs eff m m' evs H. unfold check_clone3_einval in H.
+  intros reads eff m m' evs H. unfold check_clone3_einval in H.
   apply check_ret_only_copyins_ok_iff in H as (_ & -> & _). reflexivity.
 Qed.
 
@@ -556,10 +556,10 @@ Proof.
   injection H as <- _. reflexivity.
 Qed.
 
-Lemma check_clone3_resolve_halted : forall uargs eff m m' evs,
-  check_clone3_resolve uargs eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Lemma check_clone3_resolve_halted : forall reads eff m m' evs,
+  check_clone3_resolve reads eff m = CheckOk m' evs -> m_halted m' = m_halted m.
 Proof.
-  intros uargs [ret ws zs us cs ins] m m' evs H. unfold check_clone3_resolve in H.
+  intros reads [ret ws zs us cs ins] m m' evs H. unfold check_clone3_resolve in H.
   destruct ws as [|? ?], zs as [|? ?], us as [|? ?], cs as [|? ?];
     cbv beta iota in H; repeat dif H; try discriminate H.
   exact (check_clone_answer_halted _ _ _ _ H).
@@ -857,11 +857,11 @@ Proof.
     destruct ws, zs, us, cs, ci; try discriminate H; repeat split.
 Qed.
 
-Local Lemma resolve3_no_memory : forall uargs eff m m' evs,
-  check_clone3_resolve uargs eff m = CheckOk m' evs ->
+Local Lemma resolve3_no_memory : forall reads eff m m' evs,
+  check_clone3_resolve reads eff m = CheckOk m' evs ->
   eff_writes eff = [] /\ eff_zeros eff = [] /\ eff_unmaps eff = [] /\ eff_copies eff = [].
 Proof.
-  intros uargs [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
+  intros reads [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); try discriminate H.
   destruct ws, zs, us, cs; try discriminate H. repeat split.
 Qed.
