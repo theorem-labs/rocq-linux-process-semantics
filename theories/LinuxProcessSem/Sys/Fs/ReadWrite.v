@@ -660,8 +660,8 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
 (** [write] on an opaque descriptor ([State.OpaqueFd]).  [ksys_write]
     takes the descriptor with [CLASS(fd_pos, f)], and [vfs_write] then
     tests FMODE_WRITE, FMODE_CAN_WRITE and [access_ok] in that order
-    (fs/read_write.c:727-732, :670-675, v6.18.46), so every errno below
-    comes before the buffer is looked at. *)
+    (fs/read_write.c:727-732, :670-675, v6.18.46), so every answer below
+    but the eventfd's comes before the buffer is looked at. *)
 Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
   | OEventFd fl => write_eventfd_spec fl buf count
@@ -2482,8 +2482,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            ledger exactly as the channel and file arms record theirs *)
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
-      (* five objects answer an errno, and a shared eventfd and
-         [State.ONsFile] decline: see [write_opaque_spec] *)
+      (* the eventfd answers, five objects answer an errno, and
+         [State.ONsFile] declines: see [write_opaque_spec] *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED: the model sends no message on an end, so its
          receive queue stays empty ([State.FdSeqpacket]) *)
