@@ -662,6 +662,34 @@ Local Ltac aa_frame H :=
   repeat (kf_step H || aa_done_or_unfold H || (aa_close; fail 2));
   aa_close.
 
+(* Test: single arm to verify the tactic works *)
+Lemma check_getcwd_preserves_aa : arm_preserves_aa arm_getcwd.
+Proof.
+  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
+  autorewrite with arm_unfold in H.
+  unfold check_getcwd in H. cbv beta iota zeta in H.
+  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
+  aa_close.
+Qed.
+
+Lemma check_close_preserves_aa : arm_preserves_aa arm_close.
+Proof.
+  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
+  autorewrite with arm_unfold in H.
+  unfold check_close in H. cbv beta iota zeta in H.
+  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
+  aa_close.
+Qed.
+
+Lemma check_write_preserves_aa : arm_preserves_aa arm_write.
+Proof.
+  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
+  autorewrite with arm_unfold in H.
+  unfold check_write in H. cbv beta iota zeta in H.
+  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
+  aa_close.
+Qed.
+
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
   unfold checked_table.
