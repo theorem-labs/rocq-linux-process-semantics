@@ -1332,9 +1332,12 @@ Qed.
     edit teaching [prctl] another option fails that pin, and whoever
     makes it has to come back here.
     [clone] (220) and [clone3] (435) ARE in [Specs.modeled_sysnos], but
-    only for flag words that share no address space
+    give a child only for flag words that share no address space
     ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b],
-    [Checks.ProcessCreation.clone_sharing_flags_unmodeled]), so no
+    [Checks.ProcessCreation.clone_sharing_flags_unmodeled]; a word the
+    argument checks refuse is -EINVAL or declines, and makes no child,
+    [Checks.ProcessCreation.clone_arg_checks_einval] with
+    [clone_open_file_unmodeled] for the declining tables), so no
     process this model admits an outcome for can write another's
     [mm->context].  (riscv64 has no [fork] syscall of its own: [fork] IS
     [clone(SIGCHLD)], which this model answers.)
@@ -4164,7 +4167,19 @@ Record ProcState := mkProcState {
                                     the same for 435) forces
                                     [Unmodeled] on any bit of
                                     [clone_sharing_bits], [CLONE_THREAD]
-                                    among them.  Widening that predicate
+                                    among them, that the argument checks
+                                    do not refuse and that the call
+                                    decodes to a record; those the
+                                    checks refuse are -EINVAL
+                                    ([Checks.ProcessCreation.clone_arg_checks_einval],
+                                    [clone3_arg_checks_einval]), and the
+                                    rest are -EINVAL or declined by
+                                    [clone3_own_checks_einval],
+                                    [clone_high_bits_unmodeled],
+                                    [clone3_declined_struct_unmodeled]
+                                    and [clone3_other_size_unmodeled].
+                                    None of them makes a child.
+                                    Widening that predicate
                                     breaks the proof rather than this
                                     comment *)
   procst_creds : Creds;          (* the process's credentials: seeded from the
@@ -6459,7 +6474,9 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
 
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
-      so a clone with either end open is [unmodeled], and
+      so a clone with either end open is [unmodeled], except a [clone3]
+      struct [Fork.clone3_einval_b] refuses, which is -EINVAL and creates
+      no process; and
       [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
       most namespace bits, so
       CLONE_FILES and CLONE_THREAD never share a table and no second

@@ -174,14 +174,14 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
       the parent's memory between two of the parent's own instructions,
       and every claim about the parent's memory would be void.  Closed by
       [clone_fork_flags_b] and [clone_ns_flags_b] below: neither flag
-      word this model answers has [CLONE_VM] or [CLONE_VFORK], so
+      word that gets a child has [CLONE_VM] or [CLONE_VFORK], so
       [copy_process] takes [dup_mm] and the two address spaces are
       separate from the call onwards.
     - THE DESCRIPTOR TABLE AND THE FILE OFFSET.  [CLONE_FILES] shares the
       table itself and [CLONE_FS] shares [fs_struct] (so a child [chdir]
       moves the parent's [AT_FDCWD], the only dirfd [Open.openat_spec]
       accepts); [CLONE_PIDFD] installs a NEW descriptor in the PARENT's
-      table.  All three are outside the modeled flag words.  What survives
+      table.  No word that gets a child holds any of the three.  What survives
       even a plain fork is the FILE OFFSET: [copy_files] duplicates the
       table while both tables point at the same [struct file], so a
       child's [read] advances the offset the parent will read from next.
@@ -190,14 +190,16 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
       model cannot express the sharing.  Closed by declining the call
       outright while any such descriptor is open —
       [clone_no_shared_file_b], stated as
-      [Checks.ProcessCreation.clone_open_file_unmodeled].  An inherited
+      [Checks.ProcessCreation.clone_open_file_unmodeled] — except a
+      [clone3] struct [clone3_einval_b] refuses, which answers -EINVAL
+      whatever the table holds and creates no child.  An inherited
       file's offset ([State.OInherited]) is handed to the child instead:
       the caller keeps the descriptor without it ([forfeit_inherited]).
     - PARENT MEMORY WRITTEN BY THE CALL ITSELF.  [CLONE_PARENT_SETTID]
       writes the child tid through [parent_tidptr] and [CLONE_PIDFD]
-      writes an int through the same pointer.  Both are outside the
-      modeled flag words, so the call writes no byte of user memory and
-      the effect below carries no write entry.
+      writes an int through the same pointer.  No word that gets a child
+      holds either, and an -EINVAL writes nothing, so the call writes no
+      byte of user memory and the effect below carries no write entry.
 
     FIVE CHANNELS ARE NOT CLOSED, and none of them is closeable by a
     flag test.  Each is a known gap, stated here rather than pretended
@@ -306,7 +308,13 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
 
     ALLOWLIST, NOT BLOCKLIST.  The gates admit the one flag word
     [SIGCHLD] ([clone_fork_flags_b]) and [SIGCHLD] plus namespace bits
-    and nothing else ([clone_ns_flags_b]), and decline every other.
+    and nothing else ([clone_ns_flags_b]), and give no child for any
+    other.  Another word answers -EINVAL when its decoded record exists
+    and Linux's argument-only checks refuse it ([clone_arg_checks]: a
+    refusal that creates no child and reads only the arguments), for
+    [clone] only behind the descriptor gate ([clone_einval]), or, for
+    [clone3], when its own tests refuse the struct ([clone3_pre]); and
+    declines otherwise.
     Naming the dangerous bits
     instead would be a blocklist over a 32-bit space in which new bits
     keep being defined, and each of the bits above is a separate thing
@@ -390,7 +398,10 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     [flags = SIGCHLD] the tid pointers and [tls] are never dereferenced —
     the uses are gated on [CLONE_PARENT_SETTID] (a [put_user] into the
     caller's memory, not a read), [CLONE_CHILD_SETTID] and
-    [CLONE_SETTLS] — so this spec does not fetch them, exactly as
+    [CLONE_SETTLS] — so this spec does not use them for the two words
+    that get a child (a word it does not admit is decoded into [CloneArgs],
+    whose K0 test compares the a2 parent-tid pointer only with itself, so
+    no answer depends on them), exactly as
     [Ioctl.ioctl_spec] does not take its third argument.  On success
     [kernel_clone] returns [pid_vnr(pid)] to the caller, a live pid and
     therefore strictly positive and different from the caller's own.  The
@@ -527,7 +538,7 @@ Definition SIGCHLD : Z := 17.
 Definition clone_errnos : list Z := [EAGAIN; ENOMEM; EMFILE; EACCES].
 
 (** The fork word: a child that shares nothing, reporting [SIGCHLD] on
-    exit.  This is what [fork] is.  (The other word [clone_spec] answers,
+    exit.  This is what [fork] is.  (The other word that gets a child,
     [SIGCHLD] plus namespace bits, has its own gate, [clone_ns_flags_b].)
 
     THE TEST IS ON THE WHOLE 64-BIT REGISTER, which is STRICTER than the
@@ -1068,15 +1079,262 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
          modify (fun m0 => with_child pid (forfeit_model m0)) ;;
          ret_only pid).
 
-(** The fork word goes to [clone_resolve], the namespace word to
-    [clone_ns_resolve], and every other flag word declines.  This is the
-    answer from the model's own lists, the whole answer of a run whose
-    host has no clone refuser ([State.no_clone_refusers]); [clone_spec]
-    below adds the refusers' errnos to it ([clone_spec_default_iff]). *)
+(* =========================================================================
+   The decoded argument record and the argument-only -EINVAL checks
+   ========================================================================= *)
+
+(** THE DECODED ARGUMENT RECORD.  [clone] and [clone3] both fill one
+    [struct kernel_clone_args] (kernel/fork.c, Linux v6.18.46), and the
+    model keeps one record of the part of it a clone reads: the flags,
+    the exit signal, the pidfd, child-tid and parent-tid pointers, the
+    stack and the tls.  [clone] fills it from its registers
+    ([clone_args_of_clone], below) and [clone3] from its struct
+    ([clone3_pre], after [clone_args_field]).  The argument checks
+    ([clone_arg_checks]) read the record, not the registers.
+
+    The flags and the exit signal are two fields, as in Linux: legacy
+    [clone] splits [lower_32_bits(clone_flags)] into [.flags] without
+    [CSIGNAL] and [.exit_signal] with only [CSIGNAL] (fork.c:2742-2750),
+    and [clone3] copies the two struct fields (fork.c:2802-2813).  No
+    record of this model has a flag bit in the signal byte, but for
+    [clone3] that takes more than the copy: Linux lets CLONE_NEWTIME
+    (0x80), which lies inside the signal byte, through
+    [clone3_args_valid] (fork.c:2864-2865), and [clone3_pre] refuses
+    every other signal-byte flag and declines that one
+    ([clone3_pre_split]). *)
+Record CloneArgs := mkCloneArgs {
+  cla_flags : Z;
+  cla_exit_signal : Z;
+  cla_pidfd : word;
+  cla_child_tid : word;
+  cla_parent_tid : word;
+  cla_stack : word;
+  cla_tls : word
+}.
+
+(** What the core hands the namespace extension about a pending clone's
+    arguments: the decoded record of the call, or nothing.  A record is
+    not a promise that the core answers the call, nor that any rule
+    reads the record — a [clone] (220) word the core declines still has
+    one, and the admitted words are still gated on the raw register.
+    [Procs.clone_in_of] says exactly which calls have one. *)
+Inductive CloneIn := CiArgs (r : CloneArgs) | CiNoArgs.
+
+(** [clone]'s registers under [CONFIG_CLONE_BACKWARDS], which
+    arch/riscv/Kconfig selects: a0 the flag word, a1 the new stack, a2
+    the parent-tid pointer and also the pidfd pointer, a3 the tls, a4 the
+    child-tid pointer (fork.c:2720-2753).
+
+    THE RAW-INPUT GUARD.  Linux reads only the low 32 bits of a0
+    (fork.c:2743, 2747).  The record would hide the high 32, so a word
+    with any of them set has no record, and the call declines: the
+    whole-register strictness [clone_fork_flags_b] and
+    [clone_ns_flags_b] already have. *)
+Definition clone_args_of_clone (a0 a1 a2 a3 a4 : word) : option CloneArgs :=
+  if (bv_unsigned a0 <? 2 ^ 32)%Z
+  then Some (mkCloneArgs
+               (Z.land (bv_unsigned a0) (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)))
+               (Z.land (bv_unsigned a0) CSIGNAL)
+               a2 a4 a2 a1 a3)
+  else None.
+
+(** A flag word holds a bit of [b]. *)
+Definition clone_has (f b : Z) : bool := negb (Z.land f b =? 0)%Z.
+
+(** THE ARGUMENT-ONLY -EINVAL CHECKS of [kernel_clone] and
+    [copy_process] (kernel/fork.c, Linux v6.18.46), in kernel order.
+    Each answers -EINVAL before any other step of [kernel_clone] and
+    [copy_process] and changes no state, so the answer is -EINVAL when any of them fires, whichever
+    fires first:
+    - K0 ([kernel_clone], 2588-2591): CLONE_PIDFD and CLONE_PARENT_SETTID
+      with the pidfd pointer equal to the parent-tid pointer.  Legacy
+      [clone] passes a2 as both (2744, 2746), so there the two bits
+      together always fire;
+    - C1 (1951-1952): CLONE_NEWNS with CLONE_FS;
+    - C2 (1954-1955): CLONE_NEWUSER with CLONE_FS;
+    - C3 (1961-1962): CLONE_THREAD without CLONE_SIGHAND;
+    - C4 (1969-1970): CLONE_SIGHAND without CLONE_VM;
+    - C6a (1986-1987): CLONE_THREAD with CLONE_NEWUSER or CLONE_NEWPID;
+    - C7 (1992-1999): CLONE_PIDFD with CLONE_DETACHED.
+    Two rows of the same block read state rather than the record and are
+    not here.  C5 (1978-1980) refuses CLONE_PARENT from a group with
+    SIGNAL_UNKILLABLE; every word with CLONE_PARENT that no row here
+    refuses declines, so C5 never has to be decided.  C6b (1986-1989)
+    refuses CLONE_THREAD while the active pid namespace is not
+    [pid_ns_for_children], which only the namespace extension holds.
+
+    ONE definition, which the namespace extension reads too
+    ([Ns.Clone.clone_ns_exact], over the record [Procs.clone_in_of]
+    gives), so that the core and the extension cannot disagree on which
+    records these rows refuse. *)
+Definition clone_arg_checks (r : CloneArgs) : bool :=
+  let f := cla_flags r in
+  (clone_has f CLONE_PIDFD && clone_has f CLONE_PARENT_SETTID
+     && bv_eqb (cla_pidfd r) (cla_parent_tid r))
+  || (clone_has f CLONE_NEWNS && clone_has f CLONE_FS)
+  || (clone_has f CLONE_NEWUSER && clone_has f CLONE_FS)
+  || (clone_has f CLONE_THREAD && negb (clone_has f CLONE_SIGHAND))
+  || (clone_has f CLONE_SIGHAND && negb (clone_has f CLONE_VM))
+  || (clone_has f CLONE_THREAD
+        && (clone_has f CLONE_NEWUSER || clone_has f CLONE_NEWPID))
+  || (clone_has f CLONE_PIDFD && clone_has f CLONE_DETACHED).
+
+(** Every row reads one of four bits: a record whose flags hold none of
+    them passes every check. *)
+Definition clone_check_bits : Z :=
+  Z.lor CLONE_FS (Z.lor CLONE_SIGHAND (Z.lor CLONE_THREAD CLONE_PIDFD)).
+
+Lemma clone_arg_checks_bits : forall r,
+  clone_arg_checks r = true -> Z.land (cla_flags r) clone_check_bits <> 0%Z.
+Proof.
+  intros r H Hz.
+  assert (Hb : forall b, Z.land b clone_check_bits = b ->
+             clone_has (cla_flags r) b = false).
+  { intros b Hbm. unfold clone_has.
+    rewrite <- Hbm, (Z.land_comm b), Z.land_assoc, Hz, Z.land_0_l.
+    reflexivity. }
+  unfold clone_arg_checks in H. cbv zeta in H.
+  rewrite (Hb CLONE_FS), (Hb CLONE_SIGHAND), (Hb CLONE_THREAD), (Hb CLONE_PIDFD)
+    in H by (vm_compute; reflexivity).
+  rewrite ?andb_false_r in H. cbn in H. discriminate H.
+Qed.
+
+(** Every word the namespace gate admits is [SIGCHLD] plus bits of
+    [clone_ns_mask], so it shares no bit with any [b] that is disjoint
+    from both ([Checks.Sys.Kernel.Fork.clone_ns_flags_disjoint] states
+    the same for the checker's readers). *)
+Local Lemma clone_ns_word_disjoint : forall flags b,
+  clone_ns_flags_b flags = true ->
+  Z.land clone_ns_mask b = 0%Z -> Z.land SIGCHLD b = 0%Z ->
+  Z.land (bv_unsigned flags) b = 0%Z.
+Proof.
+  intros flags b H Hm Hs. unfold clone_ns_flags_b in H.
+  apply andb_true_iff in H as [H _]. apply Z.eqb_eq in H.
+  rewrite <- (Z.land_m1_r (bv_unsigned flags)),
+    <- (Z.lor_lnot_diag clone_ns_mask), Z.land_lor_distr_r, H,
+    Z.land_lor_distr_l, <- Z.land_assoc, Hm, Hs, Z.land_0_r.
+  reflexivity.
+Qed.
+
+(** NO CHECK REFUSES AN ADMITTED WORD: the fork word and every namespace
+    word hold none of [clone_check_bits].  So [clone_spec] may ask the
+    two admitted-word tests before the checks, where Linux runs the
+    checks first, and give the same answer. *)
+Lemma clone_admitted_no_arg_check : forall flags a1 a2 a3 a4 r,
+  clone_fork_flags_b flags = true \/ clone_ns_flags_b flags = true ->
+  clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
+  clone_arg_checks r = false.
+Proof.
+  intros flags a1 a2 a3 a4 r Hw Hr.
+  destruct (clone_arg_checks r) eqn:Hc; [|reflexivity]. exfalso.
+  apply clone_arg_checks_bits in Hc. apply Hc.
+  unfold clone_args_of_clone in Hr.
+  destruct (bv_unsigned flags <? 2 ^ 32)%Z; [|discriminate Hr].
+  injection Hr as <-. cbn [cla_flags].
+  rewrite <- Z.land_assoc.
+  destruct Hw as [Hw|Hw].
+  - unfold clone_fork_flags_b in Hw. apply bv_eqb_eq in Hw. subst flags.
+    vm_compute. reflexivity.
+  - apply (clone_ns_word_disjoint flags); [exact Hw| |]; vm_compute; reflexivity.
+Qed.
+
+(** AND EVERY ADMITTED WORD HAS ONE: both admitted words lie in the low
+    32 bits, so the raw-input guard of [clone_args_of_clone] passes and
+    the word has a record, which no check refuses.  This is what makes a
+    [clone] (220) that creates a child a call with a record
+    ([clone_spec_success_record], [Procs.clone_success_has_record]). *)
+Lemma clone_admitted_word_record : forall flags a1 a2 a3 a4,
+  clone_fork_flags_b flags = true \/ clone_ns_flags_b flags = true ->
+  exists r, clone_args_of_clone flags a1 a2 a3 a4 = Some r
+            /\ clone_arg_checks r = false.
+Proof.
+  intros flags a1 a2 a3 a4 Hw.
+  assert (Hlt : (bv_unsigned flags <? 2 ^ 32)%Z = true).
+  { destruct Hw as [Hw|Hw].
+    - unfold clone_fork_flags_b in Hw. apply bv_eqb_eq in Hw. subst flags.
+      vm_compute. reflexivity.
+    - assert (Hd : Z.land (bv_unsigned flags) (Z.lnot (Z.ones 32)) = 0%Z)
+        by (apply (clone_ns_word_disjoint flags);
+            [exact Hw | vm_compute; reflexivity | vm_compute; reflexivity]).
+      assert (H32 : (0 < 2 ^ 32)%Z) by reflexivity.
+      apply Z.ltb_lt.
+      rewrite <- (Z.land_m1_r (bv_unsigned flags)), <- (Z.lor_lnot_diag (Z.ones 32)),
+        Z.land_lor_distr_r, Hd, Z.lor_0_r, Z.land_ones by lia.
+      destruct (Z.mod_pos_bound (bv_unsigned flags) (2 ^ 32) H32) as [_ Hm]. exact Hm. }
+  assert (Hr : clone_args_of_clone flags a1 a2 a3 a4
+               = Some (mkCloneArgs
+                         (Z.land (bv_unsigned flags)
+                            (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)))
+                         (Z.land (bv_unsigned flags) CSIGNAL) a2 a4 a2 a1 a3))
+    by (unfold clone_args_of_clone; rewrite Hlt; reflexivity).
+  eexists. split; [exact Hr|].
+  exact (clone_admitted_no_arg_check flags a1 a2 a3 a4 _ Hw Hr).
+Qed.
+
+(** [clone]'s checks are a function of a0 alone: the two pointers K0
+    compares are both a2, so K0 reduces to its two bits, and no other row
+    reads a pointer.  The checker asks this; [clone_legacy_einval_b_spec]
+    states that it is the record's answer whatever a1 to a4 hold. *)
+Definition clone_legacy_einval_b (a0 : word) : bool :=
+  match clone_args_of_clone a0 a0 a0 a0 a0 with
+  | Some r => clone_arg_checks r
+  | None => false
+  end.
+
+Lemma clone_legacy_einval_b_spec : forall a0 a1 a2 a3 a4,
+  clone_legacy_einval_b a0 =
+  match clone_args_of_clone a0 a1 a2 a3 a4 with
+  | Some r => clone_arg_checks r
+  | None => false
+  end.
+Proof.
+  intros. unfold clone_legacy_einval_b, clone_args_of_clone.
+  destruct (bv_unsigned a0 <? 2 ^ 32)%Z; [|reflexivity].
+  unfold clone_arg_checks. cbn [cla_flags cla_pidfd cla_parent_tid].
+  unfold bv_eqb. rewrite !Z.eqb_refl. reflexivity.
+Qed.
+
+(** [clone]'s -EINVAL for a word the argument checks refuse.
+
+    A DELIBERATE NARROWING AGAINST LINUX.  Linux answers -EINVAL here
+    whatever the caller's descriptor table holds: the checks come before
+    [copy_files] (kernel/fork.c:1944-1999).  This arm answers it only
+    when [clone_no_shared_file_b] passes the table the caller keeps, the
+    gate both admitted words have, and declines otherwise.  The reason is
+    a published statement: [Checks.ProcessCreation.clone_open_file_unmodeled]
+    says that a [clone] made with such a descriptor open declines, for
+    EVERY flag word.  A decline is never a wrong answer.  Lifting the
+    gate means restating that lemma.  [clone3] has no such statement, and
+    [clone3_einval] answers -EINVAL whatever the table holds, as Linux
+    does. *)
+Definition clone_einval : Sys SyscallEffect :=
+  m <- get_model ;;
+  if clone_no_shared_file_b (forfeit_inherited (m_fds m)) then err_ret EINVAL
+  else unmodeled.
+
+(** The fork word goes to [clone_resolve] and the namespace word to
+    [clone_ns_resolve].  Every other word is decoded into its argument
+    record ([clone_args_of_clone]): -EINVAL when the argument checks
+    refuse the record ([clone_arg_checks], through [clone_einval]), and
+    a decline otherwise, a word without a record included.
+
+    Linux runs the checks before every other step; here they come after
+    the two admitted-word tests, which changes no answer
+    ([clone_admitted_no_arg_check]).
+
+    This is the answer from the model's own lists, the whole answer of a
+    run whose host has no clone refuser ([State.no_clone_refusers]);
+    [clone_spec] below adds the refusers' errnos to it
+    ([clone_spec_default_iff]). *)
 Definition clone_spec_lists (flags : word) : Sys SyscallEffect :=
   if clone_fork_flags_b flags then clone_resolve
   else if clone_ns_flags_b flags then clone_ns_resolve
-  else unmodeled.
+  else
+    i <- input ;;
+    match clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) with
+    | Some r => if clone_arg_checks r then clone_einval else unmodeled
+    | None => unmodeled
+    end.
 
 (* =========================================================================
    The host's clone refusers
@@ -1128,6 +1386,18 @@ Lemma clone_refusable_absent : forall answered fail k i m o,
 Proof.
   intros answered fail k i m o H. unfold clone_refusable.
   rewrite H, Bool.andb_false_r. cbn [andb].
+  split; intro X; exact X.
+Qed.
+
+(** At a call the wrapper does not count as answered — the default arm,
+    and every word the lists answer with -EINVAL or a decline — the
+    wrapper is its argument whatever the host holds. *)
+Lemma clone_refusable_unanswered : forall answered fail k i m o,
+  answered i = false ->
+  (clone_refusable answered fail k i m o <-> k i m o).
+Proof.
+  intros answered fail k i m o H. unfold clone_refusable.
+  rewrite H. cbn [andb].
   split; intro X; exact X.
 Qed.
 
@@ -1203,6 +1473,59 @@ Proof.
   rewrite H. reflexivity.
 Qed.
 
+(** An errno in [1,4095] reads as an error-encoded return.
+    [Checks.Sys.Prelude.errno_ret_error_b] is the same fact, stated where
+    the checker layer can cite it; this file is below that layer, and the
+    two lemmas below need it here. *)
+Local Lemma errno_ret_is_error : forall e,
+  (1 <= e <= 4095)%Z -> addr_is_error_b (errno_ret e) = true.
+Proof.
+  intros e He. unfold addr_is_error_b, errno_ret, two_pow_64.
+  rewrite Z_to_bv_unsigned. unfold bv_wrap, bv_modulus.
+  change (Z.of_N 64) with 64%Z.
+  replace (- e)%Z with (2 ^ 64 - e + (-1) * 2 ^ 64)%Z by lia.
+  rewrite Z_mod_plus_full, Z.mod_small by lia.
+  apply Z.ltb_lt. lia.
+Qed.
+
+(** A [clone] (220) THAT CREATES A CHILD HAS A RECORD THE CHECKS PASS.
+    An answer that is not error-encoded ([State.addr_is_error_b], the
+    test [Procs.clone_success_b] reads) comes from neither a host
+    refuser nor the argument checks' -EINVAL, so it comes from one of the
+    two admitted words, and those have a record no check refuses
+    ([clone_admitted_word_record]).  This is the guard for a call with no
+    record: the core resolves none successfully
+    ([Procs.clone_success_has_record],
+    [Ns.Clone.clone_ns_exact_core_gate]). *)
+Lemma clone_spec_success_record : forall flags i m eff m' evs,
+  clone_spec flags i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists r, clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4)
+              = Some r
+            /\ clone_arg_checks r = false.
+Proof.
+  intros flags i m eff m' evs H Herr. unfold clone_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { exfalso. apply clone_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret] in Herr.
+    rewrite (errno_ret_is_error e He) in Herr. discriminate Herr. }
+  destruct (clone_fork_flags_b flags) eqn:Hf;
+    [apply (clone_admitted_word_record flags _ _ _ _ (or_introl Hf))|].
+  destruct (clone_ns_flags_b flags) eqn:Hns;
+    [apply (clone_admitted_word_record flags _ _ _ _ (or_intror Hns))|].
+  exfalso. unfold clone_spec_lists in H. rewrite Hf, Hns in H. cbv iota in H.
+  apply bind_input_iff in H. cbv beta in H.
+  destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
+    as [r|]; cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  destruct (clone_arg_checks r); cbv iota in H;
+    [|unfold unmodeled in H; discriminate H].
+  unfold clone_einval in H. apply bind_get_model in H. cbv beta in H.
+  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m)));
+    cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  unfold err_ret, ret_only, pure in H. injection H as -> _ _.
+  cbn [eff_ret] in Herr. vm_compute in Herr. discriminate Herr.
+Qed.
+
 (** [clone3] reaches the same [kernel_clone] through a struct in user
     memory rather than through registers.  [struct clone_args]
     (include/uapi/linux/sched.h) is eleven [__aligned_u64] fields —
@@ -1230,14 +1553,18 @@ Qed.
     [CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM | CLONE_SIGHAND |
     CLONE_THREAD | CLONE_SETTLS | CLONE_PARENT_SETTID |
     CLONE_CHILD_CLEARTID] — the opposite of the admitted image, and
-    refused by the flags
-    field before the size is reached.  [posix_spawn] is the third, and
+    declined on the flags field when its size and stack range are valid
+    (-EINVAL at the one modeled size when [access_ok] refuses the stack
+    range).  [posix_spawn] is the third, and
     it reaches [__clone3] DIRECTLY (sysdeps/unix/sysv/linux/spawni.c) —
     that one does pass this struct's size with
     [exit_signal = SIGCHLD], but with
     [CLONE_CLEAR_SIGHAND | CLONE_VM | CLONE_VFORK] in its BASE flag word
     — a spawn asking for a cgroup or a pidfd sets more — so it is
-    refused on the flags field whichever it is.  riscv64 has the [clone3] wrapper, so it
+    declined on the flags field whichever it is when its stack range
+    and its cgroup field are valid (-EINVAL when [access_ok] refuses
+    the stack range, or when it asks for a cgroup above INT_MAX).
+    riscv64 has the [clone3] wrapper, so it
     really executes here.  musl issues no clone3 at all.  So this arm, like the legacy one, is
     reached by a RAW syscall.
 
@@ -1247,7 +1574,9 @@ Qed.
 
     ONE ASYMMETRY BETWEEN THE TWO ENTRY POINTS IS THIS MODEL'S OWN, and
     unlike the 32-bit truncation above it is not the kernel's.  The
-    legacy arm fetches [arg 0] and nothing else, so it answers
+    legacy arm reads [arg 0] alone for the two words that get a child (a1 to
+    a4 reach only the argument record of a word it does not admit, where
+    only the flags decide), so it answers
     [clone(SIGCHLD, newsp)] for ANY [newsp]; this image requires [stack]
     and [stack_size] to be zero, so the same request through 435 is
     declined.  Both directions are sound — the caller's return is the
@@ -1335,6 +1664,238 @@ Proof.
   exists e0. rewrite app_nil_r in *. split; [exact H0 | reflexivity].
 Qed.
 
+(** [clone3]'s steps before [kernel_clone], read off the copied struct
+    [bs] in kernel order ([copy_clone_args_from_user] and
+    [clone3_args_valid], kernel/fork.c, Linux v6.18.46).  At the one size
+    this model answers ([CLONE_ARGS_SIZE], 88, which is
+    [CLONE_ARGS_SIZE_VER2]) the size tests (2772-2775) and the tail test
+    of [copy_struct_from_user] pass, so the first test here is the one
+    after the copy.
+    - [CdErr]: -EINVAL, from a test that reads the struct alone;
+    - [CdDecline]: the call declines;
+    - [CdArgs r]: every test passed, and [r] is the decoded record.
+    The steps:
+    1. set_tid_size above 32 ([MAX_PID_NS_LEVEL]), or set_tid and
+       set_tid_size not both zero or both non-zero: -EINVAL (2781-2788).
+    2. A non-zero set_tid: DECLINE.  The set_tid array is outside the
+       model; its copy (2815-2818) comes after steps 3 and 4.
+    3. exit_signal with a bit above [CSIGNAL], or above 64 ([_NSIG],
+       [valid_signal]): -EINVAL (2794-2796).
+    4. CLONE_INTO_CGROUP with cgroup above INT_MAX: -EINVAL (2798-2800;
+       the size half of that test never fires at 88).
+    5. [clone3_args_valid] (2853-2879): a flag outside
+       CLONE_LEGACY_FLAGS, CLONE_CLEAR_SIGHAND and CLONE_INTO_CGROUP;
+       CLONE_DETACHED, or a [CSIGNAL] bit other than CLONE_NEWTIME;
+       CLONE_SIGHAND with CLONE_CLEAR_SIGHAND; CLONE_THREAD or
+       CLONE_PARENT with a non-zero exit signal; a stack of 0 with a
+       non-zero size, a non-zero stack with size 0, or a stack range
+       [access_ok] refuses ([clone3_stack_valid], 2833-2844): -EINVAL.
+    6. CLONE_INTO_CGROUP or CLONE_NEWTIME: DECLINE.  The record has no
+       cgroup field; CLONE_NEWTIME (0x80) lies inside the legacy signal
+       byte, so it declines before any reader could merge the flags and
+       the exit signal into one word, and the time namespace is outside
+       the model.  Steps 2 and 6 are [clone3]'s raw-input guard.
+    7. Otherwise the record, with [stack] replaced by [stack +
+       stack_size] when it is not 0: the riscv stack grows down
+       (2845-2847). *)
+Inductive Clone3Pre := CdErr | CdDecline | CdArgs (r : CloneArgs).
+
+Definition clone3_pre (bs : list byte) : Clone3Pre :=
+  let flags := bv_unsigned (clone_args_field bs 0) in
+  let pidfd := clone_args_field bs 1 in
+  let child_tid := clone_args_field bs 2 in
+  let parent_tid := clone_args_field bs 3 in
+  let es := bv_unsigned (clone_args_field bs 4) in
+  let stack := clone_args_field bs 5 in
+  let ssize := clone_args_field bs 6 in
+  let tls := clone_args_field bs 7 in
+  let set_tid := clone_args_field bs 8 in
+  let set_tid_size := bv_unsigned (clone_args_field bs 9) in
+  let cgroup := bv_unsigned (clone_args_field bs 10) in
+  if (32 <? set_tid_size)%Z
+     || (w_is0 set_tid && negb (set_tid_size =? 0)%Z)
+     || (negb (w_is0 set_tid) && (set_tid_size =? 0)%Z)
+  then CdErr
+  else if negb (w_is0 set_tid) then CdDecline
+  else if negb (Z.land es (Z.lnot CSIGNAL) =? 0)%Z || (64 <? es)%Z then CdErr
+  else if clone_has flags CLONE_INTO_CGROUP && (2147483647 <? cgroup)%Z then CdErr
+  else if clone_has flags
+            (Z.lnot (Z.lor CLONE_LEGACY_FLAGS
+                       (Z.lor CLONE_CLEAR_SIGHAND CLONE_INTO_CGROUP)))
+          || clone_has flags
+               (Z.lor CLONE_DETACHED (Z.land CSIGNAL (Z.lnot CLONE_NEWTIME)))
+          || (clone_has flags CLONE_SIGHAND && clone_has flags CLONE_CLEAR_SIGHAND)
+          || ((clone_has flags CLONE_THREAD || clone_has flags CLONE_PARENT)
+                && negb (es =? 0)%Z)
+          || (w_is0 stack && negb (w_is0 ssize))
+          || (negb (w_is0 stack)
+                && (w_is0 ssize || negb (access_okb stack (bv_unsigned ssize))))
+  then CdErr
+  else if clone_has flags CLONE_INTO_CGROUP || clone_has flags CLONE_NEWTIME
+  then CdDecline
+  else CdArgs (mkCloneArgs flags es pidfd child_tid parent_tid
+                 (if w_is0 stack then stack else stack + ssize) tls).
+
+(** -EINVAL from [clone3]'s own tests or, on the record they pass, from
+    [clone_arg_checks] in [kernel_clone] and [copy_process]. *)
+Definition clone3_einval_b (bs : list byte) : bool :=
+  match clone3_pre bs with
+  | CdErr => true
+  | CdDecline => false
+  | CdArgs r => clone_arg_checks r
+  end.
+
+(** The fork image passes every test and every check, so the order of
+    the image test and [clone3_einval_b] in [clone3_spec] changes no
+    answer. *)
+Lemma clone3_fork_args_no_einval : forall bs,
+  clone3_fork_args_b bs = true -> clone3_einval_b bs = false.
+Proof.
+  intros bs H. unfold clone3_fork_args_b, w_is0 in H.
+  repeat (apply andb_true_iff in H as [H ?]).
+  repeat match goal with Hb : bv_eqb _ _ = true |- _ => apply bv_eqb_eq in Hb end.
+  unfold clone3_einval_b, clone3_pre. cbv zeta.
+  repeat match goal with Hb : clone_args_field bs _ = _ |- _ => rewrite Hb; clear Hb end.
+  vm_compute. reflexivity.
+Qed.
+
+(** ...and gives a record. *)
+Lemma clone3_fork_args_pre_args : forall bs,
+  clone3_fork_args_b bs = true ->
+  match clone3_pre bs with CdArgs _ => True | _ => False end.
+Proof.
+  intros bs H. unfold clone3_fork_args_b, w_is0 in H.
+  repeat (apply andb_true_iff in H as [H ?]).
+  repeat match goal with Hb : bv_eqb _ _ = true |- _ => apply bv_eqb_eq in Hb end.
+  unfold clone3_pre. cbv zeta.
+  repeat match goal with Hb : clone_args_field bs _ = _ |- _ => rewrite Hb; clear Hb end.
+  vm_compute. exact I.
+Qed.
+
+(** The record's flags are the struct's flags field. *)
+Lemma clone3_pre_flags : forall bs r,
+  clone3_pre bs = CdArgs r -> cla_flags r = bv_unsigned (clone_args_field bs 0).
+Proof.
+  intros bs r H. unfold clone3_pre in H. cbv zeta in H.
+  repeat match type of H with
+         | context [if ?b then _ else _] => destruct b; cbv iota in H
+         end;
+    try discriminate H; injection H as <-; reflexivity.
+Qed.
+
+(** THE TWO FIELDS STAY APART: no flag bit in the exit-signal byte, no
+    signal bit above it.  So the one word a reader builds from a record,
+    [Z.lor flags exit_signal], gives both fields back
+    ([flags_signal_split]), and no flag bit is read as part of the exit
+    signal.  Both decoders give such records
+    ([clone_args_of_clone_split], [clone3_pre_split]). *)
+Definition clone_args_split (r : CloneArgs) : Prop :=
+  Z.land (cla_flags r) CSIGNAL = 0%Z
+  /\ Z.land (cla_exit_signal r) (Z.lnot CSIGNAL) = 0%Z.
+
+Lemma flags_signal_split : forall f e : Z,
+  Z.land f CSIGNAL = 0%Z -> Z.land e (Z.lnot CSIGNAL) = 0%Z ->
+  Z.land (Z.lor f e) (Z.lnot CSIGNAL) = f /\ Z.land (Z.lor f e) CSIGNAL = e.
+Proof.
+  intros f e Hf He.
+  assert (Hf' : Z.land f (Z.lnot CSIGNAL) = f).
+  { transitivity (Z.land f (Z.lor CSIGNAL (Z.lnot CSIGNAL))).
+    - now rewrite Z.land_lor_distr_r, Hf, Z.lor_0_l.
+    - now rewrite Z.lor_lnot_diag, Z.land_m1_r. }
+  assert (He' : Z.land e CSIGNAL = e).
+  { transitivity (Z.land e (Z.lor CSIGNAL (Z.lnot CSIGNAL))).
+    - now rewrite Z.land_lor_distr_r, He, Z.lor_0_r.
+    - now rewrite Z.lor_lnot_diag, Z.land_m1_r. }
+  split.
+  - now rewrite Z.land_lor_distr_l, He, Z.lor_0_r, Hf'.
+  - now rewrite Z.land_lor_distr_l, Hf, Z.lor_0_l, He'.
+Qed.
+
+(** With the fields apart, the word is [SIGCHLD] exactly when the record
+    is a plain fork's: no flag, exit signal [SIGCHLD]. *)
+Lemma clone_args_word_sigchld : forall r, clone_args_split r ->
+  (Z.lor (cla_flags r) (cla_exit_signal r) = SIGCHLD
+   <-> cla_flags r = 0%Z /\ cla_exit_signal r = SIGCHLD).
+Proof.
+  intros r [Hf He]. split.
+  - intros H. destruct (flags_signal_split _ _ Hf He) as [H1 H2].
+    rewrite H in H1, H2.
+    change (Z.land SIGCHLD (Z.lnot CSIGNAL)) with 0%Z in H1.
+    change (Z.land SIGCHLD CSIGNAL) with SIGCHLD in H2.
+    split; symmetry; assumption.
+  - intros [-> ->]. reflexivity.
+Qed.
+
+Lemma clone_args_of_clone_split : forall a0 a1 a2 a3 a4 r,
+  clone_args_of_clone a0 a1 a2 a3 a4 = Some r -> clone_args_split r.
+Proof.
+  intros a0 a1 a2 a3 a4 r H. unfold clone_args_of_clone in H.
+  destruct (bv_unsigned a0 <? 2 ^ 32)%Z; [|discriminate H].
+  injection H as <-. unfold clone_args_split. cbn [cla_flags cla_exit_signal].
+  split.
+  - rewrite <- Z.land_assoc.
+    replace (Z.land (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) CSIGNAL) with 0%Z
+      by (vm_compute; reflexivity).
+    apply Z.land_0_r.
+  - rewrite <- Z.land_assoc.
+    replace (Z.land CSIGNAL (Z.lnot CSIGNAL)) with 0%Z by (vm_compute; reflexivity).
+    apply Z.land_0_r.
+Qed.
+
+(** For [clone] the record's word is a0 itself: a record exists only for
+    an a0 below 2^32. *)
+Lemma clone_args_of_clone_word : forall a0 a1 a2 a3 a4 r,
+  clone_args_of_clone a0 a1 a2 a3 a4 = Some r ->
+  Z.lor (cla_flags r) (cla_exit_signal r) = bv_unsigned a0.
+Proof.
+  intros a0 a1 a2 a3 a4 r H. unfold clone_args_of_clone in H.
+  destruct (bv_unsigned a0 <? 2 ^ 32)%Z eqn:Hlt; [|discriminate H].
+  injection H as <-. cbn [cla_flags cla_exit_signal].
+  rewrite <- Z.land_lor_distr_r.
+  replace (Z.lor (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) CSIGNAL) with (Z.ones 32)
+    by (vm_compute; reflexivity).
+  rewrite Z.land_ones by lia.
+  apply Z.mod_small. apply Z.ltb_lt in Hlt.
+  destruct (bv_unsigned_in_range 64 a0) as [H0 _].
+  split; [exact H0 | exact Hlt].
+Qed.
+
+Lemma clone3_pre_split : forall bs r, clone3_pre bs = CdArgs r -> clone_args_split r.
+Proof.
+  intros bs r H. unfold clone3_pre in H. cbv zeta in H.
+  repeat match type of H with
+         | context [if ?b then _ else _] =>
+             let E := fresh "E" in destruct b eqn:E; cbv iota in H
+         end.
+  all: try discriminate H.
+  all: injection H as <-; unfold clone_args_split; cbn [cla_flags cla_exit_signal].
+  all: repeat match goal with
+              | Hb : (_ || _) = false |- _ =>
+                  let H1 := fresh "Ho" in let H2 := fresh "Ho" in
+                  apply orb_false_iff in Hb as [H1 H2]
+              end.
+  all: match goal with
+       | HD : clone_has ?f (Z.lor CLONE_DETACHED _) = false,
+         HT : clone_has ?f CLONE_NEWTIME = false,
+         HE : negb (Z.eqb (Z.land ?e (Z.lnot CSIGNAL)) 0%Z) = false |- _ =>
+           unfold clone_has in HD, HT;
+           apply negb_false_iff in HD; apply Z.eqb_eq in HD;
+           apply negb_false_iff in HT; apply Z.eqb_eq in HT;
+           apply negb_false_iff in HE; apply Z.eqb_eq in HE;
+           split; [|exact HE];
+           assert (HC : CSIGNAL = Z.lor (Z.land (Z.lor CLONE_DETACHED
+                          (Z.land CSIGNAL (Z.lnot CLONE_NEWTIME))) CSIGNAL) CLONE_NEWTIME)
+             by (vm_compute; reflexivity);
+           rewrite HC at 1;
+           now rewrite Z.land_lor_distr_r, Z.land_assoc, HD, Z.land_0_l, HT, Z.lor_0_l
+       end.
+Qed.
+
+(** [clone3]'s -EINVAL, with the struct in the ledger: every test that
+    refuses it reads the copied struct. *)
+Definition clone3_einval (uargs : word) : Sys SyscallEffect :=
+  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] (err_ret EINVAL).
+
 (** THE RANGE TEST COMES BEFORE THE WALK: the struct is read through
     [State.copy_bytes_map], whose note says why that order is the guard.
     [copy_clone_args_from_user] (kernel/fork.c, Linux v6.18.46) reads it
@@ -1364,7 +1925,9 @@ Definition clone3_spec_lists (uargs size : word) : Sys SyscallEffect :=
         then err_ret EFAULT      (* [copy_from_user]'s [access_ok]: nothing read *)
         else unmodeled           (* admitted, not wholly readable *)
     | Some bs =>
-        if clone3_fork_args_b bs then clone3_resolve uargs else unmodeled
+        if clone3_fork_args_b bs then clone3_resolve uargs
+        else if clone3_einval_b bs then clone3_einval uargs
+        else unmodeled
     end.
 
 (** The calls of 435 that reach [copy_process]: the one modeled size, a
@@ -1423,4 +1986,87 @@ Theorem clone3_spec_default_iff : forall uargs size i m o,
 Proof.
   intros uargs size i m o H. unfold clone3_spec. apply clone_refusable_absent.
   rewrite H. reflexivity.
+Qed.
+
+(** THE WORDS ANSWERED BEFORE THE ARGUMENT CHECKS ANSWER AS BEFORE: in
+    the model's own lists, the fork word, every namespace word and
+    [clone3]'s fork image keep the resolution each had, outcome for
+    outcome.  The host refusers' layer above the lists ([clone_spec],
+    [clone3_spec]) is the pin's and is untouched by the argument
+    checks. *)
+Lemma clone_admitted_words_unchanged :
+  (forall flags i m o, clone_fork_flags_b flags = true ->
+     (clone_spec_lists flags i m o <-> clone_resolve i m o))
+  /\ (forall flags i m o, clone_ns_flags_b flags = true ->
+     (clone_spec_lists flags i m o <-> clone_ns_resolve i m o))
+  /\ (forall uargs i m o bs,
+     copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+     clone3_fork_args_b bs = true ->
+     (clone3_spec_lists uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m o
+      <-> clone3_resolve uargs i m o)).
+Proof.
+  split; [|split].
+  - intros flags i m o Hf. unfold clone_spec_lists. rewrite Hf. cbv iota.
+    apply iff_refl.
+  - intros flags i m o Hns. unfold clone_spec_lists. rewrite Hns.
+    destruct (clone_fork_flags_b flags) eqn:Hf; [|cbv iota; apply iff_refl].
+    exfalso. unfold clone_fork_flags_b in Hf. apply bv_eqb_eq in Hf. subst flags.
+    vm_compute in Hns. discriminate Hns.
+  - intros uargs i m o bs Hbs Ha. unfold clone3_spec_lists.
+    rewrite (proj2 (bv_eqb_eq (Z_to_bv 64 CLONE_ARGS_SIZE) _) eq_refl).
+    cbn [negb].
+    split; intros H.
+    + apply bind_input_iff in H. cbv beta in H. rewrite Hbs in H. cbv iota in H.
+      rewrite Ha in H. exact H.
+    + apply bind_input_iff. cbv beta. rewrite Hbs. cbv iota. rewrite Ha. exact H.
+Qed.
+
+(** A [clone3] (435) THAT CREATES A CHILD HAS A RECORD THE CHECKS PASS,
+    for the reason [clone_spec_success_record] gives: an answer that is
+    not error-encoded comes from neither a host refuser, nor the -EFAULT
+    of a refused range, nor the -EINVAL of the struct's own tests or the
+    argument checks, so the struct is the fork image, which decodes
+    ([clone3_fork_args_pre_args]) into a record no check refuses
+    ([clone3_fork_args_no_einval]). *)
+Lemma clone3_spec_success_record : forall uargs size i m eff m' evs,
+  clone3_spec uargs size i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists bs r,
+    bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE) = true
+    /\ copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs
+    /\ clone3_fork_args_b bs = true
+    /\ clone3_pre bs = CdArgs r
+    /\ clone_arg_checks r = false.
+Proof.
+  intros uargs size i m eff m' evs H Herr. unfold clone3_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { exfalso. apply clone3_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret] in Herr.
+    rewrite (errno_ret_is_error e He) in Herr. discriminate Herr. }
+  unfold clone3_spec_lists in H.
+  destruct (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) eqn:Hsz; cbn [negb] in H;
+    cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  apply bind_input_iff in H. cbv beta in H.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|] eqn:Hbs;
+    cbv iota in H.
+  2: { exfalso. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota in H;
+         [|unfold unmodeled in H; discriminate H].
+       unfold err_ret, ret_only, pure in H. injection H as -> _ _.
+       cbn [eff_ret] in Herr. vm_compute in Herr. discriminate Herr. }
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H.
+  2: { exfalso. destruct (clone3_einval_b bs); cbv iota in H;
+         [|unfold unmodeled in H; discriminate H].
+       unfold clone3_einval, record_copyins, bind in H. cbv beta iota in H.
+       destruct H as (core & m1 & evs1 & evs2 & H0 & Hp & _).
+       unfold err_ret, ret_only, pure in H0. injection H0 as -> -> ->.
+       unfold pure in Hp. injection Hp as -> _ _.
+       cbn [eff_ret with_copyins] in Herr. vm_compute in Herr. discriminate Herr. }
+  pose proof (clone3_fork_args_pre_args bs Ha) as Hpre.
+  destruct (clone3_pre bs) as [| |r] eqn:Hp;
+    [ exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
+    | exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
+    | ].
+  pose proof (clone3_fork_args_no_einval bs Ha) as Hne.
+  unfold clone3_einval_b in Hne. rewrite Hp in Hne.
+  exists bs, r. repeat split; assumption.
 Qed.

@@ -309,6 +309,21 @@ Proof.
   - intros H. right. exists m, m, []. split; [reflexivity | exact H].
 Qed.
 
+(** Reading [input] is pure in the same way: a chain that starts with it
+    is its continuation at the call's own input. *)
+Lemma bind_input_iff {A} (k : SyscallInput -> Sys A) : forall i m o,
+  bind input k i m o <-> k i i m o.
+Proof.
+  intros i m o. unfold bind, input. destruct o as [x m2 evs|]; split.
+  - intros (x0 & m1 & evs1 & evs2 & H1 & H2 & H3).
+    injection H1 as -> -> ->. cbn in H3. subst evs. exact H2.
+  - intros H. exists i, m, [], evs. split; [reflexivity|].
+    split; [exact H | reflexivity].
+  - intros [H | (x0 & m1 & evs1 & H1 & H2)]; [discriminate|].
+    injection H1 as -> -> ->. exact H2.
+  - intros H. right. exists i, m, []. split; [reflexivity | exact H].
+Qed.
+
 
 Definition get_fds  : Sys (list (word * FdEntry)) := fun _ m o => o = Ok (m_fds m) m [].
 Definition get_vmmaps : Sys VmMaps := fun _ m o => o = Ok (m_vmmaps m) m [].

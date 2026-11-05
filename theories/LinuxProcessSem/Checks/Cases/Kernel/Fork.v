@@ -13,6 +13,7 @@ From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require ProcessCreation.
 From LinuxProcessSemantics.LinuxProcessSem Require Procs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
@@ -322,6 +323,192 @@ Example clone_declines_procfd_dir_and_signalfd :
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
        clone_signalfd_model = CheckUnmodeled.
 Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
+
+(* -------------------------------------------------------------------------
+   clone (220) and clone3 (435): the argument-only -EINVAL checks
+
+   PAIRED TEST.  Before [Kernel.Fork.clone_arg_checks] every word but the
+   fork word and the namespace word declined, so each refused word below
+   was [CheckUnmodeled].  The cases are those words, now answered -EINVAL
+   and nothing else (kernel/fork.c, Linux v6.18.46).  The controls are
+   words the old text and the new one treat alike: a thread word no check
+   refuses declines in both, and so does a word with a bit above 31.
+   ------------------------------------------------------------------------- *)
+
+(** The -EINVAL a refused word answers: the one admitted outcome. *)
+Definition einval_eff : SyscallEffect := mkEffect (errno_ret EINVAL) [] [].
+
+(** A refused [clone] word answers -EINVAL with the model as it was;
+    the fork word's -EAGAIN and a pid are refused for it. *)
+Definition clone_einval_only (flags : Z) : Prop :=
+  check_syscall (clone_in (Z_to_bv 64 flags)) einval_eff clone_case_model
+    = CheckOk clone_case_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 flags)) (mkEffect (errno_ret EAGAIN) [] [])
+       clone_case_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 flags)) (mkEffect 4242 [] [])
+       clone_case_model = CheckReject.
+
+(** SIGCHLD with CLONE_SIGHAND: C4, fork.c:1969-1970. *)
+Example clone_sighand_without_vm_einval :
+  clone_einval_only (SIGCHLD + CLONE_SIGHAND)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** SIGCHLD with CLONE_THREAD: C3, fork.c:1961-1962. *)
+Example clone_thread_without_sighand_einval :
+  clone_einval_only (SIGCHLD + CLONE_THREAD)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_NEWNS with CLONE_FS: C1, fork.c:1951-1952. *)
+Example clone_newns_with_fs_einval :
+  clone_einval_only (SIGCHLD + CLONE_NEWNS + CLONE_FS)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_NEWUSER with CLONE_FS: C2, fork.c:1954-1955. *)
+Example clone_newuser_with_fs_einval :
+  clone_einval_only (SIGCHLD + CLONE_NEWUSER + CLONE_FS)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PIDFD with CLONE_PARENT_SETTID: K0, fork.c:2588-2591.
+    Legacy [clone] passes a2 as both pointers (2744, 2746), whatever a2
+    holds. *)
+Example clone_pidfd_with_parent_settid_einval :
+  clone_einval_only (SIGCHLD + CLONE_PIDFD + CLONE_PARENT_SETTID)%Z
+  /\ check_syscall (mkInput 220 [Z_to_bv 64 (SIGCHLD + CLONE_PIDFD + CLONE_PARENT_SETTID);
+                                0; Z_to_bv 64 0x2000; 0; Z_to_bv 64 0x3000; 0]
+                      (fun _ => None) (fun _ => None))
+       einval_eff clone_case_model = CheckOk clone_case_model [].
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PIDFD with CLONE_DETACHED: C7, fork.c:1992-1999. *)
+Example clone_pidfd_with_detached_einval :
+  clone_einval_only (SIGCHLD + CLONE_PIDFD + CLONE_DETACHED)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_VM, CLONE_SIGHAND and CLONE_THREAD with CLONE_NEWPID: C6a,
+    fork.c:1986-1987. *)
+Example clone_thread_with_newpid_einval :
+  clone_einval_only (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD + CLONE_NEWPID)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PARENT with CLONE_SIGHAND and no CLONE_VM: C4 refuses it,
+    whatever C5 (CLONE_PARENT from an unkillable group) would say. *)
+Example clone_parent_sighand_einval :
+  clone_einval_only (SIGCHLD + CLONE_PARENT + CLONE_SIGHAND)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** The controls: CLONE_VM, CLONE_SIGHAND and CLONE_THREAD alone
+    pass every check and decline; CLONE_PARENT alone, which only C5 could
+    refuse, declines; and a0 = 0x1_00000811, SIGCHLD with
+    CLONE_SIGHAND and bit 32 set, declines: the raw-input guard. *)
+Example clone_unrefused_words_decline :
+  check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)))
+    einval_eff clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_PARENT)))
+       einval_eff clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 0x100000811))
+       einval_eff clone_case_model = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** The restated statements at one word each:
+    [Checks.ProcessCreation.clone_arg_checks_einval] at SIGCHLD with
+    CLONE_SIGHAND, and [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
+    at CLONE_VM, CLONE_SIGHAND and CLONE_THREAD. *)
+Example clone_restated_statements_at_one_word :
+  (forall o, clone_spec (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))
+               (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))) clone_case_model o
+             <-> o = Ok einval_eff clone_case_model [])
+  /\ clone_spec (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD))
+       (clone_in (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)))
+       clone_case_model Unmodeled.
+Proof.
+  split.
+  - intros o.
+    apply (ProcessCreation.clone_arg_checks_einval _ _ _
+             (mkCloneArgs CLONE_SIGHAND SIGCHLD (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0)
+               (Z_to_bv 64 0) (Z_to_bv 64 0)));
+      check_eq.
+  - apply (ProcessCreation.clone_sharing_flags_unmodeled _ _ _
+             (mkCloneArgs (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)%Z 0%Z (Z_to_bv 64 0)
+               (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0)));
+      [check_eq | check_eq | intro Hc; vm_compute in Hc; discriminate Hc].
+Qed.
+
+(** THE DESCRIPTOR GATE, a deliberate narrowing against Linux
+    ([Kernel.Fork.clone_einval]): with a regular file open, a refused
+    [clone] word declines, as [clone_open_file_unmodeled] says for every
+    word.  [clone3] has no such gate (below). *)
+Example clone_einval_keeps_the_descriptor_gate :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))) einval_eff
+    (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A [struct clone_args] image of eleven fields at [clone3_args_base]. *)
+Definition clone3_args_base : word := Z_to_bv 64 0x1000.
+
+Definition clone3_args_mem (fields : list Z) : word -> option byte :=
+  let bs := flat_map (Z_to_le_bytes 8) fields in
+  fun a => let off := (bv_unsigned a - 0x1000)%Z in
+           if ((0 <=? off)%Z && (off <? CLONE_ARGS_SIZE)%Z)%bool
+           then nth_error bs (Z.to_nat off) else None.
+
+Definition clone3_args_call (fields : list Z) : SyscallInput :=
+  mkInput 435 [clone3_args_base; Z_to_bv 64 CLONE_ARGS_SIZE; 0; 0; 0; 0]
+    (clone3_args_mem fields) (fun _ => None).
+
+(** [clone3]'s -EINVAL carries the struct in its ledger. *)
+Definition clone3_einval_eff : SyscallEffect :=
+  mkEffectU (errno_ret EINVAL) [] [] [] []
+    [(clone3_args_base, CLONE_ARGS_SIZE_nat)].
+
+(** clone3, CLONE_PIDFD with CLONE_PARENT_SETTID at two different
+    pointers: not K0, and the word declines (the model does not answer
+    CLONE_PIDFD).  The control: the same two at ONE pointer is K0,
+    -EINVAL with the ledger, and an -EINVAL without the ledger is refused.
+    Fields: flags, pidfd, child_tid, parent_tid, exit_signal, stack,
+    stack_size, tls, set_tid, set_tid_size, cgroup. *)
+Example clone3_pidfd_parent_settid_two_pointers :
+  check_syscall
+    (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x3000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckUnmodeled
+  /\ check_syscall
+       (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x2000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x2000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       einval_eff clone3_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** [clone3] answers the copy_process checks and its own: SIGCHLD with
+    CLONE_SIGHAND (C4), an exit signal of 65 (fork.c:2794-2796), and
+    CLONE_THREAD with CLONE_SIGHAND, CLONE_VM and a non-zero exit signal
+    (fork.c:2871-2873); and with a regular file open, unlike [clone]. *)
+Example clone3_einval_words :
+  check_syscall (clone3_args_call [(CLONE_SIGHAND)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; 65%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (clone3_args_call [(CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall (clone3_args_call [(CLONE_SIGHAND)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff (with_fds [(3, FdFile [] 0)] clone3_model)
+     = CheckOk (with_fds [(3, FdFile [] 0)] clone3_model) [].
+Proof. repeat split; check_eq. Qed.
+
+(** clone3 with CLONE_NEWTIME and exit signal 17: declines, and the
+    struct gives no record, so no reader ever sees the merged word 145
+    (0x80 | 17) that would read as exit signal 145 (fork.c:2864-2865).
+    The control: the fork image still resolves. *)
+Example clone3_newtime_declines :
+  check_syscall (clone3_args_call [(CLONE_NEWTIME)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckUnmodeled
+  /\ option_map clone3_pre
+       (copy_bytes_map (clone3_args_mem [(CLONE_NEWTIME)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+          clone3_args_base CLONE_ARGS_SIZE) = Some CdDecline
+  /\ check_syscall (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       (mkEffectU (errno_ret EAGAIN) [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       clone3_model = CheckOk clone3_model [].
+Proof. repeat split; check_eq. Qed.
 
 (** AN AF_UNIX SEQUENCED-PACKET END DECLINES THE CLONE
     ([State.FdSeqpacket]; [Kernel.Fork.clone_no_shared_file_b]): the
