@@ -511,7 +511,10 @@ Local Ltac aa_done H :=
   | context [Prelude.check_copyins_after] => apply check_copyins_after_model in H
   | context [check_copyin_prefix] => apply check_copyin_prefix_model in H
   | context [check_copyins] => apply check_copyins_model in H
-  | _ => cbv beta iota zeta in H
+  | context [check_access_exists] => unfold check_access_exists in H
+  | context [Open.check_faccessat_body] => unfold Open.check_faccessat_body, check_access_exists in H
+  | context [share_eventfds] => unfold share_eventfds in H
+  | context [check_seqpacket_setsockopt] => unfold check_seqpacket_setsockopt in H
   end.
 
 Local Ltac aa_frame H :=
