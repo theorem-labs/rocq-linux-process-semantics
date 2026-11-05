@@ -57,6 +57,15 @@ Proof. reflexivity. Qed.
 Definition vdso_commutes {A} (c : Sys A) : Prop :=
   forall v i m o, c i m o -> c i (with_vdso v m) (outcome_with_vdso v o).
 
+(** Some specifications are written through a TRANSFORMER chosen by a
+    lookup: [Sys.Fs.ReadWrite.write_file_tail] takes the
+    file-extension step as an [option (Sys SyscallEffect -> Sys
+    SyscallEffect)], so the walk meets a function it cannot look inside.
+    What the producer must guarantee is this, and its lemma says which
+    transformers it can yield. *)
+Definition vdso_commutes_tr {A B} (u : Sys A -> Sys B) : Prop :=
+  forall c, vdso_commutes c -> vdso_commutes (u c).
+
 (* =========================================================================
    [with_vdso] is an equivalence on models
 
@@ -358,6 +367,131 @@ Proof.
   rewrite Heq. apply Hk. exact H.
 Qed.
 
+(* -------------------------------------------------------------------------
+   WHEN THE CONTINUATION IS NOT INDIFFERENT
+
+   [vc_bind_get_model]'s first premise fails for the memory specifications.
+   [Sys.Mm.Mmap.brk_spec] does
+
+     m <- get_model ;; … ;; modify (fun _ => with_brk_next m req r) ;; …
+
+   — it CAPTURES the model it read and builds the next one from it, ignoring
+   the model the [modify] is applied at.  Under the wrapper the captured
+   model is the wrapped one, so [k (with_vdso v m)] and [k m] are not the
+   same program: they install models that differ in the draw.  They differ
+   in NOTHING else, which is what this layer says.
+
+   [vdso_commutes2 v c1 c2] is "running [c2] at the wrapped model does what
+   running [c1] at the bare one does".  [vdso_commutes c] is its diagonal.
+   The combinators below are the same walk with two programs in hand, and
+   the one rule that is not an instance of the first layer is
+   [vc2_modify_const]: a [modify] that discards its argument.
+   ------------------------------------------------------------------------- *)
+
+Definition vdso_commutes2 {A} (v : VdsoRun) (c1 c2 : Sys A) : Prop :=
+  forall i m o, c1 i m o -> c2 i (with_vdso v m) (outcome_with_vdso v o).
+
+Lemma vc2_diag {A} : forall (c : Sys A),
+  (forall v, vdso_commutes2 v c c) -> vdso_commutes c.
+Proof. intros c H v i m o. apply H. Qed.
+
+Lemma vc2_of_commutes {A} : forall (c : Sys A) v,
+  vdso_commutes c -> vdso_commutes2 v c c.
+Proof. intros c v H i m o. apply H. Qed.
+
+Lemma vc2_pure {A} : forall v (x : A), vdso_commutes2 v (pure x) (pure x).
+Proof. intros v x i m o H. unfold pure in *. subst o. reflexivity. Qed.
+
+Lemma vc2_unmodeled {A} : forall v, vdso_commutes2 v (@unmodeled A) unmodeled.
+Proof. intros v i m o H. unfold unmodeled in *. subst o. reflexivity. Qed.
+
+Lemma vc2_choose {A} : forall v (P : A -> Prop),
+  vdso_commutes2 v (choose P) (choose P).
+Proof.
+  intros v P i m o (x & HP & ->). exists x. split; [exact HP | reflexivity].
+Qed.
+
+(** The same when the two predicates are the same TEST at the two models.
+    [Sys.Mm.Mmap.mmap_spec] chooses against [mmap_fixed_rw_budget_ok flags
+    m …], and under the wrapper the [m] is the wrapped one.  The two read
+    only framed fields, so they are equivalent; they are not the same term,
+    which is all [vc2_choose] can take. *)
+Lemma vc2_choose_conv {A} : forall v (P Q : A -> Prop),
+  (forall x, P x -> Q x) -> vdso_commutes2 v (choose P) (choose Q).
+Proof.
+  intros v P Q HPQ i m o (x & HP & ->).
+  exists x. split; [exact (HPQ x HP) | reflexivity].
+Qed.
+
+Lemma vc2_alt {A} : forall v (c1 c2 d1 d2 : Sys A),
+  vdso_commutes2 v c1 d1 -> vdso_commutes2 v c2 d2 ->
+  vdso_commutes2 v (alt c1 c2) (alt d1 d2).
+Proof.
+  intros v c1 c2 d1 d2 H1 H2 i m o [H | H];
+    [left; apply H1 | right; apply H2]; exact H.
+Qed.
+
+Lemma vc2_bind {A B} : forall v (c d : Sys A) (k l : A -> Sys B),
+  vdso_commutes2 v c d -> (forall x, vdso_commutes2 v (k x) (l x)) ->
+  vdso_commutes2 v (bind c k) (bind d l).
+Proof.
+  intros v c d k l Hc Hk i m o H. destruct o as [y m2 evs|]; cbn in *.
+  - destruct H as (x & m1 & evs1 & evs2 & Hc' & Hk' & ->).
+    exists x, (with_vdso v m1), evs1, evs2.
+    split; [exact (Hc i m _ Hc')|].
+    split; [exact (Hk x i m1 _ Hk') | reflexivity].
+  - destruct H as [H | (x & m1 & evs1 & Hc' & Hk')].
+    + left. exact (Hc i m Unmodeled H).
+    + right. exists x, (with_vdso v m1), evs1.
+      split; [exact (Hc i m _ Hc') | exact (Hk x i m1 Unmodeled Hk')].
+Qed.
+
+(** THE RULE THIS LAYER EXISTS FOR: a [modify] that discards the model it is
+    applied at and installs one the specification computed earlier.  The
+    wrapped run installs the wrapped model, and nothing about the bare run's
+    model survives either way. *)
+Lemma vc2_modify_const : forall v (N : Model),
+  vdso_commutes2 v (modify (fun _ => N)) (modify (fun _ => with_vdso v N)).
+Proof. intros v N i m o H. unfold modify in *. subst o. reflexivity. Qed.
+
+(** The same with the wrapped model given up to the setter frame, which is
+    the shape a walk meets: the wrapped run builds [F (with_vdso v m) …] and
+    the bare one [F m …], and the frame says the first is the second
+    wrapped. *)
+Lemma vc2_modify_const_eq : forall v (N N2 : Model),
+  N2 = with_vdso v N ->
+  vdso_commutes2 v (modify (fun _ => N)) (modify (fun _ => N2)).
+Proof. intros v N N2 ->. apply vc2_modify_const. Qed.
+
+(** And the ordinary [modify], under the setter frame, in two-program form. *)
+Lemma vc2_modify : forall v (f : Model -> Model),
+  (forall m, f (with_vdso v m) = with_vdso v (f m)) ->
+  vdso_commutes2 v (modify f) (modify f).
+Proof.
+  intros v f Hf i m o H. unfold modify in *. subst o. cbn. rewrite Hf.
+  reflexivity.
+Qed.
+
+Lemma vc2_emit : forall v evs, vdso_commutes2 v (emit evs) (emit evs).
+Proof. intros v evs i m o H. unfold emit in *. subst o. reflexivity. Qed.
+
+Lemma vc2_input : forall v, vdso_commutes2 v input input.
+Proof. intros v i m o H. unfold input in *. subst o. reflexivity. Qed.
+
+Lemma vc2_arg : forall v k, vdso_commutes2 v (arg k) (arg k).
+Proof. intros v k i m o H. unfold arg in *. subst o. reflexivity. Qed.
+
+(** The model-reading bind, with the continuation allowed to depend on the
+    model it was handed. *)
+Lemma vc_bind_get_model_dep {A} : forall (k : Model -> Sys A),
+  (forall v m, vdso_commutes2 v (k m) (k (with_vdso v m))) ->
+  vdso_commutes (bind get_model k).
+Proof.
+  intros k Hk v i m o H.
+  apply bind_get_model in H. apply bind_get_model.
+  exact (Hk v m i m o H).
+Qed.
+
 (** The two narrow readers ARE closed, because the value they hand over is a
     field, and a field of the wrapper is the field itself. *)
 Lemma vc_get_fds : vdso_commutes get_fds.
@@ -416,11 +550,111 @@ Qed.
    Add the shape rather than proving the arm by hand.
    ========================================================================= *)
 
+(** Pull the wrapper out from under a field reader.  [change] checks
+    convertibility, so a SETTER under the wrapper — which does not commute
+    with it this way — is skipped rather than rewritten wrongly. *)
+Ltac vdso_unwrap :=
+  repeat match goal with
+  | |- context [?r (with_vdso ?v ?m)] =>
+      lazymatch r with
+      | with_vdso => fail
+      | _ => change (r (with_vdso v m)) with (r m)
+      end
+  end.
+
+(** Writing a field.  Every [Monad.set_*] is a [modify] of a [State.with_*],
+    so one tactic closes all of them, and its side condition is the setter
+    frame proved above.
+
+    A [modify] whose function BRANCHES on the model — [raise_sigpipe], which
+    looks at the disposition and the mask before it chooses between pending
+    and killed — is not closed by conversion alone: the wrapper sits outside
+    the match on one side and inside it on the other.  Unwrapping the
+    readers first makes the two scrutinees one term, and then the branch
+    splits on both sides at once. *)
+(** The head constant of an application. *)
+Ltac vdso_head c :=
+  match c with
+  | ?f _ => vdso_head f
+  | ?f => f
+  end.
+
+(** Close a model equation whose two sides are the same construction with
+    the wrapper on opposite sides of it.  Unwrap the readers, unfold
+    whatever the construction is, split any branch it makes, and the two
+    sides meet. *)
+Ltac vdso_model_eq :=
+  repeat first
+    [ reflexivity
+    | progress vdso_unwrap
+    | match goal with
+      | |- ?lhs = _ => let h := vdso_head lhs in progress unfold h
+      | |- _ = ?rhs => let h := vdso_head rhs in progress unfold h
+      | |- context [if ?b then _ else _] => destruct b
+      | |- context [match ?x with _ => _ end] => destruct x
+      end ];
+  reflexivity.
+
+Ltac vdso_setter := apply vc_modify; intros; vdso_model_eq.
+
+(** The two-program walk, for a specification that captures the model it
+    read.  Same cases as [vdso_step], with both programs in hand. *)
+Ltac vdso_step2 :=
+  match goal with
+  | |- vdso_commutes2 _ (bind _ _) _ => apply vc2_bind; [| intros]
+  | |- vdso_commutes2 _ (alt _ _) _ => apply vc2_alt
+  | |- vdso_commutes2 _ (pure _) _ => apply vc2_pure
+  | |- vdso_commutes2 _ (ret_only _) _ => apply vc2_pure
+  | |- vdso_commutes2 _ (err_ret _) _ => apply vc2_pure
+  | |- vdso_commutes2 _ (choose _) _ =>
+      first [ apply vc2_choose
+            | apply vc2_choose_conv;
+              let H := fresh "HP" in intros ? H;
+              first [ exact H | vdso_unwrap; exact H ] ]
+  | |- vdso_commutes2 _ (@unmodeled _) _ => apply vc2_unmodeled
+  | |- vdso_commutes2 _ (emit _) _ => apply vc2_emit
+  | |- vdso_commutes2 _ input _ => apply vc2_input
+  | |- vdso_commutes2 _ (arg _) _ => apply vc2_arg
+  | |- vdso_commutes2 _ (modify (fun _ => _)) _ =>
+      apply vc2_modify_const_eq; vdso_model_eq
+  | |- vdso_commutes2 _ (modify _) _ => apply vc2_modify; intros; vdso_model_eq
+  | |- vdso_commutes2 _ (if ?b then _ else _) _ => destruct b
+  | |- vdso_commutes2 _ (match ?x with _ => _ end) _ => destruct x
+  | |- vdso_commutes2 _ ?c _ => let h := vdso_head c in progress unfold h
+  end.
+
+(** A specification that captures the model: open the [get_model] with the
+    dependent rule and walk both programs together.
+
+    [vdso_unwrap] runs in the loop here, and has to.  The two programs are
+    the same text at two models, so every reader of the captured model
+    appears wrapped on one side and bare on the other.  They are
+    convertible, but a rule such as [vc2_choose] wants ONE predicate to
+    unify with both; unwrapping first makes the two sides the same term, and
+    leaves exactly the model CONSTRUCTIONS differing, which is what
+    [vc2_modify_const_eq] is for. *)
+Ltac vdso_walk_dep :=
+  intros; apply vc_bind_get_model_dep; intros;
+  repeat (cbn beta zeta iota;
+          first [ progress vdso_unwrap | vdso_step2 ]).
+
 (** One step of the walk: peel a combinator, or split a branch. *)
 Ltac vdso_step :=
   match goal with
+  (** Already in hand: a continuation the caller handed in. *)
+  | H : vdso_commutes ?c |- vdso_commutes ?c => exact H
+  (** A transformer the caller has already shown framed; see
+      [vdso_commutes_tr]. *)
+  | H : vdso_commutes_tr ?u |- vdso_commutes (?u _) => apply H
   | |- vdso_commutes (bind get_model _) =>
       apply vc_bind_get_model; [intros; reflexivity | intros]
+  (** And when it IS: the specification captured the model, so the two
+      programs differ in the models they build.  Walk them together.  This
+      case is reached only when the one above fails, which is exactly when
+      the continuation is not indifferent. *)
+  | |- vdso_commutes (bind get_model _) =>
+      apply vc_bind_get_model_dep; intros;
+      repeat (cbn beta zeta iota; first [ progress vdso_unwrap | vdso_step2 ])
   | |- vdso_commutes (bind _ _) => apply vc_bind; [| intros]
   | |- vdso_commutes (alt _ _) => apply vc_alt
   | |- vdso_commutes (record_copyins _ _) => apply vc_record_copyins
@@ -436,12 +670,36 @@ Ltac vdso_step :=
   | |- vdso_commutes (arg _) => apply vc_arg
   | |- vdso_commutes get_fds => apply vc_get_fds
   | |- vdso_commutes get_vmmaps => apply vc_get_vmmaps
-  | |- vdso_commutes (modify _) => apply vc_modify; intros; reflexivity
+  | |- vdso_commutes (modify _) => vdso_setter
+  | |- vdso_commutes (set_fds _) => vdso_setter
+  | |- vdso_commutes (set_pipes _) => vdso_setter
+  | |- vdso_commutes (set_vmmaps _) => vdso_setter
+  | |- vdso_commutes (add_vm_lazy _ _) => vdso_setter
+  | |- vdso_commutes (forget_vm_range _ _) => vdso_setter
+  | |- vdso_commutes (set_stdin _) => vdso_setter
+  | |- vdso_commutes (set_urandom _) => vdso_setter
+  | |- vdso_commutes (set_fs _) => vdso_setter
+  | |- vdso_commutes (set_halted _) => vdso_setter
+  | |- vdso_commutes (set_tid _) => vdso_setter
+  | |- vdso_commutes (set_creds _) => vdso_setter
+  | |- vdso_commutes (set_rlimit_core _) => vdso_setter
+  | |- vdso_commutes (set_utsname _) => vdso_setter
+  | |- vdso_commutes set_setsid_succeeded => vdso_setter
+  | |- vdso_commutes (set_statpin _ _) => vdso_setter
+  | |- vdso_commutes (set_sigmask _) => vdso_setter
+  | |- vdso_commutes set_sigaltstack_installed => vdso_setter
+  | |- vdso_commutes set_sigabrt_pending => vdso_setter
+  | |- vdso_commutes (set_killed _) => vdso_setter
+  | |- vdso_commutes (set_clock _) => vdso_setter
   | |- vdso_commutes (if ?b then _ else _) => destruct b
   | |- vdso_commutes (match ?x with _ => _ end) => destruct x
   | |- vdso_commutes (let _ := ?x in _) => destruct x
+  (** LAST: a [Sys]-valued helper of the specification's own file, such as
+      [Sys.Fs.File.lowest_fd].  Unfold it and carry on, so an arm that is
+      written through helpers still costs one line. *)
+  | |- vdso_commutes ?c => let h := vdso_head c in progress unfold h
   end.
 
 (** The walk.  [unfold] the specification first; [vdso_walk] takes it from
-    there. *)
+    there, unfolding the helpers it meets. *)
 Ltac vdso_walk := intros; repeat (cbn beta zeta iota; vdso_step).
