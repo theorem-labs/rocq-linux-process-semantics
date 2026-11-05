@@ -277,20 +277,25 @@ Example eventfd2_bwrap_parent_words :
      = CheckReject.
 Proof. cbv zeta. repeat split; check_eq. Qed.
 
-(** A CLONE SHARES THE COUNTER, SO THE COUNTER CALLS DECLINE AFTER IT.
-    ADMISSION REASON: model-internal -- a run shows the answers, not which
-    descriptor kind the model holds.
+(** A CLONE SHARES THE COUNTER, SO AFTER IT THE COUNTER IS THE
+    ENVIRONMENT'S.  ADMISSION REASON: model-internal -- a run shows the
+    answers, not which descriptor kind the model holds.
 
     [efd_live_model] holds a non-blocking eventfd at fd 3 whose counter is
-    5.  Before a clone, read(3, buf, 8) is answered from the counter: 8,
-    and the value 5 stored at [buf].  A successful clone
+    5.  Before a clone, read(3, buf, 8) is answered from the counter
+    exactly: 8 and the value 5 stored at [buf], and -EAGAIN is rejected,
+    because the counter is not 0.  A successful clone
     ([Kernel.Fork.clone_child_made]) turns the entry into
     [State.FdOpaque (State.OEventFd w)], with w the O_NONBLOCK bit
     ([Kernel.Fork.share_eventfds]): after the clone the description is
-    shared by two tasks, so the same read declines; a decline is never a
-    wrong answer.  F_GETFL still answers exactly from w (O_RDWR |
-    O_NONBLOCK, 2050), F_SETFL records a change of O_NONBLOCK in w, and
-    close answers. *)
+    shared by two tasks, so no arm reads the counter the model stored.
+    The same read is a free choice over every answer Linux can give on a
+    non-blocking eventfd ([Fs.ReadWrite.read_eventfd_spec]): -EAGAIN, or
+    any nonzero value (5 and 2 both accepted), and a zero value is
+    rejected (the LPS owner's rulings of 2026-11-03, 08:33Z option 1 and
+    14:25Z).  F_GETFL still answers exactly from w (O_RDWR | O_NONBLOCK,
+    2050), F_SETFL records a change of O_NONBLOCK in w, and close
+    answers. *)
 (** Eight writable bytes at 0x9000, the read's destination. *)
 Definition efd_wmem : word -> option byte :=
   fun a => if bv_leu 0x9000 a && bv_ltu a 0x9008 then Some 0 else None.
@@ -303,6 +308,11 @@ Definition efd_read_in : SyscallInput :=
 Definition efd_read_5 : SyscallEffect :=
   mkEffect 8 [(0x9000, word_le8 (Z_to_bv 64 5))] [].
 
+(** A delivery of the value [v], and the -EAGAIN answer. *)
+Definition efd_read_v (v : Z) : SyscallEffect :=
+  mkEffect 8 [(0x9000, word_le8 (Z_to_bv 64 v))] [].
+Definition efd_read_eagain : SyscallEffect := mkEffect (errno_ret EAGAIN) [] [].
+
 Definition efd_live_model : Model :=
   with_fds (fd_insert (m_fds eventfd_model) 3
               (FdEventfd (mkEventfdCtx 5 false true))) eventfd_model.
@@ -313,19 +323,23 @@ Definition efd_clone_in : SyscallInput :=
 Definition efd_fcntl_in (cmd arg : word) : SyscallInput :=
   mkInput 25 [3; cmd; arg; 0; 0; 0] (fun _ => None) (fun _ => None).
 
-Example eventfd_read_answers_before_a_clone_and_declines_after :
+Example eventfd_read_exact_before_a_clone_environment_after :
   let shared := clone_child_made (Z_to_bv 64 4242) efd_live_model in
-  (* before the clone: the counter's value, 5 *)
+  (* before the clone: the counter's value, 5, and no -EAGAIN *)
   match check_syscall efd_read_in efd_read_5 efd_live_model with
   | CheckOk _ [] => true
   | _ => false
   end = true
+  /\ check_syscall efd_read_in efd_read_eagain efd_live_model = CheckReject
   (* the clone is answered, and the entry is the shared kind *)
   /\ check_syscall efd_clone_in (mkEffect 4242 [] []) efd_live_model
      = CheckOk shared []
   /\ fd_lookup (m_fds shared) 3 = Some (FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)))
-  (* after the clone: the same read declines *)
-  /\ check_syscall efd_read_in efd_read_5 shared = CheckUnmodeled
+  (* after the clone: the environment's counter, a free choice *)
+  /\ check_syscall efd_read_in efd_read_5 shared = CheckOk shared []
+  /\ check_syscall efd_read_in (efd_read_v 2) shared = CheckOk shared []
+  /\ check_syscall efd_read_in efd_read_eagain shared = CheckOk shared []
+  /\ check_syscall efd_read_in (efd_read_v 0) shared = CheckReject
   (* F_GETFL answers from w: O_RDWR | O_NONBLOCK *)
   /\ check_syscall (efd_fcntl_in F_GETFL 0) (mkEffect 2050 [] []) shared
      = CheckOk shared []

@@ -448,27 +448,31 @@ Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
   end.
 
 (* =========================================================================
-   read (63) and write (64) on an eventfd ([State.OEventFd])
+   read (63) and write (64) on an eventfd a clone shared ([State.OEventFd])
    ========================================================================= *)
 
-(** Is the eventfd's file non-blocking?  [do_eventfd] (fs/eventfd.c,
-    read at v6.18.44; identical at v6.18.46) makes the file with
-    [flags & EFD_SHARED_FCNTL_FLAGS | O_RDWR], so its [f_flags] carries
-    O_NONBLOCK exactly when the [eventfd2] word did ([EFD_NONBLOCK] is
-    [O_NONBLOCK]), and [eventfd_read] and [eventfd_write] test
-    [file->f_flags & O_NONBLOCK].  Nothing modeled changes that bit
-    afterwards: [Fcntl.fcntl_spec] declines F_SETFL on an opaque
-    descriptor and [Ioctl.ioctl_spec] declines FIONBIO.  ANOTHER holder
-    of the same open file can: a child that got it at a modeled [clone]
-    shares [f_flags], and [setfl] (fs/fcntl.c, read at v6.18.44;
-    identical at v6.18.46) lets it clear O_NONBLOCK, after which a read
-    here would wait.  SCOPE.md assumes no other holder
+(** Is the shared eventfd's file non-blocking?  [flags] is the word [w]
+    of [State.OEventFd w], which [Kernel.Fork.share_eventfds] builds at
+    the clone from the [State.FdEventfd] context, so its O_NONBLOCK bit
+    is the file's at the clone: the [eventfd2] word's EFD_NONBLOCK, which
+    [do_eventfd] (fs/eventfd.c, read at v6.18.44; identical at v6.18.46)
+    puts in [f_flags] as [flags & EFD_SHARED_FCNTL_FLAGS | O_RDWR]
+    ([EFD_NONBLOCK] is [O_NONBLOCK]), as any F_SETFL before the clone
+    left it.  [eventfd_read] and [eventfd_write] test
+    [file->f_flags & O_NONBLOCK].  After the clone this process changes
+    that bit only through F_SETFL, which [Fcntl.oeventfd_setfl] records
+    in [w]; [Ioctl.ioctl_spec] declines FIONBIO.  ANOTHER holder of the
+    same open file can: the child that got it at the clone shares
+    [f_flags], and [setfl] (fs/fcntl.c, read at v6.18.44; identical at
+    v6.18.46) lets it clear O_NONBLOCK, after which a read here would
+    wait.  SCOPE.md assumes no other holder
     does ("Assumptions that the model does not check"). *)
 Definition efd_nonblock_b (flags : word) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned flags) O_NONBLOCK) 0).
 
 (** Was the eventfd made with [EFD_SEMAPHORE]?  [do_eventfd] stores the
-    word as [ctx->flags], and [eventfd_ctx_do_read] reads it. *)
+    [eventfd2] word as [ctx->flags], and [eventfd_ctx_do_read] reads it;
+    [Kernel.Fork.eventfd_shared_flags] carries the bit into [w]. *)
 Definition efd_semaphore_b (flags : word) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned flags) EFD_SEMAPHORE) 0).
 
@@ -490,7 +494,7 @@ Definition eventfd_deliver (flags buf : word) : Sys SyscallEffect :=
   bs <- choose (fun bs : list byte => eventfd_value_ok flags bs = true) ;;
   pure (mkEffect (Z_to_bv 64 8) [(buf, bs)] []).
 
-(** [read fd buf count] on an eventfd made with [flags].
+(** [read fd buf count] on a shared eventfd whose word is [flags].
 
     KERNEL PATH, read at v6.18.44:
       fs/read_write.c [ksys_read], [vfs_read], [rw_verify_area],
@@ -549,7 +553,7 @@ Definition read_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
       end
   end.
 
-(** [write fd buf count] on an eventfd made with [flags].
+(** [write fd buf count] on a shared eventfd whose word is [flags].
 
     KERNEL PATH, read at v6.18.44:
       fs/read_write.c [ksys_write], [vfs_write], [rw_verify_area]: read at v6.18.44; identical at v6.18.46.
@@ -616,13 +620,8 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
   match o with
   | OProcFile _ => read_proc_spec buf count
       (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
-  | OEventFd _ => unmodeled
-      (* FAIL-CLOSED: a shared eventfd ([State.OEventFd], made by a clone,
-         [Kernel.Fork.share_eventfds]) has one counter that two tasks now
-         add to and drain, and the entry keeps none of it; [eventfd_read]
-         (fs/eventfd.c, v6.18.46) answers from that counter.  An eventfd no
-         clone shared is [State.FdEventfd] and is answered by
-         [eventfd_read].  [read_eventfd_spec] above is no longer reached *)
+  | OEventFd fl => read_eventfd_spec fl buf count
+      (* an eventfd: see [read_eventfd_spec] *)
   | OProcPath _ => err_ret EBADF
       (* [fdget_pos] is [fdget], that is [__fget_light(fd, FMODE_PATH)],
          which gives an empty [struct fd] for an O_PATH file, so
@@ -665,10 +664,8 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
     comes before the buffer is looked at. *)
 Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
   match o with
-  | OEventFd _ => unmodeled
-      (* FAIL-CLOSED, for [read_opaque_spec]'s reason: [eventfd_write]
-         answers by the shared counter's room, which the entry does not
-         keep.  [write_eventfd_spec] above is no longer reached *)
+  | OEventFd fl => write_eventfd_spec fl buf count
+      (* an eventfd: see [write_eventfd_spec] *)
   | OProcPath _ => err_ret EBADF
       (* [fdget_pos] refuses an O_PATH file, as in [read_opaque_spec]
          (fs/read_write.c:727-732; fs/file.c:1169-1170, :1225-1227) *)
