@@ -446,6 +446,7 @@ Local Ltac aa_done H :=
   | context [check_read_file_data] => unfold check_read_file_data in H
   | context [check_read_proc] => unfold check_read_proc, check_read_proc_bare in H
   | context [check_read_opaque] => unfold check_read_opaque in H
+  | context [check_write_opaque] => unfold check_write_opaque in H
   | context [check_recv_fd_answer] => unfold check_recv_fd_answer in H
   | context [check_access_ok_zero] => unfold check_access_ok_zero in H
   | context [check_socket_pending_error] =>
@@ -460,6 +461,13 @@ Local Ltac aa_done H :=
   | context [check_fstat_deliver_by] => unfold check_fstat_deliver_by in H
   | context [check_fstat_deliver] => unfold check_fstat_deliver in H
   | context [check_fstat_anon_deliver] => unfold check_fstat_anon_deliver in H
+  | context [check_fstat_file] => unfold check_fstat_file in H
+  | context [check_fstat_anon] => unfold check_fstat_anon in H
+  | context [check_fstat_opaque] => unfold check_fstat_opaque in H
+  | context [check_fstat_chrdev] => unfold check_fstat_chrdev in H
+  | context [check_fstat_devnull] => unfold check_fstat_devnull in H
+  | context [check_fstat_urandom] => unfold check_fstat_urandom in H
+  | context [check_fstat_procfd_dir] => unfold check_fstat_procfd_dir in H
   | context [check_ifreq_writeback] => unfold check_ifreq_writeback in H
   | context [check_siocgifindex] => unfold check_siocgifindex, check_ifreq_writeback in H
   | context [check_errno_or_list] => unfold check_errno_or_list in H
@@ -478,6 +486,14 @@ Local Ltac aa_done H :=
   | context [check_clone_ns_resolve] =>
       unfold check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H
   | context [check_clone3_einval] => unfold check_clone3_einval in H
+  | context [check_clone_lists] =>
+      unfold check_clone_lists, check_clone_resolve, check_clone_einval in H
+  | context [check_clone3_lists] =>
+      unfold check_clone3_lists, check_clone3_resolve, check_clone3_einval in H
+  | context [check_clone_resolve] => unfold check_clone_resolve in H
+  | context [check_clone3_resolve] => unfold check_clone3_resolve in H
+  | context [check_clone_answer] => unfold check_clone_answer in H
+  | context [check_refusable] => unfold check_refusable in H
   | context [check_setid_result] => unfold check_setid_result in H
   | context [check_tkill_self] => unfold check_tkill_self, check_send_sigabrt in H
   | context [check_kill_self] => unfold check_kill_self in H
@@ -485,6 +501,14 @@ Local Ltac aa_done H :=
       unfold check_shutdown_core, check_stream_shutdown in H
   | context [check_setsockopt_core] =>
       unfold check_setsockopt_core, check_stream_setsockopt, check_seqpacket_setsockopt in H
+  | context [check_getsockopt_core] =>
+      unfold check_getsockopt_core, check_stream_getsockopt in H
+  | context [check_getsockname_core] =>
+      unfold check_getsockname_core, check_stream_getname in H
+  | context [check_getpeername_core] =>
+      unfold check_getpeername_core, check_stream_getname in H
+  | context [check_stream_getname] => unfold check_stream_getname in H
+  | context [check_stream_getsockopt] => unfold check_stream_getsockopt in H
   | context [Open.check_openat_read] => unfold Open.check_openat_read in H
   | context [Open.check_openat_create] => unfold Open.check_openat_create in H
   | context [Open.check_openat_dir] => unfold Open.check_openat_dir in H
@@ -496,6 +520,7 @@ Local Ltac aa_done H :=
   | context [Open.check_proc_open_result] => unfold Open.check_proc_open_result in H
   | context [Open.check_openat_procfd] => unfold Open.check_openat_procfd in H
   | context [Open.check_openat_proc] => unfold Open.check_openat_proc in H
+  | context [check_openat_table] => unfold check_openat_table in H
   | context [check_create_wronly] => unfold check_create_wronly in H
   | context [check_open_append] => unfold check_open_append in H
   | context [check_open_rdwr] => unfold check_open_rdwr in H
@@ -515,9 +540,53 @@ Local Ltac aa_done H :=
   | context [Open.check_faccessat_body] => unfold Open.check_faccessat_body, check_access_exists in H
   | context [share_eventfds] => unfold share_eventfds in H
   | context [check_seqpacket_setsockopt] => unfold check_seqpacket_setsockopt in H
+  | context [check_seqpacket_recvmsg] => unfold check_seqpacket_recvmsg in H
+  | context [check_recvmsg_eof_writes] => unfold check_recvmsg_eof_writes in H
+  | context [check_rt_sigaction_sigpipe] =>
+      unfold check_rt_sigaction_sigpipe, check_sigpipe_oact_write in H
+  | context [check_sigpipe_oact_write] => unfold check_sigpipe_oact_write in H
+  | context [check_one_write] => unfold check_one_write in H
+  | context [check_clock_getres_result] => unfold check_clock_getres_result in H
+  | context [anon_place_fds] => unfold anon_place_fds in H
+  | context [check_wait4_store] => unfold check_wait4_store in H
+  | context [open_cloexec_model] => unfold open_cloexec_model in H
   end.
 
+(* Unfold the top-level check function in H so that cbv beta iota zeta
+   can expose the match/if structure for kf_step. *)
+Local Ltac aa_unfold_top H :=
+  unfold check_getcwd, check_eventfd2, check_epoll_create1,
+    check_epoll_ctl, check_epoll_pwait,
+    check_dup, check_dup3, check_fcntl, check_ioctl, check_flock,
+    check_unlinkat, check_ftruncate, check_faccessat, check_openat,
+    check_close, check_pipe2, check_getdents64, check_lseek,
+    check_read, check_write, check_readv, check_writev,
+    check_pread64, check_pwrite64, check_pselect6, check_ppoll,
+    check_signalfd4, check_readlinkat, check_newfstatat, check_fstat,
+    check_fsync, check_timerfd_create, check_capget, check_capset,
+    check_exit, check_set_tid_address, check_futex,
+    check_set_robust_list, check_nanosleep, check_clock_gettime,
+    check_clock_getres, check_sched_setscheduler,
+    check_sched_getaffinity, check_sched_yield,
+    check_kill, check_tkill, check_tgkill, check_sigaltstack,
+    check_rt_sigaction, check_rt_sigprocmask,
+    check_setsid, check_setid, check_setresid, check_getresid,
+    check_getsid, check_getgroups, check_setgroups,
+    check_uname, check_prctl, check_gettimeofday,
+    check_getpid, check_getppid, check_getid, check_gettid,
+    check_socket, check_socketpair, check_bind, check_listen,
+    check_accept4, check_connect,
+    check_getsockname, check_getpeername,
+    check_sendto, check_recvfrom, check_setsockopt, check_getsockopt,
+    check_shutdown, check_sendmsg, check_recvmsg,
+    check_brk, check_munmap, check_mremap,
+    check_clone, check_mmap, check_mprotect, check_madvise,
+    check_wait4, check_prlimit64, check_setns,
+    check_getrandom, check_pwritev2, check_clone3,
+    check_close_range, check_faccessat2 in H.
+
 Local Ltac aa_frame H :=
+  aa_unfold_top H;
   cbv beta iota zeta in H;
   repeat (kf_step H || aa_done H || (aa_close; fail 2));
   aa_close.
@@ -530,10 +599,8 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_frame H; fail).
-  (* Diagnostic: step as far as possible, then report *)
-  all: cbv beta iota zeta in H.
-  all: repeat (kf_step H || aa_done H).
-  all: let T := type of H in fail 1 "STUCK_ON:" T.
+  all: fail 1
+    "checked_table_preserves_aa has no case for this dispatcher arm".
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
