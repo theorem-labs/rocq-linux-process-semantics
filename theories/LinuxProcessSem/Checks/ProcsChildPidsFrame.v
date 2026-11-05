@@ -120,22 +120,164 @@ Ltac cp_done H :=
 Ltac cp_frame2 H :=
   repeat (vm_step H || cp_done H); try reflexivity.
 
+(** READ'S AND WRITE'S HELPERS, as [Checks.VmMapsDisjoint] proves them
+    for the address space, one lemma each: a stream-pair end's read and
+    send, the /proc/sys file, the eventfd, the unnamed file and the
+    write-fault extension.  Each closes its own step, so the frame lemmas
+    of [read], [write], [pread64], [pwrite64], [writev], [pwritev2],
+    [sendto] and [recvfrom] close these calls by name. *)
+Lemma check_stream_read_empty_cp : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H. cp_frame2 H.
+Qed.
+
+Lemma check_stream_read_cp :
+  forall fd id side st nonblock buf count i eff m m' evs,
+  check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros fd id side st nonblock buf count i eff m m' evs H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
+  cbv beta zeta in H. cp_frame2 H.
+Qed.
+
+Lemma check_stream_send_cp :
+  forall id side st nonblock nosignal n src ledger eff m m' evs,
+  check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros id side st nonblock nosignal n src ledger eff m m' evs H.
+  unfold check_stream_send in H. cbv beta zeta in H. cp_frame2 H.
+Qed.
+
+Lemma check_stream_write_cp :
+  forall id side st nonblock nosignal buf count i eff m m' evs,
+  check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros id side st nonblock nosignal buf count i eff m m' evs H.
+  unfold check_stream_write in H. eapply check_stream_send_cp. exact H.
+Qed.
+
+Ltac cp_stream H :=
+  first
+  [ apply check_stream_read_cp in H; exact H
+  | apply check_stream_read_empty_cp in H; exact H
+  | apply check_stream_write_cp in H; exact H
+  | apply check_stream_send_cp in H; exact H ].
+
+Ltac cp_frame3 H :=
+  repeat (vm_step H || cp_done H || cp_stream H); try reflexivity.
+
+Lemma cp_read_urandom : forall i buf count eff m m' evs,
+  check_read_urandom i buf count eff m = CheckOk m' evs -> cps_of m' = cps_of m.
+Proof.
+  intros i buf count eff m m' evs H. unfold check_read_urandom, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
+  check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros e fd peer ch buf count i eff m m' evs H.
+  unfold check_socket_pending_error, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_write_fault_extend : forall reads m p off eff m' evs,
+  check_write_fault_extend reads m p off eff = CheckOk m' evs -> cps_of m' = cps_of m.
+Proof.
+  intros reads m p off eff m' evs H. unfold check_write_fault_extend, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_read_proc : forall i buf count eff m m' evs,
+  check_read_proc i buf count eff m = CheckOk m' evs -> cps_of m' = cps_of m.
+Proof.
+  intros i buf count eff m m' evs H.
+  unfold check_read_proc, check_read_proc_bare in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_eventfd_read : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_read in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_eventfd_write : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_write in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_anon_fault_extend : forall reads m id data dst eff m' evs,
+  check_anon_fault_extend reads m id data dst eff = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros reads m id data dst eff m' evs H. unfold check_anon_fault_extend in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H);
+  try reflexivity.
+Qed.
+
+Lemma cp_anon_write_fault : forall reads m id af eff m' evs,
+  check_anon_write_fault reads m id af eff = CheckOk m' evs -> cps_of m' = cps_of m.
+Proof.
+  intros reads m id af eff m' evs H. unfold check_anon_write_fault in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H
+          || (eapply cp_anon_fault_extend in H; exact H));
+  try reflexivity.
+Qed.
+
 Lemma check_read_cp : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_file_data, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero in H.
-  cbv zeta in H.
-  repeat (vm_step H || cp_done H || (apply check_read_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H || cp_stream H
+          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply cp_read_urandom in H; exact H)
+          || (eapply cp_socket_pending_error in H; exact H)
+          || (eapply cp_read_proc in H; exact H)
+          || (eapply cp_eventfd_read in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_write_cp : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  repeat (vm_step H || cp_done H || (apply check_write_opaque_keeps in H; destruct H as [-> ->])); try reflexivity.
+  unfold check_write, check_access_ok_zero in H.
+  cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H || cp_stream H
+          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply cp_write_fault_extend in H; exact H)
+          || (eapply cp_eventfd_write in H; exact H)
+          || (eapply cp_anon_write_fault in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_pread64_cp : forall i fd buf count pos eff m m' evs,
@@ -143,7 +285,10 @@ Lemma check_pread64_cp : forall i fd buf count pos eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pread64, check_read_urandom in H. cbv zeta in H. cp_frame2 H.
+  unfold check_pread64 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H
+          || (eapply cp_read_urandom in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_pwrite64_cp : forall i fd buf count pos eff m m' evs,
@@ -151,7 +296,11 @@ Lemma check_pwrite64_cp : forall i fd buf count pos eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64, check_write_fault_extend in H. cp_frame2 H.
+  unfold check_pwrite64 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H
+          || (eapply cp_write_fault_extend in H; exact H)
+          || (eapply cp_anon_fault_extend in H; exact H));
+  try reflexivity.
 Qed.
 
 (** OPENAT, ONE SUB-CHECKER AT A TIME.  Unfolding the whole of
@@ -261,6 +410,7 @@ Local Ltac openat_sub_cp_tmp H :=
   lazymatch type of H with
   | Open.check_openat_read _ _ _ = CheckOk _ _ => apply openat_read_cp in H; exact H
   | Open.check_openat_create _ _ _ = CheckOk _ _ => apply openat_create_cp in H; exact H
+  | Open.check_openat_rdwr_excl _ _ _ = CheckOk _ _ => apply openat_rdwr_excl_cp in H; exact H
   end.
 
 Lemma openat_tmp_cp : forall n p flags eff m m' evs,
@@ -310,9 +460,21 @@ Proof.
   repeat (vm_step H || openat_sub_cp_resolved H || cp_done H); try reflexivity.
 Qed.
 
+(** The "/proc/self/fd/N" reopen installs a descriptor with [with_fds]
+    and nothing else. *)
+Lemma openat_procfd_cp : forall n flags eff m m' evs,
+  Open.check_openat_procfd n flags eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros n flags eff m m' evs H.
+  unfold Open.check_openat_procfd in H. cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H); try reflexivity.
+Qed.
+
 Local Ltac openat_sub_cp_proc H :=
   lazymatch type of H with
   | Open.check_proc_open_result _ _ _ = CheckOk _ _ => apply openat_proc_result_cp in H; exact H
+  | Open.check_openat_procfd _ _ _ _ = CheckOk _ _ => apply openat_procfd_cp in H; exact H
   end.
 
 Lemma openat_proc_cp : forall c flags eff m m' evs,
@@ -414,7 +576,23 @@ Lemma check_writev_cp : forall i fd iov iovcnt eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev, check_write_fault_extend in H. cp_frame2 H.
+  unfold check_writev in H. cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H || cp_stream H
+          || (eapply cp_write_fault_extend in H; exact H)
+          || (eapply cp_anon_write_fault in H; exact H));
+  try reflexivity.
+Qed.
+
+Lemma check_pwritev2_cp :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
+  unfold check_pwritev2 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || cp_done H || cp_stream H
+          || (eapply cp_anon_fault_extend in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_readv_imported_cp : forall i fd r iovs0 eff m m' evs,
@@ -423,7 +601,7 @@ Lemma check_readv_imported_cp : forall i fd r iovs0 eff m m' evs,
 Proof.
   intros i fd r iovs0 eff m m' evs H.
   unfold check_readv_imported in H.
-  cp_frame2 H.
+  cp_frame3 H.
 Qed.
 
 Lemma check_readv_cp : forall i fd iov iovcnt eff m m' evs,
@@ -762,16 +940,42 @@ Proof.
   apply check_fstat_opaque_keeps in H as (-> & _). reflexivity.
 Qed.
 
+Lemma check_fstat_anon_cp : forall i id af statbuf eff m m' evs,
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros i id af statbuf eff m m' evs H.
+  unfold check_fstat_anon in H.
+  destruct (negb (access_okb statbuf STAT_SIZE)); [cp_frame2 H|].
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
+    [|discriminate].
+  assert (Hdel : exists pin,
+             check_fstat_anon_deliver statbuf id (length (af_data af)) pin eff m
+             = CheckOk m' evs).
+  { destruct (af_pin af) as [b0|]; [|eauto].
+    destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool);
+      [discriminate|eauto]. }
+  destruct Hdel as (pin & Hd).
+  apply check_fstat_anon_deliver_ok in Hd
+    as (bs & _ & _ & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
+    first [reflexivity | autorewrite with model; reflexivity].
+Qed.
+
 Lemma check_fstat_cp : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
   intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [|cp_frame2 H].
-  destruct e; try discriminate;
-    first [eapply check_fstat_file_cp; exact H
-          |eapply check_fstat_devnull_cp; exact H
-          |eapply check_fstat_urandom_cp; exact H
-          |eapply check_fstat_opaque_cp; exact H].
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st];
+    cbv iota in H; try discriminate.
+  (* the unnamed file: past the agreement test *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H;
+            [discriminate|]).
+  all: first [eapply check_fstat_file_cp; exact H
+             |eapply check_fstat_devnull_cp; exact H
+             |eapply check_fstat_urandom_cp; exact H
+             |eapply check_fstat_anon_cp; exact H
+             |eapply check_fstat_opaque_cp; exact H].
 Qed.
 
 Lemma check_getid_cp : forall sel eff m m' evs,
@@ -994,7 +1198,7 @@ Lemma check_recvfrom_cp : forall i fd buf size eff m m' evs,
 Proof.
   intros i fd buf size eff m m' evs H.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H.
-  cp_frame2 H.
+  cp_frame3 H.
 Qed.
 
 Lemma check_recvmsg_cp : forall i fd flags eff m m' evs,
@@ -1012,7 +1216,7 @@ Lemma check_sendto_cp : forall i fd buf count flags addrp eff m m' evs,
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
   unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
-  cp_frame2 H.
+  cp_frame3 H.
 Qed.
 
 Lemma check_sendmsg_cp : forall i fd msgp flags eff m m' evs,
@@ -1338,6 +1542,7 @@ Proof.
         | eapply check_set_tid_address_cp; eassumption
         | eapply check_ioctl_cp; eassumption
         | eapply check_writev_cp; eassumption
+        | eapply check_pwritev2_cp; eassumption
         | eapply check_readv_imported_cp; eassumption
         | eapply check_readv_cp; eassumption
         | eapply check_epoll_create1_cp; eassumption

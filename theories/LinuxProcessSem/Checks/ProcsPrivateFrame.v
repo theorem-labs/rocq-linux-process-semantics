@@ -447,6 +447,58 @@ Proof.
   cbv zeta in H. sh_frame2 H.
 Qed.
 
+(** A stream-pair end's read and send ([Fs.ReadWrite.check_stream_read],
+    [Fs.ReadWrite.check_stream_send]) rewrite fd-table entries with
+    [with_fds], and the send's -EPIPE raises SIGPIPE through
+    [check_sigpipe_write]; none of that touches the file system or the
+    I/O state.  [sendto] and [recvfrom] reach them, as in
+    [Checks.VmMapsDisjoint]. *)
+Lemma check_stream_read_empty_sh : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_read_sh :
+  forall fd id side st nonblock buf count i eff m m' evs,
+  check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros fd id side st nonblock buf count i eff m m' evs H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
+  cbv beta zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_send_sh :
+  forall id side st nonblock nosignal n src ledger eff m m' evs,
+  check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros id side st nonblock nosignal n src ledger eff m m' evs H.
+  unfold check_stream_send in H. cbv beta zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_write_sh :
+  forall id side st nonblock nosignal buf count i eff m m' evs,
+  check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros id side st nonblock nosignal buf count i eff m m' evs H.
+  unfold check_stream_write in H. eapply check_stream_send_sh. exact H.
+Qed.
+
+Ltac sh_stream H :=
+  first
+  [ apply check_stream_read_sh in H; exact H
+  | apply check_stream_read_empty_sh in H; exact H
+  | apply check_stream_write_sh in H; exact H
+  | apply check_stream_send_sh in H; exact H ].
+
+Ltac sh_frame3 H :=
+  repeat (vm_step H || sh_done H || sh_stream H); try reflexivity.
+
 Lemma check_send_on_socket_sh :
   forall pre acc fd sk total bs eff m m' evs,
   check_send_on_socket pre acc fd sk total bs eff m = CheckOk m' evs ->
@@ -470,7 +522,7 @@ Lemma check_sendto_sh : forall i fd buf count flags addrp eff m m' evs,
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
   unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
-  sh_frame2 H.
+  sh_frame3 H.
 Qed.
 
 Lemma check_recvfrom_sh : forall i fd buf size eff m m' evs,
@@ -479,7 +531,7 @@ Lemma check_recvfrom_sh : forall i fd buf size eff m m' evs,
 Proof.
   intros i fd buf size eff m m' evs H.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H.
-  sh_frame2 H.
+  sh_frame3 H.
 Qed.
 
 Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,

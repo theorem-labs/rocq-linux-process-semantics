@@ -1283,12 +1283,14 @@ Lemma check_set_robust_list_nf : forall len eff m m' evs,
 Proof. intros len eff m m' evs H. unfold check_set_robust_list in H. nf_frame H. Qed.
 
 (** A successful clone shares the eventfds ([share_eventfds]); an
-    [ONsFile] passes through it unchanged. *)
+    [ONsFile] passes through it unchanged.  A host refuser's errno
+    ([check_clone_cases]) leaves the model as it was. *)
 Lemma check_clone_nf : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros flags eff m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
+  apply check_clone_cases in H as [(-> & _ & _) | H]; [exact (ns_kept_refl _)|].
+  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
     check_clone_ns_resolve, check_clone_ns_answer in H.
   nf_frame H.
 Qed.
@@ -1297,7 +1299,8 @@ Lemma check_clone3_nf : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H. nf_frame H.
+  apply check_clone3_cases in H as [(-> & _ & _) | H]; [exact (ns_kept_refl _)|].
+  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer in H. nf_frame H.
 Qed.
 
 Lemma check_getsockname_nf : forall i fd eff m m' evs,
@@ -1377,7 +1380,9 @@ Qed.
 Lemma check_recvmsg_nf : forall i fd flags eff m m' evs,
   check_recvmsg i fd flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros i fd flags eff m m' evs H. unfold check_recvmsg, check_recv_fd_answer, check_recvmsg_eof_writes, check_ret_writes_copyins, check_seqpacket_recvmsg in H.
+  intros i fd flags eff m m' evs H.
+  unfold check_recvmsg, check_seqpacket_recvmsg, check_recvmsg_eof_writes,
+    check_ret_writes_copyins, check_recv_fd_answer in H.
   nf_frame H.
 Qed.
 
@@ -1400,7 +1405,9 @@ Qed.
 
 Lemma check_pipe2_nf : forall i fildes flags eff m m' evs,
   check_pipe2 i fildes flags eff m = CheckOk m' evs -> ns_post m m'.
-Proof. intros i fildes flags eff m m' evs H. unfold check_pipe2 in H. nf_frame H. Qed.
+Proof.
+  intros i fildes flags eff m m' evs H. unfold check_pipe2, pipe2_model in H. nf_frame H.
+Qed.
 
 Lemma check_getcwd_nf : forall size eff m m' evs,
   check_getcwd size eff m = CheckOk m' evs -> ns_post m m'.
@@ -1423,6 +1430,29 @@ Lemma check_epoll_pwait_nf :
 Proof.
   intros i epfd events maxevents32 sigmask sigsetsize eff m m' evs H.
   unfold check_epoll_pwait in H. nf_frame H.
+Qed.
+
+(** The three arms procstate-migration adds beside C1's: [kill] (its
+    self-kill rebuilds [ProcState] alone), [setns] and [signalfd4] (a new
+    descriptor that is not an [ONsFile]). *)
+Lemma check_kill_nf : forall pid sig eff m m' evs,
+  check_kill pid sig eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros pid sig eff m m' evs H.
+  unfold check_kill, check_kill_self in H. nf_frame H.
+Qed.
+
+Lemma check_setns_nf : forall fd eff m m' evs,
+  check_setns fd eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros fd eff m m' evs H. unfold check_setns in H. nf_frame H.
+Qed.
+
+Lemma check_signalfd4_nf : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H. nf_frame H.
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -1504,6 +1534,7 @@ Proof.
     | eapply check_sigaltstack_nf; eassumption
     | eapply check_rt_sigaction_nf; eassumption
     | eapply check_tkill_nf; eassumption
+    | eapply check_kill_nf; eassumption
     | eapply check_tgkill_nf; eassumption
     | eapply check_rt_sigprocmask_nf; eassumption
     | eapply check_futex_nf; eassumption
@@ -1534,6 +1565,8 @@ Proof.
     | eapply check_capget_nf; eassumption
     | eapply check_capset_nf; eassumption
     | eapply check_close_range_nf; eassumption
+    | eapply check_setns_nf; eassumption
+    | eapply check_signalfd4_nf; eassumption
     | fail 1 "checked_table_ns_post has no case for this dispatcher arm: give the new checker a *_nf lemma and add it to the list above" ].
 Qed.
 
