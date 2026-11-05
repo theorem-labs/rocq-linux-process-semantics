@@ -425,9 +425,114 @@ Local Ltac aa_close :=
     ]
   end.
 
+(* Sub-checker handling: when kf_step gets stuck on a sub-checker call,
+   try unfolding it or applying aa_close through it. *)
+Local Ltac aa_done H :=
+  first
+  [ (* check_efault_or *)
+    (eapply check_efault_or_ok_iff in H; destruct H as (_ & H & _); subst; aa_close)
+  | (* check_sigpipe_write *)
+    match type of H with
+    | check_sigpipe_write _ _ = CheckOk _ _ =>
+      unfold check_sigpipe_write in H;
+      destruct (sigpipe_declines _); cbv iota in H; [discriminate H|];
+      apply check_ret_only_ok_iff in H; destruct H as (_ & H & _); subst; aa_close
+    end
+  | (* check_sigpipe_writev *)
+    match type of H with
+    | check_sigpipe_writev _ _ _ = CheckOk _ _ =>
+      unfold check_sigpipe_writev in H;
+      destruct (sigpipe_declines _); cbv iota in H; [discriminate H|];
+      apply check_ret_only_copyins_ok_iff in H; destruct H as (_ & H & _); subst; aa_close
+    end
+  | (* check_stream_read and similar — unfold and continue *)
+    match type of H with
+    | check_stream_read _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_stream_read_empty _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_stream_read_empty, check_stream_read_reset in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_stream_write _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_stream_write, check_stream_send in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_stream_send _ _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_stream_send in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_eventfd_read _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_eventfd_read in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_eventfd_write _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_eventfd_write in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_open_result _ _ _ = CheckOk _ _ =>
+      unfold check_open_result, check_new_fd_result in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_new_fd_result _ _ _ = CheckOk _ _ =>
+      unfold check_new_fd_result in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_readv_imported _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_readv_imported in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_read_file_data _ _ _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_read_file_data in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_read_proc _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_read_proc, check_read_proc_bare in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_read_opaque _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_read_opaque in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_recv_fd_answer _ _ _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_recv_fd_answer in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | check_access_ok_zero _ _ _ _ _ = CheckOk _ _ =>
+      unfold check_access_ok_zero in H;
+      cbv beta iota zeta in H
+    end
+  | match type of H with
+    | Prelude.check_copyins_after _ _ _ = CheckOk _ _ =>
+      apply check_copyins_after_model in H
+    end
+  | match type of H with
+    | check_copyin_prefix _ _ _ = CheckOk _ _ =>
+      apply check_copyin_prefix_model in H
+    end
+  | match type of H with
+    | check_copyins _ _ _ = CheckOk _ _ =>
+      apply check_copyins_model in H
+    end
+  ].
+
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (kf_step H || (aa_close; fail 2));
+  repeat (kf_step H || aa_done H || (aa_close; fail 2));
   aa_close.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
