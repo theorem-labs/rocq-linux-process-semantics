@@ -136,16 +136,16 @@ Definition host_rootfs_peer7 (gs : list positive) : NsState :=
     gs.
 
 Example clone_newuser_open_root_declines : forall m,
-  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+  clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs
                  (host_rootfs_peer7 [7%positive]) 138 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example clone_newuser_closed_root_answers : forall m,
-  child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+  child_of (clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs
                            (host_rootfs_peer7 []) 138)
-  = child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+  = child_of (clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs
                              host_rootfs 138)
-  /\ child_of (clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs
+  /\ child_of (clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs
                               host_rootfs 138) <> None.
 Proof. intros m. vm_compute. split; [reflexivity | intros H; discriminate H]. Qed.
 
@@ -159,7 +159,7 @@ Definition enospc_states (p : UserNs) : list NsState :=
    with_mounts (with_userns host_rootfs [p]) []].
 Example clone_user_level_before_chroot : forall m st,
   In st (enospc_states (user_limit 33 100)) ->
-  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+  clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs st 138
     = CnErr 28 st.
 Proof.
   intros m st H. cbn [enospc_states] in H.
@@ -167,7 +167,7 @@ Proof.
 Qed.
 Example clone_user_count_before_chroot : forall m st,
   In st (enospc_states (user_limit 0 0)) ->
-  clone_ns_exact (Z.lor CLONE_NEWUSER SIGCHLD) (with_creds (creds 65534) m) caller_rootfs st 138
+  clone_ns_exact (cw (Z.lor CLONE_NEWUSER SIGCHLD)) (with_creds (creds 65534) m) caller_rootfs st 138
     = CnErr 28 st.
 Proof.
   intros m st H. cbn [enospc_states] in H.
@@ -585,16 +585,16 @@ Definition sibling_children_state (a : PidAlloc) (last : Z) : NsState :=
     [pidns_with_alloc (mk_pidns 4 (Some 1%positive) 1 1 last) a]).
 
 Example sibling_children_declines : forall m,
-  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+  clone_ns_exact (cw SIGCHLD) (launch_children_model m) (with_pidns_children launch_children_ctx 4)
     (sibling_children_state PaEmpty 0) 140 = CnUnmodeled /\
-  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+  clone_ns_exact (cw SIGCHLD) (launch_children_model m) (with_pidns_children launch_children_ctx 4)
     (sibling_children_state PaClosed 1) 140 = CnUnmodeled.
 Proof. intros m. split; vm_compute; reflexivity. Qed.
 
 (** The control: in the same tables the descendant B (3) keeps its
     answer ([clone_into_empty_children]). *)
 Example descendant_children_beside_sibling_answers : forall m,
-  let o := clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
+  let o := clone_ns_exact (cw SIGCHLD) (launch_children_model m) launch_children_ctx
              (sibling_children_state PaEmpty 0) 140 in
   option_map cx_pids (child_of o) = Some [(3%positive, 1); (2%positive, 8); (1%positive, 140)] /\
   ret_of o = Some (Some 8) /\
