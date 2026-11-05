@@ -196,12 +196,38 @@ Proof.
   match goal with |- context [if ?b then _ else _] => destruct b end; exact Hkv.
 Qed.
 
+(** A first root-tid pin resolves the root's running children's parent
+    pid ([Procs.root_children_ppid], [State.with_ppid]), which carries the
+    bit. *)
+Lemma sigchld_root_children : forall root t ps,
+  List.Forall (fun kv => m_sigchld_dfl (pe_model (snd kv)) = true) ps ->
+  List.Forall (fun kv => m_sigchld_dfl (pe_model (snd kv)) = true)
+    (root_children_ppid root t ps).
+Proof.
+  intros root t ps H. unfold root_children_ppid. apply List.Forall_map.
+  eapply List.Forall_impl; [|exact H].
+  intros [q f] Hkv. cbv beta in *.
+  destruct (root_child_ppid_one_model root t q f) as [E | E]; rewrite E; exact Hkv.
+Qed.
+
+Lemma sigchld_first_root_pin : forall P e m' ps,
+  List.Forall (fun kv => m_sigchld_dfl (pe_model (snd kv)) = true) ps ->
+  List.Forall (fun kv => m_sigchld_dfl (pe_model (snd kv)) = true)
+    (first_root_pin_children P e m' ps).
+Proof.
+  intros P e m' ps H. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)); [|exact H].
+  destruct (m_tid (pe_model e)), (m_tid m');
+    first [exact H | apply sigchld_root_children; exact H].
+Qed.
+
 (** An absorb keeps the invariant when the step's model keeps the bit. *)
 Lemma sigchld_absorb : forall P e c',
   sigchld_ok P -> m_sigchld_dfl (cfg_model c') = true -> sigchld_ok (absorb P e c').
 Proof.
   intros P e c' H Hc. unfold sigchld_ok, absorb. cbn [pcfg_procs].
-  apply sigchld_orphan_at_exit. apply Forall_replace_in; [exact H|].
+  apply sigchld_orphan_at_exit.
+  apply Forall_replace_in; [apply sigchld_first_root_pin; exact H|].
   exact Hc.
 Qed.
 
@@ -281,12 +307,19 @@ Proof.
         cbv beta; cbn [snd]; rewrite sigchld_sync_entry;
         exact (sigchld_caller _ _ _ H Hl)
     end.
-  - (* pstep_pin_root *)
+  - (* pstep_pin_root: the root's children's parent pid resolved, if
+       this is the first pin *)
     match goal with
     | Hr : look ?Q (pcfg_root ?Q) = Some ?r |- _ =>
         unfold pin_root, sigchld_ok; cbn [pcfg_procs];
-        apply Forall_replace_in; [exact H|];
-        exact (sigchld_caller _ _ _ H Hr)
+        apply Forall_replace_in;
+        [ first
+          [ exact H
+          | match goal with
+            | |- List.Forall _ (match ?x with _ => _ end) =>
+                destruct x; first [exact H | apply sigchld_root_children; exact H]
+            end ]
+        | exact (sigchld_caller _ _ _ H Hr) ]
     end.
 Qed.
 

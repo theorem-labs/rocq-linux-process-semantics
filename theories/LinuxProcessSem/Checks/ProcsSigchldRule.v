@@ -60,11 +60,34 @@ Proof.
   match goal with |- context [if ?b then _ else _] => destruct b end; exact Hkv.
 Qed.
 
+(** A first root-tid pin resolves the root's running children's parent
+    pid ([Procs.root_children_ppid], [State.with_ppid]), which carries the
+    list and [m_has_children]. *)
+Lemma hc_root_children : forall root t ps,
+  List.Forall (fun kv => hc_ok (pe_model (snd kv))) ps ->
+  List.Forall (fun kv => hc_ok (pe_model (snd kv))) (root_children_ppid root t ps).
+Proof.
+  intros root t ps H. unfold root_children_ppid. apply List.Forall_map.
+  eapply List.Forall_impl; [|exact H].
+  intros [q f] Hkv. cbv beta in *.
+  destruct (root_child_ppid_one_model root t q f) as [E | E]; rewrite E; exact Hkv.
+Qed.
+
+Lemma hc_first_root_pin : forall P e m' ps,
+  List.Forall (fun kv => hc_ok (pe_model (snd kv))) ps ->
+  List.Forall (fun kv => hc_ok (pe_model (snd kv))) (first_root_pin_children P e m' ps).
+Proof.
+  intros P e m' ps H. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)); [|exact H].
+  destruct (m_tid (pe_model e)), (m_tid m');
+    first [exact H | apply hc_root_children; exact H].
+Qed.
+
 Lemma hc_absorb : forall P e c',
   hc_all P -> hc_ok (cfg_model c') -> hc_all (absorb P e c').
 Proof.
   intros P e c' H Hc. unfold hc_all, absorb. cbn [pcfg_procs].
-  apply hc_orphan_at_exit. apply Forall_replace_in; [exact H|].
+  apply hc_orphan_at_exit. apply Forall_replace_in; [apply hc_first_root_pin; exact H|].
   exact Hc.
 Qed.
 
@@ -157,12 +180,19 @@ Proof.
         intros Hn; rewrite E1 in Hn; rewrite E2;
         exact (hc_all_look _ _ _ H Hl Hn)
     end.
-  - (* pstep_pin_root *)
+  - (* pstep_pin_root: the root's children's parent pid resolved, if
+       this is the first pin *)
     match goal with
     | Hr : look ?Q (pcfg_root ?Q) = Some ?r |- _ =>
         unfold pin_root, hc_all; cbn [pcfg_procs];
-        apply Forall_replace_in; [exact H|];
-        exact (hc_all_look _ _ _ H Hr)
+        apply Forall_replace_in;
+        [ first
+          [ exact H
+          | match goal with
+            | |- List.Forall _ (match ?x with _ => _ end) =>
+                destruct x; first [exact H | apply hc_root_children; exact H]
+            end ]
+        | exact (hc_all_look _ _ _ H Hr) ]
     end.
 Qed.
 
@@ -242,6 +272,51 @@ Proof.
   - injection H as -> ->. left. split; reflexivity.
 Qed.
 
+(** An entry of a first root-tid pin's table is an entry of the table it
+    came from, perhaps with its parent pid resolved, so with the same bit. *)
+Lemma In_root_children : forall root t ps k g,
+  List.In (k, g) (root_children_ppid root t ps) ->
+  exists g0, List.In (k, g0) ps /\ m_sigchld_dfl (pe_model g) = m_sigchld_dfl (pe_model g0).
+Proof.
+  intros root t ps k g H. unfold root_children_ppid in H.
+  apply List.in_map_iff in H as ([k0 g0] & E & Hin).
+  assert (Hk : k0 = k).
+  { pose proof (root_child_ppid_one_fst root t (k0, g0)) as Hf.
+    rewrite E in Hf. cbn [fst] in Hf. symmetry. exact Hf. }
+  rewrite Hk in Hin. exists g0. split; [exact Hin|].
+  destruct (root_child_ppid_one_model root t k0 g0) as [M | M];
+    rewrite E in M; cbn [snd] in M; rewrite M; reflexivity.
+Qed.
+
+Lemma In_first_root_pin : forall P e m' ps k g,
+  List.In (k, g) (first_root_pin_children P e m' ps) ->
+  exists g0, List.In (k, g0) ps /\ m_sigchld_dfl (pe_model g) = m_sigchld_dfl (pe_model g0).
+Proof.
+  intros P e m' ps k g H. unfold first_root_pin_children in H.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P));
+    [|exists g; split; [exact H | reflexivity]].
+  destruct (m_tid (pe_model e)), (m_tid m');
+    first [exists g; split; [exact H | reflexivity] | exact (In_root_children _ _ _ _ _ H)].
+Qed.
+
+(** [replace_origin] over a table whose entries come from [pcfg_procs P]
+    with their bit kept: the replacement, or an entry with the old one's
+    bit. *)
+Lemma replace_origin_bit : forall P ps k f f' p e',
+  pconfig_wf P -> look P k = Some f ->
+  List.In (k, f') (replace_in ps p e') ->
+  (forall g, List.In (k, g) ps ->
+     exists g0, List.In (k, g0) (pcfg_procs P)
+                /\ m_sigchld_dfl (pe_model g) = m_sigchld_dfl (pe_model g0)) ->
+  (k = p /\ f' = e') \/ m_sigchld_dfl (pe_model f') = m_sigchld_dfl (pe_model f).
+Proof.
+  intros P ps k f f' p e' Hwf Hl Hin Hps.
+  destruct (In_replace_in _ _ _ _ Hin) as [H | H].
+  - right. destruct (Hps _ H) as (g0 & Hg0 & E). rewrite E.
+    rewrite (same_key P k f g0 Hwf Hl Hg0). reflexivity.
+  - injection H as -> ->. left. split; reflexivity.
+Qed.
+
 (** A child in the table: a non-empty list of children's keys. *)
 Lemma has_child_keys : forall P k,
   has_child_b P k = true -> children_keys (pcfg_procs P) k <> [].
@@ -294,10 +369,11 @@ Proof.
         unfold absorb in Hl'; cbn [pcfg_procs] in Hl';
         destruct (In_orphan_at_exit _ _ _ _ _ Hl') as (g & Hg & Hm);
         rewrite Hm;
-        destruct (replace_origin _ _ _ _ _ _ Hwf Hl Hg) as [(-> & ->) | ->];
+        destruct (replace_origin_bit _ _ _ _ _ _ _ Hwf Hl Hg
+                    (fun g1 Hg1 => In_first_root_pin _ _ _ _ _ _ Hg1)) as [(-> & ->) | Hbit];
         [ assert (f = e) by congruence; subst f;
           exact (released_no_set _ _ _ _ _ _ Hok Hhc He Hch Hss Hd)
-        | exact Hd ]
+        | rewrite Hbit; exact Hd ]
     end.
   - (* pstep_clone *)
     match goal with
@@ -337,8 +413,9 @@ Proof.
         unfold wait4_zero_result, absorb in Hl'; cbn [pcfg_procs] in Hl';
         destruct (In_orphan_at_exit _ _ _ _ _ Hl') as (g & Hg & Hm);
         rewrite Hm;
-        destruct (replace_origin _ _ _ _ _ _ Hwf Hl Hg) as [(-> & ->) | ->];
-        [ assert (f = e) by congruence; subst f; exact Hd | exact Hd ]
+        destruct (replace_origin_bit _ _ _ _ _ _ _ Hwf Hl Hg
+                    (fun g1 Hg1 => In_first_root_pin _ _ _ _ _ _ Hg1)) as [(-> & ->) | Hbit];
+        [ assert (f = e) by congruence; subst f; exact Hd | rewrite Hbit; exact Hd ]
     end.
   - (* pstep_sync *)
     match goal with
@@ -349,12 +426,21 @@ Proof.
           rewrite sigchld_sync_entry; exact Hd
         | exact Hd ]
     end.
-  - (* pstep_pin_root *)
+  - (* pstep_pin_root: the table it replaces into is [pcfg_procs P], or
+       that table after the first pin resolved the root's children *)
     match goal with
     | Hr : look ?Q (pcfg_root ?Q) = Some ?r |- _ =>
-        unfold pin_root in Hl'; cbn [pcfg_procs] in Hl';
-        destruct (replace_origin _ _ _ _ _ _ Hwf Hl Hl') as [(-> & ->) | ->];
-        [ assert (f = r) by congruence; subst f; exact Hd | exact Hd ]
+        unfold pin_root in Hl'; cbn [pcfg_procs] in Hl'; revert Hl';
+        match goal with
+        | |- List.In _ (replace_in (match ?x with _ => _ end) _ _) -> _ =>
+            destruct x; intros Hl'
+        end;
+        first
+        [ destruct (replace_origin _ _ _ _ _ _ Hwf Hl Hl') as [(-> & ->) | ->];
+          [ assert (f = r) by congruence; subst f; exact Hd | exact Hd ]
+        | destruct (replace_origin_bit _ _ _ _ _ _ _ Hwf Hl Hl'
+                      (fun g1 Hg1 => In_root_children _ _ _ _ _ Hg1)) as [(-> & ->) | Hbit];
+          [ assert (f = r) by congruence; subst f; exact Hd | rewrite Hbit; exact Hd ] ]
     end.
 Qed.
 
