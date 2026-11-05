@@ -36,10 +36,12 @@
     below.  Without CLONE_NEWUTS the child shares the caller's UTS
     namespace ([copy_utsname], :87-88).
 
-    The child's pid in each pid namespace from its own outwards: in a
-    namespace a modelled call made, the next after the namespace's last
-    ([alloc_pid] walks the idr cyclically; a pid at [pid_max] or above
-    declines); in the host's (the outermost), [hq], the pid the core
+    The child is allocated in [pidns_children], or in its new child when
+    CLONE_NEWPID is set.  A children's namespace that is neither the active
+    namespace nor below it declines: Linux never holds one
+    ([pidns_install], [copy_pid_ns]).  Its pids run from its own namespace outwards:
+    each model-held level gives the next pid under the clear-range and
+    no-outside-allocation launch facts, below its measured limit; the host gives [hq], the pid the core
     chooses, by which the core keys its process table.  What the parent's
     call returns is the child's pid in the caller's own pid namespace
     ([clone_ret]).
@@ -48,10 +50,10 @@
     the namespace counts of the host's user namespace, EAGAIN from
     RLIMIT_NPROC or a cgroup controller, EINTR, and the failures of every
     namespace's init function, which cannot be listed with confidence: any
-    errno) are admitted for every clone the model answers; one inside
-    [alloc_pid] can leave an inner prefix of the pid cursors advanced
-    ([pid_partial]), and one after it advances every model cursor
-    ([pid_advanced]).  A core takes a failed clone's shared state from
+    errno) are admitted for every clone the model answers.  A partial
+    allocation leaves [pid_partial]; one after complete allocation leaves
+    [pid_failed], closing each empty namespace whose first pid is freed.
+    A core takes a failed clone's shared state from
     [CnErr] too.  A statement that names [clone_tables_failures] admits
     only the tables' failures for a clone that makes a namespace: that the
     host can make the namespaces is its environment premise. *)
@@ -64,7 +66,6 @@ Import ListNotations.
 Local Open Scope Z_scope.
 
 Definition CSIGNAL : Z := 255.
-Definition PID_MAX : Z := 4194304.
 Definition CLONE_CHILD_CLEARTID : Z := 2097152.   (* 0x00200000 *)
 Definition CLONE_CHILD_SETTID : Z := 16777216.    (* 0x01000000 *)
 
@@ -102,11 +103,18 @@ Fixpoint pidns_chain (fuel : nat) (st : NsState) (p : positive) : list PidNs :=
            end
   end.
 
-(** The child's pids from its own pid namespace outwards, and the pid
-    namespaces with their new last pid: each namespace the model made
-    gives the next pid; the host's gives [hq].  [None] when a namespace
-    has run out of pids. *)
-Definition alloc_pids (chain : list PidNs) (hq : Z)
+(** [pidns_below st a c]: the pid namespace [a] is in the chain of [c],
+    that is [c] is [a] or below it in the tables. *)
+Definition pidns_below (st : NsState) (a c : positive) : bool :=
+  existsb (fun x => Pos.eqb (pidns_id x) a) (pidns_chain (length (ns_pidns st)) st c).
+
+(** The child's pids from its own namespace outwards.  Every model level
+    needs its clear-range launch fact, no outside allocator/control write,
+    and a next pid below its measured limit.  [initialize] marks empty
+    namespaces initialized on success; it is false for a closed-namespace
+    failure, which advances cursors without changing allocation states.
+    The host's pid remains the core's [hq]. *)
+Definition alloc_pids (outside initialize : bool) (chain : list PidNs) (hq : Z)
     : option (list (positive * Z) * list PidNs) :=
   fold_right (fun x acc =>
     match acc with
@@ -115,9 +123,12 @@ Definition alloc_pids (chain : list PidNs) (hq : Z)
         match pidns_parent x with
         | Some _ =>
             let p := pidns_last x + 1 in
-            if PID_MAX <=? p then None
+            if outside || negb (pidns_cursor_clear x) || (pidns_max x <=? p) then None
             else Some ((pidns_id x, p) :: ps,
-                       mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x) (pidns_level x) p :: ns)
+                       pidns_with_last_alloc x p
+                         (match pidns_alloc x with
+                          | PaEmpty => if initialize then PaInit else PaEmpty
+                          | a => a end) :: ns)
         | None => Some ((pidns_id x, hq) :: ps, ns)
         end
     end) (Some ([], [])) chain.
@@ -238,27 +249,50 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
           | Some (mntns, T', new_mntns, where_, links) =>
               (* the pid namespace *)
               let active := cx_pidns ctx in
+              let children := pidns_children ctx in
               let pid_part :=
                 if has_flag f CLONE_NEWPID then
+                  (* [copy_pid_ns] refuses a new pid namespace unless the
+                     children's namespace is the active one
+                     (kernel/pid_namespace.c:180-181, Linux v6.18.46). *)
+                  if negb (Pos.eqb children active) then inl EINVAL else
                   match find_pidns st active with
                   | Some par =>
                       if negb (in_userns U (pidns_owner par) (cc_user cc)) then inl EINVAL
                       else if Nat.leb 32 (pidns_level par) then inl ENOSPC
                       else let nid := Pos.succ (max_pidns_id st) in
-                           inr (nid, [mkPidNs nid (Some active) (cc_user cc) (S (pidns_level par)) 0])
+                           inr (nid, [fresh_pidns nid children (cc_user cc) (S (pidns_level par))], false)
                   | None => inl 0
                   end
-                else inr (active, []) in
+                else if Pos.eqb children active then inr (children, [], false)
+                (* Linux keeps the children's namespace at the active one or
+                   below it: [pidns_install] refuses any other
+                   (kernel/pid_namespace.c:419-420) and [copy_pid_ns] makes
+                   a child of the active one (:175-183), Linux v6.18.46.
+                   The model declines the state Linux never reaches. *)
+                else if negb (pidns_below st active children) then inl 0
+                else match find_pidns st children with
+                     | Some p => match pidns_alloc p with
+                       | PaEmpty => if pidns_last p =? 0 then inr (children, [], false) else inl 0
+                       | PaClosed => inr (children, [], true)
+                       | PaInit | PaUnknown => inl 0
+                       end
+                     | None => inl 0
+                     end in
               match pid_part with
               | inl 0 => CnUnmodeled
               | inl e => CnErr e st
-              | inr (child_ns, new_pidns) =>
+              | inr (child_ns, new_pidns, closed) =>
                   let st_p := ns_pidns st ++ new_pidns in
                   let chain := pidns_chain (length st_p) (with_pidns st st_p) child_ns in
-                  match alloc_pids chain hq with
+                  match alloc_pids (ns_outside_pids st) (negb closed) chain hq with
                   | None => CnUnmodeled
                   | Some (pids, updated) =>
                         let pidns' := fold_left replace_pidns updated st_p in
+                        (* PIDNS_ADDING is checked only after all ids have
+                           been allocated (kernel/pid.c:262,276-303,
+                           Linux v6.18.46).  Closed namespaces do not reset. *)
+                        if closed then CnErr ENOMEM (with_pidns st pidns') else
                         (* the network namespace *)
                         let '(net, new_net) :=
                           if has_flag f CLONE_NEWNET then
@@ -276,6 +310,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                         let child := with_user_ns ctx (cc_user cc) in
                         let child := with_mount_ns child mntns in
                         let child := with_pid_ns child child_ns in
+                        let child := with_active_pidns_children child in
                         let child := with_net_ns child net in
                         let child := with_uts_ns child uts in
                         let child := with_pids child pids in
@@ -357,47 +392,75 @@ Qed.
 
 Definition bump_pid_cursor (x : PidNs) : list PidNs :=
   match pidns_parent x with
-  | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
-      (pidns_level x) (pidns_last x + 1)]
+  | Some _ => [pidns_with_last x (pidns_last x + 1)]
   | None => []
   end.
 
-(** The pid namespaces the model made, from [active] outwards, each with
-    its cursor one further: what an [alloc_pid] that a later failure undid
-    ([free_pid] does not move the cursor) leaves. *)
+(** The model-held pid namespaces, from [active] outwards, with cursors
+    advanced and allocation states unchanged.  This is the cursor effect
+    alone; freeing a completed first allocation uses [pid_failed]. *)
 Definition pid_advanced (st : NsState) (active : positive) : NsState :=
   let chain := pidns_chain (length (ns_pidns st)) st active in
   let bumped := flat_map bump_pid_cursor chain in
   with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
 
-(** An [alloc_pid] failure at chain index [k]: the inner [k] namespaces
-    allocated a number; the failing level and the outer levels did not.
-    Removing the reservations does not rewind their cursors (Linux
-    v6.18.46, kernel/pid.c:191-251,294-299; lib/idr.c:127-136,154-157). *)
+(** After successful alloc_pid, freeing a first pid closes that namespace
+    (kernel/pid.c:136-139, v6.18.46), without resetting its cursor. *)
+Definition pid_failure_record (p : PidNs) : PidNs :=
+  pidns_with_last_alloc p (pidns_last p + 1)
+    (match pidns_alloc p with PaEmpty => PaClosed | a => a end).
+
+Definition pid_failed (st : NsState) (active : positive) : NsState :=
+  let chain := pidns_chain (length (ns_pidns st)) st active in
+  let bumped := flat_map (fun p => match pidns_parent p with
+    | Some _ => [pid_failure_record p] | None => [] end) chain in
+  with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
+
+(** out_free resets an empty innermost namespace, not its ancestors
+    (kernel/pid.c:301-303).  The host's cursor is not represented. *)
+Definition pid_reset_empty (st : NsState) (active : positive) : NsState :=
+  match find_pidns st active with
+  | Some p => match pidns_parent p, pidns_alloc p with
+              | Some _, PaEmpty => with_pidns st (replace_pidns (ns_pidns st) (pidns_with_last p 0))
+              | _, _ => st
+              end
+  | None => st
+  end.
+
 Definition pid_partial (st : NsState) (active : positive) (k : nat) : NsState :=
   let chain := firstn k (pidns_chain (length (ns_pidns st)) st active) in
   let bumped := flat_map bump_pid_cursor chain in
-  with_pidns st (fold_left replace_pidns bumped (ns_pidns st)).
+  pid_reset_empty (with_pidns st (fold_left replace_pidns bumped (ns_pidns st))) active.
 
-(** A table failure from copy_creds or copy_namespaces prevents alloc_pid
-    (kernel/fork.c:2054-2056,2188-2208, Linux v6.18.46). *)
-Definition clone_pid_allocates (o : CloneNs) : bool :=
-  match o with CnOk _ _ _ => true | _ => false end.
+(** Earlier table errors, from copy_creds or copy_namespaces, stop before
+    alloc_pid (kernel/fork.c:2054-2056, 2188-2208).  In a closed namespace,
+    cursor-moving failures are only the allocator's ENOMEM or EAGAIN;
+    its final ENOMEM prevents later failure sites (kernel/pid.c:238-303,
+    Linux v6.18.46). *)
+Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
+  match o with
+  | CnOk _ _ _ => true
+  | CnErr e _ => (e =? ENOMEM) && ((en =? ENOMEM) || (en =? EAGAIN))
+  | CnUnmodeled => false
+  end.
 
 (** The answers: the tables' answer, or one of the environment's refusals
     (an allocation failure, a namespace count of the host's user
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
     a namespace's init function).  Cursor movement requires that the
-    tables let the clone reach pid allocation; an earlier table error
-    admits only the unchanged state. *)
+    tables reach pid allocation.  For a closed namespace only an
+    allocation's ENOMEM or EAGAIN can have moved cursors; its final
+    ENOMEM prevents reaching later failure sites (kernel/pid.c:238-303,
+    Linux v6.18.46).  A partial allocation resets an empty innermost
+    namespace's cursor; freeing a completed first allocation closes it. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st hq
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
       /\ exists e st', 1 <= e <= 4095
-          /\ (st' = st \/ (clone_pid_allocates (clone_ns_exact f m ctx st hq) = true
-              /\ (st' = pid_advanced st (cx_pidns ctx)
-                  \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)))%nat
-                        /\ st' = pid_partial st (cx_pidns ctx) k)))
+          /\ (st' = st \/ (clone_pid_failure_can_move (clone_ns_exact f m ctx st hq) e = true
+              /\ (st' = pid_failed st (pidns_children ctx)
+                  \/ exists k, (k < length (pidns_chain (length (ns_pidns st)) st (pidns_children ctx)))%nat
+                        /\ st' = pid_partial st (pidns_children ctx) k)))
                        /\ o = CnErr e st').
 
 (** A task in the released world has no pid namespace the model made
@@ -422,26 +485,69 @@ Proof.
   cbv zeta. rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
 Qed.
 
-(** A partial allocation in the released world also moves no cursor. *)
-Lemma pid_partial_flat : forall ctx st k,
-  flat_view ctx st = true -> pid_partial st (cx_pidns ctx) k = st.
+(** The released world's chain contains no model level to update. *)
+Lemma flat_model_pidns_updates : forall ctx st (update : PidNs -> PidNs) k,
+  flat_view ctx st = true ->
+  with_pidns st (fold_left replace_pidns
+    (flat_map (fun p => match pidns_parent p with Some _ => [update p] | None => [] end)
+      (firstn k (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)))) (ns_pidns st)) = st.
 Proof.
-  intros ctx st k H. unfold flat_view in H.
+  intros ctx st update k H. unfold flat_view in H.
   apply andb_true_iff in H as [H _].
   apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
-  unfold pid_partial.
-  assert (Hb : flat_map bump_pid_cursor
+  assert (Hb : flat_map (fun p => match pidns_parent p with
+      Some _ => [update p] | None => [] end)
       (firstn k (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx))) = []).
-  { unfold bump_pid_cursor. destruct (length (ns_pidns st)) as [|n].
+  { destruct (length (ns_pidns st)) as [|n].
     - destruct k; reflexivity.
     - cbn [pidns_chain]. unfold find_pidns.
-      destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef.
+      destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [p|] eqn:Ef.
       + try rewrite Ef in Hpid. cbv beta iota in Hpid |- *.
-        destruct (pidns_parent x) as [q|] eqn:Ep;
+        destruct (pidns_parent p) as [q|] eqn:Ep;
           [try rewrite Ep in Hpid; discriminate Hpid|].
         destruct k; simpl; try rewrite Ep; rewrite ?firstn_nil; reflexivity.
       + destruct k; reflexivity. }
-  cbv zeta. rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
+  rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
+Qed.
+
+Lemma pid_failed_flat : forall ctx st,
+  flat_view ctx st = true -> pid_failed st (pidns_children ctx) = st.
+Proof.
+  intros ctx st H. rewrite (flat_view_pidns_children ctx st H). unfold pid_failed.
+  pose proof (flat_model_pidns_updates ctx st pid_failure_record
+    (length (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx))) H) as Hsame.
+  rewrite firstn_all in Hsame. exact Hsame.
+Qed.
+
+Lemma pid_reset_empty_flat : forall ctx st,
+  flat_view ctx st = true -> pid_reset_empty st (cx_pidns ctx) = st.
+Proof.
+  intros ctx st H. unfold flat_view in H.
+  apply andb_true_iff in H as [H _].
+  apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [_ Hpid].
+  unfold pid_reset_empty, find_pidns.
+  destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [p|] eqn:Ef;
+    [|reflexivity].
+  try rewrite Ef in Hpid. cbv beta iota in Hpid |- *.
+  destruct (pidns_parent p) as [q|] eqn:Ep;
+    [try rewrite Ep in Hpid; discriminate Hpid|].
+  reflexivity.
+Qed.
+
+Lemma pid_partial_flat : forall ctx st k,
+  flat_view ctx st = true -> pid_partial st (cx_pidns ctx) k = st.
+Proof.
+  intros ctx st k H.
+  unfold pid_partial, bump_pid_cursor. cbv zeta.
+  rewrite (flat_model_pidns_updates ctx st (fun p => pidns_with_last p (pidns_last p + 1)) k H).
+  now apply pid_reset_empty_flat.
+Qed.
+
+Lemma pid_partial_children_flat : forall ctx st k,
+  flat_view ctx st = true -> pid_partial st (pidns_children ctx) k = st.
+Proof.
+  intros ctx st k H. rewrite (flat_view_pidns_children ctx st H).
+  now apply pid_partial_flat.
 Qed.
 
 (** A task in the released world that makes no namespace: the clone is
@@ -467,12 +573,12 @@ Lemma clone_ns_coherent : forall f m ctx st hq o,
   (clone_ns f m ctx st hq o <-> released_clone ctx st o).
 Proof.
   intros f m ctx st hq o Hf Hb. unfold clone_ns, released_clone.
-  rewrite (clone_ns_exact_flat_fork f m ctx st hq Hf Hb), (pid_advanced_flat ctx st Hf).
+  rewrite (clone_ns_exact_flat_fork f m ctx st hq Hf Hb), (pid_failed_flat ctx st Hf).
   split.
   - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
     right. exists e. split; [exact He|].
     destruct Hst as [-> | [_ [-> | (k & _ & ->)]]]; try exact Ho.
-    rewrite (pid_partial_flat ctx st k Hf) in Ho. exact Ho.
+    rewrite (pid_partial_children_flat ctx st k Hf) in Ho. exact Ho.
   - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
     right. split; [intros Hc; discriminate Hc|].
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].

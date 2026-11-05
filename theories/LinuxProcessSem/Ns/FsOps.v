@@ -421,9 +421,12 @@ Definition eventfd_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
     of the same open file see one text when no mount changed between
     them; [propagate_from] is computed from the state and the captured
     root while a slave's master chain stays in the tables
-    ([Propagation.dominating_id]).  No answer for a namespace that holds a
-    mount which can receive a mount event from an open group
-    ([Mountinfo.mountinfo_text]).  Kind: exact given those values. *)
+    ([Propagation.dominating_id]).  No answer for a namespace that an
+    outside task entered or that holds a mount which can receive a mount
+    event from an open group ([Propagation.ns_open]), nor for one that
+    holds a mount whose superblock's read-only state an outside task may
+    change ([Propagation.flags_open]); see [Mountinfo.mountinfo_text].
+    Kind: exact given those values. *)
 Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) (l : Loc) (ns : positive) (root : positive * positive) (off : Z)
     (o : ext_outcome) : Prop :=
