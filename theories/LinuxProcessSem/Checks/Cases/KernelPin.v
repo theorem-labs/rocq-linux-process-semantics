@@ -50,7 +50,8 @@ Definition launch_on (kb : KernelBuild) : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] kb default_execfn
-                   true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
+                   true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false
+                   no_clone_refusers.
 
 Lemma ordinary_launch_valid : valid_input ordinary_launch.
 Proof. exact demo_input_valid. Qed.

@@ -177,7 +177,7 @@ Definition check_clone_ns_resolve (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
-Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
+Definition check_clone_lists (flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if clone_fork_flags_b flags then check_clone_resolve eff m
   else if clone_ns_flags_b flags then check_clone_ns_resolve eff m
@@ -187,7 +187,7 @@ Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
     asked through [State.copy_bytes_map] before the walk; one it admits
     that the memory does not wholly back declines (see
     [Fork.clone3_spec]). *)
-Definition check_clone3 (i : SyscallInput) (uargs size : word)
+Definition check_clone3_lists (i : SyscallInput) (uargs size : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then CheckUnmodeled
   else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
@@ -496,22 +496,22 @@ Proof.
   destruct (clone_pid_ok_b m ret); discriminate.
 Qed.
 
-Lemma check_clone_sound_ok : forall flags eff m m' evs i,
-  check_clone flags eff m = CheckOk m' evs -> clone_spec flags i m (Ok eff m' evs).
+Lemma check_clone_lists_sound_ok : forall flags eff m m' evs i,
+  check_clone_lists flags eff m = CheckOk m' evs -> clone_spec_lists flags i m (Ok eff m' evs).
 Proof.
   intros flags eff m m' evs i H.
-  unfold check_clone in H. unfold clone_spec.
+  unfold check_clone_lists in H. unfold clone_spec_lists.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_sound_ok|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *; [|discriminate].
   now apply check_clone_ns_resolve_sound_ok.
 Qed.
 
-Lemma check_clone_sound_unmodeled : forall flags eff m i,
-  check_clone flags eff m = CheckUnmodeled -> clone_spec flags i m Unmodeled.
+Lemma check_clone_lists_sound_unmodeled : forall flags eff m i,
+  check_clone_lists flags eff m = CheckUnmodeled -> clone_spec_lists flags i m Unmodeled.
 Proof.
   intros flags eff m i H.
-  unfold check_clone in H. unfold clone_spec.
+  unfold check_clone_lists in H. unfold clone_spec_lists.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_sound_unmodeled with (eff := eff)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
@@ -519,11 +519,11 @@ Proof.
     |apply unmodeled_intro].
 Qed.
 
-Lemma check_clone_complete_ok : forall flags eff m m' evs i,
-  clone_spec flags i m (Ok eff m' evs) -> check_clone flags eff m = CheckOk m' evs.
+Lemma check_clone_lists_complete_ok : forall flags eff m m' evs i,
+  clone_spec_lists flags i m (Ok eff m' evs) -> check_clone_lists flags eff m = CheckOk m' evs.
 Proof.
   intros flags eff m m' evs i H.
-  unfold clone_spec in H. unfold check_clone.
+  unfold clone_spec_lists in H. unfold check_clone_lists.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_complete_ok with (i := i)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
@@ -531,11 +531,11 @@ Proof.
     |unfold unmodeled in H; discriminate].
 Qed.
 
-Lemma check_clone_complete_unmodeled : forall flags m i eff,
-  clone_spec flags i m Unmodeled -> check_clone flags eff m = CheckUnmodeled.
+Lemma check_clone_lists_complete_unmodeled : forall flags m i eff,
+  clone_spec_lists flags i m Unmodeled -> check_clone_lists flags eff m = CheckUnmodeled.
 Proof.
   intros flags m i eff H.
-  unfold clone_spec in H. unfold check_clone.
+  unfold clone_spec_lists in H. unfold check_clone_lists.
   destruct (clone_fork_flags_b flags); cbv iota in H |- *;
     [now apply check_clone_resolve_complete_unmodeled with (i := i)|].
   destruct (clone_ns_flags_b flags); cbv iota in H |- *;
@@ -543,12 +543,12 @@ Proof.
     |reflexivity].
 Qed.
 
-Lemma check_clone3_sound_ok : forall i uargs size eff m m' evs,
-  check_clone3 i uargs size eff m = CheckOk m' evs ->
-  clone3_spec uargs size i m (Ok eff m' evs).
+Lemma check_clone3_lists_sound_ok : forall i uargs size eff m m' evs,
+  check_clone3_lists i uargs size eff m = CheckOk m' evs ->
+  clone3_spec_lists uargs size i m (Ok eff m' evs).
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3 in H. unfold clone3_spec.
+  unfold check_clone3_lists in H. unfold clone3_spec_lists.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
@@ -564,12 +564,12 @@ Proof.
   now apply check_clone3_resolve_sound_ok.
 Qed.
 
-Lemma check_clone3_sound_unmodeled : forall i uargs size eff m,
-  check_clone3 i uargs size eff m = CheckUnmodeled ->
-  clone3_spec uargs size i m Unmodeled.
+Lemma check_clone3_lists_sound_unmodeled : forall i uargs size eff m,
+  check_clone3_lists i uargs size eff m = CheckUnmodeled ->
+  clone3_spec_lists uargs size i m Unmodeled.
 Proof.
   intros i uargs size eff m H.
-  unfold check_clone3 in H. unfold clone3_spec.
+  unfold check_clone3_lists in H. unfold clone3_spec_lists.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
@@ -583,12 +583,12 @@ Proof.
   now apply check_clone3_resolve_sound_unmodeled with (eff := eff).
 Qed.
 
-Lemma check_clone3_complete_ok : forall i uargs size eff m m' evs,
-  clone3_spec uargs size i m (Ok eff m' evs) ->
-  check_clone3 i uargs size eff m = CheckOk m' evs.
+Lemma check_clone3_lists_complete_ok : forall i uargs size eff m m' evs,
+  clone3_spec_lists uargs size i m (Ok eff m' evs) ->
+  check_clone3_lists i uargs size eff m = CheckOk m' evs.
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold clone3_spec in H. unfold check_clone3.
+  unfold clone3_spec_lists in H. unfold check_clone3_lists.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [unfold unmodeled in H; discriminate|].
   sys_unfold. cbv iota in H. inv_ok.
@@ -601,12 +601,12 @@ Proof.
   now apply check_clone3_resolve_complete_ok with (i := i).
 Qed.
 
-Lemma check_clone3_complete_unmodeled : forall i uargs size m eff,
-  clone3_spec uargs size i m Unmodeled ->
-  check_clone3 i uargs size eff m = CheckUnmodeled.
+Lemma check_clone3_lists_complete_unmodeled : forall i uargs size m eff,
+  clone3_spec_lists uargs size i m Unmodeled ->
+  check_clone3_lists i uargs size eff m = CheckUnmodeled.
 Proof.
   intros i uargs size m eff H.
-  unfold clone3_spec in H. unfold check_clone3.
+  unfold clone3_spec_lists in H. unfold check_clone3_lists.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [reflexivity|].
   sys_unfold. cbv iota in H. inv_ok.
@@ -616,4 +616,390 @@ Proof.
          inv_ok; reflexivity. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok; [|reflexivity].
   now apply check_clone3_resolve_complete_unmodeled with (i := i).
+Qed.
+
+
+(* ------------------------------------------------- the host's clone refusers *)
+
+(** The effect a refusal of 220 leaves ([Kernel.Fork.clone_refused_fail]):
+    an error-encoded return and nothing else.  [addr_is_error_b] accepts
+    exactly the returns of the errnos from 1 to 4095
+    ([addr_is_error_b_errno], [errno_ret_error_b]). *)
+Definition clone_refused_eff_b (eff : SyscallEffect) : bool :=
+  match eff with
+  | mkEffectU ret [] [] [] [] [] => addr_is_error_b ret
+  | _ => false
+  end.
+
+(** ...and of 435, which carries the struct's copy-in ledger
+    ([Kernel.Fork.clone3_refused_fail]). *)
+Definition clone3_refused_eff_b (uargs : word) (eff : SyscallEffect) : bool :=
+  match eff with
+  | mkEffectU ret [] [] [] [] ((a, n) :: nil) =>
+      bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat && addr_is_error_b ret
+  | _ => false
+  end.
+
+(** [Kernel.Fork.clone_refusable] as a checker: at an answered call, with
+    a refuser present and the descriptor gate open, a refusal's effect is
+    accepted with the model unchanged; everything else is the lists'
+    checker [r].  A refusal's effect the lists also accept (an errno of
+    [Fork.clone_errnos]) gets the same answer from both, the model
+    unchanged ([check_clone_lists_refused_shape]). *)
+Definition check_refusable (answered refused_eff : bool) (m : Model)
+    (r : check_result) : check_result :=
+  if answered && clone_refused_b (m_clone_refusers m)
+     && clone_no_shared_file_b (forfeit_inherited (m_fds m)) && refused_eff
+  then CheckOk m [] else r.
+
+Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  check_refusable (clone_fork_flags_b flags || clone_ns_flags_b flags)
+    (clone_refused_eff_b eff) m (check_clone_lists flags eff m).
+
+Definition check_clone3 (i : SyscallInput) (uargs size : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  check_refusable (clone3_answered_b uargs size i)
+    (clone3_refused_eff_b uargs eff) m (check_clone3_lists i uargs size eff m).
+
+(** The four obligations, once, for any answered test, refusal and lists. *)
+Lemma check_refusable_sound_ok : forall answered fail k re r i m m' eff evs,
+  (re = true -> fail i m (Ok eff m [])) ->
+  (r = CheckOk m' evs -> k i m (Ok eff m' evs)) ->
+  check_refusable (answered i) re m r = CheckOk m' evs ->
+  clone_refusable answered fail k i m (Ok eff m' evs).
+Proof.
+  intros answered fail k re r i m m' eff evs Hf Hk H. unfold check_refusable in H.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))) eqn:Hc;
+    cbn [andb] in H.
+  - destruct re; cbv beta iota in H.
+    + injection H as <- <-. unfold clone_refusable. rewrite Hc.
+      change (alt fail k i m (Ok eff m [])). apply alt_l. apply Hf. reflexivity.
+    + apply clone_refusable_lists. apply Hk. exact H.
+  - apply clone_refusable_lists. apply Hk. exact H.
+Qed.
+
+Lemma check_refusable_sound_unmodeled : forall answered fail k re r i m,
+  (r = CheckUnmodeled -> k i m Unmodeled) ->
+  check_refusable (answered i) re m r = CheckUnmodeled ->
+  clone_refusable answered fail k i m Unmodeled.
+Proof.
+  intros answered fail k re r i m Hk H. unfold check_refusable in H.
+  apply clone_refusable_lists. apply Hk.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m)) && re);
+    [discriminate H | exact H].
+Qed.
+
+Lemma check_refusable_complete_ok : forall answered fail k re r i m m' eff evs,
+  (fail i m (Ok eff m' evs) -> re = true /\ m' = m /\ evs = []) ->
+  (k i m (Ok eff m' evs) -> r = CheckOk m' evs) ->
+  (re = true -> r = CheckOk m' evs -> m' = m /\ evs = []) ->
+  clone_refusable answered fail k i m (Ok eff m' evs) ->
+  check_refusable (answered i) re m r = CheckOk m' evs.
+Proof.
+  intros answered fail k re r i m m' eff evs Hf Hk Hs H.
+  unfold clone_refusable in H. unfold check_refusable.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))); cbn [andb].
+  - destruct H as [H | H].
+    + destruct (Hf H) as (-> & -> & ->). reflexivity.
+    + pose proof (Hk H) as Hr. destruct re.
+      * destruct (Hs eq_refl Hr) as [-> ->]. reflexivity.
+      * exact Hr.
+  - exact (Hk H).
+Qed.
+
+Lemma check_refusable_complete_unmodeled : forall answered fail k re r i m,
+  (fail i m Unmodeled -> False) ->
+  (k i m Unmodeled -> r = CheckUnmodeled) ->
+  (answered i = true -> clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true ->
+   k i m Unmodeled -> False) ->
+  clone_refusable answered fail k i m Unmodeled ->
+  check_refusable (answered i) re m r = CheckUnmodeled.
+Proof.
+  intros answered fail k re r i m Hf Hk Hn H.
+  unfold clone_refusable in H. unfold check_refusable.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))) eqn:Hc; cbn [andb].
+  - exfalso. destruct H as [H | H]; [exact (Hf H)|].
+    apply andb_true_iff in Hc as [Hc Hg]. apply andb_true_iff in Hc as [Ha _].
+    exact (Hn Ha Hg H).
+  - exact (Hk H).
+Qed.
+
+(** The refusal's effects, both ways. *)
+Lemma clone_refused_eff_b_ok : forall eff i m,
+  clone_refused_eff_b eff = true -> clone_refused_fail i m (Ok eff m []).
+Proof.
+  intros [ret ws zs us cs cis] i m H.
+  destruct ws, zs, us, cs, cis; try discriminate H.
+  cbn [clone_refused_eff_b] in H.
+  apply addr_is_error_b_errno in H as (e & H1 & H2 & ->).
+  apply clone_refused_fail_ok. lia.
+Qed.
+
+Lemma clone_refused_fail_shape : forall i m eff m' evs,
+  clone_refused_fail i m (Ok eff m' evs) ->
+  clone_refused_eff_b eff = true /\ m' = m /\ evs = [].
+Proof.
+  intros i m eff m' evs H.
+  apply clone_refused_fail_inv in H as (e & He & Heq).
+  injection Heq as -> -> ->. split; [|split; reflexivity].
+  cbn [clone_refused_eff_b]. apply errno_ret_error_b; lia.
+Qed.
+
+Lemma clone3_refused_eff_b_ok : forall uargs eff i m,
+  clone3_refused_eff_b uargs eff = true -> clone3_refused_fail uargs i m (Ok eff m []).
+Proof.
+  intros uargs [ret ws zs us cs cis] i m H.
+  destruct ws, zs, us, cs; try discriminate H.
+  destruct cis as [|[a n] [|? ?]]; try discriminate H.
+  cbn [clone3_refused_eff_b] in H.
+  apply andb_true_iff in H as [H He]. apply andb_true_iff in H as [Ha Hn].
+  apply bv_eqb_eq in Ha. apply Nat.eqb_eq in Hn. subst a n.
+  apply addr_is_error_b_errno in He as (e & H1 & H2 & ->).
+  apply clone3_refused_fail_ok. lia.
+Qed.
+
+Lemma clone3_refused_fail_shape : forall uargs i m eff m' evs,
+  clone3_refused_fail uargs i m (Ok eff m' evs) ->
+  clone3_refused_eff_b uargs eff = true /\ m' = m /\ evs = [].
+Proof.
+  intros uargs i m eff m' evs H.
+  apply clone3_refused_fail_inv in H as (e & He & Heq).
+  injection Heq as -> -> ->. split; [|split; reflexivity].
+  cbn [clone3_refused_eff_b]. rewrite bv_eqb_refl, Nat.eqb_refl. cbn [andb].
+  apply errno_ret_error_b; lia.
+Qed.
+
+(** A refusal's effect the lists accept leaves the model unchanged: an
+    error-encoded return is no admissible pid ([clone_pid_not_error]). *)
+Lemma check_clone_lists_refused_shape : forall flags eff m m' evs,
+  clone_refused_eff_b eff = true ->
+  check_clone_lists flags eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros flags [ret ws zs us cs cis] m m' evs Hr H.
+  destruct ws, zs, us, cs, cis; try discriminate Hr.
+  cbn [clone_refused_eff_b] in Hr.
+  unfold check_clone_lists, check_clone_resolve, check_clone_ns_resolve in H.
+  destruct (clone_fork_flags_b flags); [|destruct (clone_ns_flags_b flags)];
+    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+    cbv beta iota in H; try discriminate H.
+  - unfold check_clone_answer in H.
+    destruct (errno_ret_in clone_errnos ret); [injection H as <- <-; split; reflexivity|].
+    destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate H].
+    rewrite (clone_pid_not_error m ret Hv) in Hr. discriminate Hr.
+  - unfold check_clone_ns_answer in H.
+    destruct (errno_any_b ret); [injection H as <- <-; split; reflexivity|].
+    destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate H].
+    rewrite (clone_pid_not_error m ret Hv) in Hr. discriminate Hr.
+Qed.
+
+Lemma check_clone3_lists_refused_shape : forall i uargs size eff m m' evs,
+  clone3_refused_eff_b uargs eff = true ->
+  check_clone3_lists i uargs size eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i uargs size eff m m' evs Hr H.
+  unfold check_clone3_lists in H.
+  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv beta iota in H;
+    [discriminate H|].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|];
+    cbv beta iota in H.
+  - destruct (clone3_fork_args_b bs); cbv beta iota in H; [|discriminate H].
+    unfold check_clone3_resolve in H.
+    destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))));
+      cbv beta iota in H; [discriminate H|].
+    destruct eff as [ret ws zs us cs cis].
+    destruct ws, zs, us, cs; cbv beta iota in H; try discriminate H.
+    destruct cis as [|[a n] [|? ?]]; cbv beta iota in H; try discriminate H.
+    destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat); cbv beta iota in H;
+      [|discriminate H].
+    unfold check_clone_answer in H. cbn [clone3_refused_eff_b] in Hr.
+    apply andb_true_iff in Hr as [_ Hr].
+    destruct (errno_ret_in clone_errnos ret); [injection H as <- <-; split; reflexivity|].
+    destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate H].
+    rewrite (clone_pid_not_error m ret Hv) in Hr. discriminate Hr.
+  - destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv beta iota in H;
+      [|discriminate H].
+    apply check_ret_only_ok_iff in H as (_ & -> & ->). split; reflexivity.
+Qed.
+
+(** An answered word with the gate open never declines. *)
+Lemma check_clone_lists_answered : forall flags eff m,
+  (clone_fork_flags_b flags || clone_ns_flags_b flags) = true ->
+  clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true ->
+  check_clone_lists flags eff m <> CheckUnmodeled.
+Proof.
+  intros flags [ret ws zs us cs cis] m Ha Hg H.
+  unfold check_clone_lists, check_clone_resolve, check_clone_ns_resolve in H.
+  rewrite Hg in H. cbn [negb] in H.
+  destruct (clone_fork_flags_b flags);
+    [|destruct (clone_ns_flags_b flags); [|discriminate Ha]];
+    destruct ws, zs, us, cs, cis; cbv beta iota in H; try discriminate H;
+    unfold check_clone_answer, check_clone_ns_answer in H;
+    repeat match type of H with
+           | context [if ?b then _ else _] => destruct b; cbv beta iota in H
+           end;
+    discriminate H.
+Qed.
+
+Lemma check_clone3_lists_answered : forall i uargs size eff m,
+  clone3_answered_b uargs size i = true ->
+  clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true ->
+  check_clone3_lists i uargs size eff m <> CheckUnmodeled.
+Proof.
+  intros i uargs size eff m Ha Hg H.
+  unfold clone3_answered_b in Ha. apply andb_true_iff in Ha as [Hs Hb].
+  unfold check_clone3_lists in H. rewrite Hs in H. cbn [negb] in H.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|];
+    cbv beta iota in Hb, H; [|discriminate Hb].
+  rewrite Hb in H. cbv beta iota in H.
+  unfold check_clone3_resolve in H. rewrite Hg in H. cbn [negb] in H.
+  destruct eff as [ret ws zs us cs cis].
+  destruct ws, zs, us, cs; cbv beta iota in H; try discriminate H.
+  destruct cis as [|[a n] [|? ?]]; cbv beta iota in H; try discriminate H.
+  destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat); cbv beta iota in H;
+    [|discriminate H].
+  unfold check_clone_answer in H.
+  repeat match type of H with
+           | context [if ?b then _ else _] => destruct b; cbv beta iota in H
+           end;
+    discriminate H.
+Qed.
+
+Lemma check_clone_sound_ok : forall flags eff m m' evs i,
+  check_clone flags eff m = CheckOk m' evs -> clone_spec flags i m (Ok eff m' evs).
+Proof.
+  intros flags eff m m' evs i H. unfold check_clone in H. unfold clone_spec.
+  apply (check_refusable_sound_ok _ _ _ (clone_refused_eff_b eff)
+           (check_clone_lists flags eff m)); [ | | exact H].
+  - intros Hr. apply clone_refused_eff_b_ok. exact Hr.
+  - intros Hl. apply check_clone_lists_sound_ok. exact Hl.
+Qed.
+
+Lemma check_clone_sound_unmodeled : forall flags eff m i,
+  check_clone flags eff m = CheckUnmodeled -> clone_spec flags i m Unmodeled.
+Proof.
+  intros flags eff m i H. unfold check_clone in H. unfold clone_spec.
+  apply (check_refusable_sound_unmodeled _ _ _ (clone_refused_eff_b eff)
+           (check_clone_lists flags eff m)); [|exact H].
+  intros Hl. apply (check_clone_lists_sound_unmodeled flags eff). exact Hl.
+Qed.
+
+Lemma check_clone_complete_ok : forall flags eff m m' evs i,
+  clone_spec flags i m (Ok eff m' evs) -> check_clone flags eff m = CheckOk m' evs.
+Proof.
+  intros flags eff m m' evs i H. unfold clone_spec in H. unfold check_clone.
+  apply (check_refusable_complete_ok
+           (fun _ => clone_fork_flags_b flags || clone_ns_flags_b flags)
+           clone_refused_fail (clone_spec_lists flags) _ _ i m m' eff evs);
+    [ | | | exact H].
+  - apply clone_refused_fail_shape.
+  - intros Hk. exact (check_clone_lists_complete_ok flags eff m m' evs i Hk).
+  - intros Hr Hl. exact (check_clone_lists_refused_shape flags eff m m' evs Hr Hl).
+Qed.
+
+Lemma check_clone_complete_unmodeled : forall flags m i eff,
+  clone_spec flags i m Unmodeled -> check_clone flags eff m = CheckUnmodeled.
+Proof.
+  intros flags m i eff H. unfold clone_spec in H. unfold check_clone.
+  apply (check_refusable_complete_unmodeled
+           (fun _ => clone_fork_flags_b flags || clone_ns_flags_b flags)
+           clone_refused_fail (clone_spec_lists flags) _ _ i); [ | | | exact H].
+  - intros Hf. apply clone_refused_fail_inv in Hf as (e & _ & Heq). discriminate Heq.
+  - intros Hk. exact (check_clone_lists_complete_unmodeled flags m i eff Hk).
+  - intros Ha Hg Hk.
+    exact (check_clone_lists_answered flags eff m Ha Hg
+             (check_clone_lists_complete_unmodeled flags m i eff Hk)).
+Qed.
+
+Lemma check_clone3_sound_ok : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs ->
+  clone3_spec uargs size i m (Ok eff m' evs).
+Proof.
+  intros i uargs size eff m m' evs H. unfold check_clone3 in H. unfold clone3_spec.
+  apply (check_refusable_sound_ok _ _ _ (clone3_refused_eff_b uargs eff)
+           (check_clone3_lists i uargs size eff m)); [ | | exact H].
+  - intros Hr. apply clone3_refused_eff_b_ok. exact Hr.
+  - intros Hl. apply check_clone3_lists_sound_ok. exact Hl.
+Qed.
+
+Lemma check_clone3_sound_unmodeled : forall i uargs size eff m,
+  check_clone3 i uargs size eff m = CheckUnmodeled ->
+  clone3_spec uargs size i m Unmodeled.
+Proof.
+  intros i uargs size eff m H. unfold check_clone3 in H. unfold clone3_spec.
+  apply (check_refusable_sound_unmodeled _ _ _ (clone3_refused_eff_b uargs eff)
+           (check_clone3_lists i uargs size eff m)); [|exact H].
+  intros Hl. apply (check_clone3_lists_sound_unmodeled i uargs size eff). exact Hl.
+Qed.
+
+Lemma check_clone3_complete_ok : forall i uargs size eff m m' evs,
+  clone3_spec uargs size i m (Ok eff m' evs) ->
+  check_clone3 i uargs size eff m = CheckOk m' evs.
+Proof.
+  intros i uargs size eff m m' evs H. unfold clone3_spec in H. unfold check_clone3.
+  apply (check_refusable_complete_ok (clone3_answered_b uargs size)
+           (clone3_refused_fail uargs) (clone3_spec_lists uargs size) _ _ i m m' eff evs);
+    [ | | | exact H].
+  - apply clone3_refused_fail_shape.
+  - intros Hk. exact (check_clone3_lists_complete_ok i uargs size eff m m' evs Hk).
+  - intros Hr Hl.
+    exact (check_clone3_lists_refused_shape i uargs size eff m m' evs Hr Hl).
+Qed.
+
+Lemma check_clone3_complete_unmodeled : forall i uargs size m eff,
+  clone3_spec uargs size i m Unmodeled ->
+  check_clone3 i uargs size eff m = CheckUnmodeled.
+Proof.
+  intros i uargs size m eff H. unfold clone3_spec in H. unfold check_clone3.
+  apply (check_refusable_complete_unmodeled (clone3_answered_b uargs size)
+           (clone3_refused_fail uargs) (clone3_spec_lists uargs size) _ _ i);
+    [ | | | exact H].
+  - intros Hf. apply clone3_refused_fail_inv in Hf as (e & _ & Heq). discriminate Heq.
+  - intros Hk. exact (check_clone3_lists_complete_unmodeled i uargs size m eff Hk).
+  - intros Ha Hg Hk.
+    exact (check_clone3_lists_answered i uargs size eff m Ha Hg
+             (check_clone3_lists_complete_unmodeled i uargs size m eff Hk)).
+Qed.
+
+(** Every answer [check_clone] accepts is a refusal's, with the model and
+    the events unchanged, or the lists' checker's: the shape the frame
+    lemmas of [Checks] take the checker apart by. *)
+Lemma check_clone_cases : forall flags eff m m' evs,
+  check_clone flags eff m = CheckOk m' evs ->
+  (m' = m /\ evs = [] /\ addr_is_error_b (eff_ret eff) = true)
+  \/ check_clone_lists flags eff m = CheckOk m' evs.
+Proof.
+  intros flags eff m m' evs H. unfold check_clone, check_refusable in H.
+  destruct ((clone_fork_flags_b flags || clone_ns_flags_b flags)
+            && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))
+            && clone_refused_eff_b eff) eqn:Hc; cbv beta iota in H.
+  - left. injection H as <- <-. split; [reflexivity|]. split; [reflexivity|].
+    apply andb_true_iff in Hc as [_ Hr].
+    destruct eff as [ret ws zs us cs cis]. cbn [eff_ret].
+    destruct ws, zs, us, cs, cis; try discriminate Hr. exact Hr.
+  - right. exact H.
+Qed.
+
+Lemma check_clone3_cases : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs ->
+  (m' = m /\ evs = [] /\ addr_is_error_b (eff_ret eff) = true)
+  \/ check_clone3_lists i uargs size eff m = CheckOk m' evs.
+Proof.
+  intros i uargs size eff m m' evs H. unfold check_clone3, check_refusable in H.
+  destruct (clone3_answered_b uargs size i
+            && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))
+            && clone3_refused_eff_b uargs eff) eqn:Hc; cbv beta iota in H.
+  - left. injection H as <- <-. split; [reflexivity|]. split; [reflexivity|].
+    apply andb_true_iff in Hc as [_ Hr].
+    destruct eff as [ret ws zs us cs cis]. cbn [eff_ret].
+    destruct ws, zs, us, cs; try discriminate Hr.
+    destruct cis as [|[a n] [|? ?]]; try discriminate Hr.
+    cbn [clone3_refused_eff_b] in Hr. apply andb_true_iff in Hr as [_ Hr]. exact Hr.
+  - right. exact H.
 Qed.

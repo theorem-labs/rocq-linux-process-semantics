@@ -39,13 +39,13 @@
   "theories/LinuxProcessSem/Checks/Cases/Prelude.v": 1,
   "theories/LinuxProcessSem/Checks/CheckedInput.v": 1,
   "theories/LinuxProcessSem/Checks/Examples.v": 1,
-  "theories/LinuxProcessSem/State.v": 4,
+  "theories/LinuxProcessSem/State.v": 5,
   "tools/placement_conformance/log_to_rocq.py": 1,
   "tools/placement_conformance/start_state_to_rocq.py": 1
  },
  "mkProcState": {
   "theories/LinuxProcessSem/Procs.v": 1,
-  "theories/LinuxProcessSem/State.v": 31,
+  "theories/LinuxProcessSem/State.v": 32,
   "tools/check_one.py": 1
  },
  "mkSeqEnd": {

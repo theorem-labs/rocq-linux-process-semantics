@@ -3239,7 +3239,7 @@ Definition auxsz_rseq_off_input : ProcInput :=
     Sv48 default_urandom []
     (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent
                    224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable)
-    default_execfn true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
+    default_execfn true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers.
 
 Example auxsz_refuses_a_build_without_rseq :
   kb_rseq (in_kernel auxsz_rseq_off_input) = false

@@ -137,7 +137,8 @@ Section Init.
   Definition inp : ProcInput :=
     mkProcInput_full argv envp fs stdin uid gid groups net default_nofile
       (Z_to_bv 64 0) hw false Sv48 default_urandom [] (recorded_kernel kb)
-      default_execfn true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false.
+      default_execfn true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false
+      no_clone_refusers.
     (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48; the
        trailing fields are [State.mkProcInput]'s *)
 

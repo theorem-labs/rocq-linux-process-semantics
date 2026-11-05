@@ -246,15 +246,25 @@ Definition fw_q_wait4 (ms : machine_state) : Prop :=
     statement's budget premise.  NO SHARED FILE: the clone's own gate
     ([Fork.clone_no_shared_file_b]) is what decides whether
     [Fork.clone_resolve] answers [unmodeled], and [State.init_model]
-    opens only the three channels, which the gate admits. *)
+    opens only the three channels, which the gate admits.  NO CLONE
+    REFUSER: [Run.valid_input] pins [State.in_clone_refusers] to
+    [State.no_clone_refusers], [State.init_model] copies it, a child
+    copies its parent's ([Procs.child_proc]) and no call writes it, so
+    the program's clone answers from the model's lists
+    ([Fork.clone_spec_default_iff]). *)
 Definition fw_model_ok (m : Model) : Prop :=
   m_halted m = None
   /\ m_vm_lazy m = []
   /\ clone_no_shared_file_b (m_fds m) = true
-  /\ m_tid m = None.
+  /\ m_tid m = None
+  /\ m_clone_refusers m = no_clone_refusers.
 
 Lemma fw_model_ok_halted : forall m, fw_model_ok m -> m_halted m = None.
 Proof. intros m (H & _ & _ & _). exact H. Qed.
+
+Lemma fw_model_ok_refusers : forall m,
+  fw_model_ok m -> m_clone_refusers m = no_clone_refusers.
+Proof. intros m (_ & _ & _ & _ & H). exact H. Qed.
 
 (** The three components it reads are the three an instruction step, a
     [clear_shared] and a materialisation all leave alone. *)
@@ -264,11 +274,12 @@ Lemma fw_model_ok_frame : forall m m',
   m_fd m' = m_fd m ->
   fw_model_ok m -> fw_model_ok m'.
 Proof.
-  intros m m' Hp Hv Hf (Hh & Hl & Hc & Ht).
+  intros m m' Hp Hv Hf (Hh & Hl & Hc & Ht & Hr).
   split; [unfold m_halted; rewrite Hp; exact Hh|].
   split; [rewrite Hv; exact Hl|].
   split; [unfold m_fds in *; rewrite Hf; exact Hc|].
-  unfold m_tid. rewrite Hp. exact Ht.
+  split; [unfold m_tid; rewrite Hp; exact Ht|].
+  unfold m_clone_refusers. rewrite Hp. exact Hr.
 Qed.
 
 Lemma fw_model_ok_clear_shared : forall m,
@@ -899,9 +910,9 @@ Lemma fw_model_ok_child : forall e c c' q,
   fw_model_ok (pe_model e) ->
   fw_model_ok (pe_model (child_entry e c c' q)).
 Proof.
-  intros e c c' q (Hh & Hl & Hc & Ht).
+  intros e c c' q (Hh & Hl & Hc & Ht & Hr).
   split; [exact Hh|]. split; [exact Hl|].
-  split; [|reflexivity].
+  split; [|split; [reflexivity | exact Hr]].
   change (clone_no_shared_file_b (share_eventfds (m_fds (pe_model e))) = true).
   rewrite share_eventfds_gate. exact Hc.
 Qed.
@@ -1441,24 +1452,26 @@ Proof.
       split; [reflexivity|]. split; [reflexivity|].
       split; [reflexivity|]. split; [reflexivity|].
       split; [reflexivity|].
-      split; [intros (Hh & Hl & Hc & Ht);
+      split; [intros (Hh & Hl & Hc & Ht & Hr);
               split; [exact Hh|]; split; [exact Hl|];
               split; [ change (clone_no_shared_file_b
                                  (share_eventfds (forfeit_inherited (m_fds m))) = true);
                        rewrite share_eventfds_gate, (forfeit_inherited_gate _ Hc); exact Hc
-                     | exact Ht]|].
+                     | split; [exact Ht | exact Hr]]|].
       unfold clone_pid_ok_b in Hok.
       apply andb_true_iff in Hok as [Hok _].
       apply andb_true_iff in Hok as [Hlo Hhi].
       right. split; [apply Z.ltb_lt; exact Hlo | apply Z.ltb_lt; exact Hhi].
 Qed.
 
-(** And the same at the dispatcher: 220 routes to [Fork.clone_spec], and
-    the flag word this program passes is [SIGCHLD], the one word
-    [Fork.clone_fork_flags_b] admits. *)
+(** And the same at the dispatcher: 220 routes to [Fork.clone_spec], the
+    flag word this program passes is [SIGCHLD], the one word
+    [Fork.clone_fork_flags_b] admits, and with no host clone refuser the
+    answer is the lists' ([Fork.clone_spec_default_iff]). *)
 Lemma fw_clone_post : forall segs ms x8 model eff model' evs,
   bv_unsigned x8 = 220%Z ->
   ms_gpr ms 0 = 17 ->
+  m_clone_refusers model = no_clone_refusers ->
   syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
   evs = []
   /\ eff_writes eff = [] /\ eff_zeros eff = []
@@ -1469,12 +1482,13 @@ Lemma fw_clone_post : forall segs ms x8 model eff model' evs,
        \/ ( (0 < bv_unsigned (eff_ret eff))%Z
             /\ (bv_unsigned (eff_ret eff) < PID_MAX_ENVELOPE)%Z ) ).
 Proof.
-  intros segs ms x8 model eff model' evs H220 Ha0 Hspec.
+  intros segs ms x8 model eff model' evs H220 Ha0 Hrf Hspec.
   assert (Hno : bv_unsigned (in_sysno (sys_input segs ms x8)) = 220%Z)
     by (rewrite in_sysno_sys_input; exact H220).
   apply (proj1 (clone_is_clone_spec _ _ _ Hno)) in Hspec.
   rewrite in_arg0_sys_input, Ha0 in Hspec.
-  unfold clone_spec in Hspec.
+  apply (proj1 (clone_spec_default_iff _ _ _ _ Hrf)) in Hspec.
+  unfold clone_spec_lists in Hspec.
   replace (clone_fork_flags_b 17) with true in Hspec
     by (vm_compute; reflexivity).
   exact (fw_clone_resolve_inv _ _ _ _ _ Hspec).
@@ -1887,7 +1901,8 @@ Proof.
               (cfg_model (pe_cfg (pcfg_shared P) e)) (Ok eff m' ev) ->
             m_halted m' = None).
   { intros eff m' ev Hsp.
-    destruct (fw_clone_post segs (pe_ms e) x8 _ eff m' ev H220 Ha0 Hsp)
+    destruct (fw_clone_post segs (pe_ms e) x8 _ eff m' ev H220 Ha0
+                (fw_model_ok_refusers _ (fw_model_ok_pe_cfg _ e Hh)) Hsp)
       as (_ & _ & _ & _ & _ & Hhm & _ & _).
     rewrite Hhm. exact (fw_model_ok_halted _ Hh). }
   (* NAMED rather than matched: the reap arms have thirteen premises and
@@ -1916,7 +1931,8 @@ Proof.
     destruct (fw_sstep_running_syscall_inv segs cfg (pe_ms e)
                 (cfg_model (pe_cfg (pcfg_shared P) e)) evs c1 x8 Hs Hrun Hss1)
       as (eff & model' & model'' & evs0 & Hsp & Hh' & Hmat & Hc0).
-    destruct (fw_clone_post segs (pe_ms e) x8 _ eff model' evs0 H220 Ha0 Hsp)
+    destruct (fw_clone_post segs (pe_ms e) x8 _ eff model' evs0 H220 Ha0
+                (fw_model_ok_refusers _ (fw_model_ok_pe_cfg _ e Hh)) Hsp)
       as (_ & Hw & Hz & Hu & Hcp & _ & Hokm & Hdisj1).
     exists eff, model''.
     split; [exact (fw_model_ok_materialize _ _ _ Hmat
@@ -1942,7 +1958,8 @@ Proof.
     destruct (fw_sstep_running_syscall_inv segs cfg (pe_ms e)
                 (cfg_model (pe_cfg (pcfg_shared P) e)) evs c2 x8 Hs Hrun Hss2)
       as (eff & model' & model'' & evs0 & Hsp & Hh' & Hmat & Hc0).
-    destruct (fw_clone_post segs (pe_ms e) x8 _ eff model' evs0 H220 Ha0 Hsp)
+    destruct (fw_clone_post segs (pe_ms e) x8 _ eff model' evs0 H220 Ha0
+                (fw_model_ok_refusers _ (fw_model_ok_pe_cfg _ e Hh)) Hsp)
       as (_ & Hw & Hz & Hu & Hcp & _ & Hokm & Hdisj).
     assert (Hnerr : ret_in_errnos clone_errnos (eff_ret eff) = false).
     { unfold clone_success_b in Hcs2. cbn [cfg_ms pe_cfg] in Hcs2.
@@ -3124,7 +3141,9 @@ Proof.
     by (rewrite in_sysno_sys_input; exact H220).
   apply (proj1 (clone_is_clone_spec _ _ _ Hno)) in H.
   rewrite in_arg0_sys_input, Ha0 in H.
-  unfold clone_spec in H.
+  unfold clone_spec in H. apply clone_refusable_cases in H as [H | H].
+  { apply clone_refused_fail_inv in H as (e & _ & Heq). discriminate Heq. }
+  unfold clone_spec_lists in H.
   replace (clone_fork_flags_b 17) with true in H
     by (vm_compute; reflexivity).
   exact (fw_clone_no_unmodeled _ _ Hgate H).
@@ -3165,7 +3184,7 @@ Lemma fw_no_error_clone_entry : forall cfg S e,
   forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
 Proof.
   intros cfg S e Hok Hrem evs.
-  destruct Hok as (Hh & Hlz & Hgate & Htid).
+  destruct Hok as (Hh & Hlz & Hgate & Htid & Hrf).
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
   - assert (Hq : fw_q_clone (pe_ms e))
       by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
@@ -3174,9 +3193,13 @@ Proof.
     apply (fw_no_sstep_error_call cfg S e 220 Hsv).
     + intros eff m' evs0 Hsp.
       destruct (fw_clone_post forkwait_segs (pe_ms e) 220 _ eff m' evs0
-                  fw_two_twenty Ha0 Hsp)
+                  fw_two_twenty Ha0
+                  (fw_model_ok_refusers _
+                     (fw_model_ok_pe_cfg S e
+                        (conj Hh (conj Hlz (conj Hgate (conj Htid Hrf))))))
+                  Hsp)
         as (_ & _ & _ & _ & _ & _ & Hokm & _).
-      destruct (Hokm (conj Hh (conj Hlz (conj Hgate Htid))))
+      destruct (Hokm (conj Hh (conj Hlz (conj Hgate (conj Htid Hrf)))))
         as (_ & Hl' & _).
       exact Hl'.
     + apply (fw_clone_spec_no_unmodeled forkwait_segs (pe_ms e) 220);
@@ -3194,7 +3217,7 @@ Lemma fw_no_error_exit7_entry : forall cfg S e,
   forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
 Proof.
   intros cfg S e Hok Hrem evs.
-  destruct Hok as (Hh & Hlz & Hgate & Htid).
+  destruct Hok as (Hh & Hlz & Hgate & Htid & Hrf).
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
   - assert (Hq : fw_q_exit7 (pe_ms e))
       by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
@@ -3934,7 +3957,7 @@ Proof.
                                   brk0 mbase sp lim inp)) = true);
               rewrite (m_fds_init_model_no_inherited _ _ _ _ _ _ Hnoi);
               reflexivity
-            | reflexivity ]|].
+            | split; [reflexivity | exact (valid_input_no_clone_refusers inp Hvi)] ]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
   assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd
@@ -4178,6 +4201,7 @@ Proof.
     by (rewrite in_sysno_sys_input; exact H220).
   apply (proj2 (clone_is_clone_spec _ _ _ Hno)).
   rewrite in_arg0_sys_input, Ha0. unfold clone_spec.
+  apply clone_refusable_lists. unfold clone_spec_lists.
   replace (clone_fork_flags_b 17) with true by (vm_compute; reflexivity).
   apply fw_clone_resolve_ok; assumption.
 Qed.
@@ -4212,7 +4236,7 @@ Lemma fw_progress_clone : forall cfg P e,
   exists evs st, pstep_cfg forkwait_segs cfg P evs st.
 Proof.
   intros cfg P e Hp Hl Hok Hsv Ha0 Hma.
-  destruct Hok as (Hh & Hlz & Hgate & Htid).
+  destruct Hok as (Hh & Hlz & Hgate & Htid & Hrf).
   destruct (fw_fresh_pid (pe_pid e)) as (q & Hlo & Hhi & Hne).
   set (m := cfg_model (pe_cfg (pcfg_shared P) e)).
   assert (Hpid : clone_pid_ok_b m q = true)
@@ -4270,7 +4294,7 @@ Lemma fw_progress_reap : forall cfg P ep ec,
 Proof.
   intros cfg P ep ec Hp Hne Hcpar Hok Hq Hz Hk.
   destruct Hq as (Hsv & Hpc & Ha0 & Ha1 & Ha2 & Ha3 & Hrv & Hnw & Hslot).
-  destruct Hok as (Hh & Hlz & Hgate & Htid).
+  destruct Hok as (Hh & Hlz & Hgate & Htid & Hrf).
   pose proof (fw_look_two_parent P ep ec Hp) as Hl.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hlc.
   pose proof (fw_wait4_args (pe_ms ep) Ha0 Ha2 Ha3) as Hwa.
