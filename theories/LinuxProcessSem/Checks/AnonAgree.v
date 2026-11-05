@@ -50,7 +50,15 @@
        anon_agree (map (fun q => (fst q, unlink_open_entry c id data pin (snd q))) fds)
          id (mkAnonFile data o r w a pin) = true],
       whatever offset, access mode and O_APPEND [o r w a] the view
-      carries.
+      carries;
+    - (f) [anon_agree_dup3_fds]: the table [dup3] answers with
+      ([Fs.File.dup3_fds]), which MOVES an unnamed file's entry from
+      [oldfd] to [newfd] whole and leaves [State.OAlias newfd] at
+      [oldfd] (or copies a kind [Fs.File.dup_modeled_entry] copies), so
+      it holds the [FdAnon] entries it held before, less any [newfd]
+      held ([dup3_fds_anon_move] states the move),
+      [fd_lookup fds oldfd = Some e -> dup3_fds oldfd newfd e fds = Some fds' ->
+       anon_agree fds id af = true -> anon_agree fds' id af = true].
 
     The same argument needs four more steps, stated here too:
     [anon_agree_set_pin], the pin a first fstat writes to every
@@ -70,11 +78,12 @@
     agrees, which every entry that is not a descriptor of the file does.
 
     NOT PROVED: that no OTHER arm writes an [FdAnon] entry.  It holds by
-    reading the arms: [dup], [dup3], [F_DUPFD] and a [clone] that holds
-    one decline ([Fs.File.dup_modeled_entry],
-    [Kernel.Fork.clone_no_shared_file_b]), and no other arm makes one.
-    The obligation is one named predicate, [State.anon_agree], which all
-    nine answering arms call, so a reader of a new arm sees the others
+    reading the arms: [dup], [F_DUPFD] and a [clone] that holds one
+    decline ([Fs.File.dup_modeled_entry],
+    [Kernel.Fork.clone_no_shared_file_b]), [dup3] moves one, which (f)
+    covers, and no other arm makes one.  The obligation is one named
+    predicate, [State.anon_agree], which all nine answering arms that
+    read an unnamed file call, so a reader of a new arm sees the others
     calling it.
 
     THE TRIGGER for moving it into a global well-formedness predicate,
@@ -83,13 +92,16 @@
     proof, that reads or writes an [FdAnon] entry WITHOUT calling
     [State.anon_agree].  One such arm, and the predicate moves into
     well-formedness, with its preservation proved for every arm.  Until
-    then the per-arm form stands.
+    then the per-arm form stands.  The [dup3] move writes an [FdAnon]
+    entry without that test; its preservation is proved by
+    [anon_agree_dup3_fds], and whether that fires the trigger is the
+    owner's call.
 
     A leaf: nothing in the model or the checker depends on this file. *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State.
-From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Namei.
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Namei Fs.File.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -260,6 +272,47 @@ Proof.
   - exact (IH Hr).
 Qed.
 
+(** An entry the table holds agrees with every view the table agrees
+    with. *)
+Lemma anon_agree_lookup : forall fds fd e id af,
+  fd_lookup fds fd = Some e -> anon_agree fds id af = true ->
+  anon_entry_agrees id af e = true.
+Proof.
+  intros fds fd e id af. induction fds as [|[k e'] r IH]; intros Hl H; [discriminate Hl|].
+  rewrite anon_agree_cons in H. apply andb_true_iff in H as [He Hr].
+  cbn [fd_lookup] in Hl. destruct (bv_eqb k fd).
+  - injection Hl as <-. exact He.
+  - exact (IH Hl Hr).
+Qed.
+
+(** A filter that keeps every entry at [n] leaves [n]'s lookup alone. *)
+Lemma anon_lookup_filter_keep : forall (g : word * FdEntry -> bool) fds n,
+  (forall e, g (n, e) = true) ->
+  fd_lookup (List.filter g fds) n = fd_lookup fds n.
+Proof.
+  intros g fds n Hg.
+  induction fds as [|[k e] r IH]; [reflexivity|].
+  cbn [List.filter].
+  destruct (g (k, e)) eqn:Eg; cbn [fd_lookup].
+  - destruct (bv_eqb k n); [reflexivity|exact IH].
+  - rewrite IH. destruct (bv_eqb k n) eqn:E; [|reflexivity].
+    apply bv_eqb_eq in E. subst k. rewrite Hg in Eg. discriminate Eg.
+Qed.
+
+Lemma anon_lookup_insert_same : forall fds k e, fd_lookup (fd_insert fds k e) k = Some e.
+Proof. intros. unfold fd_insert. cbn [fd_lookup]. rewrite bv_eqb_refl. reflexivity. Qed.
+
+Lemma anon_lookup_insert_other : forall fds k e n,
+  n <> k -> fd_lookup (fd_insert fds k e) n = fd_lookup fds n.
+Proof.
+  intros fds k e n Hne. unfold fd_insert. cbn [fd_lookup].
+  destruct (bv_eqb k n) eqn:E.
+  - apply bv_eqb_eq in E. subst k. contradiction Hne. reflexivity.
+  - apply anon_lookup_filter_keep.
+    intros e'. cbn [fst]. destruct (bv_eqb n k) eqn:E'; [|reflexivity].
+    apply bv_eqb_eq in E'. contradiction.
+Qed.
+
 (** The start: the launch's descriptors are its three channels and the
     files it inherits ([State.inherited_table]), none of them an unnamed
     file, so every file id agrees with every view. *)
@@ -351,6 +404,50 @@ Proof.
   apply andb_true_iff. split.
   - apply unlink_open_entry_agrees. exact He.
   - apply IH. exact Hrest.
+Qed.
+
+(** (f) dup3's table: an unnamed file's entry moves from [oldfd] to
+    [newfd] whole and [oldfd] holds an alias, or a kind
+    [Fs.File.dup_modeled_entry] copies is copied.  Either way the entry
+    written is one the table held, so it agrees, and the alias is not a
+    descriptor of any unnamed file. *)
+Lemma anon_agree_dup3_fds : forall fds oldfd newfd e fds' id af,
+  fd_lookup fds oldfd = Some e ->
+  dup3_fds oldfd newfd e fds = Some fds' ->
+  anon_agree fds id af = true ->
+  anon_agree fds' id af = true.
+Proof.
+  intros fds oldfd newfd e fds' id af Hl Hd H.
+  pose proof (anon_agree_lookup fds oldfd e id af Hl H) as He.
+  pose proof (anon_agree_fd_insert fds newfd e id af H He) as Hn.
+  unfold dup3_fds in Hd.
+  destruct (dup_modeled_entry e).
+  - injection Hd as <-. exact Hn.
+  - destruct (dup3_moves_entry e); [|discriminate Hd].
+    injection Hd as <-.
+    apply anon_agree_fd_insert; [exact Hn | reflexivity].
+Qed.
+
+(** The move of an unnamed file, read off [Fs.File.dup3_fds]: [newfd]
+    holds the entry [oldfd] held, [oldfd] holds the alias, and every
+    other descriptor holds what it held.  So the table's [FdAnon]
+    entries are the ones it held before, less any [newfd] held. *)
+Lemma dup3_fds_anon_move : forall fds oldfd newfd id a fds',
+  oldfd <> newfd ->
+  dup3_fds oldfd newfd (FdAnon id a) fds = Some fds' ->
+  fd_lookup fds' newfd = Some (FdAnon id a) /\
+  fd_lookup fds' oldfd = Some (FdOpaque (OAlias newfd)) /\
+  (forall k, k <> oldfd -> k <> newfd -> fd_lookup fds' k = fd_lookup fds k).
+Proof.
+  intros fds oldfd newfd id a fds' Hne Hd.
+  unfold dup3_fds in Hd. cbn [dup_modeled_entry dup3_moves_entry] in Hd.
+  injection Hd as <-. split; [|split].
+  - rewrite anon_lookup_insert_other by (intros E; apply Hne; symmetry; exact E).
+    apply anon_lookup_insert_same.
+  - apply anon_lookup_insert_same.
+  - intros k Ho Hn.
+    rewrite (anon_lookup_insert_other _ oldfd _ k Ho).
+    apply anon_lookup_insert_other. exact Hn.
 Qed.
 
 (* ------------------------------------------ the four further steps *)

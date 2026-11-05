@@ -7378,8 +7378,9 @@ Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
     the file ([anon_update], [anon_write_back]), a reopen copies the
     contents and pin of an agreeing descriptor, the removal of a /tmp name
     gives every descriptor it converts the same contents and pin under one
-    fresh id, and a close only removes an entry.
-    [Checks.AnonAgree] states these as lemmas. *)
+    fresh id, a close only removes an entry, and [dup3] moves an entry
+    whole to [newfd], leaving an alias that is no unnamed file's
+    descriptor.  [Checks.AnonAgree] states these as lemmas. *)
 Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
   forallb (fun p => anon_entry_agrees id af (snd p)) fds.
 (* =========================================================================
