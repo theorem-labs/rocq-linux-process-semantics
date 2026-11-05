@@ -849,11 +849,11 @@ Qed.
 (** THE REFUSERS AT THE WORDS [Kernel.Fork.clone_class] ADMITS
     ([Kernel.Fork.clone_refusable_arm]).  With a BPF program on
     [task_alloc], [clone(SIGCHLD | CLONE_SYSVSEM)] admits -EPERM with the
-    model unchanged and still a child; so does [clone3]'s struct with a
-    stack, with its ledger; and CLONE_NEWIPC with CLONE_SYSVSEM admits
-    -EINTR, which [Syscall.errno_any] leaves out.  THE CONTROL: at the
-    default the same calls refuse those errnos, and the CLONE_SYSVSEM word
-    still gets a child. *)
+    model unchanged, and, as a separate answer, still a child; [clone3]'s
+    struct with a stack admits -EPERM with its ledger; and CLONE_NEWIPC
+    with CLONE_SYSVSEM admits -EINTR, which [Syscall.errno_any] leaves
+    out.  THE CONTROL: at the default the same calls refuse those errnos,
+    and the CLONE_SYSVSEM word still gets a child. *)
 Example clone_sysvsem_with_a_refuser :
   check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
     (mkEffect (errno_ret EPERM) [] []) bpf_model = CheckOk bpf_model []

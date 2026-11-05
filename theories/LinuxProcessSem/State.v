@@ -4163,7 +4163,8 @@ Record ProcState := mkProcState {
                                     plus namespace bits only,
                                     [Fork.clone_class] either of those
                                     with [CLONE_SYSVSEM] and the four
-                                    tid bits, and
+                                    tid bits (but [CLONE_NEWIPC] with
+                                    [CLONE_SYSVSEM] gets no child), and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
                                     [clone3_sharing_flags_unmodeled]
