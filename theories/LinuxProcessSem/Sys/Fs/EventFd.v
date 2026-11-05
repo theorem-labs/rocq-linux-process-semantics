@@ -127,8 +127,9 @@ Open Scope sys_scope.
     -ENOMEM (the [struct file] and [lsm_file_alloc]'s blob).  The
     [file_alloc_security] hooks of SELinux, Smack, AppArmor and Landlock
     all return 0 at v6.18.44; a BPF LSM program attached there may return
-    any errno, and the model describes a kernel with none attached (the
-    restriction [Kernel.Fork.clone_errnos] states for [task_alloc]).
+    any errno, and the model describes a kernel with none attached (an
+    assumption SCOPE.md states; a BPF program on the different hook
+    [task_alloc] is the launch value [State.cr_bpf_task_alloc]).
     [ida_alloc] cannot contribute one: [do_eventfd] does not test it.
     So the answer is the lowest free descriptor, or -ENOMEM, -EMFILE or
     -ENFILE ([eventfd2_errnos]).

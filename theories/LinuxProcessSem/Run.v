@@ -4970,7 +4970,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -5068,7 +5069,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -5093,7 +5095,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -5171,7 +5174,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -5193,7 +5197,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -5290,7 +5295,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -5308,7 +5314,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5404,7 +5411,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -5519,7 +5527,8 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5562,7 +5571,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5579,7 +5589,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5595,7 +5606,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5894,7 +5906,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5911,7 +5924,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -6009,7 +6023,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -6026,7 +6041,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -6132,11 +6148,32 @@ Definition valid_input_inherited (inp : ProcInput) : Prop :=
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ inherited_fds_ok (in_inherited_fds inp) = true
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** THE PIN, as an accessor rather than as a position. *)
 Lemma valid_input_no_inherited : forall inp,
   valid_input inp -> in_inherited_fds inp = [].
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** THE CLONE-REFUSER PIN, as an accessor rather than as a position: every
+    launch predicate of this file pins [State.in_clone_refusers] to
+    [State.no_clone_refusers], so its clones answer from the model's lists
+    ([Kernel.Fork.clone_spec_default_iff]). *)
+Lemma valid_input_no_clone_refusers : forall inp,
+  valid_input inp -> in_clone_refusers inp = no_clone_refusers.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_inherited_no_clone_refusers : forall inp,
+  valid_input_inherited inp -> in_clone_refusers inp = no_clone_refusers.
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.

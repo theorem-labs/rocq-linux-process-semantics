@@ -1264,7 +1264,8 @@ Lemma check_clone_kf : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros flags eff m m' evs H Hoff Hk.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
+  apply check_clone_cases in H as [(-> & -> & _) | H]; [kf_close m Hoff Hk|].
+  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
     check_clone_ns_resolve, check_clone_ns_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -1273,7 +1274,8 @@ Lemma check_clone3_kf : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i uargs size eff m m' evs H Hoff Hk.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
+  apply check_clone3_cases in H as [(-> & -> & _) | H]; [kf_close m Hoff Hk|].
+  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
