@@ -12,7 +12,7 @@
     whole-table predicate and carries the predicate along a run. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad MemImageType StackLayout.
 From LinuxProcessSemantics.LinuxProcessSem Require Import Run Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Dispatch.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
@@ -30,7 +30,7 @@ Open Scope bv_scope.
     other entry of the same unnamed file. *)
 Definition anon_agree_all (fds : list (word * FdEntry)) : Prop :=
   forall fd id af,
-    In (fd, FdAnon id af) fds ->
+    List.In (fd, FdAnon id af) fds ->
     anon_agree fds id af = true.
 
 Definition anon_agree_holds (c : config) : Prop :=
@@ -40,18 +40,18 @@ Definition anon_agree_holds (c : config) : Prop :=
    Helper: In under filter and fd_insert
    ========================================================================= *)
 
-Local Lemma In_filter_In {A} (f : A -> bool) l x :
-  In x (filter f l) -> In x l.
+Local Lemma In_filter_In (f : word * FdEntry -> bool) (l : list (word * FdEntry)) x :
+  List.In x (List.filter f l) -> List.In x l.
 Proof.
-  induction l as [|h t IH]; [exact id|].
-  cbn [filter]. destruct (f h).
+  induction l as [|h t IH]; [intros []|].
+  cbn [List.filter]. destruct (f h).
   - intros [<-|Hin]; [left; reflexivity | right; exact (IH Hin)].
   - intros Hin. right. exact (IH Hin).
 Qed.
 
 Local Lemma In_fd_insert_inv fds k e p :
-  In p (fd_insert fds k e) ->
-  p = (k, e) \/ In p (filter (fun q => negb (bv_eqb (fst q) k)) fds).
+  List.In p (fd_insert fds k e) ->
+  p = (k, e) \/ List.In p (List.filter (fun q => negb (bv_eqb (fst q) k)) fds).
 Proof.
   unfold fd_insert. intros [<-|Hin]; [left; reflexivity | right; exact Hin].
 Qed.
@@ -66,8 +66,8 @@ Lemma anon_agree_all_eq : forall fds fds',
 Proof. intros fds fds' <- H. exact H. Qed.
 
 (** Filter preserves: a subset of an agreeing table agrees. *)
-Lemma anon_agree_all_filter : forall f fds,
-  anon_agree_all fds -> anon_agree_all (filter f fds).
+Lemma anon_agree_all_filter : forall (f : word * FdEntry -> bool) fds,
+  anon_agree_all fds -> anon_agree_all (List.filter f fds).
 Proof.
   intros f fds Hall fd id af Hin.
   apply anon_agree_filter.
@@ -98,7 +98,7 @@ Qed.
     [af_pin af' = af_pin af]. *)
 Lemma anon_agree_entry_data_pin : forall fds id af fd af',
   anon_agree fds id af = true ->
-  In (fd, FdAnon id af') fds ->
+  List.In (fd, FdAnon id af') fds ->
   af_data af' = af_data af /\ af_pin af' = af_pin af.
 Proof.
   intros fds id af fd af' Hagr Hin.
@@ -121,7 +121,10 @@ Lemma anon_agree_all_fd_insert_anon : forall fds k id af af',
 Proof.
   intros fds k id af af' Hall Hagr Hd Hp fd0 id0 af0 Hin.
   destruct (In_fd_insert_inv _ _ _ _ Hin) as [Heq | Hfilt].
-  - injection Heq as <- Heq. injection Heq as <- <-.
+  - (* Heq : (fd0, FdAnon id0 af0) = (k, FdAnon id af') *)
+    assert (fd0 = k) by (congruence). subst fd0.
+    assert (id0 = id) by (congruence). subst id0.
+    assert (af0 = af') by (congruence). subst af0.
     apply anon_agree_fd_insert.
     + rewrite (anon_agree_congr fds id af' af Hd Hp). exact Hagr.
     + apply anon_entry_agrees_same; reflexivity.
@@ -131,10 +134,10 @@ Proof.
       pose proof (Hall _ _ _ Hin0) as Hagr0.
       pose proof (anon_agree_entry_data_pin _ _ _ _ _ Hagr Hin0) as [Hd0 Hp0].
       apply anon_agree_fd_insert.
-      * apply anon_agree_filter. exact Hagr0.
-      * apply anon_entry_agrees_same; [rewrite Hd, Hd0; reflexivity | exact Hp].
+      * exact Hagr0.
+      * apply anon_entry_agrees_same; congruence.
     + apply anon_agree_fd_insert.
-      * apply anon_agree_filter. exact (Hall _ _ _ Hin0).
+      * exact (Hall _ _ _ Hin0).
       * apply anon_entry_agrees_other.
         intros E. subst id0. rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
         discriminate Eid.
@@ -177,10 +180,16 @@ Proof.
   1-13,15-16: (injection Heq as <- Habs; discriminate Habs).
   (* FdAnon case *)
   destruct (bv_eqb id' id) eqn:Eid.
-  - injection Heq as <- <-. apply bv_eqb_eq in Eid. subst id'.
-    exact (anon_agree_update fds id af' f Hf (Hall _ _ _ Hin')).
-  - injection Heq as <- <-.
-    apply (anon_agree_update_other fds id f id0 af0).
+  - assert (id' = id) by (apply bv_eqb_eq; exact Eid). subst id'.
+    assert (fd = k) by congruence. subst fd.
+    assert (id0 = id) by congruence. subst id0.
+    assert (af0 = f af') by congruence. subst af0.
+    apply (anon_agree_update fds id af' f (fun a Ha1 Ha2 => Hf a af' Ha1 Ha2)).
+    exact (Hall _ _ _ Hin').
+  - assert (fd = k) by congruence. subst fd.
+    assert (id0 = id') by congruence. subst id0.
+    assert (af0 = af') by congruence. subst af0.
+    apply (anon_agree_update_other fds id f id' af').
     + intros E. rewrite E, (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
       discriminate Eid.
     + exact (Hall _ _ _ Hin').
@@ -223,7 +232,7 @@ Qed.
 
 (** [fd_lookup] implies [In]. *)
 Lemma fd_lookup_In : forall fds fd e,
-  fd_lookup fds fd = Some e -> In (fd, e) fds.
+  fd_lookup fds fd = Some e -> List.In (fd, e) fds.
 Proof.
   induction fds as [|[k v] r IH]; intros fd e Hl; [discriminate Hl|].
   cbn [fd_lookup] in Hl. destruct (bv_eqb k fd) eqn:Ek.
@@ -250,10 +259,10 @@ Proof.
     + pose proof (In_filter_In _ _ _ Hfilt) as Hin0.
       pose proof (Hall _ _ _ Hin0) as Hagr.
       apply anon_agree_fd_insert; [exact Hagr|].
-      destruct e; try reflexivity.
+      destruct e as [|?? |?? |?? |?? | |?|?? |?? | |??? |?|?|eid eaf|?|???]; try reflexivity.
       rewrite anon_entry_agrees_anon.
-      destruct (bv_eqb b id) eqn:Eid'; [|reflexivity].
-      apply bv_eqb_eq in Eid'. subst b.
+      destruct (bv_eqb eid id) eqn:Eid'; [|reflexivity].
+      apply bv_eqb_eq in Eid'. subst eid.
       pose proof (fd_lookup_In _ _ _ Hlook) as HinE.
       pose proof (anon_agree_entry_data_pin _ _ _ _ _ Hagr HinE) as [Hd Hp].
       cbn [implb]. rewrite Hd, path_eqb_refl, Hp, anon_pin_eqb_refl. reflexivity.
@@ -285,46 +294,46 @@ Proof.
   apply in_map_iff in Hin.
   destruct Hin as [[k e] [Heq Hin']]. cbn [fst snd] in Heq.
   injection Heq as <- Hunlink.
-  destruct (bv_eqb id0 id) eqn:Eid.
-  - apply bv_eqb_eq in Eid. subst id0.
-    destruct e; unfold unlink_open_entry in Hunlink; cbv beta iota in Hunlink;
-      try discriminate Hunlink.
-    all: try (destruct (Fs.path_eqb c _) eqn:Epc; cbv iota in Hunlink;
-              [injection Hunlink as <-;
-               rewrite (anon_agree_congr _ id af0
-                 (mkAnonFile data (af_off af0) (af_rd af0) (af_wr af0) (af_app af0) pin));
-               [apply anon_agree_unlink_open; exact Hlive | reflexivity | reflexivity]
-              |discriminate Hunlink]).
-    (* FdAnon case *)
-    + cbn [entry_anon_id] in *.
-      destruct (bv_eqb _ id) eqn:Eid'.
-      * exfalso. unfold anon_id_live in Hlive.
-        apply bv_eqb_eq in Eid'. subst.
-        assert (Htrue : existsb (fun p => match entry_anon_id (snd p) with
-                                          | Some id' => bv_eqb id' id
-                                          | None => false end) fds = true).
-        { apply existsb_exists. exists (k, FdAnon id a). split; [exact Hin'|].
-          cbn. rewrite (proj2 (bv_eqb_eq id id) eq_refl). reflexivity. }
-        rewrite Htrue in Hlive. discriminate Hlive.
-      * injection Hunlink as <- <-.
-        exfalso. rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid'.
-        discriminate Eid'.
-  - apply anon_agree_unlink_open_other.
-    + intros E. subst id0. rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
-      discriminate Eid.
-    + destruct e; unfold unlink_open_entry in Hunlink; cbv beta iota in Hunlink;
-        try discriminate Hunlink.
-      all: try (destruct (Fs.path_eqb c _) eqn:Epc; cbv iota in Hunlink;
-                [injection Hunlink as <-; exfalso;
-                 rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid; discriminate Eid
-                |discriminate Hunlink]).
-      (* FdAnon case *)
-      + cbn [entry_anon_id] in *.
-        destruct (bv_eqb _ id) eqn:Eid'.
-        * injection Hunlink as <-.
-          exfalso. rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid.
-          discriminate Eid.
-        * injection Hunlink as <- <-. exact (Hall _ _ _ Hin').
+  destruct e; unfold unlink_open_entry in Hunlink; cbv beta iota in Hunlink;
+    try discriminate Hunlink.
+  (* Named file cases: path_eqb conditional *)
+  1-4: (match type of Hunlink with
+         | context [path_eqb ?a ?b] =>
+           destruct (path_eqb a b) eqn:Epc; cbv iota in Hunlink;
+           [ (* converted to FdAnon *)
+             assert (id0 = id) by congruence; subst id0;
+             rewrite (anon_agree_congr _ id af0
+                 (mkAnonFile data (af_off af0) (af_rd af0) (af_wr af0) (af_append af0) pin)
+                 ltac:(congruence) ltac:(congruence));
+             apply anon_agree_unlink_open; exact Hlive
+           | discriminate Hunlink ]
+         end; fail).
+  (* FdAnon case *)
+  - cbn [entry_anon_id] in *.
+    match type of Hunlink with
+    | context [bv_eqb ?a id] => destruct (bv_eqb a id) eqn:Eid'
+    end.
+    + exfalso. unfold anon_id_live in Hlive.
+      apply bv_eqb_eq in Eid'. subst.
+      assert (existsb (fun p => match entry_anon_id (snd p) with
+                                | Some id' => bv_eqb id' id
+                                | None => false end) fds = true) as Htrue.
+      { apply existsb_exists.
+        eexists; split; [exact Hin'|]; cbn;
+        rewrite (proj2 (bv_eqb_eq id id) eq_refl); reflexivity. }
+      rewrite Htrue in Hlive. discriminate Hlive.
+    + (* id' ≠ id: entry unchanged as FdAnon id' af' *)
+      destruct (bv_eqb id0 id) eqn:Eid0.
+      * apply bv_eqb_eq in Eid0. subst id0. exfalso.
+        match type of Hunlink with (FdAnon ?x _) = _ =>
+          assert (x = id) by congruence end.
+        match goal with H : ?x = id |- _ =>
+          rewrite H, (proj2 (bv_eqb_eq id id) eq_refl) in Eid'; discriminate Eid' end.
+      * apply anon_agree_unlink_open_other.
+        -- intros E; subst; rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid0; discriminate.
+        -- match type of Hunlink with (FdAnon ?x ?y) = FdAnon id0 af0 =>
+             assert (id0 = x /\ af0 = y) as [<- <-] by (split; congruence) end.
+           exact (Hall _ _ _ Hin').
 Qed.
 
 (** Reopen with same data/pin. *)
@@ -354,4 +363,173 @@ Proof.
   - exact (anon_agree_set_data fds id af [] Hagr).
   - reflexivity.
   - reflexivity.
+Qed.
+
+(* =========================================================================
+   Syscall preservation
+   ========================================================================= *)
+
+Definition arm_preserves_aa (c : CheckedArm) : Prop :=
+  forall i eff m m' evs,
+    ca_check c i eff m = CheckOk m' evs ->
+    anon_agree_all (m_fds m) ->
+    anon_agree_all (m_fds m').
+
+Local Lemma negb_false (b : bool) : negb b = false -> b = true.
+Proof. destruct b; [reflexivity | discriminate]. Qed.
+
+Local Ltac find_anon_agree_hyp :=
+  match goal with
+  | H : negb (anon_agree _ _ _) = false |- _ =>
+    apply negb_false in H; exact H
+  | H : anon_agree _ _ _ = true |- _ => exact H
+  end.
+
+Local Ltac aa_close :=
+  match goal with
+  | Hinv : anon_agree_all (m_fds ?m) |- anon_agree_all ?g =>
+    first
+    [ exact Hinv
+    | change g with (m_fds m); exact Hinv
+    | autorewrite with model; exact Hinv
+    | rewrite m_fds_with_fds; exact Hinv
+    | rewrite m_fds_with_fds;
+      first
+      [ apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | exact Hinv ]
+      | apply anon_agree_all_fd_remove; exact Hinv
+      | apply anon_agree_all_filter; exact Hinv
+      | apply anon_agree_all_anon_set_data; exact Hinv
+      | apply anon_agree_all_fd_insert_set_off;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | eapply anon_agree_all_anon_write_back;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | apply anon_agree_all_set_pin; exact Hinv
+      | eapply anon_agree_all_dup3_fds;
+          [ eassumption | reflexivity | exact Hinv ]
+      | eapply anon_agree_all_reopen;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | eapply anon_agree_all_reopen_trunc;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_fd_insert_non_anon;
+            [intros ?? [=] | exact Hinv ] ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_fd_remove; exact Hinv ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_filter; exact Hinv ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_anon_set_data; exact Hinv ]
+      ]
+    ]
+  end.
+
+Local Ltac aa_frame H :=
+  cbv beta iota zeta in H;
+  repeat (kf_step H || (aa_close; fail 2));
+  aa_close.
+
+Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
+Proof.
+  unfold checked_table.
+  repeat apply Forall_cons.
+  all: try exact (Forall_nil arm_preserves_aa).
+  all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
+       autorewrite with arm_unfold in H.
+  all: try (aa_frame H; fail).
+  all: fail 1
+    "checked_table_preserves_aa has no case for this dispatcher arm".
+Qed.
+
+Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
+  syscall_spec i m (Ok eff m' evs) ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i m eff m' evs H Hinv.
+  apply check_syscall_ok_iff in H.
+  unfold check_syscall in H.
+  destruct (lookup_ca checked_table (bv_unsigned (in_sysno i))) as [c|] eqn:Elk;
+    [|discriminate H].
+  pose proof checked_table_preserves_aa as Hall.
+  rewrite Forall_forall in Hall.
+  exact (Hall c (lookup_ca_In _ _ _ Elk) i eff m m' evs H Hinv).
+Qed.
+
+(* =========================================================================
+   The initial configuration, sstep and star
+   ========================================================================= *)
+
+(** The initial model has no [FdAnon] entries. *)
+Theorem anon_agree_init : forall segs pc ph sp brk0 mb lim draw inp,
+  anon_agree_holds (init_config segs pc ph sp brk0 mb lim draw inp).
+Proof.
+  intros. unfold anon_agree_holds, anon_agree_all, init_config. cbn [cfg_model].
+  intros fd id af Hin.
+  exact (anon_agree_init_model (segments_reserved segs)
+           brk0 mb sp lim inp id af).
+Qed.
+
+(** One transition preserves [anon_agree_holds]. *)
+Lemma sstep_preserves_anon_agree : forall segs c evs c',
+  sstep segs c evs (SNext c') ->
+  anon_agree_holds c -> anon_agree_holds c'.
+Proof.
+  intros segs [ms model] evs c' Hstep Hinv.
+  unfold anon_agree_holds in *. cbn [cfg_model] in *.
+  inversion Hstep; subst; cbn [cfg_model].
+  - match goal with
+    | [ H : mi_account_step _ _ _ = RiscvSemantics.MachineOk (_, _) |- _ ] =>
+        destruct (mi_account_step_model_frame _ _ _ _ _ H) as (Hfd & _)
+    end.
+    unfold anon_agree_all in *. intros fd id af Hin.
+    assert (Hfds : m_fds model' = m_fds model)
+      by (unfold m_fds; rewrite Hfd; reflexivity).
+    rewrite Hfds in Hin |- *. exact (Hinv fd id af Hin).
+  - match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
+        Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
+        destruct (materialize_model_accesses_frame _ _ _ Hm) as (Hfd2 & _);
+        assert (Hfds : m_fds (with_vdso_bump m2) = m_fds m1)
+          by (unfold m_fds, with_vdso_bump, with_vdso; cbn [m_fd mkModelOf];
+              rewrite Hfd2; reflexivity);
+        unfold anon_agree_all in *; intros fd id af Hin;
+        rewrite Hfds in Hin |- *;
+        exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv fd id af Hin)
+    end.
+  - match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
+        Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
+        destruct (materialize_model_accesses_frame _ _ _ Hm) as (Hfd2 & _);
+        assert (Hfds : m_fds m2 = m_fds m1)
+          by (unfold m_fds; rewrite Hfd2; reflexivity);
+        unfold anon_agree_all in *; intros fd id af Hin;
+        rewrite Hfds in Hin |- *;
+        exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv fd id af Hin)
+    end.
+  - match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
+        exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv)
+    end.
+  - match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
+        exact (syscall_spec_preserves_anon_agree _ _ _ _ _ Hs Hinv)
+    end.
+Qed.
+
+(** A whole execution preserves the invariant. *)
+Theorem star_preserves_anon_agree : forall segs c tr c',
+  star segs c tr c' -> anon_agree_holds c -> anon_agree_holds c'.
+Proof.
+  intros segs.
+  exact (star_invariant segs anon_agree_holds (sstep_preserves_anon_agree segs)).
+Qed.
+
+(** The invariant holds at every reachable configuration. *)
+Theorem anon_agree_reachable : forall segs pc ph sp brk0 mb lim draw inp tr c,
+  star segs (init_config segs pc ph sp brk0 mb lim draw inp) tr c ->
+  anon_agree_holds c.
+Proof.
+  intros segs pc ph sp brk0 mb lim draw inp tr c Hstar.
+  exact (star_preserves_anon_agree segs _ _ _  Hstar
+           (anon_agree_init segs pc ph sp brk0 mb lim draw inp)).
 Qed.
