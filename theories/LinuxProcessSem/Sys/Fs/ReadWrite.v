@@ -465,8 +465,10 @@ Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
     same open file can: the child that got it at the clone shares
     [f_flags], and [setfl] (fs/fcntl.c, read at v6.18.44; identical at
     v6.18.46) lets it clear O_NONBLOCK, after which a read here would
-    wait.  SCOPE.md assumes no other holder
-    does ("Assumptions that the model does not check"). *)
+    wait.  The multi-process core refuses such an F_SETFL of a process it
+    runs while another lives ([Procs.eventfd_setfl_nb_change_b]);
+    SCOPE.md assumes no holder the model does not run does it
+    ("Assumptions that the model does not check"). *)
 Definition efd_nonblock_b (flags : word) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned flags) O_NONBLOCK) 0).
 

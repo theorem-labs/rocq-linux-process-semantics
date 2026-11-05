@@ -413,7 +413,7 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     it is given).  No peer holds that file: the clone gate declines while
     one is open ([Fork.clone_no_shared_file_b], proved as
     [Checks.ProcessCreation.clone_anon_unmodeled]), so an unnamed file was
-    made after the last clone by the entry that holds it.  Two class-(A)
+    made after the last clone by the entry that holds it.  Three class-(A)
     calls are admitted with a gate as well.
     flock (32) grants a lock when no descriptor of the CALLER names the
     file, and no lock state exists, so it is refused while another entry
@@ -422,7 +422,15 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     exits, and the exit arm does not send that signal; so a step that
     would halt an entry while one of its running children holds a nonzero
     parent-death signal is refused ([step_refused_b]), and the signal is
-    never lost.
+    never lost.  fcntl (25) with F_SETFL on a shared eventfd
+    ([FdOpaque (OEventFd w)]) records the new O_NONBLOCK bit in the
+    CALLER's word only ([Fs.Fcntl.oeventfd_setfl]), where Linux changes
+    the one [f_flags] every holder reads ([setfl], fs/fcntl.c; v6.18.46):
+    after a child cleared it, the parent's read would still be answered
+    -EAGAIN or a value where Linux waits.  So an F_SETFL that would
+    change the bit is refused while another entry lives
+    ([eventfd_setfl_nb_change_b] in [peer_refused_b]); one that keeps it
+    changes nothing a peer reads and is answered.
 
     SHARED, WRITTEN BACK, CLASS (B) ([multiproc_shared_sysnos]): 46 48 56
     62 63 64 65 66 67 68 78 79 202 242 439.  They read or write [m_fsys] or
@@ -1420,6 +1428,21 @@ Definition flock_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
   | None => false
   end.
 
+(** A pending [fcntl(fd, F_SETFL, arg)] (argument 1 is [Uapi.F_SETFL]
+    after [Syscall.cmd32]) whose descriptor holds a shared eventfd
+    ([FdOpaque (OEventFd w)]) and whose [arg] has an O_NONBLOCK bit (bit
+    11, the bit [Fs.Fcntl.oeventfd_setfl] records) other than [w]'s: an
+    F_SETFL that would change the [f_flags] every holder of the file
+    reads.  The caller's sysno is read by [peer_refused_b]. *)
+Definition eventfd_setfl_nb_change_b (e : ProcessEntry) : bool :=
+  bv_eqb (cmd32 (ms_gpr (pe_ms e) 1)) F_SETFL
+  && match fd_lookup (m_fds (pe_model e)) (fd32 (ms_gpr (pe_ms e) 0)) with
+     | Some (FdOpaque (OEventFd w)) =>
+         negb (Bool.eqb (Z.testbit (bv_unsigned (ms_gpr (pe_ms e) 2)) 11)
+                        (Z.testbit (bv_unsigned w) 11))
+     | _ => false
+     end.
+
 (** THE PIDS.  [f] is the root entry. *)
 Definition is_root_b (P : pconfig) (f : ProcessEntry) : bool :=
   bv_eqb (pe_pid f) (pcfg_root P).
@@ -1453,7 +1476,9 @@ Definition tid_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
     the caller's RLIMIT_CORE is unpinned); the flock gate (32 while
     another entry has a descriptor on the same file); the pid gate (a pid
     call while two entries would answer one pid, or while the caller's
-    tid is not its key).  See the notes above the guard. *)
+    tid is not its key); the eventfd gate (25 while a peer lives, an
+    F_SETFL that would change a shared eventfd's O_NONBLOCK,
+    [eventfd_setfl_nb_change_b]).  See the notes above the guard. *)
 Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
   let stale := pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) in
   match ms_svc_pending (pe_ms e) with
@@ -1473,6 +1498,8 @@ Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
       || (Nat.ltb 1 (List.length (pcfg_procs P))
           && (pid_collision_b P || tid_conflict_b P e)
           && List.existsb (Z.eqb (bv_unsigned x8)) multiproc_pid_sysnos)
+      || (Nat.ltb 1 (List.length (pcfg_procs P))
+          && Z.eqb (bv_unsigned x8) 25 && eventfd_setfl_nb_change_b e)
   end.
 
 (** THE PID FILTER, read off the released step's result [c']: of the
@@ -2603,15 +2630,16 @@ Proof. intros P e Hs. unfold peer_refused_b. rewrite Hs. reflexivity. Qed.
 Lemma peer_refused_of_sysno : forall P e x8,
   ms_svc_pending (pe_ms e) = Some x8 ->
   List.existsb (Z.eqb (bv_unsigned x8))
-    (ns_userns_sysnos ++ ns_netns_sysnos ++ [32; 261]%Z ++ multiproc_pid_sysnos) = false ->
+    (ns_userns_sysnos ++ ns_netns_sysnos ++ [25; 32; 261]%Z ++ multiproc_pid_sysnos) = false ->
   peer_refused_b P e = false.
 Proof.
   intros P e x8 Hs H. unfold peer_refused_b. rewrite Hs.
   rewrite !List.existsb_app in H. apply orb_false_iff in H as [Hu H].
   apply orb_false_iff in H as [Hn H]. apply orb_false_iff in H as [Hg Hp].
-  cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H32 Hg].
+  cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H25 Hg].
+  apply orb_false_iff in Hg as [H32 Hg].
   apply orb_false_iff in Hg as [H261 _].
-  rewrite Hu, Hn, H32, H261, Hp, !andb_false_r. reflexivity.
+  rewrite Hu, Hn, H25, H32, H261, Hp, !andb_false_r. reflexivity.
 Qed.
 
 (** No entry of the table is a child of [e]: the parent-death part of the

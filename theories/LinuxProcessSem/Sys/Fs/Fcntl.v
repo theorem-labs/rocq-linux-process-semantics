@@ -621,7 +621,10 @@ Definition oeventfd_set_nonblock (w : word) (b : bool) : word :=
     with the bit recorded in [w].  [setfl]'s path is the one
     [eventfd_setfl] walks, on the same file.  The child of the clone holds
     the same [struct file] and could move the same [f_flags] with its own
-    F_SETFL; SCOPE.md assumes it does not. *)
+    F_SETFL.  Where the multi-process core runs that child, it refuses an
+    F_SETFL that would change the bit while another process lives
+    ([Procs.eventfd_setfl_nb_change_b]); a holder the model does not run
+    is SCOPE.md's assumption. *)
 Definition oeventfd_setfl (fd w arg : word) (m : Model) : Sys SyscallEffect :=
   if Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0
   then set_fds (fd_insert (m_fds m) fd
