@@ -497,19 +497,20 @@ Definition SIGCHLD : Z := 17.
     userspace.  This is the argument [Mremap.mremap_errnos] makes for its own
     killable lock.
 
-    THREE ENVIRONMENT RESTRICTIONS, stated rather than modeled, in the
-    shape [Kernel.Sys.getpid_spec] uses for the same problem.  Each can make a real
-    kernel answer something outside this list, and none is visible to
-    the model:
+    THREE HOST REFUSERS, named as launch values rather than stated as
+    restrictions ([State.CloneRefusers], read through
+    [State.m_clone_refusers]).  Each can make a real kernel answer
+    something outside this list, and none is visible to the model:
     - a parent holding INHERITABLE PERF EVENTS reaches
       [perf_event_init_task], whose [inherit_group] has an -EINVAL of
       its own plus whatever a PMU's [event_init] returns.
       [perf_event_init_context] returns 0 immediately when the parent
       has no [perf_event_ctxp], and [perf_event_open] (241) is outside
       [Specs.modeled_sysnos], so a modeled run creates none — but it could
-      have INHERITED one from its own parent.  The model describes a
-      process that holds none.
-    - a BPF LSM program attached to [task_alloc] may return any errno.
+      have INHERITED one from its own parent, and a process outside the
+      model can attach one to it during the run ([State.cr_perf_inherit]).
+    - a BPF LSM program attached to [task_alloc] may return any errno
+      ([State.cr_bpf_task_alloc]).
     - with CONFIG_SCHED_CLASS_EXT and a BPF scheduler attached,
       [sched_cgroup_fork] (int-returning from v6.12) forwards the
       scheduler's own task init — [scx_ops_init_task] at v6.12,
@@ -517,7 +518,12 @@ Definition SIGCHLD : Z := 17.
       file moving from kernel/sched/ext.c to kernel/sched/ext/ext.c at
       v7.2, which is a SEPARATE change from any of the renames —
       through
-      [ops_sanitize_err], which passes any value in [-MAX_ERRNO, -1]. *)
+      [ops_sanitize_err], which passes any value in [-MAX_ERRNO, -1]
+      ([State.cr_sched_ext]; the host can attach one during the run).
+    This list is the answer at the default, [State.no_clone_refusers],
+    which [Run.valid_input] and its sibling launch predicates pin.  With
+    any refuser present, [clone_spec] and [clone3_spec] admit every
+    errno from 1 to 4095 beside it ([clone_refusable]). *)
 Definition clone_errnos : list Z := [EAGAIN; ENOMEM; EMFILE; EACCES].
 
 (** The fork word: a child that shares nothing, reporting [SIGCHLD] on
@@ -1053,11 +1059,139 @@ Definition clone_ns_resolve : Sys SyscallEffect :=
          ret_only pid).
 
 (** The fork word goes to [clone_resolve], the namespace word to
-    [clone_ns_resolve], and every other flag word declines. *)
-Definition clone_spec (flags : word) : Sys SyscallEffect :=
+    [clone_ns_resolve], and every other flag word declines.  This is the
+    answer from the model's own lists, the whole answer of a run whose
+    host has no clone refuser ([State.no_clone_refusers]); [clone_spec]
+    below adds the refusers' errnos to it ([clone_spec_default_iff]). *)
+Definition clone_spec_lists (flags : word) : Sys SyscallEffect :=
   if clone_fork_flags_b flags then clone_resolve
   else if clone_ns_flags_b flags then clone_ns_resolve
   else unmodeled.
+
+(* =========================================================================
+   The host's clone refusers
+   ========================================================================= *)
+
+(** WHAT A REFUSER ANSWERS: any errno from 1 to 4095, -EINTR included,
+    with the caller's model unchanged.  A BPF LSM program on [task_alloc]
+    and a sched_ext scheduler's task init may return any value in
+    [-MAX_ERRNO, -1] ([State.cr_bpf_task_alloc], [State.cr_sched_ext]);
+    [perf_event_init_task] returns its own -EINVAL or what a PMU's
+    [event_init] returns ([State.cr_perf_inherit]).  An -EINTR a refuser
+    returns reaches the program as it is: the restart and the SIGKILL
+    arguments at [clone_errnos] are about [copy_process]'s own -EINTR,
+    which needs a fatal signal pending.  The failure created nothing, so
+    the model is the caller's at each of the three refusers' steps
+    ([State.CloneRefusers]).  The shared namespace state is the namespace
+    side's: [Ns.Clone.clone_ns] admits, for every errno, both the state as
+    it was (a refusal before [alloc_pid]) and [Ns.Clone.pid_advanced] (one
+    after it), an over-approximation that covers either step. *)
+Definition clone_refused_fail : Sys SyscallEffect :=
+  e <- choose (fun e => (1 <= e <= 4095)%Z) ;; err_ret e.
+
+(** THE REFUSERS AT EACH ANSWERED WORD.  [answered] says whether the call
+    reaches [copy_process] in a word class the model answers: for such a
+    call, with a refuser present in the model ([State.m_clone_refusers]),
+    the call admits [fail] beside [k], its answer from the model's lists.
+    Everywhere else the answer is [k] alone: at the default, for a word
+    the model declines, and where the descriptor gate declines
+    ([clone_no_shared_file_b] over the table the caller keeps), because a
+    decline admits no answer at all. *)
+Definition clone_refusable (answered : SyscallInput -> bool)
+    (fail k : Sys SyscallEffect) : Sys SyscallEffect :=
+  fun i m o =>
+    if answered i && clone_refused_b (m_clone_refusers m)
+       && clone_no_shared_file_b (forfeit_inherited (m_fds m))
+    then alt fail k i m o
+    else k i m o.
+
+(** [clone]: the answer from the lists, and with a refuser present every
+    errno from 1 to 4095 for both words the lists answer. *)
+Definition clone_spec (flags : word) : Sys SyscallEffect :=
+  clone_refusable (fun _ => clone_fork_flags_b flags || clone_ns_flags_b flags)
+    clone_refused_fail (clone_spec_lists flags).
+
+(** With no refuser present the wrapper is its argument. *)
+Lemma clone_refusable_absent : forall answered fail k i m o,
+  clone_refused_b (m_clone_refusers m) = false ->
+  (clone_refusable answered fail k i m o <-> k i m o).
+Proof.
+  intros answered fail k i m o H. unfold clone_refusable.
+  rewrite H, Bool.andb_false_r. cbn [andb].
+  split; intro X; exact X.
+Qed.
+
+(** Every outcome of the wrapper is the refusal's or the lists'. *)
+Lemma clone_refusable_cases : forall answered fail k i m o,
+  clone_refusable answered fail k i m o -> fail i m o \/ k i m o.
+Proof.
+  intros answered fail k i m o H. unfold clone_refusable in H.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))).
+  - exact H.
+  - right. exact H.
+Qed.
+
+(** Every outcome of the lists stays admitted. *)
+Lemma clone_refusable_lists : forall answered fail k i m o,
+  k i m o -> clone_refusable answered fail k i m o.
+Proof.
+  intros answered fail k i m o H. unfold clone_refusable.
+  destruct (answered i && clone_refused_b (m_clone_refusers m)
+            && clone_no_shared_file_b (forfeit_inherited (m_fds m))).
+  - apply alt_r. exact H.
+  - exact H.
+Qed.
+
+(** And the refusal is admitted at an answered call with a refuser
+    present and the gate open. *)
+Lemma clone_refusable_refused : forall answered fail k i m o,
+  answered i = true ->
+  clone_refused_b (m_clone_refusers m) = true ->
+  clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true ->
+  fail i m o -> clone_refusable answered fail k i m o.
+Proof.
+  intros answered fail k i m o Ha Hr Hg Hf. unfold clone_refusable.
+  rewrite Ha, Hr, Hg. change (alt fail k i m o). apply alt_l. exact Hf.
+Qed.
+
+(** A refusal returns an errno from 1 to 4095 and leaves the model and
+    the events alone. *)
+Lemma clone_refused_fail_inv : forall i m o,
+  clone_refused_fail i m o ->
+  exists e, (1 <= e <= 4095)%Z /\ o = Ok (mkEffect (errno_ret e) [] []) m [].
+Proof.
+  intros i m o H. unfold clone_refused_fail, bind in H.
+  destruct o as [eff m' evs|]; cbv beta iota in H.
+  - destruct H as (e & m1 & evs1 & evs2 & He & Hr & Hevs).
+    unfold choose in He.
+    destruct He as (e0 & Hrange & He0). injection He0 as -> -> ->.
+    unfold err_ret, ret_only, pure in Hr. injection Hr as -> -> ->.
+    exists e0. split; [exact Hrange|]. cbn in Hevs. subst evs. reflexivity.
+  - destruct H as [H | (e & m1 & evs1 & He & Hr)].
+    + unfold choose in H. destruct H as (x & _ & Hx). discriminate Hx.
+    + unfold err_ret, ret_only, pure in Hr. discriminate Hr.
+Qed.
+
+Lemma clone_refused_fail_ok : forall e i m,
+  (1 <= e <= 4095)%Z ->
+  clone_refused_fail i m (Ok (mkEffect (errno_ret e) [] []) m []).
+Proof.
+  intros e i m He. unfold clone_refused_fail, bind. cbv beta iota.
+  exists e, m, [], []. split; [apply choose_ok; exact He|].
+  split; reflexivity.
+Qed.
+
+(** THE DEFAULT IS TODAY'S ANSWER.  In a model whose host has no clone
+    refuser, [clone] admits exactly what the model's lists admit, the
+    answer [clone_spec] gave before the refusers were named. *)
+Theorem clone_spec_default_iff : forall flags i m o,
+  m_clone_refusers m = no_clone_refusers ->
+  (clone_spec flags i m o <-> clone_spec_lists flags i m o).
+Proof.
+  intros flags i m o H. unfold clone_spec. apply clone_refusable_absent.
+  rewrite H. reflexivity.
+Qed.
 
 (** [clone3] reaches the same [kernel_clone] through a struct in user
     memory rather than through registers.  [struct clone_args]
@@ -1206,8 +1340,11 @@ Qed.
     [unmodeled], for the reason [Kernel.Sys.prlimit64_spec] gives: which
     bytes Linux read before it faulted is not something the ledger can
     state.  [Checks.Cases.Kernel.Fork]'s [clone3_wrap_] group pins it,
-    beside a neighbour at the top of what [access_ok] accepts. *)
-Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
+    beside a neighbour at the top of what [access_ok] accepts.
+
+    This is the answer from the model's lists; [clone3_spec] below adds
+    the host refusers' errnos to it ([clone3_spec_default_iff]). *)
+Definition clone3_spec_lists (uargs size : word) : Sys SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled
   else
     i <- input ;;
@@ -1219,3 +1356,61 @@ Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
     | Some bs =>
         if clone3_fork_args_b bs then clone3_resolve uargs else unmodeled
     end.
+
+(** The calls of 435 that reach [copy_process]: the one modeled size, a
+    struct the copy read whole, and the fork image. *)
+Definition clone3_answered_b (uargs size : word) (i : SyscallInput) : bool :=
+  bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)
+  && match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+     | Some bs => clone3_fork_args_b bs
+     | None => false
+     end.
+
+(** A refusal of 435 comes after the struct was read, so it carries the
+    copy-in ledger [clone3_resolve] carries. *)
+Definition clone3_refused_fail (uargs : word) : Sys SyscallEffect :=
+  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] clone_refused_fail.
+
+(** [clone3]: the answer from the lists, and with a refuser present every
+    errno from 1 to 4095 for the fork image. *)
+Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
+  clone_refusable (clone3_answered_b uargs size) (clone3_refused_fail uargs)
+    (clone3_spec_lists uargs size).
+
+Lemma clone3_refused_fail_inv : forall uargs i m o,
+  clone3_refused_fail uargs i m o ->
+  exists e, (1 <= e <= 4095)%Z
+            /\ o = Ok (mkEffectU (errno_ret e) [] [] [] []
+                                 [(uargs, CLONE_ARGS_SIZE_nat)]) m [].
+Proof.
+  intros uargs i m o H. unfold clone3_refused_fail, record_copyins, bind in H.
+  destruct o as [eff m' evs|]; cbv beta iota in H.
+  - destruct H as (e0 & m1 & evs1 & evs2 & H0 & Hp & Hevs).
+    apply clone_refused_fail_inv in H0 as (e & He & Heq).
+    injection Heq as -> -> ->.
+    unfold pure in Hp. injection Hp as -> -> ->.
+    exists e. split; [exact He|]. cbn in Hevs. subst evs. reflexivity.
+  - destruct H as [H | (e0 & m1 & evs1 & H0 & Hp)].
+    + apply clone_refused_fail_inv in H as (e & _ & Heq). discriminate Heq.
+    + unfold pure in Hp. discriminate Hp.
+Qed.
+
+Lemma clone3_refused_fail_ok : forall uargs e i m,
+  (1 <= e <= 4095)%Z ->
+  clone3_refused_fail uargs i m
+    (Ok (mkEffectU (errno_ret e) [] [] [] [] [(uargs, CLONE_ARGS_SIZE_nat)]) m []).
+Proof.
+  intros uargs e i m He. unfold clone3_refused_fail.
+  apply (record_copyins_ok_empty _ _ _ _ (mkEffect (errno_ret e) [] []));
+    [reflexivity|].
+  apply clone_refused_fail_ok. exact He.
+Qed.
+
+(** THE DEFAULT IS TODAY'S ANSWER for [clone3] too. *)
+Theorem clone3_spec_default_iff : forall uargs size i m o,
+  m_clone_refusers m = no_clone_refusers ->
+  (clone3_spec uargs size i m o <-> clone3_spec_lists uargs size i m o).
+Proof.
+  intros uargs size i m o H. unfold clone3_spec. apply clone_refusable_absent.
+  rewrite H. reflexivity.
+Qed.
