@@ -236,10 +236,13 @@ Lemma pstep_x_at_grows : forall ext cenv segs cfg p P evs P',
 Proof.
   intros ext cenv segs cfg p P evs P' H Hlt.
   inversion H; subst; try (do 5 eexists; reflexivity); exfalso;
+    try rewrite pin_root_procs_length in Hlt;
     unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result, sync_result in Hlt;
     simpl pcfg_procs in Hlt; try rewrite orphan_at_exit_length in Hlt;
     first
-      [ rewrite replace_in_length in Hlt; lia
+      [ lia
+      | rewrite replace_in_length in Hlt;
+        try rewrite first_root_pin_children_length in Hlt; lia
       | match type of Hlt with
         | (_ < List.length (drop_in ?l ?q0))%nat =>
             pose proof (drop_in_length_le l q0) as Hle; rewrite replace_in_length in Hle; lia

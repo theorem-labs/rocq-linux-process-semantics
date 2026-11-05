@@ -49,7 +49,8 @@ Definition fd_entry_handle (e : FdEntry) : option N :=
 
 (** One of the opaque objects ([State.FdOpaque]): an O_PATH or /proc/sys
     file, an eventfd, an open file of the namespace model, the
-    /proc/self/fd directory, a signalfd, or an inherited file. *)
+    /proc/self/fd directory, a signalfd, an inherited file, or an alias
+    left by [dup3]. *)
 Definition fd_entry_opaque (e : FdEntry) : bool :=
   match e with FdOpaque _ => true | _ => false end.
 

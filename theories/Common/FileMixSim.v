@@ -423,7 +423,8 @@ Proof.
 Qed.
 
 (** O_RDONLY openat of a present file, at the raw ecall record: errno
-    branch or any free fd, with [to_fout_mix] continuations. *)
+    branch or any free fd, its close-on-exec bit recorded clear, with
+    [to_fout_mix] continuations. *)
 Lemma tfm_open_rd_rec : forall regs pc mem model p d
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   bv_unsigned (getr regs 17) = 56%Z ->
@@ -440,8 +441,9 @@ Lemma tfm_open_rd_rec : forall regs pc mem model p d
                  model (Te e)) ->
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
-                 (with_fds (fd_insert (m_fds model) fd
-                              (FdFile p (Z_to_bv 64 0))) model)
+                 (with_cloexec (cloexec_set (m_cloexec model) fd false)
+                    (with_fds (fd_insert (m_fds model) fd
+                                 (FdFile p (Z_to_bv 64 0))) model))
                  (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
@@ -458,13 +460,18 @@ Proof.
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
   apply (tfm_open_core ms model
-           (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFile p (Z_to_bv 64 0))) model)
+           (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
+                        (with_fds (fd_insert (m_fds model) fd
+                                     (FdFile p (Z_to_bv 64 0))) model))
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_rd_check segs ms (getr regs 17) model p d).
+  - intro eff.
+    assert (Hb : open_cloexec_b (ms_gpr ms 2) = false)
+      by (unfold ms; rewrite record_gpr, arg_reg_2, H12; vm_compute; reflexivity).
+    rewrite (openat_rd_check segs ms (getr regs 17) model p d).
+    + rewrite Hb. reflexivity.
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
@@ -474,7 +481,7 @@ Proof.
       vm_compute. reflexivity.
     + exact Hdot.
     + exact Hfs.
-  - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
+  - intro fd. split; [exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
   - intros fd Hlk Hlt.
@@ -503,8 +510,9 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
                  model (Te e)) ->
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
-                 (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
-                    (with_fs (fs_set (m_fs model) p []) model)) (Ts fd)) ->
+                 (with_cloexec (cloexec_set (m_cloexec model) fd false)
+                    (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
+                       (with_fs (fs_set (m_fs model) p []) model))) (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
@@ -520,14 +528,19 @@ Proof.
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
   apply (tfm_open_core ms model
-           (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFileW p (Z_to_bv 64 0)))
-                        (with_fs (fs_set (m_fs model) p []) model))
+           (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
+                        (with_fds (fd_insert (m_fds model) fd
+                                     (FdFileW p (Z_to_bv 64 0)))
+                           (with_fs (fs_set (m_fs model) p []) model)))
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_wr_check segs ms (getr regs 17) model p).
+  - intro eff.
+    assert (Hb : open_cloexec_b (ms_gpr ms 2) = false)
+      by (unfold ms; rewrite record_gpr, arg_reg_2, H12; vm_compute; reflexivity).
+    rewrite (openat_wr_check segs ms (getr regs 17) model p).
+    + rewrite Hb. reflexivity.
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
@@ -538,7 +551,7 @@ Proof.
     + exact Hdot.
     + exact Hun.
   - intro fd. split.
-    + rewrite with_fds_halted, with_fs_halted. exact Hh.
+    + exact Hh.
     + exact Hlazy.
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.

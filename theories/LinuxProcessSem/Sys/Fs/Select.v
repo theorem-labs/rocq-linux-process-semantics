@@ -435,8 +435,9 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                v6.18.46; an [ONsFile]'s object is of unknown type, and
                so is the file system of an inherited regular file
                ([State.OInherited]), whose [file_operations] decide its
-               mask.  None is written as an arm, so the call declines to
-               [PsCoreGap]. *)
+               mask; an alias's description is used through its partner
+               only ([State.OAlias]). None is written as an arm, so the
+               call declines to [PsCoreGap]. *)
             | Some (FdSeqpacket _ _ _) => false
             (* FAIL-CLOSED: an AF_UNIX end's mask is [unix_dgram_poll]'s
                (net/unix/af_unix.c, v6.18.46), not [DEFAULT_POLLMASK];
@@ -1039,9 +1040,10 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [eventfd_poll] off its counter, a /proc/sys file answers
               [proc_sys_poll], the /proc/self/fd directory
               [DEFAULT_POLLMASK] (no [.poll]), a signalfd
-              [signalfd_poll] off its pending signals, and an
-              [ONsFile]'s object is of unknown type; none of the six is
-              written *)
+              [signalfd_poll] off its pending signals, an [ONsFile]'s
+              object is of unknown type, and an alias's description is
+              used through its partner only ([State.OAlias]); none of the
+              seven is written *)
        | Some (FdSeqpacket _ _ _) => None
            (* FAIL-CLOSED: [unix_dgram_poll]'s mask is not written *)
        end.
