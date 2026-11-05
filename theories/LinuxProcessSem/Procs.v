@@ -783,6 +783,10 @@ Definition child_ms (c c' : config) : machine_state :=
     released clone arms admit neither CLONE_SIGHAND nor
     CLONE_CLEAR_SIGHAND, so a SIGCHLD the parent set to SIG_DFL with
     SA_NOCLDWAIT clear is the child's too.
+    The host's clone refusers ([procst_clone_refusers]) are copied: a
+    child inherits the inheritable perf events ([perf_event_init_task]),
+    and a BPF [task_alloc] program and a sched_ext scheduler are the
+    host's, not the task's.
     Kernel citations, read at v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
@@ -805,7 +809,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               (procst_cap_inheritable ps)
               false false
               (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps)
-              (procst_clone_refusers ps) (procst_sigchld_dfl ps).
+              (procst_sigchld_dfl ps) (procst_clone_refusers ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

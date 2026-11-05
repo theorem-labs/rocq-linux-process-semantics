@@ -509,8 +509,10 @@ not apply.
     (`kernel/fork.c:2299-2301`; `kernel/sched/core.c:4783`), the
     scheduler's own task init, any value in `[-MAX_ERRNO, -1]`
     (`kernel/sched/ext.c:2971-2979`). The host can load a scheduler at
-    any moment (`bpf_scx_reg` reaches `scx_enable`, which sets
-    `scx_init_task_enabled`, `kernel/sched/ext.c:4790-4793, 5087-5089`),
+    any moment (`bpf_scx_reg`, `kernel/sched/ext.c:5087-5089`, reaches
+    `scx_enable`, which queues `scx_root_enable_workfn` and waits for it,
+    4954-4958; that work function, from 4671, sets
+    `scx_init_task_enabled`, 4790-4793),
     and `scx_fork` reads that setting at each fork (2975-2978), so
     absence at the launch is not enough.
 - The working directory is not `/`. The flat file model has no directory
