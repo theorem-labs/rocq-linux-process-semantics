@@ -934,5 +934,6 @@ Proof. intro eff. split; vm_compute; reflexivity. Qed.
 Example dup_of_a_channel_beside_the_pair_answers :
   check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_pair_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_pair_model) 5 (FdChannel 0)) dup_pair_model) [].
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_pair_model) 5 (FdChannel 0)) dup_pair_model)) [].
 Proof. check_eq. Qed.

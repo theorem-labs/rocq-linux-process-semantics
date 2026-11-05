@@ -1070,7 +1070,7 @@ Lemma forfeit_share_entry_comm : forall e,
 Proof.
   intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
     try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; reflexivity.
 Qed.
 
 Lemma share_eventfds_map : forall fds,

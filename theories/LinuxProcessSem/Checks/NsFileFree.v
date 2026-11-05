@@ -221,6 +221,24 @@ Proof.
    [ discriminate H | exact (ns_in_anon_update _ _ _ _ _ H) ]).
 Qed.
 
+(** [dup3]'s table ([File.dup3_fds]): a copy of a kind
+    [File.dup_modeled_entry] copies, or a move of a regular file that
+    leaves an [OAlias] behind.  Neither installs an [ONsFile]: no opaque
+    object is copied or moved. *)
+Lemma ns_in_dup3_fds : forall o n e fds fds' fd h,
+  dup3_fds o n e fds = Some fds' ->
+  In (fd, FdOpaque (ONsFile h)) fds' -> In (fd, FdOpaque (ONsFile h)) fds.
+Proof.
+  intros o n e fds fds' fd h E H. unfold dup3_fds in E.
+  destruct (dup_modeled_entry e) eqn:Hd.
+  - injection E as <-. apply ns_in_fd_insert in H. destruct H as [He|H]; [|exact H].
+    subst e. cbn in Hd. discriminate Hd.
+  - destruct (dup3_moves_entry e) eqn:Hm; [|discriminate E].
+    injection E as <-. apply ns_in_fd_insert in H. destruct H as [He|H]; [discriminate He|].
+    apply ns_in_fd_insert in H. destruct H as [He|H]; [|exact H].
+    subst e. cbn in Hm. discriminate Hm.
+Qed.
+
 (* -------------------------------------------------------------------------
    The descriptor table of a post-model
    ------------------------------------------------------------------------- *)
@@ -301,6 +319,13 @@ Proof. reflexivity. Qed.
 Lemma m_fds_sigchld_install_model_nf : forall m,
   m_fds (sigchld_install_model m) = m_fds m.
 Proof. reflexivity. Qed.
+Lemma m_fds_open_cloexec_model_nf : forall flags r m,
+  m_fds (open_cloexec_model flags r m) = m_fds m.
+Proof.
+  intros flags r m. unfold open_cloexec_model.
+  destruct (addr_is_error_b r); [reflexivity|].
+  destruct (fd_lookup (m_fds m) r); reflexivity.
+Qed.
 
 Create HintDb nf_fds.
 #[local] Hint Rewrite m_fds_with_fds m_fds_with_vmmaps m_fds_with_stdin
@@ -318,7 +343,7 @@ Create HintDb nf_fds.
   m_fds_with_sigpipe_default_nf m_fds_with_sigpipe_terminal_nf
   m_fds_with_sigpipe_pending_nf m_fds_with_vdso_bump_nf m_fds_with_vm_backing_nf
   m_fds_with_mmap_destroyed_nf m_fds_with_sigchld_dfl_nf
-  m_fds_sigchld_install_model_nf : nf_fds.
+  m_fds_sigchld_install_model_nf m_fds_with_cloexec m_fds_open_cloexec_model_nf : nf_fds.
 
 (* -------------------------------------------------------------------------
    The tactic
@@ -362,6 +387,8 @@ Ltac nf_chase Hin :=
         match goal with
         | E : anon_place_fds _ _ _ _ _ = Some v |- _ =>
             apply (ns_in_anon_place_fds _ _ _ _ _ _ _ _ E) in Hin
+        | E : dup3_fds _ _ _ _ = Some v |- _ =>
+            apply (ns_in_dup3_fds _ _ _ _ _ _ _ E) in Hin
         end
     | In _ _ =>
         (* a table chosen by a case the outcome did not split (shutdown's
@@ -877,12 +904,24 @@ Proof.
   nf_finish.
 Qed.
 
+Lemma check_openat_table_nf : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat_table in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || nf_done H || nf_use nf_openat_body H); nf_finish.
+Qed.
+
+(** The close-on-exec step after the table writes [State.m_cloexec]
+    alone ([Open.open_cloexec_model]). *)
 Lemma check_openat_nf : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || nf_done H || nf_use nf_openat_body H); nf_finish.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_nf in E.
+  unfold ns_post in *. rewrite m_fds_open_cloexec_model_nf. exact E.
 Qed.
 
 Lemma check_close_nf : forall fd eff m m' evs,
@@ -971,7 +1010,7 @@ Proof. intros eff m m' evs H. unfold check_getppid in H. nf_frame H. Qed.
 Lemma check_getsid_nf : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H. nf_frame H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H. nf_frame H.
 Qed.
 
 Lemma check_getresid_nf : forall i get rp ep sp eff m m' evs,

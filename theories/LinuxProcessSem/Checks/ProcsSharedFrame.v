@@ -151,7 +151,7 @@ Ltac fs_frame H :=
     file live in the descriptor table. *)
 Lemma check_stream_read_empty_fs : forall fd id side st nonblock eff m m' evs,
   check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros fd id side st nonblock eff m m' evs H.
   unfold check_stream_read_empty, check_stream_read_reset in H. fs_frame H.
@@ -160,7 +160,7 @@ Qed.
 Lemma check_stream_read_fs :
   forall fd id side st nonblock buf count i eff m m' evs,
   check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros fd id side st nonblock buf count i eff m m' evs H.
   unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
@@ -170,7 +170,7 @@ Qed.
 Lemma check_stream_send_fs :
   forall id side st nonblock nosignal n src ledger eff m m' evs,
   check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros id side st nonblock nosignal n src ledger eff m m' evs H.
   unfold check_stream_send in H. cbv beta zeta in H. fs_frame H.
@@ -179,7 +179,7 @@ Qed.
 Lemma check_stream_write_fs :
   forall id side st nonblock nosignal buf count i eff m m' evs,
   check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros id side st nonblock nosignal buf count i eff m m' evs H.
   unfold check_stream_write in H. eapply check_stream_send_fs. exact H.
@@ -197,7 +197,7 @@ Ltac fs_frame3 H :=
 
 Lemma fs_read_urandom : forall i buf count eff m m' evs,
   check_read_urandom i buf count eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i buf count eff m m' evs H. unfold check_read_urandom, check_access_ok_zero in H.
   cbv beta iota zeta in H.
@@ -207,7 +207,7 @@ Qed.
 
 Lemma fs_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
   check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros e fd peer ch buf count i eff m m' evs H.
   unfold check_socket_pending_error, check_access_ok_zero in H.
@@ -218,7 +218,7 @@ Qed.
 
 Lemma fs_write_fault_extend : forall reads m p off eff m' evs,
   check_write_fault_extend reads m p off eff = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros reads m p off eff m' evs H. unfold check_write_fault_extend, check_access_ok_zero in H.
   cbv beta iota zeta in H.
@@ -227,7 +227,7 @@ Proof.
 Qed.
 
 Lemma fs_read_proc : forall i buf count eff m m' evs,
-  check_read_proc i buf count eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_read_proc i buf count eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros i buf count eff m m' evs H.
   unfold check_read_proc, check_read_proc_bare in H.
@@ -238,7 +238,7 @@ Qed.
 
 Lemma fs_eventfd_read : forall fd ctx buf count i eff m m' evs,
   check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_read in H.
   cbv beta iota zeta in H.
@@ -248,7 +248,7 @@ Qed.
 
 Lemma fs_eventfd_write : forall fd ctx buf count i eff m m' evs,
   check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_write in H.
   cbv beta iota zeta in H.
@@ -258,7 +258,7 @@ Qed.
 
 Lemma fs_anon_fault_extend : forall reads m id data dst eff m' evs,
   check_anon_fault_extend reads m id data dst eff = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros reads m id data dst eff m' evs H. unfold check_anon_fault_extend in H.
   cbv beta iota zeta in H.
@@ -268,7 +268,7 @@ Qed.
 
 Lemma fs_anon_write_fault : forall reads m id af eff m' evs,
   check_anon_write_fault reads m id af eff = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros reads m id af eff m' evs H. unfold check_anon_write_fault in H.
   cbv beta iota zeta in H.
@@ -453,7 +453,7 @@ Qed.
     and nothing else. *)
 Lemma openat_procfd_fs : forall n flags eff m m' evs,
   Open.check_openat_procfd n flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros n flags eff m m' evs H.
   unfold Open.check_openat_procfd in H. cbv beta iota zeta in H.

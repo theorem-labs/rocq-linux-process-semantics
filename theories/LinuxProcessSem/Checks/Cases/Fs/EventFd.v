@@ -360,12 +360,14 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     The descriptor's close-on-exec bit came from the EFD_CLOEXEC bit of
     the [eventfd2] word ([do_eventfd], fs/eventfd.c), and a clone keeps
     the table's bit as it was ([dup_fd], fs/file.c), but the word the
-    shared kind keeps does not carry it ([Fcntl.getfd_declines]).  So
-    after the clone F_GETFD ([do_fcntl], fs/fcntl.c) declines, for
-    either claimed answer.  THE CONTROLS: before the clone the same call
-    on the same descriptor admits both answers, and after it F_SETFD
-    still answers 0.  fs/eventfd.c, fs/file.c, fs/fcntl.c: read at
-    v6.18.44; identical at v6.18.46. *)
+    shared kind keeps does not carry it and [eventfd2] records no bit
+    ([Fcntl.getfd_declines]).  So after the clone F_GETFD ([do_fcntl],
+    fs/fcntl.c) declines, for either claimed answer.  THE CONTROLS:
+    before the clone the same call on the same descriptor admits both
+    answers, and after it F_SETFD answers 0 and records the bit
+    ([State.m_cloexec]), after which F_GETFD answers that bit exactly.
+    fs/eventfd.c, fs/file.c, fs/fcntl.c: read at v6.18.44; identical at
+    v6.18.46. *)
 Example eventfd_getfd_declines_after_a_clone :
   let shared := clone_child_made (Z_to_bv 64 4242) efd_live_model in
   check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect 0 [] []) shared = CheckUnmodeled
@@ -377,8 +379,14 @@ Example eventfd_getfd_declines_after_a_clone :
   /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect FD_CLOEXEC [] []) efd_live_model
      = CheckOk efd_live_model []
   /\ check_syscall (efd_fcntl_in F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) shared
-     = CheckOk shared [].
-Proof. cbv zeta. repeat split; check_eq. Qed.
+     = CheckOk (with_cloexec [(3, true)] shared) []
+  /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect FD_CLOEXEC [] [])
+       (with_cloexec [(3, true)] shared)
+     = CheckOk (with_cloexec [(3, true)] shared) []
+  /\ check_syscall (efd_fcntl_in F_GETFD 0) (mkEffect 0 [] [])
+       (with_cloexec [(3, true)] shared)
+     = CheckReject.
+Proof. cbv zeta. repeat split; first [check_eq | vm_compute; reflexivity]. Qed.
 
 (** BIT 31 ALONE, WHICH IS THE SIGN BIT OF THE [int] LINUX COMPARES.
     ADMISSION REASON: the REFUSAL of a descriptor for it is the
