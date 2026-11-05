@@ -300,7 +300,10 @@ Proof.
 Qed.
 
 Lemma anon_lookup_insert_same : forall fds k e, fd_lookup (fd_insert fds k e) k = Some e.
-Proof. intros. unfold fd_insert. cbn [fd_lookup]. rewrite bv_eqb_refl. reflexivity. Qed.
+Proof.
+  intros. unfold fd_insert. cbn [fd_lookup].
+  rewrite (proj2 (bv_eqb_eq k k) eq_refl). reflexivity.
+Qed.
 
 Lemma anon_lookup_insert_other : forall fds k e n,
   n <> k -> fd_lookup (fd_insert fds k e) n = fd_lookup fds n.
