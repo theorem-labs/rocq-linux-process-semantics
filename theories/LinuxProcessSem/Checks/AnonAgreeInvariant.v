@@ -302,9 +302,15 @@ Proof.
            destruct (path_eqb a b) eqn:Epc; cbv iota in Hunlink;
            [ (* converted to FdAnon *)
              assert (id0 = id) by congruence; subst id0;
-             assert (Haf : af0 = ltac:(match type of Hunlink with
-               _ = FdAnon _ ?x => exact x end)) by congruence;
-             subst af0;
+             match type of Hunlink with
+             | FdAnon _ ?x = FdAnon _ af0 =>
+               assert (af0 = x) by congruence; subst af0
+             | _ = FdAnon _ af0 =>
+               let v := fresh in
+               assert (v : af0 = ltac:(match type of Hunlink with _ = FdAnon _ ?x => exact x end))
+                 by congruence;
+               rewrite v; clear v
+             end;
              apply anon_agree_unlink_open; exact Hlive
            | discriminate Hunlink ]
          end; fail).
