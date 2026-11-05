@@ -815,18 +815,27 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     THE EXTENSION NO LONGER READS THIS WORD.  It reads the decoded
     input [clone_in_of] gives ([Fork.CloneIn]), and the word is left to
     the one reader that wants a word: the stale-namespace mark of a
-    child's metadata ([child_meta], [Ns.Tables.ns_stale_child],
-    [Checks.ProcsNsGate.clone_result_userns_stale]), where CLONE_NEWUSER
-    is read off the caller's register.
+    child's metadata ([child_meta], [ns_stale_child],
+    [Checks.ProcsNsGate.clone_result_userns_stale]), which reads
+    CLONE_NEWUSER, CLONE_NEWNET and CLONE_NEWPID off it (a0 for
+    [clone], the constant [SIGCHLD] for [clone3]).
 
     The gap this comment carried, between the word and the record, is
-    closed: a [clone3] no longer reaches the extension as [SIGCHLD], and
-    a word the argument checks refuse reaches
-    [Ns.Clone.clone_ns_exact] as the record it refused, which answers
-    [CnErr EINVAL] for it.  [clone_in_of_flags] and [clone_in_of_ns_bits]
-    are what tie the two together: the record keeps flags and exit
-    signal apart and gives this word back for [clone], and where this
-    word had no namespace bit the record makes no namespace
+    closed.  A [clone3] no longer reaches the extension as [SIGCHLD].
+    A record the argument checks refuse reaches
+    [Ns.Clone.clone_ns_exact], which answers [CnErr EINVAL] for a
+    caller in the namespace world; in the released world that record
+    makes no namespace, so the exact answer is the released [CnOk] and
+    the core's own -EINVAL stands.  A call with no record at all (a
+    [clone3] its own tests refuse, and the struct range's -EFAULT)
+    reaches [Ns.Clone.clone_ns] as [Fork.CiNoArgs], whose answer is
+    [Ns.Ext.released_clone] and whose failure
+    [Ns.Clone.clone_tables_failures] admits.
+
+    [clone_in_of_flags] and [clone_in_of_ns_bits] tie the word and the
+    record together: the record keeps flags and exit signal apart and
+    gives this word back for [clone], and where this word had no
+    namespace bit the record makes no namespace
     ([NsProcs.clone_in_of_no_ns]), which is why every statement whose
     premise moved to [Ns.Ext.makes_ns] still covers what it covered. *)
 Definition clone_flags_of (c : config) : Z :=
@@ -852,8 +861,9 @@ Definition clone_flags_of (c : config) : Z :=
       size or a copy it declines or refuses, and any other record give
       none.
     - Any other call, and no pending call: none.
-    Every clone rule of [pstep_x_at] reads it, and so do the run's
-    clone environment and the forced-only filter of a failed clone. *)
+    Every clone rule the extension answers reads it, and so do the
+    run's clone environment and the forced-only filter of a failed
+    clone; [px_clone_claimed], which has no answer at all, does not. *)
 Definition clone_in_of (c : config) : CloneIn :=
   let ms := cfg_ms c in
   match ms_svc_pending ms with
@@ -914,14 +924,17 @@ Qed.
 (** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
     [clone3] has no record, whatever the released step answers for it.
-    The [Fork.CdErr] half is the second answer the namespace extension
-    owes a NAMESPACE-WORLD caller: at [Fork.CLONE_ARGS_SIZE] the core
-    answers -EINVAL ([Fork.clone3_einval_b]) while the call's
-    [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of 65 in
-    [Checks.Cases.Kernel.Fork.clone3_einval_words]; at any other size
-    the core declines ([Checks.ProcessCreation.clone3_other_size_unmodeled]),
-    and the lemma holds there too.  The [Fork.CdDecline] half owes
-    nothing: the core declines there, as
+    The [Fork.CdErr] half is the case the extension answers without a
+    record: at [Fork.CLONE_ARGS_SIZE] the core answers -EINVAL
+    ([Fork.clone3_einval_b]) while the call's [Fork.CloneIn] is
+    [Fork.CiNoArgs], as for the exit signal of 65 in
+    [Checks.Cases.Kernel.Fork.clone3_einval_words]; [Ns.Clone.clone_ns]
+    gives [Ns.Ext.released_clone] for such an input and
+    [Ns.Clone.clone_tables_failures] admits its failure, so the core's
+    answer stands.  At any other size the core declines
+    ([Checks.ProcessCreation.clone3_other_size_unmodeled]), and the
+    lemma holds there too.  The [Fork.CdDecline] half is answered by
+    nobody: the core declines there, as
     [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
     CLONE_NEWTIME image. *)
 Lemma clone_in_of_no_record : forall c bs x8,
