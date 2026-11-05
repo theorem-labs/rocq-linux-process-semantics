@@ -694,9 +694,17 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          model gives depends on it.
                        - an eventfd an earlier clone shared ([OEventFd],
                          made by [share_eventfds] below) shares one
-                         counter, and every arm that would read or move
-                         it (read, write, select, poll, epoll) declines
-                         on this kind.
+                         counter, and the model already holds that
+                         counter as the environment's: a read answers any
+                         nonzero value or -EAGAIN, and a write 8 or
+                         -EAGAIN, whatever another writer has done
+                         ([ReadWrite.read_eventfd_spec],
+                         [ReadWrite.write_eventfd_spec]); select, poll
+                         and epoll decline on it.  The child is one more
+                         such writer.  It also shares [f_flags], whose
+                         O_NONBLOCK those two arms read
+                         ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
+                         no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's
@@ -760,12 +768,15 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        keeps in this one entry.  The success branch
                        therefore replaces the entry with
                        [FdOpaque (OEventFd w)] ([share_eventfds] below),
-                       on which every arm that reads or changes the
-                       counter declines: after a clone the description is
-                       shared by two tasks, so counter calls decline, and
-                       a decline is never a wrong answer.  Before the
-                       clone, and after a clone that failed, the entry
-                       stays [FdEventfd] and the counter stays modeled. *)
+                       on which no arm reads a counter the model stores:
+                       after a clone the description is shared by two
+                       tasks, so read and write answer from the
+                       environment's counter
+                       ([ReadWrite.read_eventfd_spec],
+                       [ReadWrite.write_eventfd_spec]) and select, poll
+                       and epoll decline.  Before the clone, and after a
+                       clone that failed, the entry stays [FdEventfd] and
+                       the counter stays modeled. *)
                     | FdEventfd _ => true
                     (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
                        [Fs.File.dup_modeled_entry]'s reason: one rule for
@@ -942,9 +953,11 @@ Qed.
     Linux v6.18.46), so an eventfd open at the clone has one
     [eventfd_ctx] that two tasks can read and write.  So the success
     branch of each clone resolution turns every [State.FdEventfd] in the
-    caller's table into [State.FdOpaque (State.OEventFd w)], and the arms
-    that read or change the counter (read, write, select, poll, epoll)
-    decline on that kind.  The child's table, built by the multi-process
+    caller's table into [State.FdOpaque (State.OEventFd w)], on which no
+    arm reads a counter the model stores: read and write answer from the
+    environment's counter ([ReadWrite.read_eventfd_spec],
+    [ReadWrite.write_eventfd_spec], which read [w]'s two bits), and
+    select, poll and epoll decline.  The child's table, built by the multi-process
     core's [Procs.child_entry] from the caller's table before the call,
     gets the same conversion and nothing else: it shares the counter
     too, and it keeps each live inherited offset ([forfeit_inherited]

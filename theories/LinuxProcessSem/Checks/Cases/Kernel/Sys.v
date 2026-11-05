@@ -1095,7 +1095,10 @@ Definition suid2_kernel : KernelBuild :=
   mkKernelBuild (kb_thp default_kernel) (kb_vdso default_kernel)
                 (kb_aslr default_kernel) (kb_guard default_kernel)
                 (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
-                (kb_vlenb default_kernel) (kb_cache default_kernel) SuidDumpRoot.
+                (kb_vlenb default_kernel) (kb_cache default_kernel)
+                (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+                (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+                (kb_rmem_max default_kernel) SuidDumpRoot.
 Definition suid2_root_model : Model := with_kernel suid2_kernel root_model.
 Example dumpable_reset_to_suid_dumpable :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
