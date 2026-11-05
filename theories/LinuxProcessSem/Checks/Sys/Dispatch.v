@@ -1006,11 +1006,7 @@ Definition arm_setsockopt : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 208%Z (fun i => setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i))
                        (fun i eff m => check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
-<<<<<<< HEAD
                        (fun i m => setsockopt_witness i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m)
-=======
-                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setsockopt_sound_ok, check_setsockopt_sound_unmodeled, check_setsockopt_complete_ok, check_setsockopt_complete_unmodeled, setsockopt_witness_ok.
@@ -2200,11 +2196,7 @@ Lemma ca_check_arm_setsockopt : forall i eff m,
   ca_check arm_setsockopt i eff m = check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_setsockopt : forall i m,
-<<<<<<< HEAD
   ca_witness arm_setsockopt i m = setsockopt_witness i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m.
-=======
-  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setsockopt : forall i m o,
   sa_spec (ca_arm arm_setsockopt) i m o = setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o.
