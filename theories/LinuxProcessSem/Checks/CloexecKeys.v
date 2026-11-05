@@ -1343,7 +1343,8 @@ Lemma check_clone_fr : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros flags [ret ws zs us cs ci] m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer,
+  apply check_clone_cases in H as [(-> & _ & _) | H]; [fr_leaf|].
+  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
     check_clone_ns_resolve, check_clone_ns_answer in H.
   repeat vm_step H.
   all: fr_leaf.
@@ -1353,7 +1354,8 @@ Lemma check_clone3_fr : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i uargs size eff m m' evs H.
-  unfold check_clone3, check_clone3_resolve, check_clone_answer in H.
+  apply check_clone3_cases in H as [(-> & _ & _) | H]; [fr_leaf|].
+  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer in H.
   repeat vm_step H.
   all: fr_leaf.
 Qed.

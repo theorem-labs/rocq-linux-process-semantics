@@ -88,6 +88,41 @@ Proof.
     exact Hkv.
 Qed.
 
+(** A first root-tid pin resolves the root's children's parent pid
+    ([Procs.root_children_ppid], [State.with_ppid]) and nothing else. *)
+Lemma refusers_in_root_children : forall r root t ps,
+  refusers_in r ps -> refusers_in r (root_children_ppid root t ps).
+Proof.
+  intros r root t ps Hps. unfold root_children_ppid, refusers_in in *.
+  revert Hps. induction ps as [|kv ps IH]; intros Hps; [constructor|].
+  apply Forall_cons_iff in Hps as [Hkv Hrest].
+  cbn [List.map]. constructor; [|exact (IH Hrest)].
+  unfold root_child_ppid_one.
+  match goal with |- context [if ?b then _ else _] => destruct b end;
+    cbn [snd pe_model];
+    first [exact Hkv | etransitivity; [|exact Hkv]; reflexivity].
+Qed.
+
+Lemma refusers_in_first_root_pin : forall r P e m' ps,
+  refusers_in r ps -> refusers_in r (first_root_pin_children P e m' ps).
+Proof.
+  intros r P e m' ps Hps. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)); [|exact Hps].
+  destruct (m_tid (pe_model e)), (m_tid m');
+    first [exact Hps | apply refusers_in_root_children; exact Hps].
+Qed.
+
+(** The table an arm replaces into: the one it started from, or that table
+    after a first root-tid pin resolved the root's children. *)
+Ltac rr_tab Hall :=
+  first
+  [ exact Hall
+  | apply refusers_in_first_root_pin; exact Hall
+  | match goal with
+    | |- refusers_in _ (match ?x with _ => _ end) =>
+        destruct x; first [exact Hall | apply refusers_in_root_children; exact Hall]
+    end ].
+
 (** The clock sync raises the clock and fills the UTS name and a stat pin,
     and keeps the field. *)
 Lemma sync_entry_clone_refusers : forall P e,
@@ -135,28 +170,28 @@ Proof.
   inversion H; subst.
   - (* pstep_other: the released step, absorbed, with the orphaning *)
     unfold refusers_all, absorb; cbn [pcfg_procs].
-    apply refusers_in_orphan. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_orphan. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* pstep_clone: the parent absorbed, and the child entry *)
     unfold refusers_all, clone_result; cbn [pcfg_procs].
     apply Forall_app. split.
-    + apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    + apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
     + constructor; [cbn [snd]; rr_eq Hall | constructor].
   - (* pstep_wait_reap: the parent reaps, the child is dropped *)
     unfold refusers_all; cbn [pcfg_procs].
-    apply refusers_in_drop. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_drop. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* pstep_wait_nohang_reap *)
     unfold refusers_all, wait4_reap_result; cbn [pcfg_procs].
-    apply refusers_in_drop. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_drop. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* pstep_wait_nohang_zero *)
     unfold refusers_all, wait4_zero_result, absorb; cbn [pcfg_procs].
-    apply refusers_in_orphan. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_orphan. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* pstep_sync *)
     unfold refusers_all, sync_result; cbn [pcfg_procs].
-    apply refusers_in_replace; [exact Hall|].
+    apply refusers_in_replace; [rr_tab Hall|].
     rewrite sync_entry_clone_refusers. rr_eq Hall.
   - (* pstep_pin_root *)
     unfold refusers_all, pin_root; cbn [pcfg_procs].
-    apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
 Qed.
 
 Corollary pstep_cfg_preserves_clone_refusers : forall r segs cfg P evs P',
