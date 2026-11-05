@@ -15,8 +15,13 @@
 
     In the namespace world the model answers SIGCHLD alone or with
     CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID
-    and CLONE_NEWNET, and no other bit.  Child-tid flags decline: the
-    core does not admit them or model their memory effects.  Linux's
+    and CLONE_NEWNET, and no other bit.  Child-tid flags decline here,
+    in the namespace model only: the process core admits
+    CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID without CLONE_VM
+    ([Kernel.Fork.clone_tid_bits]) and makes the child's
+    CLONE_CHILD_SETTID store into the child's own copy of the memory
+    ([Procs.child_tid_store]), but this model does not answer a
+    namespace clone that carries either bit.  Linux's
     [copy_process] stores their pointers (kernel/fork.c:2040,2044);
     [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
     and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
