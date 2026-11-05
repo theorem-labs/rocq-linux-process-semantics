@@ -260,11 +260,20 @@ Proof.
   - exact (IH Hr).
 Qed.
 
-(** The start: the launch's descriptors are its three channels, so every
-    file id agrees with every view. *)
+(** The start: the launch's descriptors are its three channels and the
+    files it inherits ([State.inherited_table]), none of them an unnamed
+    file, so every file id agrees with every view. *)
 Lemma anon_agree_init_model : forall reserved brk0 mbase sp lim inp id af,
   anon_agree (m_fds (init_model reserved brk0 mbase sp lim inp)) id af = true.
-Proof. reflexivity. Qed.
+Proof.
+  intros reserved brk0 mbase sp lim inp id af.
+  unfold anon_agree. apply forallb_forall. intros [k e] Hin.
+  cbn in Hin.
+  destruct Hin as [Hin|[Hin|[Hin|Hin]]];
+    [injection Hin as <- <-; reflexivity ..|].
+  try unfold inherited_table in Hin. apply in_map_iff in Hin.
+  destruct Hin as (kv & Heq & _). injection Heq as <- <-. reflexivity.
+Qed.
 
 (* ----------------------------------------- the lemmas the header names *)
 
