@@ -121,8 +121,9 @@ Proof. vm_compute. repeat split. Qed.
     bytes "key\n" at offset 1) AND A NON-BLOCKING EVENTFD (fd 4, counter
     5).  The caller keeps [Kernel.Fork.clone_child_made]'s table: fd 3
     without its offset, fd 4 the shared kind.  The child the core makes
-    ([Procs.child_entry]) makes its own [CLONE_CHILD_SETTID] store, so its
-    model is the accounted one ([Procs.child_model]), and its table is the
+    ([Procs.child_entry]) makes its own [CLONE_CHILD_SETTID] store, whose
+    accounting on the caller's model succeeds, so its model is the
+    accounted one ([Procs.child_model]), and its table is the
     caller's table before the call with only the sharing applied: fd 3
     keeps its offset, fd 4 is the shared kind.  THE CONTROLS: the child's
     table is neither the table before the call nor the caller's new
@@ -152,12 +153,14 @@ Example clone_child_settid_mixed_table :
      = [(Z_to_bv 64 3, FdOpaque (OInherited None));
         (Z_to_bv 64 4, FdOpaque (OEventFd (Z_to_bv 64 0x800)))]
   /\ child_tid_store ctm_c ctm_c' <> []
+  /\ materialize_model_accesses ctm_model (write_accesses (child_tid_store ctm_c ctm_c')) <> None
   /\ m_fds (pe_model (child_entry ctm_parent ctm_c ctm_c' ct_pid)) = ctm_child_fds
   /\ ctm_child_fds <> ctm_fds
   /\ ctm_child_fds <> m_fds (clone_child_made ct_pid ctm_model).
 Proof.
   repeat match goal with |- _ /\ _ => split end;
     [ vm_compute; reflexivity | vm_compute; reflexivity
+    | intros H; vm_compute in H; discriminate H
     | intros H; vm_compute in H; discriminate H
     | vm_compute; reflexivity
     | intros H; vm_compute in H; discriminate H
