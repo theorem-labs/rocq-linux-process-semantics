@@ -451,11 +451,22 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     holds, as they already do for one process holding two listeners; the
     frame lemmas prove the queue is consumed once, not that a connection
     is routed to the listener it was meant for.  An eventfd made
-    before a clone IS a per-process copy ([FdOpaque (OEventFd _)], one
-    counter per table where Linux has one), and every (B) arm declines it,
-    so none answers from the copy; [Checks.ProcsSharedFrame] proves all of
-    this, the decline included, so an arm that one day answers an eventfd
-    counter fails that Check until the counter is moved into [shared].
+    before a clone becomes, in the parent's table and the child's, the
+    shared kind [FdOpaque (OEventFd w)] ([Kernel.Fork.share_eventfds]),
+    which carries only the file's flag word [w] and no counter: Linux has
+    one counter, and here it is the ENVIRONMENT's.  [read] and [write]
+    answer it from the environment ([Fs.ReadWrite.read_eventfd_spec],
+    [Fs.ReadWrite.write_eventfd_spec]; a read of a blocking one
+    declines), and the other (B) arms that take a descriptor (ftruncate,
+    lseek, readv, writev, pread64, pwrite64) decline it, so none answers
+    from a per-process counter.  [Checks.ProcsSharedFrame] proves both:
+    [eventfd_declined] (those arms' every answer is an errno that changes
+    nothing) and [eventfd_rw_keeps_model] (every answer of read or write
+    leaves the model and emits nothing), so an arm that one day keeps an
+    eventfd counter per process fails that Check until the counter is
+    moved into [shared].  The per-process [fcntl] (25) reads no counter
+    either: its [F_GETFD] answers a recorded close-on-exec bit and
+    declines only where the bit is unknown ([Fs.Fcntl.getfd_declines]).
 
     SYNCED ([multiproc_synced_sysnos]): 101 nanosleep, 113 clock_gettime,
     160 uname and 80 fstat.  Each reads per-entry state that stands for one
