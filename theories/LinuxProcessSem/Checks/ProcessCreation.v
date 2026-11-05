@@ -322,6 +322,34 @@ Proof.
     pose proof (IH k bs off H) as Hr. unfold clone_no_shared_file_b in Hr. exact Hr.
 Qed.
 
+(** AN UNNAMED FILE ([State.FdAnon]) closes the gate of every table that
+    holds it, and [Kernel.Fork.forfeit_inherited] keeps it, so [clone]
+    declines while one is open, with either word.  No other process can
+    therefore hold an unnamed file, which is what lets [Procs] answer
+    pwritev2 (287) as a call on the caller's own state
+    ([Procs.multiproc_private_sysnos],
+    [Checks.ProcsPrivateFrame.check_pwritev2_sh]). *)
+Lemma clone_gate_anon : forall fds k aid af,
+  fd_lookup fds k = Some (FdAnon aid af) ->
+  clone_no_shared_file_b fds = false.
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k aid af H; [discriminate H|].
+  cbn [fd_lookup] in H. unfold clone_no_shared_file_b. cbn [forallb snd].
+  destruct (bv_eqb k0 k).
+  - injection H as ->. reflexivity.
+  - apply andb_false_iff. right.
+    pose proof (IH k aid af H) as Hr. unfold clone_no_shared_file_b in Hr. exact Hr.
+Qed.
+
+Lemma clone_anon_unmodeled : forall flags i m k aid af,
+  fd_lookup (m_fds m) k = Some (FdAnon aid af) ->
+  clone_spec flags i m Unmodeled.
+Proof.
+  intros flags i m k aid af H. apply clone_open_file_unmodeled.
+  apply (clone_gate_anon _ k aid af).
+  rewrite fd_lookup_forfeit_inherited, H. reflexivity.
+Qed.
+
 (** No admitted errno encodes 0. *)
 Lemma clone_errno_ret_nonzero : forall e,
   In e clone_errnos -> errno_ret e <> Z_to_bv 64 0.

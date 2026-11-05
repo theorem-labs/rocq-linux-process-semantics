@@ -411,7 +411,8 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     [m_fsys] or [m_io]; the file's bytes and offset live in the caller's
     descriptor table, and it moves no offset (it writes at the position
     it is given).  No peer holds that file: the clone gate declines while
-    one is open ([Fork.clone_no_shared_file_b]), so an unnamed file was
+    one is open ([Fork.clone_no_shared_file_b], proved as
+    [Checks.ProcessCreation.clone_anon_unmodeled]), so an unnamed file was
     made after the last clone by the entry that holds it.  Two class-(A)
     calls are admitted with a gate as well.
     flock (32) grants a lock when no descriptor of the CALLER names the
