@@ -385,8 +385,10 @@ Lemma check_socketpair_sh : forall i family type protocol sv eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   sh_frame2 H.
 Qed.
 Print Assumptions check_socketpair_sh.

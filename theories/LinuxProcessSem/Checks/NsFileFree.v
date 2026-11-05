@@ -140,6 +140,10 @@ Lemma eventfd_shared_entry_ns : forall e h,
   eventfd_shared_entry e = FdOpaque (ONsFile h) -> e = FdOpaque (ONsFile h).
 Proof. intros e h H. unfold eventfd_shared_entry in H. destruct e; nf_entry_inv H. Qed.
 
+Lemma forfeit_entry_ns : forall e h,
+  forfeit_entry e = FdOpaque (ONsFile h) -> e = FdOpaque (ONsFile h).
+Proof. intros e h H. unfold forfeit_entry in H. destruct e; nf_entry_inv H. Qed.
+
 Lemma unlink_open_entry_ns : forall c id data pin e h,
   unlink_open_entry c id data pin e = FdOpaque (ONsFile h) -> e = FdOpaque (ONsFile h).
 Proof.
@@ -190,6 +194,18 @@ Proof.
   - injection H as -> He. apply eventfd_shared_entry_ns in He. subst e.
     left. reflexivity.
   - right. exact (IH _ _ H).
+Qed.
+
+(** The caller's table after a successful clone also forfeits its live
+    inherited offsets ([forfeit_inherited], under [share_eventfds]); an
+    [ONsFile] passes through it unchanged too. *)
+Lemma ns_in_forfeit_inherited : forall fds fd h,
+  In (fd, FdOpaque (ONsFile h)) (forfeit_inherited fds) ->
+  In (fd, FdOpaque (ONsFile h)) fds.
+Proof.
+  intros fds fd h H. unfold forfeit_inherited in H.
+  apply in_map_iff in H as ([k e] & He & Hin). cbn [fst snd] in He.
+  injection He as -> He. apply forfeit_entry_ns in He. subst e. exact Hin.
 Qed.
 
 Lemma ns_in_anon_place_fds : forall fds fd0 id af bs fds' fd h,
@@ -257,6 +273,8 @@ Lemma m_fds_with_accepted_nf : forall v m, m_fds (with_accepted v m) = v.
 Proof. reflexivity. Qed.
 Lemma m_fds_with_children_nf : forall m, m_fds (with_children m) = m_fds m.
 Proof. reflexivity. Qed.
+Lemma m_fds_with_child_nf : forall pid m, m_fds (with_child pid m) = m_fds m.
+Proof. reflexivity. Qed.
 Lemma m_fds_with_pdeath_signal_nf : forall v m, m_fds (with_pdeath_signal v m) = m_fds m.
 Proof. reflexivity. Qed.
 Lemma m_fds_with_sigpipe_install_nf : forall a m,
@@ -289,6 +307,7 @@ Create HintDb nf_fds.
   m_fds_forget_vm_ranges_nf m_fds_with_brk_next_nf m_fds_with_mmap_backing_nf
   m_fds_with_mmap_replacement_nf m_fds_raise_sigpipe_nf
   m_fds_sigmask_deliver_model_nf m_fds_with_accepted_nf m_fds_with_children_nf
+  m_fds_with_child_nf
   m_fds_with_pdeath_signal_nf m_fds_with_sigpipe_install_nf
   m_fds_with_sigpipe_default_nf m_fds_with_sigpipe_terminal_nf
   m_fds_with_sigpipe_pending_nf m_fds_with_vdso_bump_nf m_fds_with_vm_backing_nf
@@ -328,6 +347,7 @@ Ltac nf_chase Hin :=
     | In _ (close_range_fds _ _ _) => apply ns_in_close_range_fds in Hin
     | In _ (anon_update _ _ _) => apply ns_in_anon_update in Hin
     | In _ (share_eventfds _) => apply ns_in_share_eventfds in Hin
+    | In _ (forfeit_inherited _) => apply ns_in_forfeit_inherited in Hin
     | In _ (ppoll_record _ _ _) => apply ns_in_ppoll_record in Hin
     | In _ (map _ _) => apply ns_in_unlink_map in Hin
     | In _ ?v =>
@@ -1325,8 +1345,10 @@ Lemma check_socketpair_nf : forall i family type protocol sv eff m m' evs,
   check_socketpair i family type protocol sv eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_written, check_socketpair_faulted,
-    check_socketpair_unix_written in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   nf_frame H.
 Qed.
 

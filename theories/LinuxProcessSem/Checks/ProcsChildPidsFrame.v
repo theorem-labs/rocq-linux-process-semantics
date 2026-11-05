@@ -910,8 +910,10 @@ Lemma check_socketpair_cp : forall i family type protocol sv eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   cp_frame2 H.
 Qed.
 Print Assumptions check_socketpair_cp.
