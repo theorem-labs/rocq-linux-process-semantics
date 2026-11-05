@@ -3278,6 +3278,26 @@ Definition clone_parent_rewrite (segs : list Segment) (c c1 : config) (ret : opt
       end
   end.
 
+(** The rewritten parent's model is the successor's, or the successor's
+    with the store accounted ([State.materialize_model_accesses]). *)
+Lemma clone_parent_rewrite_model : forall segs c c1 ret c2,
+  clone_parent_rewrite segs c c1 ret = Some c2 ->
+  cfg_model c2 = cfg_model c1
+  \/ exists acc, materialize_model_accesses (cfg_model c1) acc = Some (cfg_model c2).
+Proof.
+  intros segs c c1 ret c2 H. unfold clone_parent_rewrite in H.
+  destruct ret as [v|]; [|injection H as <-; left; reflexivity].
+  destruct (match clone_args_of_cfg c with Some r => clone_parent_tid r | None => None end)
+    as [p|]; [|injection H as <-; left; reflexivity].
+  destruct (tid_store_case (ms_writable_byte segs (cfg_ms c)) p);
+    [injection H as <-; left; reflexivity | | discriminate H].
+  cbv zeta in H.
+  destruct (materialize_model_accesses (cfg_model c1)
+              (write_accesses [(p, le32_bytes (ms_gpr (cfg_ms c1) 0))])) as [m|] eqn:Hm;
+    [|discriminate H].
+  injection H as <-. right. eexists. exact Hm.
+Qed.
+
 Local Lemma clone_has_sub : forall f B b,
   Z.land f B = 0%Z -> Z.land B b = b -> clone_has f b = false.
 Proof.
@@ -3804,7 +3824,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     child_pid_core c' q ->
     look P q = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child ret st') ->
     clone_parent_rewrite segs (pe_cfg (pcfg_shared P) e) (with_ret c' ret) ret = None ->

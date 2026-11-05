@@ -296,9 +296,12 @@ Proof.
     apply Forall_app. split.
     + apply refusers_in_replace; [rr_tab Hall|].
       match goal with
-      | Hs : sstep_cfg _ _ _ _ (SNext ?c'), Hl : look _ (pe_pid ?e) = Some ?e
-        |- m_clone_refusers (pe_model (pe_absorb _ (with_ret ?c' ?ret))) = _ =>
-          transitivity (m_clone_refusers (cfg_model (with_ret c' ret))); [reflexivity|];
+      | Hs : sstep_cfg _ _ _ _ (SNext ?c'), Hl : look _ (pe_pid ?e) = Some ?e,
+        Hw : clone_parent_rewrite _ _ (with_ret ?c' ?ret) ?ret = Some ?c2
+        |- m_clone_refusers (pe_model (pe_absorb _ ?c2)) = _ =>
+          transitivity (m_clone_refusers (cfg_model c2)); [reflexivity|];
+          destruct (clone_parent_rewrite_model _ _ _ _ _ Hw) as [Hm | (acc & Hm)];
+          [rewrite Hm | rewrite (clone_refusers_materialize _ _ _ Hm)];
           rewrite cfg_model_with_ret, (sstep_cfg_clone_refusers_kept _ _ _ _ _ Hs);
           exact (entry_r _ _ _ _ Hall Hl)
       end.
