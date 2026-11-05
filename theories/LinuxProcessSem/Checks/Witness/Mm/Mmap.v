@@ -131,6 +131,18 @@ Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     else ret_outcome (errno_ret witness_errno) m
   else Unmodeled.
 
+(** The MAP_FIXED arms' overflow branch always admits -ENOMEM: it is
+    the whole branch below the error-valued addresses, and the
+    environment errno beside [addr] itself within them. *)
+Lemma mmap_fixed_overflow_enomem : forall addr nZ i m,
+  mmap_fixed_overflow addr nZ i m (ret_outcome (errno_ret ENOMEM) m).
+Proof.
+  intros. unfold mmap_fixed_overflow.
+  destruct (mmap_fixed_err_addr_b addr nZ).
+  - apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
+  - apply pure_ok.
+Qed.
+
 (** The NOREPLACE arms' witness, proved once for both prot words: the
     gate, then the errno arm of whichever [alt] the ledger selects. *)
 Ltac mmap_noreplace_witness_step :=
@@ -138,7 +150,7 @@ Ltac mmap_noreplace_witness_step :=
   match goal with
   | |- context [(two_pow_64 <=? bv_unsigned ?addr + page_round_up_Z (bv_unsigned ?len))%Z] =>
       destruct ((two_pow_64 <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
-        eqn:?Hovf; [apply pure_ok|]
+        eqn:?Hovf; [apply mmap_fixed_overflow_enomem|]
   end;
   eapply bind_step; [apply get_model_ok|]; cbv beta zeta;
   match goal with
@@ -186,7 +198,7 @@ Proof.
   { cbv zeta.
     destruct ((two_pow_64
                <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
-      eqn:Hovf; [apply pure_ok|].
+      eqn:Hovf; [apply mmap_fixed_overflow_enomem|].
     eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
     destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                       <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [apply unmodeled_intro|].
@@ -219,7 +231,7 @@ Proof.
   cbv zeta.
   destruct ((two_pow_64
              <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z)
-    eqn:Hovf; [apply pure_ok|].
+    eqn:Hovf; [apply mmap_fixed_overflow_enomem|].
   eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
   destruct (negb (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
                     <=? alloc_top (m_vmmaps m))%Z) eqn:Hceil; [apply unmodeled_intro|].

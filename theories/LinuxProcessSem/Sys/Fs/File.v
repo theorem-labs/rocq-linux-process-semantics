@@ -183,11 +183,41 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      while each end has one descriptor; [dup] is the operation that would
      make it wrong. *)
   | FdSeqpacket _ _ _ => false
+  (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
+     own.  [State.stream_peer] finds an end's peer by scanning the fd
+     table, and [unix_release_sock] runs at the LAST [fput] of a socket
+     file, not at each close, so a second fd naming one end would make
+     a close of either look like the peer going away.  And the end
+     carries its file's O_NONBLOCK ([State.se_nonblock]), which two
+     copies would let drift apart where Linux's two fds share one
+     [f_flags].  [State.FdStream]'s own note relies on this decline:
+     it is what keeps [socketpair] the only thing that makes an end. *)
+  | FdStream _ _ _ => false
+  (* AN EVENTFD DECLINES, for the stream-pair end's reasons: its counter
+     lives in the entry ([State.EventfdCtx]), so two copies would count
+     apart where Linux's two fds share one [eventfd_ctx], and so would
+     the O_NONBLOCK it carries for its one [struct file].
+     [State.FdEventfd]'s note relies on this decline. *)
+  | FdEventfd _ => false
+  (* A DATAGRAM SOCKET TAKES THE [FdSocket] ANSWER.  Nothing it carries
+     drifts -- only its family -- but every call that would read the
+     shared socket declines anyway, so copying it would buy nothing,
+     and a decline keeps one rule for every socket kind *)
+  | FdDgram _ => false
+  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
+     carries the descriptor's [f_pos] ([State.af_off]), which read, write
+     and lseek rewrite in place, so a copied entry would split the one
+     offset two Linux descriptors on one [struct file] share.  It carries
+     the file's contents too, which [State.anon_update] keeps in step
+     across entries; it is the offset that has no such keeper.
+     [State.FdAnon]'s note relies on this decline. *)
+  | FdAnon _ _ => false
   end.
 
-(** The kinds [dup3] MOVES rather than copies: the four regular-file
+(** The kinds [dup3] MOVES rather than copies: the five regular-file
     kinds, whose entry carries [f_pos] ([dup_modeled_entry] says why a
-    copy of one is wrong).
+    copy of one is wrong): the four named-file kinds and an unnamed file
+    ([State.FdAnon]).
 
     [do_dup2] takes a reference to [oldfd]'s [struct file] with
     [get_file] and stores it in [newfd]'s slot; [oldfd] keeps its own
@@ -204,13 +234,37 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
     and a key fd set up by [openat] and then [dup3] onto the key's
     number, are this shape.
 
-    A PIPE END AND A SOCKET DO NOT MOVE, an AF_UNIX SEQPACKET end
-    included.  What an alias answers from its kind alone is derived for
-    a regular file's description: the socket calls' -ENOTSOCK
-    ([Net.Socket.sock_fd]).  That does not hold for a socket, and
-    nothing in scope moves a pipe end, so all of them keep
-    [dup_modeled_entry]'s decline; a SEQPACKET end must also keep one
-    descriptor for [State.seq_peer] to stay exact.
+    A PIPE END AND A SOCKET DO NOT MOVE, an AF_UNIX SEQPACKET end, a
+    stream-pair end ([State.FdStream]) and a datagram socket
+    ([State.FdDgram]) included.  What an alias answers from its kind
+    alone is derived for a regular file's description: the socket
+    calls' -ENOTSOCK ([Net.Socket.sock_fd]).  That does not hold for a
+    socket, and nothing in scope moves a pipe end, so all of them keep
+    [dup_modeled_entry]'s decline; a SEQPACKET end and a stream-pair end
+    must also keep one descriptor for [State.seq_peer] and
+    [State.stream_peer] to stay exact.  AN EVENTFD ([State.FdEventfd])
+    DOES NOT MOVE either: it is an anonymous inode, not a regular file,
+    so the alias's derivation does not reach it, and nothing in scope
+    moves one.  The kinds [dup_modeled_entry] copies (a channel, a
+    directory, /dev/null, /dev/urandom) are copied before this test is
+    read, and every opaque object keeps its decline, an alias above all
+    (a move of one would make an alias of an alias's description).
+
+    AN UNNAMED FILE MOVES, for the named file's reason: it is a regular
+    file and its entry carries the descriptor's [f_pos] ([State.af_off]).
+    The entry goes to [newfd] whole, so the table holds the same [FdAnon]
+    entries as before, less any [newfd] held, and every file's
+    descriptors still carry one contents and one pin
+    ([State.anon_agree]).  An alias of one answers only what an alias of
+    a named file answers, and the arms that could show its description
+    decline it: [fstat] ([Stat.fstat_opaque_spec]), the reopen through
+    "/proc/self/fd/<alias>" ([Open.proc_fd_alias_b], read before
+    [Open.openat_procfd_spec]), [flock] while any alias exists, and a
+    [clone] holding an alias ([Kernel.Fork.clone_no_shared_file_b]), as
+    it declines one holding an unnamed file.  When the alias outlives
+    every [FdAnon] entry of its file, Linux keeps the inode through the
+    alias alone ([State.FdAnon]: the inode is freed at the last [fput]),
+    which nothing the alias answers can show.
 
     THE ALIAS MAY DANGLE.  [close] and [close_range] of [newfd], and a
     later [dup3] onto it, are answered as for any descriptor, so an
@@ -231,8 +285,17 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
 Definition dup3_moves_entry (e : FdEntry) : bool :=
   match e with
   | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _ => true
-  | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdOpaque _ | FdSeqpacket _ _ _ => false
+  | FdAnon _ _ => true
+    (* a regular file carrying [f_pos]: the named-file move, above *)
+  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom => false
+    (* copied by [dup_modeled_entry] before this test is read *)
+  | FdSocket _ | FdStream _ _ _ | FdDgram _ | FdSeqpacket _ _ _ => false
+    (* a socket: an alias's -ENOTSOCK would be wrong, and a pair end's
+       peer is read off the table *)
+  | FdPipe _ _ | FdEventfd _ => false
+    (* not a regular file, and nothing in scope moves one *)
+  | FdOpaque _ => false
+    (* every opaque object keeps [dup_modeled_entry]'s decline *)
   end.
 
 (** The table [dup3 oldfd newfd] leaves when [oldfd] holds [e], or

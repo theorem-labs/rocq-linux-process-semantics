@@ -13,6 +13,7 @@ From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net Clone Task Spec.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Ns Require CloneCases.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -52,11 +53,12 @@ Definition BWRAP_FLAGS : Z :=
   fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWUSER; CLONE_NEWPID; CLONE_NEWNET;
                    SIGCHLD] 0.
 
-(** The setup child [C] (host pid 138) and the state after the clone. *)
+(** The setup child [C] (host pid 138) and the state after the clone,
+    whose input is the record of [clone]'s registers ([CloneCases.cw]). *)
 Definition c_ctx : NsCtx :=
-  match clone_ns_exact BWRAP_FLAGS m0 parent host 138 with CnOk c _ _ => c | _ => parent end.
+  match clone_ns_exact (CloneCases.cw BWRAP_FLAGS) m0 parent host 138 with CnOk c _ _ => c | _ => parent end.
 Definition c_st : NsState :=
-  match clone_ns_exact BWRAP_FLAGS m0 parent host 138 with CnOk _ _ s => s | _ => host end.
+  match clone_ns_exact (CloneCases.cw BWRAP_FLAGS) m0 parent host 138 with CnOk _ _ s => s | _ => host end.
 
 (** [C] is in UTS namespace 2, which its new user namespace 2 owns and
     whose names are still the host's; the host's UTS namespace is
@@ -248,7 +250,7 @@ Qed.
 (** A clone by [C] with CLONE_NEWUTS (host pid 140): the new UTS namespace
     3, owned by [C]'s user namespace, starts with the name [C] set; a
     plain fork shares [C]'s UTS namespace. *)
-Definition cl (f : Z) : CloneNs := clone_ns_exact f m0 c_ctx st1 140.
+Definition cl (f : Z) : CloneNs := clone_ns_exact (CloneCases.cw f) m0 c_ctx st1 140.
 Definition child_uts (o : CloneNs) : option positive := match o with CnOk c _ _ => Some (cx_uts c) | _ => None end.
 Definition clone_names (o : CloneNs) (n : positive) : option (option UtsNs) :=
   match o with CnOk _ _ s => Some (find_utsns s n) | _ => None end.

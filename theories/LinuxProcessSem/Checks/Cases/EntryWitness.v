@@ -65,11 +65,15 @@ Open Scope bv_scope.
     [load_elf_binary]), the default [stack_guard_gap] of 256 pages
     (mm/mmap.c [cmdline_parse_stack_guard_gap]), [vm.mmap_rnd_bits] at
     its riscv64 floor of 18 (arch/riscv/Kconfig), CONFIG_RSEQ on
-    (init/Kconfig, default y on riscv64), no vector unit and no cache
-    leaf the machine reports (arch/riscv/kernel/cacheinfo.c), and
-    fs.suid_dumpable at its default 0 (fs/exec.c). *)
+    (init/Kconfig, default y on riscv64), no vector unit, no cache
+    leaf the machine reports (arch/riscv/kernel/cacheinfo.c),
+    [State.default_kernel]'s socket numbers (a 224-byte
+    [struct sk_buff], the [net.core] buffer sysctls at their
+    defaults), which no launch reads, and fs.suid_dumpable at its
+    default 0 (fs/exec.c). *)
 Definition witness_kernel : KernelBuild :=
-  mkKernelBuild false 0%N false 256%N 0%N true 0%N cache_view_absent SuidDumpDisable.
+  mkKernelBuild false 0%N false 256%N 0%N true 0%N cache_view_absent
+                224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable.
 
 (** argv ["a"], the one-byte argument of the spec's fixture; the exec
     file name is "a" too ([State.default_execfn]). *)

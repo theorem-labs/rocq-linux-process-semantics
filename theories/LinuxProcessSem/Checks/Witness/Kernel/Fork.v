@@ -74,9 +74,26 @@ Proof.
   apply pure_ok.
 Qed.
 
+(** A word the argument checks refuse: -EINVAL behind the descriptor
+    gate ([Kernel.Fork.clone_einval]). *)
+Definition clone_einval_witness (m : Model) : outcome SyscallEffect :=
+  if clone_no_shared_file_b (forfeit_inherited (m_fds m))
+  then ret_outcome (errno_ret EINVAL) m
+  else Unmodeled.
+
+Lemma clone_einval_witness_ok : forall i m,
+  clone_einval i m (clone_einval_witness m).
+Proof.
+  intros. unfold clone_einval, clone_einval_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m))); cbv iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok | apply unmodeled_intro].
+Qed.
+
 Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
   if clone_fork_flags_b flags then clone_resolve_witness m
   else if clone_ns_flags_b flags then clone_resolve_witness m
+  else if clone_legacy_einval_b flags then clone_einval_witness m
   else Unmodeled.
 
 (** The witness is an answer from the lists, which [Kernel.Fork.clone_refusable]
@@ -89,7 +106,14 @@ Proof.
   destruct (clone_fork_flags_b flags); cbv iota;
     [apply clone_resolve_witness_ok|].
   destruct (clone_ns_flags_b flags); cbv iota;
-    [apply clone_ns_resolve_witness_ok | apply unmodeled_intro].
+    [apply clone_ns_resolve_witness_ok|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  rewrite (clone_legacy_einval_b_spec flags (in_arg i 1) (in_arg i 2) (in_arg i 3)
+             (in_arg i 4)).
+  destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
+    as [r|]; cbv iota; [|apply unmodeled_intro].
+  destruct (clone_arg_checks r); cbv iota;
+    [apply clone_einval_witness_ok | apply unmodeled_intro].
 Qed.
 
 (** The same witness, carrying the copy-in ledger the [clone3] resolution
@@ -124,6 +148,9 @@ Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
            else Unmodeled                         (* admitted, not wholly readable *)
        | Some bs =>
            if clone3_fork_args_b bs then clone3_resolve_witness uargs m
+           else if clone3_einval_b bs
+           then Ok (with_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
+                      (mkEffect (errno_ret EINVAL) [] [])) m []
            else Unmodeled
        end.
 
@@ -139,6 +166,9 @@ Proof.
   2: { cbv iota. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota;
          [unfold err_ret, ret_only, ret_outcome; apply pure_ok
          |apply unmodeled_intro]. }
-  destruct (clone3_fork_args_b bs);
-    [apply clone3_resolve_witness_ok | apply unmodeled_intro].
+  cbv iota.
+  destruct (clone3_fork_args_b bs); cbv iota; [apply clone3_resolve_witness_ok|].
+  destruct (clone3_einval_b bs); cbv iota; [|apply unmodeled_intro].
+  unfold clone3_einval. apply record_copyins_ok_empty; [reflexivity|].
+  unfold err_ret, ret_only. apply pure_ok.
 Qed.

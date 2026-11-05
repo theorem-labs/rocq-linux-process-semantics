@@ -137,6 +137,26 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
     and never applies it leaves this spec answering -ECHILD for a caller
     that has one, with every proof in the tree still closing.
 
+    - THE CREATING ARMS RECORD THE CHILD.  [clone_resolve] and
+      [clone_ns_resolve] end their pid branch with [clone_child_made pid]
+      ([State.with_children]'s bit and the pid appended to
+      [State.procst_child_pids], over the caller's table with its live
+      inherited offsets forfeited and its eventfds shared,
+      [Kernel.Fork.clone_child_made]), and
+      [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
+      and [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
+      are the universal statements of it, over every model, every
+      argument shape and every admissible resolution: an errno answer
+      leaves the model untouched, and any other answer leaves
+      [m_has_children] set.
+    - THIS SPEC READS WHAT THAT ARM WROTE.  The gate in the body below
+      answers -ECHILD only while the field is clear.  With it set, the
+      spec answers a caller whose list of recorded children is not
+      empty, and only in a process whose SIGCHLD install bit
+      ([State.m_sigchld_dfl]) is set; every other caller with a child
+      gets [unmodeled].  A caller with a child the model cannot answer
+      for gets no answer here rather than a wrong one.
+
     ** THREE CALLERS, THREE ANSWERS
 
     - NO CHILD ([State.m_has_children] clear): -ECHILD, and nothing

@@ -13,6 +13,7 @@ From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require ProcessCreation.
 From LinuxProcessSemantics.LinuxProcessSem Require Procs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
@@ -152,7 +153,7 @@ Example clone3_at_the_top_still_resolves :
        (mkEffectU (Z_to_bv 64 4242) [] [] [] []
                   [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
        clone3_model
-     = CheckOk (with_child (Z_to_bv 64 4242) clone3_model) []
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone3_model) []
   /\ check_syscall clone3_top_call (mkEffect (errno_ret EFAULT) [] []) clone3_model
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
@@ -199,7 +200,7 @@ Definition bwrap_clone_flags : word :=
     0, the child's own return, refused. *)
 Example clone_namespace_word_answers_a_pid :
   check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
+    clone_case_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in bwrap_clone_flags)
        (mkEffect (errno_ret EPERM) [] []) clone_case_model
        = CheckOk clone_case_model []
@@ -218,11 +219,11 @@ Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
     set only the child bit and the list stayed [].  THE CONTROL is the
     errno answer, which leaves the model unchanged in both texts. *)
 Example clone_records_the_pid :
-  let m1 := with_child (Z_to_bv 64 4242) clone_case_model in
+  let m1 := clone_child_made (Z_to_bv 64 4242) clone_case_model in
   m_child_pids m1 = [Z_to_bv 64 4242]
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] []) m1
-     = CheckOk (with_child (Z_to_bv 64 4243) m1) []
-  /\ m_child_pids (with_child (Z_to_bv 64 4243) m1)
+     = CheckOk (clone_child_made (Z_to_bv 64 4243) m1) []
+  /\ m_child_pids (clone_child_made (Z_to_bv 64 4243) m1)
      = [Z_to_bv 64 4242; Z_to_bv 64 4243]
   (* the control *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
@@ -235,7 +236,7 @@ Proof. cbv zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
     CLONE_VM added, and a namespace bit without SIGCHLD. *)
 Example clone_controls_fork_word_and_clone_vm :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
+    clone_case_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD))
        (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckReject
   /\ check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + SIGCHLD)))
@@ -253,14 +254,21 @@ Example clone_namespace_word_keeps_the_descriptor_gate :
     (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE GATE PASSES FOUR OF THE SEVEN OPAQUE KINDS, for both words, end
-    to end: [OProcPath], [OProcFile], [OEventFd] and [ONsFile].
-    [clone_opaque_model] is the table bubblewrap's parent holds at its
-    clone (channels 0-2, the O_PATH descriptor on "/proc" at fd 3, its
-    two eventfds at 4 and 5), and [clone_all_opaque_model] adds the
-    modeled [overflowuid] sysctl file and a namespace and mount model
-    descriptor.  Before [State.FdOpaque] the model held none of these,
-    so it could not reach this clone at all.  THE CONTROL is
+(** THE GATE PASSES FOUR OF THE SEVEN OPAQUE KINDS AND THE EVENTFDS, for
+    both words, end to end: [OProcPath], [OProcFile], [OEventFd] and
+    [ONsFile], and [State.FdEventfd].  [clone_opaque_model] is the table
+    bubblewrap's parent holds at its clone (channels 0-2, the O_PATH
+    descriptor on "/proc" at fd 3, its two eventfds at 4 and 5, made with
+    0x80800 and 0x80000), and [clone_all_opaque_model] adds the modeled
+    [overflowuid] sysctl file and a namespace and mount model descriptor.
+    Before [State.FdOpaque] the model held none of the opaque kinds, so
+    it could not reach this clone at all.
+
+    A SUCCESSFUL CLONE SHARES THE TWO EVENTFDS ([Fork.clone_child_made]):
+    each [State.FdEventfd] becomes [State.FdOpaque (State.OEventFd w)],
+    with w the O_NONBLOCK bit for the 0x80800 one and 0 for the other
+    (EFD_CLOEXEC is not part of w), and the child's pid is recorded.  An
+    errno leaves the table as it was, counters included.  THE CONTROL is
     [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
     file still declines both words.  Two other kinds decline
     ([clone_declines_procfd_dir_and_signalfd] below).  An inherited
@@ -270,8 +278,8 @@ Proof. vm_compute. reflexivity. Qed.
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
-            (4, FdOpaque (OEventFd (Z_to_bv 64 0x80800)));
-            (5, FdOpaque (OEventFd (Z_to_bv 64 0x80000)))] clone_case_model.
+            (4, FdEventfd (mkEventfdCtx 0 false true));
+            (5, FdEventfd (mkEventfdCtx 0 false false))] clone_case_model.
 
 Definition clone_all_opaque_model : Model :=
   with_fds (fd_insert (fd_insert (m_fds clone_opaque_model) 6
@@ -280,14 +288,23 @@ Definition clone_all_opaque_model : Model :=
 
 Example clone_passes_the_opaque_kinds :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
+    clone_opaque_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
+       clone_opaque_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_all_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
-  (* the namespace word's errno: any but -EINTR *)
+       clone_all_opaque_model = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_all_opaque_model) []
+  (* the two eventfds after the clone: the shared kind, w from the context *)
+  /\ m_fds (clone_child_made (Z_to_bv 64 4242) clone_opaque_model)
+     = [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+        (3, FdOpaque (OProcPath proc_root_path));
+        (4, FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)));
+        (5, FdOpaque (OEventFd (Z_to_bv 64 0)))]
+  /\ m_has_children (clone_child_made (Z_to_bv 64 4242) clone_opaque_model) = true
+  /\ m_child_pids (clone_child_made (Z_to_bv 64 4242) clone_opaque_model)
+     = m_child_pids clone_opaque_model ++ [Z_to_bv 64 4242]
+  (* the namespace word's errno: any but -EINTR, and the table unchanged *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
        clone_opaque_model = CheckOk clone_opaque_model []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
@@ -323,6 +340,192 @@ Example clone_declines_procfd_dir_and_signalfd :
        clone_signalfd_model = CheckUnmodeled.
 Proof. repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity. Qed.
 
+(* -------------------------------------------------------------------------
+   clone (220) and clone3 (435): the argument-only -EINVAL checks
+
+   PAIRED TEST.  Before [Kernel.Fork.clone_arg_checks] every word but the
+   fork word and the namespace word declined, so each refused word below
+   was [CheckUnmodeled].  The cases are those words, now answered -EINVAL
+   and nothing else (kernel/fork.c, Linux v6.18.46).  The controls are
+   words the old text and the new one treat alike: a thread word no check
+   refuses declines in both, and so does a word with a bit above 31.
+   ------------------------------------------------------------------------- *)
+
+(** The -EINVAL a refused word answers: the one admitted outcome. *)
+Definition einval_eff : SyscallEffect := mkEffect (errno_ret EINVAL) [] [].
+
+(** A refused [clone] word answers -EINVAL with the model as it was;
+    the fork word's -EAGAIN and a pid are refused for it. *)
+Definition clone_einval_only (flags : Z) : Prop :=
+  check_syscall (clone_in (Z_to_bv 64 flags)) einval_eff clone_case_model
+    = CheckOk clone_case_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 flags)) (mkEffect (errno_ret EAGAIN) [] [])
+       clone_case_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 flags)) (mkEffect 4242 [] [])
+       clone_case_model = CheckReject.
+
+(** SIGCHLD with CLONE_SIGHAND: C4, fork.c:1969-1970. *)
+Example clone_sighand_without_vm_einval :
+  clone_einval_only (SIGCHLD + CLONE_SIGHAND)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** SIGCHLD with CLONE_THREAD: C3, fork.c:1961-1962. *)
+Example clone_thread_without_sighand_einval :
+  clone_einval_only (SIGCHLD + CLONE_THREAD)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_NEWNS with CLONE_FS: C1, fork.c:1951-1952. *)
+Example clone_newns_with_fs_einval :
+  clone_einval_only (SIGCHLD + CLONE_NEWNS + CLONE_FS)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_NEWUSER with CLONE_FS: C2, fork.c:1954-1955. *)
+Example clone_newuser_with_fs_einval :
+  clone_einval_only (SIGCHLD + CLONE_NEWUSER + CLONE_FS)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PIDFD with CLONE_PARENT_SETTID: K0, fork.c:2588-2591.
+    Legacy [clone] passes a2 as both pointers (2744, 2746), whatever a2
+    holds. *)
+Example clone_pidfd_with_parent_settid_einval :
+  clone_einval_only (SIGCHLD + CLONE_PIDFD + CLONE_PARENT_SETTID)%Z
+  /\ check_syscall (mkInput 220 [Z_to_bv 64 (SIGCHLD + CLONE_PIDFD + CLONE_PARENT_SETTID);
+                                0; Z_to_bv 64 0x2000; 0; Z_to_bv 64 0x3000; 0]
+                      (fun _ => None) (fun _ => None))
+       einval_eff clone_case_model = CheckOk clone_case_model [].
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PIDFD with CLONE_DETACHED: C7, fork.c:1992-1999. *)
+Example clone_pidfd_with_detached_einval :
+  clone_einval_only (SIGCHLD + CLONE_PIDFD + CLONE_DETACHED)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_VM, CLONE_SIGHAND and CLONE_THREAD with CLONE_NEWPID: C6a,
+    fork.c:1986-1987. *)
+Example clone_thread_with_newpid_einval :
+  clone_einval_only (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD + CLONE_NEWPID)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** CLONE_PARENT with CLONE_SIGHAND and no CLONE_VM: C4 refuses it,
+    whatever C5 (CLONE_PARENT from an unkillable group) would say. *)
+Example clone_parent_sighand_einval :
+  clone_einval_only (SIGCHLD + CLONE_PARENT + CLONE_SIGHAND)%Z.
+Proof. unfold clone_einval_only. repeat split; check_eq. Qed.
+
+(** The controls: CLONE_VM, CLONE_SIGHAND and CLONE_THREAD alone
+    pass every check and decline; CLONE_PARENT alone, which only C5 could
+    refuse, declines; and a0 = 0x1_00000811, SIGCHLD with
+    CLONE_SIGHAND and bit 32 set, declines: the raw-input guard. *)
+Example clone_unrefused_words_decline :
+  check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)))
+    einval_eff clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_PARENT)))
+       einval_eff clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 0x100000811))
+       einval_eff clone_case_model = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** The restated statements at one word each:
+    [Checks.ProcessCreation.clone_arg_checks_einval] at SIGCHLD with
+    CLONE_SIGHAND, and [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
+    at CLONE_VM, CLONE_SIGHAND and CLONE_THREAD. *)
+Example clone_restated_statements_at_one_word :
+  (forall o, clone_spec (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))
+               (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))) clone_case_model o
+             <-> o = Ok einval_eff clone_case_model [])
+  /\ clone_spec (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD))
+       (clone_in (Z_to_bv 64 (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)))
+       clone_case_model Unmodeled.
+Proof.
+  split.
+  - intros o.
+    apply (ProcessCreation.clone_arg_checks_einval _ _ _
+             (mkCloneArgs CLONE_SIGHAND SIGCHLD (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0)
+               (Z_to_bv 64 0) (Z_to_bv 64 0)));
+      check_eq.
+  - apply (ProcessCreation.clone_sharing_flags_unmodeled _ _ _
+             (mkCloneArgs (CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)%Z 0%Z (Z_to_bv 64 0)
+               (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0)));
+      [check_eq | check_eq | intro Hc; vm_compute in Hc; discriminate Hc].
+Qed.
+
+(** THE DESCRIPTOR GATE, a deliberate narrowing against Linux
+    ([Kernel.Fork.clone_einval]): with a regular file open, a refused
+    [clone] word declines, as [clone_open_file_unmodeled] says for every
+    word.  [clone3] has no such gate (below). *)
+Example clone_einval_keeps_the_descriptor_gate :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SIGHAND))) einval_eff
+    (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A [struct clone_args] image of eleven fields at [clone3_args_base]. *)
+Definition clone3_args_base : word := Z_to_bv 64 0x1000.
+
+Definition clone3_args_mem (fields : list Z) : word -> option byte :=
+  let bs := flat_map (Z_to_le_bytes 8) fields in
+  fun a => let off := (bv_unsigned a - 0x1000)%Z in
+           if ((0 <=? off)%Z && (off <? CLONE_ARGS_SIZE)%Z)%bool
+           then nth_error bs (Z.to_nat off) else None.
+
+Definition clone3_args_call (fields : list Z) : SyscallInput :=
+  mkInput 435 [clone3_args_base; Z_to_bv 64 CLONE_ARGS_SIZE; 0; 0; 0; 0]
+    (clone3_args_mem fields) (fun _ => None).
+
+(** [clone3]'s -EINVAL carries the struct in its ledger. *)
+Definition clone3_einval_eff : SyscallEffect :=
+  mkEffectU (errno_ret EINVAL) [] [] [] []
+    [(clone3_args_base, CLONE_ARGS_SIZE_nat)].
+
+(** clone3, CLONE_PIDFD with CLONE_PARENT_SETTID at two different
+    pointers: not K0, and the word declines (the model does not answer
+    CLONE_PIDFD).  The control: the same two at ONE pointer is K0,
+    -EINVAL with the ledger, and an -EINVAL without the ledger is refused.
+    Fields: flags, pidfd, child_tid, parent_tid, exit_signal, stack,
+    stack_size, tls, set_tid, set_tid_size, cgroup. *)
+Example clone3_pidfd_parent_settid_two_pointers :
+  check_syscall
+    (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x3000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckUnmodeled
+  /\ check_syscall
+       (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x2000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (clone3_args_call [(CLONE_PIDFD + CLONE_PARENT_SETTID)%Z; (0x2000)%Z; 0%Z; (0x2000)%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       einval_eff clone3_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** [clone3] answers the copy_process checks and its own: SIGCHLD with
+    CLONE_SIGHAND (C4), an exit signal of 65 (fork.c:2794-2796), and
+    CLONE_THREAD with CLONE_SIGHAND, CLONE_VM and a non-zero exit signal
+    (fork.c:2871-2873); and with a regular file open, unlike [clone]. *)
+Example clone3_einval_words :
+  check_syscall (clone3_args_call [(CLONE_SIGHAND)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; 65%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (clone3_args_call [(CLONE_VM + CLONE_SIGHAND + CLONE_THREAD)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff clone3_model = CheckOk clone3_model []
+  /\ check_syscall (clone3_args_call [(CLONE_SIGHAND)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       clone3_einval_eff (with_fds [(3, FdFile [] 0)] clone3_model)
+     = CheckOk (with_fds [(3, FdFile [] 0)] clone3_model) [].
+Proof. repeat split; check_eq. Qed.
+
+(** clone3 with CLONE_NEWTIME and exit signal 17: declines, and the
+    struct gives no record, so no reader ever sees the merged word 145
+    (0x80 | 17) that would read as exit signal 145 (fork.c:2864-2865).
+    The control: the fork image still resolves. *)
+Example clone3_newtime_declines :
+  check_syscall (clone3_args_call [(CLONE_NEWTIME)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+    clone3_einval_eff clone3_model = CheckUnmodeled
+  /\ option_map clone3_pre
+       (copy_bytes_map (clone3_args_mem [(CLONE_NEWTIME)%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+          clone3_args_base CLONE_ARGS_SIZE) = Some CdDecline
+  /\ check_syscall (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       (mkEffectU (errno_ret EAGAIN) [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       clone3_model = CheckOk clone3_model [].
+Proof. repeat split; check_eq. Qed.
+
 (** AN AF_UNIX SEQUENCED-PACKET END DECLINES THE CLONE
     ([State.FdSeqpacket]; [Kernel.Fork.clone_no_shared_file_b]): the
     child's second reference names the same socket, so a close in one
@@ -347,7 +550,143 @@ Example clone_with_a_seqpacket_end_open_declines :
      = false
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
        clone_channels_model
-     = CheckOk (with_child (Z_to_bv 64 4242) clone_channels_model) [].
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_channels_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(* -------------------------------------------------------------------------
+   ONE TABLE THAT HOLDS BOTH KINDS A CLONE CONVERTS
+
+   [Kernel.Fork.clone_child_made] forfeits each live inherited offset
+   ([forfeit_inherited]) and shares each eventfd ([share_eventfds]) in
+   the caller's table, and the child's table is the caller's table before
+   the call with only the sharing applied ([Procs.child_entry]).  The
+   table below holds one of each kind and an entry neither conversion
+   touches, at distinct numbers: fd 3 a live inherited file (the bytes
+   "key\n" at offset 1), fd 4 a non-blocking eventfd with counter 5, fd 5
+   an O_PATH descriptor on "/proc".  The controls below fail if either
+   half of the conversion is lost, on either side.
+   ------------------------------------------------------------------------- *)
+
+Definition clone_mixed_fds : list (word * FdEntry) :=
+  [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+   (3, FdOpaque (OInherited (Some ([107; 101; 121; 10], 1))));
+   (4, FdEventfd (mkEventfdCtx 5 false true));
+   (5, FdOpaque (OProcPath proc_root_path))].
+
+Definition clone_mixed_model : Model := with_fds clone_mixed_fds clone_case_model.
+
+(** The caller's table after a successful clone: fd 3 holds no offset,
+    fd 4 is the shared kind with O_NONBLOCK, fd 5 and the channels as
+    they were, every number in its place. *)
+Definition clone_mixed_parent_fds : list (word * FdEntry) :=
+  [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+   (3, FdOpaque (OInherited None));
+   (4, FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)));
+   (5, FdOpaque (OProcPath proc_root_path))].
+
+(** The child's table: fd 3 keeps the bytes and the offset exactly, fd 4
+    is the shared kind, as in the caller. *)
+Definition clone_mixed_child_fds : list (word * FdEntry) :=
+  [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+   (3, FdOpaque (OInherited (Some ([107; 101; 121; 10], 1))));
+   (4, FdOpaque (OEventFd (Z_to_bv 64 O_NONBLOCK)));
+   (5, FdOpaque (OProcPath proc_root_path))].
+
+Definition clone3_mixed_model : Model := with_fds clone_mixed_fds clone3_model.
+
+(** A SUCCESS OF EACH WORD, through the executable checker: the fork
+    word, the namespace word and a valid [clone3] each return an
+    admissible pid, and the caller's table is [clone_mixed_parent_fds],
+    with no [FdEventfd] left.  The child pid is recorded, and the
+    unrelated fields are unchanged. *)
+Example clone_mixed_table_success :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) clone_mixed_model
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) []
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] []) clone_mixed_model
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) []
+  /\ check_syscall clone3_top_call
+       (mkEffectU (Z_to_bv 64 4242) [] [] [] []
+                  [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
+       clone3_mixed_model
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone3_mixed_model) []
+  /\ m_fds (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) = clone_mixed_parent_fds
+  /\ m_fds (clone_child_made (Z_to_bv 64 4242) clone3_mixed_model) = clone_mixed_parent_fds
+  /\ map fst (m_fds (clone_child_made (Z_to_bv 64 4242) clone_mixed_model))
+     = map fst clone_mixed_fds
+  /\ m_child_pids (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) = [Z_to_bv 64 4242]
+  /\ m_has_children (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) = true
+  /\ m_pipes (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) = m_pipes clone_mixed_model
+  /\ m_vmmaps (clone_child_made (Z_to_bv 64 4242) clone_mixed_model)
+     = m_vmmaps clone_mixed_model
+  /\ m_creds (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) = m_creds clone_mixed_model
+  /\ share_eventfds clone_mixed_fds = clone_mixed_child_fds.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE CONTROLS, each of which one lost half of the conversion would
+    make true.  The caller's table is neither the eventfd-only table (fd 3
+    would still hold its offset) nor the forfeit-only table (fd 4 would
+    still hold its counter).  The child's table is neither a copy of the
+    caller's new table (fd 3 would have lost its offset) nor the table
+    without the sharing (fd 4 would still hold its counter). *)
+Example clone_mixed_table_controls :
+  clone_mixed_parent_fds <> share_eventfds clone_mixed_fds
+  /\ clone_mixed_parent_fds <> forfeit_inherited clone_mixed_fds
+  /\ clone_mixed_child_fds <> share_eventfds (forfeit_inherited clone_mixed_fds)
+  /\ clone_mixed_child_fds <> clone_mixed_fds.
+Proof.
+  repeat split; intros H; vm_compute in H; discriminate H.
+Qed.
+
+(** A FAILURE CONVERTS NOTHING.  An admitted errno of either word leaves
+    the model exactly as it was: both original entries, so an eventfd read
+    before the clone still answers from the counter 5 and an inherited
+    read from offset 1, and no child recorded.  An invalid pid, the
+    child's own 0, a namespace -EINTR and a [clone3] answer without its
+    ledger are rejected, never accepted with a converted table. *)
+Example clone_mixed_table_failure :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EAGAIN) [] [])
+    clone_mixed_model = CheckOk clone_mixed_model []
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EAGAIN) [] [])
+       clone_mixed_model = CheckOk clone_mixed_model []
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
+       clone_mixed_model = CheckOk clone_mixed_model []
+  /\ check_syscall clone3_top_call
+       (mkEffectU (errno_ret EAGAIN) [] [] [] []
+                  [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
+       clone3_mixed_model
+     = CheckOk clone3_mixed_model []
+  /\ m_child_pids clone_mixed_model = []
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 0 [] []) clone_mixed_model
+     = CheckReject
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
+       clone_mixed_model = CheckReject
+  /\ check_syscall clone3_top_call (mkEffect (Z_to_bv 64 4242) [] []) clone3_mixed_model
+     = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** A DISALLOWED KIND BESIDE THEM STILL DECLINES, for both words, with no
+    update: a pipe end, a stream-pair end, a datagram socket, an unnamed
+    file.  And the conversions are idempotent: a table that holds only an
+    inherited file without its offset and an already shared eventfd is
+    the caller's table again after a clone. *)
+Example clone_mixed_table_declines_and_idempotent :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+    (with_fds (clone_mixed_fds ++ [(6, FdPipe 0 false)]) clone_case_model)
+  = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       (with_fds (clone_mixed_fds ++ [(6, FdStream 0 false (stream_fresh false 4608 2304))])
+          clone_case_model)
+     = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+       (with_fds (clone_mixed_fds ++ [(6, FdDgram 1)]) clone_case_model)
+     = CheckUnmodeled
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+       (with_fds (clone_mixed_fds ++ [(6, FdAnon 0 (mkAnonFile [] 0 true true false None))])
+          clone_case_model)
+     = CheckUnmodeled
+  /\ m_fds (clone_child_made (Z_to_bv 64 4242)
+              (with_fds clone_mixed_parent_fds clone_case_model))
+     = clone_mixed_parent_fds.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
 (* -------------------------------------------------------------------------
@@ -505,4 +844,3 @@ Proof.
   intros e c c' q He Hp. cbv zeta. unfold Procs.child_entry. cbn [Procs.pe_model].
   rewrite He, Hp. check_eq.
 Qed.
-

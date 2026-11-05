@@ -12,7 +12,8 @@
     musl loops at [x_envscan A] / [x_pnscan A], and in WHAT THE
     ARGUMENT-BLOCK INVARIANT [SINV] MUST PROVIDE about an initial stack
     (sp, argv, envp, ph):
-      - [SINV_vals]: the values of [e_envp], [EVar V_ENVC], [e_str0];
+      - [SINV_vals]: the values of [e_envp], [EVar V_ENVC], [e_str0 rz] (at
+        the plan's CONFIG_RSEQ flag [rz]; the Section reads nothing else about it);
       - [SINV_envp]: the envp pointer array (incl. its NULL) in FULL memory
         is the initial stack image;
       - [SINV_str0]: the bytes of argv[0] (incl. its NUL) likewise.
@@ -25,7 +26,7 @@
     [H_off_segments_vis], the [vis]-only twins of APS's lemmas), the loop
     itself being the image-independent [AsanNodesAux.env_loop] / [pn_loop]. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes with CONFIG_RSEQ and 27 pairs / 432 bytes without it ([StackLayout.auxv_size]), and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -51,6 +52,9 @@ Section NodesD.
   Variable LIMIT : Z.
   Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
   Hypothesis CEIL_ok : ceil_ok CEIL.
+  (** the plan's CONFIG_RSEQ flag as 0 or 1 ([APC.rseq_z]); [SINV_vals] ties
+      it to the run, through the value of [e_str0 rz] *)
+  Variable rz : Z.
   Variable SINV : env -> (word -> option byte) -> Prop.
   Variable argH : env -> word -> bool.
   Variable FS0 : Fs.Fs.
@@ -135,7 +139,7 @@ Section NodesD.
   Let STR0 := usp + Z.of_nat (cat_string_off rseq sp top argv envp execfn).
 
   Hypothesis SINV_vals : forall E M, SINV E M ->
-    uE E e_envp = EA /\ ev E V_ENVC = Z_to_bv 64 envc /\ uE E e_str0 = STR0.
+    uE E e_envp = EA /\ ev E V_ENVC = Z_to_bv 64 envc /\ uE E (e_str0 rz) = STR0.
   Hypothesis SINV_envp : forall E M (a : word), SINV E M ->
     EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem inp mbase ph entry sp rdraw a.
   Hypothesis SINV_str0 : forall E M (a : word), SINV E M ->
@@ -272,7 +276,7 @@ Section NodesD.
   (** ** XEnvScan                                                              *)
   (* ----------------------------------------------------------------------- *)
 
-  Theorem x_sound_envscan : x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XEnvScan.
+  Theorem x_sound_envscan : x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XEnvScan.
   Proof.
     intros args cs cs' E R FULL model T HC _ Hn Hk. cbn [node_x] in Hn. unfold node_envscan in Hn.
     destruct (Z.eqb (pc cs) (x_envscan A) && len_eqb (kn cs) (reg cs 9) e_envp)%bool eqn:Hc; [|discriminate].
@@ -326,7 +330,7 @@ Section NodesD.
   (** ** XPnScan                                                               *)
   (* ----------------------------------------------------------------------- *)
 
-  Theorem x_sound_pnscan : x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XPnScan.
+  Theorem x_sound_pnscan : x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XPnScan.
   Proof.
     intros args cs cs' E R FULL model T HC _ Hn Hk. cbn [node_x] in Hn. unfold node_pnscan in Hn.
     destruct (reg_lit cs 10) as [p|] eqn:Hp10; [|discriminate].
@@ -350,7 +354,7 @@ Section NodesD.
     replace (Z_to_bv 5 (Z.of_nat 10)) with (10%bv : bv 5) in H10 by (apply bv_eq; reflexivity).
     destruct (reg_lit_sound SEGS A LIMIT CEIL SINV argH FS0 E cs R FULL model 12 _ HC ltac:(lia) Hp12) as [H12 _].
     replace (Z_to_bv 5 (Z.of_nat 12)) with (12%bv : bv 5) in H12 by (apply bv_eq; reflexivity).
-    pose proof (len_eqb_sound SEGS E _ (kn cs) (reg cs 11) (eaddz e_str0 1) HK Heq) as H11e.
+    pose proof (len_eqb_sound SEGS E _ (kn cs) (reg cs 11) (eaddz (e_str0 rz) 1) HK Heq) as H11e.
     pose proof (reg_sound SEGS A LIMIT CEIL SINV argH FS0 E cs R FULL model 11 HC ltac:(lia)) as H11.
     replace (Z_to_bv 5 (Z.of_nat 11)) with (11%bv : bv 5) in H11 by (apply bv_eq; reflexivity). rewrite H11e in H11.
     assert (H11' : getr R 11%bv = Z_to_bv 64 (STR0 + Z.of_nat 0 + 1)).
@@ -430,19 +434,21 @@ Section LayoutSound.
   Variable LIMIT : Z.
   Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
   Hypothesis CEIL_ok : ceil_ok CEIL.
+  (** the plan's CONFIG_RSEQ flag; [XLayout] is sound at every value of it *)
+  Variable rz : Z.
   Variable SINV : env -> (word -> option byte) -> Prop.
   Variable argH : env -> word -> bool.
   Variable FS0 : Fs.Fs.
 
-  (** the value of [e_argv1w] by class of argc *)
-  Lemma e_argv1w_ge2 : forall E, 2 <= bv_unsigned (ev E V_ARGC) -> edenot E e_argv1w = edenot E e_str1.
+  (** the value of [e_argv1w rz] by class of argc *)
+  Lemma e_argv1w_ge2 : forall E, 2 <= bv_unsigned (ev E V_ARGC) -> edenot E (e_argv1w rz) = edenot E (e_str1 rz).
   Proof.
     intros E H. unfold e_argv1w. cbn [edenot]. apply bv_eq. rewrite u_mul64, u_sltu64, u64_lit by lia.
     replace (1 <? bv_unsigned (ev E V_ARGC)) with true by (symmetry; apply Z.ltb_lt; lia).
-    pose proof (u64_range (edenot E e_str1)). rewrite Z.mul_1_l. apply Z.mod_small. lia.
+    pose proof (u64_range (edenot E (e_str1 rz))). rewrite Z.mul_1_l. apply Z.mod_small. lia.
   Qed.
 
-  Lemma e_argv1w_le1 : forall E, bv_unsigned (ev E V_ARGC) <= 1 -> edenot E e_argv1w = edenot E (ELit 0).
+  Lemma e_argv1w_le1 : forall E, bv_unsigned (ev E V_ARGC) <= 1 -> edenot E (e_argv1w rz) = edenot E (ELit 0).
   Proof.
     intros E H. unfold e_argv1w. cbn [edenot]. apply bv_eq. rewrite u_mul64, u_sltu64, !u64_lit by lia.
     replace (1 <? bv_unsigned (ev E V_ARGC)) with false by (symmetry; apply Z.ltb_ge; lia).
@@ -453,19 +459,19 @@ Section LayoutSound.
     kentry_ok SEGS E M (kw_argv1 v) -> edenot E v' = edenot E v -> kentry_ok SEGS E M (kw_argv1 v').
   Proof. intros E M v v' HK Hv. unfold kw_argv1 in *. cbn [kentry_ok] in *. rewrite Hv. exact HK. Qed.
 
-  Theorem x_sound_layout : x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XLayout.
+  Theorem x_sound_layout : x_stmt SEGS A nx0 LIMIT CEIL rz SINV argH FS0 XLayout.
   Proof.
     intros args cs cs' E R FULL model T HC _ Hn Hk. cbn [node_x] in Hn. unfold node_layout in Hn.
-    destruct (existsb (kentry_eqb (kw_argv1 e_argv1w)) (kn cs)) eqn:Hex; [|discriminate]. cbn [negb] in Hn.
+    destruct (existsb (kentry_eqb (kw_argv1 (e_argv1w rz))) (kn cs)) eqn:Hex; [|discriminate]. cbn [negb] in Hn.
     pose proof (co_know _ _ _ _ _ _ _ _ _ _ _ _ HC) as HK.
     (* the conditional fact holds *)
     apply existsb_exists in Hex as [K0 [Hin Heqb]]. apply kentry_eqb_eq in Heqb. subst K0.
     pose proof (proj1 (Forall_forall _ _) HK _ Hin) as HK0.
     assert (HK' : know_ok SEGS E (Mr A CEIL argH E cs model FULL)
-                    (List.filter (fun K => negb (kentry_eqb (kw_argv1 e_argv1w) K)) (kn cs)))
+                    (List.filter (fun K => negb (kentry_eqb (kw_argv1 (e_argv1w rz)) K)) (kn cs)))
       by (apply know_ok_filter; exact HK).
-    assert (FIN : forall v, edenot E v = edenot E e_argv1w ->
-                  cs' = set_kn cs (kw_argv1 v :: List.filter (fun K => negb (kentry_eqb (kw_argv1 e_argv1w) K)) (kn cs)) ->
+    assert (FIN : forall v, edenot E v = edenot E (e_argv1w rz) ->
+                  cs' = set_kn cs (kw_argv1 v :: List.filter (fun K => negb (kentry_eqb (kw_argv1 (e_argv1w rz)) K)) (kn cs)) ->
                   srealizes SEGS (cfg_of SEGS R (pc cs) FULL model) T).
     { intros v Hv ->. specialize (Hk E R FULL model (conj (env_agree_refl nx0 E) (env_agree_refl (nxt cs) E))).
       rewrite pc_set_kn in Hk. apply Hk; [|reflexivity].
@@ -483,7 +489,7 @@ Section LayoutSound.
       destruct (xlo (kn cs) (EVar V_ARGC)) as [lo|] eqn:Hlo; [|discriminate].
       destruct (Z.leb 2 lo) eqn:Hle; [|discriminate]. apply Z.leb_le in Hle. apply some_inj_acs in Hn.
       pose proof (xlo_sound SEGS E _ (kn cs) (EVar V_ARGC) lo HK Hlo) as B. cbn [edenot] in B.
-      apply (FIN e_str1); [|symmetry; exact Hn]. symmetry. apply e_argv1w_ge2. lia.
+      apply (FIN (e_str1 rz)); [|symmetry; exact Hn]. symmetry. apply e_argv1w_ge2. lia.
   Qed.
 End LayoutSound.
 
