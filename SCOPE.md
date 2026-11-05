@@ -879,15 +879,22 @@ not apply.
   (`State.FdDgram`) no send is answered at all, and its creation admits
   `-ENOBUFS` for `AF_INET6`.
 - An eventfd (`eventfd2`, `State.FdEventfd`) is used by this one thread
-  only, and no kernel subsystem signals it. `dup`, `dup3` and `F_DUPFD` of
-  one are declined; a `clone` holding one is answered and turns it into
-  the shared kind (`State.OEventFd`), on which no call reads the counter
-  the model stored: `read` and `write` answer from the environment's
-  counter (the `eventfd2` descriptors row), and `select`, `poll`,
-  `epoll` and `F_GETFD`, whose bit the shared kind does not carry,
-  decline. After that clone the child does not change the file's
-  `O_NONBLOCK` bit: `F_GETFL`, `F_SETFL` and the shared kind's `read` and
-  `write` answer from the parent's word. Before a clone, a blocking read of a zero counter,
+  only until a `clone` shares it, and no kernel subsystem signals it.
+  `dup`, `dup3` and `F_DUPFD` of one are declined; a `clone` holding one
+  is answered and turns it into the shared kind (`State.OEventFd`), on
+  which no call reads the counter the model stored: `read` and `write`
+  answer from the environment's counter (the `eventfd2` descriptors
+  row), `select`, `poll` and `epoll` decline, and `F_GETFD` answers the
+  close-on-exec bit an `F_SETFD` recorded and declines only where no bit
+  is recorded (`Fs.Fcntl.getfd_declines`; the `fcntl` row). What this
+  page assumes about the file's `O_NONBLOCK` bit after that clone covers
+  only holders the model does not run (the assumption above on an
+  eventfd's holders). A holder the multi-process core runs, the clone's
+  child included, needs no assumption: each process's `F_GETFL`,
+  `F_SETFL` and shared-kind `read` and `write` answer from the word in
+  its own entry, and an `F_SETFL` that would change the bit is refused
+  while another process lives (`Procs.eventfd_setfl_nb_change_b`; the
+  `fcntl` row). Before a clone, a blocking read of a zero counter,
   and a blocking write that would take the counter to `ULLONG_MAX`, are
   declined: on Linux such a call never returns, because the only task
   that could change the counter is the one that waits. A program that
