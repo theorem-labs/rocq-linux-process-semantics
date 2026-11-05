@@ -787,7 +787,8 @@ Local Lemma clone_sigchld_eperm_at : forall m,
   = if clone_refused_b (m_clone_refusers m) then CheckOk m [] else CheckReject.
 Proof.
   intros m Hg.
-  rewrite check_syscall_clone by (vm_compute; reflexivity).
+  rewrite LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.DispatchCompute.check_syscall_clone
+    by (vm_compute; reflexivity).
   unfold check_clone, check_refusable, check_clone_lists, check_clone_resolve.
   rewrite Hg.
   destruct (clone_refused_b (m_clone_refusers m)); vm_compute; reflexivity.
