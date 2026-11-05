@@ -461,12 +461,15 @@ Example parent_trace_clone_descriptors :
      = Some (FdOpaque (OEventFd (Z_to_bv 64 0))).
 Proof. repeat split; check_eq. Qed.
 
-(** The SIGCHLD install (call 08, bubblewrap.c:2910-2914) records
-    [State.procst_sigchld_dfl] before the clone, so the clone's parent
+(** The SIGCHLD install (call 08, bubblewrap.c:2910-2914) leaves
+    [State.procst_sigchld_dfl] set before the clone, so the clone's parent
     is a process [Kernel.Exit.wait4_spec] answers about its recorded
-    child; before call 08 the bit is clear. *)
+    child.  This launch ([demo_input]) declares SIGCHLD at SIG_DFL
+    ([State.in_sigchld_default]), so the bit is set from the launch and
+    call 08 keeps it; at a SIG_IGN launch the same install is what sets it
+    ([Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_dfl_over_ign_launch]). *)
 Example parent_trace_sigchld_installed_before_clone :
-  m_sigchld_dfl parent_trace_s07 = false
+  m_sigchld_dfl parent_trace_s07 = true
   /\ m_sigchld_dfl parent_trace_s08 = true
   /\ m_sigchld_dfl parent_trace_s35 = true.
 Proof. repeat split; vm_compute; reflexivity. Qed.

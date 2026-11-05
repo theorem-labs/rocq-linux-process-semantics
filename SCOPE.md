@@ -601,10 +601,14 @@ not apply.
   v6.18.46). `Kernel.Exit.wait4_spec` does not need this assumption: it
   answers a recorded child only while `State.m_sigchld_dfl` is set, and
   the bit is set only if every child the process has was cloned while
-  SIGCHLD was SIG_DFL (`Kernel.Signal.sigchld_install_model` sets it
-  only in a process with no recorded child). The assumption still covers
-  the multi-process core's own `wait4` arms in `Procs.v`, which do not
-  read the bit, until the fix tracked in #125 lands.
+  SIGCHLD was SIG_DFL. `State.init_model` seeds it, in a process with no
+  child, from the declared launch disposition
+  `State.ProcInput.in_sigchld_default` (field 27, `true` at `SIG_DFL`),
+  which `Run.valid_input` and every sibling launch predicate pin to
+  `SIG_DFL`; `Kernel.Signal.sigchld_install_model` sets it only in a
+  process with no recorded child. The assumption still covers the
+  multi-process core's own `wait4` arms in `Procs.v`, which do not read
+  the bit, until the fix tracked in #125 lands.
 - Nothing outside the process makes a signal pending for it, or wakes it
   as if one were: no other process sends it a signal; it is not frozen
   (`freeze_task`, `kernel/freezer.c`, for suspend and the cgroup v1

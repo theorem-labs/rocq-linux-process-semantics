@@ -218,6 +218,61 @@ Proof.
     first [vm_compute; reflexivity | check_eq].
 Qed.
 
+(** THE CASE AT THE LAUNCH'S DECLARED SIGCHLD DISPOSITION
+    ([State.in_sigchld_default], [State.ProcInput] field 27), with no
+    install.  [State.init_model] copies the declaration into the held bit
+    ([State.m_sigchld_dfl_init_model]).
+
+    AT SIG_IGN, which [execve] keeps ([flush_signal_handlers],
+    kernel/signal.c:520-534, Linux v6.18.46), Linux reaps the child at its
+    exit ([do_notify_parent], kernel/signal.c:2241-2259) and answers 0 and
+    then -ECHILD, never 4242: every call declines, the bare 0, the reap
+    with a status and with a NULL slot, and -ECHILD.  This is the present
+    value of the field that [Run.valid_input] and its siblings exclude.
+
+    THE CONTROL, AT SIG_DFL ([demo_input], the value they pin): the
+    launch cleared SA_NOCLDWAIT ([flush_signal_handlers] zeroes
+    [sa_flags]), so the child stays a zombie until reaped, and the same
+    calls are answered with no install: 0 with nothing stored, the reap
+    of 4242 with its status stored and the pid removed, and -ECHILD
+    rejected. *)
+Definition wait4_ign_launch_child : Model :=
+  with_child (Z_to_bv 64 4242)
+    (init_model [] 0 0 demo_sp demo_limit
+       (input_with_sigchld_default false (demo_input [] IEof))).
+
+Definition wait4_dfl_launch_child : Model :=
+  with_child (Z_to_bv 64 4242)
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+
+Example wait4_sigchld_ign_launch_unmodeled :
+  m_sigchld_dfl wait4_ign_launch_child = false
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_ign_launch_child
+     = CheckUnmodeled
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_ign_launch_child
+     = CheckUnmodeled
+  /\ check_syscall (wait4_in 0 (fun _ => None)) (mkEffect 4242 [] [])
+       wait4_ign_launch_child = CheckUnmodeled
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_ign_launch_child = CheckUnmodeled.
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.
+
+Example wait4_sigchld_dfl_launch_answers :
+  m_sigchld_dfl wait4_dfl_launch_child = true
+  /\ check_syscall wait4_call (mkEffect 0 [] []) wait4_dfl_launch_child
+     = CheckOk wait4_dfl_launch_child []
+  /\ check_syscall wait4_call (wait4_reap_eff 0x0000) wait4_dfl_launch_child
+     = CheckOk (with_child_pids [] wait4_dfl_launch_child) []
+  /\ check_syscall wait4_call (mkEffect (errno_ret ECHILD) [] [])
+       wait4_dfl_launch_child = CheckReject.
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    first [vm_compute; reflexivity | check_eq].
+Qed.
+
 (* =========================================================================
    THE ORDER OF THE CLONE AND THE INSTALL
 
