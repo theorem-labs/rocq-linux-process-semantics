@@ -327,7 +327,7 @@ Proof.
         rewrite (proj2 (bv_eqb_eq fid fid) eq_refl); reflexivity. }
       rewrite Htrue in Hlive. discriminate Hlive.
     + apply anon_agree_unlink_open_other.
-      * intros E; rewrite E in Eid0; rewrite (proj2 (bv_eqb_eq fid fid) eq_refl) in Eid0; discriminate.
+      * intros ->; pose proof (proj2 (bv_eqb_eq fid fid) eq_refl); congruence.
       * match type of Hunlink with FdAnon ?x ?y = FdAnon id0 af0 =>
           replace id0 with x by congruence;
           replace af0 with y by congruence
