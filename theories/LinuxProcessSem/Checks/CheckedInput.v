@@ -624,7 +624,6 @@ Record RawKernelBuild := mkRawKernelBuild {
   rkb_rseq     : bool;  (* CONFIG_RSEQ *)
   rkb_vlenb    : Z;     (* the vector unit's VLENB CSR *)
   rkb_cache    : RawCacheView;
-  rkb_cache    : RawCacheView;
   rkb_skb_head     : Z;  (* sizeof(struct sk_buff), in bytes *)
   rkb_wmem_default : Z;  (* net.core.wmem_default *)
   rkb_rmem_default : Z;  (* net.core.rmem_default *)
@@ -1390,7 +1389,6 @@ Definition raw_of_cache_view (c : CacheView) : RawCacheView :=
 Definition raw_of_kernel (kb : KernelBuild) : RawKernelBuild :=
   mkRawKernelBuild (kb_thp kb) (Z.of_N (kb_vdso kb)) (kb_aslr kb)
     (Z.of_N (kb_guard kb)) (Z.of_N (kb_rnd_bits kb)) (kb_rseq kb)
-    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
     (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
     (Z.of_N (kb_skb_head kb)) (Z.of_N (kb_wmem_default kb))
     (Z.of_N (kb_rmem_default kb)) (Z.of_N (kb_wmem_max kb))
