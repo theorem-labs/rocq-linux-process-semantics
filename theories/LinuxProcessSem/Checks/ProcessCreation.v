@@ -768,7 +768,9 @@ Qed.
     riscv64's scalar copy ([__asm_copy_from_user], arch/riscv/lib/uaccess.S)
     reads upward, so -EFAULT with the readable prefix in the ledger would
     charge exactly the pages Linux touched.  The 88-byte call has always
-    declined it ([Kernel.Sys.prlimit64_spec]'s reason), and answering it
+    declined it, under the reason [Kernel.Sys.prlimit64_spec] gives (the
+    ledger cannot state which bytes a faulting copy read), which this
+    argument shows does not hold on such a memory.  Answering it
     changes the 88-byte relation, which stays as it was
     ([clone3_spec_88_unchanged]); so every size declines it alike, and
     answering it at every size is a separate change.  The tail's word

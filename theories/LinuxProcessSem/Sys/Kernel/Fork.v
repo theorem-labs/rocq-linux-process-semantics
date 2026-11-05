@@ -191,8 +191,10 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
       outright while any such descriptor is open —
       [clone_no_shared_file_b], stated as
       [Checks.ProcessCreation.clone_open_file_unmodeled] — except a
-      [clone3] struct [clone3_einval_sz] refuses, which answers -EINVAL
-      whatever the table holds and creates no child.  An inherited
+      [clone3] whose size tests or struct copy fail ([clone3_copy]:
+      -E2BIG, -EINVAL or -EFAULT) or whose struct [clone3_einval_sz]
+      refuses (-EINVAL); these answer whatever the table holds and
+      create no child.  An inherited
       file's offset ([State.OInherited]) is handed to the child instead:
       the caller keeps the descriptor without it ([forfeit_inherited]).
     - PARENT MEMORY WRITTEN BY THE CALL ITSELF.  [CLONE_PARENT_SETTID]
