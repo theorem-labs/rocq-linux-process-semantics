@@ -14,6 +14,7 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Fs.File Fs.ReadWrite Fs.Namei.
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Readdir.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -146,13 +147,15 @@ Definition rdwr_excl_create_flags : Z := (O_RDWR + O_CREAT + O_EXCL)%Z.
 Definition is_rdwr_excl_create (fl : Z) : bool :=
   Z.eqb fl rdwr_excl_create_flags || Z.eqb fl (rdwr_excl_create_flags + O_TRUNC).
 
-(** The flag bits every modeled shape accepts and ignores.  Each is
+(** The flag bits every modeled SHAPE accepts and ignores.  Each is
     ignorable for its own reason, recorded at its own definition in
     [Uapi]; the mask exists so that every mirror of the flag test —
     [openat_resolved_spec], [Checks.Sys.Fs.Open.check_openat] and
     [Checks.Witness.Fs.Open.openat_witness] — strips exactly the same
     bits, and so that widening the set is one edit rather than a
-    search. *)
+    search.  O_CLOEXEC picks no shape, but it is not lost: [openat_spec]
+    records it as the new descriptor's close-on-exec bit
+    ([open_cloexec_b]). *)
 Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 
 (** The O_PATH words, read past [open_ignored_flags]: O_PATH alone or
@@ -1244,8 +1247,9 @@ Definition openat_urandom_spec (flags : word) (m : Model)
     three before the test, exactly as every other arm in this file does.
     So O_RDONLY|O_NONBLOCK and O_RDONLY|O_LARGEFILE reach the read arm
     and the create word reaches the create arm with any of the three
-    set.  All three are inert on a regular file — O_CLOEXEC is a
-    descriptor-table flag the model does not record, O_LARGEFILE is
+    set.  All three are inert on the shape — O_CLOEXEC is a
+    descriptor-table flag that [openat_spec] records after every shape
+    ([open_cloexec_model]), O_LARGEFILE is
     unconditional on a 64-bit ABI, and O_NONBLOCK on a regular file
     changes no answer any modeled operation gives — which is the
     argument the mask's own definition carries and the reason this arm
@@ -1411,6 +1415,27 @@ Fixpoint path_components_aux (cur : path) (p : path) : list path :=
     ("/proc/../etc").  The two predicates below refuse it. *)
 Definition path_has_dotdot (p : path) : bool :=
   existsb (fun c => path_eqb c dotdot_path) (path_components_aux [] p).
+
+(** "fd", the directory of a task's descriptor links. *)
+Definition fd_dir_name : path := [Z_to_bv 8 102; Z_to_bv 8 100].
+
+(** [p]'s last two components are "fd" and the decimal name of an
+    alias's number ([State.OAlias]) in [fds] ([Readdir.procfd_name], the
+    name the /proc/self/fd listing gives it): "/proc/self/fd/N" and its
+    other spellings ("/proc/<pid>/fd/N", "/proc/thread-self/fd/N").  A
+    name of another task's table is matched too, which can only decline
+    more. *)
+Definition proc_fd_alias_b (fds : list (word * FdEntry)) (p : path) : bool :=
+  match rev (path_components_aux [] p) with
+  | n :: d :: _ =>
+      path_eqb d fd_dir_name
+      && existsb (fun kv => match snd kv with
+                            | FdOpaque (OAlias _) =>
+                                path_eqb n (procfd_name (bv_unsigned (fst kv)))
+                            | _ => false
+                            end) fds
+  | _ => false
+  end.
 
 (** [p] names procfs: it is "/proc" or starts with "/proc/", and no
     component is "..".
@@ -1592,11 +1617,22 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     the assumption above rules the links out.
 
     A PIPE CANNOT GAIN A READER OR A WRITER HERE, although
-    "/proc/self/fd/N" can name one: see [State.pipe_end_live]. *)
+    "/proc/self/fd/N" can name one: see [State.pipe_end_live].
+
+    The alias gate matches raw components: a name whose last two are
+    "fd" and the decimal number of an alias ([State.OAlias],
+    [proc_fd_alias_b]) is declined for every flag word.  Linux follows
+    that magic link to the description the alias holds
+    ([proc_fd_link], fs/proc/fd.c, read at v6.18.44; identical at
+    v6.18.46).  Empty and "." components are not normalized by this
+    gate, so "/proc/self/fd//N" and "/proc/self/fd/N/" may still answer
+    an O_PATH open with [OProcPath].  That answer is opaque, as above;
+    no operation on it reads the aliased description's state. *)
 Definition openat_proc_spec (c : path) (flags : word) (m : Model)
     : Sys SyscallEffect :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
-  if open_path_word fl then proc_open_result m (OProcPath c)
+  if proc_fd_alias_b (m_fds m) c then unmodeled
+  else if open_path_word fl then proc_open_result m (OProcPath c)
   else if Z.eqb fl 0 && proc_sys_file_b c then proc_open_result m (OProcFile c)
   else if procfd_dir_word fl && path_eqb c proc_self_fd_path
   then proc_open_result m (OProcFdDir flags (Some (Z_to_bv 64 0)))
@@ -1777,10 +1813,45 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     (* then [getname()]: all three of its answers are real errnos. *)
     openat_body_spec i m dirfd pathp flags.
 
-Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+(** [openat]'s answer before the close-on-exec bit: the table, the file
+    system and the copy-in, every shape above. *)
+Definition openat_table_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
   record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_spec dirfd pathp flags).
+
+(** O_CLOEXEC in the open word.  [build_open_flags] strips it from
+    [f_flags] but [do_sys_openat2] hands [how->flags] to
+    [get_unused_fd_flags] (fs/open.c), whose [alloc_fd] ends with
+    [__set_open_fd(fd, fdt, flags & O_CLOEXEC)] (fs/file.c): the new
+    descriptor's bit is set exactly when the word has it, and cleared
+    otherwise, whatever the slot held before.  Read at v6.18.44;
+    identical at v6.18.46. *)
+Definition open_cloexec_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) O_CLOEXEC) 0).
+
+(** The model after an answered [openat] returned [r]: a descriptor
+    ([r] not an error) gets the bit [open_cloexec_b flags]; an errno
+    answer installed nothing and changes nothing.  The [fd_lookup] test
+    never fails on an answered success, since every success shape above
+    installs the descriptor it returns; it makes "every key names an
+    open descriptor" ([Checks.CloexecKeys.cloexec_keys_open]) hold by
+    construction rather than by a walk over the shapes. *)
+Definition open_cloexec_model (flags r : word) (m : Model) : Model :=
+  if addr_is_error_b r then m
+  else match fd_lookup (m_fds m) r with
+       | Some _ => with_cloexec (cloexec_set (m_cloexec m) r (open_cloexec_b flags)) m
+       | None => m
+       end.
+
+(** [openat]: [openat_table_spec], then the new descriptor's
+    close-on-exec bit recorded.  Every success shape above returns the
+    fresh descriptor it installed ([File.lowest_fd]), so the returned
+    word names the slot whose bit [get_unused_fd_flags] wrote. *)
+Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
+  eff <- openat_table_spec dirfd pathp flags ;;
+  modify (open_cloexec_model flags (eff_ret eff)) ;;
+  pure eff.
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
@@ -1813,12 +1884,21 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     no end on the other side ([State.seq_peer] is [None]) and answers end
     of file ([Net.Socket.seqpacket_recvmsg]).  The end holds exactly one
     descriptor, because [dup] and [clone] decline the kind, so this close
-    is that last reference. *)
+    is that last reference.
+
+    The descriptor's close-on-exec key is forgotten
+    ([State.cloexec_forget]): the slot is free, and whatever installs a
+    descriptor there next writes its own bit ([alloc_fd] and [do_dup2]
+    both end in [__set_open_fd], fs/file.c, read at v6.18.44; identical
+    at v6.18.46). *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
-  | Some _ => set_fds (fd_remove (m_fds m) fd) ;; ret_only (Z_to_bv 64 0)
+  | Some _ =>
+      modify (fun m' => with_cloexec (cloexec_forget (m_cloexec m) fd)
+                          (with_fds (fd_remove (m_fds m) fd) m')) ;;
+      ret_only (Z_to_bv 64 0)
   end.
 
 (** The region a GROWING [ftruncate] must zero-fill is one the model can

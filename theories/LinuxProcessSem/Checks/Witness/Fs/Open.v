@@ -27,10 +27,12 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m  (* empty pathname *)
            else match proc_open_target (m_fds m) dirfd p with
            | Some c =>
-               (* a procfs name: the errno alternative ([Syscall.errno_any]
+               (* a procfs name: the decline through an alias's descriptor
+                  link, then the errno alternative ([Syscall.errno_any]
                   admits ENOMEM) on the three shapes [Open.openat_proc_spec]
                   answers, the decline on the rest *)
-               if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               if proc_fd_alias_b (m_fds m) c then Unmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then ret_outcome (errno_ret ENOMEM) m
                else if Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                        && proc_sys_file_b c
@@ -184,11 +186,20 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            end
        end.
 
-Definition openat_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
-    : outcome SyscallEffect :=
+Definition openat_table_witness (dirfd pathp flags : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
   outcome_copyins
     [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_witness dirfd pathp flags i m).
+
+(** [openat_table_witness], then [Open.openat_spec]'s close-on-exec step
+    on whatever it answered. *)
+Definition openat_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
+    : outcome SyscallEffect :=
+  match openat_table_witness dirfd pathp flags i m with
+  | Ok eff m' evs => Ok eff (open_cloexec_model flags (eff_ret eff) m') evs
+  | Unmodeled => Unmodeled
+  end.
 
 Local Lemma openat_core_witness_ok : forall dirfd pathp flags i m,
   openat_core_spec dirfd pathp flags i m
@@ -211,6 +222,7 @@ Proof.
     { apply pure_ok. }
     destruct (proc_open_target (m_fds m) dirfd p) as [c|] eqn:Hpt.
     { unfold openat_proc_spec, proc_open_result. cbv zeta.
+      destruct (proc_fd_alias_b (m_fds m) c); [apply unmodeled_intro|].
       destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
@@ -385,13 +397,26 @@ Proof.
                  apply unmodeled_intro.
 Qed.
 
-Lemma openat_witness_ok : forall dirfd pathp flags i m,
-  openat_spec dirfd pathp flags i m (openat_witness dirfd pathp flags i m).
+Lemma openat_table_witness_ok : forall dirfd pathp flags i m,
+  openat_table_spec dirfd pathp flags i m (openat_table_witness dirfd pathp flags i m).
 Proof.
-  intros. unfold openat_spec, openat_witness.
+  intros. unfold openat_table_spec, openat_table_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   apply record_copyins_outcome.
   apply openat_core_witness_ok.
+Qed.
+
+Lemma openat_witness_ok : forall dirfd pathp flags i m,
+  openat_spec dirfd pathp flags i m (openat_witness dirfd pathp flags i m).
+Proof.
+  intros. pose proof (openat_table_witness_ok dirfd pathp flags i m) as Ht.
+  unfold openat_witness. revert Ht.
+  destruct (openat_table_witness dirfd pathp flags i m) as [eff m' evs|];
+    intro Ht; unfold openat_spec.
+  - eapply witness_bind_ok_eq; [exact Ht| |].
+    + eapply bind_step; [apply modify_ok|]. apply pure_ok.
+    + rewrite app_nil_r. reflexivity.
+  - apply bind_unmodeled1. exact Ht.
 Qed.
 
 (* =========================================================================
@@ -401,7 +426,9 @@ Qed.
 Definition close_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
-  | Some _ => ret_outcome (Z_to_bv 64 0) (with_fds (fd_remove (m_fds m) fd) m)
+  | Some _ => ret_outcome (Z_to_bv 64 0)
+                (with_cloexec (cloexec_forget (m_cloexec m) fd)
+                   (with_fds (fd_remove (m_fds m) fd) m))
   end.
 
 Lemma close_witness_ok : forall fd i m, close_spec fd i m (close_witness fd m).

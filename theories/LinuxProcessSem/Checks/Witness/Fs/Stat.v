@@ -419,7 +419,7 @@ Definition fstat_opaque_witness (o : OpaqueFd) (statbuf : word)
   match o with
   | OProcFdDir _ _ => fstat_procfd_dir_witness statbuf i m
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => Unmodeled
+  | OInherited _ | OAlias _ => Unmodeled
   end.
 
 Lemma fstat_opaque_witness_ok : forall o statbuf i m,
@@ -429,7 +429,7 @@ Proof.
   destruct o; cbv iota;
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro | apply fstat_procfd_dir_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a

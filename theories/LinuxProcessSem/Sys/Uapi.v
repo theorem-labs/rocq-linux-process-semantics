@@ -37,7 +37,8 @@ Definition O_TRUNC   : Z := 512%Z.
 Definition O_CLOEXEC : Z := 524288%Z.
 (** musl's syscall layer ORs O_LARGEFILE into EVERY open it issues
     (src/internal/syscall.h); it is meaningless on a 64-bit ABI, so it
-    is accepted and ignored like O_CLOEXEC. *)
+    is accepted and ignored.  (O_CLOEXEC is accepted too, and recorded
+    as the new descriptor's close-on-exec bit: [Open.open_cloexec_b].) *)
 Definition O_LARGEFILE : Z := 32768%Z.
 
 (** O_NONBLOCK: 2048.  riscv64 takes the asm-generic ABI
@@ -46,7 +47,7 @@ Definition O_LARGEFILE : Z := 32768%Z.
     riscv supplies no asm/fcntl.h of its own to override it — checked at
     v5.10 and v6.17, and only meaningful from v4.15, which is where
     arch/riscv first exists.  Accepted and IGNORED like
-    O_CLOEXEC and O_LARGEFILE, but for a reason that is a property of
+    O_LARGEFILE, but for a reason that is a property of
     this model's FILE SYSTEM rather than of the flag, so it is spelled
     out here and has to be re-checked whenever that file system grows.
     [Open.open_ignored_flags] is the mask that carries it.
