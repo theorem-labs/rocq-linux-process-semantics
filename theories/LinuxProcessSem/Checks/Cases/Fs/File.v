@@ -27,6 +27,8 @@ Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import
+  Fs.Stat.
 
 (** The three channels, a read-only file "f" = "hi" at fd 3 positioned
     one byte in, and the directory fd at 4 — one fd of every kind, so
@@ -47,7 +49,8 @@ Definition dup_model : Model :=
 Example dup_installs_a_copy_at_the_lowest_free_fd :
   check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 6 [] []) dup_model
      = CheckReject.
@@ -58,7 +61,8 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 Example dup_of_a_directory_fd_duplicates :
   check_syscall (mkInput 23 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 FdDir) dup_model) [].
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 FdDir) dup_model)) [].
 Proof. check_eq. Qed.
 
 (** The offset-sharing gap, stated as the model's answer rather than as
@@ -80,21 +84,23 @@ Proof. intro eff. vm_compute. reflexivity. Qed.
 Example dup3_replaces_the_target_and_returns_it :
   check_syscall (mkInput 24 [0; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 1 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(1, false)]
+               (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 5 [] []) dup_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
-(** O_CLOEXEC is accepted and leaves the same state as flags 0 — nothing
-    in [Specs.modeled_sysnos] can observe a close-on-exec bit's value
-    (F_GETFD admits both answers; see [File.dup3_spec]).  Any OTHER bit
-    is [ksys_dup3]'s -EINVAL, so claiming the successful return there is
+(** O_CLOEXEC is accepted, and leaves the same table as flags 0 with the
+    new descriptor's close-on-exec bit SET where flags 0 clears it
+    ([File.dup3_spec]: [do_dup2]'s [__set_open_fd]).  Any OTHER bit is
+    [ksys_dup3]'s -EINVAL, so claiming the successful return there is
     rejected. *)
 Example dup3_ignores_o_cloexec_but_not_another_bit :
   check_syscall (mkInput 24 [0; 1; 524288; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 1 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(1, true)]
+               (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 1; 4; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 1 [] []) dup_model
      = CheckReject.
@@ -123,7 +129,8 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 Example dup3_takes_a_free_newfd_below_the_embedded_table :
   check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 7 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(7, false)]
+               (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 5 [] []) dup_model
      = CheckReject.
@@ -159,7 +166,8 @@ Definition dup_model_nofile4 : Model := with_nofile (Z_to_bv 64 4) dup_model.
 Example dup3_free_newfd_is_decided_by_the_run_s_limit :
   check_syscall (mkInput 24 [0; 5; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model) []
+  = CheckOk (with_cloexec [(5, false)]
+               (with_fds (fd_insert (m_fds dup_model) 5 (FdChannel 0)) dup_model)) []
   /\ check_syscall (mkInput 24 [0; 5; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) dup_model_nofile4
      = CheckOk dup_model_nofile4 []
@@ -178,8 +186,9 @@ Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
 Example dup3_limit_beats_an_fd_the_process_holds :
   check_syscall (mkInput 24 [0; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 3 [] []) dup_model_nofile4
-  = CheckOk (with_fds (fd_insert (m_fds dup_model_nofile4) 3 (FdChannel 0))
-               dup_model_nofile4) []
+  = CheckOk (with_cloexec [(3, false)]
+               (with_fds (fd_insert (m_fds dup_model_nofile4) 3 (FdChannel 0))
+                  dup_model_nofile4)) []
   /\ check_syscall (mkInput 24 [0; 4; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) dup_model_nofile4
      = CheckOk dup_model_nofile4 []
@@ -196,7 +205,8 @@ Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
 Example dup3_free_newfd_just_below_the_embedded_table :
   check_syscall (mkInput 24 [0; 63; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 63 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 63 (FdChannel 0)) dup_model) [].
+  = CheckOk (with_cloexec [(63, false)]
+               (with_fds (fd_insert (m_fds dup_model) 63 (FdChannel 0)) dup_model)) [].
 Proof. check_eq. Qed.
 
 Lemma dup3_declines_a_free_newfd_at_the_embedded_table : forall eff,
@@ -207,8 +217,9 @@ Proof. intro eff. vm_compute. reflexivity. Qed.
 
 (** The RLIMIT_NOFILE gate, and its PLACEMENT.  [ksys_dup3] tests
     [newfd >= rlimit(RLIMIT_NOFILE)] before it looks [oldfd] up, so the
-    answer is -EBADF even for an [oldfd] whose kind the model refuses to
-    duplicate — 3 is [FdFile], which [File.dup_modeled_entry] rejects.
+    answer is -EBADF even for an [oldfd] whose kind the model would
+    decline to put at 2000 — 3 is [FdFile], which [File.dup3_spec]
+    moves only onto a free [newfd] below [Uapi.NR_OPEN_DEFAULT].
     Reorder the spec to test the kind first and the second conjunct
     turns into [CheckUnmodeled].  The order holds for EVERY claimed
     return and needs no run.  2000 is above
@@ -251,7 +262,8 @@ Example dup3_declines_procfd_dir_and_signalfd :
   (* the control *)
   /\ check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 7 [] []) dup_model
-     = CheckOk (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model) [].
+     = CheckOk (with_cloexec [(7, false)]
+                  (with_fds (fd_insert (m_fds dup_model) 7 (FdChannel 0)) dup_model)) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
 (* -------------------------------------------------------------------------
@@ -353,14 +365,15 @@ Example ns_file_declines_every_kind_dependent_call :
      = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
 
-(** ANSWERED on fd 3: fcntl(F_SETFD) is 0, fcntl(F_GETFD) is 0 or
-    FD_CLOEXEC, and close is 0 and removes the entry.  THE CONTROLS,
-    which the model before this kind answered the same way: the same
-    calls on fd 4, a closed fd's -EBADF for the declined ones, and dup of
-    the directory at fd 5. *)
+(** ANSWERED on fd 3: fcntl(F_SETFD) is 0 and records the bit,
+    fcntl(F_GETFD) is 0 or FD_CLOEXEC (no bit is known in [ns_model]),
+    and close is 0 and removes the entry.  THE CONTROLS, which the model
+    before this kind answered the same way: the same calls on fd 4, a
+    closed fd's -EBADF for the declined ones, and dup of the directory at
+    fd 5. *)
 Example ns_file_answers_the_kind_blind_calls :
   check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
-  = CheckOk ns_model []
+  = CheckOk (with_cloexec [(3, true)] ns_model) []
   /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect 0 [] []) ns_model
      = CheckOk ns_model []
   /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) ns_model
@@ -369,7 +382,7 @@ Example ns_file_answers_the_kind_blind_calls :
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
   (* the controls *)
   /\ check_syscall (fd_call 25 4 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
-     = CheckOk ns_model []
+     = CheckOk (with_cloexec [(4, true)] ns_model) []
   /\ check_syscall (fd_call 57 4 0 0) (mkEffect 0 [] []) ns_model
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 4) ns_model) []
   /\ check_syscall (fd_call 63 9 0x10000 16) (mkEffect (errno_ret EBADF) [] []) ns_model
@@ -377,7 +390,8 @@ Example ns_file_answers_the_kind_blind_calls :
   /\ check_syscall (fd_call 80 9 0x10000 0) (mkEffect (errno_ret EBADF) [] []) ns_model
      = CheckOk ns_model []
   /\ check_syscall (fd_call 23 5 0 0) (mkEffect 6 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 6 FdDir) ns_model) [].
+     = CheckOk (with_cloexec [(6, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 6 FdDir) ns_model)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** A LOCK IT MAY HOLD.  The file behind handle 7 may be "f" itself, so
@@ -402,12 +416,14 @@ Example ns_file_close_range_and_dup3_onto_it :
   check_syscall (close_range_in 3 3 0) (mkEffect 0 [] []) ns_model
   = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
   /\ check_syscall (fd_call 24 0 3 0) (mkEffect 3 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 3 (FdChannel 0)) ns_model) []
+     = CheckOk (with_cloexec [(3, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 3 (FdChannel 0)) ns_model)) []
   (* the controls *)
   /\ check_syscall (close_range_in 5 5 0) (mkEffect 0 [] []) ns_model
      = CheckOk (with_fds (fd_remove (m_fds ns_model) 5) ns_model) []
   /\ check_syscall (fd_call 24 0 5 0) (mkEffect 5 [] []) ns_model
-     = CheckOk (with_fds (fd_insert (m_fds ns_model) 5 (FdChannel 0)) ns_model) [].
+     = CheckOk (with_cloexec [(5, false)]
+                  (with_fds (fd_insert (m_fds ns_model) 5 (FdChannel 0)) ns_model)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** AN UNLINK IT MAY WATCH.  The file behind handle 7 may be the one
@@ -436,6 +452,384 @@ Example ns_file_blocks_unlinkat :
 Proof. split; vm_compute; reflexivity. Qed.
 
 (* =========================================================================
+   dup3 MOVES a regular file ([File.dup3_moves_entry], [State.OAlias])
+
+   Before the move every [dup3] of a regular file declined
+   ([File.dup_modeled_entry]).  Now [newfd] takes the entry, offset and
+   all, and [oldfd] holds an alias of it, which declines every call but
+   close, close_range and F_SETFD/F_GETFD.  Each example carries a
+   CONTROL that the text before the move answers alike: a call on a
+   table that holds no alias.
+   ========================================================================= *)
+
+(** [dup_model] after the launcher's [dup3(3, 0, 0)]: fd 0 holds the
+    file "f" one byte in, fd 3 the alias of fd 0, and fd 0's
+    close-on-exec bit is known clear. *)
+Definition moved_model : Model :=
+  with_cloexec [(0, false)]
+    (with_fds (fd_insert (fd_insert (m_fds dup_model) 0 (FdFile [102] 1)) 3
+                 (FdOpaque (OAlias 0))) dup_model).
+
+(** ...and after the [close_range(3, ~0U, 0)] that follows: the alias
+    and the directory at 4 are gone, and fd 0 keeps the file and its
+    bit. *)
+Definition ranged_model : Model :=
+  with_fds [(0, FdFile [102] 1); (1, FdChannel 1); (2, FdChannel 2)] moved_model.
+
+(** [read(fd, 4096, 1)] into one writable byte. *)
+Definition read1_in (fd : word) : SyscallInput :=
+  mkInput 63 [fd; 4096; 1; 0; 0; 0] (fun _ => None)
+    (fun a => if bv_eqb a 4096 then Some 0 else None).
+
+(** THE LAUNCHER'S SEQUENCE.  fd 3 stands for the read-only file a
+    launcher holds as its input, at any offset (here 1).
+    [dup3(3, 0, 0)] answers 0 and moves the file to fd 0;
+    [close_range(3, ~0U, 0)] answers 0, closing the alias and keeping
+    its partner; and [read(0, buf, 1)] answers "i", the byte at the
+    offset the file had at fd 3, and moves that offset to 2.  "h", the
+    byte at offset 0, is refused.  THE CONTROL: [dup3(0, 1, 0)] of the
+    channel at 0. *)
+Example dup3_moves_the_launcher_s_input_file :
+  check_syscall (fd_call 24 3 0 0) (mkEffect 0 [] []) dup_model
+  = CheckOk moved_model []
+  /\ check_syscall (close_range_in 3 4294967295 0) (mkEffect 0 [] []) moved_model
+     = CheckOk ranged_model []
+  /\ match check_syscall (read1_in 0) (mkEffect 1 [(4096, [105])] []) ranged_model with
+     | CheckOk m [] => fd_lookup (m_fds m) 0 = Some (FdFile [102] 2)
+     | _ => False
+     end
+  /\ check_syscall (read1_in 0) (mkEffect 1 [(4096, [104])] []) ranged_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall (fd_call 24 0 1 0) (mkEffect 1 [] []) dup_model
+     = CheckOk (with_cloexec [(1, false)]
+                  (with_fds (fd_insert (m_fds dup_model) 1 (FdChannel 0)) dup_model)) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** Path bytes "f" at 8192, NUL-terminated. *)
+Definition f_path_mem : word -> option byte :=
+  fun a => if bv_eqb a 8192 then Some 102
+           else if bv_eqb a 8193 then Some 0
+           else None.
+
+Definition open_f_in (flags : Z) : SyscallInput :=
+  mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 flags; 0; 0; 0] f_path_mem (fun _ => None).
+
+(** THE KEY SETUP.  [openat] of the read-only file "f" with O_CLOEXEC
+    answers the lowest free fd, 5, with its bit known set;
+    [dup3(5, 7, 0)] moves the file to the key number 7 with its bit
+    clear and leaves the alias at 5, whose key stays set;
+    [F_SETFD(7, 0)] answers 0; and [F_GETFD(7)] answers 0 and nothing
+    else.  THE CONTROL: the same [F_SETFD] and [F_GETFD] on fd 5 straight
+    after the [openat]. *)
+Example dup3_moves_a_key_whose_bit_reads_clear :
+  match check_syscall (open_f_in O_CLOEXEC)
+          (with_copyins [(8192, 2%nat)] (mkEffect 5 [] [])) dup_model with
+  | CheckOk m1 [] =>
+      fd_lookup (m_fds m1) 5 = Some (FdFile [102] 0)
+      /\ cloexec_lookup (m_cloexec m1) 5 = Some true
+      /\ match check_syscall (fd_call 24 5 7 0) (mkEffect 7 [] []) m1 with
+         | CheckOk m2 [] =>
+             fd_lookup (m_fds m2) 7 = Some (FdFile [102] 0)
+             /\ fd_lookup (m_fds m2) 5 = Some (FdOpaque (OAlias 7))
+             /\ cloexec_lookup (m_cloexec m2) 7 = Some false
+             /\ cloexec_lookup (m_cloexec m2) 5 = Some true
+             /\ match check_syscall (fd_call 25 7 F_SETFD 0) (mkEffect 0 [] []) m2 with
+                | CheckOk m3 [] =>
+                    check_syscall (fd_call 25 7 F_GETFD 0) (mkEffect 0 [] []) m3
+                    = CheckOk m3 []
+                    /\ check_syscall (fd_call 25 7 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) m3
+                       = CheckReject
+                | _ => False
+                end
+         | _ => False
+         end
+      (* the control *)
+      /\ match check_syscall (fd_call 25 5 F_SETFD 0) (mkEffect 0 [] []) m1 with
+         | CheckOk m3 [] =>
+             check_syscall (fd_call 25 5 F_GETFD 0) (mkEffect 0 [] []) m3
+             = CheckOk m3 []
+             /\ check_syscall (fd_call 25 5 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) m3
+                = CheckReject
+         | _ => False
+         end
+  | _ => False
+  end.
+Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
+
+(** THE PARTNER MAY GO FIRST, and the alias then DANGLES.  On
+    [moved_model], [close(0)] answers 0 and leaves the alias at 3;
+    [close_range(0, 2, 0)] answers 0 and leaves it too; and [dup3(1, 0,
+    0)] onto the partner answers 1 with the channel copied to 0, the
+    alias still naming 0.  The dangling alias then closes as any
+    descriptor does.  [dup3] FROM the alias declines.  THE CONTROL:
+    [close(0)] on [dup_model], which holds no alias, answers alike. *)
+Example dup3_partner_close_leaves_the_alias_dangling :
+  let m1 := with_cloexec [] (with_fds (fd_remove (m_fds moved_model) 0) moved_model) in
+  check_syscall (fd_call 57 0 0 0) (mkEffect 0 [] []) moved_model = CheckOk m1 []
+  /\ fd_lookup (m_fds m1) 3 = Some (FdOpaque (OAlias 0))
+  /\ check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) m1
+     = CheckOk (with_fds (fd_remove (m_fds m1) 3) m1) []
+  /\ (match check_syscall (close_range_in 0 2 0) (mkEffect 0 [] []) moved_model with
+      | CheckOk m2 [] => fd_lookup (m_fds m2) 3 = Some (FdOpaque (OAlias 0))
+      | _ => False end)
+  /\ (match check_syscall (fd_call 24 1 0 0) (mkEffect 0 [] []) moved_model with
+      | CheckOk m2 [] => fd_lookup (m_fds m2) 0 = Some (FdChannel 1)
+                         /\ fd_lookup (m_fds m2) 3 = Some (FdOpaque (OAlias 0))
+      | _ => False end)
+  /\ check_syscall (fd_call 24 3 7 0) (mkEffect 7 [] []) moved_model = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (fd_call 57 0 0 0) (mkEffect 0 [] []) dup_model
+     = CheckOk (with_fds (fd_remove (m_fds dup_model) 0) dup_model) [].
+Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
+
+(** THE ALIAS DECLINES what would read or move its description: read,
+    lseek and fstat, whatever errno the kernel claims.  THE CONTROL: the
+    same calls on the partner, fd 0, are answered. *)
+Example dup3_alias_declines_the_description :
+  check_syscall (read1_in 3) (mkEffect (errno_ret EBADF) [] []) moved_model
+  = CheckUnmodeled
+  /\ check_syscall (fd_call 62 3 0 0) (mkEffect 0 [] []) moved_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 80 3 0x10000 0) (mkEffect (errno_ret EBADF) [] []) moved_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (fd_call 62 0 0 0) (mkEffect 0 [] []) moved_model
+     = CheckOk (with_fds (fd_insert (m_fds moved_model) 0 (FdFile [102] 0)) moved_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** CLOSING THE ALIAS answers 0, drops its entry and touches nothing
+    else, after which [close(0)] answers; [close_range(0, 3, 0)], which
+    closes partner and alias together, answers 0; [F_SETFD] on the alias
+    records its bit, and [F_GETFD] on it, whose bit is unknown, admits
+    both answers.  THE CONTROLS, answered alike before the move and
+    after: [close(0)] and [close_range(0, 2, 0)] on [dup_model]. *)
+Example dup3_alias_close_frees_the_partner :
+  check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) moved_model
+  = CheckOk (with_fds (fd_remove (m_fds moved_model) 3) moved_model) []
+  /\ check_syscall (fd_call 57 0 0 0) (mkEffect 0 [] [])
+       (with_fds (fd_remove (m_fds moved_model) 3) moved_model)
+     = CheckOk (with_cloexec []
+                  (with_fds (fd_remove (fd_remove (m_fds moved_model) 3) 0) moved_model)) []
+  /\ check_syscall (close_range_in 0 3 0) (mkEffect 0 [] []) moved_model
+     = CheckOk (with_cloexec [] (with_fds [(4, FdDir)] moved_model)) []
+  /\ check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) moved_model
+     = CheckOk (with_cloexec [(3, true); (0, false)] moved_model) []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect 0 [] []) moved_model
+     = CheckOk moved_model []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) moved_model
+     = CheckOk moved_model []
+  (* the controls *)
+  /\ check_syscall (fd_call 57 0 0 0) (mkEffect 0 [] []) dup_model
+     = CheckOk (with_fds (fd_remove (m_fds dup_model) 0) dup_model) []
+  /\ check_syscall (close_range_in 0 2 0) (mkEffect 0 [] []) dup_model
+     = CheckOk (with_fds [(3, FdFile [102] 1); (4, FdDir)] dup_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+Definition clone_sigchld_in : SyscallInput :=
+  mkInput 220 [Z_to_bv 64 SIGCHLD; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** CLONE DECLINES WHILE AN ALIAS IS OPEN ([Kernel.Fork.clone_no_shared_file_b];
+    [clone3] shares the gate): the child would hold a third descriptor
+    of the moved file's description.  On [moved_model] the partner's
+    regular file declines the clone as well, so the gate is also shown
+    on a table holding the alias and a channel alone.  THE CONTROL: the
+    same clone on the channel alone answers a pid. *)
+Example clone_declines_with_an_alias :
+  check_syscall clone_sigchld_in (mkEffect 4242 [] []) moved_model = CheckUnmodeled
+  /\ clone_no_shared_file_b [(0, FdChannel 0); (3, FdOpaque (OAlias 0))] = false
+  /\ check_syscall clone_sigchld_in (mkEffect 4242 [] [])
+       (with_fds [(0, FdChannel 0); (3, FdOpaque (OAlias 0))] dup_model)
+     = CheckUnmodeled
+  (* the control *)
+  /\ clone_no_shared_file_b [(0, FdChannel 0)] = true
+  /\ check_syscall clone_sigchld_in (mkEffect 4242 [] [])
+       (with_fds [(0, FdChannel 0)] dup_model)
+     = CheckOk (with_child (Z_to_bv 64 4242) (with_fds [(0, FdChannel 0)] dup_model)) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** FLOCK DECLINES WHILE AN ALIAS EXISTS ([Locks.path_openers] counts
+    every alias as an opener of every path): a description an alias
+    keeps alive may hold a lock no entry shows.  THE CONTROL, answered
+    alike before the move and after: the same LOCK_EX on [dup_model]'s
+    sole opener of "f". *)
+Example flock_declines_with_an_alias :
+  check_syscall (fd_call 32 0 2 0) (mkEffect 0 [] []) moved_model = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (fd_call 32 3 2 0) (mkEffect 0 [] []) dup_model
+     = CheckOk dup_model [].
+Proof. split; solve [ vm_compute; reflexivity | check_eq ]. Qed.
+
+(** THE /proc/self/fd LISTING NAMES THE ALIAS: [Readdir.procfd_plan]
+    lists every key of the table, the alias at 3 included, as a
+    descriptor entry, whose record [Readdir.dirent64_rec_ok] types
+    [DT_LNK] (or [DT_UNKNOWN] with [d_ino] 1) whatever the kind.  THE
+    CONTROL: the same entry for the file at 3 of [dup_model]. *)
+Example procfd_listing_names_the_alias :
+  In (mkProcfdEnt (procfd_name 3) 5 true) (procfd_plan (m_fds moved_model) 0)
+  (* the control *)
+  /\ In (mkProcfdEnt (procfd_name 3) 5 true) (procfd_plan (m_fds dup_model) 0).
+Proof.
+  split; vm_compute; repeat (first [left; solve [ reflexivity | check_eq ] | right]).
+Qed.
+
+(** "/proc/self/fd/3" and "/proc/self/fd/4". *)
+Definition s_self_fd3 : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 51].
+Definition s_self_fd4 : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 52].
+
+Definition proc_fd_open_in (bs : list byte) : SyscallInput :=
+  mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 0x208000; 0; 0; 0]
+    (bytes_at 8192 (bs ++ [0])) (fun _ => None).
+
+(** NO OPEN THROUGH THE ALIAS'S LINK, AND NO READLINK OF IT: O_PATH on
+    "/proc/self/fd/3", where 3 is the alias, declines whatever it
+    answers ([Open.proc_fd_alias_b]), and so does [readlinkat] of the
+    name ([Stat.readlinkat_spec] declines every procfs name).  THE
+    CONTROLS, answered alike before the move and after: the same O_PATH
+    open of "/proc/self/fd/4", the directory, and [readlinkat] of "f",
+    a regular file, -EINVAL. *)
+Example alias_link_declines_open_and_readlink :
+  check_syscall (proc_fd_open_in s_self_fd3)
+    (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) moved_model
+  = CheckUnmodeled
+  /\ check_syscall (rl_in s_self_fd3 64)
+       (with_copyins [(0x2000, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) moved_model
+     = CheckUnmodeled
+  (* the controls *)
+  /\ check_syscall (proc_fd_open_in s_self_fd4)
+       (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) moved_model
+     = CheckOk moved_model []
+  /\ check_syscall (rl_in [102] 64)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] [])) moved_model
+     = CheckOk moved_model [].
+Proof. repeat split; solve [ vm_compute; reflexivity | check_eq ]. Qed.
+
+(** THE ALIAS HAS ITS OWN CLOSE-ON-EXEC BIT: [F_SETFD] on the alias
+    writes the alias's key and not its partner's, and [F_GETFD] on each
+    then answers its own.  THE CONTROL: [F_GETFD] on the partner before
+    the [F_SETFD], answered alike before and after. *)
+Example alias_close_on_exec_bit_is_its_own :
+  let m1 := with_cloexec [(3, true); (0, false)] moved_model in
+  check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) moved_model
+  = CheckOk m1 []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) m1 = CheckOk m1 []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect 0 [] []) m1 = CheckReject
+  /\ check_syscall (fd_call 25 0 F_GETFD 0) (mkEffect 0 [] []) m1 = CheckOk m1 []
+  /\ check_syscall (fd_call 25 0 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) m1 = CheckReject
+  (* the control *)
+  /\ check_syscall (fd_call 25 0 F_GETFD 0) (mkEffect 0 [] []) moved_model
+     = CheckOk moved_model [].
+Proof. repeat split; solve [ vm_compute; reflexivity | check_eq ]. Qed.
+
+(** AN UNLINK UNDER A DANGLING ALIAS: once the partner of the alias at 3
+    closed, nothing in the table but the alias holds "f", and [unlinkat]
+    of it is answered and drops the key ([Namei.fd_names_path] says why
+    no answer of the alias can tell that from Linux keeping the inode
+    alive).  THE CONTROL: while the partner lives the same unlink
+    declines, as it does on [dup_model], whose fd 3 reads "f". *)
+Definition unlink_f_in : SyscallInput :=
+  mkInput 35 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (bytes_at 0x2000 [102; 0]) (fun _ => None).
+
+Example unlink_under_a_dangling_alias :
+  let m1 := with_cloexec [] (with_fds (fd_remove (m_fds moved_model) 0) moved_model) in
+  (match check_syscall unlink_f_in (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] [])) m1 with
+   | CheckOk m2 [] => fs_lookup (m_fs m2) [102] = None
+                      /\ fd_lookup (m_fds m2) 3 = Some (FdOpaque (OAlias 0))
+   | _ => False end)
+  (* the controls *)
+  /\ check_syscall unlink_f_in (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] [])) moved_model
+     = CheckUnmodeled
+  /\ check_syscall unlink_f_in (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] [])) dup_model
+     = CheckUnmodeled.
+Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
+
+(* =========================================================================
+   The harness's descriptor setup and the launcher's hand-off
+
+   [hand(file, fd)] is [o = openat(AT_FDCWD, file, O_RDONLY|O_CLOEXEC)],
+   then [fcntl(o, F_SETFD, 0)] if [o = fd], else [dup3(o, fd, 0)] and
+   [close(o)].  The harness hands the input file first, to [stdin_fd] =
+   3, which [openat] gives at once, then [fstat]s it, then hands a key
+   to 7 ([openat] gives 4).  The launcher then [dup3(stdin_fd, 0, 0)]s
+   and [close_range(3, ~0U, 0)]s.  At the end [fstat(0)] is answered from
+   the file and [fcntl(stdin_fd, F_GETFD)] is -EBADF.
+   ========================================================================= *)
+
+(** "f" = "hi" is the input, "k" = "x" the key. *)
+Definition hand_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input [([102], [104; 105]); ([107], [120])] IEof).
+
+Definition hand_open_in (name : byte) : SyscallInput :=
+  mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 O_CLOEXEC; 0; 0; 0]
+    (bytes_at 8192 [name; 0]) (fun _ => None).
+
+Definition hand_fstat_in (fd : word) : SyscallInput :=
+  mkInput 80 [fd; 4096; 0; 0; 0; 0] (fun _ => None) stat_out.
+
+(** The truthful [struct stat] of the two-byte file "f". *)
+Definition f_stat : list byte := stat_of 4711 S_IFREG 2 8 1700000000.
+
+Example harness_setup_and_launcher_hand_off :
+  match check_syscall (hand_open_in 102)
+          (with_copyins [(8192, 2%nat)] (mkEffect 3 [] [])) hand_model with
+  | CheckOk m1 [] =>
+    match check_syscall (fd_call 25 3 F_SETFD 0) (mkEffect 0 [] []) m1 with
+    | CheckOk m2 [] =>
+      match check_syscall (hand_fstat_in 3) (mkEffect 0 [(4096, f_stat)] []) m2 with
+      | CheckOk m3 [] =>
+        match check_syscall (hand_open_in 107)
+                (with_copyins [(8192, 2%nat)] (mkEffect 4 [] [])) m3 with
+        | CheckOk m4 [] =>
+          match check_syscall (fd_call 24 4 7 0) (mkEffect 7 [] []) m4 with
+          | CheckOk m5 [] =>
+            match check_syscall (fd_call 57 4 0 0) (mkEffect 0 [] []) m5 with
+            | CheckOk m6 [] =>
+              (* the launcher *)
+              match check_syscall (fd_call 24 3 0 0) (mkEffect 0 [] []) m6 with
+              | CheckOk m7 [] =>
+                match check_syscall (close_range_in 3 4294967295 0) (mkEffect 0 [] []) m7 with
+                | CheckOk m8 [] =>
+                    (* the harness's checks *)
+                    (match check_syscall (hand_fstat_in 0)
+                             (mkEffect 0 [(4096, f_stat)] []) m8 with
+                     | CheckOk _ [] => True
+                     | _ => False end)
+                    /\ check_syscall (hand_fstat_in 0)
+                         (mkEffect 0 [(4096, stat_of 4711 S_IFREG 3 8 1700000000)] []) m8
+                       = CheckReject
+                    /\ check_syscall (fd_call 25 3 F_GETFD 0)
+                         (mkEffect (errno_ret EBADF) [] []) m8
+                       = CheckOk m8 []
+                    /\ fd_lookup (m_fds m8) 0 = Some (FdFile [102] 0)
+                    /\ cloexec_lookup (m_cloexec m8) 0 = Some false
+                    (* the key's own checks, before the launcher closes it *)
+                    /\ fd_lookup (m_fds m6) 7 = Some (FdFile [107] 0)
+                    /\ fd_lookup (m_fds m6) 4 = None
+                    /\ check_syscall (fd_call 25 7 F_GETFD 0) (mkEffect 0 [] []) m6
+                       = CheckOk m6 []
+                | _ => False end
+              | _ => False end
+            | _ => False end
+          | _ => False end
+        | _ => False end
+      | _ => False end
+    | _ => False end
+  | _ => False end.
+Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
+
+(** THE CONTROL: the same hand-off of a CHANNEL, which the text before
+    the move answered alike: [dup3(1, 0, 0)] copies the channel and
+    leaves fd 1 as it was. *)
+Example hand_off_of_a_channel_copies :
+  check_syscall (fd_call 24 1 0 0) (mkEffect 0 [] []) hand_model
+  = CheckOk (with_cloexec (cloexec_set (m_cloexec hand_model) 0 false)
+               (with_fds (fd_insert (m_fds hand_model) 0 (FdChannel 1)) hand_model)) [].
+Proof. check_eq. Qed.
+
+(* =========================================================================
    [State.FdSeqpacket]: one end of an AF_UNIX SOCK_SEQPACKET pair.  As for
    [State.ONsFile] above, these examples span the descriptor-level calls,
    because what they pin is the KIND's rule: an end answers what a socket
@@ -462,7 +856,8 @@ Example seqpacket_end_dup_declines :
   /\ check_syscall (fd_call 23 4 0 0) (mkEffect 6 [] []) seqp_model = CheckUnmodeled
   /\ check_syscall (fd_call 24 3 7 0) (mkEffect 7 [] []) seqp_model = CheckUnmodeled
   /\ check_syscall (fd_call 23 5 0 0) (mkEffect 6 [] []) seqp_model
-     = CheckOk (with_fds (fd_insert (m_fds seqp_model) 6 FdDir) seqp_model) [].
+     = CheckOk (with_cloexec [(6, false)]
+                  (with_fds (fd_insert (m_fds seqp_model) 6 FdDir) seqp_model)) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
 (** DECLINED on an end: read, write, fstat, fcntl(F_GETFL),
@@ -504,7 +899,7 @@ Example seqpacket_end_answers_the_socket_errnos :
   /\ check_syscall (fd_call 61 3 0x10000 4096) (mkEffect 0 [] []) seqp_model
      = CheckReject
   /\ check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) seqp_model
-     = CheckOk seqp_model []
+     = CheckOk (with_cloexec [(3, true)] seqp_model) []
   /\ check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) seqp_model
      = CheckOk (with_fds (fd_remove (m_fds seqp_model) 3) seqp_model) [].
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

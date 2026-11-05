@@ -28,8 +28,8 @@
       keyed one; [Run.valid_input_inherited] holds of the keyed one.
     - THE KIND: [write] answers -EBADF on a key, with its offset or
       without; [lseek] and [fstat] decline on it; [close] answers 0 and
-      frees the slot; [fcntl]'s [F_GETFD] admits 0 and FD_CLOEXEC, as on
-      every kind, and rejects 2.
+      frees the slot; [fcntl]'s [F_GETFD] answers 0 exactly at launch,
+      because execve kept the descriptor, and rejects FD_CLOEXEC and 2.
     - THE CLONE: a successful [clone] of either word, or [clone3] with
       the fork image, by a caller that holds a key with its offset
       answers the pid, and the caller keeps the key without its offset,
@@ -284,19 +284,23 @@ Example inherited_key_close_frees_the_slot :
   end.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE CONTROL: [F_GETFD] (1) admits both of [do_fcntl]'s answers, 0
-    and FD_CLOEXEC, as [Fs.Fcntl.fcntl_spec] does on every kind (the
-    model does not record the close-on-exec bit), and rejects 2. *)
+(** The keyed launch satisfies [valid_input_inherited].  Every descriptor
+    it inherited survived [do_close_on_exec] (fs/file.c, v6.18.46), so
+    [F_GETFD] answers 0 alone; FD_CLOEXEC and any other bit are rejected. *)
 Example inherited_key_getfd_answers :
-  check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (inh_model inh_key_launch)
-  = CheckOk (inh_model inh_key_launch) []
+  valid_input_inherited inh_key_launch
   /\ check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 1 [] []) (inh_model inh_key_launch)
+       (mkEffect 0 [] []) (inh_model inh_key_launch)
      = CheckOk (inh_model inh_key_launch) []
   /\ check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 1 [] []) (inh_model inh_key_launch)
+     = CheckReject
+  /\ check_syscall (mkInput 25 [3; 1; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 2 [] []) (inh_model inh_key_launch) = CheckReject.
-Proof. split; [check_eq|split; [check_eq|vm_compute; reflexivity]]. Qed.
+Proof.
+  split; [exact inherited_key_launch_valid_inherited|].
+  repeat match goal with |- _ /\ _ => split end; check_eq.
+Qed.
 
 (* -------------------------------------------------------------------------
    The clone: the caller gives the offset to the child

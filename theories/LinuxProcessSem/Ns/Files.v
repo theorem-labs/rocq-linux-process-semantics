@@ -844,12 +844,16 @@ Definition file_flags (flags : Z) : Z :=
 
 (** [fd_install] at [fd] of a new open file: a fresh handle, the opener's
     credential ([f_cred]), and the close-on-exec bit set exactly when
-    O_CLOEXEC was asked ([get_unused_fd_flags], fs/file.c). *)
+    O_CLOEXEC was asked ([get_unused_fd_flags], fs/file.c).  The bit is
+    this layer's ([cx_cloexec]); the released model's key for [fd], if
+    any, is forgotten ([State.cloexec_forget]), so no stale bit of the
+    released map names the new descriptor. *)
 Definition install (reads : list (word * nat)) (m : Model) (ctx : NsCtx) (st : NsState)
     (fd : word) (k : NsFileKind) (fflags : Z) (cloexec : bool) : ext_outcome :=
   let h := fresh_handle st in
   let st' := with_files st ((h, mkNsFile k fflags (task_cred m ctx)) :: ns_files st) in
-  let m' := with_fds (fd_insert (m_fds m) fd (ns_fd_entry h)) m in
+  let m' := State.with_cloexec (cloexec_forget (m_cloexec m) fd)
+              (with_fds (fd_insert (m_fds m) fd (ns_fd_entry h)) m) in
   let n := bv_unsigned fd in
   let cl := drop_fd (cx_cloexec ctx) n in
   ans reads fd [] m' (with_cloexec ctx (if cloexec then n :: cl else cl)) st'.
@@ -948,7 +952,8 @@ Definition openat2_arm : NsArm := fun i m ctx st o =>
 
 (** [close] (57): [SYSCALL_DEFINE1(close)], [file_close_fd], [filp_flush]
     (fs/open.c, fs/file.c).  On a descriptor of the namespace model the
-    entry and its close-on-exec bit go, and the open file goes when no
+    entry and its close-on-exec bit go (this layer's, and the released
+    map's key for it), and the open file goes when no
     other descriptor names it; 0, as [filp_flush] cannot fail on the
     objects the model mints.  Every other descriptor and number: the
     released answer.  Kind: exact. *)
@@ -958,7 +963,8 @@ Definition close_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
   match ns_file_of m st w with
   | Some (h, _) =>
       let fds' := fd_remove (m_fds m) w in
-      Some (EOk (mkEffect (Z_to_bv 64 0) [] []) (with_fds fds' m)
+      Some (EOk (mkEffect (Z_to_bv 64 0) [] [])
+                (State.with_cloexec (cloexec_forget (m_cloexec m) w) (with_fds fds' m))
                 (with_cloexec ctx (drop_fd (cx_cloexec ctx) (bv_unsigned w))) (release_handle fds' st h) [])
   | None => None
   end.
