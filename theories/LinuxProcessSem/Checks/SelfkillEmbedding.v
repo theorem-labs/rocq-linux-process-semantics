@@ -460,7 +460,6 @@ Definition finite_input_pre (inp : ProcInput) : Prop :=
 Definition embeds (V V_pre : ProcInput -> Prop) : Prop :=
   (forall inp b, V_pre (input_with_selfkill_terminal b inp) <-> V_pre inp)
   /\ (forall inp b, V_pre (input_with_cgroup_bpf_setsockopt b inp) <-> V_pre inp)
-  /\ (forall inp r, V_pre (input_with_clone_refusers r inp) <-> V_pre inp)
   /\ (forall inp b, V_pre (input_with_sigchld_default b inp) <-> V_pre inp)
   /\ (forall inp, V inp <-> V_pre inp /\ in_selfkill_terminal inp = false
                                       /\ in_cgroup_bpf_setsockopt inp = false
@@ -486,21 +485,21 @@ Ltac embeds_frame :=
 Lemma valid_input_embeds : embeds valid_input valid_input_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input, valid_input_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_abort_embeds : embeds valid_input_abort valid_input_abort_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_abort, valid_input_abort_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_either_embeds : embeds valid_input_either valid_input_either_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_either, valid_input_either_pre. embeds_conj.
 Qed.
 
@@ -508,7 +507,7 @@ Lemma valid_input_sigpipe_ignored_embeds :
   embeds valid_input_sigpipe_ignored valid_input_sigpipe_ignored_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_ignored, valid_input_sigpipe_ignored_pre.
   embeds_conj.
 Qed.
@@ -517,7 +516,7 @@ Lemma valid_input_sigpipe_either_embeds :
   embeds valid_input_sigpipe_either valid_input_sigpipe_either_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_either, valid_input_sigpipe_either_pre.
   embeds_conj.
 Qed.
@@ -526,7 +525,7 @@ Lemma valid_input_channel_closed_embeds :
   embeds valid_input_channel_closed valid_input_channel_closed_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_channel_closed, valid_input_channel_closed_pre.
   embeds_conj.
 Qed.
@@ -535,7 +534,7 @@ Lemma valid_input_channel_either_embeds :
   embeds valid_input_channel_either valid_input_channel_either_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_channel_either, valid_input_channel_either_pre.
   embeds_conj.
 Qed.
@@ -543,7 +542,7 @@ Qed.
 Lemma valid_input_paths_embeds : embeds valid_input_paths valid_input_paths_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_paths, valid_input_paths_pre. embeds_conj.
 Qed.
 
@@ -551,7 +550,7 @@ Lemma valid_input_sigpipe_kills_embeds :
   embeds valid_input_sigpipe_kills valid_input_sigpipe_kills_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sigpipe_kills, valid_input_sigpipe_kills_pre.
   embeds_conj.
 Qed.
@@ -559,21 +558,21 @@ Qed.
 Lemma valid_input_sv39_embeds : embeds valid_input_sv39 valid_input_sv39_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sv39, valid_input_sv39_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_sv57_embeds : embeds valid_input_sv57 valid_input_sv57_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_sv57, valid_input_sv57_pre. embeds_conj.
 Qed.
 
 Lemma valid_input_va_any_embeds : embeds valid_input_va_any valid_input_va_any_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_va_any, valid_input_va_any_pre. embeds_conj.
 Qed.
 
@@ -581,7 +580,7 @@ Lemma valid_input_hwcap_rv64gc_embeds :
   embeds valid_input_hwcap_rv64gc valid_input_hwcap_rv64gc_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gc, valid_input_hwcap_rv64gc_pre.
   embeds_conj.
 Qed.
@@ -590,7 +589,7 @@ Lemma valid_input_hwcap_rv64gcv_embeds :
   embeds valid_input_hwcap_rv64gcv valid_input_hwcap_rv64gcv_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold valid_input_hwcap_rv64gcv, valid_input_hwcap_rv64gcv_pre.
   embeds_conj.
 Qed.
@@ -599,7 +598,7 @@ Lemma valid_input_abort_hwcap_rv64gc_embeds :
   embeds valid_input_abort_hwcap_rv64gc valid_input_abort_hwcap_rv64gc_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gc, valid_input_abort_hwcap_rv64gc_pre.
   embeds_conj.
@@ -609,7 +608,7 @@ Lemma valid_input_abort_hwcap_rv64gcv_embeds :
   embeds valid_input_abort_hwcap_rv64gcv valid_input_abort_hwcap_rv64gcv_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp.
   unfold valid_input_abort_hwcap_rv64gcv, valid_input_abort_hwcap_rv64gcv_pre.
   embeds_conj.
@@ -618,7 +617,7 @@ Qed.
 Lemma finite_input_embeds : embeds finite_input finite_input_pre.
 Proof.
   unfold embeds; split; [embeds_frame |]. split; [embeds_frame |].
-  split; [embeds_frame |]. split; [embeds_frame |].
+  split; [embeds_frame |].
   intros inp. unfold finite_input, finite_input_pre. embeds_conj.
 Qed.
 
@@ -626,7 +625,7 @@ Qed.
 Corollary embeds_image : forall V V_pre, embeds V V_pre ->
   forall o, V (embed o) <-> V_pre (embed o).
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] o. split.
+  intros V V_pre [_ [_ [_ HV]]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed o)) H)).
   - intros H. apply (proj2 (HV (embed o))).
     split; [exact H | split; [reflexivity | split; [reflexivity | split; reflexivity]]].
@@ -636,7 +635,7 @@ Qed.
 Corollary embeds_excludes : forall V V_pre, embeds V V_pre ->
   forall inp, in_selfkill_terminal inp = true -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Ht Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Ht Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
@@ -644,7 +643,7 @@ Qed.
 Corollary embeds_excludes_clone_refusers : forall V V_pre, embeds V V_pre ->
   forall inp, in_clone_refusers inp <> no_clone_refusers -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hc Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hc Hv.
   destruct (proj1 (HV inp) Hv) as [_ [_ [_ [Hd _]]]]. exact (Hc Hd).
 Qed.
 
@@ -652,7 +651,7 @@ Qed.
 Corollary embeds_excludes_sigchld_ignored : forall V V_pre, embeds V V_pre ->
   forall inp, in_sigchld_default inp = false -> ~ V inp.
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hf Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hf Hv.
   destruct (proj1 (HV inp) Hv) as [_ [_ [_ [_ Ht]]]]. rewrite Hf in Ht.
   discriminate Ht.
 Qed.
@@ -661,7 +660,7 @@ Qed.
 Corollary embeds_covers_images : forall V V_pre, embeds V V_pre ->
   forall inp, V inp -> inp = embed (forget inp).
 Proof.
-  intros V V_pre [_ [_ [_ [_ HV]]]] inp Hv.
+  intros V V_pre [_ [_ [_ HV]]] inp Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hsk [Hbp [Hcrf Hscd]]]].
   symmetry. exact (embed_forget inp Hsk Hbp Hcrf Hscd).
 Qed.
