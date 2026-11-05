@@ -24,7 +24,9 @@
       namespace model ([FdOpaque]) the released arm declines, as it does
       every opaque descriptor;
     - [exit] 93 and [exit_group] 94.  LIMIT: when the task is pid 1 of a
-      pid namespace the model made, Linux also kills every other task of
+      pid namespace the tables hold below the host's, whatever its
+      allocation state (one the model made, or one stated at launch),
+      Linux also kills every other task of
       that namespace ([zap_pid_ns_processes], kernel/pid_namespace.c); this
       arm does not, because which tasks are in a namespace is the core's
       table, not the namespace state.  A run in which pid 1 of such a

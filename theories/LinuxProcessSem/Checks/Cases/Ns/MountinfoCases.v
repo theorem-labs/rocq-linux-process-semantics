@@ -166,6 +166,25 @@ Example mountinfo_shared_sb_entered :
   /\ mountinfo_text E (with_entered_mntns st_sb [2%positive]) 2 (LDentry 4 1) = None.
 Proof. split; [|split]; vm_compute; reflexivity. Qed.
 
+(** [st_sb] with mount 4 of namespace 2 on a superblock of its own
+    (superblock 5, root dentry 50).  With namespace 2 entered, no mount of
+    namespace 1 shares a superblock with it, so namespace 1's text keeps
+    its answer, the text of [mountinfo_lines]; namespace 2's text has
+    none.  The decline reaches only namespaces that share a superblock
+    with an entered one. *)
+Definition st_own : NsState :=
+  let w := with_mounts st_sb
+    (map (fun m => if Pos.eqb (mnt_id m) 4 then mnt_with_root (mnt_with_sb m 5) 50 else m)
+         (ns_mounts st_sb)) in
+  let w := with_sbs w (ns_sbs st_sb ++ [mkSb 5 SbTmpfs 1 50 false 16914836 false false false]) in
+  with_dentries w (ns_dentries st_sb ++ [mkDentry 50 5 None [] 50]).
+
+Example mountinfo_own_sb_entered :
+  mountinfo_text E (with_entered_mntns st_own [2%positive]) 1 (LDentry 1 1)
+    = mountinfo_text E st 1 (LDentry 1 1)
+  /\ mountinfo_text E (with_entered_mntns st_own [2%positive]) 2 (LDentry 4 50) = None.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** Groups 10 and 11 are live in [st2]; [E] gives them distinct numbers of
     at least 1, and one number for every group breaks the rule. *)
 Example E_groups_ok : mi_groups_ok E st2.
