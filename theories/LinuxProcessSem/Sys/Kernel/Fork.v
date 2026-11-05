@@ -1147,10 +1147,10 @@ Definition clone_has (f b : Z) : bool := negb (Z.land f b =? 0)%Z.
     refuses CLONE_THREAD while the active pid namespace is not
     [pid_ns_for_children], which only the namespace extension holds.
 
-    ONE definition, for the namespace extension to read too, so that the
-    core and the extension cannot disagree on which words these rows
-    refuse; until it does, they can ([Procs.clone_flags_of] states the
-    gap). *)
+    ONE definition, which the namespace extension reads too
+    ([Ns.Clone.clone_ns_exact], over the record [Procs.clone_in_of]
+    gives), so that the core and the extension cannot disagree on which
+    records these rows refuse. *)
 Definition clone_arg_checks (r : CloneArgs) : bool :=
   let f := cla_flags r in
   (clone_has f CLONE_PIDFD && clone_has f CLONE_PARENT_SETTID

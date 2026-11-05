@@ -812,58 +812,31 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
 (** The flag word of a pending clone: argument 0 of [clone] (220);
     [SIGCHLD] for [clone3] (435), the word of the one image it resolves.
 
-    KNOWN GAP until the namespace extension takes the decoded argument
-    record ([Fork.CloneIn]) in place of this word.  Closing it takes two
-    answers of the extension, not one.  The first is [CnErr EINVAL]
-    where [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record.  It
-    does not reach every call the core now answers: a [clone3] struct
-    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose struct
-    range [access_ok] refuses (-EFAULT) have no record at all
-    ([clone_in_of] gives [Fork.CiNoArgs]), so no rule over a record can
-    run for them.  The second answer covers those: for a caller in the
-    NAMESPACE world whose [clone_in_of] is [Fork.CiNoArgs] while the
-    released step answers, [CnUnmodeled].  For a caller in the released
-    world the extension keeps [Ns.Ext.released_clone], which has no
-    [CnUnmodeled] (Ns/Ext.v) and which [NsProcs.ns_flat_iff] rests on;
-    there these calls keep today's released answer.  (A struct whose own
-    tests pass and whose record the argument checks refuse is not in
-    this class: [clone_in_of] gives its record, and the first answer
-    reaches it.)  The released step now answers -EINVAL for a word the
-    argument checks refuse (and, for [clone3], a struct its own tests
-    refuse: [Fork.clone3_einval_b]), while the extension still sees this
-    word, so:
-    - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
-      extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
-      whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
-      under the clone environment [Ns.Clone.clone_tables_failures]
-      (before, the call was the error step), and under
-      [Ext.any_clone_failure] it is a failure step whose state may be
-      [Ns.Clone]'s cursor advance, a state Linux does not reach, since
-      these checks come before [alloc_pid]; where [clone_ns_exact] is
-      [CnUnmodeled] it is still the error step;
-    - under [Ext.no_ext], whose clone is [Ns.Ext.released_clone], a
-      refused [clone] (220) word with a namespace bit (for example
-      CLONE_NEWNS or CLONE_NEWUSER with CLONE_FS) has no step under
-      [Ns.Clone.clone_tables_failures], for which [clone_ns_exact] is
-      [CnUnmodeled] (before, the call was the error step).  Under
-      [Ns.Spec.ns_ext] such a word keeps the error step
-      ([px_clone_unmodeled]): every refused word holds a bit outside
-      [Ns.Clone]'s mask.
-    - under [Ext.no_ext] and [Ns.Clone.clone_tables_failures], a
-      namespace-world caller's refused [clone] or [clone3], with or
-      without a namespace bit, has no step either: [clone_ns_exact] is
-      not [CnErr EINVAL] for its word, and [Ns.Ext.released_clone] never
-      gives [CnUnmodeled].
-    Each is a missing or an extra outcome of a call the model declined
-    before, never a changed answer to a call it answered. *)
+    THE EXTENSION NO LONGER READS THIS WORD.  It reads the decoded
+    input [clone_in_of] gives ([Fork.CloneIn]), and the word is left to
+    the one reader that wants a word: the stale-namespace mark of a
+    child's metadata ([child_meta], [Ns.Tables.ns_stale_child],
+    [Checks.ProcsNsGate.clone_result_userns_stale]), where CLONE_NEWUSER
+    is read off the caller's register.
+
+    The gap this comment carried, between the word and the record, is
+    closed: a [clone3] no longer reaches the extension as [SIGCHLD], and
+    a word the argument checks refuse reaches
+    [Ns.Clone.clone_ns_exact] as the record it refused, which answers
+    [CnErr EINVAL] for it.  [clone_in_of_flags] and [clone_in_of_ns_bits]
+    are what tie the two together: the record keeps flags and exit
+    signal apart and gives this word back for [clone], and where this
+    word had no namespace bit the record makes no namespace
+    ([NsProcs.clone_in_of_no_ns]), which is why every statement whose
+    premise moved to [Ns.Ext.makes_ns] still covers what it covered. *)
 Definition clone_flags_of (c : config) : Z :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD
   | None => 0%Z
   end.
 
-(** THE DECODED ARGUMENTS of a pending clone, as the namespace extension
-    is to receive them ([Fork.CloneIn]).
+(** THE DECODED ARGUMENTS of a pending clone: what the clone rules hand
+    the namespace extension ([Fork.CloneIn]).
     - [clone] (220): the record of its registers
       ([Fork.clone_args_of_clone]); none for an a0 with a bit above 31.
     - [clone3] (435): the record of its struct ([Fork.clone3_pre]), read
@@ -879,7 +852,8 @@ Definition clone_flags_of (c : config) : Z :=
       size or a copy it declines or refuses, and any other record give
       none.
     - Any other call, and no pending call: none.
-    No rule of the core reads it yet. *)
+    Every clone rule of [pstep_x_at] reads it, and so do the run's
+    clone environment and the forced-only filter of a failed clone. *)
 Definition clone_in_of (c : config) : CloneIn :=
   let ms := cfg_ms c in
   match ms_svc_pending ms with
@@ -969,7 +943,7 @@ Proof.
   exfalso. apply (Hno r). congruence.
 Qed.
 
-(** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
+(** THE RECORD AND THE WORD THE CORE ONCE PASSED ([clone_flags_of]).  The
     record keeps flags and exit signal apart ([Fork.clone_args_split]), so
     the word [Z.lor flags exit_signal] gives both back.  For [clone] that
     word is [clone_flags_of]'s.  For [clone3], [clone_flags_of] is
@@ -1015,11 +989,13 @@ Proof.
     exact (clone_args_word_sigchld r0 Hs).
 Qed.
 
-(** THE NAMESPACE PREMISE CARRIES OVER.  Where the word the core passes
-    today has no namespace bit ([Ns.Ext.has_ns_bits], over
+(** THE NAMESPACE PREMISE CARRIES OVER.  Where the word the core once
+    passed has no namespace bit ([Ns.Ext.has_ns_bits], over
     [Ns.Ext.clone_ns_bits]), a record [clone_in_of] gives has none
-    either, or the argument checks refuse it.  The second case is
-    [clone3]'s only: its word today is [SIGCHLD] whatever the struct
+    either, or the argument checks refuse it.  This is what
+    [NsProcs.clone_in_of_no_ns] turns into [Ns.Ext.makes_ns], the
+    premise the statements now carry.  The second case is
+    [clone3]'s only: its word was [SIGCHLD] whatever the struct
     holds, and several refusing rows need a namespace bit (CLONE_NEWNS
     or CLONE_NEWUSER with CLONE_FS, CLONE_THREAD with CLONE_NEWUSER or
     CLONE_NEWPID).  A refused record makes no namespace. *)
@@ -2996,7 +2972,7 @@ Qed.
     first conjunct of [clone_table_kept]: the extension's clone admits no
     success at this call.  [no_ext]'s clone ([released_clone]) admits one
     at every call, and so does every extension's for a caller in the
-    released world whose word has no namespace bit
+    released world whose clone makes no namespace
     ([Ns.Ext.ext_clone_coherent]); there the filter is the released one,
     unchanged ([clone_fail_step_unchanged]).  [Ns.Spec.ns_ext]'s clone
     admits no success whenever [clone_ns_exact] is [CnErr] or
@@ -3052,7 +3028,7 @@ Proof.
 Qed.
 
 (** NO PUBLISHED ANSWER CHANGES: under [no_ext], and for a caller in the
-    released world whose word has no namespace bit, the premise of
+    released world whose clone makes no namespace, the premise of
     [px_clone_fail] is the released step under the run's configuration, as
     it was before the filter above. *)
 Theorem clone_fail_step_unchanged : forall ext segs cfg c ctx st hq en evs c',
@@ -3175,8 +3151,8 @@ Lemma clone_kept_not_refusal : forall ext cfg i m f ctx st hq en eff,
   refusal_b i m (eff_ret eff) = false -> clone_kept ext cfg i m f ctx st hq en eff.
 Proof. intros ext cfg i m f ctx st hq en eff Hr. left. exact (spurious_refusal_not_refusal _ _ _ _ Hr). Qed.
 
-(** Under [no_ext], and for a caller in the released world whose word
-    has no namespace bit, the extension's clone admits a success, so the
+(** Under [no_ext], and for a caller in the released world whose clone
+    makes no namespace, the extension's clone admits a success, so the
     tables keep nothing and both decisions are the released filter's. *)
 Lemma clone_success_unchanged : forall ext f m ctx st hq,
   ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
@@ -4012,7 +3988,7 @@ Qed.
 
 (** At an instruction nothing is pending, so nothing is claimed and no
     clone makes a namespace: the extended relation is the released step. *)
-Lemma no_ns_bits_instr : forall c, at_instruction c -> makes_ns (clone_in_of c) = false.
+Lemma makes_no_ns_instr : forall c, at_instruction c -> makes_ns (clone_in_of c) = false.
 Proof.
   intros c H. unfold at_instruction in H. unfold clone_in_of. cbv zeta.
   rewrite H. reflexivity.
@@ -4027,7 +4003,7 @@ Theorem pstep_x_instr_single_next : forall ext cenv segs cfg c evs P',
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext cenv segs cfg c evs P' H. apply pstep_x_single_next.
-  - apply no_ns_bits_instr. exact H.
+  - apply makes_no_ns_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - intros c' _. apply clone_success_b_instr. exact H.
   - apply wait4_intercept_b_instr. exact H.
@@ -4039,7 +4015,7 @@ Theorem pstep_x_instr_single_err : forall ext cenv segs cfg c evs,
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError <-> sstep_cfg segs cfg c evs SError).
 Proof.
   intros ext cenv segs cfg c evs H. apply pstep_x_single_err.
-  - apply no_ns_bits_instr. exact H.
+  - apply makes_no_ns_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - apply wait4_intercept_b_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
