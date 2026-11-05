@@ -2763,14 +2763,14 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
-(** The seven kernel objects behind [FdOpaque].  The model holds NO
-    CONTENTS for any of them but one: what a read returns, what a stat
+(** The eight kernel objects behind [FdOpaque].  The model holds no
+    contents for any of them but one: what a read returns, what a stat
     reports and what an eventfd counts are the environment's or are
     declined.  The exception is an inherited file, whose bytes are an
-    input of the launch ([ProcInput.in_inherited_fds]).  Three of them
-    carry one piece of kernel state each, and nothing more: the
-    /proc/self/fd directory its position, the signalfd its mask, the
-    inherited file its offset while the model holds it.
+    input of the launch ([ProcInput.in_inherited_fds]).  Four of them
+    carry one piece of kernel state each: the /proc/self/fd directory
+    its position, the signalfd its mask, the inherited file its offset
+    while the model holds it, and the alias its partner's descriptor.
 
     - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
       name [p] (an absolute path at or under "/proc";
@@ -2833,6 +2833,32 @@ Definition PipeBuf : Type := list byte * Z.
       [write] answers -EINVAL, because [signalfd_fops] has no write
       operation; read, poll and every other arm but [setns] decline it.
         fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46.
+    - [OAlias partner]: a SECOND descriptor of the open file description
+      that descriptor [partner] holds, left where [dup3] MOVED a regular
+      file ([Fs.File.dup3_spec]).  [do_dup2] takes a reference with
+      [get_file] and stores the [struct file] of [oldfd] in [newfd]'s
+      slot, and [oldfd] keeps its own reference, so both descriptors
+      name ONE description.  Its state, [f_pos] above all (a field of
+      [struct file], which fs/read_write.c reads and moves through
+      [file_ppos]), is carried by [partner]'s entry ALONE, and the model
+      answers through that one descriptor: [close], [close_range],
+      [F_SETFD] and [F_GETFD] answer on the alias.  The socket calls
+      answer -ENOTSOCK ([Net.Socket.sock_fd]), and [setns] answers
+      -EINVAL ([Kernel.Nsproxy.setns_spec]); neither reads the description.
+      Every other arm on the alias declines it.
+      Closing [partner], or a [dup3] onto it, is answered as for any
+      descriptor, and the alias then DANGLES: Linux keeps the
+      description alive through it alone.  That is exact for what the
+      alias answers, none of which reads the description; the arms that
+      could show the live description decline instead: [flock] while any
+      alias exists ([Fs.Locks.path_openers]), and an open whose last two
+      raw path components are "fd" and the alias's decimal number
+      ([Fs.Open.proc_fd_alias_b]).  Other O_PATH spellings may return an
+      opaque [OProcPath], which exposes no description state.
+      Closing the alias drops one reference, which nothing a program can observe on
+      a regular file depends on.
+        fs/file.c [do_dup2], [close_fd], [__range_close], [file_close_fd_locked]: read at v6.18.44; identical at v6.18.46.
+        fs/read_write.c [file_ppos]; include/linux/fs.h [struct file] ([f_pos]): read at v6.18.44; identical at v6.18.46.
     - [OInherited live]: a descriptor the launch inherited
       ([ProcInput.in_inherited_fds]): an open file description of a
       regular file, read-only, that the process's parent opened and
@@ -2860,7 +2886,8 @@ Inductive OpaqueFd :=
   | ONsFile (h : N)
   | OProcFdDir (flags : word) (pos : option word)
   | OSignalFd (mask flags : word)
-  | OInherited (live : option (list byte * word)).
+  | OInherited (live : option (list byte * word))
+  | OAlias (partner : word).
 
 (** One end's own socket state, for an AF_UNIX SOCK_SEQPACKET end
     ([FdSeqpacket] below).  One field: [sq_passcred] is the end's
@@ -3032,19 +3059,17 @@ Definition with_sq_passcred (b : bool) (_st : SeqEnd) : SeqEnd := mkSeqEnd b.
       environment's /dev/urandom is the random device -- is stated once, at
       the openat arm, and pointed to from everywhere else.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
-      CONTENTS for, but one; [OpaqueFd] above says which seven objects.
-      The descriptor is in the table so that its NUMBER is tracked (the
+      contents for, but one; [OpaqueFd] above says which eight objects.
+      The descriptor is in the table so that its number is tracked (the
       lowest-free-fd rule, [close], and a statement that reads "this fd
-      is held at the clone" all need it), and nothing else about the
-      object is: no counter, no bytes but an inherited file's, which are
-      a launch input, and a position or a mask only for the three
-      objects [OpaqueFd] names.  Every arm that reads one either
-      derives its answer from the Linux source for that kind of object
-      or declines.  One arm answers as an existing kind does, and for
-      the reason that it is the same object: [Fs.ReadWrite.read_spec]
-      reads a live inherited file as it reads an [FdFile], because the
-      object is a read-only regular file; it takes the bytes from the
-      entry instead of from a path.
+      is held at the clone" all need it).  It holds no counter, no bytes
+      but an inherited file's launch input, and a position, mask or
+      partner only for the four objects [OpaqueFd] names.  Every arm
+      that reads one derives its answer from the Linux source for that
+      kind of object or declines.  [Fs.ReadWrite.read_spec] reads a live
+      inherited file as it reads an [FdFile], because the object is a
+      read-only regular file; it takes bytes from the entry instead of
+      a path.  An alias leaves its description's state to its partner.
     - [FdSeqpacket id side st]: ONE END of an AF_UNIX SOCK_SEQPACKET
       pair that [Net.Socket.socketpair_spec] made, both ends held by
       this process.  [id] names the pair (both ends carry it), [side]
@@ -3426,10 +3451,28 @@ Definition vm_live_bytes (h : VmMaps) : Z := live_bytes (vm_maps h).
     are read together: which ends are still open is derived from the table
     ([pipe_end_live]) rather than counted.  Not observable: pipe bytes never
     reach the trace, so two runs that differ only in what a pipe holds are
-    still equivalent — see [Pipe.pipe2_spec]. *)
+    still equivalent — see [Pipe.pipe2_spec].
+
+    [fdst_cloexec] is the CLOSE-ON-EXEC BITS THE MODEL KNOWS, keyed by
+    descriptor: [(n, b)] says descriptor [n]'s bit is [b].  Linux keeps
+    the bit in the descriptor table, not in the open file
+    ([fdt->close_on_exec]; fs/file.c [__set_close_on_exec],
+    [get_close_on_exec]), and [F_GETFD] reports it (fs/fcntl.c
+    [do_fcntl]); all read at v6.18.44, identical at v6.18.46.  A
+    descriptor with no key has an UNKNOWN bit, and [Fcntl.fcntl_spec]
+    then admits both of [F_GETFD]'s answers.  The invariant that keeps
+    this sound is that every key is an open descriptor of [fdst_table]
+    ([Checks.CloexecKeys.cloexec_keys_open]): an arm that removes or
+    replaces a table entry forgets or rewrites its key, so a descriptor
+    a creating arm installs at a FREE number has no key, and an arm that
+    does not record a bit is still sound.  [with_fds] and [with_pipes]
+    carry the map across; [with_cloexec] is its setter, and
+    [cloexec_set], [cloexec_forget] and [cloexec_lookup] below are its
+    helpers. *)
 Record FdState := mkFdState {
   fdst_table : list (word * FdEntry);
   fdst_pipes : list (word * PipeBuf);
+  fdst_cloexec : list (word * bool);
 }.
 
 (** ONE CACHE LEAF as the kernel publishes it, for one of the four
@@ -4020,6 +4063,64 @@ Record Creds := mkCreds {
 Definition creds_privileged (c : Creds) : bool :=
   bv_eqb (cr_euid c) (Z_to_bv 64 0).
 
+(** THE THREE HOST REFUSERS OF A CLONE, as launch values.  Each is a hook
+    [copy_process] (kernel/fork.c, v6.18.46) calls on the path every
+    word [Kernel.Fork.clone_spec] and [Kernel.Fork.clone3_spec] answer,
+    and each can make the call fail with an errno no list of the model
+    names.  The model cannot see any of them, so each is a fact of the
+    launch: [true] says the hook may refuse at some clone of the run,
+    [false] says it is absent for the WHOLE run and the host does not
+    attach it later.  [copy_process] calls [sched_fork],
+    [perf_event_init_task], [audit_alloc] and [security_task_alloc] in
+    that order (fork.c:2155-2169), before [alloc_pid], and
+    [sched_cgroup_fork] (fork.c:2299-2301) after it.
+
+    - [cr_perf_inherit]: the launched process holds INHERITABLE PERF
+      EVENTS.  [perf_event_init_task] walks them, and its
+      [inherit_group] answers -EINVAL of its own and whatever a PMU's
+      [event_init] returns (kernel/events/core.c).  [perf_event_open]
+      (241) is outside [Specs.modeled_sysnos], so a modeled run creates
+      none, but the process can have inherited one from its launcher, a
+      child inherits them in turn, and a process outside the model can
+      attach one to the running task ([perf_event_open] with a pid, for a
+      caller [perf_check_permission] admits; kernel/events/core.c), which
+      the next fork walks.  So, as for sched_ext, [false] says no such
+      event is held at any clone of the run.
+    - [cr_bpf_task_alloc]: a BPF LSM program is attached to [task_alloc].
+      [security_task_alloc] returns its value, which may be any errno.
+    - [cr_sched_ext]: a sched_ext scheduler is loaded, or may be loaded
+      during the run.  [sched_cgroup_fork] (fork.c:2299-2301) returns
+      [scx_fork]'s result (kernel/sched/core.c:4783), which is the
+      scheduler's own task init through [ops_sanitize_err], any value in
+      [-MAX_ERRNO, -1] (kernel/sched/ext.c:2971-2979).  The host can load
+      one at any moment ([bpf_scx_reg], 5087-5089, reaches [scx_enable],
+      which queues [scx_root_enable_workfn] and waits for it, 4954-4958;
+      that work function, from 4671, sets [scx_init_task_enabled],
+      4790-4793), and [scx_fork] reads
+      that setting at each fork (2975-2978), so absence at the launch is
+      not enough: [false] says no scheduler is loaded at any clone of the
+      run.
+
+    The default is [no_clone_refusers], all three absent: every answer is
+    then the model's lists.  With any of them present, both entry points
+    admit every errno from 1 to 4095 for every word they answer
+    ([Kernel.Fork.clone_refusable]).  [Run.valid_input] and its sibling
+    launch predicates pin the default. *)
+Record CloneRefusers := mkCloneRefusers {
+  cr_perf_inherit : bool;
+  cr_bpf_task_alloc : bool;
+  cr_sched_ext : bool
+}.
+
+Definition no_clone_refusers : CloneRefusers := mkCloneRefusers false false false.
+
+(** Whether any of the three may refuse. *)
+Definition clone_refused_b (r : CloneRefusers) : bool :=
+  cr_perf_inherit r || cr_bpf_task_alloc r || cr_sched_ext r.
+
+Lemma clone_refused_b_default : clone_refused_b no_clone_refusers = false.
+Proof. reflexivity. Qed.
+
 (** The process itself: whether it has halted, its identity, who it runs
     as, and whether it has led a session. *)
 Record ProcState := mkProcState {
@@ -4131,7 +4232,7 @@ Record ProcState := mkProcState {
                                     -ECHILD for a process that now has
                                     something to reap.  See the launcher
                                     premise on [Kernel.Exit.wait4_spec]
-                                    and [Checks.Examples.wait4_with_a_child_is_unmodeled],
+                                    and [Checks.Examples.wait4_with_a_child_admits_no_echild],
                                     which is the tripwire and does not live in
                                     a file a process-creation change would
                                     edit. *);
@@ -4652,22 +4753,34 @@ Record ProcState := mkProcState {
   procst_ppid : word             (* THE CURRENT PARENT PID, the value
                                     [task->real_parent] gives [getppid]
                                     (kernel/sys.c).  It is seeded from
-                                    [ProcInput] at launch.  No modeled call
-                                    writes it on this branch; [with_ppid] is the
-                                    one setter.  A child gets its parent's
-                                    pid, the parent's key in the process
-                                    table; [Procs.child_proc] names that
-                                    rule.  Kernel citations, read at v6.18.44
-                                    and identical at v6.18.46: kernel/sys.c
-                                    [getppid], kernel/sched/core.c
-                                    [task_ppid_nr_ns]. *);
+                                    [ProcInput] at launch.  [getppid]
+                                    answers it, and once in a reparent
+                                    window it may answer a reaper's pid
+                                    instead and store it
+                                    ([Kernel.Sys.getppid_spec],
+                                    [with_ppid_answered]).  A child gets its
+                                    parent's pinned tid when the parent has
+                                    one, otherwise the parent's key in the
+                                    process table, which the first root-tid
+                                    pin resolves ([Procs.child_entry];
+                                    [Procs.pin_root], and [Procs.absorb] and
+                                    [Procs.absorb_x] through
+                                    [Procs.first_root_pin_children], all by
+                                    [Procs.root_children_ppid]); [Procs.child_proc]
+                                    installs it.  Kernel citations, read at
+                                    v6.18.44 and identical at v6.18.46:
+                                    kernel/sys.c [getppid],
+                                    kernel/sched/core.c [task_ppid_nr_ns],
+                                    kernel/exit.c [forget_original_parent]. *);
   procst_cap_inheritable : word  (* THE INHERITABLE CAPABILITY SET,
                                     [cred->cap_inheritable]
                                     (include/linux/cred.h).  Every word is a
                                     launch value; [init_model] copies
-                                    [ProcInput]'s declaration.  No modeled call
-                                    writes it on this branch; [with_cap_inheritable]
-                                    is the one setter, and [Procs.child_proc]
+                                    [ProcInput]'s declaration.
+                                    [Kernel.Capability.capget_spec] reads it
+                                    and [Kernel.Capability.capset_spec]
+                                    writes it through [with_cap_inheritable],
+                                    the one setter; [Procs.child_proc]
                                     copies it when fork copies credentials.
                                     Kernel citations, read at v6.18.44 and
                                     identical at v6.18.46: include/linux/cred.h,
@@ -4759,7 +4872,77 @@ Record ProcState := mkProcState {
        do_sock_setsockopt:2342-2351, v6.18.46). Until those effects are
        modeled, [Net.Socket.setsockopt_spec] declines when it is present.
        [init_model] seeds this from [in_cgroup_bpf_setsockopt]; every
-       transition and a child's construction retain the launch value. *)
+       transition and a child's construction retain the launch value. *);
+  procst_sigchld_dfl : bool      (* WHETHER THIS PROCESS INSTALLED SIG_DFL
+                                    FOR SIGCHLD with SA_NOCLDWAIT clear
+                                    while it had no recorded child, so the
+                                    bit is set only if every child the
+                                    process has was cloned while SIGCHLD was
+                                    SIG_DFL.
+                                    [false] at launch ([mkModel],
+                                    [init_model]); set by the one SIGCHLD
+                                    install the model answers
+                                    ([Kernel.Signal.sigchld_dfl_install] in
+                                    [Kernel.Signal.rt_sigaction_spec]), and
+                                    only in a process with no recorded child
+                                    ([Kernel.Signal.sigchld_install_model]);
+                                    copied into a child by [Procs.child_proc];
+                                    written by nothing else.  READ IT THROUGH
+                                    [m_sigchld_dfl].
+
+                                    WHY THE MODEL RECORDS IT.  The SIGCHLD
+                                    disposition a process starts with is its
+                                    launcher's: [begin_new_exec] calls
+                                    [flush_signal_handlers(me, 0)] (fs/exec.c,
+                                    Linux v6.18.46), which keeps a SIG_IGN
+                                    (kernel/signal.c).  Under SIG_IGN, or with
+                                    SA_NOCLDWAIT set, [do_notify_parent]
+                                    (kernel/signal.c) reaps an exiting child
+                                    itself, so [wait4] never returns its pid.
+                                    Linux decides this when the child exits,
+                                    from the parent's disposition then
+                                    ([do_notify_parent], kernel/signal.c:2241-2259),
+                                    so a child cloned under a launcher's
+                                    SIG_IGN may be gone before a later
+                                    SIG_DFL install.  So the bit is set only
+                                    if every child the process has was cloned
+                                    while SIGCHLD was SIG_DFL, and
+                                    [Kernel.Exit.wait4_spec] answers a caller
+                                    with a recorded child only when it is
+                                    set; that answer rests on no fact about
+                                    the launch's disposition.
+
+                                    WHY IT IS NEVER CLEARED.  Once set, SIGCHLD
+                                    is SIG_DFL with SA_NOCLDWAIT clear, and no
+                                    answered call changes that: every other
+                                    SIGCHLD install declines
+                                    ([Kernel.Signal.rt_sigaction_spec]), and an
+                                    install with [act] NULL installs nothing.
+                                    [execve] keeps a SIG_DFL ([flush_signal_handlers]
+                                    writes SIG_DFL over every handler that is
+                                    not SIG_IGN and clears [sa_flags]); the
+                                    model has no [execve] step.
+
+                                    WHY A CHILD COPIES IT.  A child the
+                                    released clone arms create gets a COPY of
+                                    its parent's actions: [copy_sighand]
+                                    (kernel/fork.c) [memcpy]s them unless
+                                    CLONE_SIGHAND shares them, and resets
+                                    them only under CLONE_CLEAR_SIGHAND, and
+                                    [Kernel.Fork] admits neither flag. *);
+  procst_clone_refusers : CloneRefusers
+                                 (* THE HOST'S CLONE REFUSERS, a launch fact
+                                    and not kernel state of this task: see
+                                    [CloneRefusers].  READ IT THROUGH
+                                    [m_clone_refusers].  [init_model] copies
+                                    [ProcInput.in_clone_refusers] into it,
+                                    [Procs.child_proc] copies it into a
+                                    child (a child inherits the inheritable
+                                    perf events, and the other two hooks are
+                                    the host's), and no modeled call writes
+                                    it.  [Kernel.Fork.clone_spec] and
+                                    [Kernel.Fork.clone3_spec] read it.  Every
+                                    setter carries it. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4869,6 +5052,8 @@ Record Model := mkModelOf {
     nesting. *)
 Definition m_fds (m : Model) : list (word * FdEntry) := fdst_table (m_fd m).
 Definition m_pipes (m : Model) : list (word * PipeBuf) := fdst_pipes (m_fd m).
+(** The close-on-exec bits the model knows; see [fdst_cloexec]. *)
+Definition m_cloexec (m : Model) : list (word * bool) := fdst_cloexec (m_fd m).
 Definition m_vmmaps (m : Model) : VmMaps := vmst_maps (m_vm m).
 Definition m_vm_lazy (m : Model) : list (word * word) := vmst_lazy (m_vm m).
 Definition m_vm_materialized (m : Model) : list word :=
@@ -4957,6 +5142,17 @@ Definition m_selfkill_terminal (m : Model) : bool :=
   procst_selfkill_terminal (m_proc m).
 Definition m_cgroup_bpf_setsockopt (m : Model) : bool :=
   procst_cgroup_bpf_setsockopt (m_proc m).
+(** Whether this process installed SIG_DFL for SIGCHLD with SA_NOCLDWAIT
+    clear while it had no recorded child, so the bit is set only if every
+    child the process has was cloned while SIGCHLD was SIG_DFL.
+    [Kernel.Exit.wait4_spec] reads it before it answers a caller with a
+    recorded child.  [false] at launch; see [procst_sigchld_dfl]. *)
+Definition m_sigchld_dfl (m : Model) : bool :=
+  procst_sigchld_dfl (m_proc m).
+
+(** The host's clone refusers; see [procst_clone_refusers]. *)
+Definition m_clone_refusers (m : Model) : CloneRefusers :=
+  procst_clone_refusers (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4999,11 +5195,14 @@ Definition default_nofile : word := Z_to_bv 64 1024.
     builds a model is unchanged.  The random device's stream starts
     EMPTY here ([IEof]) for the reason the accept queue starts silent:
     it is an input of the run, and the one place that installs one is
-    [init_model], through [with_urandom]. *)
+    [init_model], through [with_urandom].  It KNOWS NO close-on-exec
+    bit: its descriptors are a fixture's, not a launch's, so [F_GETFD]
+    admits both answers on each until an arm records one.  [init_model]
+    is where a launch's descriptors are known clear. *)
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds [])
+  mkModelOf (mkFdState fds [] [])
             (mkVmState vm [] [] default_kernel (vdso_run_init vdso_draw_keep))
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
@@ -5011,7 +5210,8 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
                false true true false (Z_to_bv 64 0) [] false (Z_to_bv 64 1)
-               (Z_to_bv 64 0) (Z_to_bv 64 0) false false false false)
+               (Z_to_bv 64 0) (Z_to_bv 64 0) false false false false false
+               no_clone_refusers)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -5019,11 +5219,17 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     carries the other five across, so a new field inside a subsystem touches
     that subsystem's setters and no others. *)
 Definition with_fds (fds : list (word * FdEntry)) (m : Model) : Model :=
-  mkModelOf (mkFdState fds (m_pipes m)) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
-    (m_lim m) (m_time m).
+  mkModelOf (mkFdState fds (m_pipes m) (m_cloexec m)) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
 Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
-  mkModelOf (mkFdState (m_fds m) ps) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
-    (m_lim m) (m_time m).
+  mkModelOf (mkFdState (m_fds m) ps (m_cloexec m)) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
+(** Install a new map of known close-on-exec bits.  The arms that write
+    it apply it to the post-model their table change built, so the
+    table and the map change in one step. *)
+Definition with_cloexec (cl : list (word * bool)) (m : Model) : Model :=
+  mkModelOf (mkFdState (m_fds m) (m_pipes m) cl) (m_vm m) (m_io m) (m_fsys m)
+    (m_proc m) (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
     (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) (m_vdso m))
@@ -5136,7 +5342,7 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -5158,7 +5364,7 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5173,7 +5379,7 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -5205,7 +5411,7 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -5247,7 +5453,7 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -5279,7 +5485,7 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -5298,7 +5504,7 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5312,7 +5518,7 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.  The released
@@ -5343,7 +5549,7 @@ Definition with_children (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -5369,7 +5575,7 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -5402,7 +5608,7 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -5434,7 +5640,7 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -5461,7 +5667,7 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -5485,7 +5691,7 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE disposition.  Its only caller is
@@ -5509,7 +5715,7 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE-death declaration.  Its only caller is
@@ -5529,7 +5735,7 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the task's declaration of a SIGKILL it sends itself.  Its only
@@ -5550,7 +5756,7 @@ Definition with_selfkill_terminal (b : bool) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m) b
-                         (m_cgroup_bpf_setsockopt m))
+                         (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Seed the cgroup-BPF setsockopt launch value. No syscall writes it. *)
@@ -5568,7 +5774,33 @@ Definition with_cgroup_bpf_setsockopt (b : bool) (m : Model) : Model :=
                          (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) b)
+                         (m_selfkill_terminal m) b (m_sigchld_dfl m) (m_clone_refusers m))
+            (m_lim m) (m_time m).
+
+(** Record whether the process installed SIG_DFL for SIGCHLD with
+    SA_NOCLDWAIT clear while it had no recorded child.  Its one writer is
+    [Kernel.Signal.rt_sigaction_spec]'s [sigchld_dfl_install] arm,
+    through [Kernel.Signal.sigchld_install_model], which writes [true]
+    in a process with no recorded child and the bit's own value
+    otherwise; nothing turns it from [true] to [false], because no
+    answered call can leave SIGCHLD anything else afterwards.  See
+    [procst_sigchld_dfl]. *)
+Definition with_sigchld_dfl (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m)
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m)
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) b
+                         (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Install a parent-death signal.  Two kinds of caller, both in
@@ -5608,7 +5840,7 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                                (orb (orb (Z.eqb (bv_unsigned (m_pdeath_signal m)) 0)
                                          (m_reparent_unseen m))
                                     (negb (Z.eqb (bv_unsigned s) 0))))
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Install the list of unreaped children.  Its writers are the reap
@@ -5627,7 +5859,7 @@ Definition with_child_pids (l : list word) (m : Model) : Model :=
                          l (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record a child a successful clone created: [with_children]'s bit,
@@ -5663,7 +5895,7 @@ Definition with_no_new_privs (b : bool) (m : Model) : Model :=
                          (m_child_pids m) b (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Install a dumpable mode.  Two kinds of caller, both in [Kernel.Sys]:
@@ -5683,11 +5915,15 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) d
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
-(** Install the current parent pid.  No modeled call uses this setter on
-    this branch; see [procst_ppid]. *)
+(** Install the current parent pid, the window bits unchanged.  Its
+    model callers are [init_model]'s setter chain and
+    [Procs.root_child_ppid_one], which resolves a root child's provisional
+    parent pid at the first root-tid pin; check fixtures use it too.
+    [getppid] writes the field through [with_ppid_answered].  See
+    [procst_ppid]. *)
 Definition with_ppid (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5702,14 +5938,16 @@ Definition with_ppid (p : word) (m : Model) : Model :=
                          (m_no_new_privs m) (m_dumpable m) p
                          (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** Record a [getppid] answer [p]: the held parent pid becomes [p],
     [procst_reparent_unseen] is cleared (the answer has shown the parent
     as it is now), and [procst_reparent_moved] is set when [p] differs
     from the pid it replaces and kept otherwise.  Every other field is
-    carried.  No modeled call uses this setter on this branch; see
+    carried.  Two callers: [Kernel.Sys.getppid_spec], and
+    [Run.sstep_pcfg_reparent], the parent's death under
+    [Run.parent_may_die], which records the reaper the same way; see
     [procst_reparent_unseen] and [procst_reparent_moved]. *)
 Definition with_ppid_answered (p : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5725,11 +5963,12 @@ Definition with_ppid_answered (p : word) (m : Model) : Model :=
                          (m_no_new_privs m) (m_dumpable m) p
                          (m_cap_inheritable m) false
                          (orb (m_reparent_moved m) (negb (bv_eqb p (m_ppid m))))
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
-(** Install the inheritable capability set.  No modeled call uses this
-    setter on this branch; see [procst_cap_inheritable]. *)
+(** Install the inheritable capability set.  [Kernel.Capability.capset_spec]
+    is the one modeled call that uses this setter; see
+    [procst_cap_inheritable]. *)
 Definition with_cap_inheritable (c : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5743,8 +5982,34 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
                          (m_pdeath_signal m) (m_child_pids m)
                          (m_no_new_privs m) (m_dumpable m) (m_ppid m) c
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
+
+(** Install the host's clone refusers.  Its callers are [init_model]'s
+    setter-chain form and the check cases that state a launch with a
+    refuser present; no modeled call writes the field.  See
+    [procst_clone_refusers]. *)
+Definition with_clone_refusers (r : CloneRefusers) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m) (m_child_pids m)
+                         (m_no_new_privs m) (m_dumpable m) (m_ppid m)
+                         (m_cap_inheritable m)
+                         (m_reparent_unseen m) (m_reparent_moved m)
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m)
+                         (m_sigchld_dfl m) r)
+            (m_lim m) (m_time m).
+
+Lemma m_clone_refusers_with_clone_refusers : forall r m,
+  m_clone_refusers (with_clone_refusers r m) = r.
+Proof. reflexivity. Qed.
 
 (** End the process by a fatal signal.  It writes the signal number into
     [procst_halted], because a killed process is over and every rule that
@@ -5754,8 +6019,8 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     [procst_killed] alone -- [Run.sstep_exit] declines a death by signal
     and [Run.sstep_killed] takes it -- so the two cannot both apply.
 
-    IT HAS FIVE CALLERS, IN THREE SIGNALS, and which is which decides what
-    guards them.
+    IN THE DISPATCHER IT HAS FIVE CALLERS, IN THREE SIGNALS, and which is
+    which decides what guards them (a sixth, outside it, is at the end).
 
     SIGABRT (6).  [Kernel.Signal.send_sigabrt] is the SEND, and it sits
     behind the task's declaration.  [Kernel.Signal.sigmask_deliver_model]
@@ -5795,11 +6060,17 @@ Definition with_cap_inheritable (c : word) (m : Model) : Model :=
     arm declines every call.  There is no delivery row: no mask holds
     SIGKILL, so it is never pending.  [Run.valid_input] pins it clear.
 
-    THAT THESE ARE THE ONLY CALLERS, AND THAT EACH IS GATED, IS A
-    THEOREM: [Checks.KillFree.kill_frame_holds] goes through every arm
-    of the dispatcher, and [Checks.KillFree.valid_input_no_kill] is the
-    consequence for every run under [Run.valid_input].  A new caller
-    that is not behind a gate breaks that proof. *)
+    THAT THESE ARE THE ONLY CALLERS IN THE DISPATCHER, AND THAT EACH IS
+    GATED, IS A THEOREM: [Checks.KillFree.kill_frame_holds] goes through
+    every arm of the dispatcher, and [Checks.KillFree.valid_input_no_kill]
+    is the consequence for every run under [Run.valid_input].  A new
+    caller that is not behind a gate breaks that proof.
+
+    SIGKILL (9), OUTSIDE THE DISPATCHER.  [Run.sstep_pcfg_parent_kill] is
+    the parent's death under the named environment [Run.parent_may_die],
+    a step of the configured run [Run.sstep_pcfg] and of no [sstep_cfg]
+    run; under [Run.parent_lives] that run is [sstep_cfg]
+    ([Run.sstep_pcfg_lives_iff]), so the theorem above is untouched. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)
@@ -5813,7 +6084,7 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
                          (m_ppid m) (m_cap_inheritable m)
                          (m_reparent_unseen m) (m_reparent_moved m)
-                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m))
+                         (m_selfkill_terminal m) (m_cgroup_bpf_setsockopt m) (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -5850,7 +6121,7 @@ Definition with_clock (t : word) (m : Model) : Model :=
     three, because the three moves are one event — [accept] is the only
     thing that changes any of them, and it always changes all three. *)
 Definition with_accepted (fds : list (word * FdEntry)) (m : Model) : Model :=
-  mkModelOf (mkFdState fds (m_pipes m)) (m_vm m)
+  mkModelOf (mkFdState fds (m_pipes m) (m_cloexec m)) (m_vm m)
     (mkIoState (m_stdin m) (m_urandom m) (nq_rest (m_net m))
                (m_conn_ix m + Z_to_bv 64 1))
     (m_fsys m) (m_proc m) (m_lim m) (m_time m).
@@ -5895,6 +6166,27 @@ Definition fd_insert (fds : list (word * FdEntry)) (fd : word) (e : FdEntry)
 Definition fd_remove (fds : list (word * FdEntry)) (fd : word)
     : list (word * FdEntry) :=
   List.filter (fun p => negb (bv_eqb (fst p) fd)) fds.
+
+(** The close-on-exec map's helpers, the same shape as the three above:
+    first match wins, and [cloexec_set] keeps at most one key per
+    descriptor.  [cloexec_lookup cl n] is [Some b] where the model knows
+    descriptor [n]'s bit is [b], [None] where it does not. *)
+Fixpoint cloexec_lookup (cl : list (word * bool)) (n : word) : option bool :=
+  match cl with
+  | [] => None
+  | (k, b) :: r => if bv_eqb k n then Some b else cloexec_lookup r n
+  end.
+
+(** Drop descriptor [n]'s key: its bit becomes unknown.  Every arm that
+    removes [n] from the table calls it. *)
+Definition cloexec_forget (cl : list (word * bool)) (n : word)
+    : list (word * bool) :=
+  List.filter (fun p => negb (bv_eqb (fst p) n)) cl.
+
+(** Record descriptor [n]'s bit as [b], replacing any key it had. *)
+Definition cloexec_set (cl : list (word * bool)) (n : word) (b : bool)
+    : list (word * bool) :=
+  (n, b) :: cloexec_forget cl n.
 
 (** Lowest unused fd — the descriptor the kernel hands out at open, as
     Linux does (see [File.lowest_fd]/[Open.openat_spec]).  The scan is
@@ -7677,23 +7969,40 @@ Record ProcInput := mkProcInput_full {
        A present hook makes setsockopt decline: its option rewrites and
        handler bypass are not represented by an errno-only outcome.
        Ordinary input predicates pin it false; the raw input boundary
-       requires the caller's value rather than silently defaulting it. *)
+       requires the caller's value rather than silently defaulting it. *);
+  in_clone_refusers : CloneRefusers
+    (* THE HOST'S CLONE REFUSERS: inheritable perf events the launched
+       process holds, a BPF LSM program on [task_alloc], and a sched_ext
+       scheduler, each either absent for the whole run or possibly
+       present ([CloneRefusers]).  A fact about the environment the model
+       cannot derive: nothing a trace reveals says which hooks the host
+       has, and the scheduler can be loaded during the run.
+       [init_model] copies it into [procst_clone_refusers], which
+       [Kernel.Fork.clone_spec] and [Kernel.Fork.clone3_spec] read.
+
+       [Run.valid_input] and every sibling launch predicate PIN IT TO
+       [no_clone_refusers], so every statement keeps its domain: a run
+       whose clones answer from the model's lists.  A statement about a
+       host with a refuser drops that clause and states the field.
+       Appended after every field the record had, as [mkProcInput]'s note
+       asks *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the twelve
+(** THE POSITIONAL-LITERAL FORM: every field except the thirteen
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
     [in_kernel], [in_execfn], [in_channel_reader],
     [in_sigpipe_default], [in_sigpipe_terminal], [in_ppid],
     [in_cap_inheritable], [in_inherited_fds], [in_selfkill_terminal],
-    [in_cgroup_bpf_setsockopt]).
+    [in_cgroup_bpf_setsockopt], [in_clone_refusers]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last twelve with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    last thirteen with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
     DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
     SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0, AN EMPTY
-    INHERITABLE SET, NO INHERITED DESCRIPTOR and SELF-SENT SIGKILL
-    DECLINED, and NO CGROUP-BPF SETSOCKOPT HOOK: [default_urandom], which is zero bytes
+    INHERITABLE SET, NO INHERITED DESCRIPTOR, SELF-SENT SIGKILL
+    DECLINED, NO CGROUP-BPF SETSOCKOPT HOOK and NO CLONE REFUSER:
+    [default_urandom], which is zero bytes
     forever; a private /tmp that starts empty; [default_kernel], a
     kernel built without transparent huge pages; [default_execfn], the
     one-byte name "a"; [true], the reading every literal written before
@@ -7703,16 +8012,20 @@ Record ProcInput := mkProcInput_full {
     ([mkProcInput_sigpipe_terminal] proves it is the literal); the
     literal 0 for each word; the literal [[]], the empty list of
     inherited descriptors [Run.valid_input] pins
-    ([mkProcInput_inherited_fds]); and [false], the declined self-sent
+    ([mkProcInput_inherited_fds]); [false], the declined self-sent
     SIGKILL [Run.valid_input] pins ([mkProcInput_selfkill_terminal]);
-    and [false], the absent cgroup-BPF setsockopt hook.
+    [false], the absent cgroup-BPF setsockopt hook; and
+    [no_clone_refusers], the host without perf events, a BPF [task_alloc]
+    program or a sched_ext scheduler that [Run.valid_input] pins
+    ([mkProcInput_clone_refusers]).
     So a literal written
     through this name denotes an input in an environment that holds no
     file of its own, on an ordinary kernel, launched as "a", whose
     standard output is read, whose SIGPIPE is at SIG_DFL, whose
     write to a reader-less descriptor declines, whose parent is observed
     as pid 0, whose inheritable set is empty, which inherits no
-    descriptor above 2, and whose [kill] of itself declines.
+    descriptor above 2, whose [kill] of itself declines, which has no
+    cgroup-BPF setsockopt hook, and whose clones meet no host refuser.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -7739,7 +8052,7 @@ Definition mkProcInput
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
     default_kernel default_execfn true true false (Z_to_bv 64 0)
-    (Z_to_bv 64 0) [] false false.
+    (Z_to_bv 64 0) [] false false no_clone_refusers.
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
@@ -7767,6 +8080,17 @@ Lemma mkProcInput_cap_inheritable :
   in_cap_inheritable
     (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
        hwcap abort_terminal va_size) = Z_to_bv 64 0.
+Proof. reflexivity. Qed.
+
+(** The clone-refuser default is the LITERAL [no_clone_refusers]: every
+    input built through [mkProcInput] is a launch whose clones meet no
+    host refuser, which is what [Run.valid_input] pins. *)
+Lemma mkProcInput_clone_refusers :
+  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_clone_refusers
+    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = no_clone_refusers.
 Proof. reflexivity. Qed.
 
 (** The inherited-descriptor default is the LITERAL [[]], not a
@@ -7810,7 +8134,7 @@ Definition with_inherited_fds (l : list (word * list byte)) (inp : ProcInput)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
     (in_ppid inp) (in_cap_inheritable inp) l (in_selfkill_terminal inp)
-    (in_cgroup_bpf_setsockopt inp).
+    (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp).
 
 (** Replace only the cgroup-BPF setsockopt launch value. *)
 Definition input_with_cgroup_bpf_setsockopt (b : bool) (inp : ProcInput)
@@ -7821,10 +8145,25 @@ Definition input_with_cgroup_bpf_setsockopt (b : bool) (inp : ProcInput)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
     (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
-    (in_selfkill_terminal inp) b.
+    (in_selfkill_terminal inp) b (in_clone_refusers inp).
 
 Lemma in_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b inp,
   in_cgroup_bpf_setsockopt (input_with_cgroup_bpf_setsockopt b inp) = b.
+Proof. reflexivity. Qed.
+
+(** Replace only the host's clone refusers. *)
+Definition input_with_clone_refusers (r : CloneRefusers) (inp : ProcInput)
+    : ProcInput :=
+  mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) (in_stdin inp)
+    (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp) (in_nofile inp)
+    (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
+    (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+    (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
+    (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
+    (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) r.
+
+Lemma in_clone_refusers_with_clone_refusers : forall r inp,
+  in_clone_refusers (input_with_clone_refusers r inp) = r.
 Proof. reflexivity. Qed.
 
 Lemma m_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b m,
@@ -7912,6 +8251,17 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
+(** THE LAUNCH'S CLOSE-ON-EXEC BITS: descriptors 0, 1 and 2 and every
+    additional inherited descriptor, each known CLEAR.  This is a fact
+    of [execve], not an assumption about the launcher: [begin_new_exec]
+    calls [do_close_on_exec] (fs/exec.c), which zeroes every nonzero word
+    of [fdt->close_on_exec] and closes each descriptor whose bit was set
+    (fs/file.c), so every descriptor a new image starts with has its bit
+    clear.  Read from the v6.18.46 tag. *)
+Definition launch_cloexec (inherited : list (word * list byte))
+    : list (word * bool) :=
+  [ (Z_to_bv 64 0, false); (Z_to_bv 64 1, false); (Z_to_bv 64 2, false) ]
+  ++ map (fun kv => (fst kv, false)) inherited.
 (** THE INHERITED DESCRIPTORS' TABLE ENTRIES: each element of
     [ProcInput.in_inherited_fds] as a live [OInherited] at offset 0, in
     the order the list gives.  [init_model] puts them after descriptors 0,
@@ -7983,7 +8333,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (mkFdState ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
                   (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
                   (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-                ++ inherited_table (in_inherited_fds inp)) [])
+                ++ inherited_table (in_inherited_fds inp)) []
+               (launch_cloexec (in_inherited_fds inp)))
     (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
@@ -7996,7 +8347,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        (in_abort_terminal inp) [] false (in_channel_reader inp)
        (in_sigpipe_default inp) (in_sigpipe_terminal inp) (Z_to_bv 64 0) [] false
        (Z_to_bv 64 1) (in_ppid inp) (in_cap_inheritable inp) false false
-       (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp))
+       (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) false
+       (in_clone_refusers inp))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -8007,7 +8359,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
     (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_cgroup_bpf_setsockopt (in_cgroup_bpf_setsockopt inp)
+  with_clone_refusers (in_clone_refusers inp)
+  (with_cgroup_bpf_setsockopt (in_cgroup_bpf_setsockopt inp)
   (with_selfkill_terminal (in_selfkill_terminal inp)
   (with_cap_inheritable (in_cap_inheritable inp)
   (with_ppid (in_ppid inp)
@@ -8023,7 +8376,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (mkModel
+    (with_cloexec (launch_cloexec (in_inherited_fds inp)) (mkModel
        ([ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
           (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
           (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
@@ -8034,11 +8387,16 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))))))).
+       None)))))))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_init_model : model.
+
+(** The launch's clone refusers reach the model unchanged. *)
+Lemma m_clone_refusers_init_model : forall reserved brk0 mbase sp lim inp,
+  m_clone_refusers (init_model reserved brk0 mbase sp lim inp) = in_clone_refusers inp.
+Proof. reflexivity. Qed.
 
 Lemma vdso_top_init_model : forall reserved brk0 mbase sp lim inp,
   vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
@@ -10451,6 +10809,251 @@ Lemma m_statpins_mkModel : forall fds vm stdin fs halted tid rlim,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_mkModel : model.
 
+(** The close-on-exec map against every setter and accessor.  Every one
+    is [reflexivity]: [with_cloexec] rebuilds [FdState] alone and carries
+    the other six subsystems across, and every other setter either passes
+    [m_fd m] through or rebuilds [FdState] from [m_cloexec m]. *)
+Lemma m_cloexec_with_cloexec : forall v m, m_cloexec (with_cloexec v m) = v.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_mkModel : forall fds vm stdin fs halted tid rlim,
+  m_cloexec (mkModel fds vm stdin fs halted tid rlim) = [].
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_fds : forall v m, m_cloexec (with_fds v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_pipes : forall v m, m_cloexec (with_pipes v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_accepted : forall v m,
+  m_cloexec (with_accepted v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vmmaps : forall v m, m_cloexec (with_vmmaps v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vm_backing : forall a b m,
+  m_cloexec (with_vm_backing a b m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_kernel : forall v m, m_cloexec (with_kernel v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vdso : forall v m, m_cloexec (with_vdso v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_vdso_bump : forall m,
+  m_cloexec (with_vdso_bump m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_stdin : forall v m, m_cloexec (with_stdin v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_urandom : forall v m,
+  m_cloexec (with_urandom v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_net : forall v m, m_cloexec (with_net v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_fs : forall v m, m_cloexec (with_fs v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_halted : forall v m, m_cloexec (with_halted v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_tid : forall v m, m_cloexec (with_tid v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_rlimit_core : forall v m,
+  m_cloexec (with_rlimit_core v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_utsname : forall v m,
+  m_cloexec (with_utsname v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_statpin : forall p bs m,
+  m_cloexec (with_statpin p bs m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_abort_terminal : forall v m,
+  m_cloexec (with_abort_terminal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_nofile : forall v m, m_cloexec (with_nofile v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_creds : forall v m, m_cloexec (with_creds v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_setsid_succeeded : forall m,
+  m_cloexec (with_setsid_succeeded m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_children : forall m,
+  m_cloexec (with_children m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigmask : forall v m,
+  m_cloexec (with_sigmask v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigaltstack_installed : forall m,
+  m_cloexec (with_sigaltstack_installed m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigabrt_pending : forall m,
+  m_cloexec (with_sigabrt_pending m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_pending : forall m,
+  m_cloexec (with_sigpipe_pending m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_channel_reader : forall v m,
+  m_cloexec (with_channel_reader v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_default : forall v m,
+  m_cloexec (with_sigpipe_default v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_sigpipe_terminal : forall v m,
+  m_cloexec (with_sigpipe_terminal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_pdeath_signal : forall v m,
+  m_cloexec (with_pdeath_signal v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_child_pids : forall v m,
+  m_cloexec (with_child_pids v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_child : forall v m,
+  m_cloexec (with_child v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_no_new_privs : forall v m,
+  m_cloexec (with_no_new_privs v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_dumpable : forall v m,
+  m_cloexec (with_dumpable v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_ppid : forall v m, m_cloexec (with_ppid v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_cap_inheritable : forall v m,
+  m_cloexec (with_cap_inheritable v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_ppid_answered : forall v m,
+  m_cloexec (with_ppid_answered v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_killed : forall v m, m_cloexec (with_killed v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+Lemma m_cloexec_with_clock : forall v m, m_cloexec (with_clock v m) = m_cloexec m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cloexec_with_cloexec m_cloexec_mkModel m_cloexec_with_fds
+  m_cloexec_with_pipes m_cloexec_with_accepted m_cloexec_with_vmmaps
+  m_cloexec_with_vm_backing m_cloexec_with_kernel m_cloexec_with_vdso
+  m_cloexec_with_vdso_bump m_cloexec_with_stdin m_cloexec_with_urandom
+  m_cloexec_with_net m_cloexec_with_fs m_cloexec_with_halted m_cloexec_with_tid
+  m_cloexec_with_rlimit_core m_cloexec_with_utsname m_cloexec_with_statpin
+  m_cloexec_with_abort_terminal m_cloexec_with_nofile m_cloexec_with_creds
+  m_cloexec_with_setsid_succeeded m_cloexec_with_children m_cloexec_with_sigmask
+  m_cloexec_with_sigaltstack_installed m_cloexec_with_sigabrt_pending
+  m_cloexec_with_sigpipe_pending m_cloexec_with_channel_reader
+  m_cloexec_with_sigpipe_default m_cloexec_with_sigpipe_terminal
+  m_cloexec_with_pdeath_signal m_cloexec_with_child_pids m_cloexec_with_child
+  m_cloexec_with_no_new_privs m_cloexec_with_dumpable m_cloexec_with_ppid
+  m_cloexec_with_cap_inheritable m_cloexec_with_ppid_answered
+  m_cloexec_with_killed m_cloexec_with_clock : model.
+
+(** Every other accessor against [with_cloexec]. *)
+Lemma m_fds_with_cloexec : forall v m, m_fds (with_cloexec v m) = m_fds m.
+Proof. reflexivity. Qed.
+Lemma m_pipes_with_cloexec : forall v m, m_pipes (with_cloexec v m) = m_pipes m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_cloexec : forall v m, m_vmmaps (with_cloexec v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_vm_lazy_with_cloexec : forall v m,
+  m_vm_lazy (with_cloexec v m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+Lemma m_vm_materialized_with_cloexec : forall v m,
+  m_vm_materialized (with_cloexec v m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_cloexec : forall v m, m_kernel (with_cloexec v m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_vdso_with_cloexec : forall v m, m_vdso (with_cloexec v m) = m_vdso m.
+Proof. reflexivity. Qed.
+Lemma m_stdin_with_cloexec : forall v m, m_stdin (with_cloexec v m) = m_stdin m.
+Proof. reflexivity. Qed.
+Lemma m_urandom_with_cloexec : forall v m,
+  m_urandom (with_cloexec v m) = m_urandom m.
+Proof. reflexivity. Qed.
+Lemma m_net_with_cloexec : forall v m, m_net (with_cloexec v m) = m_net m.
+Proof. reflexivity. Qed.
+Lemma m_conn_ix_with_cloexec : forall v m,
+  m_conn_ix (with_cloexec v m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+Lemma m_fs_with_cloexec : forall v m, m_fs (with_cloexec v m) = m_fs m.
+Proof. reflexivity. Qed.
+Lemma m_halted_with_cloexec : forall v m, m_halted (with_cloexec v m) = m_halted m.
+Proof. reflexivity. Qed.
+Lemma m_tid_with_cloexec : forall v m, m_tid (with_cloexec v m) = m_tid m.
+Proof. reflexivity. Qed.
+Lemma m_setsid_succeeded_with_cloexec : forall v m,
+  m_setsid_succeeded (with_cloexec v m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+Lemma m_has_children_with_cloexec : forall v m,
+  m_has_children (with_cloexec v m) = m_has_children m.
+Proof. reflexivity. Qed.
+Lemma m_sigaltstack_installed_with_cloexec : forall v m,
+  m_sigaltstack_installed (with_cloexec v m) = m_sigaltstack_installed m.
+Proof. reflexivity. Qed.
+Lemma m_sigmask_with_cloexec : forall v m,
+  m_sigmask (with_cloexec v m) = m_sigmask m.
+Proof. reflexivity. Qed.
+Lemma m_killed_with_cloexec : forall v m, m_killed (with_cloexec v m) = m_killed m.
+Proof. reflexivity. Qed.
+Lemma m_sigabrt_pending_with_cloexec : forall v m,
+  m_sigabrt_pending (with_cloexec v m) = m_sigabrt_pending m.
+Proof. reflexivity. Qed.
+Lemma m_abort_terminal_with_cloexec : forall v m,
+  m_abort_terminal (with_cloexec v m) = m_abort_terminal m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_pending_with_cloexec : forall v m,
+  m_sigpipe_pending (with_cloexec v m) = m_sigpipe_pending m.
+Proof. reflexivity. Qed.
+Lemma m_channel_reader_with_cloexec : forall v m,
+  m_channel_reader (with_cloexec v m) = m_channel_reader m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_default_with_cloexec : forall v m,
+  m_sigpipe_default (with_cloexec v m) = m_sigpipe_default m.
+Proof. reflexivity. Qed.
+Lemma m_sigpipe_terminal_with_cloexec : forall v m,
+  m_sigpipe_terminal (with_cloexec v m) = m_sigpipe_terminal m.
+Proof. reflexivity. Qed.
+Lemma m_pdeath_signal_with_cloexec : forall v m,
+  m_pdeath_signal (with_cloexec v m) = m_pdeath_signal m.
+Proof. reflexivity. Qed.
+Lemma m_child_pids_with_cloexec : forall v m,
+  m_child_pids (with_cloexec v m) = m_child_pids m.
+Proof. reflexivity. Qed.
+Lemma m_no_new_privs_with_cloexec : forall v m,
+  m_no_new_privs (with_cloexec v m) = m_no_new_privs m.
+Proof. reflexivity. Qed.
+Lemma m_dumpable_with_cloexec : forall v m,
+  m_dumpable (with_cloexec v m) = m_dumpable m.
+Proof. reflexivity. Qed.
+Lemma m_ppid_with_cloexec : forall v m, m_ppid (with_cloexec v m) = m_ppid m.
+Proof. reflexivity. Qed.
+Lemma m_cap_inheritable_with_cloexec : forall v m,
+  m_cap_inheritable (with_cloexec v m) = m_cap_inheritable m.
+Proof. reflexivity. Qed.
+Lemma m_reparent_unseen_with_cloexec : forall v m,
+  m_reparent_unseen (with_cloexec v m) = m_reparent_unseen m.
+Proof. reflexivity. Qed.
+Lemma m_reparent_moved_with_cloexec : forall v m,
+  m_reparent_moved (with_cloexec v m) = m_reparent_moved m.
+Proof. reflexivity. Qed.
+Lemma m_utsname_with_cloexec : forall v m,
+  m_utsname (with_cloexec v m) = m_utsname m.
+Proof. reflexivity. Qed.
+Lemma m_statpins_with_cloexec : forall v m,
+  m_statpins (with_cloexec v m) = m_statpins m.
+Proof. reflexivity. Qed.
+Lemma m_rlimit_core_with_cloexec : forall v m,
+  m_rlimit_core (with_cloexec v m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+Lemma m_nofile_with_cloexec : forall v m, m_nofile (with_cloexec v m) = m_nofile m.
+Proof. reflexivity. Qed.
+Lemma m_clock_with_cloexec : forall v m, m_clock (with_cloexec v m) = m_clock m.
+Proof. reflexivity. Qed.
+Lemma m_creds_with_cloexec : forall v m, m_creds (with_cloexec v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_cloexec m_pipes_with_cloexec m_vmmaps_with_cloexec
+  m_vm_lazy_with_cloexec m_vm_materialized_with_cloexec m_kernel_with_cloexec
+  m_vdso_with_cloexec m_stdin_with_cloexec m_urandom_with_cloexec m_net_with_cloexec
+  m_conn_ix_with_cloexec m_fs_with_cloexec m_halted_with_cloexec m_tid_with_cloexec
+  m_setsid_succeeded_with_cloexec m_has_children_with_cloexec
+  m_sigaltstack_installed_with_cloexec m_sigmask_with_cloexec m_killed_with_cloexec
+  m_sigabrt_pending_with_cloexec m_abort_terminal_with_cloexec
+  m_sigpipe_pending_with_cloexec m_channel_reader_with_cloexec
+  m_sigpipe_default_with_cloexec m_sigpipe_terminal_with_cloexec
+  m_pdeath_signal_with_cloexec m_child_pids_with_cloexec m_no_new_privs_with_cloexec
+  m_dumpable_with_cloexec m_ppid_with_cloexec m_cap_inheritable_with_cloexec
+  m_reparent_unseen_with_cloexec m_reparent_moved_with_cloexec
+  m_utsname_with_cloexec m_statpins_with_cloexec m_rlimit_core_with_cloexec
+  m_nofile_with_cloexec m_clock_with_cloexec m_creds_with_cloexec : model.
+
 (** Opaque to reduction, on purpose.  [cbn]/[simpl] must not walk into the
     nesting: a proof that wants past an accessor uses the rewrites above,
     which keeps [m_fs model] looking like [m_fs model] wherever it is not
@@ -10458,6 +11061,8 @@ Proof. reflexivity. Qed.
 
 Arguments m_fds : simpl never.
 Arguments with_fds : simpl never.
+Arguments m_cloexec : simpl never.
+Arguments with_cloexec : simpl never.
 
 Arguments m_vmmaps : simpl never.
 Arguments with_vmmaps : simpl never.
@@ -11415,6 +12020,14 @@ Lemma m_reparent_moved_init_model : forall reserved brk0 mbase sp lim inp,
   m_reparent_moved (init_model reserved brk0 mbase sp lim inp) = false.
 Proof. reflexivity. Qed.
 
+(** Every launch descriptor is known close-on-exec CLEAR; see
+    [launch_cloexec]. *)
+Lemma m_cloexec_init_model : forall reserved brk0 mbase sp lim inp,
+  m_cloexec (init_model reserved brk0 mbase sp lim inp)
+    = launch_cloexec (in_inherited_fds inp).
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cloexec_init_model : model.
+
 Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,
   m_killed (init_model reserved brk0 mbase sp lim inp) = None.
 Proof. reflexivity. Qed.
@@ -11451,6 +12064,18 @@ Lemma m_selfkill_terminal_init_model : forall reserved brk0 mbase sp lim inp,
     = in_selfkill_terminal inp.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_selfkill_terminal_init_model : model.
+
+(** No SIGCHLD install at launch: the process has made none yet, whatever
+    disposition its launcher left ([procst_sigchld_dfl]). *)
+Lemma m_sigchld_dfl_init_model : forall reserved brk0 mbase sp lim inp,
+  m_sigchld_dfl (init_model reserved brk0 mbase sp lim inp) = false.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigchld_dfl_init_model : model.
+
+Lemma m_sigchld_dfl_with_sigchld_dfl : forall b m,
+  m_sigchld_dfl (with_sigchld_dfl b m) = b.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigchld_dfl_with_sigchld_dfl : model.
 
 Lemma m_pipes_init_model : forall reserved brk0 mbase sp lim inp,
   m_pipes (init_model reserved brk0 mbase sp lim inp) =

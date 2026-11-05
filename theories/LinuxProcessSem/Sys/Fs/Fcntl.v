@@ -534,8 +534,8 @@ Definition procfd_dir_f_flags (fl : word) : Z :=
       THIS DECLINE IS THEREFORE CLOSABLE, and by one change: an open
       flag word recorded on the [FdEntry] rather than derived from the
       constructor.  That change would also retire [Uapi.O_NONBLOCK]'s
-      first bullet; a close-on-exec field beside it is what would
-      narrow [F_GETFD] from its two answers to one.
+      first bullet.  (The close-on-exec bit is not part of it: that bit
+      is the descriptor table's, and [State.m_cloexec] records it.)
 
     (Linux v6.18.46 throughout: fs/fcntl.c [do_fcntl] case [F_GETFL];
     fs/open.c [build_open_flags] and [do_dentry_open]; fs/file_table.c
@@ -631,12 +631,22 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          This answer has not been implemented for this kind. *)
   end.
 
+(** The bit an [F_SETFD] writes: [argi & FD_CLOEXEC], so only bit 0 of
+    [arg] counts (fs/fcntl.c [do_fcntl], read at v6.18.44; identical at
+    v6.18.46). *)
+Definition setfd_cloexec_b (arg : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned arg) (bv_unsigned FD_CLOEXEC)) 0).
+
+(** [F_GETFD]'s answer for a known bit:
+    [get_close_on_exec(fd) ? FD_CLOEXEC : 0]. *)
+Definition getfd_word (b : bool) : word := if b then FD_CLOEXEC else Z_to_bv 64 0.
+
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on
     every other one.  Three of the four are answered on every fd kind —
-    [F_GETFD] with BOTH of the answers Linux can give, because the model
-    does not record the bit it reports; the fourth, [F_GETFL], is
-    answered on the kinds whose flag word is a function of the entry,
-    and [getfl_f_flags] above holds that argument.
+    [F_GETFD] with the bit the model KNOWS ([State.m_cloexec]), or with
+    BOTH of the answers Linux can give where it knows none; the fourth,
+    [F_GETFL], is answered on the kinds whose flag word is a function of
+    the entry, and [getfl_f_flags] above holds that argument.
 
     Dropbear is the reason this exists.  It is the only fcntl caller in
     reach: this repository's own reference binaries are static,
@@ -696,52 +706,42 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     [set_close_on_exec(fd, argi & FD_CLOEXEC)] followed by an
     unconditional 0 — there is no error path, and only bit 0 of [arg] is
     consulted, so [F_SETFD, 0xdeadbeef] SETS the flag and [F_SETFD, 2]
-    CLEARS it rather than being an unknown-flag error.
+    CLEARS it rather than being an unknown-flag error ([setfd_cloexec_b]).
+    The bit it writes is RECORDED: the descriptor's key in
+    [State.m_cloexec] becomes that bit ([State.cloexec_set]), which is
+    [__set_close_on_exec] on [fdt->close_on_exec] (fs/fcntl.c
+    [do_fcntl], fs/file.c [set_close_on_exec]; read at v6.18.44,
+    identical at v6.18.46).
 
-    The close-on-exec bit the call sets is NOT recorded, and that is
-    sound rather than sloppy.  The bit has four readers in the kernel:
-    [F_GETFD]; [do_close_on_exec] on the [execve] path; [alloc_bprm]'s
-    use of the DIRFD's bit to set BINPRM_FLAGS_PATH_INACCESSIBLE for
-    [execveat]; and [/proc/<pid>/fdinfo/<fd>], which reports it as
-    O_CLOEXEC in its [flags:] line.  (Nothing INHERITS it: [dup], [dup2],
-    [dup3], [F_DUPFD] and [F_DUPFD_CLOEXEC] each derive the new
-    descriptor's bit from their own argument, so a later [dup] cannot
-    make it observable either.)  The first is modeled below and admits
-    BOTH values, so it holds whichever bit the program set.  The second
-    and third are unreachable because execve and execveat are not
-    modeled syscalls.  The fourth is unreachable because
-    [Open.openat_spec] answers only three procfs shapes and declines
-    every other name or flag word under /proc.  In particular an
-    O_RDONLY open of an fdinfo file declines; an O_PATH descriptor
-    cannot be read.  Thus no modeled read reaches fdinfo.
-
-    So no modeled execution is constrained by the difference between
-    setting the bit and not: [F_GETFD] admits the same two answers
-    either way.  Recording it would buy one thing, an [F_GETFD] that
-    answers one value rather than two.  The honest caveat is that the
-    [F_SETFD] arm buys nothing for the program that motivated it: Dropbear's
-    [F_SETFD] is the setup for a [fexecve] the model declines one syscall
-    later, so a conforming fcntl here must not be read as coverage of the
-    close-on-exec story.
-
-    [F_GETFD] answers 0 or FD_CLOEXEC, EITHER ONE, on every fd kind.
-    The kernel's arm is [err = get_close_on_exec(fd) ? FD_CLOEXEC : 0]
-    (Linux v6.18.46, fs/fcntl.c [do_fcntl]) — a bit of the fd TABLE, not
-    of the open file description, and one this model does not hold:
-    [State.FdEntry] has no field for it, [F_SETFD] above writes nothing,
-    and a descriptor minted with O_CLOEXEC ([Open.openat_spec],
-    [File.dup3_spec], [Pipe.pipe2_spec]) or SOCK_CLOEXEC
-    ([Net.Socket.socket_spec], [Net.Socket.accept4_spec]) is the same
-    entry as one minted without.
-    So the arm offers both answers as an [alt].  That is sound for every
-    program, because Linux's answer is one of the two; what it gives up
-    is precision, since a program that BRANCHES on the bit has both
-    continuations admitted.  [arg] is not read, by the kernel or here,
+    [F_GETFD] answers the RECORDED bit where there is one.  The kernel's
+    arm is [err = get_close_on_exec(fd) ? FD_CLOEXEC : 0] (fs/fcntl.c
+    [do_fcntl], fs/file.c [get_close_on_exec]; read at v6.18.44,
+    identical at v6.18.46) — a bit of the fd TABLE, not of the open file
+    description.  A descriptor whose bit the model knows answers exactly
+    FD_CLOEXEC or 0 ([getfd_word]).  One whose bit it does not know —
+    minted by a creating arm that records none, such as
+    [Net.Socket.socket_spec] with SOCK_CLOEXEC or [Pipe.pipe2_spec] with
+    O_CLOEXEC, or a fixture built by [State.mkModel] — answers 0 or
+    FD_CLOEXEC, EITHER ONE, as an [alt].
+    That is sound because Linux's answer is one of the two, and because
+    every key in the map is an open descriptor
+    ([Checks.CloexecKeys.cloexec_keys_open]), so a creating arm that
+    installs at a free number never inherits a stale key.  The writers
+    of the map are [F_SETFD] above, [Open.openat_spec] (O_CLOEXEC),
+    [File.dup_spec] (clear), [File.dup3_spec] (O_CLOEXEC on [newfd]),
+    and the two that forget a key, [Open.close_spec] and
+    [File.close_range_spec].  [arg] is not read, by the kernel or here,
     and a closed fd is still -EBADF because the lookup runs first.
-    Narrowing the arm to one answer needs a field for the bit and an
-    [F_SETFD] arm that writes it, and that is what would make the
-    O_CLOEXEC and SOCK_CLOEXEC ignores WRONG rather than merely narrow —
-    so those decisions still stand or fall together.
+
+    The bit has three more readers in the kernel, none reachable here:
+    [do_close_on_exec] on the [execve] path and [alloc_bprm]'s use of the
+    DIRFD's bit for [execveat], since neither call is modeled; and
+    [/proc/<pid>/fdinfo/<fd>], since no modeled open can read one:
+    [Open.openat_proc_spec] opens a procfs name it does not list only as
+    an O_PATH descriptor, which nothing reads.  (Nothing
+    INHERITS the bit: [dup], [dup2], [dup3], [F_DUPFD] and
+    [F_DUPFD_CLOEXEC] each derive the new descriptor's bit from their own
+    argument.)
 
     [F_SETFL] answers 0 exactly when it provably changes nothing — see
     [setfl_noop_on] — and declines otherwise.  The declined half is the
@@ -825,19 +825,24 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     by [Open.openat_proc_spec]) answers -EBADF for any command outside
     the allow-list of [check_fcntl_cmd] ([SYSCALL_DEFINE3(fcntl)],
     fs/fcntl.c, read at v6.18.44; identical at v6.18.46): [F_SETFD] and
-    [F_GETFD] are on the list, so their kind-blind answers below hold
-    for it too, and [F_SETFL] (not on the list) and [F_GETFL] decline
-    on it through [setfl_noop_on] and [getfl_f_flags]. *)
+    [F_GETFD] are on the list, so their answers below hold for it too,
+    and [F_SETFL] (not on the list) and [F_GETFL] decline on it through
+    [setfl_noop_on] and [getfl_f_flags]. *)
 Definition fcntl_spec (fd cmd arg : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before [cmd] is examined *)
   | Some e =>
-      if bv_eqb cmd F_SETFD then ret_only (Z_to_bv 64 0)
-        (* always 0; the bit it sets is not recorded *)
-      else if bv_eqb cmd F_GETFD
-      then alt (ret_only (Z_to_bv 64 0)) (ret_only FD_CLOEXEC)
-        (* the unrecorded bit: either of [do_fcntl]'s two answers *)
+      if bv_eqb cmd F_SETFD
+      then modify (with_cloexec (cloexec_set (m_cloexec m) fd (setfd_cloexec_b arg))) ;;
+           ret_only (Z_to_bv 64 0)
+        (* always 0, and the descriptor's bit becomes [argi & FD_CLOEXEC] *)
+      else if bv_eqb cmd F_GETFD then
+        match cloexec_lookup (m_cloexec m) fd with
+        | Some b => ret_only (getfd_word b)      (* the recorded bit *)
+        | None => alt (ret_only (Z_to_bv 64 0)) (ret_only FD_CLOEXEC)
+            (* an unknown bit: either of [do_fcntl]'s two answers *)
+        end
       else if bv_eqb cmd F_SETFL && setfl_noop_on e arg
       then ret_only (Z_to_bv 64 0)               (* a provably empty F_SETFL: real 0 *)
       else if bv_eqb cmd F_GETFL then

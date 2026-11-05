@@ -24,7 +24,7 @@ Definition one_sb (mf : MountFlags) (s : SuperBlock) (ds : list Dentry) (ins : l
   let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 mf no_flags false false None None] in
   let st := with_userns st [root_user] in
   let st := with_mntns st [mk_mntns 1 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [s] in
   with_tree st ds ins.
 Definition tmpfs_sb : SuperBlock := mkSb 1 SbTmpfs 1 1 false 16914836 false false false.
@@ -81,10 +81,10 @@ Example mkdirat_existing_before_readonly :
                     base_model base_ctx existing_ro_state) = Some (-17).
 Proof. vm_compute. reflexivity. Qed.
 
-(** procfs has no mkdir operation, so vfs_mkdir returns EPERM. *)
-Example mkdirat_procfs_eperm :
+(** An unlisted procfs root name is not known to be absent. *)
+Example mkdirat_procfs_unknown_declines :
   ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
-                    base_model base_ctx proc_state) = Some (-1).
+                    base_model base_ctx proc_state) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The parent walk fails before creation for a missing directory. *)
@@ -106,18 +106,297 @@ Definition newest_link (o : ext_outcome) : option (Z * list Z) :=
   | EUnmodeled => None
   end.
 
-Definition symlink_in : SyscallInput :=
+Definition symlink_to (p : list Z) : SyscallInput :=
   call 36 [PATH; -100; PATH + 128]
        (fun a => match at_ PATH (target_fd0 ++ [0]) a with
-                 | Some b => Some b | None => at_ (PATH + 128) (s_link ++ [0]) a
+                 | Some b => Some b | None => at_ (PATH + 128) (p ++ [0]) a
                  end)
        (fun _ => None).
+Definition symlink_in : SyscallInput := symlink_to s_link.
 
 (** symlinkat stores its target bytes on a new tmpfs symbolic link. *)
 Example symlinkat_tmpfs_target :
   ret_of (symlinkat_fn symlink_in base_model base_ctx base_state) = Some 0
   /\ newest_link (symlinkat_fn symlink_in base_model base_ctx base_state) = Some (511, target_fd0).
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** Procfs lookup precedes the deferred write error (Linux v6.18.46,
+    fs/namei.c:4231-4237). Only enumerated directories decide absence. *)
+Definition proc_listed_state : NsState :=
+  one_sb ro_flags (FilesCases.sb 1 1 (SbProc 1) 40864)
+    [mkDentry 1 1 None [] 1;
+     mkDentry 2 1 (Some 1%positive) (bytes [108; 105; 115; 116; 101; 100]) 2]
+    [mkInode 1 IDir 365 0 0 0 [] false; mkInode 2 IDir 365 0 0 0 [] false].
+Definition devpts_state (mf : MountFlags) (perm : Z) : NsState :=
+  one_sb mf (FilesCases.sb 1 1 SbDevpts 7377)
+    [mkDentry 1 1 None [] 1] [mkInode 1 IDir perm 1000 1002 0 [] false].
+
+Example mkdirat_procfs_listed_absent_before_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;108;105;115;116;101;100;47;110;101;119]) (fun _ => None))
+    base_model base_ctx proc_listed_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_task_unknown_declines :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;110;101;119]) (fun _ => None))
+    base_model base_ctx proc_state) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_missing_fd_is_enoent :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;102;100;47;57]) (fun _ => None))
+    base_model base_ctx proc_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_procfs_known_fd_is_eexist :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511]
+      (path_mem [47;115;101;108;102;47;102;100;47;48]) (fun _ => None))
+    base_model base_ctx proc_state) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+(** simple_lookup's NAME_MAX error precedes the deferred EROFS
+    (fs/libfs.c:71-72; fs/namei.c:4231-4237, Linux v6.18.46). *)
+Example mkdirat_devpts_namemax_precedes_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (47 :: repeat 120 256)) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_readonly_precedes_permission :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 365)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_write_permission_precedes_missing_operation :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_missing_operation_is_eperm :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_readonly_precedes_missing_operation :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state ro_flags 511))
+    = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Definition trailing_symlink_in : SyscallInput := symlink_to (s_link ++ [47]).
+
+Example symlinkat_devpts_trailing_name_keeps_enoent :
+  ret_of (symlinkat_fn trailing_symlink_in base_model base_ctx
+    (devpts_state ro_flags 511)) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Definition devpts_unmapped_state (mf : MountFlags) (perm : Z) : NsState :=
+  with_userns (devpts_state mf perm)
+    [FilesCases.uns 2 None 0 None None;
+     FilesCases.uns 1 (Some 2%positive) 1 None None].
+
+Example mkdirat_devpts_unmapped_creator_is_eoverflow :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 511)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_readonly_precedes_unmapped_creator :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state ro_flags 511)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+(** do_mkdirat requests LOOKUP_DIRECTORY, so a trailing slash still
+    creates a directory (fs/namei.c:4228-4229, 4479, Linux v6.18.46). *)
+Example mkdirat_tmpfs_trailing_slash_creates_directory :
+  let o := mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx base_state in
+  ret_of o = Some 0 /\ newest_dir o = Some (2, 493, 1000, 1002)
+  /\ match o with
+     | EOk _ _ _ st _ =>
+         (option_map d_id (child_dentry st 1 (bytes [110;101;119])),
+          option_map ino_kind (dentry_inode st 2)) = (Some 2%positive, Some IDir)
+     | EUnmodeled => False
+     end.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_readonly :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state ro_flags 365)) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_unmapped_before_permission :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_permission :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_trailing_slash_missing_operation :
+  ret_of (mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_devpts_unmapped_before_write_permission :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model (with_user_ns base_ctx 2) (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_listed_absent_before_readonly :
+  ret_of (symlinkat_fn (symlink_to [47;108;105;115;116;101;100;47;110;101;119])
+    base_model base_ctx proc_listed_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_missing_fd_is_enoent :
+  ret_of (symlinkat_fn (symlink_to [47;115;101;108;102;47;102;100;47;57])
+    base_model base_ctx proc_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_procfs_known_fd_is_eexist :
+  ret_of (symlinkat_fn (symlink_to [47;115;101;108;102;47;102;100;47;48])
+    base_model base_ctx proc_state) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_namemax_precedes_readonly :
+  ret_of (symlinkat_fn (symlink_to (47 :: repeat 120 256))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+(** simple_lookup's NAME_MAX check precedes the negative-dentry ENOENT
+    (fs/libfs.c:71-72; fs/namei.c:1705, 1713-1716, Linux v6.18.46). *)
+Example symlinkat_tmpfs_trailing_namemax_precedes_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 256) ++ [47]))
+    base_model base_ctx (one_sb ro_flags tmpfs_sb [mkDentry 1 1 None [] 1] [root_dir]))
+    = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_trailing_namemax_precedes_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 256) ++ [47]))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-36).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_tmpfs_trailing_name_keeps_enoent :
+  ret_of (symlinkat_fn trailing_symlink_in base_model base_ctx base_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_tmpfs_trailing_name_at_namemax_is_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 255) ++ [47]))
+    base_model base_ctx base_state) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_trailing_name_at_namemax_is_enoent :
+  ret_of (symlinkat_fn (symlink_to ((47 :: repeat 120 255) ++ [47]))
+    base_model base_ctx (devpts_state ro_flags 511)) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+(** An unlisted host name is not known absent: the filesystem lookup
+    may fail, or its positive dentry may give EEXIST before the deferred
+    write error (Linux v6.18.46, fs/namei.c:1705-1721, 4228-4237). *)
+Definition host_state : NsState :=
+  with_sbs base_state [FilesCases.sb 1 1 SbHost 61267].
+
+Example symlinkat_host_trailing_unknown_declines :
+  symlinkat_fn trailing_symlink_in base_model base_ctx host_state = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example mkdirat_host_trailing_unknown_declines :
+  mkdirat_fn
+    (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+    base_model base_ctx host_state = EUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_host_trailing_existing_before_readonly :
+  ret_of (symlinkat_fn (symlink_to (s_exists ++ [47])) base_model base_ctx
+    (with_sbs existing_ro_state [FilesCases.sb 1 1 SbHost 61267])) = Some (-17).
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions symlinkat_host_trailing_unknown_declines.
+Print Assumptions mkdirat_host_trailing_unknown_declines.
+Print Assumptions symlinkat_host_trailing_existing_before_readonly.
+
+Example symlinkat_devpts_unmapped_before_write_permission :
+  ret_of (symlinkat_fn symlink_in base_model (with_user_ns base_ctx 2)
+    (devpts_unmapped_state no_flags 365)) = Some (-75).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_write_permission_precedes_missing_operation :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state no_flags 365)) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+Example symlinkat_devpts_missing_operation_is_eperm :
+  ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_state no_flags 511)) = Some (-1).
+Proof. vm_compute. reflexivity. Qed.
+
+(** The devpts superblock of [devpts_state] is mounted a second time, as
+    mount 2 of mount namespace 2.  The caller creates through mount 1 of
+    namespace 1.  With namespace 2 entered from outside, namespace 1 holds
+    no open mount and the walk answers, but an outside task in namespace 2
+    can remount superblock 1 read-only through mount 2 ([do_remount],
+    fs/namespace.c:3248-3294, whose [reconfigure_super] at 3280 sets
+    SB_RDONLY, Linux v6.18.46).  [__mnt_is_readonly] (365-368) then
+    refuses write access through every mount of that superblock, so
+    [filename_create]'s deferred [mnt_want_write] answers EROFS
+    (fs/namei.c:4223, 4236-4237).  So no answer is given
+    ([Propagation.flags_open]).  The
+    control enters only namespace 9, which holds no mount on superblock 1,
+    and keeps the EPERM. *)
+Definition devpts_shared_state (entered : list positive) : NsState :=
+  let st := devpts_state no_flags 511 in
+  let st := with_mounts st (ns_mounts st ++
+              [mkMount 2 2 None 1 1 1 no_flags no_flags false false None None]) in
+  let st := with_mntns st (ns_mntns st ++ [mk_mntns 2 1 2 false]) in
+  with_entered_mntns st entered.
+
+Example devpts_create_shared_sb_entered_declines :
+  mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_shared_state [2%positive]) = EUnmodeled
+  /\ mkdirat_fn (call 34 [-100; PATH; 511] (path_mem (s_new ++ [47])) (fun _ => None))
+       base_model base_ctx (devpts_shared_state [2%positive]) = EUnmodeled
+  /\ symlinkat_fn symlink_in base_model base_ctx (devpts_shared_state [2%positive])
+     = EUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example devpts_create_shared_sb_other_entered_answers :
+  ret_of (mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None))
+    base_model base_ctx (devpts_shared_state [9%positive])) = Some (-1)
+  /\ ret_of (symlinkat_fn symlink_in base_model base_ctx (devpts_shared_state [9%positive]))
+     = Some (-1)
+  /\ ret_of (symlinkat_fn (symlink_to (47 :: repeat 120 256)) base_model base_ctx
+       (devpts_shared_state [2%positive])) = Some (-36).
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions devpts_create_shared_sb_entered_declines.
+Print Assumptions devpts_create_shared_sb_other_entered_answers.
+
+Print Assumptions mkdirat_tmpfs_trailing_slash_creates_directory.
+Print Assumptions mkdirat_devpts_trailing_slash_readonly.
+Print Assumptions mkdirat_devpts_trailing_slash_unmapped_before_permission.
+Print Assumptions mkdirat_devpts_trailing_slash_permission.
+Print Assumptions mkdirat_devpts_trailing_slash_missing_operation.
+Print Assumptions mkdirat_devpts_unmapped_before_write_permission.
+Print Assumptions symlinkat_procfs_listed_absent_before_readonly.
+Print Assumptions symlinkat_procfs_missing_fd_is_enoent.
+Print Assumptions symlinkat_procfs_known_fd_is_eexist.
+Print Assumptions symlinkat_devpts_namemax_precedes_readonly.
+Print Assumptions symlinkat_tmpfs_trailing_namemax_precedes_enoent.
+Print Assumptions symlinkat_devpts_trailing_namemax_precedes_enoent.
+Print Assumptions symlinkat_tmpfs_trailing_name_keeps_enoent.
+Print Assumptions symlinkat_tmpfs_trailing_name_at_namemax_is_enoent.
+Print Assumptions symlinkat_devpts_trailing_name_at_namemax_is_enoent.
+Print Assumptions symlinkat_devpts_unmapped_before_write_permission.
+Print Assumptions symlinkat_devpts_write_permission_precedes_missing_operation.
+Print Assumptions symlinkat_devpts_missing_operation_is_eperm.
 
 Definition identity_map : list IdExtent := [mkExtent 0 0 4294967296].
 Definition map_root : UserNs := mkUserNs 1 None 0 0 (Some identity_map) (Some identity_map) true false INT_MAX true.
@@ -359,7 +638,7 @@ Definition unlink_state (dir_perm fuid fgid : Z) (extra : list Mount) : NsState 
   let st := with_mounts empty_nsstate (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra) in
   let st := with_userns st [root_user] in
   let st := with_mntns st [mk_mntns 1 1 1 false; mk_mntns 2 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [tmpfs_sb] in
   with_tree st
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
