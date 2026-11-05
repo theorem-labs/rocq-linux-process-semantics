@@ -2621,8 +2621,8 @@ Definition clone3_spec_lists (uargs size : word) : Sys SyscallEffect :=
 (** The calls of 435 that reach [copy_process] in a class the model
     answers: a size and a copy that give a struct ([clone3_copy]), and
     the fork image.  At [CLONE_ARGS_SIZE] that is a struct the copy read
-    whole; a short struct and a long one with a zero tail reach
-    [copy_process] the same way ([clone3_answered_b_88]). *)
+    whole ([clone3_answered_b_88]); a short struct and a long one with a
+    zero tail reach [copy_process] the same way ([clone3_copy]). *)
 Definition clone3_answered_b (uargs size : word) (i : SyscallInput) : bool :=
   match clone3_copy (in_mem i) uargs (bv_unsigned size) with
   | C3Struct _ _ bs => clone3_fork_args_b bs

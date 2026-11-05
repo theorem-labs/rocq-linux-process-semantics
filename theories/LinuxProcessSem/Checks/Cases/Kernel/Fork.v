@@ -736,8 +736,9 @@ Example clone3_size_80_into_cgroup_einval :
        (c3_err EINVAL [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
 
-(** Design row S2, case 11, and the owner's case: [size] 96, a non-zero
-    byte (90) in the tail, bytes 88 to 95, and an unreadable head: the
+(** A long struct whose tail test answers before the head is read:
+    [size] 96, a non-zero byte (90) in the tail, bytes 88 to 95, and an
+    unreadable head: the
     struct sits so that its 88 head bytes end a page with nothing mapped
     and its tail begins the next, mapped, page.  The tail test runs first
     and answers -E2BIG having read the tail's one word; the head is never
@@ -776,7 +777,7 @@ Example clone3_size_96_tail_before_head :
        (c3_err EFAULT []) clone3_model = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
-(** Design row S2, case 15: [size] 200, the struct placed so that its
+(** The tail walk's order: [size] 200, the struct placed so that its
     byte 96 starts a page with nothing mapped.  The tail's first word,
     bytes 88 to 95, is readable and the second faults.  A non-zero byte
     at 90: -E2BIG at the first word, the second never read.  Bytes 88 to
