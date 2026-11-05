@@ -33,7 +33,7 @@ Definition tables (ms : list Mount) (us : list UserNs) (ps : list PidNs) : NsSta
 Definition host : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
          [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-         [mkPidNs 1 None 1 0 0].
+         [mk_pidns 1 None 1 0 0].
 
 Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 Definition fullcaps : CapSets := mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0.
@@ -78,7 +78,7 @@ Definition host_rootfs : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None;
           mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
          [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-         [mkPidNs 1 None 1 0 0].
+         [mk_pidns 1 None 1 0 0].
 
 Definition caller_rootfs : NsCtx := with_cwd (with_root caller (2%positive, 2%positive)) (2%positive, 2%positive).
 
@@ -189,7 +189,7 @@ Definition inside : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
          [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
           mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-         [mkPidNs 1 None 1 0 0; mkPidNs 2 (Some 1%positive) 2 1 1].
+         [mk_pidns 1 None 1 0 0; mk_pidns 2 (Some 1%positive) 2 1 1].
 
 Definition shell : NsCtx := with_caps no_admin_inside fullcaps.
 
@@ -271,13 +271,13 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 (** Allocation visits namespace 3 before 2.  A failure at 2 leaves 3's
     cursor advanced but 2's unchanged (kernel/pid.c:191-251,294-299). *)
 Definition nested_pids : NsState :=
-  with_pidns inside [mkPidNs 1 None 1 0 0;
-    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 1].
+  with_pidns inside [mk_pidns 1 None 1 0 0;
+    mk_pidns 2 (Some 1%positive) 2 1 7; mk_pidns 3 (Some 2%positive) 2 2 1].
 Definition nested_shell : NsCtx :=
   with_pids (with_pid_ns shell 3) [(3%positive, 1); (2%positive, 7); (1%positive, 139)].
 Definition inner_cursor_advanced : NsState :=
-  with_pidns nested_pids [mkPidNs 1 None 1 0 0;
-    mkPidNs 2 (Some 1%positive) 2 1 7; mkPidNs 3 (Some 2%positive) 2 2 2].
+  with_pidns nested_pids [mk_pidns 1 None 1 0 0;
+    mk_pidns 2 (Some 1%positive) 2 1 7; mk_pidns 3 (Some 2%positive) 2 2 2].
 
 Example partial_failure_state_is_new :
   inner_cursor_advanced <> nested_pids /\
@@ -369,7 +369,7 @@ Print Assumptions early_newns_error_keeps_pid_state.
 Definition deep : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
          [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
-         [mkPidNs 1 None 1 0 0; mkPidNs 7 (Some 1%positive) 1 32 5].
+         [mk_pidns 1 None 1 0 0; mk_pidns 7 (Some 1%positive) 1 32 5].
 
 Definition admin_in_deep : NsCtx := with_caps (with_pids (with_pid_ns init_nsctx 7) [(7%positive, 1)]) fullcaps.
 
@@ -407,3 +407,176 @@ Example clone_tables_run_succeeds : forall m,
   ALL_NS = 2080505873 /\
   exists child r st', clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138 = CnOk child r st'.
 Proof. intros m. split; [reflexivity|]. vm_compute. do 3 eexists. reflexivity. Qed.
+
+(** A launch with a different children's namespace states the whole
+    measured context, not only that one field.  The launcher is pid 1 of
+    A (2), root in the host user namespace, with full capability sets,
+    root/cwd at (1,1), umask 022, no securebits or close-on-exec entries.
+    B (3) was made by its unshare, with creation-to-launch exclusion of
+    outside entry/allocation/control writes; hence B is empty at cursor 0.
+    A's clear range is a separate launch fact, not inferred from B. *)
+Definition launch_children_ctx : NsCtx :=
+  with_pidns_children
+    (with_cloexec (with_securebits (with_caps
+      (with_umask (with_cwd (with_root
+        (with_pids (with_uts_ns (with_net_ns (with_pid_ns
+          (with_mount_ns (with_user_ns init_nsctx 1) 1) 2) 1) host_uts)
+          [(2%positive, 1); (1%positive, 137)]) (1%positive, 1%positive))
+        (1%positive, 1%positive)) 18) fullcaps) 0) []) 3.
+
+Definition launch_children_state : NsState :=
+  with_pidns host [mk_pidns 1 None 1 0 0;
+    pidns_with_cursor_clear (pidns_with_alloc (mk_pidns 2 (Some 1%positive) 1 1 7) PaInit) true;
+    pidns_with_alloc (mk_pidns 3 (Some 2%positive) 1 2 0) PaEmpty].
+
+Definition launch_children_model (m : Model) : Model :=
+  with_dumpable (Z_to_bv 64 1) (with_no_new_privs false (with_creds (creds 0) m)).
+
+Example clone_into_empty_children : forall m,
+  let o := clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx launch_children_state 140 in
+  option_map cx_pids (child_of o) = Some [(3%positive, 1); (2%positive, 8); (1%positive, 140)] /\
+  ret_of o = Some (Some 8) /\
+  option_map cx_pidns_children (child_of o) = Some None /\
+  option_map (fun st => option_map pidns_alloc (find_pidns st 3)) (st_of o) = Some (Some PaInit).
+Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
+
+Example clone_newpid_with_other_children_is_einval : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) (launch_children_model m)
+    launch_children_ctx launch_children_state 140 = CnErr 22 launch_children_state.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example other_children_is_not_flat :
+  flat_view launch_children_ctx launch_children_state = false /\
+  flat_view (with_pidns_children init_nsctx 3) empty_nsstate = false.
+Proof. split; reflexivity. Qed.
+
+Example equal_children_is_default : forall m,
+  clone_ns_exact SIGCHLD m (with_pidns_children shell (cx_pidns shell)) inside 140
+    = clone_ns_exact SIGCHLD m shell inside 140.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example released_equal_children_keeps_context : forall m,
+  let ctx := with_pidns_children caller (cx_pidns caller) in
+  clone_ns_exact SIGCHLD m ctx host 140 = CnOk ctx None host.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example unknown_children_declines : forall m,
+  clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
+    (with_pidns launch_children_state [mk_pidns 1 None 1 0 0;
+      mk_pidns 2 (Some 1%positive) 1 1 7; mk_pidns 3 (Some 2%positive) 1 2 1]) 140
+    = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example initialized_children_declines : forall m,
+  match clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx launch_children_state 140 with
+  | CnOk _ _ st => clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx st 141 = CnUnmodeled
+  | _ => False
+  end.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example failed_first_child_closes_namespace : forall m,
+  let st := pid_failed launch_children_state 3 in
+  option_map pidns_alloc (find_pidns st 3) = Some PaClosed /\
+  map pidns_last (ns_pidns st) = [0; 8; 1] /\
+  clone_ns SIGCHLD (launch_children_model m) launch_children_ctx launch_children_state 140 (CnErr 12 st).
+Proof.
+  intros m. split; [reflexivity|]. split; [reflexivity|]. right. split.
+  - vm_compute. intros H. discriminate H.
+  - exists 12, (pid_failed launch_children_state 3). split; [lia|].
+    split; [|reflexivity]. right. split; [vm_compute; reflexivity|left; reflexivity].
+Qed.
+
+Example partial_first_child_resets_only_inner :
+  map pidns_last (ns_pidns (pid_partial launch_children_state 3 2)) = [0; 8; 0] /\
+  option_map pidns_alloc (find_pidns (pid_partial launch_children_state 3 2) 3) = Some PaEmpty.
+Proof. split; reflexivity. Qed.
+
+(** Outside interference and launch occupancy are distinct inputs. *)
+Example outside_pid_allocator_declines : forall m,
+  clone_ns_exact SIGCHLD m shell
+    (with_env inside (env_with_outside_pids (ns_env inside) true)) 140 = CnUnmodeled /\
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell
+    (with_env inside (env_with_outside_pids (ns_env inside) false)) 140))
+    = Some [(2%positive, 2); (1%positive, 140)].
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+Definition cursor_launch (limit : Z) (clear : bool) (last : Z) : NsState :=
+  with_pidns inside [mk_pidns 1 None 1 0 0;
+    pidns_with_cursor_clear (pidns_with_max (mk_pidns 2 (Some 1%positive) 2 1 last) limit) clear].
+
+Example cursor_at_measured_limit_declines : forall m,
+  clone_ns_exact SIGCHLD m shell (cursor_launch 500 true 499) 140 = CnUnmodeled /\
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell
+    (cursor_launch 4194304 true 499) 140)) = Some [(2%positive, 500); (1%positive, 140)].
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+Example occupied_next_pid_declines : forall m,
+  clone_ns_exact SIGCHLD m shell (cursor_launch 4194304 false 7) 140 = CnUnmodeled /\
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell
+    (cursor_launch 4194304 true 7) 140)) = Some [(2%positive, 8); (1%positive, 140)].
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+Example empty_child_does_not_establish_parent_clear_range : forall m,
+  clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
+    (with_pidns launch_children_state [mk_pidns 1 None 1 0 0;
+      pidns_with_cursor_clear (mk_pidns 2 (Some 1%positive) 1 1 7) false;
+      pidns_with_alloc (mk_pidns 3 (Some 2%positive) 1 2 0) PaEmpty]) 140 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** No provenance or readlink alone is encoded as an allocation fact:
+    the default remains unknown; PaEmpty is an explicit measured or
+    creation-to-launch exclusion fact supplied by the launch. *)
+Example no_provenance_keeps_allocation_unknown :
+  pidns_alloc (mk_pidns 3 (Some 2%positive) 1 2 0) = PaUnknown /\
+  pidns_alloc (pidns_with_alloc (mk_pidns 3 (Some 2%positive) 1 2 0) PaEmpty) = PaEmpty.
+Proof. split; reflexivity. Qed.
+
+(** A closed children's namespace refuses allocation after all model
+    cursors advance, with no first-pid reset (kernel/pid.c:262,276-303,
+    Linux v6.18.46). *)
+Example closed_children_enomem : forall m,
+  let st := pid_failed launch_children_state 3 in
+  clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx st 141
+    = CnErr ENOMEM (pid_advanced st 3) /\
+  map pidns_last (ns_pidns (pid_advanced st 3)) = [0; 9; 2] /\
+  option_map pidns_alloc (find_pidns (pid_advanced st 3) 3) = Some PaClosed.
+Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
+
+(** A children's namespace that is not the active namespace or below it
+    declines.  Linux never reaches that state: [pidns_install] refuses a
+    namespace that is not the active one or a descendant
+    (kernel/pid_namespace.c:419-420), and [copy_pid_ns] makes a child of
+    the active namespace (kernel/pid_namespace.c:175-183), Linux v6.18.46.
+    Here A (2) is active and the children's namespace is its sibling D
+    (4), empty or closed: without the decline the clone would allocate in
+    D's chain, which does not hold A, so the parent would get no pid. *)
+Definition sibling_children_state (a : PidAlloc) (last : Z) : NsState :=
+  with_pidns launch_children_state (ns_pidns launch_children_state ++
+    [pidns_with_alloc (mk_pidns 4 (Some 1%positive) 1 1 last) a]).
+
+Example sibling_children_declines : forall m,
+  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+    (sibling_children_state PaEmpty 0) 140 = CnUnmodeled /\
+  clone_ns_exact SIGCHLD (launch_children_model m) (with_pidns_children launch_children_ctx 4)
+    (sibling_children_state PaClosed 1) 140 = CnUnmodeled.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+(** The control: in the same tables the descendant B (3) keeps its
+    answer ([clone_into_empty_children]). *)
+Example descendant_children_beside_sibling_answers : forall m,
+  let o := clone_ns_exact SIGCHLD (launch_children_model m) launch_children_ctx
+             (sibling_children_state PaEmpty 0) 140 in
+  option_map cx_pids (child_of o) = Some [(3%positive, 1); (2%positive, 8); (1%positive, 140)] /\
+  ret_of o = Some (Some 8) /\
+  option_map (fun st => option_map pidns_alloc (find_pidns st 3)) (st_of o) = Some (Some PaInit).
+Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
+
+Print Assumptions flat_view_empty.
+Print Assumptions flat_view_pidns_children.
+Print Assumptions pid_advanced_flat.
+Print Assumptions flat_model_pidns_updates.
+Print Assumptions pid_failed_flat.
+Print Assumptions pid_reset_empty_flat.
+Print Assumptions pid_partial_flat.
+Print Assumptions pid_partial_children_flat.
+Print Assumptions clone_ns_coherent.

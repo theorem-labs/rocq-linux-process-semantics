@@ -779,6 +779,10 @@ Definition child_ms (c c' : config) : machine_state :=
     released clone arms admit neither CLONE_SIGHAND nor
     CLONE_CLEAR_SIGHAND, so a SIGCHLD the parent set to SIG_DFL with
     SA_NOCLDWAIT clear is the child's too.
+    The host's clone refusers ([procst_clone_refusers]) are copied: a
+    child inherits the inheritable perf events ([perf_event_init_task]),
+    and a BPF [task_alloc] program and a sched_ext scheduler are the
+    host's, not the task's.
     Kernel citations, read at v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
@@ -801,7 +805,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               (procst_cap_inheritable ps)
               false false
               (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps)
-              (procst_sigchld_dfl ps).
+              (procst_sigchld_dfl ps) (procst_clone_refusers ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
@@ -2730,15 +2734,13 @@ Qed.
     outcome when its errno is in the clone's refusal list
     ([Fork.clone_errnos]), the clone's family is forced-only in the run's
     configuration, and the released spec admits a non-refusal at the same
-    input.  That filter cannot see the namespace state, so once an errno
-    the namespace tables decide is in the refusal list (a closed pid
-    namespace's ENOMEM, which the tables do not answer yet) it can remove
-    an answer the tables force, and then [px_clone_fail] has no step to
-    match the extension's answer.  Today no [CnErr] errno of
-    [clone_ns_exact] (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], and
-    where [clone_ns_exact] is [CnUnmodeled], [Ns.Spec.ns_ext]'s clone admits
-    no failure; so under [ns_ext] the premise of [px_clone_fail] is the
-    released step for every failure [ns_ext] admits
+    input.  That filter cannot see the namespace state: it would remove
+    a closed children's pid namespace's forced ENOMEM.  The tables now
+    answer that errno after advancing the pid cursors, and
+    [clone_table_kept] keeps it.  At the default launch, where the
+    children's namespace is the active namespace, [clone_ns_exact]
+    answers only EPERM, EINVAL and ENOSPC, none in [Fork.clone_errnos].
+    There [ns_ext]'s failed-clone premise is still the released step
     ([NsProcs.ns_clone_fail_step_released], over
     [NsProcs.clone_ns_exact_errno]).
 

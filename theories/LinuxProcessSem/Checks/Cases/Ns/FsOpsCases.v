@@ -24,7 +24,7 @@ Definition one_sb (mf : MountFlags) (s : SuperBlock) (ds : list Dentry) (ins : l
   let st := with_mounts empty_nsstate [mkMount 1 1 None 1 1 1 mf no_flags false false None None] in
   let st := with_userns st [root_user] in
   let st := with_mntns st [mk_mntns 1 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [s] in
   with_tree st ds ins.
 Definition tmpfs_sb : SuperBlock := mkSb 1 SbTmpfs 1 1 false 16914836 false false false.
@@ -597,7 +597,7 @@ Definition unlink_state (dir_perm fuid fgid : Z) (extra : list Mount) : NsState 
   let st := with_mounts empty_nsstate (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra) in
   let st := with_userns st [root_user] in
   let st := with_mntns st [mk_mntns 1 1 1 false; mk_mntns 2 1 1 false] in
-  let st := with_pidns st [mkPidNs 1 None 1 0 0] in
+  let st := with_pidns st [mk_pidns 1 None 1 0 0] in
   let st := with_sbs st [tmpfs_sb] in
   with_tree st
     [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]

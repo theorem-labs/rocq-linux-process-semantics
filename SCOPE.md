@@ -42,6 +42,7 @@ source is not included in this repository.
   and its declines, the `pivot_root` decline in an open namespace, and the
   corresponding cases. Agreement of these additions has not been checked.
 - The procfs/devpts creation-order checks and their regression cases are pending too.
+- Children's pid namespaces, allocation states, cursor/limit launch facts and their checks have not yet been translated.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
 - The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
@@ -353,7 +354,11 @@ Every `setsockopt` answer in the table assumes the launch value
 | Namespace and mount model descriptors | A descriptor may hold `State.ONsFile h`, an open file that the namespace and mount model holds under handle `h`. No arm of `spec_table` makes one, so a run from `init_config` never holds one. Its object may be a directory, a regular file, a procfs file, an eventfd or a socket, so the model answers only what Linux answers for every open file: `close` and `close_range` remove it, `fcntl`'s `F_SETFD` and `F_GETFD` answer, `dup3` onto it replaces it, and `clone` passes it. `close` answers 0 on the condition that the namespace and mount model mints an `ONsFile` only on an object whose `f_op->flush` is absent or cannot fail: `SYSCALL_DEFINE1(close)` returns `filp_flush`'s result (`fs/open.c`, v6.18.44), and FUSE, NFS, CIFS, orangefs, ecryptfs and overlayfs have a `.flush` that can fail. Every other call on it is `unmodeled`, and while one is open `flock` on any file and `unlinkat` are `unmodeled` too, because its object may be that file. |
 | `setns` | `setns` answers `-EBADF` on a number that names no descriptor or names an O_PATH descriptor (`State.OProcPath`), and `-EINVAL` on every other descriptor except `State.ONsFile`, on which it is `unmodeled` (`SYSCALL_DEFINE2(setns)`, `kernel/nsproxy.c`; `fdget`, `fs/file.c`; v6.18.46). No descriptor of the model is a pidfd, and only an `ONsFile` may be a namespace file, so the model never joins a namespace with `setns`. The answer on fds 0, 1 and 2 rests on the assumption the Standard input and output row names. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
-| Pid 1 of a model-made pid namespace | When pid 1 of a pid namespace that the namespace and mount model made exits, Linux kills every other task of that namespace (`zap_pid_ns_processes`, `kernel/pid_namespace.c`, v6.18.44). The namespace model's `exit` and `exit_group` answer as the released model does (`Ns.Pass`) and kill no other task: which tasks are in a namespace is the multi-process core's table, not the namespace state. A program that relies on pid 1's exit killing the other tasks in its pid namespace has no statement here. |
+| A pid namespace's init exits | This holds for every pid namespace the tables hold that has a parent, whatever its allocation state (`PaUnknown`, `PaEmpty`, `PaInit` or `PaClosed`): a namespace the model made, and a namespace stated at launch, which `mk_pidns` (`Ns/Tables.v`) gives `PaUnknown`, including one whose pid 1 is a launched process (the fixtures `inside` and `no_admin_inside` in `Checks/Cases/Ns/CloneCases.v` are such a launch). When that namespace's init group ends, Linux closes its allocation and kills every other task of the namespace (`find_child_reaper`, kernel/exit.c:616-630; `zap_pid_ns_processes`, kernel/pid_namespace.c:200-232, v6.18.46). The namespace model's `exit` and `exit_group` answer as the released model does (`Ns.Pass`) and kill no other task, and the namespace's allocation state does not change: which tasks are in a namespace is the multi-process core's table, not the namespace state. A program that relies on pid 1's exit killing the other tasks in its pid namespace has no statement here. A clone into a different children's namespace already in `PaInit` or `PaUnknown` declines. When a namespace's init is outside the model, no model step can observe its end. |
+| Children's pid namespace at launch | The default `cx_pidns_children = None` means that the launched process's pid namespace for children is its own active namespace (`pidns_children`). A launch that unshared or joined another namespace before exec sets `with_pidns_children` from measured facts. It is outside the released world and must state the whole context: namespace ids, each pid, capability sets, root, cwd, umask, securebits, close-on-exec descriptors, no-new-privs and dumpable. The released launch defaults are not measurements of that launch. |
+| Measuring a children's pid namespace | `readlink` of `/proc/self/ns/pid_for_children` can return ENOENT both for a new namespace and for one closed by its failed first fork; a successful link does not establish that allocation remains enabled (kernel/pid_namespace.c:374-377; fs/nsfs.c:376-388, v6.18.46). Only provenance covering creation through launch can reconstruct `PaEmpty`: the launcher made the namespace with unshare, made no clone after it, and excluded outside entry, allocation and control writes for that whole interval. That establishes parent, owner, level, cursor 0 and the new-namespace limit. Other launches state measured allocation facts or use `PaUnknown`. |
+| Pid allocation during the run | The launch value `env_outside_pids`, read by `ns_outside_pids`, defaults to false: no outside task allocates in or writes ns_last_pid or pid_max of any namespace whose cursor the model holds, for the whole run. True declines every clone that needs such a cursor. An outside task can enter or allocate through a children's namespace (kernel/pid_namespace.c:401-423; kernel/fork.c:2202). ns_last_pid selects the writer's active namespace; a pid_max descriptor retains the namespace chosen at open, even when passed to another writer (kernel/pid_namespace.c:289-302; kernel/pid.c:668-693; fs/proc/proc_sysctl.c:553-571, v6.18.46). This value says nothing about pre-launch events or occupancy. |
+| Pid occupancy and limits at launch | `pidns_max` states each model namespace's measured limit, default 4194304. `pidns_cursor_clear` defaults to true and assumes that no pid above the cursor and below that limit is reserved at launch. A launch that cannot establish this sets it false. Every model level, including ancestors of an empty child namespace, must establish the fact; no in-run interference does not imply it. Cursor 7 with pid 8 occupied declines even with `env_outside_pids = false`. New namespaces establish their own clear range, not their ancestors'. Allocation at the bound declines instead of guessing Linux's cyclic search (kernel/pid.c:191-252; lib/idr.c:105-136, v6.18.46). |
 | Parent-death signal | The multi-process core (`Procs.v`) holds each process's parent-death signal (`State.m_pdeath_signal`) but does not deliver it: when a parent exits, a child that armed `PR_SET_PDEATHSIG` is not signalled (`exit_notify` and `forget_original_parent`, `kernel/exit.c`, v6.18.44). A program that relies on its parent's death killing it has no statement here; a statement may still read the armed signal with `PR_GET_PDEATHSIG`. |
 | Namespace-model calls while another process lives | While another process lives, a task outside the released world gets the core's own numbers (`Procs.multiproc_base`: among them `clock_gettime`, whose clock the core brings up to every peer's, and `unlinkat`, which the core refuses when it removes a path a peer's descriptor or stat pin names) and the calls `Ns.Spec.ns_multiproc` lists: the calls a sandbox's setup child makes between its clone and its exec (path walks, mounts, `pivot_root`, `unshare`, `capget`, `capset`, `prctl`, `umask`, `getpid`, `sethostname`, `setsid`, `socket` and the netlink calls, `rt_sigprocmask`), each only where its answer reads and writes the namespace state (one copy, shared as Linux shares it), the task's own context, descriptor table and address space (per process after a clone without CLONE_VM: `brk`, `munmap`, `mremap`, `mprotect`, `madvise`, and `mmap` with MAP_ANONYMOUS), or nothing a peer can change: `read`, `write`, `fstat`, `fchmod`, `getdents64`, `ioctl` and the socket calls on a descriptor of the namespace model, `read` of an eventfd, `read` of an inherited descriptor that holds its offset (after a clone of either word only the child holds it), `writev` of a standard channel, `close` of an opaque descriptor, and `fcntl` F_GETFD/F_SETFD. Every other call is a model error there, never an answer: the multi-process core keeps the released file system, pipes and sockets per process. A task in the released world gets the core's own list. |
 | The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |
@@ -480,6 +485,47 @@ not apply.
   can meet without one (`do_eventfd`, `fs/eventfd.c`, and
   `alloc_empty_file`, `fs/file_table.c`, v6.18.44); such a program could
   return any errno.
+- The host's clone refusers are launch values, not assumptions of the
+  model: `State.ProcInput.in_clone_refusers` (`State.CloneRefusers`),
+  copied into the model and into each child, with three fields.
+  `Run.valid_input` and every sibling launch predicate pin all three to
+  their default, `State.no_clone_refusers`, so the ordinary statements
+  rest on that default; under it `clone` and `clone3` admit exactly the
+  model's lists (`Kernel.Fork.clone_spec_default_iff`,
+  `Kernel.Fork.clone3_spec_default_iff`). With any field `true`, both
+  calls admit every errno from 1 to 4095, with the caller's model
+  unchanged, for every flag word they answer
+  (`Kernel.Fork.clone_refusable`). Under a forced-only configuration the
+  run's filter (`Run.spurious_refusal_cfg`) still removes a refuser's
+  `-EAGAIN`, `-ENOMEM`, `-EMFILE` or `-EACCES` where a child is admissible,
+  as it removes those errnos from every clone. A statement about such a
+  host drops the pin and states the field.
+  - `cr_perf_inherit`, default `false`: **the launched process holds no
+    inheritable perf event.** `perf_event_init_task` walks the ones it
+    holds at each clone, and its `inherit_group` answers `-EINVAL` of its
+    own or what a PMU's `event_init` returns (`copy_process`,
+    `kernel/fork.c:2155-2169`, v6.18.46). No modeled call creates one
+    (`perf_event_open` is not modeled), but a launcher can pass one down,
+    and a process outside the model can attach one to the running task
+    (`perf_event_open` with its pid, for a caller `perf_check_permission`
+    admits, `kernel/events/core.c`), so the default also says **no process
+    attaches one during the run.**
+  - `cr_bpf_task_alloc`, default `false`: **no BPF LSM program is
+    attached to `task_alloc` at any clone of the run.** Such a program
+    can return any errno from `security_task_alloc`
+    (`kernel/fork.c:2155-2169`).
+  - `cr_sched_ext`, default `false`: **no sched_ext scheduler is loaded
+    at any clone of the run, and the host does not attach one during
+    it.** `sched_cgroup_fork` returns `scx_fork`'s result
+    (`kernel/fork.c:2299-2301`; `kernel/sched/core.c:4783`), the
+    scheduler's own task init, any value in `[-MAX_ERRNO, -1]`
+    (`kernel/sched/ext.c:2971-2979`). The host can load a scheduler at
+    any moment (`bpf_scx_reg`, `kernel/sched/ext.c:5087-5089`, reaches
+    `scx_enable`, which queues `scx_root_enable_workfn` and waits for it,
+    4954-4958; that work function, from 4671, sets
+    `scx_init_task_enabled`, 4790-4793),
+    and `scx_fork` reads that setting at each fork (2975-2978), so
+    absence at the launch is not enough.
 - The working directory is not `/`. The flat file model has no directory
   tree or symlinks, so this makes a slash-free relative `proc` name
   unable to reach the procfs mount; a relative path with a separator or
@@ -612,7 +658,14 @@ not apply.
   model mount namespace, including a detached tree held by a model task,
   or changes mounts through a path or descriptor into such a tree
   (`setns`, `kernel/nsproxy.c:536-569`; `mntns_install`,
-  `fs/namespace.c:6261-6274`; `may_change_propagation`, `2823-2834`).
+  `fs/namespace.c:6261-6274`; `may_change_propagation`, `2823-2834`), nor
+  reconfigures the superblock of a model mount, through any mount or path,
+  except through a mount of a listed namespace, which the mount-flag test
+  below covers (`fspick` with `FSCONFIG_CMD_RECONFIGURE` needs no
+  `check_mnt`, only `may_mount`, a path to the root of some mount of the
+  superblock, such as one under `/proc/<pid>/root` of a model task or a
+  descriptor it holds, and `CAP_SYS_ADMIN` over the superblock's user
+  namespace: `fs/fsopen.c:163-194, 251-268, 296-297`).
   Both-empty defaults keep the exact successful and error cases unchanged.
   Named nondefault uncertainty declines rather than claiming stale topology.
   `Ns.Propagation.entered_closure` also includes anonymous trees whose
@@ -939,7 +992,8 @@ equivalence) can be true of the model and false of Linux.
   on the bit has both branches admitted.
 - **Errors of a namespace `clone`.** For the namespace flag word
   (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
-  4095 but `-EINTR`. The failures run through `create_user_ns`,
+  4095 but `-EINTR`, at the default of the host's clone refusers
+  (`State.no_clone_refusers`; with one present, `-EINTR` too). The failures run through `create_user_ns`,
   `copy_namespaces` and every per-namespace init function, including
   each network namespace's pernet init, and they cannot be listed with
   confidence. Linux gives only some of them. `kernel/fork.c`'s

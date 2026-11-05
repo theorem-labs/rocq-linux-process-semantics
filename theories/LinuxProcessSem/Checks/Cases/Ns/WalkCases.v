@@ -63,7 +63,7 @@ Definition world : NsState :=
     [mnt 1 None 1 1 1; mnt 2 (Some 1%positive) 3 20 2; mnt 3 (Some 1%positive) 9 30 3]
     [root_user]
     [mk_mntns 1 1 1 false]
-    [mkPidNs 1 None 1 0 0]
+    [mk_pidns 1 None 1 0 0]
     [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 (SbProc 1)]
     [dent 1 1 None [] 1;
      dent 2 1 (Some 1%positive) s_home 2;

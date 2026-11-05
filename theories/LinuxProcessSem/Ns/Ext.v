@@ -68,7 +68,7 @@
     [ext_multiproc_coherent] gives a task in the released world the core's
     guard alone. *)
 
-From Stdlib Require Import List PArith ZArith.
+From Stdlib Require Import List PArith ZArith Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables.
 Import ListNotations.
@@ -113,9 +113,9 @@ Definition has_ns_bits (f : Z) : bool := negb (Z.eqb (Z.land f clone_ns_bits) 0)
     [uname] answers the pin's, so a namespace that answers otherwise is not
     the released world (no arm writes the host's names, so on a state the
     arms reach the names test adds nothing to the id test).  A task the
-    tables know nothing of is in the released world, so is every task of
-    [empty_nsstate] ([flat_view_empty]); a new field of [NsState] must keep
-    that. *)
+    tables know nothing of is in the released world only when its pid
+    namespace for children is its active one.  The default [None] follows
+    the active namespace; a distinct measured child namespace does not. *)
 Definition flat_view (ctx : NsCtx) (st : NsState) : bool :=
   match find (fun n => Pos.eqb (mntns_id n) (cx_mount ctx)) (ns_mntns st) with
   | Some n => mntns_released n | None => true end
@@ -125,19 +125,31 @@ Definition flat_view (ctx : NsCtx) (st : NsState) : bool :=
      | Some p => match pidns_parent p with None => true | Some _ => false end | None => true end
   && match find (fun n => Pos.eqb (netns_id n) (cx_net ctx)) (ns_netns st) with
      | Some n => negb (netns_sealed n) | None => true end
-  && match find_utsns st (cx_uts ctx) with
-     | Some u => Pos.eqb (utsns_id u) host_uts
-                 && match utsns_nodename u, utsns_domainname u with
-                    | None, None => true
-                    | _, _ => false
-                    end
-     | None => true end.
+  && (match find_utsns st (cx_uts ctx) with
+      | Some u => Pos.eqb (utsns_id u) host_uts
+                  && match utsns_nodename u, utsns_domainname u with
+                     | None, None => true
+                     | _, _ => false
+                     end
+      | None => true end
+      && Pos.eqb (pidns_children ctx) (cx_pidns ctx)).
 
-(** [empty_nsstate] holds the host's UTS namespace alone, so a task in it
-    is in the released world, and so is a task in a UTS namespace the
-    tables do not hold. *)
-Lemma flat_view_empty : forall ctx, flat_view ctx empty_nsstate = true.
-Proof. intros ctx. unfold flat_view, find_utsns. destruct (cx_uts ctx); reflexivity. Qed.
+(** The empty tables are the released world when the children's pid
+    namespace is the active one, including the default [None]. *)
+Lemma flat_view_empty : forall ctx,
+  pidns_children ctx = cx_pidns ctx -> flat_view ctx empty_nsstate = true.
+Proof.
+  intros ctx H. unfold flat_view, find_utsns. rewrite H, Pos.eqb_refl.
+  destruct (cx_uts ctx); reflexivity.
+Qed.
+
+Lemma flat_view_pidns_children : forall ctx st,
+  flat_view ctx st = true -> pidns_children ctx = cx_pidns ctx.
+Proof.
+  intros ctx st H. unfold flat_view in H.
+  apply andb_true_iff in H as [_ H]. apply andb_true_iff in H as [_ H].
+  now apply Pos.eqb_eq in H.
+Qed.
 
 (** The released clone's own answer, seen by the namespace model: the
     child gets the caller's context, the parent the core's pid, the state
