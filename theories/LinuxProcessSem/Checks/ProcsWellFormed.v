@@ -540,7 +540,8 @@ Proof.
   destruct eff as [ret ws zs us cs ins].
   destruct Hno as [Hno|Hno].
   - rewrite (check_syscall_clone i _ m Hno) in H.
-    unfold check_clone, check_clone_resolve, check_clone_ns_resolve in H.
+    apply check_clone_cases in H as [(-> & _ & _) | H]; [reflexivity|].
+    unfold check_clone_lists, check_clone_resolve, check_clone_ns_resolve in H.
     destruct ws as [|? ?], zs as [|? ?], us as [|? ?], cs as [|? ?], ins as [|? ?];
       cbv beta iota in H;
       repeat dif H; try discriminate H;
@@ -548,7 +549,8 @@ Proof.
             | exact (check_clone_ns_answer_halted _ _ _ _ H)
             | exact (check_clone_einval_halted _ _ _ _ H) ].
   - rewrite (check_syscall_clone3 i _ m Hno) in H.
-    unfold check_clone3, check_clone3_resolve, check_ret_only in H.
+    apply check_clone3_cases in H as [(-> & _ & _) | H]; [reflexivity|].
+    unfold check_clone3_lists, check_clone3_resolve, check_ret_only in H.
     destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE) as [bs|];
       destruct ws as [|? ?], zs as [|? ?], us as [|? ?], cs as [|? ?],
                ins as [|[a n] [|? ?]];

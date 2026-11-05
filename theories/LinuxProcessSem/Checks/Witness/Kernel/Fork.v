@@ -96,10 +96,13 @@ Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
   else if clone_legacy_einval_b flags then clone_einval_witness m
   else Unmodeled.
 
+(** The witness is an answer from the lists, which [Kernel.Fork.clone_refusable]
+    keeps whatever the host's refusers are. *)
 Lemma clone_witness_ok : forall flags i m,
   clone_spec flags i m (clone_witness flags m).
 Proof.
-  intros. unfold clone_spec, clone_witness.
+  intros. unfold clone_spec. apply clone_refusable_lists.
+  unfold clone_spec_lists, clone_witness.
   destruct (clone_fork_flags_b flags); cbv iota;
     [apply clone_resolve_witness_ok|].
   destruct (clone_ns_flags_b flags); cbv iota;
@@ -154,7 +157,8 @@ Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
 Lemma clone3_witness_ok : forall i uargs size m,
   clone3_spec uargs size i m (clone3_witness i uargs size m).
 Proof.
-  intros. unfold clone3_spec, clone3_witness.
+  intros. unfold clone3_spec. apply clone_refusable_lists.
+  unfold clone3_spec_lists, clone3_witness.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota;
     [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.

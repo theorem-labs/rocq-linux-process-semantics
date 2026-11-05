@@ -403,6 +403,10 @@ Qed.
     [to_proc_input] supplies [false], so this finite quantifier denotes
     the same default-hook images as [Run.valid_input].
 
+    THE SIXTH CLAUSE PINS THE HOST'S CLONE REFUSERS ABSENT
+    ([State.in_clone_refusers]), for the same reason: [to_proc_input]
+    builds [State.no_clone_refusers], the value [Run.valid_input] pins.
+
     Read through the projections rather than by matching on the
     record, following the convention [State.ProcInput]'s own header sets
     out: a projection reduces whatever the record is, so this predicate
@@ -413,16 +417,17 @@ Definition padded_urandom (s : InputStream) : Prop :=
 Definition finite_input (inp : ProcInput) : Prop :=
   finite_stream (in_stdin inp) /\ padded_urandom (in_urandom inp)
   /\ in_inherited_fds inp = [] /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** A process input with the standard-input stream and the random
     device's stream each replaced by the list of bytes it delivers.
     Field-for-field [State.ProcInput] — SAME NAMES IN THE SAME ORDER,
     including the two ENVIRONMENT fields [State.in_urandom] and
-    [State.in_tmp] at the end, and every field but the last three,
-    [State.in_inherited_fds], [State.in_selfkill_terminal] and
-    [State.in_cgroup_bpf_setsockopt], which [finite_input] pins empty,
-    off and absent — with
+    [State.in_tmp] at the end, and every field but the last four,
+    [State.in_inherited_fds], [State.in_selfkill_terminal],
+    [State.in_cgroup_bpf_setsockopt] and [State.in_clone_refusers], which
+    [finite_input] pins empty, off, absent and absent — with
     [fin_stdin] and [fin_urandom] the
     two that differ in TYPE: inductive where the original is
     coinductive, which is the reason this record exists (see the header:
@@ -581,9 +586,10 @@ Record FinProcInput := mkFinProcInput {
     [State.ProcInput]'s constructor and reading the finite record by its
     projections; every statement about the result goes back through
     [State.ProcInput]'s projections, which reduce.  The denoted launch
-    inherits no descriptor above 2 ([finite_input]'s third clause) and
-    leaves the self-kill declaration off (its fourth) and the
-    cgroup-BPF setsockopt hook absent (its fifth). *)
+    inherits no descriptor above 2 ([finite_input]'s third clause),
+    leaves the self-kill declaration off (its fourth), the cgroup-BPF
+    setsockopt hook absent (its fifth) and meets no host clone refuser
+    (its sixth). *)
 Definition to_proc_input (f : FinProcInput) : ProcInput :=
   mkProcInput_full (fin_argv f) (fin_envp f) (fin_image_fs f)
               (stream_of_list (fin_stdin f))
@@ -594,7 +600,7 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
               (fin_tmp f) (fin_kernel f) (fin_execfn f)
               (fin_channel_reader f) (fin_sigpipe_default f)
               (fin_sigpipe_terminal f) (fin_ppid f) (fin_cap_inheritable f) []
-              false false.
+              false false no_clone_refusers.
 
 (** Validity of a finite input is validity of the input it denotes —
     [Run.valid_input] and nothing else.  Deliberately not a new
@@ -874,9 +880,9 @@ Lemma finite_input_to_proc_input : forall f, finite_input (to_proc_input f).
 Proof.
   intros f. unfold finite_input, to_proc_input.
   cbn [in_stdin in_urandom in_inherited_fds in_selfkill_terminal
-       in_cgroup_bpf_setsockopt].
+       in_cgroup_bpf_setsockopt in_clone_refusers].
   split; [apply finite_stream_stream_of_list|].
-  split; [exists (fin_urandom f); reflexivity | repeat split; reflexivity].
+  split; [exists (fin_urandom f); reflexivity | repeat split].
 Qed.
 
 (** [to_proc_input] is injective ON EVERY FIELD BUT THE RANDOM ONE,
@@ -969,17 +975,18 @@ Qed.
 Lemma finite_input_surjection : forall inp,
   finite_input inp -> exists f, inp = to_proc_input f.
 Proof.
-  (* [State.ProcInput]'s constructor order, the twelve TRAILING
+  (* [State.ProcInput]'s constructor order, the thirteen TRAILING
      DECLARATION fields last: argv, envp, image, stdin, ids, queue,
      limits, declarations, then [in_urandom], [in_tmp], [in_kernel],
      [in_execfn], [in_channel_reader], [in_sigpipe_default],
      [in_sigpipe_terminal], [in_ppid], [in_cap_inheritable],
-     [in_inherited_fds], [in_selfkill_terminal], [in_cgroup_bpf_setsockopt] *)
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp] Hfin.
+     [in_inherited_fds], [in_selfkill_terminal], [in_cgroup_bpf_setsockopt],
+     [in_clone_refusers] *)
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf] Hfin.
   unfold finite_input in Hfin.
   cbn [in_stdin in_urandom in_inherited_fds in_selfkill_terminal
-       in_cgroup_bpf_setsockopt] in Hfin.
-  destruct Hfin as [Hfin [[lr Hlr] [Hifd [Hsk Hbp]]]]. subst ifd sk bp.
+       in_cgroup_bpf_setsockopt in_clone_refusers] in Hfin.
+  destruct Hfin as [Hfin [[lr Hlr] [Hifd [Hsk [Hbp Hcrf]]]]]. subst ifd sk bp crf.
   destruct (finite_stream_of_list _ Hfin) as [l Hl].
   exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm kb xf cr sd st pp ci).
   unfold to_proc_input.
@@ -1049,7 +1056,7 @@ Lemma valid_input_stdin_irrelevant : forall inp s,
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
                  (in_inherited_fds inp) (in_selfkill_terminal inp)
-                 (in_cgroup_bpf_setsockopt inp)).
+                 (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp)).
 Proof. intros inp s H. exact H. Qed.
 
 (** THE RANDOM DEVICE'S STREAM IS NOT LIKE STANDARD INPUT.
@@ -1074,7 +1081,7 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
                  (in_inherited_fds inp) (in_selfkill_terminal inp)
-                 (in_cgroup_bpf_setsockopt inp)).
+                 (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp)).
 Proof.
   intros inp r H Hr.
   (* NO CONJUNCT COUNT.  [valid_input] grows a conjunct whenever the
@@ -1135,7 +1142,7 @@ Lemma valid_input_tmp_arbitrary : forall inp t,
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
                  (in_inherited_fds inp) (in_selfkill_terminal inp)
-                 (in_cgroup_bpf_setsockopt inp)).
+                 (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp)).
 Proof.
   intros inp t Him H. unfold valid_input in H |- *.
   destruct H as (Ha & He & _ & Hrest).
@@ -1269,7 +1276,7 @@ Lemma valid_input_not_finite : forall inp,
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp)
                  (in_inherited_fds inp) (in_selfkill_terminal inp)
-                 (in_cgroup_bpf_setsockopt inp))
+                 (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
@@ -1278,7 +1285,7 @@ Lemma valid_input_not_finite : forall inp,
                       (in_channel_reader inp) (in_sigpipe_default inp)
                       (in_sigpipe_terminal inp) (in_ppid inp)
                       (in_cap_inheritable inp) (in_inherited_fds inp)
-                      (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp)).
+                      (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.
