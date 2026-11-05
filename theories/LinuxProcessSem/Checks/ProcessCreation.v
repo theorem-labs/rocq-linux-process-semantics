@@ -544,6 +544,29 @@ Proof.
   cbv beta iota delta [negb]. apply iff_refl.
 Qed.
 
+Local Lemma c3_88_refused : forall uargs size i m o,
+  bv_unsigned size = CLONE_ARGS_SIZE ->
+  access_okb uargs CLONE_ARGS_SIZE = false ->
+  (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []).
+Proof.
+  intros uargs size i m o Hs Ha.
+  rewrite clone3_spec_copy, Hs, clone3_copy_88.
+  unfold clone3_copy_full, copy_bytes_map. rewrite Ha.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_88_unbacked : forall uargs size i m o,
+  bv_unsigned size = CLONE_ARGS_SIZE ->
+  access_okb uargs CLONE_ARGS_SIZE = true ->
+  copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
+  (clone3_spec uargs size i m o <-> o = Unmodeled).
+Proof.
+  intros uargs size i m o Hs Ha Hc.
+  rewrite clone3_spec_copy, Hs, clone3_copy_88.
+  unfold clone3_copy_full. rewrite Hc, Ha.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
 Local Lemma c3_long_refused : forall uargs size i m o,
   (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
   clone3_tail_ok uargs (bv_unsigned size) = false ->
@@ -867,18 +890,22 @@ Qed.
        [Fork.clone3_pre_short] ([clone3_short_struct]), which is
        [Fork.clone3_pre] on it but for CLONE_INTO_CGROUP
        ([Fork.clone3_pre_short_no_cgroup]);
-    6. exactly 88: the 88-byte struct, as before;
-    7-9. above 88 the tail first: a widened tail range [access_ok]
+    6-8. exactly 88: the head copy of 88 bytes, as before: a range
+       [access_ok] refuses is -EFAULT, nothing read; an admitted range
+       the memory does not wholly back declines; a read struct is judged
+       by [Fork.clone3_pre];
+    9-11. above 88 the tail first: a widened tail range [access_ok]
        refuses is -EFAULT, nothing read; a word with a non-zero tail byte
        is -E2BIG with the words read, before the head is read; an
        unreadable word is -EFAULT with the words read before it;
-    10-12. a zero tail, then the 88-byte head: refused, -EFAULT with the
+    12-14. a zero tail, then the 88-byte head: refused, -EFAULT with the
        tail in the ledger; admitted but not wholly backed, declined; read,
        judged as for 88 with the tail in the ledger
        ([clone3_long_struct]).
-    Classes 4 and 11 hold for every struct; 5, 6 and 12 are where each
-    companion's struct premise applies.  The two companions differ only
-    in that premise. *)
+    Classes 3, 4, 6, 7, 12 and 13 hold for every struct; 5, 8 and 14 are
+    where each companion's struct premise applies.  The two companions
+    differ only in that premise.  The declines in classes 4, 7 and 13 are
+    the known gap [clone3_other_size_unmodeled] names. *)
 Lemma clone3_declined_struct_sizes : forall uargs size i m o,
   let usize := bv_unsigned size in
   ((page_size < usize)%Z ->
@@ -896,6 +923,13 @@ Lemma clone3_declined_struct_sizes : forall uargs size i m o,
       copy_bytes_map (in_mem i) uargs usize = Some bs ->
       clone3_pre_short (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - usize)))
         = CdDecline ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (usize = CLONE_ARGS_SIZE ->
+      access_okb uargs CLONE_ARGS_SIZE = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ (usize = CLONE_ARGS_SIZE ->
+      access_okb uargs CLONE_ARGS_SIZE = true ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
      (clone3_spec uargs size i m o <-> o = Unmodeled))
   /\ (forall bs, usize = CLONE_ARGS_SIZE ->
       copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
@@ -941,12 +975,15 @@ Proof.
          (conj (c3_below_ver0 uargs size i m o)
          (conj (c3_short_refused uargs size i m o)
          (conj (c3_short_unbacked uargs size i m o)
-         (conj _ (conj _
+         (conj _
+         (conj (c3_88_refused uargs size i m o)
+         (conj (c3_88_unbacked uargs size i m o)
+         (conj _
          (conj (c3_long_refused uargs size i m o)
          (conj (fun n => c3_long_nonzero uargs size i m o n)
          (conj (fun n => c3_long_fault uargs size i m o n)
          (conj (c3_long_head_refused uargs size i m o)
-         (conj (c3_long_unbacked uargs size i m o) _))))))))))).
+         (conj (c3_long_unbacked uargs size i m o) _))))))))))))).
   - intros bs Hs Hc Hp.
     rewrite (clone3_short_struct uargs size i m o bs Hs Hc).
     exact (clone3_on_struct_decline _ true _ i m o Hp).
@@ -977,6 +1014,13 @@ Lemma clone3_sharing_flags_sizes : forall uargs size i m o,
         = CdArgs r ->
       clone_arg_checks r = false ->
       (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (usize = CLONE_ARGS_SIZE ->
+      access_okb uargs CLONE_ARGS_SIZE = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ (usize = CLONE_ARGS_SIZE ->
+      access_okb uargs CLONE_ARGS_SIZE = true ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
      (clone3_spec uargs size i m o <-> o = Unmodeled))
   /\ (forall bs r, usize = CLONE_ARGS_SIZE ->
       copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
@@ -1026,12 +1070,15 @@ Proof.
          (conj (c3_below_ver0 uargs size i m o)
          (conj (c3_short_refused uargs size i m o)
          (conj (c3_short_unbacked uargs size i m o)
-         (conj _ (conj _
+         (conj _
+         (conj (c3_88_refused uargs size i m o)
+         (conj (c3_88_unbacked uargs size i m o)
+         (conj _
          (conj (c3_long_refused uargs size i m o)
          (conj (fun n => c3_long_nonzero uargs size i m o n)
          (conj (fun n => c3_long_fault uargs size i m o n)
          (conj (c3_long_head_refused uargs size i m o)
-         (conj (c3_long_unbacked uargs size i m o) _))))))))))).
+         (conj (c3_long_unbacked uargs size i m o) _))))))))))))).
   - intros bs r Hs Hc Hp Hck Hbit.
     rewrite (clone3_short_struct uargs size i m o bs Hs Hc).
     exact (clone3_on_struct_sharing _ true _ r i m o Hp Hck Hbit).
