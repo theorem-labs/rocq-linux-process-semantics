@@ -215,21 +215,28 @@ Example rt_sigaction_sigchld_ign_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** SIG_DFL (0): answered 0, the model left as it was, the 24 bytes of
-    [act] in the ledger -- and the same answer with an empty ledger
+(** SIG_DFL (0): answered 0, the 24 bytes of [act] in the ledger, and
+    the install recorded ([State.procst_sigchld_dfl] set, which
+    [Kernel.Exit.wait4_spec] reads before it answers a caller with a
+    recorded child) -- and the same answer with an empty ledger
     rejected.  The model before [Signal.sigchld_dfl_install] declined
     this call; it is the install bwrap makes first thing in [main]. *)
+Definition sigchld_installed : Model :=
+  with_sigchld_dfl true (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+
 Example rt_sigaction_sigchld_dfl_accepted :
   check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
     (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [] /\
+  = CheckOk sigchld_installed [] /\
   check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckReject.
-Proof. split; vm_compute; reflexivity. Qed.
+  = CheckReject /\
+  m_sigchld_dfl (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) = false /\
+  m_sigchld_dfl sigchld_installed = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** A SIG_DFL [struct sigaction] whose flag word is [fl]: the low byte
     of [sa_flags], at offset 8, is [fl], and every other byte of the 24
@@ -270,13 +277,58 @@ Example rt_sigaction_sigchld_dfl_flags_accepted :
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
     (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [] /\
+  = CheckOk sigchld_installed [] /\
   check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 1)
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
     (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+  = CheckOk sigchld_installed [].
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** THE LIFETIME OF THE INSTALL BIT ([State.procst_sigchld_dfl]), at a
+    process that has made the install.  Linux keeps SIGCHLD at SIG_DFL
+    with SA_NOCLDWAIT clear until a later [rt_sigaction] changes it, and
+    [execve] keeps it: [flush_signal_handlers(me, 0)], called from
+    [begin_new_exec] (fs/exec.c, v6.18.46), writes SIG_DFL over every
+    handler that is not SIG_IGN and clears every [sa_flags]
+    (kernel/signal.c).  The model has no [execve] step: 221 and 281 have
+    no arm ([Checks.ProcessCreation.execve_unmodeled],
+    [Checks.ProcessCreation.execveat_unmodeled]), so the bit is carried
+    only along the run that made the install, which is the run Linux
+    keeps it in.
+
+    STAYS: a second SIG_DFL install answers 0 and leaves the bit set,
+    and so does a query, [act] NULL, which installs nothing.
+    CLEARS: every install that would leave SIGCHLD other than SIG_DFL
+    with SA_NOCLDWAIT clear -- SIG_IGN, a handler, SIG_DFL with
+    SA_NOCLDWAIT -- is declined at the installed process too, so no
+    answered call leaves the bit set over a disposition it does not
+    describe, and none needs to clear it. *)
+Example rt_sigaction_sigchld_bit_stays :
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) sigchld_installed
+  = CheckOk sigchld_installed [] /\
+  check_syscall (mkInput 134 [17; 0; 0; 8; 0; 0] (fun _ => None)
+                   (fun _ => None))
+    (mkEffect 0 [] []) sigchld_installed
+  = CheckOk sigchld_installed [].
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example rt_sigaction_sigchld_bit_never_contradicted :
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_ign
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) sigchld_installed
+  = CheckUnmodeled /\
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_handler
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) sigchld_installed
+  = CheckUnmodeled /\
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 2)
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] [])) sigchld_installed
+  = CheckUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** ...and the acceptance the declines above are AGAINST, so that a spec
     that declined everything would not pass this file either.  It

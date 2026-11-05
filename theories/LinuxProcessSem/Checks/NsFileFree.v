@@ -295,6 +295,12 @@ Proof. reflexivity. Qed.
 Lemma m_fds_with_mmap_destroyed_nf : forall a n h' m,
   m_fds (with_mmap_destroyed a n h' m) = m_fds m.
 Proof. reflexivity. Qed.
+Lemma m_fds_with_sigchld_dfl_nf : forall b m,
+  m_fds (with_sigchld_dfl b m) = m_fds m.
+Proof. reflexivity. Qed.
+Lemma m_fds_sigchld_install_model_nf : forall m,
+  m_fds (sigchld_install_model m) = m_fds m.
+Proof. reflexivity. Qed.
 
 Create HintDb nf_fds.
 #[local] Hint Rewrite m_fds_with_fds m_fds_with_vmmaps m_fds_with_stdin
@@ -311,7 +317,8 @@ Create HintDb nf_fds.
   m_fds_with_pdeath_signal_nf m_fds_with_sigpipe_install_nf
   m_fds_with_sigpipe_default_nf m_fds_with_sigpipe_terminal_nf
   m_fds_with_sigpipe_pending_nf m_fds_with_vdso_bump_nf m_fds_with_vm_backing_nf
-  m_fds_with_mmap_destroyed_nf : nf_fds.
+  m_fds_with_mmap_destroyed_nf m_fds_with_sigchld_dfl_nf
+  m_fds_sigchld_install_model_nf : nf_fds.
 
 (* -------------------------------------------------------------------------
    The tactic

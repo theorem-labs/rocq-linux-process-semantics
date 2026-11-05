@@ -477,7 +477,8 @@ Qed.
 
     [Kernel.Exit.wait4_spec]'s -ECHILD is correct only for a caller with
     nothing to reap, and what it reads to decide that is
-    [State.m_has_children].  The two specs therefore compose on a claim
+    [State.m_has_children]; what it reaps is [State.m_child_pids].  The
+    two specs therefore compose on a claim
     no single model can carry: that every resolution of 220 and 435
     which returns a PID leaves that field set.  [clone_checker_admits_a_pid]
     below pins one model and one pid; this is the [forall], and it is the
@@ -492,7 +493,7 @@ Qed.
     [State.with_children] on the ERRNO arm as well, which is a real
     mistake — a [clone] that answered -EAGAIN made no child, and a
     [wait4] after it must still answer -ECHILD, so a model that recorded
-    one would decline a call Linux answers.
+    one would reject the -ECHILD Linux gives.
     [clone_checker_admits_eagain] below
     pins ONE model and ONE errno, exactly as
     [clone_checker_admits_a_pid] does for the other arm; the disjunction
@@ -811,32 +812,32 @@ Lemma setrlimit_unmodeled : forall i m,
   bv_unsigned (in_sysno i) = 164%Z -> syscall_spec i m Unmodeled.
 Proof. intros i m Hno. declined_at Hno. Qed.
 
-(** [wait4] (260) — MODELED, and stated here in the negative.  A file of
-    tripwires is only worth reading if it stops being one when the fact
-    changes.
+(** [wait4] (260) — MODELED.  A file of tripwires is only worth reading
+    if it stops being one when the fact changes.
 
-    A faithful [wait4] at a caller WITH a child needs a
-    child to wait for and a status ENCODING the model cannot produce —
-    the signal-death half, [WIFSIGNALED] / [WTERMSIG] and the core-dump
-    bit, which [Monad.outcome]'s two constructors cannot tell apart
-    from a voluntary exit.  BOTH HALVES OF THAT ARGUMENT ARE ABOUT
-    MODELING THE CHILD.  A caller with NO child has a complete, decidable
-    answer that needs neither: -ECHILD.  [Exit.wait4_spec] gives that
-    answer and nothing else — no pid, no status word, no encoding, so
-    [Monad.outcome] never has to widen.
+    [Exit.wait4_spec] answers three callers.  A caller with NO child has
+    a complete, decidable answer: -ECHILD, and nothing else.  A caller
+    with a RECORDED child gets the environment's choice of 0 (a child
+    exists and has nothing to report) or a reap of a recorded nonzero
+    pid, with a status word [Exit.wait_status_okz] admits stored at
+    [stat_addr] unless it is NULL, the pid removed from
+    [State.m_child_pids].  A caller whose bit is set and whose list is
+    empty is declined: every recorded child was reaped already, and the
+    model does not know whether one remains.
 
     THE ARGUMENT RUNS THROUGH THIS FILE, which is why the statement
-    belongs here rather than beside the spec alone.  [Exit.wait4_spec]
+    belongs here rather than beside the spec alone.  The -ECHILD half
     is correct only for a caller whose children and tracees are both
     empty, and this file is HALF of what makes that decidable: 220 and
     435 create a child in-model, and what makes the composition sound
     is that their success branches RECORD it, which is
-    [clone_resolve_declines_or_sets_children] (the fork word, and 435)
-    and [clone_ns_resolve_declines_or_sets_children] (the namespace
-    word) above.  A creating arm that skipped [State.with_child] is
-    the change that would make [Exit.wait4_spec] WRONG rather than
-    merely incomplete; for 220 and 435 those lemmas are what break
-    first, and a new child-creating number owes an instance of its own.
+    [clone_resolve_declines_or_sets_children] (the fork word, and 435),
+    [clone_ns_resolve_declines_or_sets_children] (the namespace word) and
+    [clone_success_records_pid] above.  A creating arm that skipped
+    [State.with_child] is the change that would make [Exit.wait4_spec]
+    WRONG rather than merely incomplete; for 220 and 435 those lemmas
+    are what break first, and a new child-creating number owes an
+    instance of its own.
 
     THE OTHER HALF IS NOT DISCHARGED IN THE MODEL, and saying so is
     the point of this paragraph.  The lists must also have STARTED empty,
@@ -844,23 +845,27 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     neither, so a process that forked a grandchild or attached a
     tracee before exec'ing this image hands it something to wait for.
     That is a closed-world assumption about the environment of exactly
-    the shape [State.access_okb]'s is above.
+    the shape [State.access_okb]'s is above.  The launch's SIGCHLD
+    disposition is not assumed: a caller with a recorded child is
+    answered only while [State.m_sigchld_dfl] is set, and the bit is set
+    only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL ([Kernel.Signal.sigchld_install_model] sets it only in a
+    process with no recorded child;
+    [Checks.Examples.rt_sigaction_sets_sigchld_bit_only_without_children]).
+    So a child cloned under a launcher's SIG_IGN, which Linux may reap
+    at its exit, can only turn an answer into a decline.
 
-    This statement is carried by two different
-    facts at once: at a childless caller -ECHILD really is the only
-    answer, and at a caller with a child there is no [Ok] outcome at all
-    because [Exit.wait4_spec] declines.  Both halves are needed —
-    dropping the gate would leave the first covering a case it is false
-    for.  [Checks.Examples.wait4_with_a_child_is_unmodeled] is the
-    statement of the second half that does NOT live in this file.
+    [Checks.Examples.wait4_with_a_child_admits_no_echild] is the
+    statement, outside this file, that a caller with a child never gets
+    the childless answer.
 
     See [Exit.wait4_spec] for the three guards that decline: any
     [upid] but -1, any [options] but [Uapi.WNOHANG] (a blocking wait is
     a wait-queue sleep, and can answer -EINTR), and a non-NULL
-    [rusage].  [stat_addr] is not among them and is not read at all —
-    [kernel_wait4] guards its copy-out on [ret > 0], so no -ECHILD
-    touches the pointer — which is why the lemma below needs no
-    hypothesis about it.
+    [rusage].  [stat_addr] is not among them, and the childless answer
+    does not read it — [kernel_wait4] guards its copy-out on [ret > 0],
+    so no -ECHILD touches the pointer — which is why the lemma below
+    needs no hypothesis about it.
 
     WHAT THIS OWES A SIBLING.  [Kernel.Fork.clone_resolve] and
     [Kernel.Fork.clone_ns_resolve] have succeeding arms, so a child can
@@ -868,7 +873,8 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     excludes SIGCHLD (17), whose one answered install puts back the
     default action and installs no handler.  What [Exit.wait4_spec]
     rests on is not that no child can exist, but that the model RECORDS
-    whether one does.  That is [clone_success_sets_children] above. *)
+    whether one does, and which.  That is [clone_success_sets_children]
+    and [clone_success_records_pid] above. *)
 Lemma wait4_not_unmodeled : forall i m,
   bv_unsigned (in_sysno i) = 260%Z ->
   bv_unsigned (pid32 (in_arg i 0)) = WAIT_ANY32 ->
@@ -889,22 +895,48 @@ Qed.
 
 (** ...and what it is not declined TO, which is the half a
     [~ Unmodeled] statement cannot carry.  This is the soundness claim
-    for 260 in one line: EVERY admissible resolution of the number, at
-    every argument shape and in every model, is -ECHILD with no memory
-    moved.  No argument hypothesis is needed — outside the modeled
-    shape there is no [Ok] outcome to constrain.
+    for 260 in one statement: EVERY admissible resolution of the number,
+    at every argument shape and in every model, is one of three, and
+    moves no memory but the status store.
 
-    One run reaches the accepting half of this and one
-    rejection at a time; only a [forall] says that a reaped pid,
-    WNOHANG's bare 0 and an -EFAULT are ALL absent, and that no arm
-    anywhere writes through [stat_addr].  That is [Checks.Examples]'s
-    first reason, and it is the statement priority 2 turns on: a
-    childless process cannot reap, so a model admitting a reap would
-    admit a trace Linux cannot produce. *)
-Lemma wait4_answers_only_echild : forall i m eff m' evs,
+    - At a caller with NO child: -ECHILD, nothing stored, the model
+      unchanged.
+    - At a caller with a child, in a process whose every child was cloned
+      while SIGCHLD was SIG_DFL ([State.m_sigchld_dfl]): 0, nothing
+      stored, the model unchanged.
+    - At such a caller: a REAP — a recorded nonzero pid [q], a
+      status word [s] that [Exit.wait_status_okz] admits, stored at
+      [stat_addr] (the second argument) unless it is NULL, and [q]
+      removed from [State.m_child_pids].
+
+    No argument hypothesis is needed — outside the modeled shape there
+    is no [Ok] outcome to constrain.  One run reaches one of these at a
+    time; only a [forall] says that a reap of an unrecorded pid, a bare 0
+    at a childless caller, an -EFAULT, a stopped child's report, and any
+    store but the status word are ALL absent.
+
+    THIS RESTATES [wait4_answers_only_echild], which said every
+    resolution was -ECHILD.  That stopped being true when a caller with a
+    recorded child became answered; the first disjunct is that statement
+    at the caller it still describes.  The second and third name the
+    SIGCHLD install they need, so a process that never made it gets the
+    first answer or none. *)
+Lemma wait4_answers : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 260%Z ->
   syscall_spec i m (Ok eff m' evs) ->
-  eff = mkEffect (errno_ret ECHILD) [] [] /\ m' = m /\ evs = [].
+  evs = []
+  /\ ( (m_has_children m = false
+        /\ eff = mkEffect (errno_ret ECHILD) [] [] /\ m' = m)
+     \/ (m_has_children m = true /\ m_sigchld_dfl m = true
+         /\ eff = mkEffect (Z_to_bv 64 0) [] [] /\ m' = m)
+     \/ (m_has_children m = true /\ m_sigchld_dfl m = true
+         /\ exists q s,
+              pid_recorded_b q (m_child_pids m) = true
+              /\ w_is0 q = false
+              /\ clone_pid_ok_b m q = true
+              /\ wait_status_okz s = true
+              /\ eff = mkEffect q (wait4_stat_store (in_arg i 1) s) []
+              /\ m' = with_child_pids (remove_pid q (m_child_pids m)) m) ).
 Proof.
   intros i m [ret ws zs us cs ins] m' evs Hno H.
   apply check_syscall_complete_ok in H.
@@ -915,18 +947,47 @@ Proof.
   destruct (negb (Z.eqb (bv_unsigned (waitopts32 (in_arg i 2))) WNOHANG));
     [discriminate|].
   destruct (negb (w_is0 (in_arg i 3))); [discriminate|].
-  (* a caller WITH a child declines, so it contributes no [Ok] to
-     constrain; the claim below is about the childless case, which is
-     the only one that answers *)
-  destruct (m_has_children m); [discriminate|].
-  destruct ws as [|? ?]; [|discriminate].
-  destruct zs as [|? ?]; [|discriminate].
-  destruct us as [|? ?]; [|discriminate].
-  destruct cs as [|? ?]; [|discriminate].
-  destruct ins as [|? ?]; [|discriminate].
-  destruct (bv_eqb ret (errno_ret ECHILD)) eqn:Hr; [|discriminate].
-  apply bv_eqb_eq in Hr. subst ret. inversion H; clear H; subst.
-  split; [reflexivity|]. split; reflexivity.
+  destruct (m_has_children m) eqn:Hc; cbv iota in H.
+  - (* a caller with a child: 0, or a reap *)
+    destruct (m_child_pids m) as [|q0 l0] eqn:Hl; cbv iota in H;
+      [discriminate|].
+    destruct (negb (m_sigchld_dfl m)) eqn:Hd; cbv iota in H; [discriminate|].
+    apply negb_false_iff in Hd.
+    destruct (negb (wait4_stat_ok_b (in_wmem i) (in_arg i 1))); cbv iota in H;
+      [discriminate|].
+    destruct zs as [|? ?]; [|discriminate].
+    destruct us as [|? ?]; [|discriminate].
+    destruct cs as [|? ?]; [|discriminate].
+    destruct ins as [|? ?]; [|discriminate].
+    cbv iota in H.
+    destruct (w_is0 ret) eqn:H0; cbv iota in H.
+    + destruct ws as [|? ?]; cbv iota in H; [|discriminate].
+      injection H as <- <-.
+      unfold w_is0 in H0. apply bv_eqb_eq in H0. subst ret.
+      split; [reflexivity|]. right; left.
+      split; [reflexivity|]. split; [exact Hd|]. split; reflexivity.
+    + destruct (pid_recorded_b ret (q0 :: l0)
+                && (clone_pid_ok_b m ret && check_wait4_store (in_arg i 1) ws))
+        eqn:Hr; cbv iota in H; [|discriminate].
+      apply andb_true_iff in Hr as [Hq Hr].
+      apply andb_true_iff in Hr as [Hp Hw].
+      apply check_wait4_store_sound in Hw as (s & Hs & ->).
+      injection H as <- <-.
+      split; [reflexivity|]. right; right.
+      split; [reflexivity|]. split; [exact Hd|].
+      exists ret, s.
+      split; [exact Hq|]. split; [exact H0|]. split; [exact Hp|]. split; [exact Hs|].
+      split; reflexivity.
+  - (* no child: -ECHILD *)
+    destruct ws as [|? ?]; [|discriminate].
+    destruct zs as [|? ?]; [|discriminate].
+    destruct us as [|? ?]; [|discriminate].
+    destruct cs as [|? ?]; [|discriminate].
+    destruct ins as [|? ?]; [|discriminate].
+    destruct (bv_eqb ret (errno_ret ECHILD)) eqn:Hr; [|discriminate].
+    apply bv_eqb_eq in Hr. subst ret. inversion H; clear H; subst.
+    split; [reflexivity|]. left.
+    split; [reflexivity|]. split; reflexivity.
 Qed.
 
 (** [setsid] (157) — MODELED, and stated here in the negative.  A file of tripwires
@@ -1302,15 +1363,20 @@ Proof. vm_compute. reflexivity. Qed.
     declining shape — so these use [wait4_input_any], the shape both
     dropbear call sites issue: [waitpid(-1, NULL, WNOHANG)].
 
-    TWO CASES.  [wait4_checker_echild] is [wait4_not_unmodeled]'s
+    THREE CASES.  [wait4_checker_echild] is [wait4_not_unmodeled]'s
     checker half at the shape its hypotheses name.
-    [wait4_checker_rejects_a_reap] is the concrete witness for
-    [wait4_answers_only_echild]: a kernel claiming to have reaped pid
-    4321 is REJECTED, which is the whole soundness point and the case
-    that catches a [wait4] that admits a reap.  Without it
+    [wait4_checker_rejects_a_reap] is the concrete witness for the first
+    disjunct of [wait4_answers]: at a caller with no child, a kernel
+    claiming to have reaped pid 4321 is REJECTED, which is the case that
+    catches a [wait4] that admits a reap Linux cannot give.  Without it
     the accept above is satisfied by a checker that answers [CheckOk]
-    to everything.  The argument gates are left to the
-    lemmas' hypotheses. *)
+    to everything.  [wait4_checker_after_clone] is the composition with
+    [clone_checker_admits_a_pid], in a process that installed SIG_DFL
+    for SIGCHLD before the clone ([State.with_sigchld_dfl], the install
+    [Exit.wait4_spec] waits for): the pid that clone recorded is the
+    one pid a reap may return, the reap removes it, and -ECHILD is no
+    longer admitted.  Without the install the same reap declines.  The
+    argument gates are left to the lemmas' hypotheses. *)
 Definition wait4_input_any : SyscallInput :=
   mkInput (Z_to_bv 64 260)
     [Z_to_bv 64 (-1); 0; Z_to_bv 64 1; 0; 0; 0]
@@ -1325,6 +1391,23 @@ Example wait4_checker_rejects_a_reap :
   check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4321) [] []) pc_model
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
+
+Example wait4_checker_after_clone :
+  check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4242) [] [])
+    (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+  = CheckOk (with_child_pids []
+               (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))) []
+  /\ check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4321) [] [])
+       (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+     = CheckReject
+  /\ check_syscall wait4_input_any (mkEffect (errno_ret ECHILD) [] [])
+       (with_child (Z_to_bv 64 4242) (with_sigchld_dfl true pc_model))
+     = CheckReject
+  /\ check_syscall wait4_input_any (mkEffect (Z_to_bv 64 4242) [] [])
+       (with_child (Z_to_bv 64 4242) pc_model) = CheckUnmodeled.
+Proof.
+  repeat match goal with |- _ /\ _ => split end; vm_compute; reflexivity.
+Qed.
 
 (** setsid is the one number PINNED here that the checker admits, so it
     gets the shape rather than the refusal.  ([read] (63) is admitted

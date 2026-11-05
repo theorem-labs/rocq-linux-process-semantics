@@ -586,8 +586,13 @@ Qed.
     action the model stores), then the other 63.  For those, every
     admissible outcome is a bare return.  The arms after the 24-byte
     copy of [act] carry that copy in the ledger; the arms before it,
-    and the -EFAULT of the copy itself, carry none.  The declining arms
-    are the ones whose answer would need a stored disposition (see
+    and the -EFAULT of the copy itself, carry none.  Of those 63 the
+    one arm that moves the model is the SIGCHLD SIG_DFL install, which
+    sets [State.procst_sigchld_dfl] in a process with no recorded child
+    ([Signal.sigchld_install_model]).  So two arms of rt_sigaction carry
+    state: SIGPIPE's, which stores the action, and SIGCHLD's, which
+    records the install bit.  The declining arms are the ones whose
+    answer would need a stored disposition (see
     [Signal.rt_sigaction_spec]). *)
 Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -613,7 +618,8 @@ Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
         else if sigabrt_dfl_install sig (in_mem i) act
         then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
         else if sigchld_dfl_install sig (in_mem i) act
-        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
+        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0)
+               (sigchld_install_model m) []
         else CheckUnmodeled
     end.
 
@@ -652,7 +658,8 @@ Proof.
     apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
   destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota; [|discriminate].
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
-  apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+  apply record_copyins_ok_empty; [reflexivity|].
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
 Lemma check_rt_sigaction_sound_unmodeled : forall i sig act oact ss eff m,
