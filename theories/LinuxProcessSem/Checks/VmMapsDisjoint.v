@@ -2852,10 +2852,10 @@ Lemma check_clone3_frame : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i uargs size eff m m' evs H.
-  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H) as [He|[He|[He|(e & He & _)]]];
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
+    as [(reads & He)|[(reads & en & _ & He)|(e & He & _)]];
     clear H;
-    unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
-      check_clone3_einval in He;
+    unfold check_clone3_resolve, check_clone_resolve, check_clone_answer in He;
     vm_frame2 He.
 Qed.
 

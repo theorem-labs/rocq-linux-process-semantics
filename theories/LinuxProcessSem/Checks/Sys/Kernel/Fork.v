@@ -134,19 +134,19 @@ Definition check_clone_resolve (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
-(** [clone3] read [CLONE_ARGS_SIZE] bytes at [uargs] before resolving, so
-    its effect must carry exactly that range and no other.  An empty
+(** [clone3] read [reads] ([Fork.clone3_copy]) before resolving, so its
+    effect must carry exactly those ranges and no other.  An empty
     ledger here is not a harmless omission: it is a claim that the call
     read no user memory, which would let the model admit an allocation
     the kernel refuses.  The descriptor gate is tested FIRST, so a model
     the resolution declines answers [CheckUnmodeled] whatever ledger the
     effect carries. *)
-Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
+Definition check_clone3_resolve (reads : list (word * nat)) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then CheckUnmodeled
   else match eff with
-  | mkEffectU ret [] [] [] [] ((a, n) :: nil) =>
-      if bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat
+  | mkEffectU ret [] [] [] [] cis =>
+      if access_ranges_eqb cis reads
       then check_clone_answer ret m
       else CheckReject
   | _ => CheckReject
@@ -237,43 +237,48 @@ Definition check_clone (i : SyscallInput) (flags : word) (eff : SyscallEffect) (
        | None => CheckUnmodeled
        end.
 
-(** [clone3]'s -EINVAL carries the struct in its ledger
+(** [clone3]'s -EINVAL carries the copy's ledger
     ([Kernel.Fork.clone3_einval]). *)
-Definition check_clone3_einval (uargs : word) (eff : SyscallEffect)
+Definition check_clone3_einval (reads : list (word * nat)) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  check_ret_only_copyins [(uargs, CLONE_ARGS_SIZE_nat)] eff (errno_ret EINVAL) m [].
+  check_ret_only_copyins reads eff (errno_ret EINVAL) m [].
 
-(** [Kernel.Fork.clone3_with_stores]: the struct in the ledger, and the
-    rest decided on the effect with the ledger cleared. *)
-Definition check_clone3_stores (i : SyscallInput) (uargs : word) (r : CloneArgs)
-    (eff : SyscallEffect) (m : Model) : check_result :=
-  check_copyins_after [(uargs, CLONE_ARGS_SIZE_nat)] eff
+(** The copy's failures ([Kernel.Fork.clone3_fail]): the errno, the
+    ranges read before it, and the model as it was. *)
+Definition check_clone3_fail (reads : list (word * nat)) (en : Z) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  check_ret_only_copyins reads eff (errno_ret en) m [].
+
+(** [Kernel.Fork.clone3_with_stores]: the copy's ledger, and the rest
+    decided on the effect with the ledger cleared. *)
+Definition check_clone3_stores (i : SyscallInput) (reads : list (word * nat))
+    (r : CloneArgs) (eff : SyscallEffect) (m : Model) : check_result :=
+  check_copyins_after reads eff
     (check_with_stores i r check_clone_resolve (clear_copyins eff) m).
 
-(** A [uargs] range [access_ok] refuses is -EFAULT with an EMPTY ledger,
-    asked through [State.copy_bytes_map] before the walk; one it admits
-    that the memory does not wholly back declines (see
-    [Fork.clone3_spec]). *)
+(** [Kernel.Fork.clone3_on_struct], branch for branch. *)
+Definition check_clone3_on_struct (i : SyscallInput) (reads : list (word * nat))
+    (short : bool) (bs : list byte) (eff : SyscallEffect) (m : Model) : check_result :=
+  if clone3_fork_args_b bs then check_clone3_resolve reads eff m
+  else if clone3_einval_sz short bs then check_clone3_einval reads eff m
+  else match clone3_pre_sz short bs with
+       | CdArgs r =>
+           match clone_class r with
+           | CcFork => check_clone3_stores i reads r eff m
+           | _ => CheckUnmodeled
+           end
+       | _ => CheckUnmodeled
+       end.
+
+(** [Kernel.Fork.clone3_spec]: the size tests and the copy
+    ([Fork.clone3_copy]) decide first. *)
 Definition check_clone3 (i : SyscallInput) (uargs size : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then CheckUnmodeled
-  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
-       | None =>
-           if negb (access_okb uargs CLONE_ARGS_SIZE)
-           then check_ret_only eff (errno_ret EFAULT) m []
-           else CheckUnmodeled
-       | Some bs =>
-           if clone3_fork_args_b bs then check_clone3_resolve uargs eff m
-           else if clone3_einval_b bs then check_clone3_einval uargs eff m
-           else match clone3_pre bs with
-                | CdArgs r =>
-                    match clone_class r with
-                    | CcFork => check_clone3_stores i uargs r eff m
-                    | _ => CheckUnmodeled
-                    end
-                | _ => CheckUnmodeled
-                end
-       end.
+  match clone3_copy (in_mem i) uargs (bv_unsigned size) with
+  | C3Err reads en => check_clone3_fail reads en eff m
+  | C3Decline => CheckUnmodeled
+  | C3Struct reads short bs => check_clone3_on_struct i reads short bs eff m
+  end.
 
 (** No admissible pid can be mistaken for an admissible errno.  Every
     member of [Fork.clone_errnos] reads as an unsigned 64-bit value just
@@ -385,6 +390,7 @@ Proof.
   intros uargs eff m m' evs i H. unfold clone3_einval in H.
   apply record_copyins_ok_inv in H as (core & Hc & ->).
   unfold err_ret, ret_only, pure in Hc. injection Hc as -> -> ->.
+  cbn [eff_copyins]. rewrite app_nil_r.
   unfold check_clone3_einval. exact (check_ret_only_copyins_refl _ _ _ _).
 Qed.
 
@@ -394,6 +400,43 @@ Proof.
   intros uargs i m H. unfold clone3_einval in H.
   apply record_copyins_unmodeled_inv in H.
   unfold err_ret, ret_only, pure in H. discriminate H.
+Qed.
+
+Lemma check_clone3_fail_sound_ok : forall reads en eff m m' evs i,
+  check_clone3_fail reads en eff m = CheckOk m' evs ->
+  clone3_fail reads en i m (Ok eff m' evs).
+Proof.
+  intros reads en eff m m' evs i H. unfold check_clone3_fail in H.
+  apply check_ret_only_copyins_ok_iff in H as (-> & -> & ->).
+  unfold clone3_fail.
+  apply record_copyins_ok_empty; [reflexivity|].
+  unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Lemma check_clone3_fail_complete_ok : forall reads en eff m m' evs i,
+  clone3_fail reads en i m (Ok eff m' evs) ->
+  check_clone3_fail reads en eff m = CheckOk m' evs.
+Proof.
+  intros reads en eff m m' evs i H. unfold clone3_fail in H.
+  apply record_copyins_ok_inv in H as (core & Hc & ->).
+  unfold err_ret, ret_only, pure in Hc. injection Hc as -> -> ->.
+  cbn [eff_copyins]. rewrite app_nil_r.
+  unfold check_clone3_fail. exact (check_ret_only_copyins_refl _ _ _ _).
+Qed.
+
+Lemma clone3_fail_not_unmodeled : forall reads en i m,
+  ~ clone3_fail reads en i m Unmodeled.
+Proof.
+  intros reads en i m H. unfold clone3_fail in H.
+  apply record_copyins_unmodeled_inv in H.
+  unfold err_ret, ret_only, pure in H. discriminate H.
+Qed.
+
+Lemma check_clone3_fail_not_unmodeled : forall reads en eff m,
+  check_clone3_fail reads en eff m <> CheckUnmodeled.
+Proof.
+  intros reads en eff m H. unfold check_clone3_fail in H.
+  exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
 Qed.
 
 Lemma check_clone_ns_resolve_sound_ok : forall eff m m' evs i,
@@ -546,11 +589,11 @@ Qed.
 (** The same four, for the resolution that carries a ledger.  Each goes
     through the plain one on the effect with the ledger stripped, so the
     admitted answer is decided in exactly one place. *)
-Lemma check_clone3_resolve_sound_ok : forall uargs eff m m' evs i,
-  check_clone3_resolve uargs eff m = CheckOk m' evs ->
-  clone3_resolve uargs i m (Ok eff m' evs).
+Lemma check_clone3_resolve_sound_ok : forall reads eff m m' evs i,
+  check_clone3_resolve reads eff m = CheckOk m' evs ->
+  clone3_resolve reads i m (Ok eff m' evs).
 Proof.
-  intros uargs [ret ws zs us cs cis] m m' evs i H.
+  intros reads [ret ws zs us cs cis] m m' evs i H.
   unfold check_clone3_resolve in H.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota in H; [discriminate|].
@@ -558,22 +601,19 @@ Proof.
   destruct zs as [|? ?]; try discriminate.
   destruct us as [|? ?]; try discriminate.
   destruct cs as [|? ?]; try discriminate.
-  destruct cis as [|[a n] [|? ?]]; try discriminate.
-  destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat) eqn:Hl;
-    cbv iota in H; [|discriminate].
-  apply andb_true_iff in Hl as [Ha Hn].
-  apply bv_eqb_eq in Ha. apply Nat.eqb_eq in Hn. subst a n.
+  destruct (access_ranges_eqb cis reads) eqn:Hl; cbv iota in H; [|discriminate].
+  apply access_ranges_eqb_eq in Hl. subst cis.
   unfold clone3_resolve.
   apply (record_copyins_ok_empty _ _ _ _ (mkEffect ret [] [])); [reflexivity|].
   apply check_clone_resolve_sound_ok.
   unfold check_clone_resolve. rewrite Hg. cbv iota. exact H.
 Qed.
 
-Lemma check_clone3_resolve_sound_unmodeled : forall uargs eff m i,
-  check_clone3_resolve uargs eff m = CheckUnmodeled ->
-  clone3_resolve uargs i m Unmodeled.
+Lemma check_clone3_resolve_sound_unmodeled : forall reads eff m i,
+  check_clone3_resolve reads eff m = CheckUnmodeled ->
+  clone3_resolve reads i m Unmodeled.
 Proof.
-  intros uargs eff m i H.
+  intros reads eff m i H.
   unfold check_clone3_resolve in H.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
     cbv iota in H.
@@ -585,23 +625,20 @@ Proof.
     destruct zs as [|? ?]; [|discriminate].
     destruct us as [|? ?]; [|discriminate].
     destruct cs as [|? ?]; [|discriminate].
-    destruct cis as [|[a n] [|? ?]]; try discriminate.
-    destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat);
-      cbv iota in H; [|discriminate].
+    destruct (access_ranges_eqb cis reads); cbv iota in H; [|discriminate].
     unfold check_clone_answer in H.
     destruct (errno_ret_in clone_errnos ret); [discriminate|].
     destruct (clone_pid_ok_b m ret); discriminate.
 Qed.
 
-Lemma check_clone3_resolve_complete_ok : forall uargs eff m m' evs i,
-  clone3_resolve uargs i m (Ok eff m' evs) ->
-  check_clone3_resolve uargs eff m = CheckOk m' evs.
+Lemma check_clone3_resolve_complete_ok : forall reads eff m m' evs i,
+  clone3_resolve reads i m (Ok eff m' evs) ->
+  check_clone3_resolve reads eff m = CheckOk m' evs.
 Proof.
-  intros uargs eff m m' evs i H.
+  intros reads eff m m' evs i H.
   unfold clone3_resolve, record_copyins in H.
   destruct H as (e0 & m0 & evs0 & evs2 & H0 & Hp & Hevs).
   unfold pure in Hp. inversion Hp; clear Hp; subst.
-  try rewrite app_nil_r.
   pose proof (check_clone_resolve_complete_ok e0 m _ evs0 i H0) as Hc.
   unfold check_clone_resolve in Hc.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg;
@@ -612,16 +649,16 @@ Proof.
   destruct us as [|? ?]; try discriminate.
   destruct cs as [|? ?]; try discriminate.
   destruct cis as [|? ?]; try discriminate.
-  unfold check_clone3_resolve, with_copyins. cbn [eff_copyins].
-  rewrite Hg. cbv iota. cbn [app].
-  rewrite bv_eqb_refl, Nat.eqb_refl. cbv iota. exact Hc.
+  unfold check_clone3_resolve, with_copyins.
+  cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
+  rewrite Hg. repeat rewrite app_nil_r. cbv iota. rewrite access_ranges_eqb_refl. exact Hc.
 Qed.
 
-Lemma check_clone3_resolve_complete_unmodeled : forall uargs m i eff,
-  clone3_resolve uargs i m Unmodeled ->
-  check_clone3_resolve uargs eff m = CheckUnmodeled.
+Lemma check_clone3_resolve_complete_unmodeled : forall reads m i eff,
+  clone3_resolve reads i m Unmodeled ->
+  check_clone3_resolve reads eff m = CheckUnmodeled.
 Proof.
-  intros uargs m i eff H.
+  intros reads m i eff H.
   unfold clone3_resolve, record_copyins in H.
   destruct H as [H|H]; [|destruct H as [? [? [? [_ Hp]]]];
                           unfold pure in Hp; discriminate].
@@ -793,8 +830,8 @@ Proof.
   rewrite (Hc _ Hb). reflexivity.
 Qed.
 
-(** The same four for [clone3]'s, which carries the struct in its
-    ledger. *)
+(** The same four for [clone3]'s, which carries the copy's ledger
+    ([uargs] here). *)
 Lemma check_clone3_stores_sound_ok : forall i uargs r eff m m' evs,
   check_clone3_stores i uargs r eff m = CheckOk m' evs ->
   clone3_with_stores uargs r i m (Ok eff m' evs).
@@ -833,8 +870,7 @@ Proof.
     cbn [eff_copyins]. exact Hci0. }
   unfold check_clone3_stores. apply check_copyins_after_ok_iff. split.
   - unfold with_copyins. cbn [eff_copyins]. rewrite Hci, app_nil_r. reflexivity.
-  - replace (clear_copyins (with_copyins ([(uargs, CLONE_ARGS_SIZE_nat)] ++ eff_copyins core)
-                              core)) with core.
+  - replace (clear_copyins (with_copyins (uargs ++ eff_copyins core) core)) with core.
     + apply (check_with_stores_complete_ok clone_resolve); [| |exact Hcore].
       * intros e m1 evs1 He. now apply check_clone_resolve_complete_ok with (i := i).
       * intros e m1 evs1 He. exact (proj1 (check_clone_resolve_no_writes _ _ _ _ He)).
@@ -953,29 +989,85 @@ Proof.
   - reflexivity.
 Qed.
 
+(** [clone3_on_struct] and its checker, both ways. *)
+Lemma check_clone3_on_struct_sound_ok : forall i reads short bs eff m m' evs,
+  check_clone3_on_struct i reads short bs eff m = CheckOk m' evs ->
+  clone3_on_struct reads short bs i m (Ok eff m' evs).
+Proof.
+  intros i reads short bs eff m m' evs H.
+  unfold check_clone3_on_struct in H. unfold clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha;
+    cbv iota; cbv iota in H; [now apply check_clone3_resolve_sound_ok|].
+  destruct (clone3_einval_sz short bs) eqn:He;
+    cbv iota; cbv iota in H; [now apply check_clone3_einval_sound_ok|].
+  destruct (clone3_pre_sz short bs) as [| |r]; cbv iota in H |- *; try discriminate H.
+  destruct (clone_class r); cbv iota in H |- *; try discriminate H.
+  now apply check_clone3_stores_sound_ok.
+Qed.
+
+Lemma check_clone3_on_struct_sound_unmodeled : forall i reads short bs eff m,
+  check_clone3_on_struct i reads short bs eff m = CheckUnmodeled ->
+  clone3_on_struct reads short bs i m Unmodeled.
+Proof.
+  intros i reads short bs eff m H.
+  unfold check_clone3_on_struct in H. unfold clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha;
+    cbv iota; cbv iota in H;
+    [now apply check_clone3_resolve_sound_unmodeled with (eff := eff)|].
+  destruct (clone3_einval_sz short bs) eqn:He; cbv iota; cbv iota in H.
+  { exfalso. unfold check_clone3_einval in H.
+    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H). }
+  destruct (clone3_pre_sz short bs) as [| |r]; cbv iota in H |- *;
+    [apply unmodeled_intro | apply unmodeled_intro|].
+  destruct (clone_class r); cbv iota in H |- *;
+    [now apply check_clone3_stores_sound_unmodeled with (eff := eff)
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
+Qed.
+
+Lemma check_clone3_on_struct_complete_ok : forall i reads short bs eff m m' evs,
+  clone3_on_struct reads short bs i m (Ok eff m' evs) ->
+  check_clone3_on_struct i reads short bs eff m = CheckOk m' evs.
+Proof.
+  intros i reads short bs eff m m' evs H.
+  unfold clone3_on_struct in H. unfold check_clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *.
+  { now apply check_clone3_resolve_complete_ok with (i := i). }
+  destruct (clone3_einval_sz short bs) eqn:He; cbv iota in H |- *.
+  { now apply check_clone3_einval_complete_ok with (i := i). }
+  destruct (clone3_pre_sz short bs) as [| |r]; cbv iota in H |- *;
+    try (unfold unmodeled in H; discriminate H).
+  destruct (clone_class r); cbv iota in H |- *;
+    try (unfold unmodeled in H; discriminate H).
+  now apply check_clone3_stores_complete_ok.
+Qed.
+
+Lemma check_clone3_on_struct_complete_unmodeled : forall i reads short bs eff m,
+  clone3_on_struct reads short bs i m Unmodeled ->
+  check_clone3_on_struct i reads short bs eff m = CheckUnmodeled.
+Proof.
+  intros i reads short bs eff m H.
+  unfold clone3_on_struct in H. unfold check_clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *.
+  { now apply check_clone3_resolve_complete_unmodeled with (i := i). }
+  destruct (clone3_einval_sz short bs) eqn:He; cbv iota in H |- *.
+  { exfalso; eapply clone3_einval_not_unmodeled; eassumption. }
+  destruct (clone3_pre_sz short bs) as [| |r]; cbv iota in H |- *; try reflexivity.
+  destruct (clone_class r); cbv iota in H |- *; try reflexivity.
+  now apply check_clone3_stores_complete_unmodeled.
+Qed.
+
 Lemma check_clone3_sound_ok : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
   clone3_spec uargs size i m (Ok eff m' evs).
 Proof.
   intros i uargs size eff m m' evs H.
   unfold check_clone3 in H. unfold clone3_spec.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
-    cbv iota; cbv iota in H; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
-  2: { (* the walk declined: only a refused range answers, with -EFAULT *)
-       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
-         cbv iota; cbv iota in H; [|discriminate].
-       apply check_ret_only_ok_iff in H as (-> & -> & ->).
-       unfold err_ret, ret_only. apply pure_ok. }
-  destruct (clone3_fork_args_b bs) eqn:Ha;
-    cbv iota; cbv iota in H; [now apply check_clone3_resolve_sound_ok|].
-  destruct (clone3_einval_b bs) eqn:He;
-    cbv iota; cbv iota in H; [now apply check_clone3_einval_sound_ok|].
-  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; try discriminate H.
-  destruct (clone_class r); cbv iota in H |- *; try discriminate H.
-  now apply check_clone3_stores_sound_ok.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
+    cbv iota in H |- *.
+  - now apply check_clone3_fail_sound_ok.
+  - discriminate H.
+  - now apply check_clone3_on_struct_sound_ok.
 Qed.
 
 Lemma check_clone3_sound_unmodeled : forall i uargs size eff m,
@@ -984,25 +1076,12 @@ Lemma check_clone3_sound_unmodeled : forall i uargs size eff m,
 Proof.
   intros i uargs size eff m H.
   unfold check_clone3 in H. unfold clone3_spec.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
-    cbv iota; cbv iota in H; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
-  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
-         cbv iota; cbv iota in H;
-         [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
-  destruct (clone3_fork_args_b bs) eqn:Ha;
-    cbv iota; cbv iota in H;
-    [now apply check_clone3_resolve_sound_unmodeled with (eff := eff)|].
-  destruct (clone3_einval_b bs) eqn:He; cbv iota; cbv iota in H.
-  { exfalso. unfold check_clone3_einval in H.
-    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H). }
-  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; [apply unmodeled_intro
-                                                           | apply unmodeled_intro|].
-  destruct (clone_class r); cbv iota in H |- *;
-    [now apply check_clone3_stores_sound_unmodeled with (eff := eff)
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
+    cbv iota in H |- *.
+  - exfalso. exact (check_clone3_fail_not_unmodeled _ _ _ _ H).
+  - apply unmodeled_intro.
+  - now apply check_clone3_on_struct_sound_unmodeled with (eff := eff).
 Qed.
 
 Lemma check_clone3_complete_ok : forall i uargs size eff m m' evs,
@@ -1011,22 +1090,12 @@ Lemma check_clone3_complete_ok : forall i uargs size eff m m' evs,
 Proof.
   intros i uargs size eff m m' evs H.
   unfold clone3_spec in H. unfold check_clone3.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
-    cbv iota in H; [unfold unmodeled in H; discriminate|].
-  sys_unfold. cbv iota in H. inv_ok.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-  2: { (* -EFAULT with nothing recorded, the only answer of a refused range *)
-       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs; inv_ok.
-       apply check_ret_only_ok_iff. now repeat split. }
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
-  { now apply check_clone3_resolve_complete_ok with (i := i). }
-  destruct (clone3_einval_b bs) eqn:He; hall He; inv_ok.
-  { now apply check_clone3_einval_complete_ok with (i := i). }
-  destruct (clone3_pre bs) as [| |r] eqn:Hp3; hall Hp3; inv_ok.
-  destruct (clone_class r) eqn:Hcc; hall Hcc; inv_ok.
-  match goal with Hx : clone3_with_stores _ _ _ _ _ |- _ =>
-    now apply check_clone3_stores_complete_ok end.
+  apply input_bind_ok_inv in H. cbv beta in H.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
+    cbv iota in H |- *.
+  - now apply check_clone3_fail_complete_ok with (i := i).
+  - unfold unmodeled in H. discriminate H.
+  - now apply check_clone3_on_struct_complete_ok.
 Qed.
 
 Lemma check_clone3_complete_unmodeled : forall i uargs size m eff,
@@ -1035,20 +1104,12 @@ Lemma check_clone3_complete_unmodeled : forall i uargs size m eff,
 Proof.
   intros i uargs size m eff H.
   unfold clone3_spec in H. unfold check_clone3.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
-    cbv iota in H; [reflexivity|].
   apply input_bind_unmodeled_inv in H. cbv beta in H.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
-    as [bs|] eqn:Hbs; cbv iota in H |- *.
-  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; cbv iota in H |- *;
-         [unfold err_ret, ret_only, pure in H; discriminate H | reflexivity]. }
-  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *.
-  { now apply check_clone3_resolve_complete_unmodeled with (i := i). }
-  destruct (clone3_einval_b bs) eqn:He; cbv iota in H |- *.
-  { exfalso; eapply clone3_einval_not_unmodeled; eassumption. }
-  destruct (clone3_pre bs) as [| |r]; cbv iota in H |- *; try reflexivity.
-  destruct (clone_class r); cbv iota in H |- *; try reflexivity.
-  now apply check_clone3_stores_complete_unmodeled.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
+    cbv iota in H |- *.
+  - exfalso. exact (clone3_fail_not_unmodeled _ _ _ _ H).
+  - reflexivity.
+  - now apply check_clone3_on_struct_complete_unmodeled.
 Qed.
 
 (* ------------------------------------------- what an accepted answer is *)
@@ -1103,28 +1164,32 @@ Proof.
   - discriminate H.
 Qed.
 
+(** Every answer [check_clone3] accepts is the fork image's, a failure of
+    the copy or of the struct's tests (-E2BIG, -EINVAL or -EFAULT, with
+    the model as it was), or a stores answer's, with the same return. *)
 Lemma check_clone3_ok_inv : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
-  check_clone3_resolve uargs eff m = CheckOk m' evs
-  \/ check_ret_only eff (errno_ret EFAULT) m [] = CheckOk m' evs
-  \/ check_clone3_einval uargs eff m = CheckOk m' evs
+  (exists reads, check_clone3_resolve reads eff m = CheckOk m' evs)
+  \/ (exists reads en, (en = E2BIG \/ en = EINVAL \/ en = EFAULT)
+        /\ check_ret_only_copyins reads eff (errno_ret en) m [] = CheckOk m' evs)
   \/ (exists e, check_clone_resolve e m = CheckOk m' evs /\ eff_ret e = eff_ret eff).
 Proof.
   intros i uargs size eff m m' evs H. unfold check_clone3 in H.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota in H;
-    [discriminate H|].
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|]; cbv iota in H.
-  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota in H; [|discriminate H].
-       right; left. exact H. }
-  destruct (clone3_fork_args_b bs); cbv iota in H; [left; exact H|].
-  destruct (clone3_einval_b bs); cbv iota in H; [right; right; left; exact H|].
-  destruct (clone3_pre bs) as [| |r]; cbv iota in H; try discriminate H.
-  destruct (clone_class r); cbv iota in H; try discriminate H.
-  right; right; right. unfold check_clone3_stores in H.
-  apply check_copyins_after_ok_iff in H as [_ H].
-  exists (strip_tid_writes (clear_copyins eff)).
-  split; [exact (check_with_stores_ok_inv _ _ _ _ _ _ _ H)|].
-  rewrite strip_tid_writes_ret. reflexivity.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs]
+    eqn:Hc; cbv iota in H.
+  - right; left. exists reads, en. split; [exact (clone3_copy_errno _ _ _ _ _ Hc)|exact H].
+  - discriminate H.
+  - unfold check_clone3_on_struct in H.
+    destruct (clone3_fork_args_b bs); cbv iota in H; [left; exists reads; exact H|].
+    destruct (clone3_einval_sz short bs); cbv iota in H.
+    { right; left. exists reads, EINVAL. split; [right; left; reflexivity|exact H]. }
+    destruct (clone3_pre_sz short bs) as [| |r]; cbv iota in H; try discriminate H.
+    destruct (clone_class r); cbv iota in H; try discriminate H.
+    right; right. unfold check_clone3_stores in H.
+    apply check_copyins_after_ok_iff in H as [_ H].
+    exists (strip_tid_writes (clear_copyins eff)).
+    split; [exact (check_with_stores_ok_inv _ _ _ _ _ _ _ H)|].
+    rewrite strip_tid_writes_ret. reflexivity.
 Qed.
 
 (** THE SHAPE OF AN ACCEPTED ANSWER: no event, and either an
@@ -1211,16 +1276,14 @@ Proof.
   cbn [eff_ret]. unfold errno_any_b in He. apply andb_true_iff in He as [He _]. exact He.
 Qed.
 
-Lemma check_clone3_resolve_shape : forall uargs eff m m' evs,
-  check_clone3_resolve uargs eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
+Lemma check_clone3_resolve_shape : forall reads eff m m' evs,
+  check_clone3_resolve reads eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
 Proof.
-  intros uargs [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
+  intros reads [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); cbv iota in H;
     [discriminate H|].
   destruct ws, zs, us, cs; try discriminate H.
-  destruct ci as [|[a n] [|? ?]]; try discriminate H.
-  destruct (bv_eqb a uargs && Nat.eqb n CLONE_ARGS_SIZE_nat); cbv iota in H;
-    [|discriminate H].
+  destruct (access_ranges_eqb ci reads); cbv iota in H; [|discriminate H].
   exact (check_clone_answer_shape _ _ _ _ H).
 Qed.
 
@@ -1243,12 +1306,11 @@ Lemma check_clone3_shape : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> clone_answer_shape eff m m' evs.
 Proof.
   intros i uargs size eff m m' evs H.
-  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H) as [He|[He|[He|(e & He & Hr)]]].
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
+    as [(reads & He)|[(reads & en & Hen & He)|(e & He & Hr)]].
   - exact (check_clone3_resolve_shape _ _ _ _ _ He).
-  - apply check_ret_only_ok_iff in He as (-> & -> & ->).
-    split; [reflexivity|]. left. split; [reflexivity|]. vm_compute. reflexivity.
-  - unfold check_clone3_einval in He.
-    apply check_ret_only_copyins_ok_iff in He as (-> & -> & ->).
-    split; [reflexivity|]. left. split; [reflexivity|]. vm_compute. reflexivity.
+  - apply check_ret_only_copyins_ok_iff in He as (-> & -> & ->).
+    split; [reflexivity|]. left. split; [reflexivity|].
+    destruct Hen as [-> | [-> | ->]]; vm_compute; reflexivity.
   - exact (clone_answer_shape_ret _ _ _ _ _ Hr (check_clone_resolve_shape _ _ _ _ He)).
 Qed.

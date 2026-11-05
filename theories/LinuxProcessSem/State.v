@@ -561,6 +561,7 @@ Definition errno_ret (e : Z) : word := Z_to_bv 64 (- e).
 Definition EPERM  : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
 Definition ESRCH  : Z := 3%Z.
+Definition E2BIG  : Z := 7%Z.
 Definition EBADF  : Z := 9%Z.
 Definition ECHILD : Z := 10%Z.
 Definition EFAULT : Z := 14%Z.
@@ -4065,7 +4066,7 @@ Record ProcState := mkProcState {
                                     tid bits, and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
-                                    [clone3_sharing_flags_unmodeled]
+                                    [clone3_sharing_flags_sizes]
                                     the same for 435) forces
                                     [Unmodeled] on any bit of
                                     [unadmitted_bits], [CLONE_THREAD]
@@ -4078,8 +4079,11 @@ Record ProcState := mkProcState {
                                     rest are -EINVAL or declined by
                                     [clone3_own_checks_einval],
                                     [clone_high_bits_unmodeled],
-                                    [clone3_declined_struct_unmodeled]
-                                    and [clone3_other_size_unmodeled].
+                                    [clone3_struct_einval],
+                                    [clone3_declined_struct_sizes]
+                                    and [clone3_other_size_unmodeled]
+                                    (a [clone3] struct the copy does
+                                    not read is an errno or declines).
                                     None of them makes a child.
                                     Widening that predicate
                                     breaks the proof rather than this
@@ -6186,7 +6190,7 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
       so a clone with either end open is [unmodeled], except a [clone3]
-      struct [Fork.clone3_einval_b] refuses, which is -EINVAL and creates
+      struct [Fork.clone3_einval_sz] refuses, which is -EINVAL and creates
       no process; and
       [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
       most namespace bits, so

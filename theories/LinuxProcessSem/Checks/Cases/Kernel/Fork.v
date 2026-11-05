@@ -648,3 +648,152 @@ Example clone3_stack_cases :
        (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0%Z; 8%Z; 0%Z; 0%Z; 0%Z; 0%Z])
        clone3_einval_eff clone3_model = CheckOk clone3_model [].
 Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   clone3 (435): SIZES OTHER THAN 88
+
+   [Fork.clone3_copy] answers the size tests of
+   [copy_clone_args_from_user] (kernel/fork.c:2772-2775) and the copy of
+   [copy_struct_from_user] (include/linux/uaccess.h:400-411) in the
+   kernel's order: above [PAGE_SIZE] -E2BIG and below
+   [CLONE_ARGS_SIZE_VER0] -EINVAL, nothing read; a short struct is
+   zero-filled; a long struct's tail is tested ([check_zeroed_user],
+   lib/usercopy.c:45-81) BEFORE its head is read.  The structs below
+   sit at a page boundary where it matters, so that "unreadable" is what
+   it is on a real process: a whole page with nothing mapped.
+   ========================================================================= *)
+
+(** [len] bytes at [base], byte [off] being [byte_at off]. *)
+Definition c3_mem (base len : Z) (byte_at : Z -> option byte) : word -> option byte :=
+  fun a => let off := (bv_unsigned a - base)%Z in
+           if ((0 <=? off)%Z && (off <? len)%Z)%bool then byte_at off else None.
+
+Definition c3_call (uargs : word) (usize : Z) (mem : word -> option byte) : SyscallInput :=
+  mkInput 435 [uargs; Z_to_bv 64 usize; 0; 0; 0; 0] mem (fun _ => None).
+
+(** Byte [off] of the fork image: [exit_signal] (offset 32) is SIGCHLD,
+    every other byte 0. *)
+Definition c3_fork_byte (off : Z) : byte :=
+  if Z.eqb off 32 then Z_to_bv 8 SIGCHLD else Z_to_bv 8 0.
+
+Definition c3_err (en : Z) (reads : list (word * nat)) : SyscallEffect :=
+  mkEffectU (errno_ret en) [] [] [] [] reads.
+
+(** [size] 4097, one past [PAGE_SIZE]: -E2BIG, nothing read, whatever the
+    struct (kernel/fork.c:2772-2773). *)
+Example clone3_size_4097_e2big :
+  check_syscall (c3_call clone3_args_base 4097 (c3_mem 0x1000 4097 (fun o => Some (c3_fork_byte o))))
+    (c3_err E2BIG []) clone3_model = CheckOk clone3_model []
+  /\ check_syscall (c3_call clone3_args_base 4097 (c3_mem 0x1000 4097 (fun o => Some (c3_fork_byte o))))
+       (c3_err E2BIG [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model = CheckReject
+  /\ check_syscall (c3_call clone3_args_base 4097 (c3_mem 0x1000 4097 (fun o => Some (c3_fork_byte o))))
+       (mkEffectU 4242 [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
+     = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** [size] 63, one below [CLONE_ARGS_SIZE_VER0]: -EINVAL, nothing read
+    (kernel/fork.c:2774-2775). *)
+Example clone3_size_63_einval :
+  check_syscall (c3_call clone3_args_base 63 (c3_mem 0x1000 88 (fun o => Some (c3_fork_byte o))))
+    (c3_err EINVAL []) clone3_model = CheckOk clone3_model []
+  /\ check_syscall (c3_call clone3_args_base 63 (c3_mem 0x1000 88 (fun o => Some (c3_fork_byte o))))
+       (c3_err E2BIG []) clone3_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** [size] 80 ([CLONE_ARGS_SIZE_VER1]) with the fork image in its first
+    80 bytes and nothing mapped past them: zero-filled, a child, exactly
+    as the 88-byte image at the same address (with 88 bytes mapped)
+    gives; only the ledger differs, 80 bytes read against 88
+    (include/linux/uaccess.h:402-403, 408). *)
+Example clone3_size_80_fork_image :
+  check_syscall (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+    (mkEffectU 4242 [] [] [] [] [(clone3_args_base, 80%nat)]) clone3_model
+  = CheckOk (with_child 4242 (forfeit_model clone3_model)) []
+  /\ check_syscall (c3_call clone3_args_base 88 (c3_mem 0x1000 88 (fun o => Some (c3_fork_byte o))))
+       (mkEffectU 4242 [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
+     = CheckOk (with_child 4242 (forfeit_model clone3_model)) []
+  /\ check_syscall (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+       (mkEffectU (errno_ret EAGAIN) [] [] [] [] [(clone3_args_base, 80%nat)]) clone3_model
+     = CheckOk clone3_model []
+  /\ check_syscall (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+       (mkEffectU 4242 [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
+     = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** The one test that reads the size: CLONE_INTO_CGROUP in a struct
+    shorter than [CLONE_ARGS_SIZE_VER2] is -EINVAL (kernel/fork.c:
+    2798-2800), where the same 88-byte struct with cgroup 0 passes that
+    test and declines (CLONE_INTO_CGROUP is outside the model). *)
+Example clone3_size_80_into_cgroup_einval :
+  check_syscall
+    (c3_call clone3_args_base 80
+       (c3_mem 0x1000 80 (fun o => Some (if Z.eqb o 4 then Z_to_bv 8 2 else c3_fork_byte o))))
+    (c3_err EINVAL [(clone3_args_base, 80%nat)]) clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (c3_call clone3_args_base 88
+          (c3_mem 0x1000 88 (fun o => Some (if Z.eqb o 4 then Z_to_bv 8 2 else c3_fork_byte o))))
+       (c3_err EINVAL [(clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** Design row S2, case 11, and the owner's case: [size] 96, a non-zero
+    byte (90) in the tail, bytes 88 to 95, and an unreadable head: the
+    struct sits so that its 88 head bytes end a page with nothing mapped
+    and its tail begins the next, mapped, page.  The tail test runs first
+    and answers -E2BIG having read the tail's one word; the head is never
+    read, so -EFAULT is refused (include/linux/uaccess.h:404-406).  The
+    same with only the struct's first byte unreadable answers the same. *)
+Example clone3_size_96_tail_before_head :
+  check_syscall
+    (c3_call (Z_to_bv 64 0x2FA8) 96
+       (c3_mem 0x2FA8 96 (fun o => if (o <? 88)%Z then None
+                                   else Some (if Z.eqb o 90 then Z_to_bv 8 1 else Z_to_bv 8 0))))
+    (c3_err E2BIG [(Z_to_bv 64 0x3000, 8%nat)]) clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x2FA8) 96
+          (c3_mem 0x2FA8 96 (fun o => if (o <? 88)%Z then None
+                                      else Some (if Z.eqb o 90 then Z_to_bv 8 1 else Z_to_bv 8 0))))
+       (c3_err EFAULT []) clone3_model = CheckReject
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x2FA8) 96
+          (c3_mem 0x2FA8 96 (fun o => if (o <? 88)%Z then None
+                                      else Some (if Z.eqb o 90 then Z_to_bv 8 1 else Z_to_bv 8 0))))
+       (c3_err EFAULT [(Z_to_bv 64 0x3000, 8%nat)]) clone3_model = CheckReject
+  /\ check_syscall
+       (c3_call clone3_args_base 96
+          (c3_mem 0x1000 96 (fun o => if Z.eqb o 0 then None
+                                      else Some (if Z.eqb o 90 then Z_to_bv 8 1 else c3_fork_byte o))))
+       (c3_err E2BIG [(Z_to_bv 64 0x1058, 8%nat)]) clone3_model = CheckOk clone3_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** Design row S2, case 15: [size] 200, the struct placed so that its
+    byte 96 starts a page with nothing mapped.  The tail's first word,
+    bytes 88 to 95, is readable and the second faults.  A non-zero byte
+    at 90: -E2BIG at the first word, the second never read.  Bytes 88 to
+    95 zero: the walk reaches the second word, which faults: -EFAULT,
+    the first word in the ledger (lib/usercopy.c:56-75). *)
+Example clone3_size_200_tail_order :
+  check_syscall
+    (c3_call (Z_to_bv 64 0x1FA0) 200
+       (c3_mem 0x1FA0 96 (fun o => Some (if Z.eqb o 90 then Z_to_bv 8 1 else c3_fork_byte o))))
+    (c3_err E2BIG [(Z_to_bv 64 0x1FF8, 8%nat)]) clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x1FA0) 200
+          (c3_mem 0x1FA0 96 (fun o => Some (if Z.eqb o 90 then Z_to_bv 8 1 else c3_fork_byte o))))
+       (c3_err EFAULT [(Z_to_bv 64 0x1FF8, 8%nat)]) clone3_model = CheckReject
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x1FA0) 200 (c3_mem 0x1FA0 96 (fun o => Some (c3_fork_byte o))))
+       (c3_err EFAULT [(Z_to_bv 64 0x1FF8, 8%nat)]) clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x1FA0) 200 (c3_mem 0x1FA0 96 (fun o => Some (c3_fork_byte o))))
+       (c3_err E2BIG [(Z_to_bv 64 0x1FF8, 8%nat)]) clone3_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** A long struct whose tail is zero is the 88-byte struct after the
+    tail's reads: [size] 96 with the fork image and a zero tail is a
+    child, the tail and then the head in the ledger. *)
+Example clone3_size_96_zero_tail_fork_image :
+  check_syscall (c3_call clone3_args_base 96 (c3_mem 0x1000 96 (fun o => Some (c3_fork_byte o))))
+    (mkEffectU 4242 [] [] [] []
+       [(Z_to_bv 64 0x1058, 8%nat); (clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
+  = CheckOk (with_child 4242 (forfeit_model clone3_model)) [].
+Proof. check_eq. Qed.

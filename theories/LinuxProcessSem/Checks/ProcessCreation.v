@@ -402,11 +402,13 @@ Proof.
 Qed.
 
 (** The same statements for [clone3], where the record comes from a
-    struct in user memory ([Fork.clone3_pre]).  The premise is the COPY,
-    [State.copy_bytes_map], and not the bare walk: a range [access_ok]
-    refuses is -EFAULT before any field is judged ([Fork.clone3_spec]).
-    [clone3]'s -EINVAL carries the struct in its ledger and has no
-    descriptor gate, as in Linux.  The old (ii) was:
+    struct in user memory ([Fork.clone3_copy], then [Fork.clone3_pre]
+    for a struct of 88 bytes or more and [Fork.clone3_pre_short] for a
+    shorter one).  The premise is the COPY, [State.copy_bytes_map], and
+    not the bare walk: a range [access_ok] refuses is -EFAULT before any
+    field is judged ([Fork.clone3_spec]).  [clone3]'s -EINVAL carries the
+    struct in its ledger and has no descriptor gate, as in Linux.  The
+    old (ii) was:
       [forall uargs size i m bs,
          copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
          (Z.land (bv_unsigned (clone_args_field bs 0)) clone_sharing_bits <> 0)%Z ->
@@ -414,12 +416,263 @@ Qed.
     The new (ii) adds that [clone3]'s own tests pass and give the record
     ([Fork.clone3_pre bs = CdArgs r]) and that the checks pass.  A struct
     [clone3]'s own tests refuse is -EINVAL ([clone3_own_checks_einval]),
-    and one they decline declines ([clone3_declined_struct_unmodeled]);
-    every size but [CLONE_ARGS_SIZE] declines
-    ([clone3_other_size_unmodeled]): together they cover every struct
-    the copy reads that holds a bit of [unadmitted_bits].  (A struct the
-    copy does not read answers -EFAULT or declines, before any field is
-    judged.) *)
+    and one they decline declines ([clone3_declined_struct_unmodeled]).
+    Together they cover every 88-byte struct the copy reads that holds a
+    bit of [unadmitted_bits].
+
+    RESTATED FOR THE SIZES.  [clone3] answers every [size] in the
+    kernel's order ([Fork.clone3_copy]), where it declined every size but
+    88, so four statements are restated, each quoted old beside new
+    where it stands:
+    - [clone3_declined_struct_unmodeled] and
+      [clone3_sharing_flags_unmodeled] concluded [Unmodeled] at EVERY
+      [size] from the 88-byte copy, true while every other size declined.
+      They now conclude it at [size] 88, where that copy is what the
+      kernel reads.  Each has an all-size companion
+      ([clone3_declined_struct_sizes], [clone3_sharing_flags_sizes]) that
+      gives every size class its exact answer, in the kernel's order;
+      with the size-88 form no size is left out.
+    - [clone3_other_size_unmodeled] said every size but 88 declines.  It
+      now names what still declines before any field is judged, at any
+      size: a head range [access_ok] admits that the memory does not
+      wholly back.  [clone3_spec_declines_only] shows nothing else
+      declines there.
+    - [clone3_checker_declines_size_zero] (below) is now
+      [clone3_checker_size_zero_einval].
+    At 88 the relation is the one it was ([clone3_spec_88_unchanged]). *)
+
+(** [clone3_spec] is its copy's answer. *)
+Lemma clone3_spec_copy : forall uargs size i m o,
+  clone3_spec uargs size i m o <->
+  match clone3_copy (in_mem i) uargs (bv_unsigned size) with
+  | C3Err reads en => o = Ok (with_copyins reads (mkEffect (errno_ret en) [] [])) m []
+  | C3Decline => o = Unmodeled
+  | C3Struct reads short bs => clone3_on_struct reads short bs i m o
+  end.
+Proof.
+  intros uargs size i m o. unfold clone3_spec. rewrite bind_input_iff. cbv beta.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs].
+  - unfold clone3_fail. split; intros H.
+    + destruct o as [eff m' evs|].
+      * apply record_copyins_ok_inv in H as (core & Hcore & ->).
+        unfold err_ret, ret_only, pure in Hcore. injection Hcore as -> -> ->.
+        cbn [eff_copyins]. rewrite app_nil_r. reflexivity.
+      * apply record_copyins_unmodeled_inv in H.
+        unfold err_ret, ret_only, pure in H. discriminate H.
+    + subst o. apply record_copyins_ok_empty; [reflexivity|].
+      unfold err_ret, ret_only. apply pure_ok.
+  - unfold unmodeled. apply iff_refl.
+  - apply iff_refl.
+Qed.
+
+(** At 88 the struct is the 88-byte copy. *)
+Lemma clone3_spec_88 : forall uargs i m o bs,
+  copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+  (clone3_spec uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m o
+   <-> clone3_on_struct [(uargs, CLONE_ARGS_SIZE_nat)] false bs i m o).
+Proof.
+  intros uargs i m o bs Hbs.
+  rewrite clone3_spec_copy, clone3_size_88_unsigned, clone3_copy_88.
+  unfold clone3_copy_full. rewrite Hbs. apply iff_refl.
+Qed.
+
+(** A struct shorter than 88: zero-filled, with the caller's bytes in the
+    ledger ([Fork.clone3_copy], include/linux/uaccess.h:402-403, 408). *)
+Lemma clone3_short_struct : forall uargs size i m o bs,
+  (CLONE_ARGS_SIZE_VER0 <= bv_unsigned size < CLONE_ARGS_SIZE)%Z ->
+  copy_bytes_map (in_mem i) uargs (bv_unsigned size) = Some bs ->
+  (clone3_spec uargs size i m o
+   <-> clone3_on_struct [(uargs, Z.to_nat (bv_unsigned size))] true
+         (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - bv_unsigned size)))
+         i m o).
+Proof.
+  intros uargs size i m o bs Hs Hc.
+  rewrite clone3_spec_copy, (clone3_copy_short _ _ _ Hs), Hc. apply iff_refl.
+Qed.
+
+(** A struct longer than 88 whose tail is zero: the 88-byte copy, after
+    the tail's reads ([Fork.clone3_copy], include/linux/uaccess.h:404-409). *)
+Lemma clone3_long_struct : forall uargs size i m o bs,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = true ->
+  clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsZero ->
+  copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+  (clone3_spec uargs size i m o
+   <-> clone3_on_struct [(clone3_tail uargs, clone3_rest (bv_unsigned size));
+                         (uargs, CLONE_ARGS_SIZE_nat)] false bs i m o).
+Proof.
+  intros uargs size i m o bs Hs Ht Hz Hc.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht, Hz.
+  unfold clone3_copy_full. rewrite Hc. cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+(** The size classes where no field is judged. *)
+Local Lemma c3_above_page : forall uargs size i m o,
+  (page_size < bv_unsigned size)%Z ->
+  (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret E2BIG) [] []) m []).
+Proof.
+  intros uargs size i m o H.
+  rewrite clone3_spec_copy, (clone3_copy_above_page _ _ _ H). apply iff_refl.
+Qed.
+
+Local Lemma c3_below_ver0 : forall uargs size i m o,
+  (bv_unsigned size < CLONE_ARGS_SIZE_VER0)%Z ->
+  (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EINVAL) [] []) m []).
+Proof.
+  intros uargs size i m o H.
+  rewrite clone3_spec_copy, (clone3_copy_below_ver0 _ _ _ H). apply iff_refl.
+Qed.
+
+Local Lemma c3_short_refused : forall uargs size i m o,
+  (CLONE_ARGS_SIZE_VER0 <= bv_unsigned size < CLONE_ARGS_SIZE)%Z ->
+  access_okb uargs (bv_unsigned size) = false ->
+  (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []).
+Proof.
+  intros uargs size i m o Hs Ha.
+  rewrite clone3_spec_copy, (clone3_copy_short _ _ _ Hs).
+  unfold copy_bytes_map. rewrite Ha. cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_short_unbacked : forall uargs size i m o,
+  (CLONE_ARGS_SIZE_VER0 <= bv_unsigned size < CLONE_ARGS_SIZE)%Z ->
+  access_okb uargs (bv_unsigned size) = true ->
+  copy_bytes_map (in_mem i) uargs (bv_unsigned size) = None ->
+  (clone3_spec uargs size i m o <-> o = Unmodeled).
+Proof.
+  intros uargs size i m o Hs Ha Hc.
+  rewrite clone3_spec_copy, (clone3_copy_short _ _ _ Hs), Hc, Ha.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_long_refused : forall uargs size i m o,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = false ->
+  (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []).
+Proof.
+  intros uargs size i m o Hs Ht.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_long_nonzero : forall uargs size i m o n,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = true ->
+  clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsNonzero n ->
+  (clone3_spec uargs size i m o
+   <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                 (mkEffect (errno_ret E2BIG) [] [])) m []).
+Proof.
+  intros uargs size i m o n Hs Ht Hn.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht, Hn.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_long_fault : forall uargs size i m o n,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = true ->
+  clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsFault n ->
+  (clone3_spec uargs size i m o
+   <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                 (mkEffect (errno_ret EFAULT) [] [])) m []).
+Proof.
+  intros uargs size i m o n Hs Ht Hn.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht, Hn.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_long_head_refused : forall uargs size i m o,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = true ->
+  clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsZero ->
+  access_okb uargs CLONE_ARGS_SIZE = false ->
+  (clone3_spec uargs size i m o
+   <-> o = Ok (with_copyins [(clone3_tail uargs, clone3_rest (bv_unsigned size))]
+                 (mkEffect (errno_ret EFAULT) [] [])) m []).
+Proof.
+  intros uargs size i m o Hs Ht Hz Ha.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht, Hz.
+  unfold clone3_copy_full, copy_bytes_map. rewrite Ha.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+Local Lemma c3_long_unbacked : forall uargs size i m o,
+  (CLONE_ARGS_SIZE < bv_unsigned size <= page_size)%Z ->
+  clone3_tail_ok uargs (bv_unsigned size) = true ->
+  clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsZero ->
+  access_okb uargs CLONE_ARGS_SIZE = true ->
+  copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
+  (clone3_spec uargs size i m o <-> o = Unmodeled).
+Proof.
+  intros uargs size i m o Hs Ht Hz Ha Hc.
+  rewrite clone3_spec_copy, (clone3_copy_long _ _ _ Hs), Ht, Hz.
+  unfold clone3_copy_full. rewrite Hc, Ha.
+  cbv beta iota delta [negb]. apply iff_refl.
+Qed.
+
+(** What [Fork.clone3_on_struct] answers for the struct classes these
+    statements are about. *)
+Local Lemma clone3_on_struct_einval : forall reads short bs i m o,
+  clone3_einval_sz short bs = true ->
+  (clone3_on_struct reads short bs i m o
+   <-> o = Ok (with_copyins reads (mkEffect (errno_ret EINVAL) [] [])) m []).
+Proof.
+  intros reads short bs i m o He.
+  assert (Ha : clone3_fork_args_b bs = false).
+  { destruct (clone3_fork_args_b bs) eqn:Ha; [|reflexivity].
+    rewrite (clone3_fork_args_no_einval_sz short bs Ha) in He. discriminate He. }
+  unfold clone3_on_struct. rewrite Ha, He. cbv iota. unfold clone3_einval.
+  split; intros H.
+  - destruct o as [eff m' evs|].
+    + apply record_copyins_ok_inv in H as (core & Hcore & ->).
+      unfold err_ret, ret_only, pure in Hcore. injection Hcore as -> -> ->.
+      cbn [eff_copyins]. rewrite app_nil_r. reflexivity.
+    + apply record_copyins_unmodeled_inv in H.
+      unfold err_ret, ret_only, pure in H. discriminate H.
+  - subst o. apply record_copyins_ok_empty; [reflexivity|].
+    unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Local Lemma clone3_on_struct_decline : forall reads short bs i m o,
+  clone3_pre_sz short bs = CdDecline ->
+  (clone3_on_struct reads short bs i m o <-> o = Unmodeled).
+Proof.
+  intros reads short bs i m o Hp. unfold clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha.
+  { exfalso. pose proof (clone3_fork_args_pre_args_sz short bs Ha) as Hx.
+    rewrite Hp in Hx. exact Hx. }
+  unfold clone3_einval_sz. rewrite Hp. cbv iota. unfold unmodeled. apply iff_refl.
+Qed.
+
+Local Lemma clone3_on_struct_sharing : forall reads short bs r i m o,
+  clone3_pre_sz short bs = CdArgs r ->
+  clone_arg_checks r = false ->
+  (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+  (clone3_on_struct reads short bs i m o <-> o = Unmodeled).
+Proof.
+  intros reads short bs r i m o Hp Hc Hbit. unfold clone3_on_struct.
+  destruct (clone3_fork_args_b bs) eqn:Ha.
+  { exfalso. apply Hbit. rewrite (clone3_pre_sz_flags short bs r Hp).
+    unfold clone3_fork_args_b, w_is0 in Ha.
+    repeat (apply andb_true_iff in Ha as [Ha ?]).
+    apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity. }
+  unfold clone3_einval_sz. rewrite Hp. cbv iota. rewrite Hc. cbv iota.
+  rewrite (unadmitted_class_none r Hbit). cbv iota. unfold unmodeled. apply iff_refl.
+Qed.
+
+(** At any size, a copied struct its own tests or the argument checks
+    refuse is -EINVAL with the copy's ledger, and nothing else: the
+    all-size form of [clone3_arg_checks_einval] and
+    [clone3_own_checks_einval], which keep their 88-byte statements. *)
+Lemma clone3_struct_einval : forall uargs size i m o reads short bs,
+  clone3_copy (in_mem i) uargs (bv_unsigned size) = C3Struct reads short bs ->
+  clone3_einval_sz short bs = true ->
+  (clone3_spec uargs size i m o
+   <-> o = Ok (with_copyins reads (mkEffect (errno_ret EINVAL) [] [])) m []).
+Proof.
+  intros uargs size i m o reads short bs Hc He.
+  rewrite clone3_spec_copy, Hc. exact (clone3_on_struct_einval reads short bs i m o He).
+Qed.
+
 Local Lemma clone3_einval_b_answer : forall uargs i m bs o,
   copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
   clone3_einval_b bs = true ->
@@ -428,23 +681,8 @@ Local Lemma clone3_einval_b_answer : forall uargs i m bs o,
                  (mkEffect (errno_ret EINVAL) [] [])) m []).
 Proof.
   intros uargs i m bs o Hbs He.
-  assert (Ha : clone3_fork_args_b bs = false).
-  { destruct (clone3_fork_args_b bs) eqn:Ha; [|reflexivity].
-    rewrite (clone3_fork_args_no_einval bs Ha) in He. discriminate He. }
-  unfold clone3_spec. rewrite bv_eqb_refl. cbn [negb].
-  split; intros H.
-  - apply bind_input_iff in H. cbv beta in H. rewrite Hbs in H. cbv iota in H.
-    rewrite Ha, He in H. cbv iota in H. unfold clone3_einval in H.
-    destruct o as [eff m' evs|].
-    + apply record_copyins_ok_inv in H as (core & Hcore & ->).
-      unfold err_ret, ret_only, pure in Hcore. injection Hcore as -> -> ->.
-      reflexivity.
-    + apply record_copyins_unmodeled_inv in H.
-      unfold err_ret, ret_only, pure in H. discriminate H.
-  - subst o. apply bind_input_iff. cbv beta. rewrite Hbs. cbv iota.
-    rewrite Ha, He. cbv iota. unfold clone3_einval.
-    apply record_copyins_ok_empty; [reflexivity|].
-    unfold err_ret, ret_only. apply pure_ok.
+  rewrite (clone3_spec_88 uargs i m o bs Hbs).
+  apply clone3_on_struct_einval. rewrite clone3_einval_sz_full. exact He.
 Qed.
 
 Lemma clone3_arg_checks_einval : forall uargs i m bs r o,
@@ -475,51 +713,369 @@ Proof.
 Qed.
 
 (** A struct the tests decline (a non-zero set_tid, CLONE_INTO_CGROUP,
-    CLONE_NEWTIME) declines. *)
-Lemma clone3_declined_struct_unmodeled : forall uargs size i m bs,
+    CLONE_NEWTIME) declines.  RESTATED: the old form concluded it at
+    every [size] from the 88-byte copy,
+      [forall uargs size i m bs,
+         copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+         clone3_pre bs = CdDecline ->
+         clone3_spec uargs size i m Unmodeled],
+    and this one at 88; [clone3_declined_struct_sizes] gives every size. *)
+Lemma clone3_declined_struct_unmodeled : forall uargs i m bs,
   copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
   clone3_pre bs = CdDecline ->
-  clone3_spec uargs size i m Unmodeled.
+  clone3_spec uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m Unmodeled.
 Proof.
-  intros uargs size i m bs Hread Hp. unfold clone3_spec.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
-    cbv iota; [apply unmodeled_intro|].
-  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  rewrite Hread. cbv iota.
-  destruct (clone3_fork_args_b bs) eqn:Ha.
-  { exfalso. pose proof (clone3_fork_args_pre_args bs Ha) as Hx.
-    rewrite Hp in Hx. exact Hx. }
-  cbv iota. unfold clone3_einval_b. rewrite Hp. cbv iota. apply unmodeled_intro.
+  intros uargs i m bs Hread Hp.
+  apply (proj2 (clone3_spec_88 uargs i m Unmodeled bs Hread)).
+  apply (proj2 (clone3_on_struct_decline _ false bs i m Unmodeled Hp)). reflexivity.
 Qed.
 
-(** Every size but the one modeled declines. *)
+(** WHAT DECLINES BEFORE A FIELD IS JUDGED.  RESTATED: the old form was
+    "every size but the one modeled declines",
+      [forall uargs size i m,
+         bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE) = false ->
+         clone3_spec uargs size i m Unmodeled].
+    Every size now has its answer ([clone3_declined_struct_sizes] lists
+    them), and the one decline left before the struct is judged is the
+    head copy's: [copy_from_user] of [min size 88] bytes over a range
+    [access_ok] admits that the memory does not wholly back, the tail
+    (if any) having passed.  Linux answers -EFAULT there, having read
+    whatever bytes riscv64's copy routine moved before it faulted
+    ([__asm_copy_from_user], arch/riscv/lib/uaccess.S), a count the
+    ledger cannot state; the 88-byte call declines it for the same
+    reason ([Kernel.Sys.prlimit64_spec]).  The tail's word walk is
+    different: its reads are [check_zeroed_user]'s own aligned words, so
+    its -EFAULT is answered with the words read. *)
 Lemma clone3_other_size_unmodeled : forall uargs size i m,
-  bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE) = false ->
+  let usize := bv_unsigned size in
+  (CLONE_ARGS_SIZE_VER0 <= usize <= page_size)%Z ->
+  access_okb uargs (Z.min usize CLONE_ARGS_SIZE) = true ->
+  copy_bytes_map (in_mem i) uargs (Z.min usize CLONE_ARGS_SIZE) = None ->
+  ((CLONE_ARGS_SIZE < usize)%Z ->
+     clone3_tail_ok uargs usize = true /\ clone3_tail_test (in_mem i) uargs usize = TsZero) ->
   clone3_spec uargs size i m Unmodeled.
 Proof.
-  intros uargs size i m Hs. unfold clone3_spec. rewrite Hs. cbn [negb].
-  apply unmodeled_intro.
+  intros uargs size i m. cbv zeta. intros Hs Ha Hc Ht.
+  destruct (Z.lt_trichotomy (bv_unsigned size) CLONE_ARGS_SIZE) as [Hlt|[Heq|Hgt]].
+  - rewrite Z.min_l in Ha, Hc by lia.
+    apply (proj2 (c3_short_unbacked uargs size i m Unmodeled ltac:(lia) Ha Hc)).
+    reflexivity.
+  - rewrite Heq, Z.min_id in Ha, Hc.
+    apply (proj2 (clone3_spec_copy uargs size i m Unmodeled)).
+    rewrite Heq, clone3_copy_88. unfold clone3_copy_full. rewrite Hc, Ha.
+    cbv beta iota delta [negb]. reflexivity.
+  - rewrite Z.min_r in Ha, Hc by lia. destruct (Ht Hgt) as [Hto Hz].
+    apply (proj2 (c3_long_unbacked uargs size i m Unmodeled ltac:(lia) Hto Hz Ha Hc)).
+    reflexivity.
 Qed.
 
-Lemma clone3_sharing_flags_unmodeled : forall uargs size i m bs r,
+(** ...and nothing else declines before the struct is judged: a decline
+    is that one, or the struct's own ([Fork.clone3_on_struct]), which
+    the statements above and below cover as for 88. *)
+Local Lemma clone3_copy_decline_inv : forall mem uargs usize,
+  clone3_copy mem uargs usize = C3Decline ->
+  (CLONE_ARGS_SIZE_VER0 <= usize <= page_size)%Z
+  /\ access_okb uargs (Z.min usize CLONE_ARGS_SIZE) = true
+  /\ copy_bytes_map mem uargs (Z.min usize CLONE_ARGS_SIZE) = None
+  /\ ((CLONE_ARGS_SIZE < usize)%Z ->
+        clone3_tail_ok uargs usize = true /\ clone3_tail_test mem uargs usize = TsZero).
+Proof.
+  intros mem uargs usize H. unfold clone3_copy in H.
+  destruct (page_size <? usize)%Z eqn:E1; [discriminate H|]. apply Z.ltb_ge in E1.
+  destruct (usize <? CLONE_ARGS_SIZE_VER0)%Z eqn:E2; [discriminate H|]. apply Z.ltb_ge in E2.
+  destruct (usize <? CLONE_ARGS_SIZE)%Z eqn:E3.
+  - apply Z.ltb_lt in E3. rewrite Z.min_l by lia.
+    destruct (copy_bytes_map mem uargs usize) eqn:Ec; [discriminate H|].
+    destruct (access_okb uargs usize) eqn:Ea; cbn [negb] in H; [|discriminate H].
+    repeat split; try lia; try reflexivity; intros Hgt; lia.
+  - apply Z.ltb_ge in E3.
+    destruct (CLONE_ARGS_SIZE <? usize)%Z eqn:E4.
+    + apply Z.ltb_lt in E4. rewrite Z.min_r by lia.
+      destruct (clone3_tail_ok uargs usize) eqn:Et; cbn [negb] in H; [|discriminate H].
+      destruct (clone3_tail_test mem uargs usize) eqn:Ez; try discriminate H.
+      unfold clone3_copy_full in H.
+      destruct (copy_bytes_map mem uargs CLONE_ARGS_SIZE) eqn:Ec; [discriminate H|].
+      destruct (access_okb uargs CLONE_ARGS_SIZE) eqn:Ea; cbn [negb] in H; [|discriminate H].
+      repeat split; try lia; try reflexivity; intros _; split; reflexivity.
+    + apply Z.ltb_ge in E4. assert (Heq : usize = CLONE_ARGS_SIZE) by lia. subst usize.
+      rewrite Z.min_id. unfold clone3_copy_full in H.
+      destruct (copy_bytes_map mem uargs CLONE_ARGS_SIZE) eqn:Ec; [discriminate H|].
+      destruct (access_okb uargs CLONE_ARGS_SIZE) eqn:Ea; cbn [negb] in H; [|discriminate H].
+      repeat split; try lia; try reflexivity; intros Hgt; lia.
+Qed.
+
+Lemma clone3_spec_declines_only : forall uargs size i m,
+  clone3_spec uargs size i m Unmodeled ->
+  ((CLONE_ARGS_SIZE_VER0 <= bv_unsigned size <= page_size)%Z
+   /\ access_okb uargs (Z.min (bv_unsigned size) CLONE_ARGS_SIZE) = true
+   /\ copy_bytes_map (in_mem i) uargs (Z.min (bv_unsigned size) CLONE_ARGS_SIZE) = None
+   /\ ((CLONE_ARGS_SIZE < bv_unsigned size)%Z ->
+         clone3_tail_ok uargs (bv_unsigned size) = true
+         /\ clone3_tail_test (in_mem i) uargs (bv_unsigned size) = TsZero))
+  \/ (exists reads short bs,
+        clone3_copy (in_mem i) uargs (bv_unsigned size) = C3Struct reads short bs
+        /\ clone3_on_struct reads short bs i m Unmodeled).
+Proof.
+  intros uargs size i m H. apply clone3_spec_copy in H.
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs]
+    eqn:Hc.
+  - discriminate H.
+  - left. exact (clone3_copy_decline_inv _ _ _ Hc).
+  - right. exists reads, short, bs. split; [reflexivity|exact H].
+Qed.
+
+(** A struct that passes the tests, fails the checks and holds a bit of
+    [unadmitted_bits] declines.  RESTATED: the old form concluded it at
+    every [size] from the 88-byte copy,
+      [forall uargs size i m bs r,
+         copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+         clone3_pre bs = CdArgs r ->
+         clone_arg_checks r = false ->
+         (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+         clone3_spec uargs size i m Unmodeled],
+    and this one at 88; [clone3_sharing_flags_sizes] gives every size. *)
+Lemma clone3_sharing_flags_unmodeled : forall uargs i m bs r,
   copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
   clone3_pre bs = CdArgs r ->
   clone_arg_checks r = false ->
   (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
-  clone3_spec uargs size i m Unmodeled.
+  clone3_spec uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m Unmodeled.
 Proof.
-  intros uargs size i m bs r Hread Hp Hc Hbit. unfold clone3_spec.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
-    cbv iota; [apply unmodeled_intro|].
-  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  rewrite Hread. cbv iota.
-  destruct (clone3_fork_args_b bs) eqn:Ha.
-  { exfalso. apply Hbit. rewrite (clone3_pre_flags bs r Hp).
-    unfold clone3_fork_args_b, w_is0 in Ha.
-    repeat (apply andb_true_iff in Ha as [Ha ?]).
-    apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity. }
-  cbv iota. unfold clone3_einval_b. rewrite Hp. cbv iota. rewrite Hc. cbv iota.
-  rewrite (unadmitted_class_none r Hbit). apply unmodeled_intro.
+  intros uargs i m bs r Hread Hp Hc Hbit.
+  apply (proj2 (clone3_spec_88 uargs i m Unmodeled bs Hread)).
+  apply (proj2 (clone3_on_struct_sharing _ false bs r i m Unmodeled Hp Hc Hbit)).
+  reflexivity.
+Qed.
+
+(** THE COMPANIONS: every size class, in the kernel's order
+    ([copy_clone_args_from_user], kernel/fork.c:2772-2779;
+    [copy_struct_from_user], include/linux/uaccess.h:400-411;
+    [check_zeroed_user], lib/usercopy.c:45-81; Linux v6.18.46), with its
+    exact answer.  [usize] is the [size] argument, [page_size] riscv64's
+    [PAGE_SIZE] (4096).
+    1. above [PAGE_SIZE]: -E2BIG, nothing read;
+    2. below [CLONE_ARGS_SIZE_VER0] (64): -EINVAL, nothing read;
+    3-5. 64 to 87: the head copy of [usize] bytes: a range [access_ok]
+       refuses is -EFAULT, nothing read; an admitted range the memory
+       does not wholly back declines ([clone3_other_size_unmodeled]); a
+       read struct is zero-filled to 88 and judged by
+       [Fork.clone3_pre_short] ([clone3_short_struct]), which is
+       [Fork.clone3_pre] on it but for CLONE_INTO_CGROUP
+       ([Fork.clone3_pre_short_no_cgroup]);
+    6. exactly 88: the 88-byte struct, as before;
+    7-9. above 88 the tail first: a widened tail range [access_ok]
+       refuses is -EFAULT, nothing read; a word with a non-zero tail byte
+       is -E2BIG with the words read, before the head is read; an
+       unreadable word is -EFAULT with the words read before it;
+    10-12. a zero tail, then the 88-byte head: refused, -EFAULT with the
+       tail in the ledger; admitted but not wholly backed, declined; read,
+       judged as for 88 with the tail in the ledger
+       ([clone3_long_struct]).
+    Classes 4 and 11 hold for every struct; 5, 6 and 12 are where each
+    companion's struct premise applies.  The two companions differ only
+    in that premise. *)
+Lemma clone3_declined_struct_sizes : forall uargs size i m o,
+  let usize := bv_unsigned size in
+  ((page_size < usize)%Z ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret E2BIG) [] []) m []))
+  /\ ((usize < CLONE_ARGS_SIZE_VER0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EINVAL) [] []) m []))
+  /\ ((CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      access_okb uargs usize = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ ((CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      access_okb uargs usize = true ->
+      copy_bytes_map (in_mem i) uargs usize = None ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs, (CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      copy_bytes_map (in_mem i) uargs usize = Some bs ->
+      clone3_pre_short (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - usize)))
+        = CdDecline ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs, usize = CLONE_ARGS_SIZE ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+      clone3_pre bs = CdDecline ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ (forall n, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsNonzero n ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                    (mkEffect (errno_ret E2BIG) [] [])) m []))
+  /\ (forall n, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsFault n ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                    (mkEffect (errno_ret EFAULT) [] [])) m []))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      access_okb uargs CLONE_ARGS_SIZE = false ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins [(clone3_tail uargs, clone3_rest usize)]
+                    (mkEffect (errno_ret EFAULT) [] [])) m []))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      access_okb uargs CLONE_ARGS_SIZE = true ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+      clone3_pre bs = CdDecline ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled)).
+Proof.
+  intros uargs size i m o. cbv zeta.
+  refine (conj (c3_above_page uargs size i m o)
+         (conj (c3_below_ver0 uargs size i m o)
+         (conj (c3_short_refused uargs size i m o)
+         (conj (c3_short_unbacked uargs size i m o)
+         (conj _ (conj _
+         (conj (c3_long_refused uargs size i m o)
+         (conj (fun n => c3_long_nonzero uargs size i m o n)
+         (conj (fun n => c3_long_fault uargs size i m o n)
+         (conj (c3_long_head_refused uargs size i m o)
+         (conj (c3_long_unbacked uargs size i m o) _))))))))))).
+  - intros bs Hs Hc Hp.
+    rewrite (clone3_short_struct uargs size i m o bs Hs Hc).
+    exact (clone3_on_struct_decline _ true _ i m o Hp).
+  - intros bs Hs Hc Hp. rewrite clone3_spec_copy, Hs, clone3_copy_88.
+    unfold clone3_copy_full. rewrite Hc.
+    exact (clone3_on_struct_decline _ false _ i m o Hp).
+  - intros bs Hs Ht Hz Hc Hp.
+    rewrite (clone3_long_struct uargs size i m o bs Hs Ht Hz Hc).
+    exact (clone3_on_struct_decline _ false _ i m o Hp).
+Qed.
+
+Lemma clone3_sharing_flags_sizes : forall uargs size i m o,
+  let usize := bv_unsigned size in
+  ((page_size < usize)%Z ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret E2BIG) [] []) m []))
+  /\ ((usize < CLONE_ARGS_SIZE_VER0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EINVAL) [] []) m []))
+  /\ ((CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      access_okb uargs usize = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ ((CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      access_okb uargs usize = true ->
+      copy_bytes_map (in_mem i) uargs usize = None ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs r, (CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+      copy_bytes_map (in_mem i) uargs usize = Some bs ->
+      clone3_pre_short (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - usize)))
+        = CdArgs r ->
+      clone_arg_checks r = false ->
+      (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs r, usize = CLONE_ARGS_SIZE ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+      clone3_pre bs = CdArgs r ->
+      clone_arg_checks r = false ->
+      (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = false ->
+     (clone3_spec uargs size i m o <-> o = Ok (mkEffect (errno_ret EFAULT) [] []) m []))
+  /\ (forall n, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsNonzero n ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                    (mkEffect (errno_ret E2BIG) [] [])) m []))
+  /\ (forall n, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsFault n ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins (clone3_tail_reads (clone3_tail uargs) n)
+                    (mkEffect (errno_ret EFAULT) [] [])) m []))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      access_okb uargs CLONE_ARGS_SIZE = false ->
+     (clone3_spec uargs size i m o
+      <-> o = Ok (with_copyins [(clone3_tail uargs, clone3_rest usize)]
+                    (mkEffect (errno_ret EFAULT) [] [])) m []))
+  /\ ((CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      access_okb uargs CLONE_ARGS_SIZE = true ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = None ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled))
+  /\ (forall bs r, (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+      clone3_tail_ok uargs usize = true ->
+      clone3_tail_test (in_mem i) uargs usize = TsZero ->
+      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
+      clone3_pre bs = CdArgs r ->
+      clone_arg_checks r = false ->
+      (Z.land (cla_flags r) unadmitted_bits <> 0)%Z ->
+     (clone3_spec uargs size i m o <-> o = Unmodeled)).
+Proof.
+  intros uargs size i m o. cbv zeta.
+  refine (conj (c3_above_page uargs size i m o)
+         (conj (c3_below_ver0 uargs size i m o)
+         (conj (c3_short_refused uargs size i m o)
+         (conj (c3_short_unbacked uargs size i m o)
+         (conj _ (conj _
+         (conj (c3_long_refused uargs size i m o)
+         (conj (fun n => c3_long_nonzero uargs size i m o n)
+         (conj (fun n => c3_long_fault uargs size i m o n)
+         (conj (c3_long_head_refused uargs size i m o)
+         (conj (c3_long_unbacked uargs size i m o) _))))))))))).
+  - intros bs r Hs Hc Hp Hck Hbit.
+    rewrite (clone3_short_struct uargs size i m o bs Hs Hc).
+    exact (clone3_on_struct_sharing _ true _ r i m o Hp Hck Hbit).
+  - intros bs r Hs Hc Hp Hck Hbit. rewrite clone3_spec_copy, Hs, clone3_copy_88.
+    unfold clone3_copy_full. rewrite Hc.
+    exact (clone3_on_struct_sharing _ false _ r i m o Hp Hck Hbit).
+  - intros bs r Hs Ht Hz Hc Hp Hck Hbit.
+    rewrite (clone3_long_struct uargs size i m o bs Hs Ht Hz Hc).
+    exact (clone3_on_struct_sharing _ false _ r i m o Hp Hck Hbit).
+Qed.
+
+(** TODAY'S RELATION AT 88, VERBATIM: [Fork.clone3_spec] as it stood
+    before the sizes, its helpers' one-struct forms written as the new
+    ones at the one range it read, [[(uargs, CLONE_ARGS_SIZE_nat)]]. *)
+Definition clone3_spec_before (uargs size : word) : Sys SyscallEffect :=
+  if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled
+  else
+    i <- input ;;
+    match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+    | None =>
+        if negb (access_okb uargs CLONE_ARGS_SIZE)
+        then err_ret EFAULT
+        else unmodeled
+    | Some bs =>
+        if clone3_fork_args_b bs then clone3_resolve [(uargs, CLONE_ARGS_SIZE_nat)]
+        else if clone3_einval_b bs then clone3_einval [(uargs, CLONE_ARGS_SIZE_nat)]
+        else match clone3_pre bs with
+             | CdArgs r =>
+                 match clone_class r with
+                 | CcFork => clone3_with_stores [(uargs, CLONE_ARGS_SIZE_nat)] r
+                 | _ => unmodeled
+                 end
+             | _ => unmodeled
+             end
+    end.
+
+(** For [size] 88 the new relation is today's, outcome for outcome. *)
+Lemma clone3_spec_88_unchanged : forall uargs i m o,
+  clone3_spec uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m o
+  <-> clone3_spec_before uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m o.
+Proof.
+  intros uargs i m o. unfold clone3_spec_before. rewrite bv_eqb_refl. cbn [negb].
+  rewrite clone3_spec_copy, clone3_size_88_unsigned, clone3_copy_88, bind_input_iff.
+  cbv beta. unfold clone3_copy_full.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|].
+  - apply iff_refl.
+  - destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota.
+    + unfold err_ret, ret_only, pure. apply iff_refl.
+    + unfold unmodeled. apply iff_refl.
 Qed.
 
 (** The FILE OFFSET is the one thing a plain fork still shares:
@@ -1340,8 +1896,14 @@ Example clone_checker_declines_flags_zero :
   check_syscall (pc_input 220) (mkEffect 0 [] []) pc_model = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-Example clone3_checker_declines_size_zero :
-  check_syscall (pc_input 435) (mkEffect 0 [] []) pc_model = CheckUnmodeled.
+(** A [size] of 0 is below [CLONE_ARGS_SIZE_VER0]: -EINVAL, nothing read
+    (kernel/fork.c:2774-2775).  RESTATED: the old example,
+    [clone3_checker_declines_size_zero], was
+      [check_syscall (pc_input 435) (mkEffect 0 [] []) pc_model = CheckUnmodeled],
+    true while every size but 88 declined. *)
+Example clone3_checker_size_zero_einval :
+  check_syscall (pc_input 435) (mkEffect (errno_ret EINVAL) [] []) pc_model
+  = CheckOk pc_model [].
 Proof. vm_compute. reflexivity. Qed.
 
 (** [clone(SIGCHLD, 0, 0, 0, 0)] against the same model, which has no

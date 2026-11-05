@@ -710,9 +710,10 @@ Definition ms_with_mem (ms : machine_state) (mem : word -> option byte) : machin
 (** THE DECODED ARGUMENT RECORD of the clone pending at [c]
     ([Fork.CloneArgs]), read as the released step reads it: [clone]
     (220) from its registers ([Fork.clone_args_of_clone]), [clone3] (435)
-    from the struct at a0 ([Fork.clone3_pre], over the caller's memory as
-    the call began, [Run.sys_input]'s [in_mem]).  [None] when the call
-    has no record; such a call gets no child. *)
+    from the struct at a0 of the size in a1 ([Fork.clone3_copy], then
+    [Fork.clone3_pre_sz], over the caller's memory as the call began,
+    [Run.sys_input]'s [in_mem]).  [None] when the call has no record;
+    such a call gets no child. *)
 Definition clone_args_of_cfg (c : config) : option CloneArgs :=
   let ms := cfg_ms c in
   match ms_svc_pending ms with
@@ -721,9 +722,10 @@ Definition clone_args_of_cfg (c : config) : option CloneArgs :=
         clone_args_of_clone (ms_gpr ms 0) (ms_gpr ms 1) (ms_gpr ms 2) (ms_gpr ms 3)
           (ms_gpr ms 4)
       else if Z.eqb (bv_unsigned x8) 435%Z then
-        match copy_bytes_map (ms_read_byte ms) (ms_gpr ms 0) CLONE_ARGS_SIZE with
-        | Some bs => match clone3_pre bs with CdArgs r => Some r | _ => None end
-        | None => None
+        match clone3_copy (ms_read_byte ms) (ms_gpr ms 0) (bv_unsigned (ms_gpr ms 1)) with
+        | C3Struct _ short bs =>
+            match clone3_pre_sz short bs with CdArgs r => Some r | _ => None end
+        | _ => None
         end
       else None
   | None => None
@@ -734,7 +736,7 @@ Definition clone_args_of_cfg (c : config) : option CloneArgs :=
     stack when it is not 0 (251-252) and tp the record's tls under
     [CLONE_SETTLS] (253-254); a0 = 0 is set by [child_ms].  The record's
     stack is a1 for [clone] and [stack + stack_size] for [clone3]
-    ([Fork.clone3_pre], fork.c:2845-2847).  [set_reg] takes a PHYSICAL
+    ([Fork.clone3_pre_sz], fork.c:2845-2847).  [set_reg] takes a PHYSICAL
     register number: sp is x2 and tp is x4. *)
 Definition child_regs (r : option CloneArgs) (ms : machine_state) : machine_state :=
   match r with
@@ -916,9 +918,9 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     this class: [clone_in_of] gives its record, and the first answer
     reaches it.)  The released step now answers -EINVAL for a word the
     argument checks refuse (and, for [clone3], a struct its own tests
-    refuse: [Fork.clone3_einval_b]), while the extension still sees this
+    refuse: [Fork.clone3_einval_sz]), while the extension still sees this
     word, so:
-    - a [clone3] struct [Fork.clone3_einval_b] refuses reaches the
+    - a [clone3] struct [Fork.clone3_einval_sz] refuses reaches the
       extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
       whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
       under the clone environment [Ns.Clone.clone_tables_failures]
@@ -952,11 +954,11 @@ Definition clone_flags_of (c : config) : Z :=
     is to receive them ([Fork.CloneIn]).
     - [clone] (220): the record of its registers
       ([Fork.clone_args_of_clone]); none for an a0 with a bit above 31.
-    - [clone3] (435): the record of its struct ([Fork.clone3_pre]), read
-      as the released step reads it ([Fork.clone3_spec]: the size test,
-      then [State.copy_bytes_map] over the pre-syscall memory, which
-      [Run.sys_input] gives as [ms_read_byte] whatever the segments,
-      [clone_in_of_input]), and only for a record whose call
+    - [clone3] (435): the record of its struct ([Fork.clone3_pre_sz]),
+      read as the released step reads it ([Fork.clone3_spec]: the size
+      tests and the copy, [Fork.clone3_copy], over the pre-syscall memory,
+      which [Run.sys_input] gives as [ms_read_byte] whatever the
+      segments, [clone_in_of_input]), and only for a record whose call
       [Fork.clone3_spec] takes further: the fork image, which it takes
       to [Fork.clone3_resolve] off the raw struct
       ([Fork.clone3_fork_args_b]), whether or not that resolution then
@@ -964,8 +966,8 @@ Definition clone_flags_of (c : config) : Z :=
       -EINVAL; or a record [Fork.clone_class] puts in the fork class (a
       stack, or bits of [Fork.clone_extra_bits]), which it takes to
       [Fork.clone3_with_stores], whether or not that then declines.  A
-      struct its own tests refuse or decline, a size or a copy it
-      declines or refuses, and any other record give none.
+      struct its own tests refuse or decline, a size or a copy that fails
+      or declines, and any other record give none.
     - Any other call, and no pending call: none.
     No rule of the core reads it yet. *)
 Definition clone_in_of (c : config) : CloneIn :=
@@ -979,19 +981,17 @@ Definition clone_in_of (c : config) : CloneIn :=
         | None => CiNoArgs
         end
       else if Z.eqb (bv_unsigned x8) 435 then
-        if negb (bv_eqb (ms_gpr ms 1) (Z_to_bv 64 CLONE_ARGS_SIZE)) then CiNoArgs
-        else
-          match copy_bytes_map (ms_read_byte ms) (ms_gpr ms 0) CLONE_ARGS_SIZE with
-          | Some bs =>
-              match clone3_pre bs with
-              | CdArgs r =>
-                  if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
-                  then CiArgs r
-                  else CiNoArgs
-              | _ => CiNoArgs
-              end
-          | None => CiNoArgs
-          end
+        match clone3_copy (ms_read_byte ms) (ms_gpr ms 0) (bv_unsigned (ms_gpr ms 1)) with
+        | C3Struct _ short bs =>
+            match clone3_pre_sz short bs with
+            | CdArgs r =>
+                if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
+                then CiArgs r
+                else CiNoArgs
+            | _ => CiNoArgs
+            end
+        | _ => CiNoArgs
+        end
       else CiNoArgs
   | None => CiNoArgs
   end.
@@ -1009,19 +1009,17 @@ Lemma clone_in_of_input : forall segs c x8,
      | None => CiNoArgs
      end
    else if Z.eqb (bv_unsigned x8) 435 then
-     if negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)) then CiNoArgs
-     else
-       match copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE with
-       | Some bs =>
-           match clone3_pre bs with
-           | CdArgs r =>
-               if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
-               then CiArgs r
-               else CiNoArgs
-           | _ => CiNoArgs
-           end
-       | None => CiNoArgs
-       end
+     match clone3_copy (in_mem i) (in_arg i 0) (bv_unsigned (in_arg i 1)) with
+     | C3Struct _ short bs =>
+         match clone3_pre_sz short bs with
+         | CdArgs r =>
+             if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
+             then CiArgs r
+             else CiNoArgs
+         | _ => CiNoArgs
+         end
+     | _ => CiNoArgs
+     end
    else CiNoArgs).
 Proof.
   intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
@@ -1031,32 +1029,50 @@ Qed.
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
     [clone3] has no record, whatever the released step answers for it.
     The [Fork.CdErr] half is the second answer the namespace extension
-    owes a NAMESPACE-WORLD caller: at [Fork.CLONE_ARGS_SIZE] the core
-    answers -EINVAL ([Fork.clone3_einval_b]) while the call's
-    [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of 65 in
-    [Checks.Cases.Kernel.Fork.clone3_einval_words]; at any other size
-    the core declines ([Checks.ProcessCreation.clone3_other_size_unmodeled]),
-    and the lemma holds there too.  The [Fork.CdDecline] half owes
-    nothing: the core declines there, as
+    owes a NAMESPACE-WORLD caller: the core answers -EINVAL
+    ([Fork.clone3_einval_sz]) while the call's [Fork.CloneIn] is
+    [Fork.CiNoArgs], as for the exit signal of 65 in
+    [Checks.Cases.Kernel.Fork.clone3_einval_words].  The [Fork.CdDecline]
+    half owes nothing: the core declines there, as
     [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
-    CLONE_NEWTIME image. *)
-Lemma clone_in_of_no_record : forall c bs x8,
+    CLONE_NEWTIME image.  [clone_in_of_no_record] is the 88-byte struct's
+    case, [clone_in_of_no_record_sized] every size's: a size whose copy
+    fails or declines has no struct and no record either. *)
+Lemma clone_in_of_no_record_sized : forall c x8,
   ms_svc_pending (cfg_ms c) = Some x8 ->
   bv_unsigned x8 = 435%Z ->
-  copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE = Some bs ->
-  (forall r, clone3_pre bs <> CdArgs r) ->
+  (forall reads short bs,
+     clone3_copy (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0)
+       (bv_unsigned (ms_gpr (cfg_ms c) 1)) = C3Struct reads short bs ->
+     forall r, clone3_pre_sz short bs <> CdArgs r) ->
   clone_in_of c = CiNoArgs.
 Proof.
-  intros c bs x8 Hp H435 Hcopy Hno. unfold clone_in_of. cbv zeta. rewrite Hp.
+  intros c x8 Hp H435 Hno. unfold clone_in_of. cbv zeta. rewrite Hp.
   cbv iota. rewrite H435.
   replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
   replace (Z.eqb 435%Z 435%Z) with true by reflexivity.
   cbv iota.
-  destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
-    [reflexivity|].
-  rewrite Hcopy.
-  destruct (clone3_pre bs) as [| |r] eqn:Hpre; [reflexivity|reflexivity|].
-  exfalso. apply (Hno r). congruence.
+  destruct (clone3_copy (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0)
+              (bv_unsigned (ms_gpr (cfg_ms c) 1))) as [| |reads short bs] eqn:Hc;
+    [reflexivity|reflexivity|].
+  destruct (clone3_pre_sz short bs) as [| |r] eqn:Hpre; [reflexivity|reflexivity|].
+  exfalso. exact (Hno reads short bs ltac:(first [exact Hc | reflexivity]) r Hpre).
+Qed.
+
+Lemma clone_in_of_no_record : forall c bs x8,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = 435%Z ->
+  ms_gpr (cfg_ms c) 1 = Z_to_bv 64 CLONE_ARGS_SIZE ->
+  copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE = Some bs ->
+  (forall r, clone3_pre bs <> CdArgs r) ->
+  clone_in_of c = CiNoArgs.
+Proof.
+  intros c bs x8 Hp H435 Hsz Hcopy Hno.
+  apply (clone_in_of_no_record_sized c x8 Hp H435).
+  intros reads short bs' Hc r.
+  rewrite Hsz, clone3_size_88_unsigned, clone3_copy_88 in Hc.
+  unfold clone3_copy_full in Hc. rewrite Hcopy in Hc.
+  injection Hc as _ <- <-. exact (Hno r).
 Qed.
 
 (** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
@@ -1089,16 +1105,15 @@ Proof.
     split; [apply Z.eqb_eq; exact H220|].
     exact (clone_args_of_clone_word _ _ _ _ _ _ Hr).
   - destruct (Z.eqb (bv_unsigned x8) 435) eqn:H435; cbv iota in H; [|discriminate H].
-    destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
-      cbv iota in H; [discriminate H|].
-    destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
-      as [bs|]; cbv iota in H; [|discriminate H].
-    destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
+    destruct (clone3_copy (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0)
+                (bv_unsigned (ms_gpr (cfg_ms c) 1))) as [| |reads short bs];
+      cbv iota in H; try discriminate H.
+    destruct (clone3_pre_sz short bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
     destruct (clone3_fork_args_b bs || clone_arg_checks r0 || clone_class_fork_b r0);
       cbv iota in H;
       [|discriminate H].
     injection H as <-.
-    pose proof (clone3_pre_split _ _ Hp3) as Hs.
+    pose proof (clone3_pre_sz_split _ _ _ Hp3) as Hs.
     split; [exact Hs|].
     exists x8. split; [reflexivity|]. right.
     split; [apply Z.eqb_eq; exact H435|].
@@ -1139,17 +1154,16 @@ Proof.
       (Z.land_comm (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)) clone_ns_bits),
       Z.land_assoc, Hns, Z.land_0_l.
   - destruct (Z.eqb (bv_unsigned x8) 435) eqn:H435; cbv iota in H; [|discriminate H].
-    destruct (negb (bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
-      cbv iota in H; [discriminate H|].
-    destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
-      as [bs|]; cbv iota in H; [|discriminate H].
-    destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
+    destruct (clone3_copy (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0)
+                (bv_unsigned (ms_gpr (cfg_ms c) 1))) as [| |reads short bs];
+      cbv iota in H; try discriminate H.
+    destruct (clone3_pre_sz short bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
     destruct (clone3_fork_args_b bs || clone_arg_checks r0 || clone_class_fork_b r0) eqn:Hor;
       cbv iota in H; [|discriminate H].
     injection H as <-.
     apply orb_true_iff in Hor as [Hor|Hcf].
     + apply orb_true_iff in Hor as [Ha|Hc0]; [|rewrite Hc0 in Hc; discriminate Hc].
-      rewrite (clone3_pre_flags bs r0 Hp3).
+      rewrite (clone3_pre_sz_flags short bs r0 Hp3).
       unfold clone3_fork_args_b, w_is0 in Ha.
       repeat (apply andb_true_iff in Ha as [Ha ?]).
       apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity.

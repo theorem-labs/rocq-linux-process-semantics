@@ -195,10 +195,12 @@ Definition clone3_probe_uargs : word := Z_to_bv 64 0x10000.
     unreadable -- EXCEPT the one byte that makes [clone3]'s struct
     fork-shaped.
 
-    [clone3_spec] declines every size but [CLONE_ARGS_SIZE], answers
-    -EFAULT for a [uargs] range [access_ok] refuses, answers -EINVAL for
-    a struct [Fork.clone3_einval_b] refuses (its own tests or, on a
-    struct that gives a record, the argument checks),
+    [clone3_spec] answers its size tests and its copy first
+    ([Fork.clone3_copy]: -E2BIG above [PAGE_SIZE], -EINVAL below 64,
+    -EFAULT or -E2BIG from a long struct's tail, -EFAULT for a head range
+    [access_ok] refuses), answers -EINVAL for a struct
+    [Fork.clone3_einval_sz] refuses (its own tests or, on a struct that
+    gives a record, the argument checks),
     and otherwise declines every struct but the one
     [Fork.clone3_fork_args_b] admits: all eleven fields zero except
     [exit_signal] = SIGCHLD, which [Fork.clone_args_field] reads from
@@ -257,10 +259,10 @@ Definition probe_mem : word -> option byte :=
     - clone (220) declines the default FLAG WORD: [clone_fork_flags_b]
       admits the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
       namespace bits, and AT_FDCWD is neither.
-    - clone3 (435) declines the default SIZE and the default STRUCT: it
-      resolves only [CLONE_ARGS_SIZE] bytes at a readable address holding
-      the fork-shaped [struct clone_args], which is why [probe_mem] above
-      carries one.
+    - clone3 (435) does not reach [kernel_clone] with the default SIZE
+      (AT_FDCWD is above [PAGE_SIZE]: -E2BIG) and declines the default
+      STRUCT: it resolves only a readable fork-shaped [struct clone_args],
+      which is why [probe_mem] above carries one.
     - wait4 (260) declines the default ARGUMENT WORDS, before anything
       else: [Kernel.Exit.wait4_spec] answers only when [upid] is the
       32-bit -1 [Kernel.Exit.WAIT_ANY32] and [options] is exactly
@@ -411,12 +413,12 @@ Definition probe_args (n : Z) : list word :=
     [Z_to_bv 64 SIGCHLD; z; z; z; z; z]
   else if Z.eqb n 435 then
     (* clone3 reaches [kernel_clone] through a struct in user memory
-       rather than through registers, and declines every size but
-       [CLONE_ARGS_SIZE] and, of the structs no argument check refuses,
-       every one but the fork-shaped one.  A
-       refused [uargs] answers -EFAULT without reaching [kernel_clone], so
-       the probe points at the struct [probe_mem] carries at
-       [clone3_probe_uargs] instead. *)
+       rather than through registers: its size tests and its copy answer
+       first ([Fork.clone3_copy]; AT_FDCWD as the size is -E2BIG), and of
+       the structs no argument check refuses it declines every one but
+       the fork-shaped one.  A refused [uargs] answers -EFAULT without
+       reaching [kernel_clone], so the probe points at the struct
+       [probe_mem] carries at [clone3_probe_uargs], at the full size. *)
     [clone3_probe_uargs; Z_to_bv 64 CLONE_ARGS_SIZE; z; z; z; z]
   else if Z.eqb n 260 then
     (* wait4 decides on the ARGUMENT WORDS before it decides anything else:
