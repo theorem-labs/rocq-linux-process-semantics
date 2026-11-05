@@ -307,18 +307,22 @@ Open Scope bv_scope.
     is {kb_vdso_text}).  [kb_aslr] is the boot's own: false under
     `norandmaps`, true otherwise.
 
-    The remaining six are [State.default_kernel]'s, and the replay
+    The remaining eleven are [State.default_kernel]'s, and the replay
     does not depend on them: [Sys/Mm/Mmap.linux_place] reads [kb_thp],
     and [State.vdso_reserved] reads [kb_vdso], and nothing in a
     placement reads the guard gap, the randomisation width, rseq, the
-    vector length, the cache words or fs.suid_dumpable.  A start-state
-    replay does read the first five of them, and that is what
+    vector length, the cache words, the [struct sk_buff] size, the
+    socket buffer sysctls or fs.suid_dumpable.  A start-state replay
+    does read the first five of them, and that is what
     tools/placement_conformance's start-state rules are for. *)
 Definition replay_kernel : KernelBuild :=
   mkKernelBuild {thp} {kb_vdso_text}%N {kb_aslr}
     (kb_guard default_kernel) (kb_rnd_bits default_kernel)
     (kb_rseq default_kernel) (kb_vlenb default_kernel)
-    (kb_cache default_kernel) (kb_suid_dumpable default_kernel).
+    (kb_cache default_kernel)
+    (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+    (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+    (kb_rmem_max default_kernel) (kb_suid_dumpable default_kernel).
 
 (** The launch.  Nothing below reads the argument vector, the environment,
     the file system or the credentials, so they are empty or ordinary; the

@@ -130,11 +130,11 @@ Proof.
   intros size eff m m' evs H. unfold check_getcwd in H. sh_frame2 H.
 Qed.
 
-Lemma check_eventfd2_sh : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs ->
+Lemma check_eventfd2_sh : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros flags eff m m' evs H.
+  intros i flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. sh_frame2 H.
 Qed.
 
@@ -190,9 +190,12 @@ Proof.
   intros fd cmd arg eff m m' evs H. unfold check_fcntl in H. sh_frame2 H.
 Qed.
 
-Lemma check_ioctl_sh : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> sh_of m' = sh_of m.
-Proof. intros fd req eff m m' evs H. unfold check_ioctl in H. sh_frame2 H. Qed.
+Lemma check_ioctl_sh : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros i fd req eff m m' evs H.
+  unfold check_ioctl, check_siocgifindex, check_ifreq_writeback in H. sh_frame2 H.
+Qed.
 
 Lemma check_close_sh : forall fd eff m m' evs,
   check_close fd eff m = CheckOk m' evs -> sh_of m' = sh_of m.
@@ -219,7 +222,7 @@ Lemma check_pselect6_sh : forall i n32 inp outp exp tsp sig eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H.
-  unfold check_pselect6 in H. sh_frame2 H.
+  unfold check_pselect6, check_pselect_answer in H. sh_frame2 H.
 Qed.
 
 Lemma check_ppoll_sh : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
@@ -227,7 +230,7 @@ Lemma check_ppoll_sh : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H. sh_frame2 H.
+  unfold check_ppoll, check_pselect_answer in H. sh_frame2 H.
 Qed.
 
 Lemma check_fsync_sh : forall fd eff m m' evs,
@@ -324,7 +327,14 @@ Lemma check_rt_sigaction_sh : forall i sig act oact ss eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i sig act oact ss eff m m' evs H.
-  unfold check_rt_sigaction in H. sh_frame2 H.
+  unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [sh_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { (* the SIGPIPE arm: [check_rt_sigaction_sigpipe] is opaque to the
+       cascade, and its install rebuilds [ProcState] alone *)
+    destruct (check_rt_sigaction_sigpipe_model _ _ _ _ _ _ _ H) as [-> | (a & ->)];
+      reflexivity. }
+  sh_frame2 H.
 Qed.
 
 Lemma check_setid_sh : forall get put user v eff m m' evs,
@@ -388,8 +398,10 @@ Lemma check_socketpair_sh : forall i family type protocol sv eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   sh_frame2 H.
 Qed.
 Print Assumptions check_socketpair_sh.
@@ -418,21 +430,77 @@ Proof.
   unfold check_connect in H. sh_frame2 H.
 Qed.
 
-Lemma check_getsockname_sh : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs ->
+Lemma check_getsockname_sh : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core in H. sh_frame2 H.
+  intros i fd eff m m' evs H.
+  unfold check_getsockname, check_getsockname_core, check_stream_getname,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
-Lemma check_getpeername_sh : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs ->
+Lemma check_getpeername_sh : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core in H. sh_frame2 H.
+  intros i fd eff m m' evs H.
+  unfold check_getpeername, check_getpeername_core, check_stream_getname,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
+
+(** A stream-pair end's read and send ([Fs.ReadWrite.check_stream_read],
+    [Fs.ReadWrite.check_stream_send]) rewrite fd-table entries with
+    [with_fds], and the send's -EPIPE raises SIGPIPE through
+    [check_sigpipe_write]; none of that touches the file system or the
+    I/O state.  [sendto] and [recvfrom] reach them, as in
+    [Checks.VmMapsDisjoint]. *)
+Lemma check_stream_read_empty_sh : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_read_sh :
+  forall fd id side st nonblock buf count i eff m m' evs,
+  check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros fd id side st nonblock buf count i eff m m' evs H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
+  cbv beta zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_send_sh :
+  forall id side st nonblock nosignal n src ledger eff m m' evs,
+  check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros id side st nonblock nosignal n src ledger eff m m' evs H.
+  unfold check_stream_send in H. cbv beta zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_stream_write_sh :
+  forall id side st nonblock nosignal buf count i eff m m' evs,
+  check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros id side st nonblock nosignal buf count i eff m m' evs H.
+  unfold check_stream_write in H. eapply check_stream_send_sh. exact H.
+Qed.
+
+Ltac sh_stream H :=
+  first
+  [ apply check_stream_read_sh in H; exact H
+  | apply check_stream_read_empty_sh in H; exact H
+  | apply check_stream_write_sh in H; exact H
+  | apply check_stream_send_sh in H; exact H ].
+
+Ltac sh_frame3 H :=
+  repeat (vm_step H || sh_done H || sh_stream H); try reflexivity.
 
 Lemma check_send_on_socket_sh :
   forall pre acc fd sk total bs eff m m' evs,
@@ -457,7 +525,7 @@ Lemma check_sendto_sh : forall i fd buf count flags addrp eff m m' evs,
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
   unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
-  sh_frame2 H.
+  sh_frame3 H.
 Qed.
 
 Lemma check_recvfrom_sh : forall i fd buf size eff m m' evs,
@@ -466,7 +534,32 @@ Lemma check_recvfrom_sh : forall i fd buf size eff m m' evs,
 Proof.
   intros i fd buf size eff m m' evs H.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H.
-  sh_frame2 H.
+  sh_frame3 H.
+Qed.
+
+(** pwritev2 (287) answers on an unnamed file alone
+    ([Fs.ReadWrite.pwritev2_spec]), whose bytes live in the caller's
+    descriptor table ([State.anon_set_data] under [with_fds]); every
+    other kind is declined.  So neither spliced slot moves, the zero-fill
+    of a write that faults past the end included. *)
+Lemma check_anon_fault_extend_sh : forall reads m id data dst eff m' evs,
+  check_anon_fault_extend reads m id data dst eff = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros reads m id data dst eff m' evs H. unfold check_anon_fault_extend in H.
+  cbv beta iota zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_pwritev2_sh :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
+  unfold check_pwritev2 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || sh_done H
+          || (eapply check_anon_fault_extend_sh in H; exact H));
+  try reflexivity.
 Qed.
 
 Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,
@@ -474,8 +567,9 @@ Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
-    in H. sh_frame2 H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core,
+    check_stream_setsockopt in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_getsockopt_sh : forall i fd level optlenp eff m m' evs,
@@ -483,7 +577,9 @@ Lemma check_getsockopt_sh : forall i fd level optlenp eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt, check_getsockopt_core in H. sh_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core, check_stream_getsockopt,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_shutdown_sh : forall fd how eff m m' evs,
@@ -491,7 +587,8 @@ Lemma check_shutdown_sh : forall fd how eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown, check_shutdown_core in H. sh_frame2 H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_sendmsg_sh : forall i fd msgp flags eff m m' evs,
@@ -598,7 +695,10 @@ Lemma check_mmap_sh : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only in H. mm_walk H. all: mm_leaf H.
+  (* [unfold] takes its names in order: [check_ret_only] goes last, so
+     the one inside [check_mmap_fixed_overflow] (the -ENOMEM answer) is
+     opened too, as [MmStepFrame.check_mmap_mm_frame] does. *)
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H. mm_walk H. all: mm_leaf H.
 Qed.
 
 Lemma check_mremap_sh : forall old old_size new_size flags eff m m' evs,
@@ -794,6 +894,7 @@ Proof.
       | eapply check_madvise_sh; eassumption
       | eapply check_getrandom_sh; eassumption
       | eapply check_close_range_sh; eassumption
+      | eapply check_pwritev2_sh; eassumption
       | fail 2 "checked_table_private_sh has no case for this class-(A) arm: give its checker a *_sh lemma above and add it to the list" ] ].
 Qed.
 

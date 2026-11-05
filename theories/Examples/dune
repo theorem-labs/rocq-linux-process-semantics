@@ -23,9 +23,9 @@
 ; ---------------------------------------------------------------------------
 ; Generated members of the theory, two per example.  dune makes them in
 ; _build; they are not in the repository.  Both generators read only files
-; that are in the repository, and both write only VM-checked or type-checked
-; content.  Thus a generator bug cannot make a proof pass: it makes the build
-; fail.
+; of the repository or of installed packages, and both write only
+; VM-checked or type-checked content.  Thus a generator bug cannot make a
+; proof pass: it makes the build fail.
 ;
 ;   <name>/<name>_code.v  fetch/decode lemmas, from the two memory images
 ;                         (gen-fd-lemmas).  The generator runs `rocq` on
@@ -38,7 +38,12 @@
 ;                         theories/Riscv only: Riscv/Decode needs only
 ;                         Stdlib and stdpp, and a recursive glob over
 ;                         theories/ would include theories/Examples and
-;                         make a cycle.
+;                         make a cycle.  The rule also depends on
+;                         (universe): the `rocq` it runs is no dependency,
+;                         and in a `dune build -p` neither is the installed
+;                         decoder.  So dune runs it on every build and
+;                         never takes its output from the dune cache that
+;                         CI keeps (.github/workflows/ci.yml).
 ;
 ;   <name>/Checker.v      the top-level check (tools/gen_checker.py), a
 ;                         fixed template with the example name in it.
@@ -58,6 +63,7 @@
  (rule
   (target rwx_flag_ns_code.v)
   (deps
+   (universe)
    %{project_root}/tools/gen_fd_lemmas.py
    (glob_files *MemImage.v)
    (glob_files *MemImage_seg_*.hex)

@@ -224,6 +224,12 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdSeqpacket _ _ _) => err_ret EINVAL    (* the [FdSocket] answer, from [socket_file_ops]
                                                      alone (net/socket.c:156, no [.fsync];
                                                      fs/sync.c:183-184, v6.18.46) *)
+  | Some (FdStream _ _ _) => err_ret EINVAL       (* a stream-pair end has [socket_file_ops] too *)
+  | Some (FdDgram _)   => err_ret EINVAL          (* and so does a datagram socket *)
+  | Some (FdEventfd _) => err_ret EINVAL          (* nor on an eventfd: [eventfd_fops] (fs/eventfd.c,
+                                                     v6.18.46) lists [.show_fdinfo], [.release],
+                                                     [.poll], [.read_iter], [.write] and [.llseek]
+                                                     and no [.fsync] *)
   | Some (FdPipe _ _)  => err_ret EINVAL          (* no [.fsync] on a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL        (* no [.fsync] on /dev/null either: [null_fops]
                                                      (drivers/char/mem.c, v6.18.46) lists [.llseek],
@@ -256,5 +262,11 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdFileRW _ _) => ret_only (Z_to_bv 64 0) (* and opened O_RDWR: it reads no access mode
                                                       either, which is why the read-only arm
                                                       above is not an error *)
+  | Some (FdAnon _ _) => ret_only (Z_to_bv 64 0)   (* the [FdFile] answer carries over unchanged:
+                                                      [vfs_fsync_range] (fs/sync.c) reads
+                                                      [f_op->fsync], which an unnamed file keeps
+                                                      from its regular-file table, and nothing
+                                                      about a name; on a tmpfs /tmp that is
+                                                      [noop_fsync] (mm/shmem.c, v6.18.46) *)
   | Some FdDir         => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
   end.

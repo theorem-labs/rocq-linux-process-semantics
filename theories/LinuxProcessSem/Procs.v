@@ -405,7 +405,16 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     call here reads.  setns (268) reads only the kind of the caller's
     descriptor (an O_PATH file, a namespace model descriptor, or any
     other), which no process changes, and answers an errno that changes
-    nothing.  Two class-(A) calls are admitted with a gate as well.
+    nothing.  pwritev2 (287) is class (A), not class (B) beside pwrite64:
+    it answers on an unnamed file ([State.FdAnon]) alone and declines
+    every other kind ([Fs.ReadWrite.pwritev2_spec]), so it never reaches
+    [m_fsys] or [m_io]; the file's bytes and offset live in the caller's
+    descriptor table, and it moves no offset (it writes at the position
+    it is given).  No peer holds that file: the clone gate declines while
+    one is open ([Fork.clone_no_shared_file_b], proved as
+    [Checks.ProcessCreation.clone_anon_unmodeled]), so an unnamed file was
+    made after the last clone by the entry that holds it.  Three class-(A)
+    calls are admitted with a gate as well.
     flock (32) grants a lock when no descriptor of the CALLER names the
     file, and no lock state exists, so it is refused while another entry
     has a descriptor on the same path ([peer_refused_b]).  prctl (167)
@@ -413,7 +422,15 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     exits, and the exit arm does not send that signal; so a step that
     would halt an entry while one of its running children holds a nonzero
     parent-death signal is refused ([step_refused_b]), and the signal is
-    never lost.
+    never lost.  fcntl (25) with F_SETFL on a shared eventfd
+    ([FdOpaque (OEventFd w)]) records the new O_NONBLOCK bit in the
+    CALLER's word only ([Fs.Fcntl.oeventfd_setfl]), where Linux changes
+    the one [f_flags] every holder reads ([setfl], fs/fcntl.c; v6.18.46):
+    after a child cleared it, the parent's read would still be answered
+    -EAGAIN or a value where Linux waits.  So an F_SETFL that would
+    change the bit is refused while another entry lives
+    ([eventfd_setfl_nb_change_b] in [peer_refused_b]); one that keeps it
+    changes nothing a peer reads and is answered.
 
     SHARED, WRITTEN BACK, CLASS (B) ([multiproc_shared_sysnos]): 46 48 56
     62 63 64 65 66 67 68 78 79 202 242 439.  They read or write [m_fsys] or
@@ -442,11 +459,22 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     holds, as they already do for one process holding two listeners; the
     frame lemmas prove the queue is consumed once, not that a connection
     is routed to the listener it was meant for.  An eventfd made
-    before a clone IS a per-process copy ([FdOpaque (OEventFd _)], one
-    counter per table where Linux has one), and every (B) arm declines it,
-    so none answers from the copy; [Checks.ProcsSharedFrame] proves all of
-    this, the decline included, so an arm that one day answers an eventfd
-    counter fails that Check until the counter is moved into [shared].
+    before a clone becomes, in the parent's table and the child's, the
+    shared kind [FdOpaque (OEventFd w)] ([Kernel.Fork.share_eventfds]),
+    which carries only the file's flag word [w] and no counter: Linux has
+    one counter, and here it is the ENVIRONMENT's.  [read] and [write]
+    answer it from the environment ([Fs.ReadWrite.read_eventfd_spec],
+    [Fs.ReadWrite.write_eventfd_spec]; a read of a blocking one
+    declines), and the other (B) arms that take a descriptor (ftruncate,
+    lseek, readv, writev, pread64, pwrite64) decline it, so none answers
+    from a per-process counter.  [Checks.ProcsSharedFrame] proves both:
+    [eventfd_declined] (those arms' every answer is an errno that changes
+    nothing) and [eventfd_rw_keeps_model] (every answer of read or write
+    leaves the model and emits nothing), so an arm that one day keeps an
+    eventfd counter per process fails that Check until the counter is
+    moved into [shared].  The per-process [fcntl] (25) reads no counter
+    either: its [F_GETFD] answers a recorded close-on-exec bit and
+    declines only where the bit is unknown ([Fs.Fcntl.getfd_declines]).
 
     SYNCED ([multiproc_synced_sysnos]): 101 nanosleep, 113 clock_gettime,
     160 uname and 80 fstat.  Each reads per-entry state that stands for one
@@ -534,7 +562,7 @@ Definition multiproc_private_sysnos : list Z :=
     73;  74;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 129; 130;
    131; 132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
    175; 176; 177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209;
-   210; 211; 212; 214; 215; 216; 222; 226; 233; 268; 278; 436]%Z.
+   210; 211; 212; 214; 215; 216; 222; 226; 233; 268; 278; 287; 436]%Z.
 
 Definition multiproc_shared_sysnos : list Z :=
   [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
@@ -683,8 +711,13 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
   | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
   | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom | FdOpaque _ => None
-  | FdSeqpacket _ _ _ => None
-    (* unreachable: the clone gate declines while an end is open
+  | FdEventfd _ => None
+    (* per-process too: the clone shares it ([Kernel.Fork.share_eventfds]),
+       which turns it into [FdOpaque (OEventFd _)] in both tables, a kind on
+       which no arm reads a counter the model stores: read and write answer
+       from the environment's counter ([Fs.ReadWrite.read_eventfd_spec]) *)
+  | FdSeqpacket _ _ _ | FdStream _ _ _ | FdDgram _ | FdAnon _ _ => None
+    (* unreachable: the clone gate declines while one is open
        ([Kernel.Fork.clone_no_shared_file_b]) *)
   end.
 
@@ -771,8 +804,11 @@ Definition child_ms (c c' : config) : machine_state :=
     - [procst_reparent_moved] is false: the child's parent pid is its
       parent's key, given below, so it has not moved.
 
-    The four launch facts ([procst_channel_reader], [procst_sigpipe_default],
-    [procst_sigpipe_terminal], [procst_selfkill_terminal]) are copied, and so are the no-new-privs bit
+    The four launch facts ([procst_channel_reader], [procst_sigpipe_terminal],
+    [procst_selfkill_terminal], [procst_cgroup_bpf_setsockopt]) are copied,
+    and so is SIGPIPE's action ([procst_sigpipe_action]: [copy_sighand],
+    kernel/fork.c, copies the parent's action table without CLONE_SIGHAND),
+    and so are the no-new-privs bit
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
@@ -808,7 +844,7 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
                  wrong value.  (Found in review, 2026-11-01.) *)
               (procst_killed ps) false
               (procst_abort_terminal ps) (procst_statpins ps)
-              false (procst_channel_reader ps) (procst_sigpipe_default ps)
+              false (procst_channel_reader ps) (procst_sigpipe_action ps)
               (procst_sigpipe_terminal ps)
               (Z_to_bv 64 0)
               [] (procst_no_new_privs ps) (procst_dumpable ps)
@@ -821,12 +857,26 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
 
+(** THE CHILD'S DESCRIPTOR TABLE is the parent's table BEFORE the call,
+    [pe_model e], with each eventfd shared ([Kernel.Fork.share_eventfds]):
+    the child names the same [eventfd_ctx] as the parent, so neither may
+    answer from a counter.  Nothing else of the table changes: a live
+    inherited entry keeps its bytes and offset here, because the parent's
+    successful clone forfeits its own copy ([Kernel.Fork.clone_child_made]),
+    and the child is the one holder left.  The close-on-exec bits the
+    model knows ([State.m_cloexec]) are carried with the table, as
+    [dup_fd] copies the close-on-exec bitmap (fs/file.c, read at
+    v6.18.44; identical at v6.18.46); [share_eventfds] rewrites entries
+    in place, so every key still names an open descriptor.  The child's
+    parent pid is the parent's pinned tid, or its key in the process
+    table before the first root-tid pin ([child_proc]). *)
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
           (clear_shared (with_proc (child_proc
              (match m_tid (pe_model e) with Some t => t | None => pe_pid e end)
-             (m_proc (pe_model e))) (pe_model e)))
+             (m_proc (pe_model e)))
+             (with_fds (share_eventfds (m_fds (pe_model e))) (pe_model e))))
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);
@@ -1667,6 +1717,21 @@ Definition flock_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
   | None => false
   end.
 
+(** A pending [fcntl(fd, F_SETFL, arg)] (argument 1 is [Uapi.F_SETFL]
+    after [Syscall.cmd32]) whose descriptor holds a shared eventfd
+    ([FdOpaque (OEventFd w)]) and whose [arg] has an O_NONBLOCK bit (bit
+    11, the bit [Fs.Fcntl.oeventfd_setfl] records) other than [w]'s: an
+    F_SETFL that would change the [f_flags] every holder of the file
+    reads.  The caller's sysno is read by [peer_refused_b]. *)
+Definition eventfd_setfl_nb_change_b (e : ProcessEntry) : bool :=
+  bv_eqb (cmd32 (ms_gpr (pe_ms e) 1)) F_SETFL
+  && match fd_lookup (m_fds (pe_model e)) (fd32 (ms_gpr (pe_ms e) 0)) with
+     | Some (FdOpaque (OEventFd w)) =>
+         negb (Bool.eqb (Z.testbit (bv_unsigned (ms_gpr (pe_ms e) 2)) 11)
+                        (Z.testbit (bv_unsigned w) 11))
+     | _ => false
+     end.
+
 (** THE PIDS.  [f] is the root entry. *)
 Definition is_root_b (P : pconfig) (f : ProcessEntry) : bool :=
   bv_eqb (pe_pid f) (pcfg_root P).
@@ -1700,7 +1765,9 @@ Definition tid_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
     the caller's RLIMIT_CORE is unpinned); the flock gate (32 while
     another entry has a descriptor on the same file); the pid gate (a pid
     call while two entries would answer one pid, or while the caller's
-    tid is not its key).  See the notes above the guard. *)
+    tid is not its key); the eventfd gate (25 while a peer lives, an
+    F_SETFL that would change a shared eventfd's O_NONBLOCK,
+    [eventfd_setfl_nb_change_b]).  See the notes above the guard. *)
 Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
   let stale := pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) in
   match ms_svc_pending (pe_ms e) with
@@ -1720,6 +1787,8 @@ Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
       || (Nat.ltb 1 (List.length (pcfg_procs P))
           && (pid_collision_b P || tid_conflict_b P e)
           && List.existsb (Z.eqb (bv_unsigned x8)) multiproc_pid_sysnos)
+      || (Nat.ltb 1 (List.length (pcfg_procs P))
+          && Z.eqb (bv_unsigned x8) 25 && eventfd_setfl_nb_change_b e)
   end.
 
 (** THE PID FILTER, read off the released step's result [c']: of the
@@ -2850,15 +2919,16 @@ Proof. intros P e Hs. unfold peer_refused_b. rewrite Hs. reflexivity. Qed.
 Lemma peer_refused_of_sysno : forall P e x8,
   ms_svc_pending (pe_ms e) = Some x8 ->
   List.existsb (Z.eqb (bv_unsigned x8))
-    (ns_userns_sysnos ++ ns_netns_sysnos ++ [32; 261]%Z ++ multiproc_pid_sysnos) = false ->
+    (ns_userns_sysnos ++ ns_netns_sysnos ++ [25; 32; 261]%Z ++ multiproc_pid_sysnos) = false ->
   peer_refused_b P e = false.
 Proof.
   intros P e x8 Hs H. unfold peer_refused_b. rewrite Hs.
   rewrite !List.existsb_app in H. apply orb_false_iff in H as [Hu H].
   apply orb_false_iff in H as [Hn H]. apply orb_false_iff in H as [Hg Hp].
-  cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H32 Hg].
+  cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H25 Hg].
+  apply orb_false_iff in Hg as [H32 Hg].
   apply orb_false_iff in Hg as [H261 _].
-  rewrite Hu, Hn, H32, H261, Hp, !andb_false_r. reflexivity.
+  rewrite Hu, Hn, H25, H32, H261, Hp, !andb_false_r. reflexivity.
 Qed.
 
 (** No entry of the table is a child of [e]: the parent-death part of the

@@ -2,7 +2,7 @@
 (* soundness of AP.check (Module APS) — SpinAlg.srealizes form with spec nodes (PMmap/PMmapIn/PMprotect/PSpin) *)
 (** * AsanPlanSound — soundness of the reflective ASan plan checker [AsanPlan].
 
-    [check_sound]: if [AP.check SEGS IT A nx0 LIMIT HS bfuel fuel cs p = COk s]
+    [check_sound]: if [AP.check SEGS IT A nx0 LIMIT CEIL rz XN XE XB HS KC bfuel fuel lc cs p = COk s]
     then every concrete configuration matching the checker state [cs]
     ([cs_ok E cs R FULL model]: registers, knowledge about the RESTRICTED
     memory, exact mmap ledger, budget invariant [AsanAcct.MInv], the hidden
@@ -10,7 +10,9 @@
     the trace set [sd E (m_fs model) s] denoted by the shape [s].
 
     Image-independent: the segment list [SEGS], the instruction table [IT],
-    the address table [A], the budget [LIMIT], the argument-block invariant
+    the address table [A], the budget [LIMIT], the plan's CONFIG_RSEQ flag [rz]
+    (the auxv size [AUXSZ rz]; sound for every value, because only the
+    obligations [x_stmt XPnScan] / [x_stmt XLayout] read it), the argument-block invariant
     [SINV]/[argH], the hole denotations [HOLES] and stored states [HS] are
     Section variables with the hypotheses listed in Section [Sound].  The
     per-node soundness obligations that are NOT proved in this file are the
@@ -124,6 +126,9 @@ Hypothesis CEIL_ok : ceil_ok CEIL.
 Lemma ceil_facts : CEIL mod 4096 = 0 /\ 0x7fff7f800000 <= CEIL <= 0x7fffff800000.
 Proof. exact CEIL_ok. Qed.
 #[local] Ltac ceilnum := let H := fresh "CEILF" in pose proof ceil_facts as H.
+(** the plan's CONFIG_RSEQ flag as 0 or 1 ([APC.rseq_z]): [AP.node_x] reads it
+    through [node_pnscan] / [node_layout], so [x_stmt] does too *)
+Variable rz : Z.
 Variable HS : nat -> option acs.
 (** hooked extension nodes ([PExt id args]) and emitting nodes ([PEmit id args]) *)
 Variable XN : nat -> list expr -> acs -> option acs.
@@ -203,7 +208,7 @@ Definition resx_entry_ok (iv : word * word) : Prop :=
     [m_vmmaps model] across every field of [cs_ok], and [rewrite] cannot see
     under an unexpanded definition. *)
 
-#[local] Notation CHECK := (AP.check SEGS IT A nx0 LIMIT CEIL XN XE XB HS KC).
+#[local] Notation CHECK := (AP.check SEGS IT A nx0 LIMIT CEIL rz XN XE XB HS KC).
 
 #[local] Notation cfg := (cfg_of SEGS).
 
@@ -1636,7 +1641,7 @@ Definition always (cs : acs) : bool := true.
 (** syscall nodes *)
 Definition sys_stmt (y : snode) : Prop := node1_stmt (is_ecall_at SEGS) (node_sys A nx0 y).
 (** extension nodes *)
-Definition x_stmt (x : xnode) : Prop := forall args, node1_stmt always (node_x SEGS A nx0 x args).
+Definition x_stmt (x : xnode) : Prop := forall args, node1_stmt always (node_x SEGS A nx0 rz x args).
 (** fresh-variable node *)
 Definition fresh_stmt : Prop := forall r logc base, node1_stmt always (fun cs => node_fresh nx0 cs r logc base).
 (** byte-join node *)
@@ -3224,7 +3229,7 @@ Proof. reflexivity. Qed.
 (** shapes only mention the initial variables *)
 (** [AP.check_all]: every state of the (non-empty) list checks with the returned shape *)
 Lemma check_all_ok : forall (chk : acs -> plan -> cres) k css s,
-  check_all A CEIL chk k css = COk s ->
+  check_all A CEIL rz chk k css = COk s ->
   (exists cs1, In cs1 css /\ chk cs1 k = COk s /\ True) /\ (forall cs, In cs css -> chk cs k = COk s).
 Proof.
   intros chk k css s H. unfold check_all in H. destruct css as [|cs0 rest]; [discriminate|].
@@ -3292,7 +3297,7 @@ Proof.
   - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT CEIL false cs) as [[[csa csb] cscs]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ia) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ib) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A CEIL (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL rz (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     destruct (check_all_ok _ _ _ _ H3) as [(cs1 & Hin1 & Hc1 & _) _].
     apply salt2_vars; [exact (IH _ ia _ sa H1) | apply salt2_vars; [exact (IH _ ib _ sb H2) | exact (IH _ ic _ sc Hc1)]].
@@ -3308,7 +3313,7 @@ Proof.
     destruct (CHECK bfuel fuel lc csa ua) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ub2) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-. apply salt2_vars; [exact (IH _ ua _ sa H1) | exact (IH _ ub2 _ sb H2)].
-  - destruct (node_x SEGS A nx0 x args cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
+  - destruct (node_x SEGS A nx0 rz x args cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (XN xid xargs cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (XE eid eargs cs) as [[[fd ps] cs1]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc cs1 k) as [s1|] eqn:H1; [|discriminate].
@@ -3355,7 +3360,7 @@ Proof.
     destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT CEIL true cs) as [[[csa csb] cscs]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa iha) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ihb) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A CEIL (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL rz (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     destruct (check_all_ok _ _ _ _ H3) as [(cs1 & Hin1 & Hc1 & _) _].
     apply salt2_vars; [exact (IH _ iha _ sa H1) | apply salt2_vars; [exact (IH _ ihb _ sb H2) | exact (IH _ ihc _ sc Hc1)]].
@@ -4374,7 +4379,7 @@ Proof.
     destruct (node_mmapin A LIMIT CEIL false cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ia) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ib) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A CEIL (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL rz (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     pose proof (proj2 (check_all_ok _ _ _ _ H3)) as Hall.
     eapply srz_conseq; [| eapply t_eq_trans; [| apply sd_salt2; exact HD]; apply t_eq_alt2; [apply t_eq_refl' | apply sd_salt2; exact HD]].
@@ -4406,7 +4411,7 @@ Proof.
     eapply srz_conseq; [| apply sd_salt2; exact HD].
     eapply (node_munmap2_sound cs csa csb E R FULL model); [exact HC | exact Hec | exact Hn | exact (CONT ua csa sa H1) | exact (CONT ub2 csb sb H2)].
   - (* extension nodes *)
-    destruct (node_x SEGS A nx0 x args cs) as [cs1|] eqn:Hn; [|discriminate].
+    destruct (node_x SEGS A nx0 rz x args cs) as [cs1|] eqn:Hn; [|discriminate].
     eapply (node_x_sound x args cs cs1 E R FULL model); [exact HC | reflexivity | exact Hn |]. exact (CONT k cs1 s Hc).
   - (* hooked extension nodes *)
     destruct (XN xid xargs cs) as [cs1|] eqn:Hn; [|discriminate].
@@ -4607,7 +4612,7 @@ Proof.
     destruct (node_mmapin A LIMIT CEIL true cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa iha) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ihb) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A CEIL (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL rz (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     pose proof (proj2 (check_all_ok _ _ _ _ H3)) as Hall.
     eapply srz_conseq; [| eapply t_eq_trans; [| apply sd_salt2; exact HD]; apply t_eq_alt2; [apply t_eq_refl' | apply sd_salt2; exact HD]].
