@@ -400,7 +400,10 @@ Qed.
 
 Lemma check_ioctl_cp : forall i fd req eff m m' evs,
   check_ioctl i fd req eff m = CheckOk m' evs -> cps_of m' = cps_of m.
-Proof. intros i fd req eff m m' evs H. unfold check_ioctl in H. cp_frame2 H. Qed.
+Proof.
+  intros i fd req eff m m' evs H.
+  unfold check_ioctl, check_siocgifindex, check_ifreq_writeback in H. cp_frame2 H.
+Qed.
 
 Lemma check_writev_cp : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs ->
@@ -675,7 +678,7 @@ Lemma check_pselect6_cp : forall i n32 inp outp exp tsp sig eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H.
-  unfold check_pselect6 in H. cp_frame2 H.
+  unfold check_pselect6, check_pselect_answer in H. cp_frame2 H.
 Qed.
 
 Lemma check_ppoll_cp : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
@@ -683,7 +686,7 @@ Lemma check_ppoll_cp : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H. cp_frame2 H.
+  unfold check_ppoll, check_pselect_answer in H. cp_frame2 H.
 Qed.
 
 Lemma check_newfstatat_cp : forall i dirfd pathp flag eff m m' evs,
@@ -907,7 +910,7 @@ Lemma check_getsockname_cp : forall i fd eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core in H. cp_frame2 H.
+  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H. cp_frame2 H.
 Qed.
 
 Lemma check_getpeername_cp : forall i fd eff m m' evs,
@@ -915,7 +918,7 @@ Lemma check_getpeername_cp : forall i fd eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core in H. cp_frame2 H.
+  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H. cp_frame2 H.
 Qed.
 
 Lemma check_setsockopt_cp : forall i fd level optlen eff m m' evs,
@@ -924,7 +927,7 @@ Lemma check_setsockopt_cp : forall i fd level optlen eff m m' evs,
 Proof.
   intros i fd level optlen eff m m' evs H.
   unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
-    in H. cp_frame2 H.
+   , check_stream_setsockopt in H. cp_frame2 H.
 Qed.
 
 Lemma check_getsockopt_cp : forall i fd level optlenp eff m m' evs,
@@ -932,7 +935,7 @@ Lemma check_getsockopt_cp : forall i fd level optlenp eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt, check_getsockopt_core in H. cp_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core, check_ret_writes_copyins, check_stream_getsockopt in H. cp_frame2 H.
 Qed.
 
 Lemma check_shutdown_cp : forall fd how eff m m' evs,
@@ -940,7 +943,7 @@ Lemma check_shutdown_cp : forall fd how eff m m' evs,
   cps_of m' = cps_of m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown, check_shutdown_core in H. cp_frame2 H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H. cp_frame2 H.
 Qed.
 
 Lemma check_send_on_socket_cp :
@@ -1097,7 +1100,7 @@ Lemma check_mmap_cp : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only in H. mm_walk H. all: mm_leaf H.
+  unfold check_mmap, check_ret_only, check_mmap_fixed_overflow in H. mm_walk H. all: mm_leaf H.
 Qed.
 
 Lemma check_mremap_cp : forall old old_size new_size flags eff m m' evs,

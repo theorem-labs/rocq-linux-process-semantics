@@ -646,7 +646,7 @@ Lemma check_read_nf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_access_ok_zero in H.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H
           || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
@@ -1167,7 +1167,7 @@ Qed.
 Lemma check_newfstatat_nf : forall i dirfd pathp flag eff m m' evs,
   check_newfstatat i dirfd pathp flag eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros i dirfd pathp flag eff m m' evs H. unfold check_newfstatat in H.
+  intros i dirfd pathp flag eff m m' evs H. unfold check_newfstatat, check_newfstatat_proc, check_newfstatat_proc_errno in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H || nf_use nf_newfstatat_proc H
           || nf_use nf_newfstatat_proc_errno H);
@@ -1316,7 +1316,7 @@ Lemma check_setsockopt_nf : forall i fd level optlen eff m m' evs,
   check_setsockopt i fd level optlen eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_setsockopt_core, check_stream_setsockopt in H.
+  unfold check_setsockopt, check_setsockopt_core, check_stream_setsockopt, check_seqpacket_setsockopt in H.
   nf_frame H.
 Qed.
 
@@ -1371,7 +1371,7 @@ Qed.
 Lemma check_recvmsg_nf : forall i fd flags eff m m' evs,
   check_recvmsg i fd flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros i fd flags eff m m' evs H. unfold check_recvmsg, check_recv_fd_answer in H.
+  intros i fd flags eff m m' evs H. unfold check_recvmsg, check_recv_fd_answer, check_recvmsg_eof_writes, check_ret_writes_copyins, check_seqpacket_recvmsg in H.
   nf_frame H.
 Qed.
 
