@@ -251,20 +251,26 @@ Definition fw_q_wait4 (ms : machine_state) : Prop :=
     [State.no_clone_refusers], [State.init_model] copies it, a child
     copies its parent's ([Procs.child_proc]) and no call writes it, so
     the program's clone answers from the model's lists
-    ([Fork.clone_spec_default_iff]). *)
+    ([Fork.clone_spec_default_iff]).  SIGCHLD AT SIG_DFL: [Run.valid_input]
+    pins [State.in_sigchld_default] to [true], [State.init_model] copies
+    it into [State.procst_sigchld_dfl], a child copies its parent's
+    ([Procs.child_proc]) and no admitted call clears it
+    ([Checks.ProcsSigchldFrame]), so the parent's reap
+    ([Procs.pstep_wait_reap]) has the bit it requires. *)
 Definition fw_model_ok (m : Model) : Prop :=
   m_halted m = None
   /\ m_vm_lazy m = []
   /\ clone_no_shared_file_b (m_fds m) = true
   /\ m_tid m = None
-  /\ m_clone_refusers m = no_clone_refusers.
+  /\ m_clone_refusers m = no_clone_refusers
+  /\ m_sigchld_dfl m = true.
 
 Lemma fw_model_ok_halted : forall m, fw_model_ok m -> m_halted m = None.
 Proof. intros m (H & _ & _ & _). exact H. Qed.
 
 Lemma fw_model_ok_refusers : forall m,
   fw_model_ok m -> m_clone_refusers m = no_clone_refusers.
-Proof. intros m (_ & _ & _ & _ & H). exact H. Qed.
+Proof. intros m (_ & _ & _ & _ & H & _). exact H. Qed.
 
 (** The three components it reads are the three an instruction step, a
     [clear_shared] and a materialisation all leave alone. *)
@@ -279,7 +285,7 @@ Proof.
   split; [rewrite Hv; exact Hl|].
   split; [unfold m_fds in *; rewrite Hf; exact Hc|].
   split; [unfold m_tid; rewrite Hp; exact Ht|].
-  unfold m_clone_refusers. rewrite Hp. exact Hr.
+  unfold m_clone_refusers, m_sigchld_dfl. rewrite Hp. exact Hr.
 Qed.
 
 Lemma fw_model_ok_clear_shared : forall m,
@@ -3951,7 +3957,14 @@ Proof.
                                   brk0 mbase sp lim inp)) = true);
               rewrite (m_fds_init_model_no_inherited _ _ _ _ _ _ Hnoi);
               reflexivity
-            | split; [reflexivity | exact (valid_input_no_clone_refusers inp Hvi)] ]|].
+            | split; [reflexivity|]; split;
+              [ exact (valid_input_no_clone_refusers inp Hvi)
+              | change (m_sigchld_dfl
+                          (init_model
+                             (segments_reserved ForkwaitMemImage_loaded_segments)
+                             brk0 mbase sp lim inp) = true);
+                rewrite m_sigchld_dfl_init_model;
+                exact (valid_input_sigchld_default inp Hvi) ] ]|].
   assert (Hsp16 : (16 <= bv_unsigned sp)%Z)
     by exact (fw_sp_at_least_16 _ sp Hsp).
   assert (Hwlo : (stack_window_lo (in_kernel inp) mbase rnd
@@ -4326,7 +4339,7 @@ Proof.
   eapply pstep_wait_reap;
     [exact Hl | exact Hh | exact Hsv | exact Hwi | exact Hwa | exact Hlc
      | exact Hqne | exact Hcpar | exact Hk | exact Hst | exact Hwm
-     | reflexivity | exact Hmat].
+     | reflexivity | exact Hmat | exact (proj2 Hrf)].
 Qed.
 
 (** THE PROGRESS PREMISE.  Below terminal, some entry can step, and

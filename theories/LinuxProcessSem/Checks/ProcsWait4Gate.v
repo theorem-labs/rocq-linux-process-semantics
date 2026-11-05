@@ -208,7 +208,8 @@ Qed.
 (** What the two "never blocks" theorems share: a non-blocking [wait4] of
     a caller with a child is refused, or has no zombie child under the
     answered WNOHANG shape, or has a child the WNOHANG reap can take, with
-    everything that reap needs. *)
+    everything that reap needs but the caller's SIGCHLD bit, which the
+    theorems below case on. *)
 Lemma owned_nonblocking_cases : forall segs P e,
   wait4_owned_b P e = true ->
   wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
@@ -238,7 +239,8 @@ Proof.
   exists x8, sa, ru. split; [reflexivity|]. split; [reflexivity|]. split; [exact Hshape|].
   destruct (List.existsb pe_zombie_b (children_of P (pe_pid e))) eqn:Hex;
     [|left; reflexivity].
-  right. cbn [andb] in Hz. apply negb_false_iff in Hz.
+  right. cbn [andb] in Hz. apply orb_false_iff in Hz as [_ Hz].
+  apply negb_false_iff in Hz.
   unfold wait4_nohang_reap_ok_b in Hz. rewrite Hsv, Hna in Hz.
   apply andb_true_iff in Hz as [Hz Hmat]. apply andb_true_iff in Hz as [Hwr Hre].
   destruct (materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
@@ -257,6 +259,26 @@ Proof.
   split; [exact Hpe|]. split; [exact Hhz|]. split; [exact Hkz|].
   split; [|reflexivity].
   unfold user_writable_b in Hwr. intros Hc. rewrite Hc in Hwr. discriminate Hwr.
+Qed.
+
+(** A halted child of [p] in the table makes [p]'s zombie test true. *)
+Lemma zombie_child_listed : forall P p q ez code,
+  look P q = Some ez -> pe_parent ez = Some p -> m_halted (pe_model ez) = Some code ->
+  List.existsb pe_zombie_b (children_of P p) = true.
+Proof.
+  intros P p q ez code Hl Hpar Hh.
+  apply List.existsb_exists. exists ez. split.
+  - unfold children_of. apply List.in_map_iff. exists (q, ez). split; [reflexivity|].
+    apply List.filter_In. split.
+    + unfold look in Hl. clear Hpar Hh. revert Hl.
+      generalize (pcfg_procs P) as ps.
+      induction ps as [|[k x] r IH]; intros Hl; cbn [look_in fst snd] in Hl;
+        [discriminate Hl|].
+      destruct (bv_eqb k q) eqn:E.
+      * injection Hl as <-. apply bv_eqb_true_eq in E. subst k. left. reflexivity.
+      * right. apply IH. exact Hl.
+    + cbv beta. cbn [snd]. rewrite Hpar. apply bv_eqb_same.
+  - unfold pe_zombie_b, pe_zombie. rewrite Hh. reflexivity.
 Qed.
 
 (** The usage record the reap writes when [ru] is not NULL: any record of
@@ -294,7 +316,13 @@ Proof.
   - exists PError. apply pstep_wait_refuse; assumption.
   - exists (PNext (wait4_zero_result P e)).
     eapply pstep_wait_nohang_zero; eassumption.
-  - set (status := bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256)).
+  - destruct (m_sigchld_dfl (pe_model e)) eqn:Hsd.
+    2:{ exists PError. apply pstep_wait_refuse; try assumption.
+        unfold wait4_refused_b.
+        rewrite Hwo, Hwi, Hsd, (zombie_child_listed _ _ _ _ _ Hlq Hpe Hhz).
+        unfold wait4_nohang_shape_b. rewrite Hsv, Hna. cbv beta iota. rewrite Hru.
+        reflexivity. }
+    set (status := bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256)).
     set (eff := mkEffect q (wait4_nohang_writes sa status ru some_rusage) []).
     exists (PNext (wait4_reap_result P e q eff model'')).
     apply (pstep_wait_nohang_reap segs cfg P e q ez x8 sa ru some_rusage status eff
@@ -320,7 +348,13 @@ Proof.
   - exists PError. apply px_wait_refuse; assumption.
   - exists (PNext (wait4_zero_result P e)).
     eapply px_wait_nohang_zero; eassumption.
-  - set (status := bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256)).
+  - destruct (m_sigchld_dfl (pe_model e)) eqn:Hsd.
+    2:{ exists PError. apply px_wait_refuse; try assumption.
+        unfold wait4_refused_b.
+        rewrite Hwo, Hwi, Hsd, (zombie_child_listed _ _ _ _ _ Hlq Hpe Hhz).
+        unfold wait4_nohang_shape_b. rewrite Hsv, Hna. cbv beta iota. rewrite Hru.
+        reflexivity. }
+    set (status := bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256)).
     set (eff := mkEffect q (wait4_nohang_writes sa status ru some_rusage) []).
     exists (PNext (wait4_reap_result P e q eff model'')).
     apply (px_wait_nohang_reap ext cenv segs cfg P e q ez x8 sa ru some_rusage status eff
