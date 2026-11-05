@@ -1899,7 +1899,7 @@ Lemma check_getdents64_opaque_fds : forall i fd o dirent count eff m m' evs,
   (exists fds, m' = with_fds fds m) /\ evs = [].
 Proof.
   intros i fd o dirent count eff m m' evs H.
-  destruct o as [q|q|fl0|h|fl pos|mk fl1|live]; cbn [check_getdents64_opaque] in H;
+  destruct o as [q|q|fl0|h|fl pos|mk fl1|live|pt]; cbn [check_getdents64_opaque] in H;
     try discriminate H.
   unfold check_procfd_getdents in H.
   destruct pos as [pw|]; [|discriminate H].
@@ -2303,17 +2303,30 @@ Proof.
   try reflexivity.
 Qed.
 
-Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+Lemma check_openat_table_frame : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   (* openat's body and its sub-checkers are [Local] to
      [Checks/Sys/Fs/Open.v]; [vm_openat_body] and the lemmas above it
      cover them one at a time. *)
-  unfold check_openat in H. cbv beta iota zeta in H.
+  unfold check_openat_table in H. cbv beta iota zeta in H.
   repeat (vm_step H || vm_done H || (eapply vm_openat_body in H; exact H));
   try reflexivity.
+Qed.
+
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
+Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_frame in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_frame : forall fd eff m m' evs,
@@ -2321,8 +2334,9 @@ Lemma check_close_frame : forall fd eff m m' evs,
 Proof. intros fd eff m m' evs H. unfold check_close in H. vm_frame2 H. Qed.
 
 (** [close_range] removes descriptors and nothing else: its one
-    model-changing arm is [with_fds] over [File.close_range_fds], which
-    carries the VM subsystem across untouched. *)
+    model-changing arm is [with_fds] over [File.close_range_fds] under
+    [with_cloexec] over [File.close_range_cloexec], which carry the VM
+    subsystem across untouched. *)
 Lemma check_close_range_frame : forall fd max_fd flags eff m m' evs,
   check_close_range fd max_fd flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
@@ -2541,9 +2555,9 @@ Proof.
   unfold check_prlimit64, check_rlim64_read in H. vm_frame2 H.
 Qed.
 
-(** capget and capset return the model they were given on every
-    [CheckOk]: neither carries a capability set in the model, and the
-    one answered [capset] shape changes nothing the model holds. *)
+(** capget returns the model it was given on every [CheckOk]; capset
+    returns it, or writes the inheritable set alone
+    ([State.with_cap_inheritable]), which is not the address space. *)
 Lemma check_capget_frame : forall i header dataptr eff m m' evs,
   check_capget i header dataptr eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
@@ -2581,8 +2595,8 @@ Lemma check_gettid_frame : forall eff m m' evs,
   check_gettid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. exact check_set_tid_address_frame. Qed.
 
-(** [getppid] hands back [m] itself: its answer is a fresh choice and
-    nothing is pinned. *)
+(** [getppid] hands back [m] itself, or [m] with the answer recorded
+    ([State.with_ppid_answered]), which rebuilds only [ProcState]. *)
 Lemma check_getppid_frame : forall eff m m' evs,
   check_getppid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_getppid in H. vm_frame2 H. Qed.
@@ -2597,11 +2611,11 @@ Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
 (** [getsid] hands back [m] itself on every accepting branch: the tid
     after a successful setsid is read, not written, and the fresh choice
-    before one is [check_getppid]'s, which pins nothing. *)
+    before one is [check_pid_choice]'s, which pins nothing. *)
 Lemma check_getsid_frame : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H.
   vm_frame2 H.
 Qed.
 

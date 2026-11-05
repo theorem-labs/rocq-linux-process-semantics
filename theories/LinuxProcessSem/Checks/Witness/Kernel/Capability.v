@@ -16,14 +16,8 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude.
 
-(** One data image [capget_data_ok] admits: all 24 bytes 0, the empty
-    effective and permitted sets of a caller with no uid 0 and an empty
-    inheritable set. *)
-Definition capget_witness_bytes : list byte := repeat (Z_to_bv 8 0) 24.
-
-Lemma capget_witness_bytes_ok : capget_data_ok capget_witness_bytes = true.
-Proof. vm_compute. reflexivity. Qed.
-
+(** capget: the arm's one answer past each gate; at the copy-out, the
+    image of the held inheritable set. *)
 Definition capget_witness (header dataptr : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (access_okb header 4) then ret_outcome (errno_ret EFAULT) m
@@ -57,7 +51,7 @@ Definition capget_witness (header dataptr : word) (i : SyscallInput)
                       Ok (with_copyins
                             [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat)]
                             (mkEffect (Z_to_bv 64 0)
-                               [(dataptr, capget_witness_bytes)] [])) m []
+                               [(dataptr, capget_image (cap_inheritable_set m))] [])) m []
                 end
           end
     end.
@@ -99,14 +93,13 @@ Proof.
   apply (record_copyins_ok_eq _ _ i m
            (with_copyins [(header + Z_to_bv 64 4, 4%nat)]
               (mkEffect (Z_to_bv 64 0)
-                 [(dataptr, capget_witness_bytes)] []))); [reflexivity|].
+                 [(dataptr, capget_image (cap_inheritable_set m))] []))); [reflexivity|].
   apply record_copyins_ok_empty; [reflexivity|].
-  eapply bind_step.
-  { apply choose_ok. cbv beta. apply capget_witness_bytes_ok. }
   apply pure_ok.
 Qed.
 
-(** capset: the success answer where the arm answers at all. *)
+(** capset: the answer [cap_capset] gives where the arm answers at all,
+    0 with the new inheritable set installed or -EPERM. *)
 Definition capset_witness (header data : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (access_okb header 4) then ret_outcome (errno_ret EFAULT) m
@@ -132,12 +125,18 @@ Definition capset_witness (header data : word) (i : SyscallInput)
                 match read_bytes_map (in_mem i) data (Z_to_bv 64 CAP_V3_DATA_SIZE) with
                 | None => Unmodeled
                 | Some db =>
-                    if negb (Z.eqb (bytes_le_to_Z db) 0) then Unmodeled
+                    if negb (capset_ep_zero_b db) then Unmodeled
                     else if cap_permitted_nonempty_b (m_creds m) then Unmodeled
+                    else if cap_issubset_b (capset_inheritable db) (cap_inheritable_set m)
+                    then Ok (with_copyins
+                               [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat);
+                                (data, Z.to_nat CAP_V3_DATA_SIZE)]
+                               (mkEffect (Z_to_bv 64 0) [] []))
+                            (with_cap_inheritable (Z_to_bv 64 (capset_inheritable db)) m) []
                     else Ok (with_copyins
                                [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat);
                                 (data, Z.to_nat CAP_V3_DATA_SIZE)]
-                               (mkEffect (Z_to_bv 64 0) [] [])) m []
+                               (mkEffect (errno_ret EPERM) [] [])) m []
                 end
           end
     end.
@@ -172,19 +171,30 @@ Proof.
   destruct (read_bytes_map (in_mem i) data (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [db|] eqn:Hdb; cbv iota.
   2: { apply record_copyins_unmodeled, record_copyins_unmodeled, unmodeled_intro. }
-  destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2; cbv iota.
+  destruct (negb (capset_ep_zero_b db)) eqn:Hz2; cbv iota.
   { apply record_copyins_unmodeled, record_copyins_unmodeled,
       record_copyins_unmodeled, unmodeled_intro. }
   destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc; cbv iota.
   { apply record_copyins_unmodeled, record_copyins_unmodeled,
       record_copyins_unmodeled, unmodeled_intro. }
-  apply (record_copyins_ok_eq _ _ i m
-           (with_copyins [(header + Z_to_bv 64 4, 4%nat);
-                          (data, Z.to_nat CAP_V3_DATA_SIZE)]
-              (mkEffect (Z_to_bv 64 0) [] []))); [reflexivity|].
-  apply (record_copyins_ok_eq _ _ i m
-           (with_copyins [(data, Z.to_nat CAP_V3_DATA_SIZE)]
-              (mkEffect (Z_to_bv 64 0) [] []))); [reflexivity|].
-  apply record_copyins_ok_empty; [reflexivity|].
-  apply alt_r. unfold ret_only. apply pure_ok.
+  destruct (cap_issubset_b (capset_inheritable db) (cap_inheritable_set m)) eqn:Hs;
+    cbv iota.
+  - apply (record_copyins_ok_eq _ _ i m
+             (with_copyins [(header + Z_to_bv 64 4, 4%nat);
+                            (data, Z.to_nat CAP_V3_DATA_SIZE)]
+                (mkEffect (Z_to_bv 64 0) [] []))); [reflexivity|].
+    apply (record_copyins_ok_eq _ _ i m
+             (with_copyins [(data, Z.to_nat CAP_V3_DATA_SIZE)]
+                (mkEffect (Z_to_bv 64 0) [] []))); [reflexivity|].
+    apply record_copyins_ok_empty; [reflexivity|].
+    apply alt_r. eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - apply (record_copyins_ok_eq _ _ i m
+             (with_copyins [(header + Z_to_bv 64 4, 4%nat);
+                            (data, Z.to_nat CAP_V3_DATA_SIZE)]
+                (mkEffect (errno_ret EPERM) [] []))); [reflexivity|].
+    apply (record_copyins_ok_eq _ _ i m
+             (with_copyins [(data, Z.to_nat CAP_V3_DATA_SIZE)]
+                (mkEffect (errno_ret EPERM) [] []))); [reflexivity|].
+    apply record_copyins_ok_empty; [reflexivity|].
+    apply alt_r. unfold err_ret, ret_only. apply pure_ok.
 Qed.

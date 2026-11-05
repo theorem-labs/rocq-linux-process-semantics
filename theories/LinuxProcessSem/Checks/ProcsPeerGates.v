@@ -26,7 +26,9 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
+  ExecutableSpecs VmMapsDisjoint ProcsWellFormed ProcsPrivateFrame ProcsClockSync ProcsSyncOnce.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Prelude DispatchCompute.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs Require Import Namei.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -61,9 +63,12 @@ Lemma look_absorb_self : forall P e c',
   look P (pe_pid e) = Some e ->
   look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
 Proof.
-  intros P e c' Hl. unfold look, absorb. cbn [pcfg_procs].
+  intros P e c' Hl.
+  pose proof (look_in_first_root_pin_children_self P e (cfg_model c')
+    (pcfg_procs P) e Hl) as Hl'.
+  unfold look, absorb. cbn [pcfg_procs].
   rewrite orphan_at_exit_map, look_in_orphan.
-  rewrite look_in_replace_same by (unfold look in Hl; rewrite Hl; discriminate).
+  rewrite look_in_replace_same by (rewrite Hl'; discriminate).
   cbn [option_map]. unfold orphan_slot.
   destruct (m_halted _); [|reflexivity].
   unfold orphan_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.
@@ -155,6 +160,59 @@ Proof.
     destruct (fs_lookup new (fst kv)) as [d'|]; [exists d'; reflexivity | discriminate Hr].
 Qed.
 
+(** Unlink can remove a path, so it is not a class-(B) growing-filesystem
+    call. Its checker still keeps the caller's tid, which prevents a first
+    root pin from changing another entry's held parent pid. *)
+Local Lemma check_unlinkat_tid : forall i dirfd pathp flags eff m m' evs,
+  check_unlinkat i dirfd pathp flags eff m = CheckOk m' evs ->
+  m_tid m' = m_tid m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
+    Namei.check_unlink_found, check_unlink_result,
+    Namei.check_unlink_open_tmp, check_unlink_open_result, check_unlink_type_result in H.
+  repeat vm_step H; first
+    [ reflexivity
+    | pose proof (check_efault_or_sh _ _ _ _ _ H) as Hsh;
+      exact (f_equal (fun x => snd (snd x)) Hsh) ].
+Qed.
+
+Local Lemma syscall_spec_unlinkat_tid : forall i m eff m' evs,
+  syscall_spec i m (Ok eff m' evs) ->
+  bv_unsigned (in_sysno i) = 35%Z -> m_tid m' = m_tid m.
+Proof.
+  intros i m eff m' evs H H35. apply check_syscall_ok_iff in H.
+  rewrite check_syscall_unlinkat in H by exact H35.
+  eapply check_unlinkat_tid; exact H.
+Qed.
+
+Local Lemma sstep_unlinkat_tid : forall segs cfg c evs c',
+  (match ms_svc_pending (cfg_ms c) with
+   | Some x8 => bv_unsigned x8 = 35%Z | None => False end) ->
+  sstep_cfg segs cfg c evs (SNext c') ->
+  m_tid (cfg_model c') = m_tid (cfg_model c).
+Proof.
+  intros segs cfg c evs c' Hp H.
+  inversion H; subst; cbn [cfg_ms cfg_model] in Hp |- *.
+  all: match goal with
+       | Hs : ms_svc_pending ?s = None |- _ => rewrite Hs in Hp; contradiction
+       | Hs : ms_svc_pending ?s = Some _ |- _ => rewrite Hs in Hp
+       end.
+  all: match goal with
+       | Hsp : syscall_spec (sys_input _ _ _) _ (Ok _ _ _) |- _ =>
+           pose proof (syscall_spec_unlinkat_tid _ _ _ _ _ Hsp) as Htid;
+           cbn [in_sysno sys_input] in Htid; specialize (Htid Hp)
+       end.
+  all: first
+    [ exact Htid
+    | match goal with
+      | Hm : materialize_model_accesses _ _ = Some _ |- _ =>
+          pose proof (sh_of_materialize _ _ _ Hm) as Hsh;
+          pose proof (f_equal (fun x => snd (snd x)) Hsh) as Ht;
+          cbn [sh_of fst snd] in Ht; rewrite Ht; exact Htid
+      end ].
+Qed.
+
 (** THE UNLINKAT CONSISTENCY.  After a step at 35, another entry keeps
     its model, and every path its descriptors and pins named before is
     still a path of the file system. *)
@@ -171,8 +229,13 @@ Proof.
   intros segs cfg P evs P' e x8 q f Hl Hs H35 Hp Hne Hf Hin.
   destruct (pstep_next_gate_cases _ _ _ _ _ _ Hp) as (e1 & Hl1 & _ & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
-  - destruct (absorb_keeps_other P e c' q f (fun E => Hne (eq_sym E)) Hf)
+  destruct Hcases as [ (c' & Hstep & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
+  - assert (Hunlink : match ms_svc_pending (pe_ms e) with
+      | Some n => bv_unsigned n = 35%Z | None => False end)
+      by (rewrite Hs; exact H35).
+    pose proof (sstep_unlinkat_tid segs cfg (pe_cfg (pcfg_shared P) e) evs c' Hunlink Hstep) as Htid.
+    change (m_tid (cfg_model c') = m_tid (pe_model e)) in Htid.
+    destruct (absorb_keeps_other_tid_stable P e c' q f (fun E => Hne (eq_sym E)) Hf Htid)
       as (f' & Hf' & Hm & _).
     exists f'. split; [exact Hf'|]. split; [exact Hm|].
     assert (Hlen : (1 < List.length (pcfg_procs P))%nat)
@@ -246,7 +309,14 @@ Proof.
     destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:Er;
       [cbn [negb] in Hrp; rewrite andb_false_r in Hrp; discriminate Hrp|].
     unfold look, pin_root in Hl'. cbn [pcfg_procs] in Hl'.
-    rewrite look_in_replace_other in Hl'
-      by (intros E; rewrite E, bv_eqb_same in Er; discriminate Er).
-    unfold look in Hl. rewrite Hl in Hl'. injection Hl' as <-. contradiction.
+    destruct (m_tid (pe_model r));
+      rewrite look_in_replace_other in Hl'
+        by (intros E; rewrite E, bv_eqb_same in Er; discriminate Er);
+      unfold look in Hl.
+    + rewrite Hl in Hl'. injection Hl' as <-. contradiction.
+    + rewrite look_in_root_children_ppid, Hl in Hl'. cbn [option_map] in Hl'.
+      injection Hl' as <-.
+      pose proof (root_child_ppid_one_fields (pcfg_root P) t (pe_pid e) e)
+        as (_ & _ & _ & _ & _ & Hhalt & _).
+      rewrite Hhalt in Hh'. contradiction.
 Qed.

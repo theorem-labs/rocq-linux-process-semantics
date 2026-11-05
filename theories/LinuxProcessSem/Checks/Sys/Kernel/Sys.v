@@ -533,24 +533,24 @@ Lemma check_gettid_complete_unmodeled : forall m i eff,
   gettid_spec i m Unmodeled -> check_gettid eff m = CheckUnmodeled.
 Proof. exact check_set_tid_address_complete_unmodeled. Qed.
 
-(* ------------------------------------------------------------ getppid *)
+(* --------------------------------------------------------- a fresh pid *)
 
-(** getppid: a bare return in [[0, PID_MAX_ENVELOPE)], with the model
-    handed back unchanged.  [Kernel.Sys.getppid_spec] makes a fresh
-    choice on every call and pins nothing (the argument is there), so
-    this acceptor reads nothing of the model, and it is TOTAL: every
-    effect is accepted or rejected, none declined. *)
-Definition check_getppid (eff : SyscallEffect) (m : Model) : check_result :=
+(** A fresh pid: a bare return in [[0, PID_MAX_ENVELOPE)], with the model
+    handed back unchanged.  [Kernel.Sys.pid_choice_spec] makes a fresh
+    choice on every call and pins nothing, so this acceptor reads nothing
+    of the model, and it is TOTAL: every effect is accepted or rejected,
+    none declined.  [check_getsid] answers through it before a setsid. *)
+Definition check_pid_choice (eff : SyscallEffect) (m : Model) : check_result :=
   match eff with
   | mkEffectU ret [] [] [] [] [] =>
       if (bv_unsigned ret <? PID_MAX_ENVELOPE)%Z then CheckOk m [] else CheckReject
   | _ => CheckReject
   end.
 
-Lemma check_getppid_no_unmodeled : forall eff m,
-  check_getppid eff m <> CheckUnmodeled.
+Lemma check_pid_choice_no_unmodeled : forall eff m,
+  check_pid_choice eff m <> CheckUnmodeled.
 Proof.
-  intros [ret ws zs us cs copyins] m. unfold check_getppid.
+  intros [ret ws zs us cs copyins] m. unfold check_pid_choice.
   destruct ws;
     [destruct zs;
       [destruct us;
@@ -560,11 +560,11 @@ Proof.
     discriminate.
 Qed.
 
-Lemma check_getppid_sound_ok : forall eff m m' evs i,
-  check_getppid eff m = CheckOk m' evs -> getppid_spec i m (Ok eff m' evs).
+Lemma check_pid_choice_sound_ok : forall eff m m' evs i,
+  check_pid_choice eff m = CheckOk m' evs -> pid_choice_spec i m (Ok eff m' evs).
 Proof.
   intros [ret ws zs us cs copyins] m m' evs i H.
-  unfold check_getppid in H. unfold getppid_spec.
+  unfold check_pid_choice in H. unfold pid_choice_spec.
   destruct ws as [|? ?];
     [destruct zs as [|? ?];
       [destruct us as [|? ?];
@@ -577,6 +577,80 @@ Proof.
   apply pure_ok.
 Qed.
 
+Lemma check_pid_choice_complete_ok : forall eff m m' evs i,
+  pid_choice_spec i m (Ok eff m' evs) -> check_pid_choice eff m = CheckOk m' evs.
+Proof.
+  intros eff m m' evs i H.
+  unfold pid_choice_spec in H. unfold check_pid_choice. sys_unfold. inv_ok.
+  cbn.
+  match goal with
+  | Hx : (bv_unsigned ?r < PID_MAX_ENVELOPE)%Z |- _ =>
+      rewrite (proj2 (Z.ltb_lt (bv_unsigned r) PID_MAX_ENVELOPE) Hx)
+  end.
+  reflexivity.
+Qed.
+
+Lemma check_pid_choice_complete_unmodeled : forall m i eff,
+  pid_choice_spec i m Unmodeled -> check_pid_choice eff m = CheckUnmodeled.
+Proof.
+  intros m i eff H. exfalso.
+  unfold pid_choice_spec in H. sys_unfold. inv_ok.
+Qed.
+
+(* ------------------------------------------------------------ getppid *)
+
+(** getppid: [Kernel.Sys.getppid_spec] carries the argument.  While the
+    reparent window is shut the answer is the held pid and nothing else,
+    with the model handed back unchanged.  While it is open the answer is
+    a bare return [Kernel.Sys.getppid_answer_ok] admits, and the model
+    records it ([State.with_ppid_answered]).  TOTAL: every effect is
+    accepted or rejected, none declined. *)
+Definition check_getppid (eff : SyscallEffect) (m : Model) : check_result :=
+  if reparent_open m then
+    match eff with
+    | mkEffectU ret [] [] [] [] [] =>
+        if getppid_answer_ok m ret then CheckOk (with_ppid_answered ret m) []
+        else CheckReject
+    | _ => CheckReject
+    end
+  else check_ret_only eff (m_ppid m) m [].
+
+Lemma check_getppid_no_unmodeled : forall eff m,
+  check_getppid eff m <> CheckUnmodeled.
+Proof.
+  intros [ret ws zs us cs copyins] m. unfold check_getppid.
+  destruct (reparent_open m); [|apply check_ret_only_no_unmodeled].
+  destruct ws;
+    [destruct zs;
+      [destruct us;
+        [destruct cs;
+          [destruct copyins;
+            [destruct (getppid_answer_ok m ret)|]|]|]|]|];
+    discriminate.
+Qed.
+
+Lemma check_getppid_sound_ok : forall eff m m' evs i,
+  check_getppid eff m = CheckOk m' evs -> getppid_spec i m (Ok eff m' evs).
+Proof.
+  intros eff m m' evs i H.
+  unfold check_getppid in H. unfold getppid_spec.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (reparent_open m) eqn:Ho.
+  - destruct eff as [ret ws zs us cs copyins].
+    destruct ws as [|? ?];
+      [destruct zs as [|? ?];
+        [destruct us as [|? ?];
+          [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|]|]|];
+      try discriminate.
+    destruct (getppid_answer_ok m ret) eqn:Ha; [|discriminate].
+    inversion H; clear H; subst.
+    eapply bind_ok0; [apply (choose_ok _ ret); exact Ha|].
+    eapply bind_ok0; [apply modify_ok|].
+    apply pure_ok.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok.
+Qed.
+
 Lemma check_getppid_sound_unmodeled : forall eff m i,
   check_getppid eff m = CheckUnmodeled -> getppid_spec i m Unmodeled.
 Proof.
@@ -587,20 +661,27 @@ Lemma check_getppid_complete_ok : forall eff m m' evs i,
   getppid_spec i m (Ok eff m' evs) -> check_getppid eff m = CheckOk m' evs.
 Proof.
   intros eff m m' evs i H.
-  unfold getppid_spec in H. unfold check_getppid. sys_unfold. inv_ok.
-  cbn.
-  match goal with
-  | Hx : (bv_unsigned ?r < PID_MAX_ENVELOPE)%Z |- _ =>
-      rewrite (proj2 (Z.ltb_lt (bv_unsigned r) PID_MAX_ENVELOPE) Hx)
-  end.
-  reflexivity.
+  unfold getppid_spec in H. apply bind_model_inv in H. cbv beta in H.
+  unfold check_getppid.
+  destruct (reparent_open m) eqn:Ho.
+  - sys_unfold. inv_ok.
+    cbn -[getppid_answer_ok with_ppid_answered].
+    match goal with
+    | Hx : getppid_answer_ok m ?r = true |- _ => rewrite Hx
+    end.
+    reflexivity.
+  - unfold ret_only, pure in H. inversion H; subst.
+    apply check_ret_only_ok_iff. now repeat split.
 Qed.
 
 Lemma check_getppid_complete_unmodeled : forall m i eff,
   getppid_spec i m Unmodeled -> check_getppid eff m = CheckUnmodeled.
 Proof.
   intros m i eff H. exfalso.
-  unfold getppid_spec in H. sys_unfold. inv_ok.
+  unfold getppid_spec in H. apply bind_model_inv in H. cbv beta in H.
+  destruct (reparent_open m).
+  - sys_unfold. inv_ok.
+  - unfold ret_only, pure in H. discriminate H.
 Qed.
 
 (* ------------------------------------------------------------- setsid *)
@@ -717,9 +798,9 @@ Qed.
 (** getsid: [Kernel.Sys.getsid_spec] carries the argument -- which pids
     are answered, why the answer after a successful setsid is the tid,
     and why the answer before one is a fresh choice.  This mirrors its
-    branches one for one, and the fresh choice is [check_getppid]: the
-    same bare return in [[0, PID_MAX_ENVELOPE)] with the model handed
-    back unchanged. *)
+    branches one for one, and the fresh choice is [check_pid_choice]: a
+    bare return in [[0, PID_MAX_ENVELOPE)] with the model handed back
+    unchanged. *)
 Definition check_getsid (pid : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if negb (getsid_pid_ok pid (m_tid m)) then CheckUnmodeled
@@ -728,7 +809,7 @@ Definition check_getsid (pid : word) (eff : SyscallEffect) (m : Model)
     | Some t => check_ret_only eff t m []
     | None => CheckUnmodeled
     end
-  else check_getppid eff m.
+  else check_pid_choice eff m.
 
 Lemma check_getsid_sound_ok : forall pid eff m m' evs i,
   check_getsid pid eff m = CheckOk m' evs -> getsid_spec pid i m (Ok eff m' evs).
@@ -740,7 +821,7 @@ Proof.
   destruct (m_setsid_succeeded m).
   - destruct (m_tid m) as [t|]; [|discriminate].
     apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
-  - exact (check_getppid_sound_ok _ _ _ _ i H).
+  - exact (check_pid_choice_sound_ok _ _ _ _ i H).
 Qed.
 
 Lemma check_getsid_sound_unmodeled : forall pid eff m i,
@@ -753,7 +834,7 @@ Proof.
   destruct (m_setsid_succeeded m).
   - destruct (m_tid m) as [t|];
       [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro].
-  - exfalso. eapply check_getppid_no_unmodeled. exact H.
+  - exfalso. eapply check_pid_choice_no_unmodeled. exact H.
 Qed.
 
 Lemma check_getsid_complete_ok : forall pid eff m m' evs i,
@@ -767,7 +848,7 @@ Proof.
   - destruct (m_tid m) as [t|]; [|now inversion H].
     unfold ret_only, pure in H. inversion H; subst.
     apply check_ret_only_ok_iff. now repeat split.
-  - exact (check_getppid_complete_ok _ _ _ _ i H).
+  - exact (check_pid_choice_complete_ok _ _ _ _ i H).
 Qed.
 
 Lemma check_getsid_complete_unmodeled : forall pid m i eff,
@@ -780,7 +861,7 @@ Proof.
   destruct (m_setsid_succeeded m).
   - destruct (m_tid m) as [t|]; [|reflexivity].
     unfold ret_only, pure in H. discriminate H.
-  - exact (check_getppid_complete_unmodeled m i eff H).
+  - exact (check_pid_choice_complete_unmodeled m i eff H).
 Qed.
 
 (* ----------------------------------------------------------------- ioctl *)

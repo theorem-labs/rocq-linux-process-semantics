@@ -238,10 +238,10 @@ Definition socket_dgram_errnos (fam : Z) : list Z :=
     WHAT IS DECLINED, and why:
     - [SOCK_NONBLOCK] in the flags sets O_NONBLOCK on the new file, and
       the model has no notion of a non-blocking fd.  ([SOCK_CLOEXEC] is
-      accepted and ignored, as [openat_spec] does for O_CLOEXEC: it
-      touches only the descriptor's close-on-exec bit, there is no
-      execve here, and [Fs.Fcntl.fcntl_spec]'s F_GETFD admits both
-      values of the bit.)
+      accepted and its bit left UNKNOWN: the new descriptor gets no key
+      in [State.m_cloexec], so [Fs.Fcntl.fcntl_spec]'s F_GETFD admits
+      both values there, which holds whichever bit [get_unused_fd_flags]
+      wrote.)
     - Every family but AF_INET, AF_INET6 and AF_UNIX, and of those two
       every shape but [socket_dgram_b]'s.  Whether an in-range family
       is registered is a property of the kernel build, so neither
@@ -770,7 +770,7 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
       and the model has no such notion.  (Note it does not affect
       whether this call blocks: [do_accept] takes that from the
       LISTENING socket's own [f_flags], not from the argument.)
-      [SOCK_CLOEXEC] is accepted and ignored.
+      [SOCK_CLOEXEC] is accepted and its bit left unknown, as above.
     - A non-NULL address argument.  [getsockname] and [getpeername] ARE
       modeled, and all three declines wait on the same missing
       export: [SyscallEffect] cannot express the [move_addr_to_user]
@@ -1310,6 +1310,11 @@ Definition sock_fd (m : Model) (fd : word) : SockOf :=
                                        (* a signalfd: [signalfd_fops] (fs/signalfd.c,
                                           v6.18.44; identical at v6.18.46) is not
                                           [socket_file_ops] *)
+  | Some (FdOpaque (OAlias _)) => SoErr ENOTSOCK
+                                       (* an alias ([State.OAlias]): its description
+                                          is a regular file's, whose [f_op] is not
+                                          [socket_file_ops], and the answer reads the
+                                          kind and nothing of the description *)
   | Some (FdOpaque (OInherited _)) => SoErr ENOTSOCK
                                        (* an inherited regular file: its [f_op]
                                           is its file system's, not
@@ -2228,8 +2233,8 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      [if (!fown) goto next] and [send_sigio] -- whose own guard is
      [if (!pid) goto out_unlock_fown] -- is never entered.
      [Fs.Fcntl.fcntl_spec] models EXACTLY FOUR COMMANDS -- [F_SETFD],
-     [F_GETFD] (answered 0 or FD_CLOEXEC, since the model does not
-     record the bit), the provably empty [F_SETFL] above, and an
+     [F_GETFD] (the recorded bit, or 0 or FD_CLOEXEC where the model
+     knows none), the provably empty [F_SETFL] above, and an
      [F_GETFL] restricted to the fd kinds [Fs.Fcntl.getfl_f_flags] can
      derive a flag word for -- and answers [unmodeled] for every other
      one; none of those ioctls is in [Fs.Ioctl.tty_only_request].
@@ -2901,7 +2906,7 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdOpaque _) => None
       (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd,
-         /proc/sys, /proc/self/fd and signalfd objects
+         /proc/sys, /proc/self/fd, signalfd and alias objects
          [sock_from_file]'s -ENOTSOCK, and an [ONsFile] may be a socket
          (net/socket.c, read at v6.18.44; identical at v6.18.46); the
          split is not written *)

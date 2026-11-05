@@ -14,6 +14,7 @@
     kernel/capability.c [SYSCALL_DEFINE2(capget)] read at v6.18.44; identical at v6.18.46.
     kernel/capability.c [SYSCALL_DEFINE2(capset)] read at v6.18.44; identical at v6.18.46.
     kernel/capability.c [cap_validate_magic] read at v6.18.44; identical at v6.18.46.
+    kernel/capability.c [mk_kernel_cap] read at v6.18.44; identical at v6.18.46.
     kernel/capability.c [cap_get_target_pid] read at v6.18.44; identical at v6.18.46.
     security/security.c [security_capget] read at v6.18.44; identical at v6.18.46.
     security/security.c [security_capset] read at v6.18.44; identical at v6.18.46.
@@ -22,6 +23,8 @@
     security/commoncap.c [cap_inh_is_capped] read at v6.18.44; identical at v6.18.46.
     kernel/cred.c [prepare_creds] read at v6.18.44; identical at v6.18.46.
     kernel/cred.c [commit_creds] read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [cred_cap_issubset] read at v6.18.44; identical at v6.18.46.
+    include/linux/capability.h [cap_issubset], [cap_combine], [CAP_VALID_MASK] read at v6.18.44; identical at v6.18.46.
     And for the capability sets the answers report:
     security/commoncap.c [cap_bprm_creds_from_file] read at v6.18.44; identical at v6.18.46.
     security/commoncap.c [handle_privileged_root] read at v6.18.44; identical at v6.18.46.
@@ -69,19 +72,24 @@ Definition cap_permitted_nonempty_b (c : Creds) : bool :=
   || bv_eqb (cr_euid c) (Z_to_bv 64 0)
   || bv_eqb (cr_suid c) (Z_to_bv 64 0).
 
-(** The data images [capget] may write for a caller whose three uids
-    are all non-zero: 24 bytes, the effective and permitted halves 0,
-    the inheritable low half any [__u32] and the inheritable high half
-    any value within the valid capability bits (caps 32 to 40, so at
-    most 0x1ff). *)
-Definition capget_data_ok (bs : list byte) : bool :=
-  Nat.eqb (length bs) (Z.to_nat CAP_V3_DATA_SIZE)
-  && Z.eqb (cap_data_word bs 0) 0         (* kdata[0].effective *)
-  && Z.eqb (cap_data_word bs 1) 0         (* kdata[0].permitted *)
-                                          (* kdata[0].inheritable: any __u32 *)
-  && Z.eqb (cap_data_word bs 3) 0         (* kdata[1].effective *)
-  && Z.eqb (cap_data_word bs 4) 0         (* kdata[1].permitted *)
-  && Z.leb (cap_data_word bs 5) (Z.shiftr CAP_VALID_MASK 32). (* kdata[1].inheritable *)
+(** The inheritable set the caller holds, as Linux holds it: the stored
+    word ([State.m_cap_inheritable]) within [CAP_VALID_MASK].  The kernel
+    masks every set it stores with that mask, so a real process's set
+    has no bit above [CAP_LAST_CAP]; a launch word may have one
+    ([State.procst_cap_inheritable]: every word is a launch value), and
+    such a bit names no capability.  For a launch word within the mask
+    this is the stored word. *)
+Definition cap_inheritable_set (m : Model) : Z :=
+  Z.land (bv_unsigned (m_cap_inheritable m)) CAP_VALID_MASK.
+
+(** The 24 bytes a version-3 [capget] copies out for a caller whose
+    three uids are all non-zero, in [cap_data_word]'s order: the
+    effective and permitted halves 0, and the inheritable set [inh] split
+    as [SYSCALL_DEFINE2(capget)] splits it, [kdata[0].inheritable =
+    pI.val] (the low 32 bits) and [kdata[1].inheritable = pI.val >> 32]. *)
+Definition capget_image (inh : Z) : list byte :=
+  Z_to_le_bytes 4 0 ++ Z_to_le_bytes 4 0 ++ Z_to_le_bytes 4 inh
+  ++ Z_to_le_bytes 4 0 ++ Z_to_le_bytes 4 0 ++ Z_to_le_bytes 4 (Z.shiftr inh 32).
 
 (** [capget(header, dataptr)] — syscall 90, answered for a version-3
     header naming pid 0, and for nothing else; the sets themselves are
@@ -133,9 +141,9 @@ Definition capget_data_ok (bs : list byte) : bool :=
 
     THE ANSWER: [cap_capget] copies the caller's own [cap_effective],
     [cap_permitted] and [cap_inheritable].  The model carries no
-    capability sets ([State.Creds]'s note), so it answers only where the
-    uids decide the effective and permitted sets, and declines where
-    they do not.  The derivation is exact under the assumptions
+    effective or permitted set ([State.Creds]'s note), so it answers only
+    where the uids decide those two sets, and declines where they do
+    not.  The derivation is exact under the assumptions
     [State.creds_privileged] states: the init user namespace, no file
     capabilities on the executed binary, no ambient capabilities,
     default securebits, a bounding set that holds CAP_SETUID and
@@ -179,13 +187,16 @@ Definition capget_data_ok (bs : list byte) : bool :=
     copies nothing out.
 
     For a caller with no uid 0 the effective and permitted sets are
-    therefore empty.  The INHERITABLE set is inherited across exec
-    unchanged and the model does not carry it, so it is the
-    environment's choice, constrained only to the valid capability bits
-    (the kernel masks every set it stores with [CAP_VALID_MASK]).  It is
-    chosen afresh on each call and not pinned — a widening: a real
-    process reads the same set twice, and after an answered [capset] it
-    reads 0.
+    therefore empty.  The INHERITABLE set is the one the model holds
+    ([State.m_cap_inheritable]): a launch value, kept across exec
+    unchanged, copied by fork, and changed only by an answered
+    [capset_spec] ([setuid], [setgid], [setresuid], [setresgid] and
+    [setgroups] leave it, as [cap_task_fix_setuid] and [commit_creds]
+    do).  The arm reads it within [CAP_VALID_MASK]
+    ([cap_inheritable_set]) and copies it out split as the kernel splits
+    it ([capget_image]).  So two calls with no [capset] between them
+    report the same set, and a call after an answered [capset] reports
+    the set that call installed.
 
     The LSM: [security_capget] calls every registered [capget] hook, and
     this arm assumes the capability module's alone ([cap_capget],
@@ -222,16 +233,35 @@ Definition capget_spec (header dataptr : word) : Sys SyscallEffect :=
                       if cap_permitted_nonempty_b (m_creds m)
                       then unmodeled   (* the sets read [cap_bset] *)
                       else
-                        (bs <- choose (fun bs : list byte =>
-                                         capget_data_ok bs = true) ;;
-                         pure (mkEffect (Z_to_bv 64 0) [(dataptr, bs)] []))
+                        pure (mkEffect (Z_to_bv 64 0)
+                                [(dataptr, capget_image (cap_inheritable_set m))] [])
                   end)
            end)
     end.
 
-(** [capset(header, data)] — syscall 91, answered for ONE shape: version
-    3, pid 0, all six data words 0, from a caller whose real, effective
-    and saved uids are all non-zero.  The answer is 0 or -ENOMEM.
+(** Whether the four effective and permitted words of a [capset] data
+    image are 0: [kdata[0].effective], [kdata[0].permitted],
+    [kdata[1].effective] and [kdata[1].permitted]. *)
+Definition capset_ep_zero_b (db : list byte) : bool :=
+  Z.eqb (cap_data_word db 0) 0 && Z.eqb (cap_data_word db 1) 0
+  && Z.eqb (cap_data_word db 3) 0 && Z.eqb (cap_data_word db 4) 0.
+
+(** The new inheritable set a [capset] data image names:
+    [mk_kernel_cap(kdata[0].inheritable, kdata[1].inheritable)], the
+    low and high halves joined and masked with [CAP_VALID_MASK]. *)
+Definition capset_inheritable (db : list byte) : Z :=
+  Z.land (Z.lor (cap_data_word db 2) (Z.shiftl (cap_data_word db 5) 32))
+    CAP_VALID_MASK.
+
+(** [cap_issubset(a, set)]: no bit of [a] outside [set]. *)
+Definition cap_issubset_b (a set : Z) : bool :=
+  Z.eqb (Z.land a (Z.lnot set)) 0.
+
+(** [capset(header, data)] — syscall 91, answered for version 3, pid 0,
+    effective and permitted words all 0 and any inheritable words, from
+    a caller whose real, effective and saved uids are all non-zero.  The
+    answer is -ENOMEM, -EPERM, or 0 with the new inheritable set
+    installed.
 
     THE KERNEL FUNCTION, in its own order ([SYSCALL_DEFINE2(capset)]):
 
@@ -239,49 +269,75 @@ Definition capget_spec (header dataptr : word) : Sys SyscallEffect :=
       if (get_user(pid, &header->pid))             return -EFAULT;
       if (pid != 0 && pid != task_pid_vnr(current)) return -EPERM;
       if (copy_from_user(&kdata, data, tocopy * 12)) return -EFAULT;
-      effective, permitted, inheritable = the words, masked to
-                                          CAP_VALID_MASK;
+      effective, permitted, inheritable =
+          mk_kernel_cap(kdata[0].x, kdata[1].x);   -- the halves joined,
+                                                      masked to CAP_VALID_MASK
       new = prepare_creds();                       if (!new) return -ENOMEM;
       ret = security_capset(new, current_cred(), ...);
                                                    if (ret < 0) abort, ret;
       return commit_creds(new);                    -- always 0
 
     [cap_capset] (the capability module's hook; the same capability-only
-    LSM assumption as [capget_spec]) refuses with -EPERM a raised
-    inheritable bit outside the old inheritable and permitted (unless
-    the caller holds CAP_SETPCAP) or outside the old inheritable and
-    bounding sets, a permitted set not inside the old permitted set, and
-    an effective set not inside the new permitted set; else it installs
-    the three sets and masks the ambient set.  All-zero sets pass every
-    test from any caller, so the call returns 0 unless [prepare_creds]
-    failed (-ENOMEM: a slab allocation, or [security_prepare_creds]).
+    LSM assumption as [capget_spec]) refuses with -EPERM, in this order:
+    a new inheritable set outside the old inheritable and permitted sets
+    combined, unless [cap_inh_is_capped] finds CAP_SETPCAP in the
+    caller's effective set; a new inheritable set outside the old
+    inheritable and bounding sets combined; a permitted set not inside
+    the old permitted set; an effective set not inside the new permitted
+    set.  Else it installs the three sets and masks the ambient set.
 
-    WHY ONLY A CALLER WITH NO UID 0.  Such a caller already holds empty
-    effective and permitted sets ([capget_spec]'s derivation), so the
-    call changes neither: the model's euid-based privilege
-    ([State.creds_privileged]) and [capget_spec]'s derivation both stay
-    exact.  It does set the inheritable set to 0, which the model does
-    not carry; [capget_spec] keeps choosing it, a widening.  A caller
-    with any uid 0 holds a non-empty permitted set (CAP_SETUID and
-    CAP_SETGID at least), and all-zero sets would DROP it: afterwards a
-    euid-0 caller has no CAP_SETUID, which the model's privilege test
-    cannot follow, so that call is declined.
+    THE ANSWER, AND HOW EACH TEST IS DECIDED WITHOUT THE BOUNDING SET.
+    The caller has no uid 0, so under the assumptions
+    [State.creds_privileged] states its effective and permitted sets are
+    empty ([capget_spec]'s derivation).  Then:
+    - CAP_SETPCAP is not in its effective set ([cap_capable] reads the
+      effective set in the init user namespace), [cap_inh_is_capped]
+      holds, and the first test asks for the new inheritable set within
+      the old inheritable set ([cap_inheritable_set]) combined with the
+      empty permitted set: within the old inheritable set alone.
+    - The second test asks for the new set within the old inheritable set
+      combined with the bounding set.  Every set that passed the first
+      test passes it, so the bounding set, which the model knows only to
+      hold CAP_SETUID and CAP_SETGID, decides nothing here.
+    - The permitted and effective words are 0, so the last two tests
+      pass.
+    So the arm answers -EPERM exactly when the new inheritable set
+    ([capset_inheritable]) has a bit outside the held one
+    ([cap_issubset_b]), and otherwise 0 with the new set installed
+    ([State.with_cap_inheritable]).  The effective and permitted sets stay
+    empty, and the ambient set, empty by assumption, stays empty.
+    [prepare_creds] runs before [security_capset], so -ENOMEM (a slab
+    allocation, or [security_prepare_creds]) is an answer for every data
+    image the arm answers.
 
-    THE PARENT-DEATH SIGNAL STAYS.  [commit_creds] (kernel/cred.c) resets
-    [pdeath_signal] when the effective or filesystem ids move or when
-    [cred_cap_issubset(old, new)] fails, that is, when the call gains a
-    permitted capability.  capset never clears it, because that arm
-    answers only where no capability is gained: the answered call moves
-    no id and leaves the permitted set empty, as it was.  So the arm
-    leaves [State.m_pdeath_signal] alone, with the rest of the model.
+    WHY ONLY A CALLER WITH NO UID 0.  For such a caller the call changes
+    neither the effective nor the permitted set, so the model's
+    euid-based privilege ([State.creds_privileged]) and [capget_spec]'s
+    derivation both stay exact.  A caller with any uid 0 holds a
+    non-empty permitted set, [cap_bset | cap_inheritable], whose bits
+    other than CAP_SETUID and CAP_SETGID the model does not know; the
+    first and third tests read it, and a call that drops it leaves a
+    euid-0 caller without CAP_SETUID, which the model's privilege test
+    cannot follow.  So that call is declined.
+
+    THE PARENT-DEATH SIGNAL AND THE DUMPABLE MODE STAY.  [commit_creds]
+    (kernel/cred.c) resets [pdeath_signal] and the dumpable mode when the
+    effective or filesystem ids move or when [cred_cap_issubset(old,
+    new)] fails, that is, when the new permitted set is not inside the
+    old one.  The answered call moves no id and leaves the permitted set
+    empty, as it was.  So the arm leaves [State.m_pdeath_signal] and
+    [State.m_dumpable] alone, with the rest of the model but the
+    inheritable set.
 
     EVERY OTHER SHAPE IS DECLINED: another version (or an unknown one,
     whose header write-back the model does not carry), a non-zero pid
     (-EPERM for another task, but the model may not know its own pid),
-    any non-zero data word (the answer then turns on the caller's sets
-    in ways the model could derive but no caller here needs).  The
-    user-memory accesses are decided as in [capget_spec]; the data read
-    is one [copy_from_user] of 24 bytes and is recorded as one range. *)
+    and a non-zero effective or permitted word (for this caller Linux
+    then answers -ENOMEM or -EPERM when the masked word is non-zero, and
+    as for a zero word when it is not; the arm keeps the shape it
+    answered before).  The user-memory accesses are decided as in
+    [capget_spec]; the data read is one [copy_from_user] of 24 bytes and
+    is recorded as one range. *)
 Definition capset_spec (header data : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -306,9 +362,15 @@ Definition capset_spec (header data : word) : Sys SyscallEffect :=
                   | None => unmodeled  (* a partial copy_from_user *)
                   | Some db =>
                       record_copyins [(data, Z.to_nat CAP_V3_DATA_SIZE)]
-                      (if negb (Z.eqb (bytes_le_to_Z db) 0) then unmodeled
+                      (if negb (capset_ep_zero_b db) then unmodeled
                        else if cap_permitted_nonempty_b (m_creds m) then unmodeled
-                       else alt (err_ret ENOMEM) (ret_only (Z_to_bv 64 0)))
+                       else alt (err_ret ENOMEM)
+                              (if cap_issubset_b (capset_inheritable db)
+                                    (cap_inheritable_set m)
+                               then modify (with_cap_inheritable
+                                              (Z_to_bv 64 (capset_inheritable db))) ;;
+                                    ret_only (Z_to_bv 64 0)
+                               else err_ret EPERM))
                   end)
            end)
     end.

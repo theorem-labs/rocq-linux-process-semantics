@@ -129,7 +129,7 @@ Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInp
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else ret_outcome (errno_ret EISDIR) m
-  | ONsFile _ | OSignalFd _ _ | OInherited _ => Unmodeled
+  | ONsFile _ | OSignalFd _ _ | OInherited _ | OAlias _ => Unmodeled
   end.
 
 Lemma read_opaque_witness_ok : forall o buf count i m,
@@ -142,6 +142,7 @@ Proof.
     | apply unmodeled_intro
     | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota;
         unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply unmodeled_intro
     | apply unmodeled_intro
     | apply unmodeled_intro ].
 Qed.
@@ -182,7 +183,7 @@ Proof.
 Qed.
 
 (** [ReadWrite.write_opaque_spec]: the eventfd's witness, the errno of
-    five objects, [Unmodeled] on [State.ONsFile]. *)
+    five objects, [Unmodeled] on [State.ONsFile] and [State.OAlias]. *)
 Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
@@ -190,7 +191,7 @@ Definition write_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallIn
   | OProcPath _ | OProcFile _ | OProcFdDir _ _ | OInherited _ =>
       ret_outcome (errno_ret EBADF) m
   | OSignalFd _ _ => ret_outcome (errno_ret EINVAL) m
-  | ONsFile _ => Unmodeled
+  | ONsFile _ | OAlias _ => Unmodeled
   end.
 
 Lemma write_opaque_witness_ok : forall o buf count i m,
@@ -204,7 +205,8 @@ Proof.
     | apply unmodeled_intro
     | unfold err_ret, ret_only, ret_outcome; apply pure_ok
     | unfold err_ret, ret_only, ret_outcome; apply pure_ok
-    | unfold err_ret, ret_only, ret_outcome; apply pure_ok ].
+    | unfold err_ret, ret_only, ret_outcome; apply pure_ok
+    | apply unmodeled_intro ].
 Qed.
 
 (** [ReadWrite.read_file_data]: the read of a regular file's bytes that
@@ -740,7 +742,7 @@ Proof.
   9:{ (* the opaque kinds: a live inherited file through
          [read_file_data_witness], every other kind through
          [read_opaque_witness] *)
-      destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+      destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt];
         try (eapply bind_step; [apply input_ok|]; cbv beta;
              eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
              srw Hfd; apply read_opaque_witness_ok).

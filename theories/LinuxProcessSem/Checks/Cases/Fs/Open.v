@@ -184,11 +184,13 @@ Example openat_excl_append_flag_word :
                 | CheckOk m _ => fd_lookup (m_fds m) 3
                 | _ => None
                 end in
-  (* the O_TRUNC spelling and the ignored bits change nothing *)
+  (* the O_TRUNC spelling and O_LARGEFILE and O_NONBLOCK change nothing
+     (O_CLOEXEC sets the new descriptor's close-on-exec bit, and nothing
+     else: [Checks.Cases.Fs.Cloexec]) *)
   open absent mem_open_write (excl_append_create_flags + O_TRUNC)%Z fd3
     = open absent mem_open_write excl_append_create_flags fd3
   /\ open absent mem_open_write
-       (excl_append_create_flags + O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z fd3
+       (excl_append_create_flags + O_LARGEFILE + O_NONBLOCK)%Z fd3
      = open absent mem_open_write excl_append_create_flags fd3
   (* an ABSENT name: created empty, and the fd is the APPEND kind *)
   /\ kept (open absent mem_open_write excl_append_create_flags fd3) = Some []
@@ -921,7 +923,8 @@ Example devnull_dispatch_sites :
   /\ (match call 23 [5; 0; 0; 0; 0; 0] (mkEffect 6 [] []) with
       | CheckOk m [] => fd_lookup (m_fds m) 6 = Some (FdDevNull true true)
       | _ => False end)
-  /\ call 25 [5; F_SETFD; 1; 0; 0; 0] (mkEffect 0 [] []) = CheckOk devnull_model []
+  /\ call 25 [5; F_SETFD; 1; 0; 0; 0] (mkEffect 0 [] [])
+     = CheckOk (with_cloexec [(5, true)] devnull_model) []
   /\ call 25 [5; F_GETFL; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled
   /\ call 80 [5; 4096; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled
      (* an fstat into a destination no page backs: the partial
@@ -932,7 +935,7 @@ Example devnull_dispatch_sites :
   /\ call 29 [5; Z_to_bv 64 21537; 4096; 0; 0; 0] (mkEffect 0 [] [])
      = CheckUnmodeled   (* FIONBIO 0x5421: outside the eight, still declined *)
   /\ call 32 [5; 2; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled.
-Proof. vm_compute. repeat split; reflexivity. Qed.
+Proof. vm_compute. repeat split; check_eq. Qed.
 
 (** A [struct stat] for the examples: the device's asserted members as
     given, zero everywhere else. *)
@@ -1440,14 +1443,15 @@ Example urandom_dispatch_sites :
   /\ (match call 23 [3; 0; 0; 0; 0; 0] (mkEffect 4 [] []) with
       | CheckOk m [] => fd_lookup (m_fds m) 4 = Some FdUrandom
       | _ => False end)
-  /\ call 25 [3; F_SETFD; 1; 0; 0; 0] (mkEffect 0 [] []) = CheckOk urandom_model []
+  /\ call 25 [3; F_SETFD; 1; 0; 0; 0] (mkEffect 0 [] [])
+     = CheckOk (with_cloexec [(3, true)] urandom_model) []
   /\ call 25 [3; F_GETFL; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled
   /\ check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) urandom_model = CheckUnmodeled
   /\ call 29 [3; TCGETS; 4096; 0; 0; 0] (mkEffect (errno_ret ENOTTY) [] [])
      = CheckUnmodeled
   /\ call 32 [3; 2; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled.
-Proof. vm_compute. repeat split; reflexivity. Qed.
+Proof. vm_compute. repeat split; check_eq. Qed.
 
 (** fstat ON /dev/urandom ASSERTS THE RANDOM DEVICE: S_IFCHR with
     [st_rdev] 1:9 and a zero size is accepted and PINNED under
@@ -1645,9 +1649,13 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** THE IGNORED BITS ARE IGNORED HERE TOO, which is an EQUALITY BETWEEN
     TWO FLAG WORDS and so cannot be a real run: a run issues one word,
     and could show the four-bit word conforming without showing
-    that it lands where the two-bit word lands.  Stated over all four of
+    that it lands where the narrower word lands.  Stated over all four of
     the arm's answers at once, since a mask applied in one branch and
-    not another is exactly the mistake this catches. *)
+    not another is exactly the mistake this catches.  O_LARGEFILE picks
+    nothing; O_CLOEXEC picks no shape either, and the one thing it
+    changes is the new descriptor's close-on-exec bit, so the two
+    successes are compared against O_DIRECTORY|O_CLOEXEC and the two
+    errno answers, which install nothing, against bare O_DIRECTORY. *)
 Example openat_directory_ignores_largefile_and_cloexec :
   let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
   let open fs bs n fl eff := check_syscall
@@ -1657,9 +1665,9 @@ Example openat_directory_ignores_largefile_and_cloexec :
   let wide := (O_DIRECTORY + O_LARGEFILE + O_CLOEXEC)%Z in
   let have := [([Z_to_bv 8 97], [104])] in
   open [] [46%Z] 2%nat wide (mkEffect 3 [] [])
-    = open [] [46%Z] 2%nat O_DIRECTORY (mkEffect 3 [] [])
+    = open [] [46%Z] 2%nat (O_DIRECTORY + O_CLOEXEC)%Z (mkEffect 3 [] [])
   /\ open [] [46%Z; 46%Z] 3%nat wide (mkEffect 3 [] [])
-     = open [] [46%Z; 46%Z] 3%nat O_DIRECTORY (mkEffect 3 [] [])
+     = open [] [46%Z; 46%Z] 3%nat (O_DIRECTORY + O_CLOEXEC)%Z (mkEffect 3 [] [])
   /\ open have [97%Z] 2%nat wide (mkEffect (errno_ret ENOTDIR) [] [])
      = open have [97%Z] 2%nat O_DIRECTORY (mkEffect (errno_ret ENOTDIR) [] [])
   /\ open [] [97%Z] 2%nat wide (mkEffect (errno_ret ENOENT) [] [])
@@ -1901,9 +1909,14 @@ Example openat_tmp_create_read_unlink :
          O_NONBLOCK, the file's shared mask — not past O_CLOEXEC alone,
          so the create word carrying any of them reaches the same arm
          and records the same key.  A real run cannot separate this
-         from the bare word; only a literal can. *)
-      /\ open (wr_create_flags + O_CLOEXEC)%Z (mkEffect 3 [] []) m0
-         = CheckOk m1 []
+         from the bare word; only a literal can.  O_CLOEXEC also sets
+         the new descriptor's close-on-exec bit, which is all it
+         changes. *)
+      /\ match open (wr_create_flags + O_CLOEXEC)%Z (mkEffect 3 [] []) m0 with
+         | CheckOk m1' [] =>
+             m_fds m1' = m_fds m1 /\ m_fs m1' = m_fs m1
+             /\ cloexec_lookup (m_cloexec m1') (Z_to_bv 64 3) = Some true
+         | _ => False end
       /\ open (wr_create_flags + O_NONBLOCK)%Z (mkEffect 3 [] []) m0
          = CheckOk m1 []
       /\ open (wr_create_flags + O_LARGEFILE)%Z (mkEffect 3 [] []) m0
@@ -2367,8 +2380,9 @@ Definition proc_open_in (dirfd : word) (bs : list byte) (fl : Z) : SyscallInput 
 
 (** [m] with the opaque object [o] at [fd], which is what an answered
     open leaves. *)
-Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) : Model :=
-  with_fds (fd_insert (m_fds m) fd (FdOpaque o)) m.
+Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) (cl : bool) : Model :=
+  with_cloexec (cloexec_set (m_cloexec m) fd cl)
+    (with_fds (fd_insert (m_fds m) fd (FdOpaque o)) m).
 
 (** [openat(-100, "/proc", O_PATH|O_LARGEFILE)]: the lowest free
     descriptor holding [OProcPath "/proc"], or any errno, and the six
@@ -2381,7 +2395,7 @@ Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) : Model :=
 Example openat_proc_root_o_path :
   check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
     (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
-  = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+  = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc) false) []
   /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
        (with_copyins [(8192, 6%nat)] (mkEffect (errno_ret ENOENT) [] []))
        proc_open_model
@@ -2398,7 +2412,7 @@ Example openat_proc_root_o_path :
   /\ check_syscall
        (proc_open_in AT_FDCWD s_proc (O_PATH + O_DIRECTORY + O_NOFOLLOW + O_CLOEXEC))
        (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc) true) []
   (* the controls *)
   /\ check_syscall (proc_open_in AT_FDCWD s_etc_x 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect 3 [] [])) proc_open_model
@@ -2420,10 +2434,10 @@ Proof. repeat split; check_eq. Qed.
 Example openat_proc_sys_read_only :
   check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
     (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
-  = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowuid)) []
+  = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowuid) true) []
   /\ check_syscall (proc_open_in AT_FDCWD s_overflowgid 0x88000)
        (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowgid)) []
+     = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowgid) true) []
   /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
        (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EACCES) [] []))
        proc_open_model
@@ -2447,7 +2461,7 @@ Example openat_proc_sys_directories_decline_read_only :
      = CheckUnmodeled
   /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x208000)
        (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
-     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel)) [].
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel) false) [].
 Proof. repeat split; check_eq. Qed.
 
 (** [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] relative to the O_PATH
@@ -2458,12 +2472,12 @@ Proof. repeat split; check_eq. Qed.
     name from a descriptor that is not an O_PATH one on procfs (fd 1, a
     channel). *)
 Definition proc_fd_model : Model :=
-  proc_opened proc_open_model 3 (OProcPath s_proc).
+  proc_opened proc_open_model 3 (OProcPath s_proc) false.
 
 Example openat_relative_to_proc_fd :
   check_syscall (proc_open_in 3 s_pid_ns 0x208000)
     (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
-  = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) []
+  = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns) false) []
   /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect (errno_ret ESRCH) [] []))
        proc_fd_model
@@ -2517,7 +2531,7 @@ Example openat_relative_dotdot_from_proc_fd_declines :
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
        (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
-     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
+     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns) false) [].
 Proof. repeat split; check_eq. Qed.
 
 (** THE /proc/self/fd DIRECTORY.  bubblewrap's monitor process lists
@@ -2541,7 +2555,7 @@ Example openat_proc_self_fd_directory :
   check_syscall (proc_open_in 3 s_self_fd 0x98900)
     (with_copyins [(8192, 8%nat)] (mkEffect 4 [] [])) proc_fd_model
   = CheckOk (proc_opened proc_fd_model 4
-               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0))) true) []
   /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
        (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EMFILE) [] [])) proc_fd_model
      = CheckOk proc_fd_model []
@@ -2551,7 +2565,7 @@ Example openat_proc_self_fd_directory :
   /\ check_syscall (proc_open_in AT_FDCWD s_proc_self_fd 0x98900)
        (with_copyins [(8192, 14%nat)] (mkEffect 3 [] [])) proc_open_model
      = CheckOk (proc_opened proc_open_model 3
-                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0))) true) []
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_self_fdinfo 0x98900)
        (with_copyins [(8192, 12%nat)] (mkEffect 4 [] [])) proc_fd_model
@@ -2575,7 +2589,7 @@ Definition s_proc_self_ns : list byte :=
   [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 110; 115].                       (* "/proc/self/ns" *)
 
 Definition proc_self_dirfd_model : Model :=
-  proc_opened proc_open_model 3 (OProcPath s_proc_self).
+  proc_opened proc_open_model 3 (OProcPath s_proc_self) false.
 
 Example openat_fd_relative_to_proc_self_declines :
   check_syscall (proc_open_in 3 s_fd 0x98900)
@@ -2587,5 +2601,5 @@ Example openat_fd_relative_to_proc_self_declines :
   (* the control *)
   /\ check_syscall (proc_open_in 3 s_ns 0x208000)
        (with_copyins [(8192, 3%nat)] (mkEffect 4 [] [])) proc_self_dirfd_model
-     = CheckOk (proc_opened proc_self_dirfd_model 4 (OProcPath s_proc_self_ns)) [].
+     = CheckOk (proc_opened proc_self_dirfd_model 4 (OProcPath s_proc_self_ns) false) [].
 Proof. repeat split; check_eq. Qed.

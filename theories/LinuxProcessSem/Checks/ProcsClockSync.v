@@ -282,10 +282,12 @@ Proof.
                     | None => false end) = true)
       by (cbn [cfg_ms pe_cfg]; rewrite Hs; exact Hn).
     pose proof (sstep_clock_ge _ _ _ _ _ Hsyn Hss) as Hg.
+    pose proof (look_in_first_root_pin_children_self P e (cfg_model c1)
+      (pcfg_procs P) e Hl) as Hl'.
     exists (pe_absorb e c1). split.
     + unfold look, absorb. cbn [pcfg_procs].
       rewrite orphan_at_exit_map, look_in_orphan.
-      rewrite look_in_replace_same by (unfold look in Hl; rewrite Hl; discriminate).
+      rewrite look_in_replace_same by (rewrite Hl'; discriminate).
       cbn [option_map]. unfold orphan_slot.
       destruct (m_halted _); [|reflexivity].
       unfold orphan_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.

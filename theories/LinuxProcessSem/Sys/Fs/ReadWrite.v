@@ -650,6 +650,11 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
       (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
          v6.18.44; identical at v6.18.46) answers from the pending
          signals and their [siginfo], which this arm does not model *)
+  | OAlias _ => unmodeled
+      (* FAIL-CLOSED: a read through the alias reads and moves the
+         description's [f_pos], which its partner's entry carries
+         ([State.OAlias]); the description is used through the partner
+         only *)
   | OInherited _ => unmodeled
       (* FAIL-CLOSED: [read_spec] answers a live inherited file
          ([OInherited (Some _)]) before it reaches this arm; on one whose
@@ -684,9 +689,10 @@ Definition write_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffe
          (:241-249), so FMODE_CAN_WRITE is clear (fs/file_table.c:369-371)
          and [vfs_write] answers -EINVAL (fs/read_write.c:672-673,
          v6.18.46) *)
-  | ONsFile _ => unmodeled
-      (* FAIL-CLOSED: the object behind the handle may be of any type,
-         and a write's answer depends on it ([State.ONsFile]) *)
+  | ONsFile _ | OAlias _ => unmodeled
+      (* FAIL-CLOSED: the object behind a namespace handle may have any
+         type, and an alias's description is used through its partner
+         only ([State.ONsFile], [State.OAlias]) *)
   end.
 
 (** THE READ OF A REGULAR FILE'S BYTES, after [vfs_read]'s [access_ok]:
@@ -2483,7 +2489,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
       end
   | Some (FdOpaque o) => write_opaque_spec o buf count
       (* the eventfd answers, five objects answer an errno, and
-         [State.ONsFile] declines: see [write_opaque_spec] *)
+         [State.ONsFile] and [State.OAlias] decline: see [write_opaque_spec] *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED: the model sends no message on an end, so its
          receive queue stays empty ([State.FdSeqpacket]) *)
@@ -2754,9 +2760,10 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       (* FAIL-CLOSED: an O_PATH file is [ksys_pread64]'s [CLASS(fd, f)]
          -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46); a
          positional read of an eventfd, a /proc/sys file, the
-         /proc/self/fd directory or a signalfd is not written, and an
-         [ONsFile]'s object is of unknown type.  None of the six answers
-         is. *)
+         /proc/self/fd directory or a signalfd is not written, an
+         [ONsFile]'s object is of unknown type, and an alias's
+         description is used through its partner only ([State.OAlias]).
+         None of the seven answers is. *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED: a positional read of an AF_UNIX end is not
          written *)
@@ -2965,7 +2972,7 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
   | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the six answers
+      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the seven answers
          is written *)
   | Some (FdSeqpacket _ _ _) => unmodeled
       (* FAIL-CLOSED, as [pread64_spec]'s arm *)
@@ -3669,7 +3676,7 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
       v6.18.44; identical at v6.18.46); a /proc/sys file, a shared
       eventfd, the /proc/self/fd directory and a signalfd are open for
-      reading *)
+      reading, and an alias's mode is its partner's description's *)
   | FdSeqpacket _ _ _ => None
     (* NOT AN -EBADF either: an AF_UNIX end is open O_RDWR
        ([sock_alloc_file], net/socket.c:483-485, v6.18.46), and
@@ -4330,8 +4337,9 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              would move the position the listing reads, and a signalfd's
              [signalfd_fops] [noop_llseek] (fs/proc/fd.c, fs/signalfd.c,
              read at v6.18.44; identical at v6.18.46); an [ONsFile]'s
-             object is of unknown type.  None of the six answers is
-             written. *)
+             object is of unknown type; and an lseek through an alias
+             would move the [f_pos] its partner's entry carries
+             ([State.OAlias]).  None of the seven answers is written. *)
       | FdSeqpacket _ _ _ => unmodeled
           (* FAIL-CLOSED: a seek on an AF_UNIX end is not written *)
       | FdAnon id af =>

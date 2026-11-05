@@ -34,18 +34,40 @@ Definition gettid_witness : Model -> outcome SyscallEffect :=
 Lemma gettid_witness_ok : forall i m, gettid_spec i m (gettid_witness m).
 Proof. exact set_tid_address_witness_ok. Qed.
 
-(** getppid witness: 0, the answer for a parent outside the caller's pid
-    namespace, which is inside [Kernel.Sys.getppid_spec]'s range and
-    leaves the model alone. *)
-Definition getppid_witness (m : Model) : outcome SyscallEffect :=
+(** A fresh pid witness: 0, the answer for a parent or session leader
+    outside the caller's pid namespace, which is inside
+    [Kernel.Sys.pid_choice_spec]'s range and leaves the model alone. *)
+Definition pid_choice_witness (m : Model) : outcome SyscallEffect :=
   ret_outcome (Z_to_bv 64 0) m.
+
+Lemma pid_choice_witness_ok : forall i m, pid_choice_spec i m (pid_choice_witness m).
+Proof.
+  intros. unfold pid_choice_spec, pid_choice_witness.
+  eapply bind_step;
+    [apply (choose_ok _ (Z_to_bv 64 0)); vm_compute; reflexivity|].
+  apply pure_ok.
+Qed.
+
+(** getppid witness: the held parent pid, an answer
+    [Kernel.Sys.getppid_spec] admits whether the reparent window is open
+    (recorded through [State.with_ppid_answered]) or shut (the model
+    left alone). *)
+Definition getppid_witness (m : Model) : outcome SyscallEffect :=
+  if reparent_open m then ret_outcome (m_ppid m) (with_ppid_answered (m_ppid m) m)
+  else ret_outcome (m_ppid m) m.
 
 Lemma getppid_witness_ok : forall i m, getppid_spec i m (getppid_witness m).
 Proof.
   intros. unfold getppid_spec, getppid_witness.
-  eapply bind_step;
-    [apply (choose_ok _ (Z_to_bv 64 0)); vm_compute; reflexivity|].
-  apply pure_ok.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (reparent_open m).
+  - eapply bind_step;
+      [apply (choose_ok _ (m_ppid m));
+       unfold getppid_answer_ok; apply orb_true_intro; left;
+       apply bv_eqb_eq; reflexivity|].
+    eapply bind_step; [apply modify_ok|].
+    apply pure_ok.
+  - apply pure_ok.
 Qed.
 
 (** setsid witness: -EPERM, which is admissible whatever the model
@@ -65,7 +87,7 @@ Proof.
 Qed.
 
 (** getsid witness: the spec's own answer where it has one -- the tid
-    after a successful setsid -- and otherwise [getppid_witness]'s 0,
+    after a successful setsid -- and otherwise [pid_choice_witness]'s 0,
     which is inside [Kernel.Sys.getsid_spec]'s fresh range (a session led
     from an ancestor pid namespace).  It declines where the spec does. *)
 Definition getsid_witness (pid : word) (m : Model) : outcome SyscallEffect :=
@@ -75,7 +97,7 @@ Definition getsid_witness (pid : word) (m : Model) : outcome SyscallEffect :=
     | Some t => ret_outcome t m
     | None => Unmodeled
     end
-  else getppid_witness m.
+  else pid_choice_witness m.
 
 Lemma getsid_witness_ok : forall pid i m, getsid_spec pid i m (getsid_witness pid m).
 Proof.
@@ -84,7 +106,7 @@ Proof.
   destruct (negb (getsid_pid_ok pid (m_tid m))); [apply unmodeled_intro|].
   destruct (m_setsid_succeeded m).
   - destruct (m_tid m) as [t|]; [apply pure_ok|apply unmodeled_intro].
-  - exact (getppid_witness_ok i m).
+  - exact (pid_choice_witness_ok i m).
 Qed.
 
 (** ioctl witness: -EBADF on a closed fd, -ENOTTY on a terminal-only

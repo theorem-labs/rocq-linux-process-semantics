@@ -865,12 +865,13 @@ Definition fstat_procfd_dir_spec (statbuf : word) : Sys SyscallEffect :=
     sysctl inode's, an [ONsFile]'s object is of unknown type, and an
     inherited file's is the inode of a file the model holds the bytes of
     and nothing else (fs/stat.c, fs/anon_inodes.c, read at v6.18.44;
-    identical at v6.18.46). *)
+    identical at v6.18.46). An alias's is its partner's regular file's,
+    and its description is used through the partner only ([State.OAlias]). *)
 Definition fstat_opaque_spec (o : OpaqueFd) (statbuf : word) : Sys SyscallEffect :=
   match o with
   | OProcFdDir _ _ => fstat_procfd_dir_spec statbuf
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => unmodeled
+  | OInherited _ | OAlias _ => unmodeled
   end.
 
 (** THE MATCH BELOW IS TOTAL ON [FdEntry] ON PURPOSE, with no wildcard.
