@@ -65,7 +65,7 @@ Definition ct_pid : word := Z_to_bv 64 4242.
 Definition ct_eff : SyscallEffect :=
   mkEffect ct_pid [(Z_to_bv 64 0x2000, le32_bytes ct_pid)] [].
 
-Definition ct_model' : Model := with_child ct_pid (forfeit_model ct_model).
+Definition ct_model' : Model := clone_child_made ct_pid ct_model.
 
 Definition ct_c' : config := mkCfg (advance_past_svc (apply_effect ct_ms ct_eff)) ct_model'.
 
@@ -141,7 +141,7 @@ Definition ct_lazy_model : Model :=
 Definition pt_ms : machine_state :=
   set_reg ct_ms (Z_to_bv 5 10) (Z_to_bv 64 (SIGCHLD + CLONE_PARENT_SETTID)).
 
-Definition pt_model' : Model := with_child ct_pid (forfeit_model ct_lazy_model).
+Definition pt_model' : Model := clone_child_made ct_pid ct_lazy_model.
 
 Lemma pt_check :
   check_syscall (sys_input [] pt_ms (Z_to_bv 64 220)) ct_eff ct_lazy_model

@@ -113,6 +113,13 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
   | (_, FdSeqpacket _ _ _) :: r => path_openers r p
     (* a socket inode on sockfs is not a key of [Fs.Fs], and every flock
        on an end declines in this model ([flock_spec]) *)
+  | (_, FdStream _ _ _) :: r => path_openers r p  (* a socket inode, not a key of [Fs.Fs] *)
+  | (_, FdDgram _) :: r => path_openers r p       (* another sockfs inode *)
+  | (_, FdEventfd _) :: r => path_openers r p     (* the anonymous inode, not a key of [Fs.Fs] *)
+  | (_, FdAnon _ _) :: r => path_openers r p
+      (* an unnamed file's inode lost its last name, and a file made
+         later under that name is another inode, so it opens no key of
+         [Fs.Fs] *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -359,5 +366,18 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
           | FdSeqpacket _ _ _ => unmodeled
               (* FAIL-CLOSED, for the [FdSocket] reason: no caller, and a
                  lock on a sockfs inode needs its own argument *)
+          | FdStream _ _ _ => unmodeled
+              (* the [FdSocket] case: a sockfs inode, no caller *)
+          | FdDgram _ => unmodeled
+              (* the [FdSocket] case: a sockfs inode, no caller *)
+          | FdEventfd _ => unmodeled
+              (* FAIL-CLOSED: every eventfd shares the one anonymous
+                 inode ([anon_inode_getfile_fmode] passes
+                 [anon_inode_inode]), so a conflict is an argument about
+                 other eventfds this entry does not count; no caller *)
+          | FdAnon _ _ => unmodeled
+              (* DECLINED: the sole-opener gate would need a count of the
+                 descriptors of the file id, which [path_openers] does
+                 not keep, and no target locks an unnamed file *)
           end
     end.

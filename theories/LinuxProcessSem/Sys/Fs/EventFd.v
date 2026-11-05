@@ -39,7 +39,11 @@ Open Scope sys_scope.
                                   [__get_unused_fd_flags], [alloc_fd],
                                   [expand_files]
       fs/anon_inodes.c            [anon_inode_getfile_fmode],
-                                  [__anon_inode_getfile]
+                                  [__anon_inode_getfile],
+                                  [anon_inode_init]
+      fs/file_table.c             [alloc_file_pseudo], [alloc_file],
+                                  [alloc_empty_file], [file_init_path]
+      fs/libfs.c                  [alloc_anon_inode]
       init/Kconfig                [config EVENTFD]
       kernel/sys_ni.c             [COND_SYSCALL(eventfd2)]
       include/uapi/asm-generic/unistd.h
@@ -51,11 +55,11 @@ Open Scope sys_scope.
     successors all match, so a later regression cannot hide inside one.
 
       v6.15 - v6.18.46      [do_eventfd], byte-for-byte.  v6.12 differs,
-                            and only past the gate this file models:
-                            it calls [anon_inode_getfile] and then sets
+                            and only past the gate: it calls
+                            [anon_inode_getfile] and then sets
                             [FMODE_NOWAIT] by hand where the pinned text
-                            calls [anon_inode_getfile_fmode].  Both of
-                            those sit below the [return -EINVAL], so the
+                            calls [anon_inode_getfile_fmode].  Both set
+                            the same mode bit on the same file, so the
                             difference is invisible to every answer here
                             — but the TEXT is not identical, and this
                             repository pins text.
@@ -91,54 +95,22 @@ Open Scope sys_scope.
     know that neither adds a check of its own.  Neither does: each is a
     one-line forward.
 
-    THE ARM MODELS THE ARGUMENT REJECTION AND THE DESCRIPTOR, AND NOT
-    THE COUNTER.  Every input that survives the gate creates a file
-    descriptor, and the model mints it as [State.FdOpaque (OEventFd
-    flags)]: the descriptor NUMBER is tracked (the lowest free one, as
-    for every open), and the 64-bit counter and the [EFD_SEMAPHORE]
-    behaviour are not.  So [read] and [write] on it decline
-    ([Fs.ReadWrite.read_spec] and [write_spec]), as do poll, select and
-    epoll on it; [close] removes it like any descriptor.  A program
-    that creates an eventfd and holds it (bubblewrap's parent does,
-    twice, before its [clone]) stays on the modeled surface; one that
-    reads or writes the counter leaves it there.
+    THE ARM HAS TWO HALVES: the argument rejection below, and past it
+    the allocation errnos or the descriptor itself, an
+    [State.FdEventfd] carrying the counter, its [EFD_SEMAPHORE] bit and
+    the file's O_NONBLOCK ([State.EventfdCtx]).  The read, write, poll
+    and fcntl arms answer from that entry, and ioctl from its kind;
+    [dup] and [F_DUPFD] of one decline, so the counter has one home
+    while this process is its only holder.
 
-    THE SUCCESS PATH, read at v6.18.44:
-      fs/eventfd.c [do_eventfd], [SYSCALL_DEFINE2(eventfd2, ...)],
-        [eventfd_fops]: read at v6.18.44; identical at v6.18.46.
-      fs/anon_inodes.c [anon_inode_getfile_fmode], [__anon_inode_getfile],
-        [anon_inode_init]: read at v6.18.44; identical at v6.18.46.
-      fs/file_table.c [alloc_file_pseudo], [alloc_path_pseudo],
-        [alloc_empty_file], [init_file]: read at v6.18.44; identical at v6.18.46.
-      fs/file.c [get_unused_fd_flags], [alloc_fd], [expand_files],
-        [expand_fdtable], [alloc_fdtable]: read at v6.18.44; identical at v6.18.46.
-      security/security.c [security_file_alloc], [lsm_file_alloc]: read at v6.18.44; identical at v6.18.46.
-
-    Past the gate [do_eventfd] allocates the context (-ENOMEM), takes
-    the lowest free descriptor through [get_unused_fd_flags] (-EMFILE
-    from [alloc_fd], or -EMFILE / -ENOMEM from [expand_files] growing
-    the table), and makes the file with [anon_inode_getfile_fmode].
-    That is [__anon_inode_getfile], whose two early errnos cannot fire:
-    -ENOENT needs a [fops->owner] module and [eventfd_fops] has no
-    [.owner], and -ENODEV needs [anon_inode_inode] to be an error
-    pointer, where [anon_inode_init] PANICS at boot instead.  Then
-    [alloc_file_pseudo]: -ENOMEM from [alloc_path_pseudo], and
-    [alloc_empty_file]'s -ENFILE (the system-wide file limit) and
-    -ENOMEM (the [struct file] and [lsm_file_alloc]'s blob).  The
-    [file_alloc_security] hooks of SELinux, Smack, AppArmor and Landlock
-    all return 0 at v6.18.44; a BPF LSM program attached there may return
-    any errno, and the model describes a kernel with none attached (an
-    assumption SCOPE.md states; a BPF program on the different hook
-    [task_alloc] is the launch value [State.cr_bpf_task_alloc]).
-    [ida_alloc] cannot contribute one: [do_eventfd] does not test it.
-    So the answer is the lowest free descriptor, or -ENOMEM, -EMFILE or
-    -ENFILE ([eventfd2_errnos]).
-
-    [flags] IS RECORDED on the descriptor as the call passed it (it has
-    passed the gate, so only [EFD_SEMAPHORE], [EFD_CLOEXEC] and
-    [EFD_NONBLOCK] can be set): [do_eventfd] stores it as [ctx->flags],
-    and a statement can read off the table which of them an eventfd was
-    made with.
+    A [clone] HOLDING ONE IS ANSWERED, and its success turns the entry
+    into [State.FdOpaque (State.OEventFd w)] ([Kernel.Fork.share_eventfds]):
+    after the clone the description is shared by two tasks, so no call
+    answers from a stored counter value: read and write answer from the
+    environment's counter (Sys/Fs/ReadWrite.v), and readiness (select,
+    poll, epoll) and F_GETFD decline; a decline is never a
+    wrong answer.  bubblewrap's parent holds two eventfds at its
+    namespace [clone] ([Checks.Cases.ParentTrace]).
 
     THE GATE IS ONE [if], AND IT IS THE FIRST THING [do_eventfd] DOES
     that can fail.  Linux writes
@@ -169,15 +141,15 @@ Open Scope sys_scope.
     consumes no fd number, and cannot answer -ENOMEM or -EMFILE — those
     two are unreachable on this path rather than merely unmodeled.
 
-    [count] IS NOT READ BY ANY MODELED PATH.  It is the initial value of
+    [count] IS NOT READ BEFORE THE GATE.  It is the initial value of
     the counter and is stored by [ctx->count = count], which sits below
-    the gate; nothing above the gate looks at it.  So no arm below takes
-    it as an argument, and [eventfd2(count, flags)] answers -EINVAL for
-    EVERY [count] when [flags] is refused — including counts a reader
-    might expect to be rejected, such as [(unsigned int)-1].  There is
-    no [count] the kernel refuses: the type is [unsigned int], so the
-    64-bit register's high half is discarded and every remaining value
-    is a legal initial counter.
+    the gate; so [eventfd2(count, flags)] answers -EINVAL for EVERY
+    [count] when [flags] is refused — including counts a reader might
+    expect to be rejected, such as [(unsigned int)-1].  There is no
+    [count] the kernel refuses: the type is [unsigned int], so the
+    64-bit register's high half is discarded ([__SC_CAST] again, as for
+    the flag word below) and every remaining value is a legal initial
+    counter, which the success arm stores as it stands.
 
     THE FLAG WORD ARRIVES ALREADY TRUNCATED TO 32 BITS, and that is
     load-bearing rather than incidental.  [flags] is declared [int] in
@@ -204,25 +176,40 @@ Open Scope sys_scope.
     [Fs.Timerfd] carries the identical argument for the identical
     reason.
 
-    THE ERRNOS PAST THE GATE ARE [eventfd2_errnos], derived in the
-    SUCCESS PATH paragraph above.
-
-    NO -EINVAL IS REACHABLE PAST THE GATE, which is what makes the
-    -EINVAL arm exact: there is no input where the model answers -EINVAL
-    and Linux answers something else.  These are the returns of the
-    functions [do_eventfd] reaches after the gate, each read at
-    v6.18.44:
+    PAST THE GATE, walked from the source so the errnos are a named list
+    rather than "the rest": -ENOMEM from the [kmalloc] of the
+    [eventfd_ctx]; -EMFILE from [get_unused_fd_flags] at the descriptor
+    limit, and -ENOMEM from the [expand_files] beneath it; -ENFILE or
+    -ENOMEM from [alloc_file_pseudo] under [anon_inode_getfile_fmode];
+    and otherwise the success, which is the descriptor number.  Each is
+    the return of a function [do_eventfd] reaches after the gate, read
+    at v6.18.46:
 
     - [do_eventfd] itself (fs/eventfd.c) has exactly one
-      [return -EINVAL] in its body, the gate's;
+      [return -EINVAL] in its body, the gate's, and one [-ENOMEM], the
+      [kmalloc]'s;
     - [get_unused_fd_flags] (fs/file.c) forwards
       [__get_unused_fd_flags] to [alloc_fd], whose errnos are -EMFILE
-      and [expand_files]'s -EMFILE and -ENOMEM;
+      and, from [expand_files], -ENOMEM;
     - [__anon_inode_getfile] (fs/anon_inodes.c), under
-      [anon_inode_getfile_fmode], forwards [alloc_file_pseudo], whose
-      errnos are the -ENOMEM and -ENFILE above;
+      [anon_inode_getfile_fmode], has two errnos of its own and NEITHER
+      IS REACHABLE HERE: -ENOENT needs [fops->owner] set and its module
+      unpinnable, and [eventfd_fops] has no [.owner] (eventfd.c is
+      built in, never a module); -ENODEV needs the shared
+      [anon_inode_inode] to be an error pointer, and [anon_inode_init]
+      panics rather than leave it one.  What remains is
+      [alloc_file_pseudo] (fs/file_table.c): [d_alloc_pseudo]'s -ENOMEM
+      and [alloc_empty_file]'s -ENFILE past [files_stat.max_files] or
+      -ENOMEM from its cache;
     - [ida_alloc] cannot contribute one, because [do_eventfd] does not
       TEST its result: it writes [ctx->id = ida_alloc(...)] and reads on.
+
+    No -EINVAL is reachable on any of them, so the gate's errno is
+    exactly Linux's.  That is the walk, not a claim about the whole
+    tree: a caller reaching [do_eventfd] through some path not
+    enumerated here is outside what was checked.  [security_file_alloc]
+    inside [alloc_empty_file] is an LSM hook, and the model describes a
+    kernel with no LSM denying it, as everywhere else.
 
     CONFIG_EVENTFD IS ASSUMED ON.  fs/Makefile builds eventfd.c under
     [obj-$(CONFIG_EVENTFD)] and kernel/sys_ni.c carries
@@ -247,24 +234,50 @@ Open Scope sys_scope.
 Definition eventfd2_einval_b (flags : word) : bool :=
   negb (Z.eqb (Z.ldiff (bv_unsigned flags) EFD_FLAGS_SET) 0).
 
-(** The errnos an accepted flag word can still meet: the allocations'
-    -ENOMEM, the descriptor table's -EMFILE, the file table's -ENFILE.
-    Derived in the SUCCESS PATH paragraph above. *)
+(** The errnos [eventfd2] can fail with past the gate, for reasons the
+    model does not decide (see the walk in this file's header): memory
+    for the context, the descriptor table, or the file.  Drawn from with
+    [errno_from] under an [alt], as [Net.Socket.socket_errnos] is: the
+    failure has to stay live, or a target could delete the source's
+    error handling and remain equivalent.  The soft RLIMIT_NOFILE is
+    carried ([State.m_nofile]) and, as in [Net.Socket.socket_spec], not
+    consulted: -EMFILE is offered beside every success instead. *)
 Definition eventfd2_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
 
 (** [eventfd2 count flags]: create a descriptor holding a 64-bit counter.
 
-    No [count]: the counter is not modeled.  A refused flag word is
-    -EINVAL, which touches no memory, emits no event and changes no
-    state, as the kernel does on that path — it returns before the
-    [kmalloc].  An accepted one is an errno from [eventfd2_errnos], or
-    the lowest free descriptor holding [State.OEventFd flags]. *)
+    The -EINVAL arm reads no state and no [count], touches no memory,
+    emits no event and changes no state, which is what the kernel does
+    on that path too — it returns before the [kmalloc].
+
+    Past the gate, [do_eventfd] (fs/eventfd.c, Linux v6.18.46) either
+    fails with one of [eventfd2_errnos], installing nothing, or
+    installs a new [State.FdEventfd] at the lowest free descriptor
+    ([fd_install] after [get_unused_fd_flags]; [Fs.File.lowest_fd]) and
+    returns it.  The new context is:
+
+    - [ef_count]: [count], the first argument, an [unsigned int]: the low
+      32 bits of the register ([ctx->count = count]);
+    - [ef_semaphore]: [EFD_SEMAPHORE] in [flags] ([ctx->flags = flags]);
+    - [ef_nonblock]: [EFD_NONBLOCK], which is O_NONBLOCK, in [flags]:
+      [flags &= EFD_SHARED_FCNTL_FLAGS; flags |= O_RDWR] and then
+      [alloc_file_pseudo]'s [flags & (O_ACCMODE | O_NONBLOCK)] put it in
+      the file's [f_flags].
+
+    [EFD_CLOEXEC] is accepted and ignored, as [Net.Socket.socket_spec]
+    ignores SOCK_CLOEXEC: it reaches only the fd table's close-on-exec
+    bit, no execve is modeled, and [Fs.Fcntl.fcntl_spec]'s F_GETFD
+    admits both values of the bit. *)
 Definition eventfd2_spec (flags : word) : Sys SyscallEffect :=
   if eventfd2_einval_b flags
   then err_ret EINVAL      (* real -EINVAL, decided before anything is allocated *)
   else
+    i <- input ;;
     m <- get_model ;;
+    let ctx := mkEventfdCtx (bv_unsigned (abi_low32 (in_arg i 0)))
+                 (negb (Z.eqb (Z.land (bv_unsigned flags) EFD_SEMAPHORE) 0))
+                 (negb (Z.eqb (Z.land (bv_unsigned flags) O_NONBLOCK) 0)) in
     alt (e <- errno_from eventfd2_errnos ;; err_ret e)
         (fd <- lowest_fd (m_fds m) ;;
-         modify (with_fds (fd_insert (m_fds m) fd (FdOpaque (OEventFd flags)))) ;;
+         set_fds (fd_insert (m_fds m) fd (FdEventfd ctx)) ;;
          ret_only fd).

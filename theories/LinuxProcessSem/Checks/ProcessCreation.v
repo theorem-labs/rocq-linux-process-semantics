@@ -1295,6 +1295,34 @@ Proof.
     pose proof (IH k bs off H) as Hr. unfold clone_no_shared_file_b in Hr. exact Hr.
 Qed.
 
+(** AN UNNAMED FILE ([State.FdAnon]) closes the gate of every table that
+    holds it, and [Kernel.Fork.forfeit_inherited] keeps it, so [clone]
+    declines while one is open, with either word.  No other process can
+    therefore hold an unnamed file, which is what lets [Procs] answer
+    pwritev2 (287) as a call on the caller's own state
+    ([Procs.multiproc_private_sysnos],
+    [Checks.ProcsPrivateFrame.check_pwritev2_sh]). *)
+Lemma clone_gate_anon : forall fds k aid af,
+  fd_lookup fds k = Some (FdAnon aid af) ->
+  clone_no_shared_file_b fds = false.
+Proof.
+  induction fds as [|[k0 e] r IH]; intros k aid af H; [discriminate H|].
+  cbn [fd_lookup] in H. unfold clone_no_shared_file_b. cbn [forallb snd].
+  destruct (bv_eqb k0 k).
+  - injection H as ->. reflexivity.
+  - apply andb_false_iff. right.
+    pose proof (IH k aid af H) as Hr. unfold clone_no_shared_file_b in Hr. exact Hr.
+Qed.
+
+Lemma clone_anon_unmodeled : forall flags i m k aid af,
+  fd_lookup (m_fds m) k = Some (FdAnon aid af) ->
+  clone_spec flags i m Unmodeled.
+Proof.
+  intros flags i m k aid af H. apply clone_open_file_unmodeled.
+  apply (clone_gate_anon _ k aid af).
+  rewrite fd_lookup_forfeit_inherited, H. reflexivity.
+Qed.
+
 (** No admitted errno encodes 0. *)
 Lemma clone_errno_ret_nonzero : forall e,
   In e clone_errnos -> errno_ret e <> Z_to_bv 64 0.
@@ -1443,8 +1471,8 @@ Qed.
     which returns a PID leaves that field set.  [clone_checker_admits_a_pid]
     below pins one model and one pid; this is the [forall], and it is the
     statement [Kernel.Fork.clone_resolve]'s
-    [modify (fun m0 => with_child pid (forfeit_model m0))] exists to make
-    true.
+    [modify (clone_child_made pid)] (which applies [State.with_child])
+    exists to make true.
 
     THE TWO ARMS ARE SEPARATED, NOT MERELY COVERED.  The statement is a
     pair of implications keyed on the observed return rather than a
@@ -1584,22 +1612,22 @@ Proof.
 Qed.
 
 (** THE PID IS RECORDED.  On the success branch of 220 and 435 the
-    post-model is exactly [State.with_child] of the returned pid over the
-    model the caller keeps ([Kernel.Fork.forfeit_model]): the child bit
-    set, the pid appended at the tail of [State.procst_child_pids]
-    (oldest first, as [copy_process]'s [list_add_tail] keeps
-    [task->children], kernel/fork.c, read at v6.18.44; identical at
-    v6.18.46), each live inherited descriptor without its offset, and
-    nothing else moved.  On every table without a live inherited
-    descriptor that model is the caller's own
-    ([Kernel.Fork.forfeit_model_gate]).  A reap removes the pid again;
+    post-model is exactly [Kernel.Fork.clone_child_made] of the returned
+    pid: [State.with_child] over the caller's table with each live
+    inherited descriptor without its offset and each eventfd shared.  The
+    child bit is set, the pid appended at the tail of
+    [State.procst_child_pids] (oldest first, as [copy_process]'s
+    [list_add_tail] keeps [task->children], kernel/fork.c, read at
+    v6.18.44; identical at v6.18.46), and nothing else moved.  On every
+    table the gate passes the forfeit changes nothing
+    ([Kernel.Fork.clone_child_made_gate]).  A reap removes the pid again;
     the multi-process core's invariant that the list names exactly the
     caller's children starts from this lemma. *)
 Lemma clone_success_records_pid : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
   addr_is_error_b (eff_ret eff) = false ->
-  m' = with_child (eff_ret eff) (forfeit_model m).
+  m' = clone_child_made (eff_ret eff) m.
 Proof.
   intros i m eff m' evs Hno H He.
   destruct (clone_spec_shape i m eff m' evs Hno H) as (_ & [(_ & He') | (-> & _)]).
@@ -1612,7 +1640,7 @@ Corollary check_clone_success_records_pid : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   check_syscall i eff m = CheckOk m' evs ->
   addr_is_error_b (eff_ret eff) = false ->
-  m' = with_child (eff_ret eff) (forfeit_model m).
+  m' = clone_child_made (eff_ret eff) m.
 Proof.
   intros i m eff m' evs Hno H He.
   apply clone_success_records_pid with (i := i) (evs := evs); [exact Hno| |exact He].
@@ -2160,12 +2188,13 @@ Definition pc_clone_input : SyscallInput :=
     (fun _ => None) (fun _ => None).
 
 (** The success arm records the child: [Kernel.Fork.clone_resolve] calls
-    [State.with_child] on this branch, so the post-model is not
-    [pc_model].  That is what [Kernel.Exit.wait4_spec]'s -ECHILD gate
-    reads, and pinning it here is what makes the two compose. *)
+    [Kernel.Fork.clone_child_made], so [State.with_child], on this
+    branch, so the post-model is not [pc_model].  That is what
+    [Kernel.Exit.wait4_spec]'s -ECHILD gate reads, and pinning it here is
+    what makes the two compose. *)
 Example clone_checker_admits_a_pid :
   check_syscall pc_clone_input (mkEffect (Z_to_bv 64 4242) [] []) pc_model
-  = CheckOk (with_child (Z_to_bv 64 4242) pc_model) [].
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) pc_model) [].
 Proof. vm_compute. reflexivity. Qed.
 
 Example clone_checker_admits_eagain :

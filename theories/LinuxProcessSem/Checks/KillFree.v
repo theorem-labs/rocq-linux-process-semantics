@@ -243,6 +243,113 @@ Proof.
   split; [exact Hoff | split; [exact Hk | intros ? ? []]].
 Qed.
 
+(** A stream-pair end's read and send rewrite fd-table entries with
+    [State.with_fds], which keeps [State.m_proc] whole; the send's
+    -EPIPE without MSG_NOSIGNAL goes through [check_sigpipe_write]. *)
+Ltac kf_stream_base H Hoff Hk :=
+  first
+  [ exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
+  | exact (check_sigpipe_write_kf _ _ _ _ H Hoff Hk) ].
+
+Lemma check_stream_read_empty_kf : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros fd id side st nonblock eff m m' evs H Hoff Hk.
+  unfold check_stream_read_empty, check_stream_read_reset in H. cbv beta iota zeta in H.
+  repeat (kf_step H || kf_stream_base H Hoff Hk); kf_close m Hoff Hk.
+Qed.
+
+Lemma check_stream_read_kf :
+  forall fd id side st nonblock buf count i eff m m' evs,
+  check_stream_read fd id side st nonblock buf count i eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros fd id side st nonblock buf count i eff m m' evs H Hoff Hk.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H. cbv beta iota zeta in H.
+  repeat (kf_step H || kf_stream_base H Hoff Hk); kf_close m Hoff Hk.
+Qed.
+
+Lemma check_stream_send_kf :
+  forall id side st nonblock nosignal n src ledger eff m m' evs,
+  check_stream_send id side st nonblock nosignal n src ledger eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros id side st nonblock nosignal n src ledger eff m m' evs H Hoff Hk.
+  unfold check_stream_send in H. cbv beta iota zeta in H.
+  repeat (kf_step H || kf_stream_base H Hoff Hk); kf_close m Hoff Hk.
+Qed.
+
+Lemma check_stream_write_kf :
+  forall id side st nonblock nosignal buf count i eff m m' evs,
+  check_stream_write id side st nonblock nosignal buf count i eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros id side st nonblock nosignal buf count i eff m m' evs H.
+  unfold check_stream_write in H. exact (check_stream_send_kf _ _ _ _ _ _ _ _ _ _ _ _ H).
+Qed.
+
+Ltac kf_stream H Hoff Hk :=
+  first
+  [ exact (check_stream_read_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk)
+  | exact (check_stream_read_empty_kf _ _ _ _ _ _ _ _ _ H Hoff Hk)
+  | exact (check_stream_write_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk)
+  | exact (check_stream_send_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk) ].
+
+(** SIGPIPE's install ([State.with_sigpipe_install]) keeps every gate:
+    it clears the pending bit or keeps it, and writes no other one. *)
+Lemma kill_off_with_sigpipe_install : forall a m,
+  kill_off m -> kill_off (with_sigpipe_install a m).
+Proof.
+  intros a m (Ha & Hp & Ht & Hq & Hs).
+  split; [exact Ha|]. split; [exact Hp|]. split; [exact Ht|].
+  split; [|exact Hs].
+  change ((m_sigpipe_pending m && spa_default a)%bool = false).
+  rewrite Hq. reflexivity.
+Qed.
+
+Lemma check_sigpipe_oact_write_evs : forall i oact old eff m1 m' evs,
+  check_sigpipe_oact_write i oact old eff m1 = CheckOk m' evs -> evs = [].
+Proof.
+  intros i oact old eff m1 m' evs H.
+  unfold check_sigpipe_oact_write in H.
+  destruct (w_is0 oact); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (_ & _ & ->). }
+  destruct (negb (access_okb oact 24)); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (_ & _ & ->). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)); cbv beta iota in H.
+  { apply check_one_write_ok_iff in H. now destruct H as (_ & _ & ->). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)); cbv beta iota in H;
+    [discriminate|].
+  apply check_ret_only_ok_iff in H. now destruct H as (_ & _ & ->).
+Qed.
+
+Lemma check_rt_sigaction_sigpipe_kf : forall i act oact eff m m' evs,
+  check_rt_sigaction_sigpipe i act oact eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros i act oact eff m m' evs H Hoff Hk.
+  unfold check_rt_sigaction_sigpipe in H. cbv zeta in H.
+  destruct (w_is0 act); cbv beta iota in H.
+  { pose proof (check_sigpipe_oact_write_evs _ _ _ _ _ _ _ H) as ->.
+    apply check_sigpipe_oact_write_model in H. subst m'.
+    split; [exact Hoff | split; [exact Hk | intros ? ? []]]. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|]; cbv beta iota in H.
+  2:{ apply check_ret_only_ok_iff in H. destruct H as (_ & -> & ->).
+      split; [exact Hoff | split; [exact Hk | intros ? ? []]]. }
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool);
+    cbv beta iota in H; [discriminate|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool;
+    cbv beta iota in H; [discriminate|].
+  apply check_copyins_after_ok_iff in H. destruct H as (_ & H).
+  pose proof (check_sigpipe_oact_write_evs _ _ _ _ _ _ _ H) as ->.
+  apply check_sigpipe_oact_write_model in H. subst m'.
+  split; [exact (kill_off_with_sigpipe_install _ _ Hoff)|].
+  split; [exact Hk | intros ? ? []].
+Qed.
+
 (** The new-descriptor answer of [openat] and its kin.  The model it
     installs is [mk fd]; the premise asks that one to owe what an outcome
     owes, which [kf_done] discharges with [kf_close] -- some of these
@@ -271,6 +378,7 @@ Proof.
   unfold check_readv_imported in H. cbv beta iota zeta in H.
   repeat (kf_step H
           || exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
+          || kf_stream H Hoff Hk
           || elim (check_readv_gap_frame _ _ H));
   kf_close m Hoff Hk.
 Qed.
@@ -281,6 +389,7 @@ Ltac kf_done H Hoff Hk :=
   | exact (check_sigpipe_write_kf _ _ _ _ H Hoff Hk)
   | exact (check_sigpipe_writev_kf _ _ _ _ _ H Hoff Hk)
   | elim (check_readv_gap_frame _ _ H)
+  | kf_stream H Hoff Hk
   | exact (check_readv_imported_kf _ _ _ _ _ _ _ _ H Hoff Hk)
   | (match type of Hoff with
      | kill_off ?m0 =>
@@ -354,7 +463,7 @@ Lemma check_mmap_kf : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H Hoff Hk.
-  unfold check_mmap in H.
+  unfold check_mmap, check_mmap_fixed_overflow in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -395,11 +504,180 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-(** OPENAT AND READ'S HELPERS, ONE LEMMA PER SUB-CHECKER.  Each proves
-    its own step and closes the sub-checkers it calls with their lemmas,
-    so no proof unfolds the whole openat tree: unfolding every
-    sub-checker at once and splitting it costs the build more memory
-    than a CI runner has. *)
+(** READ'S AND WRITE'S HELPERS, ONE LEMMA EACH, as in
+    [Checks.VmMapsDisjoint].  The arm lemmas below close these calls by
+    name instead of unfolding every helper into every arm, which costs
+    the build more memory than a CI runner has. *)
+
+Lemma kf_read_urandom : forall i buf count eff m m' evs,
+  check_read_urandom i buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i buf count eff m m' evs H Hoff Hk. unfold check_read_urandom, check_access_ok_zero in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
+  check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros e fd peer ch buf count i eff m m' evs H Hoff Hk.
+  unfold check_socket_pending_error, check_access_ok_zero in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+(** A read of a /proc/sys file (C1's [OProcFile]). *)
+Lemma kf_read_proc : forall i buf count eff m m' evs,
+  check_read_proc i buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i buf count eff m m' evs H Hoff Hk.
+  unfold check_read_proc, check_read_proc_bare in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_eventfd_read : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros fd ctx buf count i eff m m' evs H Hoff Hk. unfold check_eventfd_read in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_eventfd_write : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros fd ctx buf count i eff m m' evs H Hoff Hk. unfold check_eventfd_write in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_write_fault_extend : forall reads m p off eff m' evs,
+  check_write_fault_extend reads m p off eff = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros reads m p off eff m' evs H Hoff Hk. unfold check_write_fault_extend, check_access_ok_zero in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_anon_fault_extend : forall reads m id data dst eff m' evs,
+  check_anon_fault_extend reads m id data dst eff = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros reads m id data dst eff m' evs H Hoff Hk. unfold check_anon_fault_extend in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_anon_write_fault : forall reads m id af eff m' evs,
+  check_anon_write_fault reads m id af eff = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros reads m id af eff m' evs H Hoff Hk. unfold check_anon_write_fault in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_anon_fault_extend in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma check_read_kf : forall i fd buf count eff m m' evs,
+  check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd buf count eff m m' evs H Hoff Hk.
+  unfold check_read, check_read_file_data, check_access_ok_zero in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply kf_read_urandom in H; exact (H Hoff Hk))
+          || (eapply kf_socket_pending_error in H; exact (H Hoff Hk))
+          || (eapply kf_read_proc in H; exact (H Hoff Hk))
+          || (eapply kf_eventfd_read in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+(** [anon_place_fds] stays folded: whatever table it answers, the arm
+    installs it with [with_fds], which keeps [State.m_proc] whole. *)
+Lemma check_write_kf : forall i fd buf count eff m m' evs,
+  check_write i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd buf count eff m m' evs H Hoff Hk.
+  unfold check_write, check_access_ok_zero in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
+          || (eapply kf_write_fault_extend in H; exact (H Hoff Hk))
+          || (eapply kf_eventfd_write in H; exact (H Hoff Hk))
+          || (eapply kf_anon_write_fault in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma check_pread64_kf : forall i fd buf count pos eff m m' evs,
+  check_pread64 i fd buf count pos eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd buf count pos eff m m' evs H Hoff Hk.
+  unfold check_pread64 in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_read_urandom in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma check_pwrite64_kf : forall i fd buf count pos eff m m' evs,
+  check_pwrite64 i fd buf count pos eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd buf count pos eff m m' evs H Hoff Hk.
+  unfold check_pwrite64 in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_write_fault_extend in H; exact (H Hoff Hk))
+          || (eapply kf_anon_fault_extend in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma check_readv_kf : forall i fd iov iovcnt eff m m' evs,
+  check_readv i fd iov iovcnt eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd iov iovcnt eff m m' evs H Hoff Hk.
+  unfold check_readv in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_writev_kf : forall i fd iov iovcnt eff m m' evs,
+  check_writev i fd iov iovcnt eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i fd iov iovcnt eff m m' evs H Hoff Hk.
+  unfold check_writev in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_write_fault_extend in H; exact (H Hoff Hk))
+          || (eapply kf_anon_write_fault in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma check_pwritev2_kf :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  kill_post m m' evs.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H Hoff Hk.
+  unfold check_pwritev2 in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_anon_fault_extend in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+(** OPENAT'S SUB-CHECKERS, ONE LEMMA EACH, as in
+    [Checks.VmMapsDisjoint].  Each proves its own step and closes the
+    sub-checkers it calls with their lemmas, so no proof unfolds the
+    whole openat tree: unfolding every sub-checker at once and splitting
+    it costs the build more memory than a CI runner has. *)
 
 Lemma kf_open_wronly : forall p eff m m' evs,
   check_create_wronly p eff m = CheckOk m' evs -> kill_post m m' evs.
@@ -550,7 +828,8 @@ Proof.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
           || (eapply kf_openat_read in H; exact (H Hoff Hk))
-          || (eapply kf_openat_create in H; exact (H Hoff Hk))).
+          || (eapply kf_openat_create in H; exact (H Hoff Hk))
+          || (eapply kf_openat_rdwr_excl in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
 Qed.
 
@@ -593,13 +872,23 @@ Proof.
   all: kf_close m Hoff Hk.
 Qed.
 
+Lemma kf_openat_procfd : forall n flags eff m m' evs,
+  Open.check_openat_procfd n flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros n flags eff m m' evs H Hoff Hk. unfold Open.check_openat_procfd in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
 Lemma kf_openat_proc : forall c flags eff m m' evs,
   Open.check_openat_proc c flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros c flags eff m m' evs H Hoff Hk. unfold Open.check_openat_proc in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_proc_open_result in H; exact (H Hoff Hk))).
+          || (eapply kf_proc_open_result in H; exact (H Hoff Hk))
+          || (eapply kf_openat_procfd in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
 Qed.
 
@@ -612,172 +901,6 @@ Proof.
           || (eapply kf_openat_proc in H; exact (H Hoff Hk))
           || (eapply kf_openat_resolved in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_read_urandom : forall i buf count eff m m' evs,
-  check_read_urandom i buf count eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i buf count eff m m' evs H Hoff Hk. unfold check_read_urandom, check_access_ok_zero in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_socket_pending_error : forall e fd peer ch buf count i eff m m' evs,
-  check_socket_pending_error e fd peer ch buf count i eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros e fd peer ch buf count i eff m m' evs H Hoff Hk. unfold check_socket_pending_error, check_access_ok_zero in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_write_fault_extend : forall reads m p off eff m' evs,
-  check_write_fault_extend reads m p off eff = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros reads m p off eff m' evs H Hoff Hk. unfold check_write_fault_extend, check_access_ok_zero in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_deliver_by : forall ok statbuf p pin eff m m' evs,
-  check_fstat_deliver_by ok statbuf p pin eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros ok statbuf p pin eff m m' evs H Hoff Hk. unfold check_fstat_deliver_by in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_deliver : forall statbuf n p pin eff m m' evs,
-  check_fstat_deliver statbuf n p pin eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros statbuf n p pin eff m m' evs H Hoff Hk. unfold check_fstat_deliver in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_file : forall i p statbuf eff m m' evs,
-  check_fstat_file i p statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i p statbuf eff m m' evs H Hoff Hk. unfold check_fstat_file in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_fstat_deliver in H; exact (H Hoff Hk))
-          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_chrdev : forall ok p i statbuf eff m m' evs,
-  check_fstat_chrdev ok p i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros ok p i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_chrdev in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_fstat_deliver in H; exact (H Hoff Hk))
-          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_devnull : forall i statbuf eff m m' evs,
-  check_fstat_devnull i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_devnull in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_fstat_urandom : forall i statbuf eff m m' evs,
-  check_fstat_urandom i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_urandom in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_newfstatat_proc_errno : forall reads eff m m' evs,
-  check_newfstatat_proc_errno reads eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros reads eff m m' evs H Hoff Hk. unfold check_newfstatat_proc_errno in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma kf_newfstatat_proc : forall i reads statbuf eff m m' evs,
-  check_newfstatat_proc i reads statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i reads statbuf eff m m' evs H Hoff Hk. unfold check_newfstatat_proc in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (eapply kf_newfstatat_proc_errno in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-
-Lemma check_read_kf : forall i fd buf count eff m m' evs,
-  check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_read_file_data, check_access_ok_zero in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
-          || (eapply kf_read_urandom in H; exact (H Hoff Hk))
-          || (eapply kf_socket_pending_error in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma check_write_kf : forall i fd buf count eff m m' evs,
-  check_write i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_write, check_access_ok_zero in H.
-  cbv beta iota zeta in H;
-  repeat (kf_step H || kf_done H Hoff Hk
-          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
-          || (eapply kf_write_fault_extend in H; exact (H Hoff Hk))).
-  all: kf_close m Hoff Hk.
-Qed.
-
-Lemma check_pread64_kf : forall i fd buf count pos eff m m' evs,
-  check_pread64 i fd buf count pos eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd buf count pos eff m m' evs H Hoff Hk.
-  unfold check_pread64, check_read_urandom in H.
-  cbv zeta in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_pwrite64_kf : forall i fd buf count pos eff m m' evs,
-  check_pwrite64 i fd buf count pos eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd buf count pos eff m m' evs H Hoff Hk.
-  unfold check_pwrite64, check_write_fault_extend in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_readv_kf : forall i fd iov iovcnt eff m m' evs,
-  check_readv i fd iov iovcnt eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd iov iovcnt eff m m' evs H Hoff Hk.
-  unfold check_readv in H.
-  kf_frame H m Hoff Hk.
-Qed.
-
-Lemma check_writev_kf : forall i fd iov iovcnt eff m m' evs,
-  check_writev i fd iov iovcnt eff m = CheckOk m' evs -> kill_post m m' evs.
-Proof.
-  intros i fd iov iovcnt eff m m' evs H Hoff Hk.
-  unfold check_writev, check_write_fault_extend in H.
-  kf_frame H m Hoff Hk.
 Qed.
 
 Lemma check_openat_table_kf : forall i dirfd pathp flags eff m m' evs,
@@ -828,11 +951,11 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_ioctl_kf : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_ioctl_kf : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd req eff m m' evs H Hoff Hk.
-  unfold check_ioctl in H.
+  intros i fd req eff m m' evs H Hoff Hk.
+  unfold check_ioctl, check_siocgifindex, check_ifreq_writeback in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -840,7 +963,7 @@ Lemma check_readlinkat_kf : forall i dirfd eff m m' evs,
   check_readlinkat i dirfd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd eff m m' evs H Hoff Hk.
-  unfold check_readlinkat in H.
+  unfold check_readlinkat in H. cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1001,7 +1124,8 @@ Lemma check_unlinkat_kf : forall i dirfd pathp flags eff m m' evs,
   check_unlinkat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp, Namei.check_unlink_found, check_unlink_result in H.
+  unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp, Namei.check_unlink_found, check_unlink_result,
+    Namei.check_unlink_open_tmp, check_unlink_open_result, check_unlink_type_result in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1025,7 +1149,7 @@ Lemma check_pselect6_kf : forall i n32 inp outp exp tsp sig eff m m' evs,
   check_pselect6 i n32 inp outp exp tsp sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H Hoff Hk.
-  unfold check_pselect6 in H.
+  unfold check_pselect6, check_pselect_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1033,8 +1157,110 @@ Lemma check_ppoll_kf : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   check_ppoll i ufds nfds tsp sig sigsetsize eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H Hoff Hk.
-  unfold check_ppoll in H.
+  unfold check_ppoll, check_pselect_answer in H.
   kf_frame H m Hoff Hk.
+Qed.
+
+(** FSTAT'S AND NEWFSTATAT'S HELPERS, ONE LEMMA EACH, for the reason
+    the openat and read helpers above have theirs. *)
+
+Lemma kf_fstat_deliver_by : forall ok statbuf p pin eff m m' evs,
+  check_fstat_deliver_by ok statbuf p pin eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros ok statbuf p pin eff m m' evs H Hoff Hk. unfold check_fstat_deliver_by in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_deliver : forall statbuf n p pin eff m m' evs,
+  check_fstat_deliver statbuf n p pin eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros statbuf n p pin eff m m' evs H Hoff Hk. unfold check_fstat_deliver in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_file : forall i p statbuf eff m m' evs,
+  check_fstat_file i p statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i p statbuf eff m m' evs H Hoff Hk. unfold check_fstat_file in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_deliver in H; exact (H Hoff Hk))
+          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_chrdev : forall ok p i statbuf eff m m' evs,
+  check_fstat_chrdev ok p i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros ok p i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_chrdev in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_deliver in H; exact (H Hoff Hk))
+          || (eapply kf_fstat_deliver_by in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_devnull : forall i statbuf eff m m' evs,
+  check_fstat_devnull i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_devnull in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_urandom : forall i statbuf eff m m' evs,
+  check_fstat_urandom i statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i statbuf eff m m' evs H Hoff Hk. unfold check_fstat_urandom in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_anon_deliver : forall statbuf id n pin eff m m' evs,
+  check_fstat_anon_deliver statbuf id n pin eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros statbuf id n pin eff m m' evs H Hoff Hk. unfold check_fstat_anon_deliver in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_fstat_anon : forall i id af statbuf eff m m' evs,
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i id af statbuf eff m m' evs H Hoff Hk. unfold check_fstat_anon in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_fstat_anon_deliver in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_newfstatat_proc_errno : forall reads eff m m' evs,
+  check_newfstatat_proc_errno reads eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros reads eff m m' evs H Hoff Hk. unfold check_newfstatat_proc_errno in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk).
+  all: kf_close m Hoff Hk.
+Qed.
+
+Lemma kf_newfstatat_proc : forall i reads statbuf eff m m' evs,
+  check_newfstatat_proc i reads statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i reads statbuf eff m m' evs H Hoff Hk. unfold check_newfstatat_proc in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (eapply kf_newfstatat_proc_errno in H; exact (H Hoff Hk))).
+  all: kf_close m Hoff Hk.
 Qed.
 
 Lemma check_newfstatat_kf : forall i dirfd pathp flag eff m m' evs,
@@ -1060,7 +1286,8 @@ Proof.
           || (eapply kf_fstat_file in H; exact (H Hoff Hk))
           || (eapply kf_fstat_devnull in H; exact (H Hoff Hk))
           || (eapply kf_fstat_urandom in H; exact (H Hoff Hk))
-          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))).
+          || (eapply kf_fstat_chrdev in H; exact (H Hoff Hk))
+          || (eapply kf_fstat_anon in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
 Qed.
 
@@ -1233,6 +1460,10 @@ Lemma check_rt_sigaction_kf : forall i sig act oact ss eff m m' evs,
 Proof.
   intros i sig act oact ss eff m m' evs H Hoff Hk.
   unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H;
+    [kf_frame H m Hoff Hk|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { exact (check_rt_sigaction_sigpipe_kf _ _ _ _ _ _ _ H Hoff Hk). }
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1285,19 +1516,21 @@ Proof.
       kf_frame He m Hoff Hk .. ].
 Qed.
 
-Lemma check_getsockname_kf : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_getsockname_kf : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd eff m m' evs H Hoff Hk.
-  unfold check_getsockname, check_getsockname_core in H.
+  intros i fd eff m m' evs H Hoff Hk.
+  unfold check_getsockname, check_getsockname_core, check_stream_getname,
+    check_ret_writes_copyins in H. cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_getpeername_kf : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_getpeername_kf : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd eff m m' evs H Hoff Hk.
-  unfold check_getpeername, check_getpeername_core in H.
+  intros i fd eff m m' evs H Hoff Hk.
+  unfold check_getpeername, check_getpeername_core, check_stream_getname,
+    check_ret_writes_copyins in H. cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1305,7 +1538,9 @@ Lemma check_setsockopt_kf : forall i fd level optlen eff m m' evs,
   check_setsockopt i fd level optlen eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd level optlen eff m m' evs H Hoff Hk.
-  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core in H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core,
+    check_stream_setsockopt in H.
+  cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1313,7 +1548,9 @@ Lemma check_getsockopt_kf : forall i fd level optlenp eff m m' evs,
   check_getsockopt i fd level optlenp eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd level optlenp eff m m' evs H Hoff Hk.
-  unfold check_getsockopt, check_getsockopt_core in H.
+  unfold check_getsockopt, check_getsockopt_core, check_stream_getsockopt,
+    check_ret_writes_copyins in H.
+  cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1321,7 +1558,7 @@ Lemma check_shutdown_kf : forall fd how eff m m' evs,
   check_shutdown fd how eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros fd how eff m m' evs H Hoff Hk.
-  unfold check_shutdown, check_shutdown_core in H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H. cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1345,8 +1582,10 @@ Lemma check_socketpair_kf : forall i family type protocol sv eff m m' evs,
   check_socketpair i family type protocol sv eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i family type protocol sv eff m m' evs H Hoff Hk.
-  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 Print Assumptions check_socketpair_kf.
@@ -1384,10 +1623,10 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_eventfd2_kf : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_eventfd2_kf : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros flags eff m m' evs H Hoff Hk.
+  intros i flags eff m m' evs H Hoff Hk.
   unfold check_eventfd2, check_new_fd_result in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -1472,6 +1711,7 @@ Proof.
     | eapply check_pwrite64_kf; eassumption
     | eapply check_readv_kf; eassumption
     | eapply check_writev_kf; eassumption
+    | eapply check_pwritev2_kf; eassumption
     | eapply check_openat_kf; eassumption
     | eapply check_close_kf; eassumption
     | eapply check_lseek_kf; eassumption
