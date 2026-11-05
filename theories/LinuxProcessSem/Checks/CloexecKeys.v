@@ -132,7 +132,8 @@ Proof.
           cbv beta iota in E);
   first [ discriminate E | injection E as <- ];
   unfold anon_write_back, anon_set_data, anon_update;
-  apply fds_grow_insert; apply fds_grow_map_key; [intros [? ?]; reflexivity | exact H].
+  (apply fds_grow_insert; apply fds_grow_map_key;
+   [ intros [? ?]; reflexivity | exact H ]).
 Qed.
 
 (** What an arm that does not write the map owes: the map is the old
@@ -1273,10 +1274,17 @@ Lemma check_sigaltstack_fr : forall i uss uoss eff m m' evs,
   check_sigaltstack i uss uoss eff m = CheckOk m' evs -> fd_rel m m'.
 Proof. intros i uss uoss eff m m' evs H. unfold check_sigaltstack in H. fr_frame2 H. Qed.
 
+(** The SIGPIPE arm answers at the model it was handed or installs one
+    SIGPIPE action ([State.with_sigpipe_install]), which rebuilds
+    [ProcState] alone: [Checks.Sys.Kernel.Signal.check_rt_sigaction_sigpipe_model]. *)
 Lemma check_rt_sigaction_fr : forall i sig act oact ss eff m m' evs,
   check_rt_sigaction i sig act oact ss eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros i sig act oact ss eff m m' evs H. unfold check_rt_sigaction in H. fr_frame2 H.
+  intros i sig act oact ss eff m m' evs H. unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [fr_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { apply check_rt_sigaction_sigpipe_model in H as [-> | [a ->]]; fr_leaf. }
+  fr_frame2 H.
 Qed.
 
 Lemma check_getsockname_fr : forall i fd eff m m' evs,
@@ -1320,12 +1328,17 @@ Proof.
   fr_frame2 H.
 Qed.
 
+(** [shutdown] on a stream end rewrites that end and its peer, if the
+    pair still has one, in place ([Socket.check_stream_shutdown]): the
+    peer lookup is a [match] in the post-model, split here. *)
 Lemma check_shutdown_fr : forall fd how eff m m' evs,
   check_shutdown fd how eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros fd how eff m m' evs H.
   unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H. cbv zeta in H.
-  fr_frame2 H.
+  repeat (vm_step H || fr_done H);
+  repeat match goal with |- context [match ?x with _ => _ end] => destruct x end;
+  fr_leaf.
 Qed.
 
 Lemma check_send_on_socket_fr :
@@ -1360,7 +1373,7 @@ Lemma check_recvfrom_fr : forall i fd buf size eff m m' evs,
 Proof.
   intros i fd buf size eff m m' evs H.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H.
-  fr_frame2 H.
+  repeat (vm_step H || fr_done H || fr_stream H); fr_leaf.
 Qed.
 
 Lemma check_recvmsg_fr : forall i fd flags eff m m' evs,
@@ -1377,7 +1390,7 @@ Lemma check_sendto_fr : forall i fd buf count flags addrp eff m m' evs,
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
   unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
-  fr_frame2 H.
+  repeat (vm_step H || fr_done H || fr_stream H); fr_leaf.
 Qed.
 
 Lemma check_sendmsg_fr : forall i fd msgp flags eff m m' evs,
@@ -1430,7 +1443,11 @@ Lemma check_mmap_fr : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only in H. mm_walk H. all: mm_leaf H.
+  (* [check_ret_only] goes last, so the one inside
+     [check_mmap_fixed_overflow] (the -ENOMEM answer) is opened too, as
+     [MmStepFrame.check_mmap_mm_frame] does. *)
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H.
+  mm_walk H. all: mm_leaf H.
 Qed.
 
 Lemma check_mremap_fr : forall old old_size new_size flags eff m m' evs,
