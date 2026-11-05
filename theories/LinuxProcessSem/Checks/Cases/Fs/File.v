@@ -20,7 +20,7 @@
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs Progress.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
 Import ListNotations.
@@ -743,6 +743,104 @@ Example unlink_under_a_dangling_alias :
      = CheckUnmodeled
   /\ check_syscall unlink_f_in (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] [])) dup_model
      = CheckUnmodeled.
+Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
+
+(* =========================================================================
+   dup3 MOVES an unnamed file ([State.FdAnon]) as it moves a named one
+
+   [File.dup3_moves_entry] sends an [FdAnon] entry, offset and all, to
+   [newfd] and leaves [State.OAlias newfd] at [oldfd]
+   ([Checks.AnonAgree.anon_agree_dup3_fds] proves the table still
+   agrees).  The alias then declines every call that could show the
+   description: read, fstat, the reopen through "/proc/self/fd/<alias>",
+   pwritev2 and clone.
+   ========================================================================= *)
+
+(** The unnamed file the example moves: contents "hi", offset 1, open
+    read-write, no stat pin yet. *)
+Definition anon_hi (off : word) : FdEntry :=
+  FdAnon 7 (mkAnonFile [104; 105] off true true false None).
+
+(** The three channels and the unnamed file at fd 3. *)
+Definition anon_model : Model :=
+  with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2); (3, anon_hi 1)] dup_model.
+
+(** [fstat(fd, 0x7000)] into a writable 128-byte buffer. *)
+Definition fstat_w_in (fd : word) : SyscallInput :=
+  mkInput 80 [fd; 0x7000; 0; 0; 0; 0] (fun _ => None)
+    (bytes_at 0x7000 (repeat (Z_to_bv 8 0) 128%nat)).
+
+(** [openat(AT_FDCWD, bs, O_RDONLY)]: the reopen of "/proc/self/fd/N". *)
+Definition proc_fd_reopen_in (bs : list byte) : SyscallInput :=
+  mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0] (bytes_at 8192 (bs ++ [0])) (fun _ => None).
+
+(** "/proc/self/fd/5". *)
+Definition s_self_fd5 : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 53].
+
+(** [pwritev2(fd, iov, 1, 0, 0, RWF_NOAPPEND)] of "x": the one iovec at
+    0x6000 names one byte at 0x6010. *)
+Definition pwv_x_in (fd : word) : SyscallInput :=
+  mkInput 287 [fd; 0x6000; 1; 0; 0; 32]
+    (bytes_at 0x6000 (Z_to_le_bytes 8 0x6010%Z ++ Z_to_le_bytes 8 1%Z ++ [120]))
+    (fun _ => None).
+
+(** The model answers the call: the witness the spec admits
+    ([Progress.receptive]) is not a decline, and the checker accepts
+    its effect with the witness's model and events. *)
+Definition anon_answered (i : SyscallInput) (m : Model) : Prop :=
+  match syscall_spec_witness i m with
+  | Ok e m' evs => check_syscall i e m = CheckOk m' evs
+  | Unmodeled => False
+  end.
+
+(** THE MOVE.  [dup3(3, 5, 0)] answers 5: fd 5 holds the unnamed file,
+    offset 1, and fd 3 the alias of fd 5.  Through fd 5 [read] answers
+    "i", the byte at offset 1, and moves the offset to 2.  THE ALIAS
+    DECLINES read, fstat, the O_RDONLY reopen of "/proc/self/fd/3",
+    pwritev2 and clone, and the same read, fstat, reopen and pwritev2 on
+    fd 5 are answered.
+
+    THE CONTROLS.  Before the move the same read, fstat, reopen and
+    pwritev2 on fd 3 are answered, so each decline above is the alias's.
+    Were the move a copy, fd 3 would still hold the file and its read
+    would be answered: the conjuncts on fd 3 fail.  After a
+    [close_range(3, ~0U, 0)] closes alias and partner, the same clone is
+    answered, so its decline is theirs. *)
+Example dup3_moves_an_unnamed_file :
+  match check_syscall (fd_call 24 3 5 0) (mkEffect 5 [] []) anon_model with
+  | CheckOk m1 [] =>
+      fd_lookup (m_fds m1) 5 = Some (anon_hi 1)
+      /\ fd_lookup (m_fds m1) 3 = Some (FdOpaque (OAlias 5))
+      /\ check_syscall (read1_in 3) (mkEffect 1 [(4096, [105])] []) m1 = CheckUnmodeled
+      /\ match check_syscall (read1_in 5) (mkEffect 1 [(4096, [105])] []) m1 with
+         | CheckOk m2 [] => fd_lookup (m_fds m2) 5 = Some (anon_hi 2)
+         | _ => False
+         end
+      /\ check_syscall (fstat_w_in 3) (mkEffect (errno_ret EBADF) [] []) m1 = CheckUnmodeled
+      /\ check_syscall (proc_fd_reopen_in s_self_fd3)
+           (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) m1
+         = CheckUnmodeled
+      /\ check_syscall (pwv_x_in 3) (mkEffect 1 [] []) m1 = CheckUnmodeled
+      /\ check_syscall clone_sigchld_in (mkEffect 4242 [] []) m1 = CheckUnmodeled
+      /\ anon_answered (fstat_w_in 5) m1
+      /\ anon_answered (proc_fd_reopen_in s_self_fd5) m1
+      /\ anon_answered (pwv_x_in 5) m1
+      (* the clone control *)
+      /\ match check_syscall (close_range_in 3 4294967295 0) (mkEffect 0 [] []) m1 with
+         | CheckOk m3 [] => anon_answered clone_sigchld_in m3
+         | _ => False
+         end
+  | _ => False
+  end
+  (* the controls before the move *)
+  /\ match check_syscall (read1_in 3) (mkEffect 1 [(4096, [105])] []) anon_model with
+     | CheckOk m2 [] => fd_lookup (m_fds m2) 3 = Some (anon_hi 2)
+     | _ => False
+     end
+  /\ anon_answered (fstat_w_in 3) anon_model
+  /\ anon_answered (proc_fd_reopen_in s_self_fd3) anon_model
+  /\ anon_answered (pwv_x_in 3) anon_model.
 Proof. vm_compute. repeat split; solve [ reflexivity | check_eq ]. Qed.
 
 (* =========================================================================
