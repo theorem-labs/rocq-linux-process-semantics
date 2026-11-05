@@ -646,7 +646,8 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
            (fs/read_write.c:451-478): [access_ok] bounds the count by
            [State.TASK_SIZE], and the position is at most the kernel's
            [max_fds + 2], because only [getdents64] moves it ([lseek],
-           [dup] and [clone] decline the kind).  The position stays:
+           [dup] and [clone] decline the kind, or answer an -EINVAL that
+           creates no child).  The position stays:
            [ksys_read] stores it back only for a return of 0 or more *)
   | OSignalFd _ _ => unmodeled
       (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at

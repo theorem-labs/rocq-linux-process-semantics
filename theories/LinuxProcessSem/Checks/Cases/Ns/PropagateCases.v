@@ -279,7 +279,7 @@ Definition clone_world : NsState :=
 
 Example clone_newns_copy_after_original : forall m,
   option_map (fun s => pl_find 7 (pl_rings (ns_prop s)))
-    (CloneCases.st_of (clone_ns_exact (Z.lor CLONE_NEWNS CloneCases.SIGCHLD)
+    (CloneCases.st_of (clone_ns_exact (CloneCases.cw (Z.lor CLONE_NEWNS CloneCases.SIGCHLD))
                                       (with_creds (CloneCases.creds 65534) m) CloneCases.shell
                                       clone_world 140))
   = Some (Some [2; 8; 6; 9]).
@@ -344,7 +344,7 @@ Example clone_entered_namespace_copy : forall m,
   option_map (fun s => (env_entered_mntns (ns_env s),
                         open_mount s 7, open_mount s 8,
                         pl_find 7 (pl_rings (ns_prop s))))
-    (CloneCases.st_of (clone_ns_exact (Z.lor CLONE_NEWNS CloneCases.SIGCHLD)
+    (CloneCases.st_of (clone_ns_exact (CloneCases.cw (Z.lor CLONE_NEWNS CloneCases.SIGCHLD))
           (with_creds (CloneCases.creds 65534) m) CloneCases.shell
           (with_entered_mntns clone_world [1]) 140))
   = Some ([2; 1], true, true, None).
@@ -352,7 +352,7 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example clone_preserves_other_uncertainty : forall m,
   option_map (fun s => (env_entered_mntns (ns_env s), open_mount s 8))
-    (CloneCases.st_of (clone_ns_exact (Z.lor CLONE_NEWNS CloneCases.SIGCHLD)
+    (CloneCases.st_of (clone_ns_exact (CloneCases.cw (Z.lor CLONE_NEWNS CloneCases.SIGCHLD))
           (with_creds (CloneCases.creds 65534) m) CloneCases.shell
           (with_open_groups (with_entered_mntns clone_world [9]) [7]) 140))
   = Some ([9], true).

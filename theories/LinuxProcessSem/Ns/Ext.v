@@ -41,15 +41,16 @@
 
     [ext_clone] is what a successful or failing [clone] does to the
     namespace model, for a core whose own clone step creates the child:
-    for the clone's flag word, the caller's spliced model, context and
-    state, and the pid the core gives the child, a [CnOk] with the child's
-    context, what the parent's call returns when that is not the core's pid
-    (the child's pid in the caller's own pid namespace), and the next
-    state; or a [CnErr] with the errno and the state after the failure; or
+    for the clone's input ([CloneIn]: the decoded argument record the core
+    made, or none), the caller's spliced model, context and state, and the
+    pid the core gives the child, a [CnOk] with the child's context, what
+    the parent's call returns when that is not the core's pid (the child's
+    pid in the caller's own pid namespace), and the next state; or a
+    [CnErr] with the errno and the state after the failure; or
     [CnUnmodeled].  [ext_clone_coherent] makes it the core's own clone in
-    the released world for a word with no namespace bit: the child gets the
-    caller's context, the parent gets the core's pid, the state does not
-    change, and a failure is any errno.
+    the released world for a clone that makes no namespace ([makes_ns]):
+    the child gets the caller's context, the parent gets the core's pid,
+    the state does not change, and a failure is any errno.
 
     Which clone failures a run admits is not the extension's to choose: a
     core takes it as an explicit argument, a [CloneEnv], which a statement
@@ -71,6 +72,7 @@
 From Stdlib Require Import List PArith ZArith Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Fork.
 Import ListNotations.
 
 Inductive ext_outcome :=
@@ -100,6 +102,30 @@ Definition clone_ns_bits : Z :=
   fold_left Z.lor [131072; 33554432; 67108864; 134217728; 268435456; 536870912; 1073741824]%Z 0%Z.
 
 Definition has_ns_bits (f : Z) : bool := negb (Z.eqb (Z.land f clone_ns_bits) 0).
+
+(** A clone that makes a namespace, read off what the core gives the
+    namespace model for it ([Fork.CloneIn]: the decoded argument record
+    of the call, or [Fork.CiNoArgs] for a call the core does not answer
+    from one): the record's flags hold a namespace bit and the argument
+    checks pass it.  A record the checks refuse ([Fork.clone_arg_checks])
+    makes none: its -EINVAL comes before every other step of
+    [copy_process] (kernel/fork.c:1951-1999, Linux v6.18.46), so before
+    [copy_namespaces] (2188); and a call with no record makes none. *)
+Definition makes_ns (f : Fork.CloneIn) : bool :=
+  match f with
+  | Fork.CiArgs r => has_ns_bits (Fork.cla_flags r) && negb (Fork.clone_arg_checks r)
+  | Fork.CiNoArgs => false
+  end.
+
+(** A RECORD WHOSE FLAGS HOLD NO NAMESPACE BIT MAKES NO NAMESPACE.  This
+    is the direction the statements restated for [makes_ns] need: every
+    record the old premise [has_ns_bits] admitted, the new premise admits
+    too, so each of those statements still covers what it covered.  The
+    converse fails, and deliberately: a record the argument checks refuse
+    makes no namespace however its flags read. *)
+Lemma makes_ns_no_ns_bits : forall r,
+  has_ns_bits (Fork.cla_flags r) = false -> makes_ns (Fork.CiArgs r) = false.
+Proof. intros r H. cbn [makes_ns]. rewrite H. reflexivity. Qed.
 
 (** A task is in the released world when each of its namespaces is the
     host's: its mount namespace is not in the tables or is marked
@@ -169,7 +195,7 @@ Record ExtSpec := mkExtSpec {
   ext_claims    : SyscallInput -> bool;
   ext_spec      : SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop;
   ext_refusal   : SpuriousCfg -> SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop;
-  ext_clone     : Z -> Model -> NsCtx -> NsState -> Z -> CloneNs -> Prop;
+  ext_clone     : Fork.CloneIn -> Model -> NsCtx -> NsState -> Z -> CloneNs -> Prop;
   ext_multiproc : SyscallInput -> Model -> NsCtx -> NsState -> bool;
   ext_coherent : forall i m ctx st,
     flat_view ctx st = true -> ext_claims i = true ->
@@ -178,7 +204,7 @@ Record ExtSpec := mkExtSpec {
     flat_view ctx st = true -> ext_claims i = true -> outcome_eff o = Some eff ->
     (ext_refusal cfg i m ctx st o <-> spurious_refusal_cfg cfg i m eff);
   ext_clone_coherent : forall f m ctx st hq o,
-    flat_view ctx st = true -> has_ns_bits f = false ->
+    flat_view ctx st = true -> makes_ns f = false ->
     (ext_clone f m ctx st hq o <-> released_clone ctx st o);
   ext_multiproc_coherent : forall i m ctx st,
     flat_view ctx st = true -> ext_multiproc i m ctx st = false
@@ -218,10 +244,11 @@ Proof.
   exact (ext_refusal_coherent ext cfg i m ctx st (EOk eff m' ctx' st' evs) eff Hf Hc eq_refl).
 Qed.
 
-(** The clone failures a run admits: for the clone's flag word, the
-    caller's model, context and state, the pid the core gives the child,
-    the errno and the state after the failure. *)
-Definition CloneEnv : Type := Z -> Model -> NsCtx -> NsState -> Z -> Z -> NsState -> Prop.
+(** The clone failures a run admits: for the clone's input
+    ([Fork.CloneIn]), the caller's model, context and state, the pid the
+    core gives the child, the errno and the state after the failure. *)
+Definition CloneEnv : Type :=
+  Fork.CloneIn -> Model -> NsCtx -> NsState -> Z -> Z -> NsState -> Prop.
 
 (** Every failure: the unrestricted relation. *)
 Definition any_clone_failure : CloneEnv := fun _ _ _ _ _ _ _ => True.

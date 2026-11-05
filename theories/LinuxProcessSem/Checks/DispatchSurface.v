@@ -196,11 +196,14 @@ Definition clone3_probe_uargs : word := Z_to_bv 64 0x10000.
     fork-shaped.
 
     [clone3_spec] declines every size but [CLONE_ARGS_SIZE], answers
-    -EFAULT for a [uargs] range [access_ok] refuses, and otherwise
-    declines every struct but the one [Fork.clone3_fork_args_b] admits:
-    all eleven fields zero except [exit_signal] = SIGCHLD, which
-    [Fork.clone_args_field] reads from offset 32.  An all-NUL memory
-    therefore gives [exit_signal = 0] and the arm declines.  A refused
+    -EFAULT for a [uargs] range [access_ok] refuses, answers -EINVAL for
+    a struct [Fork.clone3_einval_b] refuses (its own tests or, on a
+    struct that gives a record, the argument checks),
+    and otherwise declines every struct but the one
+    [Fork.clone3_fork_args_b] admits: all eleven fields zero except
+    [exit_signal] = SIGCHLD, which [Fork.clone_args_field] reads from
+    offset 32.  An all-NUL memory passes every check and gives
+    [exit_signal = 0], so the arm declines.  A refused
     address would reach the -EFAULT by registers alone, but that answer
     stops before [kernel_clone]; this probe measures the RESOLUTION, so
     unlike every other entry below the fixture has to carry the struct.
@@ -409,7 +412,8 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 435 then
     (* clone3 reaches [kernel_clone] through a struct in user memory
        rather than through registers, and declines every size but
-       [CLONE_ARGS_SIZE] and every struct but the fork-shaped one.  A
+       [CLONE_ARGS_SIZE] and, of the structs no argument check refuses,
+       every one but the fork-shaped one.  A
        refused [uargs] answers -EFAULT without reaching [kernel_clone], so
        the probe points at the struct [probe_mem] carries at
        [clone3_probe_uargs] instead. *)
