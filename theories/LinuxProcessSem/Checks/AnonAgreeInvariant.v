@@ -530,8 +530,10 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_frame H; fail).
-  all: fail 1
-    "checked_table_preserves_aa has no case for this dispatcher arm".
+  (* Diagnostic: step as far as possible, then report *)
+  all: cbv beta iota zeta in H.
+  all: repeat (kf_step H || aa_done H).
+  all: let T := type of H in fail 1 "STUCK_ON:" T.
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
