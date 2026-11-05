@@ -704,7 +704,7 @@ Proof. repeat split; check_eq. Qed.
     80 bytes and nothing mapped past them: zero-filled, a child, exactly
     as the 88-byte image at the same address (with 88 bytes mapped)
     gives; only the ledger differs, 80 bytes read against 88
-    (include/linux/uaccess.h:402-403, 408). *)
+    (include/linux/uaccess.h:400-401, 408-409). *)
 Example clone3_size_80_fork_image :
   check_syscall (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
     (mkEffectU 4242 [] [] [] [] [(clone3_args_base, 80%nat)]) clone3_model
@@ -740,8 +740,13 @@ Proof. repeat split; check_eq. Qed.
     struct sits so that its 88 head bytes end a page with nothing mapped
     and its tail begins the next, mapped, page.  The tail test runs first
     and answers -E2BIG having read the tail's one word; the head is never
-    read, so -EFAULT is refused (include/linux/uaccess.h:404-406).  The
-    same with only the struct's first byte unreadable answers the same. *)
+    read, so -EFAULT is refused (include/linux/uaccess.h:402-405).  THE
+    SAME WITH A MISALIGNED TAIL: at [uargs] 0x2FFF only the struct's first
+    byte lies on the unmapped page 0x2000, and the tail starts at 0x3057,
+    7 bytes into its word, so [check_zeroed_user] widens the range down to
+    0x3050 (lib/usercopy.c:53-57), masks the 7 bytes below the tail off
+    its first word (59-61), and finds byte 90 in the second word: -E2BIG,
+    the tail's 8 bytes read. *)
 Example clone3_size_96_tail_before_head :
   check_syscall
     (c3_call (Z_to_bv 64 0x2FA8) 96
@@ -759,10 +764,15 @@ Example clone3_size_96_tail_before_head :
                                       else Some (if Z.eqb o 90 then Z_to_bv 8 1 else Z_to_bv 8 0))))
        (c3_err EFAULT [(Z_to_bv 64 0x3000, 8%nat)]) clone3_model = CheckReject
   /\ check_syscall
-       (c3_call clone3_args_base 96
-          (c3_mem 0x1000 96 (fun o => if Z.eqb o 0 then None
+       (c3_call (Z_to_bv 64 0x2FFF) 96
+          (c3_mem 0x2FFF 96 (fun o => if Z.eqb o 0 then None
                                       else Some (if Z.eqb o 90 then Z_to_bv 8 1 else c3_fork_byte o))))
-       (c3_err E2BIG [(Z_to_bv 64 0x1058, 8%nat)]) clone3_model = CheckOk clone3_model [].
+       (c3_err E2BIG [(Z_to_bv 64 0x3057, 8%nat)]) clone3_model = CheckOk clone3_model []
+  /\ check_syscall
+       (c3_call (Z_to_bv 64 0x2FFF) 96
+          (c3_mem 0x2FFF 96 (fun o => if Z.eqb o 0 then None
+                                      else Some (if Z.eqb o 90 then Z_to_bv 8 1 else c3_fork_byte o))))
+       (c3_err EFAULT []) clone3_model = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
 (** Design row S2, case 15: [size] 200, the struct placed so that its
@@ -770,7 +780,7 @@ Proof. repeat split; check_eq. Qed.
     bytes 88 to 95, is readable and the second faults.  A non-zero byte
     at 90: -E2BIG at the first word, the second never read.  Bytes 88 to
     95 zero: the walk reaches the second word, which faults: -EFAULT,
-    the first word in the ledger (lib/usercopy.c:56-75). *)
+    the first word in the ledger (lib/usercopy.c:53-81). *)
 Example clone3_size_200_tail_order :
   check_syscall
     (c3_call (Z_to_bv 64 0x1FA0) 200

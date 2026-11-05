@@ -1941,9 +1941,9 @@ Definition pc_input (n : Z) : SyscallInput :=
 
 (** [clone] and [clone3] are modeled, so their examples run the other
     way round: the checker must DECLINE the flag words the spec does not
-    admit, and answer the one it does.  [pc_input] passes zero in every
-    argument register, which is a flag word of 0 — not [SIGCHLD] — and a
-    [clone3] whose [size] is 0. *)
+    admit, and answer the inputs it does.  [pc_input] passes zero in every
+    argument register, which is a flag word of 0 — not [SIGCHLD] — and
+    declines, and a [clone3] whose [size] is 0, which is -EINVAL. *)
 Example clone_checker_declines_flags_zero :
   check_syscall (pc_input 220) (mkEffect 0 [] []) pc_model = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
