@@ -1033,3 +1033,34 @@ Example clone_sysvsem_with_a_refuser :
   /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
        (mkEffect (errno_ret EINTR) [] []) clone_case_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE WORDS [Kernel.Fork.clone_class] ADMITS CONVERT THE TABLE TOO.  On
+    the table above that holds a live inherited file (fd 3) and an
+    eventfd (fd 4), [clone(SIGCHLD | CLONE_SYSVSEM)],
+    [clone(SIGCHLD | CLONE_SETTLS)], a namespace word with
+    [CLONE_SYSVSEM], [clone3]'s struct with a stack, and the
+    [CLONE_SYSVSEM] word with a BPF program on [task_alloc] each return
+    the pid with the caller's table [clone_mixed_parent_fds]: fd 3
+    without its offset, fd 4 the shared kind.  Every success of these
+    arms is [Kernel.Fork.clone_child_made]. *)
+Example clone_admitted_words_mixed_table :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+    (mkEffect (Z_to_bv 64 4242) [] []) clone_mixed_model
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SETTLS)))
+       (mkEffect (Z_to_bv 64 4242) [] []) clone_mixed_model
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWNS + CLONE_SYSVSEM)))
+       (mkEffect (Z_to_bv 64 4242) [] []) clone_mixed_model
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone_mixed_model) []
+  /\ check_syscall
+       (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0x8000%Z; 0x1000%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       (mkEffectU (Z_to_bv 64 4242) [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       clone3_mixed_model
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) clone3_mixed_model) []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+       (mkEffect (Z_to_bv 64 4242) [] []) (with_fds clone_mixed_fds bpf_model)
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) (with_fds clone_mixed_fds bpf_model)) []
+  /\ m_fds (clone_child_made (Z_to_bv 64 4242) (with_fds clone_mixed_fds bpf_model))
+     = clone_mixed_parent_fds.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

@@ -24,6 +24,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem Require Import Procs.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Tables.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -115,6 +116,53 @@ Example clone_child_registers_and_memory :
          [0x2000; 0x2001; 0x2002; 0x2003; 0x3000; 0x3001; 0x3002; 0x3003]%Z
      = [Some 0; Some 0; Some 0; Some 0; Some 0x92; Some 0x10; Some 0; Some 0]%Z.
 Proof. vm_compute. repeat split. Qed.
+
+(** THE SAME CALL ON A TABLE THAT HOLDS A LIVE INHERITED FILE (fd 3, the
+    bytes "key\n" at offset 1) AND A NON-BLOCKING EVENTFD (fd 4, counter
+    5).  The caller keeps [Kernel.Fork.clone_child_made]'s table: fd 3
+    without its offset, fd 4 the shared kind.  The child the core makes
+    ([Procs.child_entry]) makes its own [CLONE_CHILD_SETTID] store, so its
+    model is the accounted one ([Procs.child_model]), and its table is the
+    caller's table before the call with only the sharing applied: fd 3
+    keeps its offset, fd 4 is the shared kind.  THE CONTROLS: the child's
+    table is neither the table before the call nor the caller's new
+    table. *)
+Definition ctm_fds : list (word * FdEntry) :=
+  [(Z_to_bv 64 3, FdOpaque (OInherited (Some ([107; 101; 121; 10], 1))));
+   (Z_to_bv 64 4, FdEventfd (mkEventfdCtx 5 false true))].
+
+Definition ctm_child_fds : list (word * FdEntry) :=
+  [(Z_to_bv 64 3, FdOpaque (OInherited (Some ([107; 101; 121; 10], 1))));
+   (Z_to_bv 64 4, FdOpaque (OEventFd (Z_to_bv 64 0x800)))].
+
+Definition ctm_model : Model := with_fds ctm_fds ct_model.
+
+Definition ctm_c : config := mkCfg ct_ms ctm_model.
+
+Definition ctm_c' : config :=
+  mkCfg (advance_past_svc (apply_effect ct_ms ct_eff)) (clone_child_made ct_pid ctm_model).
+
+Definition ctm_parent : ProcessEntry :=
+  mkEntry (Z_to_bv 64 1) None ct_ms ctm_model [] Tables.init_nsctx.
+
+Example clone_child_settid_mixed_table :
+  check_syscall (sys_input [] ct_ms (Z_to_bv 64 220)) ct_eff ctm_model
+  = CheckOk (clone_child_made ct_pid ctm_model) []
+  /\ m_fds (clone_child_made ct_pid ctm_model)
+     = [(Z_to_bv 64 3, FdOpaque (OInherited None));
+        (Z_to_bv 64 4, FdOpaque (OEventFd (Z_to_bv 64 0x800)))]
+  /\ child_tid_store ctm_c ctm_c' <> []
+  /\ m_fds (pe_model (child_entry ctm_parent ctm_c ctm_c' ct_pid)) = ctm_child_fds
+  /\ ctm_child_fds <> ctm_fds
+  /\ ctm_child_fds <> m_fds (clone_child_made ct_pid ctm_model).
+Proof.
+  repeat match goal with |- _ /\ _ => split end;
+    [ vm_compute; reflexivity | vm_compute; reflexivity
+    | intros H; vm_compute in H; discriminate H
+    | vm_compute; reflexivity
+    | intros H; vm_compute in H; discriminate H
+    | intros H; vm_compute in H; discriminate H ].
+Qed.
 
 (** The extension gives the call a return value of its own, 77: the
     caller's four bytes at a2 hold 77 ([Procs.clone_parent_rewrite]), and
