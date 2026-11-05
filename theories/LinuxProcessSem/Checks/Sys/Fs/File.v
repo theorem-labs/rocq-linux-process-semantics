@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Fs.File — the dup (23) and dup3 (24) checkers, and their proofs
+(** * LinuxProcessSem.Checks.Sys.Fs.File — the dup (23), dup3 (24) and close_range (436) checkers, and their proofs
 
     Mirrors [Sys/Fs/File.v], which answers to Linux [fs/file.c]: this
     file holds the checkers for the syscalls defined there, and no
@@ -265,4 +265,92 @@ Proof.
   destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf; hall Hnf; inv_ok.
   destruct (Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT) eqn:Hb; hall Hb; inv_ok.
   reflexivity.
+Qed.
+
+(* ------------------------------------------------------------ close_range *)
+
+(** [close_range] (436): the unknown-flag -EINVAL, then the [fd > max_fd]
+    -EINVAL, in the kernel's order; then a decline for either known
+    flag; then 0 with every descriptor of the range removed
+    ([File.close_range_fds]).  Deterministic on every branch it answers,
+    so each is a bare return compared against its one answer.  Kernel
+    citations live on [File.close_range_spec]. *)
+Definition check_close_range (fd max_fd flags : word) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                          (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)
+  then check_ret_only eff (errno_ret EINVAL) m []
+  else if (bv_unsigned max_fd <? bv_unsigned fd)%Z
+  then check_ret_only eff (errno_ret EINVAL) m []
+  else if negb (Z.eqb (bv_unsigned flags) 0) then CheckUnmodeled
+  else check_ret_only eff (Z_to_bv 64 0)
+         (with_fds (close_range_fds fd max_fd (m_fds m)) m) [].
+
+Lemma check_close_range_sound_ok : forall fd max_fd flags eff m m' evs i,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs ->
+  close_range_spec fd max_fd flags i m (Ok eff m' evs).
+Proof.
+  intros fd max_fd flags eff m m' evs i H.
+  unfold check_close_range in H. unfold close_range_spec.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                                 (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)).
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct ((bv_unsigned max_fd <? bv_unsigned fd)%Z).
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (negb (Z.eqb (bv_unsigned flags) 0)); [discriminate|].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+(** Only a known flag declines, on both sides. *)
+Lemma check_close_range_sound_unmodeled : forall fd max_fd flags eff m i,
+  check_close_range fd max_fd flags eff m = CheckUnmodeled ->
+  close_range_spec fd max_fd flags i m Unmodeled.
+Proof.
+  intros fd max_fd flags eff m i H.
+  unfold check_close_range in H. unfold close_range_spec.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                                 (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct ((bv_unsigned max_fd <? bv_unsigned fd)%Z).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (Z.eqb (bv_unsigned flags) 0)); [apply unmodeled_intro|].
+  now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Lemma check_close_range_complete_ok : forall fd max_fd flags eff m m' evs i,
+  close_range_spec fd max_fd flags i m (Ok eff m' evs) ->
+  check_close_range fd max_fd flags eff m = CheckOk m' evs.
+Proof.
+  intros fd max_fd flags eff m m' evs i H.
+  unfold close_range_spec in H. unfold check_close_range.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                                 (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)).
+  { unfold err_ret, ret_only, pure in H. inversion H; subst.
+    cbn; try rewrite bv_eqb_refl; reflexivity. }
+  destruct ((bv_unsigned max_fd <? bv_unsigned fd)%Z).
+  { unfold err_ret, ret_only, pure in H. inversion H; subst.
+    cbn; try rewrite bv_eqb_refl; reflexivity. }
+  destruct (negb (Z.eqb (bv_unsigned flags) 0)); [now inversion H|].
+  apply get_model_bind_ok_inv in H. cbv beta in H. sys_unfold. inv_ok.
+  cbn; try rewrite bv_eqb_refl; reflexivity.
+Qed.
+
+Lemma check_close_range_complete_unmodeled : forall fd max_fd flags m i eff,
+  close_range_spec fd max_fd flags i m Unmodeled ->
+  check_close_range fd max_fd flags eff m = CheckUnmodeled.
+Proof.
+  intros fd max_fd flags m i eff H.
+  unfold close_range_spec in H. unfold check_close_range.
+  destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                                 (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)).
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct ((bv_unsigned max_fd <? bv_unsigned fd)%Z).
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (negb (Z.eqb (bv_unsigned flags) 0)); [reflexivity|].
+  exfalso. apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+  sys_unfold. inv_ok.
 Qed.

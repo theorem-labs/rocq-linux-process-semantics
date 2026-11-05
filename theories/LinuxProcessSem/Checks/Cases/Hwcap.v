@@ -78,6 +78,18 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], the thirteenth conjunct: a positional
+     [mkProcInput] gets [State.default_execfn], the one-byte relative
+     name "a" that [getname_flags] (fs/namei.c, Linux v6.18.46, commit
+     1f99e9ab748f) can return -- one byte, no NUL -- and the launch it
+     makes is a handful of bytes, far under the E2BIG limit
+     [bprm_stack_limits] (fs/exec.c) computes. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 Example hwcap_input_gcv_declared :
@@ -92,6 +104,14 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]: the launch of
+     the one-byte name "a" is far under the E2BIG limit. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** Both words are admitted by the DEFAULT, which is what makes a
@@ -126,12 +146,12 @@ Proof.
   - destruct (valid_input_hwcap_splits _
                 (valid_input_of_valid_input_hwcap_rv64gc _ hwcap_input_gc_declared))
       as [H | H]; [exact H |].
-    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & H & _ & _).
+    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _).
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
   - destruct (valid_input_hwcap_splits _
                 (valid_input_of_valid_input_hwcap_rv64gcv _ hwcap_input_gcv_declared))
       as [H | H]; [| exact H].
-    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & H & _ & _).
+    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _).
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -146,7 +166,7 @@ Example each_declaration_refuses_the_other_word :
   ~ valid_input_hwcap_rv64gc (hwcap_input hwcap_rv64gcv)
   /\ ~ valid_input_hwcap_rv64gcv (hwcap_input hwcap_rv64gc).
 Proof.
-  split; intros (_ & _ & _ & _ & _ & _ & _ & H & _ & _);
+  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _);
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -167,7 +187,7 @@ Example both_declarations_refuse_a_word_outside_the_pair :
   /\ ~ valid_input_hwcap_rv64gc (hwcap_input (Z_to_bv 64 0x40112D))
   /\ ~ valid_input_hwcap_rv64gcv (hwcap_input (Z_to_bv 64 0x40112D)).
 Proof.
-  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & H & _ & _);
+  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _);
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -179,7 +199,7 @@ Example the_default_refuses_a_word_outside_the_pair :
   /\ ~ valid_input (hwcap_input (Z_to_bv 64 0x112C))
   /\ ~ valid_input (hwcap_input (Z_to_bv 64 0x40112D)).
 Proof.
-  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & [H | H] & _ & _);
+  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & [H | H] & _ & _);
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -202,25 +222,27 @@ Qed.
     strength [Cases.Prelude] already had; nothing here weakens it and
     nothing here extends it. *)
 Example the_rv64gc_declaration_publishes_the_v_less_word :
-  forall inp ph at_random,
+  forall inp la ph entry at_random at_execfn,
     valid_input_hwcap_rv64gc inp ->
     filter (fun e => bv_eqb (fst e) AT_HWCAP)
-           (auxv_entries ph at_random (in_uid inp) (in_hwcap inp))
+           (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
+                         at_random at_execfn)
     = [(AT_HWCAP, hwcap_rv64gc)].
 Proof.
-  intros inp ph at_random H.
+  intros inp la ph entry at_random at_execfn H.
   rewrite auxv_hwcap_is_exactly_the_launch_word.
   rewrite (valid_input_hwcap_rv64gc_word _ H). reflexivity.
 Qed.
 
 Example the_rv64gcv_declaration_publishes_the_v_word :
-  forall inp ph at_random,
+  forall inp la ph entry at_random at_execfn,
     valid_input_hwcap_rv64gcv inp ->
     filter (fun e => bv_eqb (fst e) AT_HWCAP)
-           (auxv_entries ph at_random (in_uid inp) (in_hwcap inp))
+           (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
+                         at_random at_execfn)
     = [(AT_HWCAP, hwcap_rv64gcv)].
 Proof.
-  intros inp ph at_random H.
+  intros inp la ph entry at_random at_execfn H.
   rewrite auxv_hwcap_is_exactly_the_launch_word.
   rewrite (valid_input_hwcap_rv64gcv_word _ H). reflexivity.
 Qed.
@@ -308,6 +330,13 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 Example hwcap_abort_input_gcv_declared :
@@ -322,6 +351,13 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** The abort-stance split lemma, fired, and naming which arm catches
@@ -336,12 +372,12 @@ Proof.
   - destruct (valid_input_abort_hwcap_splits _
                 (valid_input_abort_of_valid_input_abort_hwcap_rv64gc
                    _ hwcap_abort_input_gc_declared)) as [H | H]; [exact H |].
-    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & H & _ & _).
+    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _).
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
   - destruct (valid_input_abort_hwcap_splits _
                 (valid_input_abort_of_valid_input_abort_hwcap_rv64gcv
                    _ hwcap_abort_input_gcv_declared)) as [H | H]; [| exact H].
-    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & H & _ & _).
+    exfalso. destruct H as (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _).
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -349,7 +385,7 @@ Example each_abort_declaration_refuses_the_other_word :
   ~ valid_input_abort_hwcap_rv64gc (hwcap_abort_input hwcap_rv64gcv)
   /\ ~ valid_input_abort_hwcap_rv64gcv (hwcap_abort_input hwcap_rv64gc).
 Proof.
-  split; intros (_ & _ & _ & _ & _ & _ & _ & H & _ & _);
+  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _);
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -361,7 +397,7 @@ Example the_word_declaration_does_not_carry_the_stance :
   ~ valid_input_hwcap_rv64gc (hwcap_abort_input hwcap_rv64gc)
   /\ ~ valid_input_abort_hwcap_rv64gc (hwcap_input hwcap_rv64gc).
 Proof.
-  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
+  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
 Qed.
 
 (** ** (vi) The budget cells' split lemmas, their shape pinned

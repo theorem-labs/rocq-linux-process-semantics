@@ -26,6 +26,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
   Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys Kernel.Time.Hrtimer Kernel.Time.PosixTimers
@@ -36,6 +37,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
   Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -113,7 +115,7 @@ Defined.
 Definition arm_eventfd2 : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 19%Z (fun i => eventfd2_spec (flag32 (in_arg i 1)) i))
-                       (fun i eff m => check_eventfd2 (flag32 (in_arg i 1)) eff m)
+                       (fun i eff m => check_eventfd2 i (flag32 (in_arg i 1)) eff m)
                        (fun i m => eventfd2_witness (flag32 (in_arg i 1)) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
@@ -190,8 +192,8 @@ Defined.
 Definition arm_ioctl : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 29%Z (fun i => ioctl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i))
-                       (fun i eff m => check_ioctl (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m)
-                       (fun i m => ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) m)
+                       (fun i eff m => check_ioctl i (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m)
+                       (fun i m => ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_ioctl_sound_ok, check_ioctl_sound_unmodeled, check_ioctl_complete_ok, check_ioctl_complete_unmodeled, ioctl_witness_ok.
@@ -388,8 +390,8 @@ Defined.
 Definition arm_readlinkat : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_readlinkat (fd32 (in_arg i 0)) eff m)
-                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_readlinkat i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_readlinkat_sound_ok, check_readlinkat_sound_unmodeled, check_readlinkat_complete_ok, check_readlinkat_complete_unmodeled, readlinkat_witness_ok.
@@ -454,6 +456,28 @@ Proof.
     eauto using check_timerfd_create_sound_ok, check_timerfd_create_sound_unmodeled, check_timerfd_create_complete_ok, check_timerfd_create_complete_unmodeled, timerfd_create_witness_ok.
 Defined.
 
+(** capget (90). *)
+Definition arm_capget : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 90%Z (fun i => capget_spec (in_arg i 0) (in_arg i 1) i))
+                       (fun i eff m => check_capget i (in_arg i 0) (in_arg i 1) eff m)
+                       (fun i m => capget_witness (in_arg i 0) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_capget_sound_ok, check_capget_sound_unmodeled, check_capget_complete_ok, check_capget_complete_unmodeled, capget_witness_ok.
+Defined.
+
+(** capset (91). *)
+Definition arm_capset : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 91%Z (fun i => capset_spec (in_arg i 0) (in_arg i 1) i))
+                       (fun i eff m => check_capset i (in_arg i 0) (in_arg i 1) eff m)
+                       (fun i m => capset_witness (in_arg i 0) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_capset_sound_ok, check_capset_sound_unmodeled, check_capset_complete_ok, check_capset_complete_unmodeled, capset_witness_ok.
+Defined.
+
 (** exit (93). *)
 Definition arm_exit : CheckedArm.
 Proof.
@@ -503,7 +527,7 @@ Definition arm_set_robust_list : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 99%Z (fun i => set_robust_list_spec (in_arg i 1) i))
                        (fun i eff m => check_set_robust_list (in_arg i 1) eff m)
-                       (fun i m => set_robust_list_witness m)
+                       (fun i m => set_robust_list_witness (in_arg i 1) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_set_robust_list_sound_ok, check_set_robust_list_sound_unmodeled, check_set_robust_list_complete_ok, check_set_robust_list_complete_unmodeled, set_robust_list_witness_ok.
@@ -667,6 +691,17 @@ Proof.
     eauto using check_setresid_sound_ok, check_setresid_sound_unmodeled, check_setresid_complete_ok, check_setresid_complete_unmodeled, setresid_witness_ok.
 Defined.
 
+(** getresuid (148). *)
+Definition arm_getresuid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 148%Z (fun i => getresid_spec cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i))
+                       (fun i eff m => check_getresid i cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m)
+                       (fun i m => getresid_witness cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getresid_sound_ok, check_getresid_sound_unmodeled, check_getresid_complete_ok, check_getresid_complete_unmodeled, getresid_witness_ok.
+Defined.
+
 (** setresgid (149). *)
 Definition arm_setresgid : CheckedArm.
 Proof.
@@ -676,6 +711,28 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setresid_sound_ok, check_setresid_sound_unmodeled, check_setresid_complete_ok, check_setresid_complete_unmodeled, setresid_witness_ok.
+Defined.
+
+(** getresgid (150). *)
+Definition arm_getresgid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 150%Z (fun i => getresid_spec cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i))
+                       (fun i eff m => check_getresid i cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m)
+                       (fun i m => getresid_witness cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getresid_sound_ok, check_getresid_sound_unmodeled, check_getresid_complete_ok, check_getresid_complete_unmodeled, getresid_witness_ok.
+Defined.
+
+(** getsid (156). *)
+Definition arm_getsid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 156%Z (fun i => getsid_spec (pid32 (in_arg i 0)) i))
+                       (fun i eff m => check_getsid (pid32 (in_arg i 0)) eff m)
+                       (fun i m => getsid_witness (pid32 (in_arg i 0)) m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getsid_sound_ok, check_getsid_sound_unmodeled, check_getsid_complete_ok, check_getsid_complete_unmodeled, getsid_witness_ok.
 Defined.
 
 (** setsid (157). *)
@@ -704,8 +761,8 @@ Defined.
 Definition arm_setgroups : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 159%Z (fun i => setgroups_spec i))
-                       (fun i eff m => check_setgroups eff m)
-                       (fun i m => setgroups_witness m)
+                       (fun i eff m => check_setgroups i eff m)
+                       (fun i m => setgroups_witness i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setgroups_sound_ok, check_setgroups_sound_unmodeled, check_setgroups_complete_ok, check_setgroups_complete_unmodeled, setgroups_witness_ok.
@@ -715,8 +772,8 @@ Defined.
 Definition arm_prctl : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 167%Z (fun i => prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i))
-                       (fun i eff m => check_prctl (int32 (in_arg i 0)) (in_arg i 1) eff m)
-                       (fun i m => prctl_witness (int32 (in_arg i 0)) (in_arg i 1) m)
+                       (fun i eff m => check_prctl i (int32 (in_arg i 0)) (in_arg i 1) eff m)
+                       (fun i m => prctl_witness i (int32 (in_arg i 0)) (in_arg i 1) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_prctl_sound_ok, check_prctl_sound_unmodeled, check_prctl_complete_ok, check_prctl_complete_unmodeled, prctl_witness_ok.
@@ -742,6 +799,17 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getpid_sound_ok, check_getpid_sound_unmodeled, check_getpid_complete_ok, check_getpid_complete_unmodeled, getpid_witness_ok.
+Defined.
+
+(** getppid (173). *)
+Definition arm_getppid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 173%Z (fun i => getppid_spec i))
+                       (fun i eff m => check_getppid eff m)
+                       (fun i m => getppid_witness m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getppid_sound_ok, check_getppid_sound_unmodeled, check_getppid_complete_ok, check_getppid_complete_unmodeled, getppid_witness_ok.
 Defined.
 
 (** getuid (174). *)
@@ -869,8 +937,8 @@ Defined.
 Definition arm_getsockname : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 204%Z (fun i => getsockname_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_getsockname (fd32 (in_arg i 0)) eff m)
-                       (fun i m => getsockname_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_getsockname i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => getsockname_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getsockname_sound_ok, check_getsockname_sound_unmodeled, check_getsockname_complete_ok, check_getsockname_complete_unmodeled, getsockname_witness_ok.
@@ -880,8 +948,8 @@ Defined.
 Definition arm_getpeername : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 205%Z (fun i => getpeername_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_getpeername (fd32 (in_arg i 0)) eff m)
-                       (fun i m => getpeername_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_getpeername i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => getpeername_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getpeername_sound_ok, check_getpeername_sound_unmodeled, check_getpeername_complete_ok, check_getpeername_complete_unmodeled, getpeername_witness_ok.
@@ -913,8 +981,8 @@ Defined.
 Definition arm_setsockopt : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 208%Z (fun i => setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i))
-                       (fun i eff m => check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
-                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m)
+                       (fun i eff m => check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
+                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setsockopt_sound_ok, check_setsockopt_sound_unmodeled, check_setsockopt_complete_ok, check_setsockopt_complete_unmodeled, setsockopt_witness_ok.
@@ -1096,6 +1164,17 @@ Proof.
     eauto using check_getrandom_sound_ok, check_getrandom_sound_unmodeled, check_getrandom_complete_ok, check_getrandom_complete_unmodeled, getrandom_witness_ok.
 Defined.
 
+(** pwritev2 (287). *)
+Definition arm_pwritev2 : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 287%Z (fun i => pwritev2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i))
+                       (fun i eff m => check_pwritev2 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) eff m)
+                       (fun i m => pwritev2_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_pwritev2_sound_ok, check_pwritev2_sound_unmodeled, check_pwritev2_complete_ok, check_pwritev2_complete_unmodeled, pwritev2_witness_ok.
+Defined.
+
 (** clone3 (435). *)
 Definition arm_clone3 : CheckedArm.
 Proof.
@@ -1105,6 +1184,19 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_clone3_sound_ok, check_clone3_sound_unmodeled, check_clone3_complete_ok, check_clone3_complete_unmodeled, clone3_witness_ok.
+Defined.
+
+(** close_range (436).  [fd32] on a0 and a1 and [flag32] on a2 are the
+    [unsigned int] narrowing of [SYSCALL_DEFINE3(close_range)], applied
+    here at the ABI boundary as for every other fd and flag word. *)
+Definition arm_close_range : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 436%Z (fun i => close_range_spec (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) i))
+                       (fun i eff m => check_close_range (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) eff m)
+                       (fun i m => close_range_witness (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_close_range_sound_ok, check_close_range_sound_unmodeled, check_close_range_complete_ok, check_close_range_complete_unmodeled, close_range_witness_ok.
 Defined.
 
 (** faccessat2 (439). *)
@@ -1151,6 +1243,8 @@ Definition checked_table : list CheckedArm :=
   arm_fsync ::
   arm_fdatasync ::
   arm_timerfd_create ::
+  arm_capget ::
+  arm_capset ::
   arm_exit ::
   arm_exit_group ::
   arm_set_tid_address ::
@@ -1170,7 +1264,10 @@ Definition checked_table : list CheckedArm :=
   arm_setgid ::
   arm_setuid ::
   arm_setresuid ::
+  arm_getresuid ::
   arm_setresgid ::
+  arm_getresgid ::
+  arm_getsid ::
   arm_setsid ::
   arm_getgroups ::
   arm_setgroups ::
@@ -1178,6 +1275,7 @@ Definition checked_table : list CheckedArm :=
   arm_prctl ::
   arm_gettimeofday ::
   arm_getpid ::
+  arm_getppid ::
   arm_getuid ::
   arm_geteuid ::
   arm_getgid ::
@@ -1209,7 +1307,9 @@ Definition checked_table : list CheckedArm :=
   arm_wait4 ::
   arm_prlimit64 ::
   arm_getrandom ::
+  arm_pwritev2 ::
   arm_clone3 ::
+  arm_close_range ::
   arm_faccessat2 ::
   nil.
 (** The two tables describe the same surface.  [reflexivity] rather than a
@@ -1239,7 +1339,7 @@ Lemma sa_spec_arm_getcwd : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_eventfd2 : forall i eff m,
-  ca_check arm_eventfd2 i eff m = check_eventfd2 (flag32 (in_arg i 1)) eff m.
+  ca_check arm_eventfd2 i eff m = check_eventfd2 i (flag32 (in_arg i 1)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_eventfd2 : forall i m,
   ca_witness arm_eventfd2 i m = eventfd2_witness (flag32 (in_arg i 1)) m.
@@ -1309,10 +1409,10 @@ Lemma sa_spec_arm_fcntl : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_ioctl : forall i eff m,
-  ca_check arm_ioctl i eff m = check_ioctl (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
+  ca_check arm_ioctl i eff m = check_ioctl i (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_ioctl : forall i m,
-  ca_witness arm_ioctl i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) m.
+  ca_witness arm_ioctl i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_ioctl : forall i m o,
   sa_spec (ca_arm arm_ioctl) i m o = ioctl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m o.
@@ -1492,10 +1592,10 @@ Lemma sa_spec_arm_ppoll : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_readlinkat : forall i eff m,
-  ca_check arm_readlinkat i eff m = check_readlinkat (fd32 (in_arg i 0)) eff m.
+  ca_check arm_readlinkat i eff m = check_readlinkat i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_readlinkat : forall i m,
-  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_readlinkat : forall i m o,
   sa_spec (ca_arm arm_readlinkat) i m o = readlinkat_spec (fd32 (in_arg i 0)) i m o.
@@ -1554,6 +1654,26 @@ Lemma sa_spec_arm_timerfd_create : forall i m o,
     = timerfd_create_spec (clockid32 (in_arg i 0)) (flag32 (in_arg i 1)) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_capget : forall i eff m,
+  ca_check arm_capget i eff m = check_capget i (in_arg i 0) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_capget : forall i m,
+  ca_witness arm_capget i m = capget_witness (in_arg i 0) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_capget : forall i m o,
+  sa_spec (ca_arm arm_capget) i m o = capget_spec (in_arg i 0) (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_capset : forall i eff m,
+  ca_check arm_capset i eff m = check_capset i (in_arg i 0) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_capset : forall i m,
+  ca_witness arm_capset i m = capset_witness (in_arg i 0) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_capset : forall i m o,
+  sa_spec (ca_arm arm_capset) i m o = capset_spec (in_arg i 0) (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_exit : forall i eff m,
   ca_check arm_exit i eff m = check_exit (in_arg i 0) eff m.
 Proof. reflexivity. Qed.
@@ -1598,7 +1718,7 @@ Lemma ca_check_arm_set_robust_list : forall i eff m,
   ca_check arm_set_robust_list i eff m = check_set_robust_list (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_set_robust_list : forall i m,
-  ca_witness arm_set_robust_list i m = set_robust_list_witness m.
+  ca_witness arm_set_robust_list i m = set_robust_list_witness (in_arg i 1) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_set_robust_list : forall i m o,
   sa_spec (ca_arm arm_set_robust_list) i m o = set_robust_list_spec (in_arg i 1) i m o.
@@ -1743,6 +1863,16 @@ Lemma sa_spec_arm_setresuid : forall i m o,
   sa_spec (ca_arm arm_setresuid) i m o = setresid_spec cred_uids set_cred_uids true (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_getresuid : forall i eff m,
+  ca_check arm_getresuid i eff m = check_getresid i cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getresuid : forall i m,
+  ca_witness arm_getresuid i m = getresid_witness cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getresuid : forall i m o,
+  sa_spec (ca_arm arm_getresuid) i m o = getresid_spec cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_setresgid : forall i eff m,
   ca_check arm_setresgid i eff m = check_setresid cred_gids set_cred_gids false (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) eff m.
 Proof. reflexivity. Qed.
@@ -1751,6 +1881,26 @@ Lemma ca_witness_arm_setresgid : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setresgid : forall i m o,
   sa_spec (ca_arm arm_setresgid) i m o = setresid_spec cred_gids set_cred_gids false (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_getresgid : forall i eff m,
+  ca_check arm_getresgid i eff m = check_getresid i cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getresgid : forall i m,
+  ca_witness arm_getresgid i m = getresid_witness cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getresgid : forall i m o,
+  sa_spec (ca_arm arm_getresgid) i m o = getresid_spec cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_getsid : forall i eff m,
+  ca_check arm_getsid i eff m = check_getsid (pid32 (in_arg i 0)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getsid : forall i m,
+  ca_witness arm_getsid i m = getsid_witness (pid32 (in_arg i 0)) m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getsid : forall i m o,
+  sa_spec (ca_arm arm_getsid) i m o = getsid_spec (pid32 (in_arg i 0)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setsid : forall i eff m,
@@ -1774,10 +1924,10 @@ Lemma sa_spec_arm_getgroups : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setgroups : forall i eff m,
-  ca_check arm_setgroups i eff m = check_setgroups eff m.
+  ca_check arm_setgroups i eff m = check_setgroups i eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_setgroups : forall i m,
-  ca_witness arm_setgroups i m = setgroups_witness m.
+  ca_witness arm_setgroups i m = setgroups_witness i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setgroups : forall i m o,
   sa_spec (ca_arm arm_setgroups) i m o = setgroups_spec i m o.
@@ -1794,10 +1944,10 @@ Lemma sa_spec_arm_uname : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_prctl : forall i eff m,
-  ca_check arm_prctl i eff m = check_prctl (int32 (in_arg i 0)) (in_arg i 1) eff m.
+  ca_check arm_prctl i eff m = check_prctl i (int32 (in_arg i 0)) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_prctl : forall i m,
-  ca_witness arm_prctl i m = prctl_witness (int32 (in_arg i 0)) (in_arg i 1) m.
+  ca_witness arm_prctl i m = prctl_witness i (int32 (in_arg i 0)) (in_arg i 1) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_prctl : forall i m o,
   sa_spec (ca_arm arm_prctl) i m o = prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i m o.
@@ -1821,6 +1971,16 @@ Lemma ca_witness_arm_getpid : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getpid : forall i m o,
   sa_spec (ca_arm arm_getpid) i m o = getpid_spec i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_getppid : forall i eff m,
+  ca_check arm_getppid i eff m = check_getppid eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getppid : forall i m,
+  ca_witness arm_getppid i m = getppid_witness m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getppid : forall i m o,
+  sa_spec (ca_arm arm_getppid) i m o = getppid_spec i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getuid : forall i eff m,
@@ -1934,20 +2094,20 @@ Lemma sa_spec_arm_connect : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getsockname : forall i eff m,
-  ca_check arm_getsockname i eff m = check_getsockname (fd32 (in_arg i 0)) eff m.
+  ca_check arm_getsockname i eff m = check_getsockname i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getsockname : forall i m,
-  ca_witness arm_getsockname i m = getsockname_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_getsockname i m = getsockname_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getsockname : forall i m o,
   sa_spec (ca_arm arm_getsockname) i m o = getsockname_spec (fd32 (in_arg i 0)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getpeername : forall i eff m,
-  ca_check arm_getpeername i eff m = check_getpeername (fd32 (in_arg i 0)) eff m.
+  ca_check arm_getpeername i eff m = check_getpeername i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getpeername : forall i m,
-  ca_witness arm_getpeername i m = getpeername_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_getpeername i m = getpeername_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getpeername : forall i m o,
   sa_spec (ca_arm arm_getpeername) i m o = getpeername_spec (fd32 (in_arg i 0)) i m o.
@@ -1974,10 +2134,10 @@ Lemma sa_spec_arm_recvfrom : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setsockopt : forall i eff m,
-  ca_check arm_setsockopt i eff m = check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
+  ca_check arm_setsockopt i eff m = check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_setsockopt : forall i m,
-  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m.
+  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setsockopt : forall i m o,
   sa_spec (ca_arm arm_setsockopt) i m o = setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o.
@@ -2133,6 +2293,16 @@ Lemma sa_spec_arm_getrandom : forall i m o,
   sa_spec (ca_arm arm_getrandom) i m o = getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_pwritev2 : forall i eff m,
+  ca_check arm_pwritev2 i eff m = check_pwritev2 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_pwritev2 : forall i m,
+  ca_witness arm_pwritev2 i m = pwritev2_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_pwritev2 : forall i m o,
+  sa_spec (ca_arm arm_pwritev2) i m o = pwritev2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_clone3 : forall i eff m,
   ca_check arm_clone3 i eff m = check_clone3 i (in_arg i 0) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
@@ -2141,6 +2311,16 @@ Lemma ca_witness_arm_clone3 : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_clone3 : forall i m o,
   sa_spec (ca_arm arm_clone3) i m o = clone3_spec (in_arg i 0) (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_close_range : forall i eff m,
+  ca_check arm_close_range i eff m = check_close_range (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_close_range : forall i m,
+  ca_witness arm_close_range i m = close_range_witness (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_close_range : forall i m o,
+  sa_spec (ca_arm arm_close_range) i m o = close_range_spec (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_faccessat2 : forall i eff m,
@@ -2185,6 +2365,8 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_fsync ca_witness_arm_fsync sa_spec_arm_fsync : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_fdatasync ca_witness_arm_fdatasync sa_spec_arm_fdatasync : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_timerfd_create ca_witness_arm_timerfd_create sa_spec_arm_timerfd_create : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_capget ca_witness_arm_capget sa_spec_arm_capget : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_capset ca_witness_arm_capset sa_spec_arm_capset : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_exit ca_witness_arm_exit sa_spec_arm_exit : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_exit_group ca_witness_arm_exit_group sa_spec_arm_exit_group : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_set_tid_address ca_witness_arm_set_tid_address sa_spec_arm_set_tid_address : arm_unfold.
@@ -2205,13 +2387,17 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_setgid ca_witness_arm_setgid sa_spec_arm_setgid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setuid ca_witness_arm_setuid sa_spec_arm_setuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setresuid ca_witness_arm_setresuid sa_spec_arm_setresuid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getresuid ca_witness_arm_getresuid sa_spec_arm_getresuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setresgid ca_witness_arm_setresgid sa_spec_arm_setresgid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getresgid ca_witness_arm_getresgid sa_spec_arm_getresgid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getsid ca_witness_arm_getsid sa_spec_arm_getsid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getgroups ca_witness_arm_getgroups sa_spec_arm_getgroups : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setgroups ca_witness_arm_setgroups sa_spec_arm_setgroups : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_uname ca_witness_arm_uname sa_spec_arm_uname : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_prctl ca_witness_arm_prctl sa_spec_arm_prctl : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_gettimeofday ca_witness_arm_gettimeofday sa_spec_arm_gettimeofday : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getpid ca_witness_arm_getpid sa_spec_arm_getpid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getppid ca_witness_arm_getppid sa_spec_arm_getppid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getuid ca_witness_arm_getuid sa_spec_arm_getuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_geteuid ca_witness_arm_geteuid sa_spec_arm_geteuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getgid ca_witness_arm_getgid sa_spec_arm_getgid : arm_unfold.
@@ -2243,7 +2429,9 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_wait4 ca_witness_arm_wait4 sa_spec_arm_wait4 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_prlimit64 ca_witness_arm_prlimit64 sa_spec_arm_prlimit64 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getrandom ca_witness_arm_getrandom sa_spec_arm_getrandom : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_pwritev2 ca_witness_arm_pwritev2 sa_spec_arm_pwritev2 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_clone3 ca_witness_arm_clone3 sa_spec_arm_clone3 : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_close_range ca_witness_arm_close_range sa_spec_arm_close_range : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_faccessat2 ca_witness_arm_faccessat2 sa_spec_arm_faccessat2 : arm_unfold.
 
 (** Each arm's NUMBER, so the lookup can be computed without unfolding the
@@ -2355,6 +2543,14 @@ Lemma ca_no_arm_timerfd_create : ca_no arm_timerfd_create = 85%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_timerfd_create : arm_unfold.
 
+Lemma ca_no_arm_capget : ca_no arm_capget = 90%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_capget : arm_unfold.
+
+Lemma ca_no_arm_capset : ca_no arm_capset = 91%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_capset : arm_unfold.
+
 Lemma ca_no_arm_exit : ca_no arm_exit = 93%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_exit : arm_unfold.
@@ -2423,9 +2619,21 @@ Lemma ca_no_arm_setresuid : ca_no arm_setresuid = 147%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_setresuid : arm_unfold.
 
+Lemma ca_no_arm_getresuid : ca_no arm_getresuid = 148%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getresuid : arm_unfold.
+
 Lemma ca_no_arm_setresgid : ca_no arm_setresgid = 149%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_setresgid : arm_unfold.
+
+Lemma ca_no_arm_getresgid : ca_no arm_getresgid = 150%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getresgid : arm_unfold.
+
+Lemma ca_no_arm_getsid : ca_no arm_getsid = 156%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getsid : arm_unfold.
 
 Lemma ca_no_arm_setsid : ca_no arm_setsid = 157%Z.
 Proof. reflexivity. Qed.
@@ -2450,6 +2658,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_getpid : ca_no arm_getpid = 172%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_getpid : arm_unfold.
+
+Lemma ca_no_arm_getppid : ca_no arm_getppid = 173%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getppid : arm_unfold.
 
 Lemma ca_no_arm_getuid : ca_no arm_getuid = 174%Z.
 Proof. reflexivity. Qed.
@@ -2574,9 +2786,17 @@ Lemma ca_no_arm_getrandom : ca_no arm_getrandom = 278%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_getrandom : arm_unfold.
 
+Lemma ca_no_arm_pwritev2 : ca_no arm_pwritev2 = 287%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_pwritev2 : arm_unfold.
+
 Lemma ca_no_arm_clone3 : ca_no arm_clone3 = 435%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_clone3 : arm_unfold.
+
+Lemma ca_no_arm_close_range : ca_no arm_close_range = 436%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_close_range : arm_unfold.
 
 Lemma ca_no_arm_faccessat2 : ca_no arm_faccessat2 = 439%Z.
 Proof. reflexivity. Qed.

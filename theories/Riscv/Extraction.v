@@ -17,29 +17,64 @@
       OCaml caller can build operands from parsed integers cheaply.
     - [bv n] is a record whose only computational field is the unsigned
       [Z] (the [BvWf] proof is erased), so a bitvector extracts to a
-      bare [Big_int_Z.big_int] and the WIDTH IS ERASED.  The OCaml
-      caller must therefore mask values itself when constructing inputs, and
-      must recover each immediate's width from the [instr] constructor
-      rather than from the runtime value.  Widths the model carries
-      explicitly ([ELoad]/[EStore]'s [n], [exec]'s size argument, the
-      [Z] in [decode_any]'s result) survive extraction and are readable.
+      bare [Big_int_Z.big_int] and the WIDTH IS ERASED.
     - [eff]'s [ELoad] continuation extracts to an OCaml closure, so the
-      OCaml caller answers loads on demand out of its own memory. *)
+      OCaml caller answers loads on demand out of its own memory.
+
+    THE ROOTS ARE THE CHECKED ONES, and the second note above is why.
+    This file used to tell the caller that it "must therefore mask
+    values itself when constructing inputs, and must recover each
+    immediate's width from the [instr] constructor rather than from the
+    runtime value".  A sentence telling the caller to mask is not a
+    boundary; it is a contract nobody checks, and it is the same failure
+    that let a system call return of 2^64 reach a verdict through the
+    other extracted artifact.  [Riscv.CheckedIsa] is the boundary: every
+    entry point takes the outside world's values as [Z] and refuses,
+    before the model runs, any integer that is not in the type it would
+    have to inhabit.  A refusal ([CkRefused], [LsRefused], and [None]
+    from [core_of_raw]) is a third answer, kept apart from the model's
+    own: a word that does not decode is [CkAnswer None], and a word that
+    is not a word at all is [CkRefused].  Read that file for what it
+    checks, what it builds, and what it cannot enforce.
+
+    A caller gives an ENCODING and a [RawCore] of plain integers; the
+    instruction AST, the compressed AST and the core state are built out
+    of [bv]s and so are not arguments of this surface, which is also why
+    no caller has to recover an immediate's width any more.
+    [eff_feed_load] is how the interpreter answers the [ELoad] its own
+    memory serves, and it refuses a value the pending width does not
+    hold. *)
 
 From Stdlib Require Import extraction.ExtrOcamlBasic.
 From Stdlib Require Import extraction.ExtrOcamlZBigInt.
-From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
+From LinuxProcessSemantics.Riscv Require Import
+  Prelude CheckedBv Instr Decode DecodeC Sem CheckedIsa.
 
 Require Extraction.
 
-(* Roots: the two decoders and the compressed expander, plus the
-   execution semantics and its core-state plumbing. *)
+(* Roots: the checked decoders and the compressed expander, the checked
+   execution of one encoding and of one step, the raw core a caller
+   fills in and the way back from a retired one, the checked answer to a
+   pending load with the reader of what that load is waiting for, and
+   [msize_bytes], which takes no bitvector.
+
+   [decode], [decode16], [expand_c], [decode_any], [is_defined_illegal],
+   [exec] and [step] are NOT roots any more: each is reached through its
+   checked form, and naming one here would publish a way into the model
+   that no boundary guards.  (The generated .mli publishes everything the
+   roots reach, these included, so no choice of roots can hide them; the
+   roots are what this tree supports, and what a reader must use.) *)
 Extraction "riscv_model.ml"
-  decode
-  decode16
-  expand_c
-  decode_any
-  is_defined_illegal
-  exec
-  step
+  decode_checked
+  decode16_checked
+  expand_c_checked
+  decode_any_checked
+  is_defined_illegal_checked
+  exec_encoded_checked
+  step_checked
+  mkRawCore
+  core_of_raw
+  raw_of_core
+  eff_pending_load
+  eff_feed_load
   msize_bytes.

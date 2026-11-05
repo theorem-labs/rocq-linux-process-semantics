@@ -16,19 +16,78 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
+(** Mirrors [Fcntl.stream_setfl]: an [arg] carrying no bit of
+    [setfl_acted_on] but O_NONBLOCK answers 0 and records that bit in
+    the end's [se_nonblock]; any other [arg] is declined.
+
+    An abbreviation rather than a [Definition] so that [check_fcntl]'s
+    body carries the test itself: the frame lemmas over the dispatcher
+    ([Checks/VmMapsDisjoint.v]'s [check_fcntl_frame]) unfold
+    [check_fcntl] and walk its branches, and a folded helper would stop
+    them. *)
+Local Abbreviation check_stream_setfl fd id side st arg eff m :=
+  (if Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0
+   then check_ret_only eff (Z_to_bv 64 0)
+          (with_fds (fd_insert (m_fds m) fd
+                       (FdStream id side
+                          (se_set_nonblock st (Z.testbit (bv_unsigned arg) 11)))) m) []
+   else CheckUnmodeled).
+
+(** Mirrors [Fcntl.eventfd_setfl]: the [check_stream_setfl] test, with
+    the bit recorded in the context's [ef_nonblock].  An abbreviation
+    for [check_stream_setfl]'s reason. *)
+Local Abbreviation check_eventfd_setfl fd ctx arg eff m :=
+  (if Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0
+   then check_ret_only eff (Z_to_bv 64 0)
+          (with_fds (fd_insert (m_fds m) fd
+                       (FdEventfd
+                          (ef_set_nonblock ctx (Z.testbit (bv_unsigned arg) 11)))) m) []
+   else CheckUnmodeled).
+
+(** Mirrors [Fcntl.oeventfd_setfl]: the [check_stream_setfl] test, with
+    the bit recorded in the shared eventfd's word.  An abbreviation for
+    [check_stream_setfl]'s reason. *)
+Local Abbreviation check_oeventfd_setfl fd w arg eff m :=
+  (if Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0
+   then check_ret_only eff (Z_to_bv 64 0)
+          (with_fds (fd_insert (m_fds m) fd
+                       (FdOpaque (OEventFd
+                          (oeventfd_set_nonblock w (Z.testbit (bv_unsigned arg) 11))))) m) []
+   else CheckUnmodeled).
+
 (** fcntl: a closed fd is -EBADF whatever the command; on an open one
-    F_SETFD answers 0 for any arg, an F_SETFL that provably changes
-    nothing answers 0, F_GETFL answers the flag word on the fd kinds
-    [Fcntl.getfl_f_flags] can derive it for, and every other command is
-    unmodeled. *)
+    F_SETFD answers 0 for any arg, F_GETFD answers 0 or FD_CLOEXEC (and
+    declines on a shared eventfd, [Fcntl.getfd_declines]),
+    F_SETFL on a stream-pair end, an eventfd or a shared eventfd records
+    O_NONBLOCK ([check_stream_setfl], [check_eventfd_setfl],
+    [check_oeventfd_setfl]) and on every other
+    kind answers 0 only when it provably changes nothing, F_GETFL
+    answers the flag word on the fd kinds [Fcntl.getfl_f_flags] can
+    derive it for, and every other command is unmodeled. *)
 Definition check_fcntl (fd cmd arg : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some e =>
       if bv_eqb cmd F_SETFD then check_ret_only eff (Z_to_bv 64 0) m []
-      else if bv_eqb cmd F_SETFL && setfl_noop_on e arg
-      then check_ret_only eff (Z_to_bv 64 0) m []
+      else if bv_eqb cmd F_GETFD then
+        if getfd_declines e then CheckUnmodeled
+        else
+        match eff with
+        | mkEffectU r [] [] [] [] [] =>
+            if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
+            then CheckOk m [] else CheckReject
+        | _ => CheckReject
+        end
+      else if bv_eqb cmd F_SETFL then
+        match e with
+        | FdStream id side st => check_stream_setfl fd id side st arg eff m
+        | FdEventfd ctx => check_eventfd_setfl fd ctx arg eff m
+        | FdOpaque (OEventFd w) => check_oeventfd_setfl fd w arg eff m
+        | _ =>
+            if setfl_noop_on e arg then check_ret_only eff (Z_to_bv 64 0) m []
+            else CheckUnmodeled
+        end
       else if bv_eqb cmd F_GETFL then
         match getfl_f_flags e with
         | Some fl => check_ret_only eff fl m []
@@ -36,6 +95,141 @@ Definition check_fcntl (fd cmd arg : word) (eff : SyscallEffect) (m : Model)
         end
       else CheckUnmodeled
   end.
+
+Lemma check_stream_setfl_sound_ok : forall fd id side st arg eff m m' evs i,
+  check_stream_setfl fd id side st arg eff m = CheckOk m' evs ->
+  stream_setfl fd id side st arg m i m (Ok eff m' evs).
+Proof.
+  intros fd id side st arg eff m m' evs i H.
+  unfold stream_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota; [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_stream_setfl_sound_unmodeled : forall fd id side st arg eff m i,
+  check_stream_setfl fd id side st arg eff m = CheckUnmodeled ->
+  stream_setfl fd id side st arg m i m Unmodeled.
+Proof.
+  intros fd id side st arg eff m i H.
+  unfold stream_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota.
+  - now apply check_ret_only_no_unmodeled in H.
+  - apply unmodeled_intro.
+Qed.
+
+Lemma check_stream_setfl_complete_ok : forall fd id side st arg eff m m' evs i,
+  stream_setfl fd id side st arg m i m (Ok eff m' evs) ->
+  check_stream_setfl fd id side st arg eff m = CheckOk m' evs.
+Proof.
+  intros fd id side st arg eff m m' evs i H.
+  unfold stream_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok;
+    cbn; try rewrite bv_eqb_refl; reflexivity.
+Qed.
+
+Lemma check_stream_setfl_complete_unmodeled : forall fd id side st arg eff m i,
+  stream_setfl fd id side st arg m i m Unmodeled ->
+  check_stream_setfl fd id side st arg eff m = CheckUnmodeled.
+Proof.
+  intros fd id side st arg eff m i H.
+  unfold stream_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok; reflexivity.
+Qed.
+
+Lemma check_eventfd_setfl_sound_ok : forall fd ctx arg eff m m' evs i,
+  check_eventfd_setfl fd ctx arg eff m = CheckOk m' evs ->
+  eventfd_setfl fd ctx arg m i m (Ok eff m' evs).
+Proof.
+  intros fd ctx arg eff m m' evs i H.
+  unfold eventfd_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota; [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_eventfd_setfl_sound_unmodeled : forall fd ctx arg eff m i,
+  check_eventfd_setfl fd ctx arg eff m = CheckUnmodeled ->
+  eventfd_setfl fd ctx arg m i m Unmodeled.
+Proof.
+  intros fd ctx arg eff m i H.
+  unfold eventfd_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota.
+  - now apply check_ret_only_no_unmodeled in H.
+  - apply unmodeled_intro.
+Qed.
+
+Lemma check_eventfd_setfl_complete_ok : forall fd ctx arg eff m m' evs i,
+  eventfd_setfl fd ctx arg m i m (Ok eff m' evs) ->
+  check_eventfd_setfl fd ctx arg eff m = CheckOk m' evs.
+Proof.
+  intros fd ctx arg eff m m' evs i H.
+  unfold eventfd_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok;
+    cbn; try rewrite bv_eqb_refl; reflexivity.
+Qed.
+
+Lemma check_eventfd_setfl_complete_unmodeled : forall fd ctx arg eff m i,
+  eventfd_setfl fd ctx arg m i m Unmodeled ->
+  check_eventfd_setfl fd ctx arg eff m = CheckUnmodeled.
+Proof.
+  intros fd ctx arg eff m i H.
+  unfold eventfd_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok; reflexivity.
+Qed.
+
+Lemma check_oeventfd_setfl_sound_ok : forall fd w arg eff m m' evs i,
+  check_oeventfd_setfl fd w arg eff m = CheckOk m' evs ->
+  oeventfd_setfl fd w arg m i m (Ok eff m' evs).
+Proof.
+  intros fd w arg eff m m' evs i H.
+  unfold oeventfd_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota; [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_oeventfd_setfl_sound_unmodeled : forall fd w arg eff m i,
+  check_oeventfd_setfl fd w arg eff m = CheckUnmodeled ->
+  oeventfd_setfl fd w arg m i m Unmodeled.
+Proof.
+  intros fd w arg eff m i H.
+  unfold oeventfd_setfl.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv beta iota.
+  - now apply check_ret_only_no_unmodeled in H.
+  - apply unmodeled_intro.
+Qed.
+
+Lemma check_oeventfd_setfl_complete_ok : forall fd w arg eff m m' evs i,
+  oeventfd_setfl fd w arg m i m (Ok eff m' evs) ->
+  check_oeventfd_setfl fd w arg eff m = CheckOk m' evs.
+Proof.
+  intros fd w arg eff m m' evs i H.
+  unfold oeventfd_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok;
+    cbn; try rewrite bv_eqb_refl; reflexivity.
+Qed.
+
+Lemma check_oeventfd_setfl_complete_unmodeled : forall fd w arg eff m i,
+  oeventfd_setfl fd w arg m i m Unmodeled ->
+  check_oeventfd_setfl fd w arg eff m = CheckUnmodeled.
+Proof.
+  intros fd w arg eff m i H.
+  unfold oeventfd_setfl in H. sys_unfold.
+  destruct (Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0);
+    cbv iota in H; inv_ok; reflexivity.
+Qed.
 
 Lemma check_fcntl_sound_ok : forall fd cmd arg eff m m' evs i,
   check_fcntl fd cmd arg eff m = CheckOk m' evs -> fcntl_spec fd cmd arg i m (Ok eff m' evs).
@@ -47,15 +241,42 @@ Proof.
     + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. apply pure_ok.
-    + destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl.
-      * apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
+      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H; [discriminate H|].
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd. srw Hl. apply pure_ok.
-      * destruct (bv_eqb cmd F_GETFL) eqn:Hg; [|discriminate].
-        destruct (getfl_f_flags e) as [fl|] eqn:Hgf; [|discriminate].
-        apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd. srw Hl. srw Hgf. apply pure_ok.
+        srw Hfd. srw Hgx.
+        destruct eff as [r ws zs us cs ci];
+          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+        destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
+          [|destruct (bv_eqb r FD_CLOEXEC) eqn:H1]; try discriminate.
+        -- apply bv_eqb_eq in H0; subst r. inversion H; subst.
+           apply alt_l. apply pure_ok.
+        -- apply bv_eqb_eq in H1; subst r. inversion H; subst.
+           apply alt_r. apply pure_ok.
+      * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
+        -- (* F_SETFL: the stream-pair end records its O_NONBLOCK; every
+              other kind answers only a provable no-op *)
+           destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+             cbv beta iota in H;
+             (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
+             [ ..
+             | now apply check_stream_setfl_sound_ok
+             | now apply check_eventfd_setfl_sound_ok
+             | idtac | idtac
+             | destruct o as [q|q|w|h]; cbv beta iota in H |- *;
+               [ idtac | idtac | now apply check_oeventfd_setfl_sound_ok | idtac ] ];
+             match type of H with
+             | context [setfl_noop_on ?e arg] =>
+                 destruct (setfl_noop_on e arg) eqn:Hl; [|discriminate]
+             end;
+             cbv beta iota;
+             apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+             apply pure_ok.
+        -- destruct (bv_eqb cmd F_GETFL) eqn:Hg; [|discriminate].
+           destruct (getfl_f_flags e) as [fl|] eqn:Hgf; [|discriminate].
+           apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+           eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hgf. apply pure_ok.
   - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply pure_ok.
@@ -69,15 +290,42 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + now apply check_ret_only_no_unmodeled in H.
-    + destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl.
-      * now apply check_ret_only_no_unmodeled in H.
-      * destruct (bv_eqb cmd F_GETFL) eqn:Hg.
-        -- destruct (getfl_f_flags e) as [fl|] eqn:Hgf.
-           ++ now apply check_ret_only_no_unmodeled in H.
+    + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
+      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H.
+        { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+          srw Hfd. srw Hgx. apply unmodeled_intro. }
+        destruct eff as [r ws zs us cs ci];
+          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+        destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
+          discriminate.
+      * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
+        -- destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+             cbv beta iota in H;
+             [ ..
+             | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+               srw Hfd; eapply check_stream_setfl_sound_unmodeled; exact H
+             | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+               srw Hfd; eapply check_eventfd_setfl_sound_unmodeled; exact H
+             | idtac | idtac
+             | destruct o as [q|q|w|h]; cbv beta iota in H;
+               [ idtac | idtac
+               | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                 srw Hfd; eapply check_oeventfd_setfl_sound_unmodeled; exact H
+               | idtac ] ];
+             match type of H with
+             | context [setfl_noop_on ?e arg] =>
+                 destruct (setfl_noop_on e arg) eqn:Hl;
+                 [ now apply check_ret_only_no_unmodeled in H
+                 | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+                   srw Hfd; srw Hl; apply unmodeled_intro ]
+             end.
+        -- destruct (bv_eqb cmd F_GETFL) eqn:Hg.
+           ++ destruct (getfl_f_flags e) as [fl|] eqn:Hgf.
+              ** now apply check_ret_only_no_unmodeled in H.
+              ** eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+                 srw Hfd. srw Hgf. apply unmodeled_intro.
            ++ eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-              srw Hfd. srw Hl. srw Hgf. apply unmodeled_intro.
-        -- eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-           srw Hfd. srw Hl. apply unmodeled_intro.
+              srw Hfd. apply unmodeled_intro.
   - now apply check_ret_only_no_unmodeled in H.
 Qed.
 
@@ -89,11 +337,30 @@ Proof.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
-         try (destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl;
-              hall Hl; inv_ok;
-              try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;
-                   try (destruct (getfl_f_flags e) as [fl|] eqn:Hgf;
-                        hall Hgf; inv_ok))));
+         try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (match goal with
+                   | |- context [getfd_declines ?e'] =>
+                       destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
+                   end);
+              try (destruct (bv_eqb cmd F_SETFL) eqn:Hs; hall Hs; inv_ok;
+                   [ (* F_SETFL: one arm per fd kind *)
+                     destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+                     cbv beta iota zeta in *;
+                     [ ..
+                     | now apply check_stream_setfl_complete_ok with (i := i)
+                     | now apply check_eventfd_setfl_complete_ok with (i := i)
+                     | idtac | idtac
+                     | destruct o as [q|q|w|h]; cbv beta iota zeta in *;
+                       [ idtac | idtac
+                       | now apply check_oeventfd_setfl_complete_ok with (i := i)
+                       | idtac ] ];
+                     match goal with
+                     | |- context [setfl_noop_on ?e arg] =>
+                         destruct (setfl_noop_on e arg) eqn:Hl; hall Hl; inv_ok
+                     end
+                   | try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;
+                          try (destruct (getfl_f_flags e) as [fl|] eqn:Hgf;
+                               hall Hgf; inv_ok)) ])));
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
 Qed.
 
@@ -105,10 +372,29 @@ Proof.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
-         try (destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl;
-              hall Hl; inv_ok;
-              try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;
-                   try (destruct (getfl_f_flags e) as [fl|] eqn:Hgf;
-                        hall Hgf; inv_ok))));
+         try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (match goal with
+                   | |- context [getfd_declines ?e'] =>
+                       destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
+                   end);
+              try (destruct (bv_eqb cmd F_SETFL) eqn:Hs; hall Hs; inv_ok;
+                   [ (* F_SETFL: one arm per fd kind *)
+                     destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+                     cbv beta iota zeta in *;
+                     [ ..
+                     | now apply check_stream_setfl_complete_unmodeled with (i := i)
+                     | now apply check_eventfd_setfl_complete_unmodeled with (i := i)
+                     | idtac | idtac
+                     | destruct o as [q|q|w|h]; cbv beta iota zeta in *;
+                       [ idtac | idtac
+                       | now apply check_oeventfd_setfl_complete_unmodeled with (i := i)
+                       | idtac ] ];
+                     match goal with
+                     | |- context [setfl_noop_on ?e arg] =>
+                         destruct (setfl_noop_on e arg) eqn:Hl; hall Hl; inv_ok
+                     end
+                   | try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;
+                          try (destruct (getfl_f_flags e) as [fl|] eqn:Hgf;
+                               hall Hgf; inv_ok)) ])));
     reflexivity.
 Qed.

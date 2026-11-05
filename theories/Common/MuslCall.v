@@ -445,6 +445,8 @@ Lemma musl_write_wexit :
   (bv_unsigned len <= 18446744073709547520)%Z ->
   rdn segs (wbytes mem (at_ sp0 (-8)) (word_to_le_bytes 8 k))
       buf (word_to_nat len) = Some out ->
+  (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+  access_okb buf (bv_unsigned len) = true ->
   (1 <= length out)%nat ->
   (forall regs' n, (1 <= n)%nat -> (n <= length out)%nat ->
      getr regs' 1 = k -> getr regs' 2 = sp0 ->
@@ -455,7 +457,7 @@ Lemma musl_write_wexit :
   to_wexit segs (mkst regs (at_ B 0x00) mem rom) (out :: bufs) code.
 Proof.
   intros regs mem rom k sp0 buf len out bufs code
-         Hrom Hk Hr28 H1 H2 H10 H11 H12 Hok Hnw Hlen Hread Hnb Hcont.
+         Hrom Hk Hr28 H1 H2 H10 H11 H12 Hok Hnw Hlen Hread Hacc Hnb Hcont.
   set (mem1 := wbytes mem (at_ sp0 (-8)) (word_to_le_bytes 8 k)).
   pose proof (rdn_length _ _ _ _ _ Hread) as Hlout.
   pose proof (u64_range len) as Hlr.
@@ -475,6 +477,7 @@ Proof.
   - rewrite (ms_read_bytes_rdn segs) by (cbn [mkst]; exact Hrom).
     cbn [ms_mem ms_regs].
     rewrite <- !getr_nz by reg_neq_tac. rewrite Q11, Q12. exact Hread.
+  - rewrite <- !getr_nz by reg_neq_tac. rewrite Q11, Q12. exact Hacc.
   - exact Hnb.
   - (* back from the kernel: __syscall_ret, then the caller *)
     intros n Hn1 Hn2.
@@ -555,6 +558,7 @@ Lemma musl_write_wall :
   (bv_unsigned len <= 18446744073709547520)%Z ->
   rdn segs (wbytes mem (at_ sp0 (-8)) (word_to_le_bytes 8 kra))
       buf (word_to_nat len) = Some out ->
+  access_okb buf (bv_unsigned len) = true ->
   (1 <= length out)%nat ->
   (forall regs' n, (1 <= n)%nat -> (n <= length out)%nat ->
      regs_agree musl_clob regs regs' ->
@@ -566,7 +570,7 @@ Lemma musl_write_wall :
   to_wall_tail segs (Z_to_bv 64 1) (mkst regs (at_ B 0x00) mem rom) out k.
 Proof.
   intros k regs mem rom kra sp0 buf len out
-         Hrom Hk Hr28 H1 H2 H10 H11 H12 Hok Hnw Hlen Hread Hnb Hcont.
+         Hrom Hk Hr28 H1 H2 H10 H11 H12 Hok Hnw Hlen Hread Hacc Hnb Hcont.
   set (mem1 := wbytes mem (at_ sp0 (-8)) (word_to_le_bytes 8 kra)) in *.
   pose proof (rdn_length _ _ _ _ _ Hread) as Hlout.
   pose proof (u64_range len) as Hlr.
@@ -588,6 +592,7 @@ Proof.
   - rewrite (ms_read_bytes_rdn segs) by (cbn [mkst]; exact Hrom).
     cbn [ms_mem ms_regs].
     rewrite <- !getr_nz by reg_neq_tac. rewrite Q11, Q12. exact Hread.
+  - rewrite <- !getr_nz by reg_neq_tac. rewrite Q11, Q12. exact Hacc.
   - exact Hnb.
   - (* back from the kernel: __syscall_ret, then the caller's put loop *)
     intros n Hn1 Hn2.

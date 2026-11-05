@@ -227,13 +227,28 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
+  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
+                                              file is still a regular file, whose
+                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
+  | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
+  | Some (FdDgram _)   => err_ret ENOTDIR    (* nor for a datagram socket's file *)
+  | Some (FdEventfd _) => err_ret ENOTDIR    (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
+                                                [.iterate_shared] either *)
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)
   | Some FdUrandom => err_ret ENOTDIR       (* and [urandom_fops] (drivers/char/random.c) has
                                               none either: the same -ENOTDIR *)
+  | Some (FdOpaque _) => unmodeled         (* FAIL-CLOSED: [CLASS(fd_pos, f)] refuses an O_PATH
+                                              file (-EBADF), an eventfd has no [.iterate_shared]
+                                              (-ENOTDIR), a /proc/sys name opened O_RDONLY
+                                              may be a directory whose listing is not
+                                              modeled, and an [ONsFile]'s object is of
+                                              unknown type (fs/readdir.c, fs/file.c,
+                                              fs/eventfd.c, fs/proc/proc_sysctl.c, read at
+                                              v6.18.44; identical at v6.18.46) *)
   | Some FdDir =>
       if getdents64_no_room count
       then alt (e <- errno_from getdents64_errnos ;; err_ret e)  (* the removed directory *)

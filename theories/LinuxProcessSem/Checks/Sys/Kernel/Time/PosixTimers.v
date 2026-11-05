@@ -25,7 +25,11 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
     [Kernel.Time.PosixTimers.cputime_ok_b]) admits — the same booleans
     the spec chooses against, so acceptor and spec cannot drift apart.
     The effect must be exactly one write of those bytes at [tp] and
-    nothing else: no zeros, no unmaps, no copies, no copy-ins.
+    nothing else: no zeros, no unmaps, no copies, no copy-ins.  A [tp]
+    whose range [access_ok] refuses is -EFAULT with nothing written on
+    every arm; the destination is asked through
+    [State.copy_bytes_map], as [Kernel.Time.PosixTimers.clock_gettime_spec]
+    asks it.
 
     The three arms differ in three places, and each is the point.  Only
     the monotonic arm tests an envelope on [m_clock], because it is the
@@ -37,8 +41,11 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
 Definition check_clock_gettime (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if clockid_percall_b clkid then
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => CheckUnmodeled
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16)
+        then check_ret_only eff (errno_ret EFAULT) m []
+        else CheckUnmodeled
     | Some _ =>
         match eff with
         | mkEffectU r [(a, bs)] [] [] [] [] =>
@@ -49,8 +56,11 @@ Definition check_clock_gettime (i : SyscallInput) (clkid tp : word)
         end
     end
   else if Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID then
-    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-    | None => CheckUnmodeled
+    match copy_bytes_map (in_wmem i) tp 16 with
+    | None =>
+        if negb (access_okb tp 16)
+        then check_ret_only eff (errno_ret EFAULT) m []
+        else CheckUnmodeled
     | Some _ =>
         match eff with
         | mkEffectU r [(a, bs)] [] [] [] [] =>
@@ -64,8 +74,11 @@ Definition check_clock_gettime (i : SyscallInput) (clkid tp : word)
   else if negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)
   then CheckUnmodeled
   else
-  match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
-  | None => CheckUnmodeled
+  match copy_bytes_map (in_wmem i) tp 16 with
+  | None =>
+      if negb (access_okb tp 16)
+      then check_ret_only eff (errno_ret EFAULT) m []
+      else CheckUnmodeled
   | Some _ =>
       match eff with
       | mkEffectU r [(a, bs)] [] [] [] [] =>
@@ -84,8 +97,13 @@ Proof.
   intros i clkid tp [ret ws zs us cs copyins] m m' evs H.
   unfold check_clock_gettime in H. unfold clock_gettime_spec.
   destruct (clockid_percall_b clkid) eqn:Hrt; cbv iota.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst0;
-      [|discriminate]. cbv iota in H.
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst0; cbv iota in H.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+        apply check_ret_only_ok_iff in H as (Heq & -> & ->).
+        inversion Heq; subst.
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        rewrite Hdst0. cbv iota. try rewrite Ho. cbv iota.
+        apply pure_ok. }
     destruct ws as [|[a bs] ws']; [discriminate|].
     destruct ws' as [|? ?]; [|discriminate].
     destruct zs as [|? ?]; [|discriminate].
@@ -104,8 +122,13 @@ Proof.
     apply pure_ok. }
   destruct (Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID) eqn:Hcp;
     cbv iota.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst1;
-      [|discriminate]. cbv iota in H.
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst1; cbv iota in H.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+        apply check_ret_only_ok_iff in H as (Heq & -> & ->).
+        inversion Heq; subst.
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        rewrite Hdst1. cbv iota. try rewrite Ho. cbv iota.
+        apply pure_ok. }
     destruct ws as [|[a bs] ws']; [discriminate|].
     destruct ws' as [|? ?]; [|discriminate].
     destruct zs as [|? ?]; [|discriminate].
@@ -128,8 +151,11 @@ Proof.
   destruct (negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)) eqn:Henv;
     [discriminate|]. cbv iota.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst;
-    [|discriminate]. cbv iota.
+  destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst; cbv iota.
+  2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in H |- *;
+        [|discriminate].
+      apply check_ret_only_ok_iff in H as (Heq & -> & ->).
+      inversion Heq; subst. apply pure_ok. }
   destruct ws as [|[a bs] ws']; [discriminate|].
   destruct ws' as [|? ?]; [|discriminate].
   destruct zs as [|? ?]; [|discriminate].
@@ -155,8 +181,9 @@ Proof.
   unfold check_clock_gettime in H. unfold clock_gettime_spec.
   destruct (clockid_percall_b clkid) eqn:Hrt; cbv iota.
   { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst0;
-      cbv iota; [|apply unmodeled_intro].
+    destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst0; cbv iota.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in H |- *;
+          [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
     exfalso. cbv iota in H.
     destruct ws as [|[a bs] ws']; [discriminate|].
     destruct ws' as [|? ?]; [|discriminate].
@@ -169,8 +196,9 @@ Proof.
   destruct (Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID) eqn:Hcp;
     cbv iota.
   { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst1;
-      cbv iota; [|apply unmodeled_intro].
+    destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst1; cbv iota.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in H |- *;
+          [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
     exfalso. cbv iota in H.
     destruct ws as [|[a bs] ws']; [discriminate|].
     destruct ws' as [|? ?]; [|discriminate].
@@ -186,8 +214,9 @@ Proof.
   destruct (negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)) eqn:Henv;
     cbv iota; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst;
-    cbv iota; [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst; cbv iota.
+  2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in H |- *;
+        [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
   exfalso. cbv iota in H.
   destruct ws as [|[a bs] ws']; [discriminate|].
   destruct ws' as [|? ?]; [|discriminate].
@@ -207,20 +236,26 @@ Proof.
   unfold clock_gettime_spec in H. unfold check_clock_gettime.
   destruct (clockid_percall_b clkid) eqn:Hrt;
     cbv iota in *; sys_unfold; inv_ok.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst0;
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst0;
       cbv iota in *; inv_ok.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *; inv_ok.
+        now apply check_ret_only_ok_iff. }
     cbv iota. bool_true. reflexivity. }
   destruct (Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID) eqn:Hcp;
     cbv iota in *; sys_unfold; inv_ok.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst1;
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst1;
       cbv iota in *; inv_ok.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *; inv_ok.
+        now apply check_ret_only_ok_iff. }
     cbv iota. bool_true. reflexivity. }
   destruct (negb (Z.eqb (bv_unsigned clkid) CLOCK_MONOTONIC)) eqn:Hid;
     cbv iota in *; inv_ok.
   destruct (negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)) eqn:Henv;
     cbv iota in *; inv_ok.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst;
+  destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst;
     cbv iota in *; inv_ok.
+  2:{ destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *; inv_ok.
+      now apply check_ret_only_ok_iff. }
   cbv iota. bool_true. reflexivity.
 Qed.
 
@@ -232,18 +267,27 @@ Proof.
   unfold clock_gettime_spec in H. unfold check_clock_gettime.
   destruct (clockid_percall_b clkid) eqn:Hrt;
     cbv iota in *; sys_unfold; inv_ok.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst0;
-      cbv iota in *; [|reflexivity]. inv_ok. }
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst0;
+      cbv iota in *.
+    - inv_ok.
+    - destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *;
+        [inv_ok|reflexivity]. }
   destruct (Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID) eqn:Hcp;
     cbv iota in *; sys_unfold; inv_ok.
-  { destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst1;
-      cbv iota in *; [|reflexivity]. inv_ok. }
+  { destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst1;
+      cbv iota in *.
+    - inv_ok.
+    - destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *;
+        [inv_ok|reflexivity]. }
   destruct (negb (Z.eqb (bv_unsigned clkid) CLOCK_MONOTONIC)) eqn:Hid;
     cbv iota in *; [reflexivity|]. inv_ok.
   destruct (negb (Z.ltb (bv_unsigned (m_clock m)) CLOCK_NS_ENVELOPE)) eqn:Henv;
     cbv iota in *; [reflexivity|]. inv_ok.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16)) eqn:Hdst;
-    cbv iota in *; [|reflexivity]. inv_ok.
+  destruct (copy_bytes_map (in_wmem i) tp 16) eqn:Hdst;
+    cbv iota in *.
+  - inv_ok.
+  - destruct (negb (access_okb tp 16)) eqn:Ho; cbv iota in *;
+      [inv_ok|reflexivity].
 Qed.
 
 (** The successful result, after the destination gate has passed. *)
@@ -326,6 +370,12 @@ Proof.
   - sys_unfold; inv_ok.
 Qed.
 
+(** A destination that is not [clock_getres_dst_ok_b] is non-NULL; a
+    range [access_ok] refuses is -EFAULT with nothing written, beside
+    the alarm ids' -EINVAL, and a range it admits that is not wholly
+    writable declines — [Kernel.Time.PosixTimers.clock_getres_spec]'s
+    split, decided from the return value as the writable arm decides
+    its -EINVAL. *)
 Definition check_clock_getres (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if clock_getres_supported_b clkid then
@@ -334,6 +384,11 @@ Definition check_clock_getres (i : SyscallInput) (clkid tp : word)
          && bv_eqb (eff_ret eff) (errno_ret EINVAL)
       then check_ret_only eff (errno_ret EINVAL) m []
       else check_clock_getres_result clkid tp eff m
+    else if negb (access_okb tp 16) then
+      if clock_getres_alarm_b clkid
+         && bv_eqb (eff_ret eff) (errno_ret EINVAL)
+      then check_ret_only eff (errno_ret EINVAL) m []
+      else check_ret_only eff (errno_ret EFAULT) m []
     else CheckUnmodeled
   else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE
   then check_ret_only eff (errno_ret EINVAL) m []
@@ -348,7 +403,16 @@ Proof.
   unfold clock_getres_spec.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - eapply bind_ok0; [apply input_ok|]. cbv beta.
-    destruct (clock_getres_dst_ok_b i tp) eqn:Hd; [|discriminate].
+    destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+        destruct (clock_getres_alarm_b clkid) eqn:Ha; cbn [andb] in H.
+        - destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)) eqn:Hr.
+          + apply check_ret_only_ok_iff in H as (-> & -> & ->).
+            apply alt_l. unfold err_ret, ret_only. apply pure_ok.
+          + apply check_ret_only_ok_iff in H as (-> & -> & ->).
+            apply alt_r. unfold err_ret, ret_only. apply pure_ok.
+        - apply check_ret_only_ok_iff in H as (-> & -> & ->).
+          unfold err_ret, ret_only. apply pure_ok. }
     destruct (clock_getres_alarm_b clkid) eqn:Ha.
     + cbn [andb] in H.
       destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)) eqn:Hr.
@@ -370,8 +434,12 @@ Proof.
   unfold clock_getres_spec.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-    destruct (clock_getres_dst_ok_b i tp) eqn:Hd;
-      [|apply unmodeled_intro].
+    destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|apply unmodeled_intro].
+        exfalso.
+        destruct (clock_getres_alarm_b clkid
+                  && bv_eqb (eff_ret eff) (errno_ret EINVAL));
+          now apply check_ret_only_no_unmodeled in H. }
     destruct (clock_getres_alarm_b clkid) eqn:Ha.
     + cbn [andb] in H.
       destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)).
@@ -392,7 +460,19 @@ Proof.
   unfold check_clock_getres.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - apply input_bind_ok_inv in H. cbv beta in H.
-    destruct (clock_getres_dst_ok_b i tp) eqn:Hd; [|discriminate].
+    destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+        destruct (clock_getres_alarm_b clkid) eqn:Ha.
+        - unfold alt in H. destruct H as [H|H].
+          + unfold err_ret, ret_only, pure in H. inversion H; subst.
+            cbn [eff_ret]. rewrite bv_eqb_refl.
+            now apply check_ret_only_ok_iff.
+          + unfold err_ret, ret_only, pure in H. inversion H; subst.
+            cbn [andb eff_ret].
+            change (bv_eqb (errno_ret EFAULT) (errno_ret EINVAL)) with false.
+            cbv iota. now apply check_ret_only_ok_iff.
+        - unfold err_ret, ret_only, pure in H. inversion H; subst.
+          cbn [andb]. now apply check_ret_only_ok_iff. }
     destruct (clock_getres_alarm_b clkid) eqn:Ha.
     + unfold alt in H. destruct H as [H|H].
       * unfold err_ret, ret_only, pure in H. inversion H; subst.
@@ -422,7 +502,12 @@ Proof.
   unfold check_clock_getres.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - apply input_bind_unmodeled_inv in H. cbv beta in H.
-    destruct (clock_getres_dst_ok_b i tp) eqn:Hd; [|reflexivity].
+    destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
+    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|reflexivity].
+        exfalso. destruct (clock_getres_alarm_b clkid).
+        - unfold alt in H. destruct H as [H|H];
+            unfold err_ret, ret_only, pure in H; discriminate.
+        - unfold err_ret, ret_only, pure in H. discriminate. }
     destruct (clock_getres_alarm_b clkid) eqn:Ha.
     + unfold alt in H. destruct H as [H|H].
       * unfold err_ret, ret_only, pure in H. discriminate.
