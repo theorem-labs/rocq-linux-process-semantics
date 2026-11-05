@@ -49,7 +49,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
     [mkUserNs 1 None 0 0 None None true true 100 false;
      mkUserNs 2 (Some 1%positive) 1 1000 None None true true 100 true] in
   let w := with_mntns w [mk_mntns 1 2 1 false] in
-  let w := with_pidns w [mkPidNs 1 None 2 0 0] in
+  let w := with_pidns w [mk_pidns 1 None 2 0 0] in
   let w := with_sbs w
     [mkSb 1 SbTmpfs 2 1 false TMPFS_MAGIC false false true;
      mkSb 3 (SbProc 1) 2 30 false PROC_SUPER_MAGIC true true true;
