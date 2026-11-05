@@ -740,13 +740,23 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          shares the [f_pos] that [read] moves, and the
                          model holds that offset in the entry
                          ([ReadWrite.read_spec]), for the [FdFile] reason
-                         above.  Both words ask this gate of the
+                         above. Both words ask this gate of the
                          table [forfeit_inherited] leaves the
                          caller, which holds no live one
-                         ([clone_resolve], [clone_ns_resolve]). *)
+                         ([clone_resolve], [clone_ns_resolve]).
+                       - an alias ([OAlias], left by [Fs.File.dup3_spec]'s
+                         move) names a regular file's description whose
+                         [f_pos] its partner's entry carries; the child
+                         would hold a third descriptor of it, and the
+                         one-descriptor argument the alias rests on
+                         ([State.OAlias]) would not hold. In a run its
+                         partner holds that regular file, which declines
+                         above as well; the alias declines on its own so
+                         that the gate says so. *)
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _
                                 | OInherited None) => true
-                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)) => false
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)
+                                | OAlias _) => false
                     (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe
                        reason: the child's second reference names the
                        same socket, whose peer and queue both copies
@@ -876,14 +886,14 @@ Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = fa
 Proof.
   intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
     try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; reflexivity.
 Qed.
 
 Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
 Proof.
   intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st] H;
     try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; try reflexivity.
   discriminate H.
 Qed.
 
@@ -932,7 +942,7 @@ Proof.
   intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
   destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid sd0 st0|c|fam|aid af|o|i0 sd st];
     try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; try reflexivity.
   cbn in H. discriminate H.
 Qed.
 
@@ -974,9 +984,12 @@ Qed.
     O_NONBLOCK (= EFD_NONBLOCK) when [ef_nonblock].  [Fcntl.fcntl_spec]
     answers F_GETFL and F_SETFL on the shared kind exactly from [w].
     EFD_CLOEXEC is not in [w]: it is a bit of the descriptor table, not
-    of the file, and this model keeps no close-on-exec bit, so after the
-    clone it is unknown, and [Fcntl.fcntl_spec]'s F_GETFD declines on
-    the shared kind ([Fcntl.getfd_declines]). *)
+    of the file, and [eventfd2] records none in [State.m_cloexec], so
+    after the clone it is unknown unless an [F_SETFD] recorded it, and
+    [Fcntl.fcntl_spec]'s F_GETFD declines on the shared kind where it is
+    unknown ([Fcntl.getfd_declines]).  The rewrite keeps every entry at
+    its number, so every close-on-exec key still names an open
+    descriptor. *)
 Definition eventfd_shared_flags (c : EventfdCtx) : word :=
   Z_to_bv 64 (Z.lor (if ef_semaphore c then EFD_SEMAPHORE else 0%Z)
                     (if ef_nonblock c then O_NONBLOCK else 0%Z)).

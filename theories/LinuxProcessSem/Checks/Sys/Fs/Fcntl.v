@@ -56,7 +56,8 @@ Local Abbreviation check_oeventfd_setfl fd w arg eff m :=
    else CheckUnmodeled).
 
 (** fcntl: a closed fd is -EBADF whatever the command; on an open one
-    F_SETFD answers 0 for any arg, F_GETFD answers 0 or FD_CLOEXEC (and
+    F_SETFD answers 0 for any arg and records the bit, F_GETFD answers
+    the recorded bit or, where none is recorded, 0 or FD_CLOEXEC (and
     declines on a shared eventfd, [Fcntl.getfd_declines]),
     F_SETFL on a stream-pair end, an eventfd or a shared eventfd records
     O_NONBLOCK ([check_stream_setfl], [check_eventfd_setfl],
@@ -69,15 +70,21 @@ Definition check_fcntl (fd cmd arg : word) (eff : SyscallEffect) (m : Model)
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some e =>
-      if bv_eqb cmd F_SETFD then check_ret_only eff (Z_to_bv 64 0) m []
+      if bv_eqb cmd F_SETFD
+      then check_ret_only eff (Z_to_bv 64 0)
+             (with_cloexec (cloexec_set (m_cloexec m) fd (setfd_cloexec_b arg)) m) []
       else if bv_eqb cmd F_GETFD then
-        if getfd_declines e then CheckUnmodeled
-        else
-        match eff with
-        | mkEffectU r [] [] [] [] [] =>
-            if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
-            then CheckOk m [] else CheckReject
-        | _ => CheckReject
+        match cloexec_lookup (m_cloexec m) fd with
+        | Some b => check_ret_only eff (getfd_word b) m []
+        | None =>
+            if getfd_declines e then CheckUnmodeled
+            else
+            match eff with
+            | mkEffectU r [] [] [] [] [] =>
+                if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
+                then CheckOk m [] else CheckReject
+            | _ => CheckReject
+            end
         end
       else if bv_eqb cmd F_SETFL then
         match e with
@@ -240,19 +247,24 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. apply pure_ok.
+      srw Hfd. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H; [discriminate H|].
-        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd. srw Hgx.
-        destruct eff as [r ws zs us cs ci];
-          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
-        destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
-          [|destruct (bv_eqb r FD_CLOEXEC) eqn:H1]; try discriminate.
-        -- apply bv_eqb_eq in H0; subst r. inversion H; subst.
-           apply alt_l. apply pure_ok.
-        -- apply bv_eqb_eq in H1; subst r. inversion H; subst.
-           apply alt_r. apply pure_ok.
+      * destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota in H.
+        -- apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+           eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hcl. apply pure_ok.
+        -- destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H; [discriminate H|].
+           eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hcl. srw Hgx.
+           destruct eff as [r ws zs us cs ci];
+             destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+           destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
+             [|destruct (bv_eqb r FD_CLOEXEC) eqn:H1]; try discriminate.
+           ++ apply bv_eqb_eq in H0; subst r. inversion H; subst.
+              apply alt_l. apply pure_ok.
+           ++ apply bv_eqb_eq in H1; subst r. inversion H; subst.
+              apply alt_r. apply pure_ok.
       * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
         -- (* F_SETFL: the stream-pair end records its O_NONBLOCK; every
               other kind answers only a provable no-op *)
@@ -263,9 +275,9 @@ Proof.
              | now apply check_stream_setfl_sound_ok
              | now apply check_eventfd_setfl_sound_ok
              | idtac | idtac
-             | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota in H |- *;
+             | destruct o as [q|q|w|h|fl pos|sm sf|lv|pt]; cbv beta iota in H |- *;
                [ idtac | idtac | now apply check_oeventfd_setfl_sound_ok
-               | idtac | idtac | idtac | idtac ]
+               | idtac | idtac | idtac | idtac | idtac ]
              | idtac ];
              match type of H with
              | context [setfl_noop_on ?e arg] =>
@@ -293,13 +305,16 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + now apply check_ret_only_no_unmodeled in H.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H.
-        { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-          srw Hfd. srw Hgx. apply unmodeled_intro. }
-        destruct eff as [r ws zs us cs ci];
-          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
-        destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
-          discriminate.
+      * destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota in H.
+        -- now apply check_ret_only_no_unmodeled in H.
+        -- destruct (getfd_declines e) eqn:Hgx; cbv beta iota in H.
+           { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+             srw Hfd. srw Hcl. srw Hgx. apply unmodeled_intro. }
+           destruct eff as [r ws zs us cs ci];
+             destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+           destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
+             discriminate.
       * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
         -- destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st0];
              cbv beta iota in H;
@@ -309,11 +324,11 @@ Proof.
              | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                srw Hfd; eapply check_eventfd_setfl_sound_unmodeled; exact H
              | idtac | idtac
-             | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota in H;
+             | destruct o as [q|q|w|h|fl pos|sm sf|lv|pt]; cbv beta iota in H;
                [ idtac | idtac
                | eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
                  srw Hfd; eapply check_oeventfd_setfl_sound_unmodeled; exact H
-               | idtac | idtac | idtac | idtac ]
+               | idtac | idtac | idtac | idtac | idtac ]
              | idtac ];
              match type of H with
              | context [setfl_noop_on ?e arg] =>
@@ -341,6 +356,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+                   hall Hcl; inv_ok);
               try (match goal with
                    | |- context [getfd_declines ?e'] =>
                        destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
@@ -353,10 +370,10 @@ Proof.
                      | now apply check_stream_setfl_complete_ok with (i := i)
                      | now apply check_eventfd_setfl_complete_ok with (i := i)
                      | idtac | idtac
-                     | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota zeta in *;
+                     | destruct o as [q|q|w|h|fl pos|sm sf|lv|pt]; cbv beta iota zeta in *;
                        [ idtac | idtac
                        | now apply check_oeventfd_setfl_complete_ok with (i := i)
-                       | idtac | idtac | idtac | idtac ]
+                       | idtac | idtac | idtac | idtac | idtac ]
                      | idtac ];
                      match goal with
                      | |- context [setfl_noop_on ?e arg] =>
@@ -377,6 +394,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+                   hall Hcl; inv_ok);
               try (match goal with
                    | |- context [getfd_declines ?e'] =>
                        destruct (getfd_declines e') eqn:Hgx; hall Hgx; inv_ok
@@ -389,10 +408,10 @@ Proof.
                      | now apply check_stream_setfl_complete_unmodeled with (i := i)
                      | now apply check_eventfd_setfl_complete_unmodeled with (i := i)
                      | idtac | idtac
-                     | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota zeta in *;
+                     | destruct o as [q|q|w|h|fl pos|sm sf|lv|pt]; cbv beta iota zeta in *;
                        [ idtac | idtac
                        | now apply check_oeventfd_setfl_complete_unmodeled with (i := i)
-                       | idtac | idtac | idtac | idtac ]
+                       | idtac | idtac | idtac | idtac | idtac ]
                      | idtac ];
                      match goal with
                      | |- context [setfl_noop_on ?e arg] =>

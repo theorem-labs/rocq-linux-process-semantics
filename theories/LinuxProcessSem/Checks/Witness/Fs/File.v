@@ -53,16 +53,22 @@ Definition dup3_witness (oldfd newfd flags : word) (m : Model)
     match fd_lookup (m_fds m) oldfd with
     | None => ret_outcome (errno_ret EBADF) m
     | Some e =>
-        if negb (dup_modeled_entry e) then Unmodeled
-        else
+        match dup3_fds oldfd newfd e (m_fds m) with
+        | None => Unmodeled
+        | Some fds' =>
           match fd_lookup (m_fds m) newfd with
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
-              then ret_outcome newfd (with_fds (fd_insert (m_fds m) newfd e) m)
+              then ret_outcome newfd
+                     (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                        (with_fds fds' m))
               else Unmodeled
           | Some _ =>
-              ret_outcome newfd (with_fds (fd_insert (m_fds m) newfd e) m)
+              ret_outcome newfd
+                (with_cloexec (cloexec_set (m_cloexec m) newfd (dup3_cloexec_b flags))
+                   (with_fds fds' m))
           end
+        end
     end.
 
 Lemma dup3_witness_ok : forall oldfd newfd flags i m,
@@ -79,9 +85,7 @@ Proof.
   { eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hl. apply pure_ok. }
   destruct (fd_lookup (m_fds m) oldfd) as [e|] eqn:Hfd.
-  - destruct (negb (dup_modeled_entry e)) eqn:Hk.
-    + eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hl; srw Hfd; srw Hk. apply unmodeled_intro.
+  - destruct (dup3_fds oldfd newfd e (m_fds m)) as [fds'|] eqn:Hk.
     + destruct (fd_lookup (m_fds m) newfd) as [e2|] eqn:Hnf.
       * eapply bind_step; [apply get_model_ok|].
         cbv beta iota zeta; srw Hl; srw Hfd; srw Hk; srw Hnf.
@@ -93,12 +97,15 @@ Proof.
         eapply bind_step; [apply get_model_ok|].
         cbv beta iota zeta; srw Hl; srw Hfd; srw Hk; srw Hnf.
         apply unmodeled_intro.
+    + eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hl; srw Hfd; srw Hk. apply unmodeled_intro.
   - eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hl; srw Hfd. apply pure_ok.
 Qed.
 
 (** close_range: the spec's own answer on every arm -- the two -EINVALs,
-    the decline for a known flag, and 0 with the range removed. *)
+    the decline for a known flag, and 0 with the range removed and its
+    close-on-exec keys forgotten. *)
 Definition close_range_witness (fd max_fd flags : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
@@ -108,7 +115,8 @@ Definition close_range_witness (fd max_fd flags : word) (m : Model)
   then ret_outcome (errno_ret EINVAL) m
   else if negb (Z.eqb (bv_unsigned flags) 0) then Unmodeled
   else ret_outcome (Z_to_bv 64 0)
-         (with_fds (close_range_fds fd max_fd (m_fds m)) m).
+         (with_cloexec (close_range_cloexec fd max_fd (m_cloexec m))
+            (with_fds (close_range_fds fd max_fd (m_fds m)) m)).
 
 Lemma close_range_witness_ok : forall fd max_fd flags i m,
   close_range_spec fd max_fd flags i m (close_range_witness fd max_fd flags m).

@@ -357,7 +357,7 @@ Proof.
       | (* the opaque kinds: a /proc/sys file delivers at most [count]
            bytes under the count gate, an eventfd 8, a live inherited file
            the shared file read's prefix *)
-        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv iota in Hspec;
+        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; cbv iota in Hspec;
         try exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws);
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)

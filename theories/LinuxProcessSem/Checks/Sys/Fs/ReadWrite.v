@@ -887,7 +887,7 @@ Definition check_read_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
       else check_ret_only eff (errno_ret EISDIR) m []
-  | ONsFile _ | OSignalFd _ _ | OInherited _ => CheckUnmodeled
+  | ONsFile _ | OSignalFd _ _ | OInherited _ | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_read_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -920,6 +920,7 @@ Proof.
     | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
         now apply check_ret_only_no_unmodeled in H
     | apply unmodeled_intro
+    | apply unmodeled_intro
     | apply unmodeled_intro ].
 Qed.
 
@@ -939,6 +940,7 @@ Proof.
         unfold err_ret, ret_only, pure in H; inversion H; subst;
         now apply check_ret_only_ok_iff
     | unfold unmodeled in H; discriminate H
+    | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H ].
 Qed.
 
@@ -955,7 +957,7 @@ Proof.
     | reflexivity
     | destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
         unfold err_ret, ret_only, pure in H; discriminate H
-    | reflexivity | reflexivity ].
+    | reflexivity | reflexivity | reflexivity ].
 Qed.
 
 (** What an opaque descriptor's read delivers is under the clamp: a
@@ -982,7 +984,7 @@ Qed.
     -EBADF of the O_PATH descriptor and of the three read-only objects
     (the /proc/sys leaf, the /proc/self/fd directory and the inherited
     file in either form), the signalfd's -EINVAL, and the decline on
-    [State.ONsFile]. *)
+    [State.ONsFile] and [State.OAlias]. *)
 Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
@@ -990,7 +992,7 @@ Definition check_write_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : wor
   | OProcPath _ | OProcFile _ | OProcFdDir _ _ | OInherited _ =>
       check_ret_only eff (errno_ret EBADF) m []
   | OSignalFd _ _ => check_ret_only eff (errno_ret EINVAL) m []
-  | ONsFile _ => CheckUnmodeled
+  | ONsFile _ | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_write_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -1018,7 +1020,8 @@ Proof.
     | apply unmodeled_intro
     | now apply check_ret_only_no_unmodeled in H
     | now apply check_ret_only_no_unmodeled in H
-    | now apply check_ret_only_no_unmodeled in H ].
+    | now apply check_ret_only_no_unmodeled in H
+    | apply unmodeled_intro ].
 Qed.
 
 Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -1027,9 +1030,9 @@ Lemma check_write_opaque_complete_ok : forall i o buf count eff m m' evs,
 Proof.
   intros i o buf count eff m m' evs H.
   unfold write_opaque_spec in H. unfold check_write_opaque.
-  destruct o; cbv beta iota in H |- *.
+  destruct o; cbv beta iota in H |- *;
+    try (unfold unmodeled in H; discriminate H).
   3: now apply check_write_eventfd_complete_ok.
-  3: unfold unmodeled in H; discriminate H.
   all: unfold err_ret, ret_only, pure in H; inversion H; subst;
        now apply check_ret_only_ok_iff.
 Qed.
@@ -1047,7 +1050,8 @@ Proof.
     | reflexivity
     | unfold err_ret, ret_only, pure in H; discriminate H
     | unfold err_ret, ret_only, pure in H; discriminate H
-    | unfold err_ret, ret_only, pure in H; discriminate H ].
+    | unfold err_ret, ret_only, pure in H; discriminate H
+    | reflexivity ].
 Qed.
 
 (** [ReadWrite.read_file_data] as an acceptor: the read of a regular
@@ -2954,7 +2958,7 @@ Proof.
   16:{ (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] *) discriminate H. }
   15:{ (* the opaque kinds: a live inherited file reads through
           [check_read_file_data]; every other kind is [check_read_opaque] *)
-       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt];
          try (cbv beta iota in H;
               eapply bind_ok0; [apply input_ok|]; cbv beta;
               eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
@@ -3345,7 +3349,7 @@ Proof.
        srw Hfd. apply unmodeled_intro. }
   15:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
-       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt];
          try (eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
               eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
               srw Hfd; cbv beta iota in H;
@@ -3617,7 +3621,7 @@ Proof.
   15:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
        hall Hfd; inv_ok.
-       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv beta iota zeta in *;
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; cbv beta iota zeta in *;
          try (apply check_read_opaque_complete_ok; assumption).
        destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
        { (* the range is refused: -EFAULT *)
@@ -3786,7 +3790,7 @@ Proof.
   15:{ (* the opaque kinds: a live inherited file through
           [check_read_file_data], every other kind through [check_read_opaque] *)
        hall Hfd; inv_ok.
-       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv beta iota zeta in *;
+       destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; cbv beta iota zeta in *;
          try (apply check_read_opaque_complete_unmodeled; assumption).
        destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
          try discriminate.

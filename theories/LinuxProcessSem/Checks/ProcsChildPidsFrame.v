@@ -506,13 +506,26 @@ Local Ltac openat_sub_cp_top H :=
   | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_cp in H; exact H
   end.
 
+Lemma check_openat_table_cp : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
+  cps_of m' = cps_of m.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H.
+  unfold check_openat_table in H. cbv zeta in H.
+  repeat (vm_step H || openat_sub_cp_top H || cp_done H); try reflexivity.
+Qed.
+
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
 Lemma check_openat_cp : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros i dirfd pathp flags eff m m' evs H.
-  unfold check_openat in H. cbv zeta in H.
-  repeat (vm_step H || openat_sub_cp_top H || cp_done H); try reflexivity.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_cp in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_cp : forall fd eff m m' evs,
@@ -770,7 +783,7 @@ Proof. intros eff m m' evs H. unfold check_setsid in H. cp_frame2 H. Qed.
 Lemma check_getsid_cp : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
-  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H.
+  intros pid eff m m' evs H. unfold check_getsid, check_pid_choice in H.
   cp_frame2 H.
 Qed.
 

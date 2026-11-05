@@ -79,9 +79,10 @@ Proof.
   - apply unmodeled_intro.
 Qed.
 
-(** fcntl witness: -EBADF on a closed fd, 0 for F_SETFD and for F_GETFD
-    (the first of its two admitted answers; [Unmodeled] on a shared
-    eventfd, [Fcntl.getfd_declines]), [stream_setfl_witness],
+(** fcntl witness: -EBADF on a closed fd; 0 for F_SETFD, with the bit
+    recorded; for F_GETFD the recorded bit, or 0 (the first of its two
+    admitted answers) where none is recorded ([Unmodeled] there on a
+    shared eventfd, [Fcntl.getfd_declines]); [stream_setfl_witness],
     [eventfd_setfl_witness] or [oeventfd_setfl_witness] for an F_SETFL on
     a stream-pair end, an eventfd or a shared eventfd, 0 for an F_SETFL
     on any other kind that provably changes nothing, the derived flag
@@ -92,9 +93,14 @@ Definition fcntl_witness (fd cmd arg : word) (m : Model) : outcome SyscallEffect
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
-      if bv_eqb cmd F_SETFD then ret_outcome (Z_to_bv 64 0) m
+      if bv_eqb cmd F_SETFD
+      then ret_outcome (Z_to_bv 64 0)
+             (with_cloexec (cloexec_set (m_cloexec m) fd (setfd_cloexec_b arg)) m)
       else if bv_eqb cmd F_GETFD then
-        (if getfd_declines e then Unmodeled else ret_outcome (Z_to_bv 64 0) m)
+        match cloexec_lookup (m_cloexec m) fd with
+        | Some b => ret_outcome (getfd_word b) m
+        | None => if getfd_declines e then Unmodeled else ret_outcome (Z_to_bv 64 0) m
+        end
       else if bv_eqb cmd F_SETFL then
         match e with
         | FdStream id side st => stream_setfl_witness fd id side st arg m
@@ -118,12 +124,15 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + eapply bind_step; [apply get_model_ok|].
-      cbv beta iota; srw Hfd. apply pure_ok.
+      cbv beta iota; srw Hfd. eapply bind_step; [apply modify_ok|]. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
       * eapply bind_step; [apply get_model_ok|].
         cbv beta iota; srw Hfd.
-        destruct (getfd_declines e); cbv beta iota;
-          [apply unmodeled_intro | apply alt_l; apply pure_ok].
+        destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota;
+          [ apply pure_ok
+          | destruct (getfd_declines e); cbv beta iota;
+            [apply unmodeled_intro | apply alt_l; apply pure_ok] ].
       * destruct (bv_eqb cmd F_SETFL) eqn:Hs.
         -- (* one arm per fd kind: the stream-pair end's [stream_setfl],
               the eventfd's [eventfd_setfl], the shared eventfd's
@@ -132,9 +141,9 @@ Proof.
              (eapply bind_step; [apply get_model_ok|]); cbv beta iota; srw Hfd;
              [ .. | apply stream_setfl_witness_ok | apply eventfd_setfl_witness_ok
                   | idtac | idtac
-                  | destruct o as [q|q|w|h|fl pos|sm sf|lv]; cbv beta iota;
+                  | destruct o as [q|q|w|h|fl pos|sm sf|lv|pt]; cbv beta iota;
                     [ idtac | idtac | apply oeventfd_setfl_witness_ok
-                    | idtac | idtac | idtac | idtac ]
+                    | idtac | idtac | idtac | idtac | idtac ]
                   | idtac ];
              match goal with
              | |- context [setfl_noop_on ?e arg] =>

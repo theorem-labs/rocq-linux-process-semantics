@@ -14,9 +14,9 @@
     and a stat pin keyed by path; nothing it holds names [m_io].  Both stay
     valid because the file system only grows.
 
-    - [syscall_spec_shared_grows]: every [Ok] outcome of the released spec
-      at a class-(B) number keeps every path of [m_fs] present.  A [Forall]
-      over [checked_table], as in [ProcsPrivateFrame].
+    - [syscall_spec_shared_frame]: every [Ok] outcome of the released spec
+      at a class-(B) number keeps every path of [m_fs] and the caller's tid.
+      A [Forall] over [checked_table], as in [ProcsPrivateFrame].
     - [pstep_at_shared_frame]: a [pstep_at] step of entry [p] with a
       class-(B) call pending keeps [pcfg_root], [sh_ofd], [sh_pipes] and
       [sh_ns]; the new [sh_fsys] keeps every path of the old; every other
@@ -85,41 +85,45 @@ Proof.
   destruct (fs_lookup fs p); [apply fs_grows_refl | apply fs_grows_set].
 Qed.
 
-(** A leaf of a checker walk: the post-model's file system is the old one,
-    one [fs_set] over it, or [append_open_fs] of it, by conversion. *)
+
+(** Shared calls may grow the file system, but do not first-pin a tid. *)
+Definition fs_tid_frame (m m' : Model) : Prop :=
+  fs_grows (m_fs m) (m_fs m') /\ m_tid m' = m_tid m.
+
+(** A checker leaf keeps the tid, and keeps every path by conversion or
+    by one [fs_set] or [append_open_fs]. *)
 Ltac fs_leaf :=
-  first
-  [ exact (fs_grows_refl _)
-  | eapply fs_grows_set
-  | eapply fs_grows_append_open ].
+  unfold fs_tid_frame; split;
+    [ first [exact (fs_grows_refl _) | eapply fs_grows_set | eapply fs_grows_append_open]
+    | reflexivity ].
 
 Lemma check_efault_or_fs : forall fb eff m m' evs,
-  check_efault_or fb eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_efault_or fb eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof. intros fb eff m m' evs H. unfold check_efault_or in H. repeat vm_step H; fs_leaf. Qed.
 
 Lemma check_sigpipe_write_fs : forall eff m m' evs,
-  check_sigpipe_write eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_sigpipe_write eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros eff m m' evs H. unfold check_sigpipe_write in H.
   destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_model in H; subst.
   unfold raise_sigpipe.
-  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); exact (fs_grows_refl _).
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); fs_leaf.
 Qed.
 
 Lemma check_sigpipe_writev_fs : forall reads eff m m' evs,
-  check_sigpipe_writev reads eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_sigpipe_writev reads eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros reads eff m m' evs H. unfold check_sigpipe_writev in H.
   destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_copyins_model in H; subst.
   unfold raise_sigpipe.
-  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); exact (fs_grows_refl _).
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); fs_leaf.
 Qed.
 
 Lemma check_open_result_fs : forall eff m mk m' evs,
-  (forall fd, fs_grows (m_fs m) (m_fs (mk fd))) ->
-  check_open_result eff m mk = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  (forall fd, fs_tid_frame m (mk fd)) ->
+  check_open_result eff m mk = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros eff m mk m' evs Hmk H.
   unfold check_open_result, check_new_fd_result in H.
@@ -274,14 +278,14 @@ Proof.
 Qed.
 
 Lemma check_ftruncate_fs : forall fd len eff m m' evs,
-  check_ftruncate fd len eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_ftruncate fd len eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros fd len eff m m' evs H. unfold check_ftruncate in H. fs_frame H.
 Qed.
 
 Lemma check_faccessat_fs : forall i dirfd pathp mode eff m m' evs,
   check_faccessat i dirfd pathp mode eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i dirfd pathp mode eff m m' evs H.
   unfold check_faccessat, Open.check_faccessat_body, check_access_exists in H.
@@ -294,7 +298,7 @@ Qed.
     the calls below it by their lemmas. *)
 Lemma openat_read_fs : forall p eff m m' evs,
   Open.check_openat_read p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p eff m m' evs H.
   unfold Open.check_openat_read in H. cbv zeta in H.
@@ -303,7 +307,7 @@ Qed.
 
 Lemma openat_create_fs : forall p eff m m' evs,
   Open.check_openat_create p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p eff m m' evs H.
   unfold Open.check_openat_create, check_create_wronly in H. cbv zeta in H.
@@ -312,7 +316,7 @@ Qed.
 
 Lemma openat_append_fs : forall excl p eff m m' evs,
   Open.check_openat_append excl p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros excl p eff m m' evs H.
   unfold Open.check_openat_append, check_open_append in H. cbv zeta in H.
@@ -321,7 +325,7 @@ Qed.
 
 Lemma openat_rdwr_fs : forall creat trunc p eff m m' evs,
   Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros creat trunc p eff m m' evs H.
   unfold Open.check_openat_rdwr, check_open_rdwr in H. cbv zeta in H.
@@ -330,7 +334,7 @@ Qed.
 
 Lemma openat_rdwr_excl_fs : forall p eff m m' evs,
   Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p eff m m' evs H.
   unfold Open.check_openat_rdwr_excl, check_open_rdwr in H. cbv zeta in H.
@@ -339,7 +343,7 @@ Qed.
 
 Lemma openat_excl_fs : forall p eff m m' evs,
   Open.check_openat_excl p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p eff m m' evs H.
   unfold Open.check_openat_excl, check_create_wronly in H. cbv zeta in H.
@@ -348,7 +352,7 @@ Qed.
 
 Lemma openat_dir_fs : forall p eff m m' evs,
   Open.check_openat_dir p eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p eff m m' evs H.
   unfold Open.check_openat_dir in H. cbv zeta in H.
@@ -357,7 +361,7 @@ Qed.
 
 Lemma openat_localtime_fs : forall flags eff m m' evs,
   Open.check_openat_localtime flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros flags eff m m' evs H.
   unfold Open.check_openat_localtime in H. cbv zeta in H.
@@ -366,7 +370,7 @@ Qed.
 
 Lemma openat_devnull_fs : forall flags eff m m' evs,
   Open.check_openat_devnull flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros flags eff m m' evs H.
   unfold Open.check_openat_devnull, Open.check_open_devnull in H. cbv zeta in H.
@@ -375,7 +379,7 @@ Qed.
 
 Lemma openat_urandom_fs : forall flags eff m m' evs,
   Open.check_openat_urandom flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros flags eff m m' evs H.
   unfold Open.check_openat_urandom, Open.check_open_urandom in H. cbv zeta in H.
@@ -384,7 +388,7 @@ Qed.
 
 Lemma openat_proc_result_fs : forall o eff m m' evs,
   Open.check_proc_open_result o eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros o eff m m' evs H.
   unfold Open.check_proc_open_result in H. cbv zeta in H.
@@ -400,7 +404,7 @@ Local Ltac openat_sub_fs_tmp H :=
 
 Lemma openat_tmp_fs : forall n p flags eff m m' evs,
   Open.check_openat_tmp n p flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros n p flags eff m m' evs H.
   unfold Open.check_openat_tmp in H. cbv zeta in H.
@@ -417,7 +421,7 @@ Local Ltac openat_sub_fs_sep H :=
 
 Lemma openat_sep_fs : forall p flags eff m m' evs,
   Open.check_openat_sep p flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p flags eff m m' evs H.
   unfold Open.check_openat_sep in H. cbv zeta in H.
@@ -438,7 +442,7 @@ Local Ltac openat_sub_fs_resolved H :=
 
 Lemma openat_resolved_fs : forall p flags eff m m' evs,
   Open.check_openat_resolved p flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros p flags eff m m' evs H.
   unfold Open.check_openat_resolved in H. cbv zeta in H.
@@ -464,7 +468,7 @@ Local Ltac openat_sub_fs_proc H :=
 
 Lemma openat_proc_fs : forall c flags eff m m' evs,
   Open.check_openat_proc c flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros c flags eff m m' evs H.
   unfold Open.check_openat_proc in H. cbv zeta in H.
@@ -479,7 +483,7 @@ Local Ltac openat_sub_fs_body H :=
 
 Lemma openat_body_fs : forall i dirfd pathp flags eff m m' evs,
   Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold Open.check_openat_body in H. cbv zeta in H.
@@ -491,23 +495,36 @@ Local Ltac openat_sub_fs_top H :=
   | Open.check_openat_body _ _ _ _ _ _ = CheckOk _ _ => apply openat_body_fs in H; exact H
   end.
 
-Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+Lemma check_openat_table_fs : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_tid_frame m m'.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  unfold check_openat in H. cbv zeta in H.
+  unfold check_openat_table in H. cbv zeta in H.
   repeat (vm_step H || openat_sub_fs_top H || fs_done H); try fs_leaf.
 Qed.
 
+(** The close-on-exec step writes [State.m_cloexec] alone. *)
+Lemma check_openat_fs : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  fs_tid_frame m m'.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_fs in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
+Qed.
+
 Lemma check_lseek_fs : forall fd off whence eff m m' evs,
-  check_lseek fd off whence eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_lseek fd off whence eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros fd off whence eff m m' evs H. unfold check_lseek in H. fs_frame H.
 Qed.
 
 Lemma check_read_fs : forall i fd buf count eff m m' evs,
-  check_read i fd buf count eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_read i fd buf count eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_file_data, check_access_ok_zero in H.
@@ -522,7 +539,7 @@ Proof.
 Qed.
 
 Lemma check_write_fs : forall i fd buf count eff m m' evs,
-  check_write i fd buf count eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_write i fd buf count eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_access_ok_zero in H.
@@ -537,7 +554,7 @@ Qed.
 
 Lemma check_readv_imported_fs : forall i fd r iovs0 eff m m' evs,
   check_readv_imported i fd r iovs0 eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i fd r iovs0 eff m m' evs H.
   unfold check_readv_imported in H.
@@ -546,7 +563,7 @@ Qed.
 
 Lemma check_readv_fs : forall i fd iov iovcnt eff m m' evs,
   check_readv i fd iov iovcnt eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
   unfold check_readv in H.
@@ -557,7 +574,7 @@ Qed.
 
 Lemma check_writev_fs : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
   unfold check_writev in H. cbv beta iota zeta in H.
@@ -569,7 +586,7 @@ Qed.
 
 Lemma check_pread64_fs : forall i fd buf count pos eff m m' evs,
   check_pread64 i fd buf count pos eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i fd buf count pos eff m m' evs H.
   unfold check_pread64, check_read_urandom in H. cbv zeta in H. fs_frame H.
@@ -577,7 +594,7 @@ Qed.
 
 Lemma check_pwrite64_fs : forall i fd buf count pos eff m m' evs,
   check_pwrite64 i fd buf count pos eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i fd buf count pos eff m m' evs H.
   unfold check_pwrite64 in H. cbv beta iota zeta in H.
@@ -588,7 +605,7 @@ Proof.
 Qed.
 
 Lemma check_readlinkat_fs : forall i dirfd eff m m' evs,
-  check_readlinkat i dirfd eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  check_readlinkat i dirfd eff m = CheckOk m' evs -> fs_tid_frame m m'.
 Proof.
   intros i dirfd eff m m' evs H. unfold check_readlinkat in H. cbv zeta in H.
   fs_frame H.
@@ -596,7 +613,7 @@ Qed.
 
 Lemma check_newfstatat_fs : forall i dirfd pathp flag eff m m' evs,
   check_newfstatat i dirfd pathp flag eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i dirfd pathp flag eff m m' evs H.
   unfold check_newfstatat, check_newfstatat_proc, check_newfstatat_proc_errno in H.
@@ -605,7 +622,7 @@ Qed.
 
 Lemma check_accept4_fs : forall fd addrp addrlenp flags eff m m' evs,
   check_accept4 fd addrp addrlenp flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros fd addrp addrlenp flags eff m m' evs H.
   (* [check_errno_only] is unfolded alongside, the way
@@ -619,7 +636,7 @@ Qed.
 
 Lemma check_faccessat2_fs : forall i dirfd pathp mode flags eff m m' evs,
   check_faccessat2 i dirfd pathp mode flags eff m = CheckOk m' evs ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i dirfd pathp mode flags eff m m' evs H.
   unfold check_faccessat2, Open.check_faccessat_body, check_access_exists in H.
@@ -630,16 +647,16 @@ Qed.
    Every class-(B) arm keeps every path
    ========================================================================= *)
 
-Definition arm_shared_grows (c : CheckedArm) : Prop :=
+Definition arm_shared_frame (c : CheckedArm) : Prop :=
   List.existsb (Z.eqb (ca_no c)) multiproc_shared_sysnos = true ->
-  forall i eff m m' evs, ca_check c i eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
+  forall i eff m m' evs, ca_check c i eff m = CheckOk m' evs -> fs_tid_frame m m'.
 
-Lemma checked_table_shared_grows : Forall arm_shared_grows checked_table.
+Lemma checked_table_shared_frame : Forall arm_shared_frame checked_table.
 Proof.
   unfold checked_table.
   repeat apply Forall_cons.
-  all: try exact (Forall_nil arm_shared_grows).
-  all: unfold arm_shared_grows; intros Hp i eff m m' evs H.
+  all: try exact (Forall_nil arm_shared_frame).
+  all: unfold arm_shared_frame; intros Hp i eff m m' evs H.
   all: first
     [ exfalso; clear H; vm_compute in Hp; discriminate Hp
     | autorewrite with arm_unfold in H;
@@ -659,29 +676,29 @@ Proof.
         | eapply check_newfstatat_fs; eassumption
         | eapply check_accept4_fs; eassumption
         | eapply check_faccessat2_fs; eassumption
-      | fail 2 "checked_table_shared_grows has no case for this class-(B) arm: give its checker a *_fs lemma above and add it to the list" ] ].
+      | fail 2 "checked_table_shared_frame has no case for this class-(B) arm: give its checker a *_fs lemma above and add it to the list" ] ].
 Qed.
 
-(** THE SPEC FACT: at a class-(B) number, every [Ok] outcome of the
-    released spec keeps every path of the file system. *)
-Theorem syscall_spec_shared_grows : forall i m eff m' evs,
+(** At a class-(B) number, every [Ok] outcome of the released spec keeps
+    every path and the caller's tid. *)
+Theorem syscall_spec_shared_frame : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   List.existsb (Z.eqb (bv_unsigned (in_sysno i))) multiproc_shared_sysnos = true ->
-  fs_grows (m_fs m) (m_fs m').
+  fs_tid_frame m m'.
 Proof.
   intros i m eff m' evs H Hp. apply check_syscall_ok_iff in H.
   unfold check_syscall in H.
   destruct (lookup_ca checked_table (bv_unsigned (in_sysno i))) as [c|] eqn:Elk;
     [|discriminate H].
-  pose proof checked_table_shared_grows as Hall. rewrite Forall_forall in Hall.
+  pose proof checked_table_shared_frame as Hall. rewrite Forall_forall in Hall.
   refine (Hall c (lookup_ca_In _ _ _ Elk) _ i eff m m' evs H).
   rewrite (lookup_ca_no _ _ _ Elk). exact Hp.
 Qed.
 
-(** The released step at a class-(B) call keeps every path. *)
-Lemma sstep_shared_grows : forall segs cfg c evs c',
+(** The released class-(B) step keeps every path and the caller's tid. *)
+Lemma sstep_shared_frame : forall segs cfg c evs c',
   multiproc_shared c = true ->
-  sstep_cfg segs cfg c evs (SNext c') -> fs_grows (m_fs (cfg_model c)) (m_fs (cfg_model c')).
+  sstep_cfg segs cfg c evs (SNext c') -> fs_tid_frame (cfg_model c) (cfg_model c').
 Proof.
   intros segs cfg c evs c' Hp H.
   inversion H; subst; unfold multiproc_shared in Hp; cbn [cfg_ms cfg_model] in Hp |- *.
@@ -691,7 +708,7 @@ Proof.
        end.
   all: match goal with
        | Hsp : syscall_spec (sys_input _ _ _) _ (Ok _ _ _) |- _ =>
-           pose proof (syscall_spec_shared_grows _ _ _ _ _ Hsp) as Hg;
+           pose proof (syscall_spec_shared_frame _ _ _ _ _ Hsp) as Hg;
            cbn [in_sysno sys_input] in Hg; specialize (Hg Hp)
        end.
   all: first
@@ -699,8 +716,10 @@ Proof.
     | match goal with
       | Hm : materialize_model_accesses _ _ = Some _ |- _ =>
           pose proof (sh_of_materialize _ _ _ Hm) as Hsh;
-          unfold sh_of in Hsh; injection Hsh as Hf _;
-          unfold m_fs; rewrite Hf; exact Hg
+          pose proof (f_equal fst Hsh) as Hf;
+          pose proof (f_equal (fun x => snd (snd x)) Hsh) as Ht;
+          cbn [sh_of fst snd] in Hf, Ht;
+          unfold fs_tid_frame, m_fs in Hg |- *; rewrite Hf, Ht; exact Hg
       end ].
 Qed.
 
@@ -778,11 +797,12 @@ Proof.
     [ (c' & Hs & _ & _ & ->)
     | [ (c' & q & _ & Hsucc & _)
       | [ (Hwt & _) | [ (Hwo & _) | [ (Hsy & _ & _) | (Hrp & _ & _) ] ] ] ] ].
-  - pose proof (sstep_shared_grows _ _ _ _ _ Hp Hs) as Hg.
+  - destruct (sstep_shared_frame _ _ _ _ _ Hp Hs) as (Hg & Htid).
     split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
     split; [reflexivity|]. split.
     + exact Hg.
     + intros q Hne. unfold look, absorb. cbn [pcfg_procs].
+      rewrite first_root_pin_children_same_tid by exact Htid.
       rewrite orphan_at_exit_map, look_in_orphan, look_in_replace_other by exact Hne.
       destruct (look_in (pcfg_procs P) q) as [f|]; cbn [option_map];
         [apply orphan_slot_orphaned | exact I].

@@ -445,7 +445,8 @@ Proof. check_eq. Qed.
 
 Definition xc_dst : word := Z_to_bv 64 0x7000.
 
-(** Six zero words: empty effective, permitted and inheritable sets. *)
+(** Six zero words: empty effective and permitted sets, and the
+    launch's inheritable set, 0 ([mkProcInput]'s default). *)
 Definition xc_image : list byte := repeat (Z_to_bv 8 0) 24.
 
 (** One answer: 0, the 24 bytes at the destination, the two header
@@ -477,14 +478,12 @@ Proof.
   check_eq.
 Qed.
 
-(** Every answer at this configuration: 0, one copy-out of an image
-    [capget_data_ok] admits at the destination, the header reads, and
-    the model unchanged. *)
+(** The only answer at this configuration: [xc_eff], with the model
+    unchanged.  The image is the held inheritable set's, which this
+    launch makes 0. *)
 Lemma xc_spec_inv : forall segs eff m' evs,
   syscall_spec (sys_input segs xc_ms (Z_to_bv 64 90)) xb_model (Ok eff m' evs) ->
-  exists bs, eff = mkEffectU (Z_to_bv 64 0) [(xc_dst, bs)] [] [] []
-                     (cap_header_reads (Z_to_bv 64 0x6000))
-             /\ capget_data_ok bs = true /\ m' = xb_model /\ evs = [].
+  eff = xc_eff /\ m' = xb_model /\ evs = [].
 Proof.
   intros segs eff m' evs H.
   apply check_syscall_complete_ok in H. rewrite xc_capget_check in H.
@@ -494,16 +493,17 @@ Proof.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
-  destruct (bv_eqb r (Z_to_bv 64 0) && bv_eqb a xc_dst && capget_data_ok bs
+  destruct (bv_eqb r (Z_to_bv 64 0) && bv_eqb a xc_dst
+            && listN_eqb bs (capget_image (cap_inheritable_set xb_model))
             && access_ranges_eqb cis (cap_header_reads (Z_to_bv 64 0x6000))) eqn:Hok;
     [|discriminate].
   injection H as Hm Hevs. subst m' evs.
   apply andb_true_iff in Hok as [Hok Hcis].
   apply andb_true_iff in Hok as [Hok Hdata].
   apply andb_true_iff in Hok as [Hr Ha].
-  apply bv_eqb_eq in Hr. apply bv_eqb_eq in Ha.
-  apply access_ranges_eqb_eq in Hcis. subst r a cis.
-  exists bs. split; [reflexivity|]. split; [exact Hdata|]. split; reflexivity.
+  apply bv_eqb_eq in Hr. apply bv_eqb_eq in Ha. apply listN_eqb_eq in Hdata.
+  apply access_ranges_eqb_eq in Hcis. subst r a bs cis.
+  split; [check_eq | split; reflexivity].
 Qed.
 
 (** No step from [xc_cfg] halts the process: capget returns. *)
@@ -522,7 +522,7 @@ Proof.
        end.
   all: match goal with
        | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
-           destruct (xc_spec_inv _ _ _ _ Hsp) as (? & _ & _ & -> & _)
+           destruct (xc_spec_inv _ _ _ _ Hsp) as (_ & -> & _)
        end.
   all: first
     [ exfalso; congruence
@@ -555,15 +555,13 @@ Proof.
 Qed.
 
 (** THE LOG HOLDS WHAT WAS STORED: every logged run from [xc_cfg] is the
-    empty one, or its log starts with number 90, a0..a5, 0, one
-    copy-out of 24 bytes at the destination whose effective and
-    permitted words are 0, and no zero-filled range. *)
+    empty one, or its log starts with [xc_call]: number 90, a0..a5, 0,
+    the one copy-out of the 24 bytes of the held inheritable set's image
+    at the destination, and no zero-filled range. *)
 Example xc_capget_log_head : forall segs tr log c',
   star_calls segs xc_cfg tr log c' ->
   (tr = [] /\ log = [] /\ c' = xc_cfg) \/
-  exists bs rest,
-    log = mkSysCall (Z_to_bv 64 90) xc_args (Z_to_bv 64 0) [(xc_dst, bs)] [] :: rest
-    /\ capget_data_ok bs = true.
+  exists rest, log = xc_call :: rest.
 Proof.
   intros segs tr log c' H.
   assert (Hsvc : ms_svc_pending xc_ms = Some (Z_to_bv 64 90)) by reflexivity.
@@ -576,10 +574,10 @@ Proof.
     end.
     match goal with
     | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
-        destruct (xc_spec_inv _ _ _ _ Hsp) as (bs & -> & Hbs & _ & _)
+        destruct (xc_spec_inv _ _ _ _ Hsp) as (-> & _ & _)
     end.
-    match goal with |- exists _ _, _ :: ?l = _ /\ _ => exists bs, l end.
-    rewrite xc_args_at. split; [reflexivity | exact Hbs].
+    match goal with |- exists _, _ :: ?l = _ => exists l end.
+    rewrite xc_args_at. reflexivity.
   - exfalso.
     match goal with
     | Hs : sstep _ _ _ (SNext _), Hor : _ \/ _ |- _ =>
@@ -603,16 +601,16 @@ Example xc_capget_other_logs_refused : forall segs tr rest c',
        :: rest) c'.
 Proof.
   intros segs tr rest c'. split; intros H;
-    destruct (xc_capget_log_head _ _ _ _ H) as [(_ & Hl & _) | (bs & r & Hl & Hbs)];
+    destruct (xc_capget_log_head _ _ _ _ H) as [(_ & Hl & _) | (r & Hl)];
     [ discriminate Hl
     | apply (f_equal (fun l => length (sc_writes (hd xc_call l)))) in Hl;
       vm_compute in Hl; discriminate Hl
     | discriminate Hl
     | apply (f_equal (fun l => match sc_writes (hd xc_call l) with
-                               | (_, b) :: _ => b
-                               | [] => []
+                               | (_, b) :: _ => bytes_le_to_Z b
+                               | [] => 0%Z
                                end)) in Hl;
-      vm_compute in Hl; subst bs; vm_compute in Hbs; discriminate Hbs ].
+      vm_compute in Hl; discriminate Hl ].
 Qed.
 
 (** THE CONTROL: the same run is a [star] run. *)

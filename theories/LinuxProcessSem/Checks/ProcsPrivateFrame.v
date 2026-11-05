@@ -48,11 +48,14 @@ Open Scope bv_scope.
 Local Open Scope bool_scope.
 
 (* =========================================================================
-   The two slots the core splices
+   The shared slots and the private caller's tid
    ========================================================================= *)
 
-(** The part of a model [Procs.pe_cfg] takes from [shared]. *)
-Definition sh_of (m : Model) : FsState * IoState := (m_fsys m, m_io m).
+(** Private calls preserve the two shared slots and the caller's tid.
+    The tid component ensures that such a call cannot first-pin the root
+    and align peer parent pids; private-step peer views stay unchanged. *)
+Definition sh_of (m : Model) : FsState * (IoState * option word) :=
+  (m_fsys m, (m_io m, m_tid m)).
 
 (** The checker cascade of [VmMapsDisjoint]'s frame proofs ([vm_step]),
     finished for this goal.  Every setter rebuilds its own subsystem record
@@ -904,7 +907,7 @@ Proof.
 Qed.
 
 (** THE SPEC FRAME: at a class-(A) number, every [Ok] outcome of the
-    released spec keeps [m_fsys] and [m_io]. *)
+    released spec keeps [m_fsys], [m_io] and [m_tid]. *)
 Theorem syscall_spec_private_shared : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
   List.existsb (Z.eqb (bv_unsigned (in_sysno i))) multiproc_private_sysnos = true ->
@@ -926,7 +929,7 @@ Proof.
   destruct (materialize_accesses _ _ _ _ _); [injection H as <-; reflexivity | discriminate H].
 Qed.
 
-(** The released step at a class-(A) call keeps the two slots. *)
+(** The released step at a class-(A) call keeps both slots and its tid. *)
 Lemma sstep_private_shared : forall segs cfg c evs c',
   multiproc_private c = true ->
   sstep_cfg segs cfg c evs (SNext c') -> sh_of (cfg_model c') = sh_of (cfg_model c).
@@ -1062,11 +1065,16 @@ Proof.
     | [ (c' & q & _ & Hsucc & _)
       | [ (Hwt & _) | [ (Hwo & _) | [ (Hsy & _ & _) | (Hrp & _ & _) ] ] ] ] ].
   - pose proof (sstep_private_shared _ _ _ _ _ Hp Hs) as Hsh.
-    unfold sh_of in Hsh. injection Hsh as Hf Hi.
+    pose proof (f_equal fst Hsh) as Hf.
+    pose proof (f_equal (fun x => fst (snd x)) Hsh) as Hi.
+    pose proof (f_equal (fun x => snd (snd x)) Hsh) as Htid.
+    cbn [sh_of fst snd] in Hf, Hi, Htid.
+    change (m_tid (cfg_model c') = m_tid (pe_model e)) in Htid.
     split; [|split; [reflexivity|]].
     + unfold absorb, shared_absorb. cbn [pcfg_shared].
       rewrite Hf, Hi. destruct (pcfg_shared P); reflexivity.
     + intros q Hne. unfold look, absorb. cbn [pcfg_procs].
+      rewrite first_root_pin_children_same_tid by exact Htid.
       rewrite orphan_at_exit_map, look_in_orphan, look_in_replace_other by exact Hne.
       destruct (look_in (pcfg_procs P) q) as [f|]; cbn [option_map];
         [apply orphan_slot_orphaned | exact I].

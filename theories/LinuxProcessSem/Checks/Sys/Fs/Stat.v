@@ -1151,7 +1151,7 @@ Definition check_fstat_opaque (i : SyscallInput) (o : OpaqueFd) (statbuf : word)
   match o with
   | OProcFdDir _ _ => check_fstat_procfd_dir i statbuf eff m
   | OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _ | OSignalFd _ _
-  | OInherited _ => CheckUnmodeled
+  | OInherited _ | OAlias _ => CheckUnmodeled
   end.
 
 Lemma check_fstat_opaque_sound_ok : forall i o statbuf eff m m' evs,
@@ -1174,7 +1174,7 @@ Proof.
     [apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro
     | apply unmodeled_intro
     | eapply check_fstat_procfd_dir_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro].
+    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro].
 Qed.
 
 Lemma check_fstat_opaque_complete_ok : forall i o statbuf eff m m' evs,
@@ -1197,7 +1197,7 @@ Proof.
   destruct o; cbv beta iota in H |- *;
     [reflexivity | reflexivity | reflexivity | reflexivity
     | now apply check_fstat_procfd_dir_complete_unmodeled
-    | reflexivity | reflexivity].
+    | reflexivity | reflexivity | reflexivity].
 Qed.
 
 (** What an unnamed file's [struct stat] must carry beside
