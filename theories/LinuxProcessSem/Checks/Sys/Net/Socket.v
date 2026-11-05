@@ -292,9 +292,7 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
               end
       end
   | Some (FdOpaque _) => CheckUnmodeled   (* [fdget] refuses an O_PATH file: see [Net.Socket.bind_spec] *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* an AF_UNIX end is a socket: see [Net.Socket.bind_spec] *)
-=======
   | Some (FdStream _ _ _) =>
       (* A stream-pair end is a socket: [move_addr_to_kernel]'s three
          answers as in the arm above, then [unix_bind].  An autobind and an
@@ -323,7 +321,6 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
   | Some (FdDgram _) => CheckUnmodeled
       (* a datagram socket is a socket too: [unix_bind] / [inet6_bind]
          claim an address [State.FdDgram] does not carry *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -351,13 +348,10 @@ Definition check_listen (fd backlog : word) (eff : SyscallEffect) (m : Model)
             (Z_to_bv 64 0) eff m
       end
   | Some (FdOpaque _) => CheckUnmodeled   (* as [check_bind]'s *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* as [check_bind]'s *)
-=======
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []
       (* [unix_listen] on an unbound pair end *)
   | Some (FdDgram _) => CheckUnmodeled   (* a socket: [sock_no_listen], declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -398,12 +392,9 @@ Definition check_accept4 (fd addrp addrlenp flags : word)
                                                (nq_script (m_net m))))) m)
           | _ => check_errno_or_list EINVAL accept_notlisten_errnos eff m
           end
-<<<<<<< HEAD
       | FdSeqpacket _ _ _ => CheckUnmodeled   (* see [Net.Socket.accept4_spec] *)
-=======
       | FdStream _ _ _ => CheckUnmodeled   (* a socket: [unix_accept]'s allocations *)
       | FdDgram _ => CheckUnmodeled        (* a socket: [sock_no_accept], declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then CheckUnmodeled
              else check_errno_or_list ENOTSOCK accept_notsock_errnos eff m
@@ -453,12 +444,9 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
                     then check_ret_only_copyins copied eff (errno_ret EAFNOSUPPORT) m []
                     else CheckUnmodeled
                 end
-<<<<<<< HEAD
           | FdSeqpacket _ _ _ => CheckUnmodeled   (* see [Net.Socket.connect_spec] *)
-=======
           | FdStream _ _ _ => CheckUnmodeled   (* [unix_stream_connect]: a name lookup *)
           | FdDgram _ => CheckUnmodeled        (* a peer [State.FdDgram] does not carry *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
           | _ => check_ret_only_copyins copied eff (errno_ret ENOTSOCK) m []
           end
       end
@@ -837,11 +825,7 @@ Proof.
   unfold check_bind in H. unfold bind_spec. cbv zeta in H.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
@@ -919,14 +903,7 @@ Proof.
   unfold check_bind in H. unfold bind_spec. cbv zeta in H.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    cbv beta iota zeta in H |- *;
-    try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
-    try apply unmodeled_intro.
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H); try apply unmodeled_intro.
   2: { (* the stream-pair end: the autobind and an AF_UNIX name *)
@@ -950,7 +927,6 @@ Proof.
     destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5;
       cbv beta iota zeta in H |- *;
       [now apply check_ret_only_copyins_no_unmodeled in H | apply unmodeled_intro]. }
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     cbv beta iota zeta in H |- *.
@@ -994,11 +970,7 @@ Proof.
   intros i fd addrp addrlen eff m m' evs H.
   unfold bind_spec in H. unfold check_bind. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   2: { (* the stream-pair end: each errno is fixed by the input *)
@@ -1066,13 +1038,7 @@ Proof.
   intros i fd addrp addrlen m eff H.
   unfold bind_spec in H. unfold check_bind. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    hall Hfd; inv_ok; try discriminate;
-    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
-    try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate; try unm_refl.
   2: { (* the stream-pair end: only the autobind and an AF_UNIX name *)
     destruct (orb (Z.ltb (sint32 addrlen) 0)
@@ -1089,7 +1055,6 @@ Proof.
       try discriminate.
     destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5; hall E5; inv_ok;
       try discriminate; unm_refl. }
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     hall E1; inv_ok; try discriminate.
@@ -1180,11 +1145,7 @@ Proof.
   intros fd backlog eff m m' evs i H.
   unfold listen_spec in H. unfold check_listen. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *.
@@ -1200,14 +1161,8 @@ Proof.
   intros fd backlog m i eff H.
   unfold listen_spec in H. unfold check_listen. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    hall Hfd; inv_ok; try discriminate;
-    try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate; try unm_refl.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *.
   2-5: (inv_ok; discriminate).
   eapply (check_errno_or_success_complete_unmodeled _ _ _ i); eassumption.
@@ -1586,11 +1541,7 @@ Proof.
   intros i fd addrp addrlen m eff H.
   unfold connect_spec in H. unfold check_connect. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
     (* the opaque kinds: declined on both sides *)
     try unm_refl.
@@ -3064,16 +3015,13 @@ Definition check_sendto (i : SyscallInput) (fd buf count flags addrp : word)
            check_send_on_socket [] (fun n => [(buf, n)]) fd sk count
              (readable_bytes (in_mem i) buf count) eff m
        | Some (FdOpaque _) => CheckUnmodeled   (* as [check_bind]'s *)
-<<<<<<< HEAD
        | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [Net.Socket.sendto_spec] *)
-=======
        | Some (FdStream id side st) =>
            if negb (stream_send_flags_ok flags) then CheckUnmodeled
            else check_stream_write id side st
                   (se_nonblock st || send_flag flags MSG_DONTWAIT)%bool
                   (send_flag flags MSG_NOSIGNAL) buf count i eff m
        | Some (FdDgram _) => CheckUnmodeled  (* a socket with no peer: declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
        | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
        end).
 
@@ -3097,15 +3045,12 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
   | Some (FdOpaque _) => CheckUnmodeled
       (* -EBADF for an O_PATH file, -ENOTSOCK for the other two: the
          split is not written, see [Net.Socket.sendmsg_spec] *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => CheckUnmodeled   (* see [Net.Socket.sendmsg_spec] *)
-=======
   | Some (FdStream _ _ _) => CheckUnmodeled
       (* AF_UNIX [sendmsg] can carry SCM_RIGHTS: see [Specs.sendmsg_spec] *)
   | Some (FdDgram _) => CheckUnmodeled
       (* the stream-pair end's reason for AF_UNIX, and no peer or state
          for either family: see [Specs.sendmsg_spec] *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdSocket sk) =>
       match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => check_ret_only eff (errno_ret EFAULT) m []
@@ -3317,11 +3262,7 @@ Proof.
   ok_zero_cases H buf count;
     [ | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
         apply pure_ok ].
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
@@ -3390,11 +3331,7 @@ Proof.
   sys_unfold. cbv iota zeta in H. inv_ok.
   ok_zero_split buf count.
   2: { cbn; try rewrite bv_eqb_refl; reflexivity. }
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (apply check_ret_only_ok_iff; now repeat split).
   - destruct (negb (send_flags_modeled flags)) eqn:Hs; hall Hs; inv_ok.
@@ -3456,11 +3393,7 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     (* the opaque kinds and an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
     try discriminate;
@@ -3505,18 +3438,11 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    cbv beta iota zeta in H |- *;
-    try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H);
     (* the stream-pair end, the datagram socket and the opaque kinds:
        declined on both sides *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     try apply unmodeled_intro.
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
@@ -3553,11 +3479,7 @@ Proof.
   destruct (negb (send_flags_modeled flags)) eqn:Hf;
     [unfold unmodeled in H; inversion H|].
   sys_unfold. cbv iota zeta in H. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
@@ -3598,18 +3520,11 @@ Proof.
   unfold sendmsg_spec in H. unfold check_sendmsg.
   destruct (negb (send_flags_modeled flags)) eqn:Hf; [reflexivity|].
   sys_unfold. cbv iota zeta in H. inv_ok.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    hall Hfd; inv_ok; try discriminate;
-    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
-    try (match goal with |- CheckUnmodeled = CheckUnmodeled => reflexivity end).
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
     (* the stream-pair end, the datagram socket and the opaque kinds:
        declined on both sides *)
     try unm_refl.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok; try discriminate.
   destruct (read_u64 (in_mem i) msgp) as [name|] eqn:R0,
