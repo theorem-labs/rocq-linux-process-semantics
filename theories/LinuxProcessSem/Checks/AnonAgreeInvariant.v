@@ -552,43 +552,114 @@ Local Ltac aa_done H :=
   | context [open_cloexec_model] => unfold open_cloexec_model in H
   end.
 
-(* Unfold the top-level check function in H so that cbv beta iota zeta
-   can expose the match/if structure for kf_step. *)
-Local Ltac aa_unfold_top H :=
-  unfold check_getcwd, check_eventfd2, check_epoll_create1,
-    check_epoll_ctl, check_epoll_pwait,
-    check_dup, check_dup3, check_fcntl, check_ioctl, check_flock,
-    check_unlinkat, check_ftruncate, check_faccessat, check_openat,
-    check_close, check_pipe2, check_getdents64, check_lseek,
-    check_read, check_write, check_readv, check_writev,
-    check_pread64, check_pwrite64, check_pselect6, check_ppoll,
-    check_signalfd4, check_readlinkat, check_newfstatat, check_fstat,
-    check_fsync, check_timerfd_create, check_capget, check_capset,
-    check_exit, check_set_tid_address, check_futex,
-    check_set_robust_list, check_nanosleep, check_clock_gettime,
-    check_clock_getres, check_sched_setscheduler,
-    check_sched_getaffinity, check_sched_yield,
-    check_kill, check_tkill, check_tgkill, check_sigaltstack,
-    check_rt_sigaction, check_rt_sigprocmask,
-    check_setsid, check_setid, check_setresid, check_getresid,
-    check_getsid, check_getgroups, check_setgroups,
-    check_uname, check_prctl, check_gettimeofday,
-    check_getpid, check_getppid, check_getid, check_gettid,
-    check_socket, check_socketpair, check_bind, check_listen,
-    check_accept4, check_connect,
-    check_getsockname, check_getpeername,
-    check_sendto, check_recvfrom, check_setsockopt, check_getsockopt,
-    check_shutdown, check_sendmsg, check_recvmsg,
-    check_brk, check_munmap, check_mremap,
-    check_clone, check_mmap, check_mprotect, check_madvise,
-    check_wait4, check_prlimit64, check_setns,
-    check_getrandom, check_pwritev2, check_clone3,
-    check_close_range, check_faccessat2 in H.
+(* Unfold the top-level check function in H so that kf_step can see
+   the match/if structure.  We add the top-level names to aa_done
+   so that the repeat loop handles both levels of unfolding. *)
+Local Ltac aa_done_or_unfold H :=
+  first
+  [ aa_done H
+  | (* Top-level check functions: unfold when kf_step gets stuck *)
+    match type of H with
+    | context [check_getcwd] => unfold check_getcwd in H
+    | context [check_eventfd2] => unfold check_eventfd2 in H
+    | context [check_epoll_create1] => unfold check_epoll_create1 in H
+    | context [check_epoll_ctl] => unfold check_epoll_ctl in H
+    | context [check_epoll_pwait] => unfold check_epoll_pwait in H
+    | context [check_dup] => unfold check_dup in H
+    | context [check_dup3] => unfold check_dup3 in H
+    | context [check_fcntl] => unfold check_fcntl in H
+    | context [check_ioctl] => unfold check_ioctl in H
+    | context [check_flock] => unfold check_flock in H
+    | context [check_unlinkat] => unfold check_unlinkat in H
+    | context [check_ftruncate] => unfold check_ftruncate in H
+    | context [check_faccessat] => unfold check_faccessat in H
+    | context [check_openat] => unfold check_openat in H
+    | context [check_close] => unfold check_close in H
+    | context [check_pipe2] => unfold check_pipe2 in H
+    | context [check_getdents64] => unfold check_getdents64 in H
+    | context [check_lseek] => unfold check_lseek in H
+    | context [check_read] => unfold check_read in H
+    | context [check_write] => unfold check_write in H
+    | context [check_readv] => unfold check_readv in H
+    | context [check_writev] => unfold check_writev in H
+    | context [check_pread64] => unfold check_pread64 in H
+    | context [check_pwrite64] => unfold check_pwrite64 in H
+    | context [check_pselect6] => unfold check_pselect6 in H
+    | context [check_ppoll] => unfold check_ppoll in H
+    | context [check_signalfd4] => unfold check_signalfd4 in H
+    | context [check_readlinkat] => unfold check_readlinkat in H
+    | context [check_newfstatat] => unfold check_newfstatat in H
+    | context [check_fstat] => unfold check_fstat in H
+    | context [check_fsync] => unfold check_fsync in H
+    | context [check_timerfd_create] => unfold check_timerfd_create in H
+    | context [check_capget] => unfold check_capget in H
+    | context [check_capset] => unfold check_capset in H
+    | context [check_exit] => unfold check_exit in H
+    | context [check_set_tid_address] => unfold check_set_tid_address in H
+    | context [check_futex] => unfold check_futex in H
+    | context [check_set_robust_list] => unfold check_set_robust_list in H
+    | context [check_nanosleep] => unfold check_nanosleep in H
+    | context [check_clock_gettime] => unfold check_clock_gettime in H
+    | context [check_clock_getres] => unfold check_clock_getres in H
+    | context [check_sched_setscheduler] => unfold check_sched_setscheduler in H
+    | context [check_sched_getaffinity] => unfold check_sched_getaffinity in H
+    | context [check_sched_yield] => unfold check_sched_yield in H
+    | context [check_kill] => unfold check_kill in H
+    | context [check_tkill] => unfold check_tkill in H
+    | context [check_tgkill] => unfold check_tgkill in H
+    | context [check_sigaltstack] => unfold check_sigaltstack in H
+    | context [check_rt_sigaction] => unfold check_rt_sigaction in H
+    | context [check_rt_sigprocmask] => unfold check_rt_sigprocmask in H
+    | context [check_setsid] => unfold check_setsid in H
+    | context [check_setid] => unfold check_setid in H
+    | context [check_setresid] => unfold check_setresid in H
+    | context [check_getresid] => unfold check_getresid in H
+    | context [check_getsid] => unfold check_getsid in H
+    | context [check_getgroups] => unfold check_getgroups in H
+    | context [check_setgroups] => unfold check_setgroups in H
+    | context [check_uname] => unfold check_uname in H
+    | context [check_prctl] => unfold check_prctl in H
+    | context [check_gettimeofday] => unfold check_gettimeofday in H
+    | context [check_getpid] => unfold check_getpid in H
+    | context [check_getppid] => unfold check_getppid in H
+    | context [check_getid] => unfold check_getid in H
+    | context [check_gettid] => unfold check_gettid in H
+    | context [check_socket] => unfold check_socket in H
+    | context [check_socketpair] => unfold check_socketpair in H
+    | context [check_bind] => unfold check_bind in H
+    | context [check_listen] => unfold check_listen in H
+    | context [check_accept4] => unfold check_accept4 in H
+    | context [check_connect] => unfold check_connect in H
+    | context [check_getsockname] => unfold check_getsockname in H
+    | context [check_getpeername] => unfold check_getpeername in H
+    | context [check_sendto] => unfold check_sendto in H
+    | context [check_recvfrom] => unfold check_recvfrom in H
+    | context [check_setsockopt] => unfold check_setsockopt in H
+    | context [check_getsockopt] => unfold check_getsockopt in H
+    | context [check_shutdown] => unfold check_shutdown in H
+    | context [check_sendmsg] => unfold check_sendmsg in H
+    | context [check_recvmsg] => unfold check_recvmsg in H
+    | context [check_brk] => unfold check_brk in H
+    | context [check_munmap] => unfold check_munmap in H
+    | context [check_mremap] => unfold check_mremap in H
+    | context [check_clone] => unfold check_clone in H
+    | context [check_mmap] => unfold check_mmap in H
+    | context [check_mprotect] => unfold check_mprotect in H
+    | context [check_madvise] => unfold check_madvise in H
+    | context [check_wait4] => unfold check_wait4 in H
+    | context [check_prlimit64] => unfold check_prlimit64 in H
+    | context [check_setns] => unfold check_setns in H
+    | context [check_getrandom] => unfold check_getrandom in H
+    | context [check_pwritev2] => unfold check_pwritev2 in H
+    | context [check_clone3] => unfold check_clone3 in H
+    | context [check_close_range] => unfold check_close_range in H
+    | context [check_faccessat2] => unfold check_faccessat2 in H
+    end
+  ].
 
 Local Ltac aa_frame H :=
-  aa_unfold_top H;
   cbv beta iota zeta in H;
-  repeat (kf_step H || aa_done H || (aa_close; fail 2));
+  repeat (kf_step H || aa_done_or_unfold H || (aa_close; fail 2));
   aa_close.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
@@ -599,12 +670,8 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_frame H; fail).
-  (* Diagnostic: which step fails? *)
-  all: aa_unfold_top H.
-  all: cbv beta iota zeta in H.
-  all: repeat (kf_step H || aa_done H).
-  (* Now try aa_close and report if it fails *)
-  all: first [aa_close | let T := type of H in fail 1 "AA_CLOSE_FAILED. H=" T].
+  all: fail 1
+    "checked_table_preserves_aa has no case for this dispatcher arm".
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
