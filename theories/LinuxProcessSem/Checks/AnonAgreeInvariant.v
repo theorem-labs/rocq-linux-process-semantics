@@ -599,8 +599,12 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_frame H; fail).
-  all: fail 1
-    "checked_table_preserves_aa has no case for this dispatcher arm".
+  (* Diagnostic: which step fails? *)
+  all: aa_unfold_top H.
+  all: cbv beta iota zeta in H.
+  all: repeat (kf_step H || aa_done H).
+  (* Now try aa_close and report if it fails *)
+  all: first [aa_close | let T := type of H in fail 1 "AA_CLOSE_FAILED. H=" T].
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
