@@ -4812,12 +4812,17 @@ Record ProcState := mkProcState {
                                     [Kernel.Fork.clone3_spec] read it.  Every
                                     setter carries it. *);
   procst_sigchld_dfl : bool      (* WHETHER SIGCHLD IS SIG_DFL WITH
-                                    SA_NOCLDWAIT CLEAR for this process.
+                                    SA_NOCLDWAIT CLEAR for this process, and
+                                    has been since before its first recorded
+                                    child, so the bit is set only if every
+                                    child the process has was cloned while
+                                    SIGCHLD was SIG_DFL.
                                     [init_model] seeds it from the launch's
                                     declared disposition
                                     ([ProcInput.in_sigchld_default]: [true] at
-                                    SIG_DFL, [false] at SIG_IGN); [mkModel]
-                                    starts it [false]; set by the one SIGCHLD
+                                    SIG_DFL, [false] at SIG_IGN; a launch has
+                                    no child); [mkModel] starts it [false];
+                                    set by the one SIGCHLD
                                     install the model answers
                                     ([Kernel.Signal.sigchld_dfl_install] in
                                     [Kernel.Signal.rt_sigaction_spec]), and
@@ -5073,8 +5078,10 @@ Definition m_clone_refusers (m : Model) : CloneRefusers :=
   procst_clone_refusers (m_proc m).
 
 (** Whether SIGCHLD is SIG_DFL with SA_NOCLDWAIT clear for this process,
-    which [Kernel.Exit.wait4_spec] reads before it answers a caller with
-    a recorded child.  At launch, the declared disposition
+    and has been since before its first recorded child, so the bit is set
+    only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL.  [Kernel.Exit.wait4_spec] reads it before it answers a caller
+    with a recorded child.  At launch, the declared disposition
     ([ProcInput.in_sigchld_default]); see [procst_sigchld_dfl]. *)
 Definition m_sigchld_dfl (m : Model) : bool :=
   procst_sigchld_dfl (m_proc m).

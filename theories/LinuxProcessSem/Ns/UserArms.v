@@ -24,8 +24,13 @@
     mode: the new namespace is a child of the old one owned by the task's
     euid, so [cred_cap_issubset] holds.
 
-    Any other flag set declines.  Kind: exact inside the tree; over at a
-    namespace that is not sealed and for the environment's refusals. *)
+    Any other flag set declines. With CLONE_NEWUSER the level and count
+    ENOSPC checks precede [current_chrooted] (kernel/user_namespace.c:91-107,
+    v6.18.46). If neither decides ENOSPC, the tables decline when the
+    chroot test is undecided, including an open root stack
+    ([Tables.env_open_groups]); environment refusals remain possible.
+    Kind: exact inside the tree; over at an unsealed namespace and for
+    the environment's refusals. *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -56,9 +61,15 @@ Definition unshare_valid : Z :=
 
 Definition CAP_FULL_SET : Z := 2 ^ 41 - 1.
 
-(** [current_chrooted]: the task's root is not the root dentry of the
-    topmost mount on its mount namespace's root mount.  [None] when the
-    tables do not list that namespace or mount. *)
+(** [current_chrooted] (fs/namespace.c:6118-6132): the task's root is not
+    the root dentry of the topmost mount on its mount namespace's root
+    mount ([topmost_overmount], fs/mount.h:243-248).  [None] when the
+    tables do not list that namespace or mount, and when a mount of the
+    stack from the root mount to the top can receive a mount or unmount
+    event from an open group or belongs to an entered namespace
+    ([Walk.ns_top_open]): the host can change the top without a call of
+    the model. With both uncertainty lists empty the test is false
+    ([Walk.ns_top_open_closed]). *)
 Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
   match find (fun n => Pos.eqb (mntns_id n) (cx_mount ctx)) (ns_mntns st) with
   | None => None
@@ -66,8 +77,10 @@ Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
       match find_mount (ns_mounts st) (mntns_root n) with
       | None => None
       | Some r =>
-          let top := ns_top st r in
-          Some (negb (Pos.eqb (fst (cx_root ctx)) (mnt_id top) && Pos.eqb (snd (cx_root ctx)) (mnt_root top)))
+          if ns_top_open st r then None
+          else
+            let top := ns_top st r in
+            Some (negb (Pos.eqb (fst (cx_root ctx)) (mnt_id top) && Pos.eqb (snd (cx_root ctx)) (mnt_root top)))
       end
   end.
 
@@ -99,19 +112,23 @@ Definition user_injected : list NsInjected :=
 
 (** What [create_user_ns] answers from the tables, in its order, once the
     environment refuses nothing. *)
-Definition unshare_exact (p : UserNs) (chrooted : bool) (m : Model) (ctx : NsCtx) (st : NsState)
+Definition unshare_exact (p : UserNs) (chrooted : option bool) (m : Model) (ctx : NsCtx) (st : NsState)
     (o : ext_outcome) : Prop :=
   let euid := bv_unsigned (cr_euid (m_creds m)) in
   let egid := bv_unsigned (cr_egid (m_creds m)) in
   let after :=
-    if chrooted then o = ns_errno EPERM m ctx st
-    else if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
-    then o = ns_errno EPERM m ctx st
-    else match create_user_ns (ns_userns st) (cx_user ctx) euid
-                              (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
-         | NsOk (n, U') => o = ns_ret (Z_to_bv 64 0) m (in_new_userns ctx n) (with_userns st U')
-         | NsErr e => o = ns_errno e m ctx st
-         end in
+    match chrooted with
+    | None => o = EUnmodeled
+    | Some c =>
+        if c then o = ns_errno EPERM m ctx st
+        else if negb (kid_has_mapping (uns_uid_map p) euid && kid_has_mapping (uns_gid_map p) egid)
+        then o = ns_errno EPERM m ctx st
+        else match create_user_ns (ns_userns st) (cx_user ctx) euid
+                                  (Z.testbit (cap_effective (cx_caps ctx)) CAP_SETFCAP) with
+             | NsOk (n, U') => o = ns_ret (Z_to_bv 64 0) m (in_new_userns ctx n) (with_userns st U')
+             | NsErr e => o = ns_errno e m ctx st
+             end
+    end in
   if Nat.ltb 32 (uns_level p) then o = ns_errno ENOSPC m ctx st
   else match ucount_check (ns_userns st) (cx_user ctx) p euid with
        | ChargeFull => o = ns_errno ENOSPC m ctx st
@@ -124,9 +141,9 @@ Definition unshare_arm : NsArm := fun i m ctx st o =>
   if negb (Z.land f (Z.lnot unshare_valid) =? 0) then o = ns_errno EINVAL m ctx st
   else if negb (f =? CLONE_NEWUSER) then o = EUnmodeled
   else
-    match find_userns (ns_userns st) (cx_user ctx), current_chrooted st ctx with
-    | Some p, Some chrooted => unshare_exact p chrooted m ctx st o \/ env_refusal o m ctx st
-    | _, _ => o = EUnmodeled
+    match find_userns (ns_userns st) (cx_user ctx) with
+    | Some p => unshare_exact p (current_chrooted st ctx) m ctx st o \/ env_refusal o m ctx st
+    | None => o = EUnmodeled
     end.
 
 (** For CLONE_NEWUSER alone, from a namespace and a mount namespace the
@@ -135,7 +152,7 @@ Lemma unshare_arm_newuser : forall i m ctx st o p c,
   bv_unsigned (in_arg i 0) = CLONE_NEWUSER ->
   find_userns (ns_userns st) (cx_user ctx) = Some p ->
   current_chrooted st ctx = Some c ->
-  unshare_arm i m ctx st o <-> unshare_exact p c m ctx st o \/ env_refusal o m ctx st.
+  unshare_arm i m ctx st o <-> unshare_exact p (Some c) m ctx st o \/ env_refusal o m ctx st.
 Proof.
   intros i m ctx st o p c Hf Hp Hc. unfold unshare_arm. cbv zeta. rewrite Hf.
   replace (Z.land CLONE_NEWUSER (Z.lnot unshare_valid) =? 0) with true by reflexivity.

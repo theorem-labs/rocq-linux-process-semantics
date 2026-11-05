@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files Mountinfo.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Propagation Walk Task Files Mountinfo.
 Import ListNotations.
 Local Open Scope Z_scope.
 
@@ -140,6 +140,7 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
                     else if negb (fsuidgid_mapped st (sb_owner sb) cr) then Some EOVERFLOW
                     else inode_permission st ctx cr (task_eff ctx) p sb attr (MAY_WRITE + MAY_EXEC) in
                   if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+                  else if flags_open st mt then OROver
                   else match denied with
                        | Some e => ORErr e
                        | None =>
@@ -418,7 +419,11 @@ Definition eventfd_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
     and file-system display fields are the environment's, one value per
     kernel object for the whole run ([Tables.env_mountinfo]), so two reads
     of the same open file see one text when no mount changed between
-    them.  Kind: exact given those values. *)
+    them; [propagate_from] is computed from the state and the captured
+    root while a slave's master chain stays in the tables
+    ([Propagation.dominating_id]).  No answer for a namespace that holds a
+    mount which can receive a mount event from an open group
+    ([Mountinfo.mountinfo_text]).  Kind: exact given those values. *)
 Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) (l : Loc) (ns : positive) (root : positive * positive) (off : Z)
     (o : ext_outcome) : Prop :=
@@ -807,7 +812,8 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
           match sb_kind sb, dentry_inode st d, loc_attr m ctx st l with
           | SbTmpfs, Some ino, Some a =>
               let cr := walk_creds m in
-              if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
+              if flags_open st mt then EUnmodeled
+              else if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
               else if kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino) then ns_errno EOVERFLOW m ctx st
               else match owner_or_capable st ctx cr a with
                    | None => EUnmodeled
@@ -908,7 +914,8 @@ Definition unlink_at_parent (m : Model) (ctx : NsCtx) (st : NsState) (reads : li
   | LDentry mn d, Some (mt, sb), Some dattr =>
       match sb_kind sb with
       | SbTmpfs =>
-          if mf_ro (mnt_flags mt) || sb_rdonly sb then err reads EROFS m ctx st
+          if flags_open st mt then EUnmodeled
+          else if mf_ro (mnt_flags mt) || sb_rdonly sb then err reads EROFS m ctx st
           else if Nat.ltb NAME_MAX (length name) then err reads ENAMETOOLONG m ctx st
           else match child_dentry st d name with
                | None => err reads ENOENT m ctx st

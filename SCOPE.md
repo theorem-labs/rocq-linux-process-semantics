@@ -32,6 +32,15 @@ The Lean translation of this Rocq model is maintained separately; its
 source is not included in this repository.
 
 - The namespace layer's Lean translation is pending.
+- Mount propagation, including the open-parent path guards and the
+  user-namespace ENOSPC-before-chroot checks, is pending too. Its pending
+  outside-entry translation includes the mount-namespace anonymous/origin
+  fields and builders, the entered-namespace and superblock-group closures,
+  clone inheritance, the five closed-launch fast paths, path printing, the
+  root-stack walk's fuel of one more than the mount count
+  (`Ns.Walk.ns_top_open`), the mount-flag test (`Ns.Propagation.flags_open`)
+  and its declines, the `pivot_root` decline in an open namespace, and the
+  corresponding cases. Agreement of these additions has not been checked.
 - Partial pid-allocation rollback and its failure-state checks are pending too.
 - The namespace clone mask, SIGCHLD check, core-gate lemma and regression cases have not yet been translated.
 
@@ -313,7 +322,7 @@ Every `setsockopt` answer in the table assumes the launch value
 | `prctl` | The model answers seven options: `PR_CAPBSET_READ` (1 for `CAP_SETUID` and `CAP_SETGID`, 0 or 1 chosen at each call for every other capability, or `-EINVAL` past `CAP_LAST_CAP`; `security/commoncap.c`, `cap_task_prctl`, v6.18.44), `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL`, `PR_GET_PDEATHSIG`, `PR_GET_DUMPABLE` and `PR_GET_NO_NEW_PRIVS` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). The model holds the parent-death signal (`State.m_pdeath_signal`, 0 at launch): `PR_SET_PDEATHSIG` stores it, `PR_GET_PDEATHSIG` stores it as a 4-byte `int` at its pointer and answers 0 (`-EFAULT` with nothing stored for a range `access_ok` refuses, `unmodeled` for a range `access_ok` admits that memory does not wholly back), and `setuid`, `setgid`, `setresuid` and `setresgid` reset it to 0 when they move the effective id, as `commit_creds` does (`kernel/cred.c`, v6.18.44). `setgroups` and `capset` do not reset it. The model holds the no-new-privs bit (`State.m_no_new_privs`, false at launch): `PR_SET_NO_NEW_PRIVS` sets it, nothing clears it, `PR_GET_NO_NEW_PRIVS` answers 1 or 0, or `-EINVAL` for a nonzero `arg2` to `arg5`. The model holds the dumpable mode (`State.m_dumpable`, 1 at launch): `PR_SET_DUMPABLE` writes 0 or 1, the four id setters write the build's `fs.suid_dumpable` (`State.kb_suid_dumpable`) when they move the effective id, as `commit_creds` does, and `PR_GET_DUMPABLE` answers it, 2 included. A clone copies both (`copy_process`, `mm_init`, `kernel/fork.c`). Every other option is `unmodeled`. |
 | Parent process | The model holds the current parent pid (`State.m_ppid`), seeded from `State.ProcInput.in_ppid`. A child starts with its parent's pid, the parent's key in the process table (`copy_process` sets `p->real_parent`, `kernel/fork.c`, v6.18.44). On this branch `getppid` does not read the held value: it answers any pid below 2^22, 0 included (a parent outside the caller's pid namespace), chosen afresh at each call. A statement that needs a particular parent takes it as a premise. The model also keeps two bits, false at launch and in a child, for what a later `getppid` may still show: `State.m_reparent_unseen` (since the last `getppid` answer a nonzero parent-death signal has replaced a 0, so the parent may have died unseen while it was 0) and `State.m_reparent_moved` (an answer moved the parent pid in the current reparent window); `State.with_pdeath_signal` and `State.with_ppid_answered` write them, a write of the parent-death signal already held changes neither, and on this branch no modeled call reads them. |
 | Session id | `getsid` answers pid 0 and the caller's own tid once the model has pinned it (`SYSCALL_DEFINE1(getsid)`, `kernel/sys.c`, v6.18.44). After a successful `setsid` the answer is the tid. Before one it is any pid below 2^22, 0 included (a session led from an ancestor pid namespace), chosen afresh at each call: Linux answers one fixed number until the process's own `setsid`, and the model does not pin it. Every other pid, a negative one included, is `unmodeled`. |
-| `setsid` in the namespace model | For a task outside the released world `setsid` answers the caller's pid in its own pid namespace, and `-EPERM` once a `setsid` of its process has succeeded (`ksys_setsid`, `kernel/sys.c:1268-1301`, v6.18.46). Linux also answers `-EPERM` when a live task's process group is the caller's pid. No modelled process makes such a group, because `setpgid` has no arm; a process outside the model can only after the caller's modelled parent exits: the caller is reparented to a reaper the environment owns, and that reaper may call `setpgid(caller, caller)` in the caller's session before the caller execs (`kernel/sys.c:1143-1149`). The launch value `env_foreign_pgroups` names that event. **Its default `false` assumes that no environment reaper calls `setpgid` on the caller before the caller's `setsid`;** under it the answer in a pid namespace the model made is exactly the pid. A statement that wants that case names `env_foreign_pgroups := true`; under `true`, and in the host's pid namespace, where group membership is the environment's, `-EPERM` is admitted beside the success, as for the released `setsid`. The arm records the leader bit only; Linux also sets the session and group ids, which no call the namespace model answers reads. When `setpgid` is modelled, this row and `Ns.Task.setsid_arm` must read the group table. |
+| `setsid` in the namespace model | For a task outside the released world `setsid` answers the caller's pid in its own pid namespace, and `-EPERM` once a `setsid` of its process has succeeded (`ksys_setsid`, `kernel/sys.c:1268-1301`, v6.18.46). Linux also answers `-EPERM` when a live task's process group is the caller's pid. No modelled process makes such a group, because `setpgid` has no arm; a process outside the model can only when the caller is pid 1 of a pid namespace the model made and its modelled parent exits: the caller is then reparented to a reaper the environment owns, and that reaper may call `setpgid(caller, caller)` in the caller's session before the caller execs (`kernel/sys.c:1144-1150`). Another task of such a namespace whose parent exits goes to the namespace's pid 1 or to a child subreaper at its level (`find_new_reaper`, `kernel/exit.c:642-675`), a modelled process. The launch value `env_foreign_pgroups` names that event. **Its default `false` assumes that no environment reaper calls `setpgid` on the caller before the caller's `setsid`;** under it the answer in a pid namespace the model made is exactly the pid. A statement that wants that case names `env_foreign_pgroups := true`; under `true`, and in the host's pid namespace, where group membership is the environment's, `-EPERM` is admitted beside the success, as for the released `setsid`. The arm records the leader bit only; Linux also sets the session and group ids, which no call the namespace model answers reads. When `setpgid` is modelled, this row and `Ns.Task.setsid_arm` must read the group table. |
 | Credentials read back | `getresuid` and `getresgid` store the real, effective and saved ids, 4 bytes each, through the three pointers in order, and answer 0 (`SYSCALL_DEFINE3(getresuid)`, `SYSCALL_DEFINE3(getresgid)`, `kernel/sys.c`, v6.18.44). A pointer whose 4-byte range `access_ok` refuses answers `-EFAULT` with the stores before it already made, as Linux leaves them. A range `access_ok` admits that memory does not wholly back is `unmodeled`, even after an earlier store: a store that straddles into an unmapped page can leave part of itself behind. |
 | Supplementary groups | `setgroups` answers a privileged caller only for the empty list: 0 with the list cleared, or `-ENOMEM` (`SYSCALL_DEFINE2(setgroups)` and `set_current_groups`, `kernel/groups.c`, v6.18.44). A non-empty list, and a size Linux refuses with `-EINVAL`, are `unmodeled`. An unprivileged caller gets `-EPERM` for every argument. |
 | `close_range` | With flags 0 the model closes every descriptor in the range, of any kind, and answers 0; an unknown flag bit or `fd > max_fd` is `-EINVAL` (`SYSCALL_DEFINE3(close_range)`, `fs/file.c`, v6.18.44). `CLOSE_RANGE_CLOEXEC` and `CLOSE_RANGE_UNSHARE` are `unmodeled`: the model records no close-on-exec bit. |
@@ -623,6 +632,100 @@ not apply.
   or with an I/O error (`-EIO`), as `Ns.Arm.walk_pairs` and the arm files
   list. A network or FUSE file system can answer other errnos, which the
   namespace model does not give.
+- No host mount event reaches a mount namespace of the namespace model,
+  under the default launch. A peer group that the tables hold and that
+  also has a member outside the tables is open: a mount or unmount at that
+  outside member propagates to every member in the tables and to every
+  slave below them (`propagate_mnt`, `propagate_umount`, `fs/pnode.c`,
+  v6.18.46), at any time and without a call of the model. The launch names
+  these groups in `Ns.Tables.env_open_groups`. Host
+  `/proc/<pid>/mountinfo` files reveal namespace-held peers, but not
+  detached trees: mountinfo alone cannot establish that no host process
+  holds a detached copy of a mount of a model group. The default empty
+  group list assumes that no such host-held detached copy exists either.
+  The separate launch value `Ns.Tables.env_entered_mntns` names namespaces
+  an outside task may enter or alter through a path or descriptor. Its
+  default `[]` means: no process outside the model enters or changes a
+  model mount namespace, including a detached tree held by a model task,
+  or changes mounts through a path or descriptor into such a tree
+  (`setns`, `kernel/nsproxy.c:536-569`; `mntns_install`,
+  `fs/namespace.c:6261-6274`; `may_change_propagation`, `2823-2834`).
+  Both-empty defaults keep the exact successful and error cases unchanged.
+  Named nondefault uncertainty declines rather than claiming stale topology.
+  `Ns.Propagation.entered_closure` also includes anonymous trees whose
+  originating real namespace is listed, and every origin-None anonymous
+  tree under any nonempty entered list, including records added later.
+  `open_groups` adds every peer group on a superblock represented in this
+  closure, even in an unlisted namespace: an outside `SET_GROUP` can join
+  a private listed mount to such a group (`fs/namespace.c:3328-3355`).
+  `CLONE_NEWNS` adds the copied real namespace when the source is listed;
+  `CLONE_NEWNS` through unshare remains unsupported. With both lists empty
+  no outside event reaches a model namespace
+  (`Ns.Propagation.closed_no_outside_event`). Otherwise a call whose answer
+  reads uncertain topology has no answer: a path walk that
+  enters such a mount or whose ".." climbs through such a parent mount
+  (`Ns.Walk.follow_mounts_fuel`, `Ns.Walk.choose_mountpoint_fuel`,
+  `Ns.Propagation.open_mount`), `getcwd` and the text of a procfs
+  cwd/root/fd link whose upward path steps into such a parent mount
+  (`Ns.Files.path_open`: a host unmount can detach the child below it,
+  `fs/pnode.c:500-535`, `586-593`; `fs/namespace.c:1752-1753`,
+  `1813-1819`, `993-1000`; the climb then stops there,
+  `fs/d_path.c:110-125`), or whose start or visited mount belongs to an
+  entered namespace (an outside move can change even a private cwd mount's
+  path), a `clone` or `unshare` with
+  `CLONE_NEWUSER`, after the earlier level/count `ENOSPC` checks pass
+  (`kernel/user_namespace.c:91-107`), which reads the topmost mount on
+  the caller's mount namespace's root mount to decide whether the caller
+  is chrooted (`Ns.UserArms.current_chrooted`; `current_chrooted`,
+  `fs/namespace.c:6118-6132`), and a `/proc/<pid>/fd` link to a
+  descriptor the released model opened, whose path resolves from the
+  topmost mount on the host's root mount (`Ns.Arm.host_loc`), when a
+  mount of the stack from that root mount to its top is such a mount
+  (`Ns.Walk.ns_top_open`), a bind or a new mount (`mount(2)`)
+  in a mount namespace that holds such a mount, or onto a shared mount
+  whose propagation tree holds one or reaches a namespace that holds one
+  (`Ns.Propagation.ns_open`, `Ns.Propagation.attach_check`), a
+  propagation change (`mount(2)` with `MS_SHARED`, `MS_SLAVE`,
+  `MS_PRIVATE` or `MS_UNBINDABLE`) or a `mount_setattr` whose target, or
+  with `MS_REC` or `AT_RECURSIVE` whose subtree, holds one, or, for a
+  change to slave, private or unbindable, whose slaves it hands over, or
+  the mounts whose slave lists it changes, hold one
+  (`Ns.Propagation.targets_open`: `change_mnt_propagation` takes the next
+  peer among the group's members outside the tables too,
+  `fs/pnode.c:101-116`, and `transfer_propagation` sets the master of
+  each slave it hands over, `fs/pnode.c:74-88`; a `mount_setattr` still
+  answers the `EPERM` or `EBUSY` that its selected tree alone decides,
+  `mount_setattr_prepare`, `fs/namespace.c:4710-4743`, as it reads those
+  slaves and mounts only after these checks), an
+  `umount2` with `MNT_DETACH` whose subtree, candidates or parents' peers
+  and slaves hold one (`Ns.Propagation.umount_detach_prop`: every
+  `MNT_DETACH` runs `umount_tree` with `UMOUNT_PROPAGATE`,
+  `fs/namespace.c:1949`, `1793-1794`, and `propagate_umount` gathers its
+  candidates on those peers and slaves, `fs/pnode.c:505-531`), and a read
+  of `/proc/<pid>/mountinfo` of a mount namespace that holds one
+  (`Ns.Mountinfo.mountinfo_text`), and a `pivot_root` whose mount
+  namespace holds one, after both walks (`Ns.MountArms.pivot_root_fn`,
+  `Ns.Propagation.ns_open`: its tests read the new root's, the old root's
+  and put_old's mounts and parents, `fs/namespace.c:4584-4618`). Every
+  answer that reads a mount's flags or its superblock's read-only state
+  also has no answer when some mount on that superblock is such a mount
+  (`Ns.Propagation.flags_open`): an outside task in the namespace can
+  change them (`do_mount_setattr`, `fs/namespace.c:4781-4838`, its
+  `check_mnt` at 4816; `do_reconfigure_mnt`, 3211-3241; `do_remount`,
+  3248-3294). These are a write `open` or `O_TRUNC` (`EROFS`), an `open`
+  of a device (`EACCES` for nodev, unless the superblock's `SB_I_NODEV`
+  decides it), `faccessat` for `W_OK` or for `X_OK` on a regular file
+  (unless `SB_I_NOEXEC` decides it), a file, directory, node or link
+  creation after its `ENAMETOOLONG`, `fchmod`, `unlinkat`, a new mount
+  (`mount(2)`) in a namespace that holds such a mount
+  (`Ns.NewMount.new_mount_shared`: `mnt_already_visible` reads procfs
+  mounts' flags), and a read of `/proc/<pid>/mountinfo` of a namespace
+  that holds such a mount (each line prints its superblock's read-only
+  state, `show_mountinfo`, `fs/proc_namespace.c:182`). `statfs` and
+  `fstatfs` then admit any `f_flags`. The
+  path-text check declines a start in an entered namespace even when the
+  start is the caller's root, where Linux prints "/" without reading
+  topology (`fs/d_path.c:107`): a decline, never a wrong answer.
 - The sysctls `kernel.overflowuid` and `kernel.overflowgid` hold 65534,
   the kernel's default (`include/linux/highuid.h:41-42`,
   `kernel/sys.c:167-168`, v6.18.46), and the host does not write them

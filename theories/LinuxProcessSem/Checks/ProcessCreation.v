@@ -976,9 +976,9 @@ Qed.
 
     - At a caller with NO child: -ECHILD, nothing stored, the model
       unchanged.
-    - At a caller with a child, in a process that has installed SIG_DFL
-      for SIGCHLD ([State.m_sigchld_dfl]): 0, nothing stored, the model
-      unchanged.
+    - At a caller with a child, in a process whose every child was cloned
+      while SIGCHLD was SIG_DFL ([State.m_sigchld_dfl]): 0, nothing
+      stored, the model unchanged.
     - At such a caller: a REAP — a recorded nonzero pid [q], a
       status word [s] that [Exit.wait_status_okz] admits, stored at
       [stat_addr] (the second argument) unless it is NULL, and [q]
