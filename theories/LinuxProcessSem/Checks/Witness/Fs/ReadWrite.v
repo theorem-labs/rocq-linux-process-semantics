@@ -83,7 +83,6 @@ Proof.
       [apply unmodeled_intro | apply alt_r; apply pure_ok].
 Qed.
 
-<<<<<<< HEAD
 (** [ReadWrite.read_eventfd_spec]: the -EFAULT, the -EINVAL, the decline
     of a blocking eventfd, and on a non-blocking one the -EAGAIN, which
     the spec admits beside both the delivery and the no-byte -EFAULT; a
@@ -239,7 +238,6 @@ Proof.
       cbv beta iota; [apply unmodeled_intro | apply pure_ok].
 Qed.
 
-=======
 (* ------------------------------------------------- stream-pair ends *)
 
 (** [ReadWrite.stream_read_reset]'s one outcome per state: an end that
@@ -512,7 +510,6 @@ Proof.
   { eapply bind_step; [apply modify_ok|]. apply pure_ok. }
   destruct (ef_nonblock ctx); cbv beta iota; [apply pure_ok|apply unmodeled_intro].
 Qed.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -612,7 +609,6 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled   (* see [ReadWrite.read_spec] *)
   | Some (FdOpaque o) =>
       match o with
@@ -624,11 +620,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           else read_file_data_witness i m fd buf count data off
                  (fun off' => FdOpaque (OInherited (Some (data, off'))))
       | _ => read_opaque_witness o buf count i m
-=======
-  | Some (FdOpaque (OProcFile _)) => read_proc_witness buf count i m
-  | Some (FdOpaque (OProcPath _)) => Unmodeled
-  | Some (FdOpaque (OEventFd _)) => Unmodeled
-  | Some (FdOpaque (ONsFile _)) => Unmodeled
+      end
   | Some (FdStream id side st) =>
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m      (* [vfs_read]'s access_ok *)
@@ -660,7 +652,6 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
              (with_fds (fd_insert (m_fds m) fd
                           (FdAnon id (af_set_off af (af_off af + len_word bs)))) m)
              []
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
       end
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
@@ -698,12 +689,8 @@ Lemma read_witness_ok : forall fd buf count i m,
   read_spec fd buf count i m (read_witness fd buf count i m).
 Proof.
   intros. unfold read_spec, read_witness.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -715,24 +702,6 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
-<<<<<<< HEAD
-  9:{ (* the opaque kinds: a live inherited file through
-         [read_file_data_witness], every other kind through
-         [read_opaque_witness] *)
-      destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
-        try (eapply bind_step; [apply input_ok|]; cbv beta;
-             eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
-             srw Hfd; apply read_opaque_witness_ok).
-      cbv beta iota zeta.
-      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
-      { eapply bind_step; [apply input_ok|]. cbv beta.
-        eapply bind_step; [apply get_model_ok|].
-        cbv beta iota; srw Hfd. apply pure_ok. }
-      eapply bind_step; [apply input_ok|]. cbv beta.
-      eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd. apply read_file_data_witness_ok. }
-  9:{ (* an AF_UNIX SEQPACKET end: declined *)
-=======
   9:{ (* stream-pair end: the range verdict, the zero count, then
          [stream_read] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
@@ -768,8 +737,22 @@ Proof.
       - eapply bind_step; [apply modify_ok|]. apply pure_ok.
       - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv beta iota;
           [apply unmodeled_intro | apply pure_ok]. }
-  9:{ (* the opaque kinds: a /proc/sys file reads, the other three decline *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  9:{ (* the opaque kinds: a live inherited file through
+         [read_file_data_witness], every other kind through
+         [read_opaque_witness] *)
+      destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]];
+        try (eapply bind_step; [apply input_ok|]; cbv beta;
+             eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+             srw Hfd; apply read_opaque_witness_ok).
+      cbv beta iota zeta.
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+      { eapply bind_step; [apply input_ok|]. cbv beta.
+        eapply bind_step; [apply get_model_ok|].
+        cbv beta iota; srw Hfd. apply pure_ok. }
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply read_file_data_witness_ok. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply unmodeled_intro. }
@@ -1272,12 +1255,8 @@ Lemma write_witness_ok : forall fd buf count i m,
 Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
     write_fault_keep, write_ledger, write_witness.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
       2:{ eapply bind_step; [apply input_ok|]. cbv beta.
@@ -1299,13 +1278,6 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply pure_ok. }
-<<<<<<< HEAD
-  9:{ (* the opaque kinds: see [write_opaque_witness] *)
-      eapply bind_step; [apply input_ok|]. cbv beta.
-      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. apply write_opaque_witness_ok. }
-  9:{ (* an AF_UNIX SEQPACKET end: declined *)
-=======
   9:{ (* stream-pair end: the range verdict, then [stream_write] *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -1359,8 +1331,11 @@ Proof.
               destruct (access_okb buf (bv_unsigned count)); [ | apply pure_ok ]
             | ].
           all: apply unmodeled_intro. }
-  9:{ (* the opaque kinds: declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  9:{ (* the opaque kinds: see [write_opaque_witness] *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply write_opaque_witness_ok. }
+  9:{ (* an AF_UNIX SEQPACKET end: declined *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply unmodeled_intro. }
@@ -1687,12 +1662,8 @@ Lemma pread64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pread64_spec, pread64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
     destruct rd; cbn [negb]; cbv beta iota;
       [ destruct (access_okb buf (bv_unsigned count)) eqn:Hok; cbn [negb];
@@ -1903,12 +1874,8 @@ Lemma pwrite64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pwrite64_spec, pwrite64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     try (eapply bind_step; [apply input_ok|]; cbv beta;
          (eapply bind_step; [apply get_model_ok|]);
          cbv beta iota zeta; srw Hfd; apply pure_ok).
@@ -1924,7 +1891,7 @@ Proof.
        eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
        cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
-  5: { (* an AF_UNIX SEQPACKET end: declined *)
+  6: { (* an AF_UNIX SEQPACKET end, sixth once the opaque goal is gone: declined *)
        eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
        cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
@@ -2253,12 +2220,8 @@ Lemma writev_witness_ok : forall fd iov iovcnt i m,
 Proof.
   intros. unfold writev_witness, writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd.
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.
       2:{ wvw_open Hfd. apply pure_ok. }
@@ -2543,7 +2506,8 @@ Definition pwritev2_witness (fd iov iovcnt pos_l pos_h flags : word)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
-  | Some (FdDgram _) | Some (FdOpaque _) => Unmodeled   (* declined: [ReadWrite.pwritev2_spec] *)
+  | Some (FdDgram _) | Some (FdOpaque _) | Some (FdSeqpacket _ _ _) =>
+      Unmodeled   (* declined: [ReadWrite.pwritev2_spec] *)
   end.
 
 Lemma pwritev2_witness_ok : forall fd iov iovcnt pos_l pos_h flags i m,
@@ -2558,7 +2522,7 @@ Proof.
   destruct (Z.eqb (bv_signed pos_l) (-1)%Z); cbv beta iota; [apply unmodeled_intro|].
   destruct (ppos_einvalb pos_l); cbv beta iota; [apply pure_ok|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     try (wvw_open Hfd; apply unmodeled_intro).
   2:{ wvw_open Hfd. apply pure_ok. }
   destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag.
@@ -3153,12 +3117,8 @@ Lemma lseek_witness_ok : forall fd off whence i m,
   lseek_spec fd off whence i m (lseek_witness fd off whence m).
 Proof.
   intros. unfold lseek_spec, lseek_witness.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |o|i0 sd st]|] eqn:Hfd;
-=======
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
          [ eapply bind_step; [apply get_model_ok|];
            cbv beta iota; srw Hfd; first [apply pure_ok | apply unmodeled_intro] |]).
