@@ -2141,17 +2141,12 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** The flag-bit check runs BEFORE the two descriptors are reserved, so
     -EINVAL leaves sv alone — and it is answered for every family, not
-<<<<<<< HEAD
-    just the modeled one.  An AF_UNIX stream pair (family 1, type 1)
-    really does hand back two sockets connected to each other, a shape
-    [State.SockState] cannot express: fail closed.  (The AF_UNIX
-    sequenced-packet pair is answered: see the section at the end.) *)
-=======
     just the modeled ones.  AF_UNIX SOCK_DGRAM (family 1, type 2) hands
     back two connected MESSAGE sockets, which no [State.FdEntry]
     expresses: fail closed.  (AF_UNIX SOCK_STREAM is the pair the model
-    does hold; [Checks.Cases.Net.StreamPair] pins its success.) *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    does hold; [Checks.Cases.Net.StreamPair] pins its success.  The
+    AF_UNIX sequenced-packet pair is answered too: see the section at
+    the end.) *)
 Example socketpair_flag_check_precedes_the_writes :
   check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
     (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
