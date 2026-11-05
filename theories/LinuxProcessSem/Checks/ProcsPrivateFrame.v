@@ -534,6 +534,31 @@ Proof.
   sh_frame3 H.
 Qed.
 
+(** pwritev2 (287) answers on an unnamed file alone
+    ([Fs.ReadWrite.pwritev2_spec]), whose bytes live in the caller's
+    descriptor table ([State.anon_set_data] under [with_fds]); every
+    other kind is declined.  So neither spliced slot moves, the zero-fill
+    of a write that faults past the end included. *)
+Lemma check_anon_fault_extend_sh : forall reads m id data dst eff m' evs,
+  check_anon_fault_extend reads m id data dst eff = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros reads m id data dst eff m' evs H. unfold check_anon_fault_extend in H.
+  cbv beta iota zeta in H. sh_frame2 H.
+Qed.
+
+Lemma check_pwritev2_sh :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  sh_of m' = sh_of m.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
+  unfold check_pwritev2 in H. cbv beta iota zeta in H.
+  repeat (vm_step H || sh_done H
+          || (eapply check_anon_fault_extend_sh in H; exact H));
+  try reflexivity.
+Qed.
+
 Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,
   check_setsockopt i fd level optlen eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
@@ -667,7 +692,10 @@ Lemma check_mmap_sh : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only, check_mmap_fixed_overflow in H. mm_walk H. all: mm_leaf H.
+  (* [unfold] takes its names in order: [check_ret_only] goes last, so
+     the one inside [check_mmap_fixed_overflow] (the -ENOMEM answer) is
+     opened too, as [MmStepFrame.check_mmap_mm_frame] does. *)
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H. mm_walk H. all: mm_leaf H.
 Qed.
 
 Lemma check_mremap_sh : forall old old_size new_size flags eff m m' evs,
@@ -863,6 +891,7 @@ Proof.
       | eapply check_madvise_sh; eassumption
       | eapply check_getrandom_sh; eassumption
       | eapply check_close_range_sh; eassumption
+      | eapply check_pwritev2_sh; eassumption
       | fail 2 "checked_table_private_sh has no case for this class-(A) arm: give its checker a *_sh lemma above and add it to the list" ] ].
 Qed.
 

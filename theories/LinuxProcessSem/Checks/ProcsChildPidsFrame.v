@@ -833,7 +833,8 @@ Lemma check_unlinkat_cp : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result in H.
+    Namei.check_unlink_found, check_unlink_result, Namei.check_unlink_open_tmp,
+    check_unlink_open_result, check_unlink_type_result in H.
   cp_frame2 H.
 Qed.
 
@@ -1316,7 +1317,10 @@ Lemma check_mmap_cp : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> cps_of m' = cps_of m.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap, check_ret_only, check_mmap_fixed_overflow in H. mm_walk H. all: mm_leaf H.
+  (* [unfold] takes its names in order: [check_ret_only] goes last, so
+     the one inside [check_mmap_fixed_overflow] (the -ENOMEM answer) is
+     opened too, as [MmStepFrame.check_mmap_mm_frame] does. *)
+  unfold check_mmap, check_mmap_fixed_overflow, check_ret_only in H. mm_walk H. all: mm_leaf H.
 Qed.
 
 Lemma check_mremap_cp : forall old old_size new_size flags eff m m' evs,
