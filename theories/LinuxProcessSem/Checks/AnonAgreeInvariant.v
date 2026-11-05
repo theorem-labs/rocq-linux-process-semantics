@@ -393,8 +393,7 @@ Local Ltac aa_close :=
     [ exact Hinv
     | change g with (m_fds m); exact Hinv
     | autorewrite with model; exact Hinv
-    | rewrite m_fds_with_fds; exact Hinv
-    | rewrite m_fds_with_fds;
+    | autorewrite with model;
       first
       [ apply anon_agree_all_fd_insert_non_anon;
           [intros ?? [=] | exact Hinv ]
@@ -421,6 +420,7 @@ Local Ltac aa_close :=
           [intros ?? [=] | apply anon_agree_all_filter; exact Hinv ]
       | apply anon_agree_all_fd_insert_non_anon;
           [intros ?? [=] | apply anon_agree_all_anon_set_data; exact Hinv ]
+      | eapply anon_agree_all_unlink_open; [eassumption | exact Hinv]
       ]
     ]
   end.
@@ -659,36 +659,8 @@ Local Ltac aa_done_or_unfold H :=
 
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (kf_step H || aa_done_or_unfold H || (aa_close; fail 2));
+  repeat (kf_step H || aa_done_or_unfold H);
   aa_close.
-
-(* Test: single arm to verify the tactic works *)
-Lemma check_getcwd_preserves_aa : arm_preserves_aa arm_getcwd.
-Proof.
-  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
-  autorewrite with arm_unfold in H.
-  unfold check_getcwd in H. cbv beta iota zeta in H.
-  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
-  aa_close.
-Qed.
-
-Lemma check_close_preserves_aa : arm_preserves_aa arm_close.
-Proof.
-  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
-  autorewrite with arm_unfold in H.
-  unfold check_close in H. cbv beta iota zeta in H.
-  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
-  aa_close.
-Qed.
-
-Lemma check_write_preserves_aa : arm_preserves_aa arm_write.
-Proof.
-  unfold arm_preserves_aa. intros i eff m m' evs H Hinv.
-  autorewrite with arm_unfold in H.
-  unfold check_write in H. cbv beta iota zeta in H.
-  repeat (kf_step H || aa_done H || (aa_close; fail 2)).
-  aa_close.
-Qed.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
