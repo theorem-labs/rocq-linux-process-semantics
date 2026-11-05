@@ -8428,7 +8428,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))))))))).
+       None))))))))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
