@@ -552,7 +552,7 @@ Lemma check_mmap_nf : forall addr len prot flags fd off eff m m' evs,
   check_mmap addr len prot flags fd off eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros addr len prot flags fd off [ret ws zs us cs ci] m m' evs H.
-  unfold check_mmap in H. nf_frame H.
+  unfold check_mmap, check_mmap_fixed_overflow in H. nf_frame H.
 Qed.
 
 Lemma check_munmap_nf : forall addr len eff m m' evs,
