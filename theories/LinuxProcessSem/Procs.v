@@ -941,6 +941,62 @@ Proof.
   intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
 Qed.
 
+(** A CLONE THE CORE RESOLVES SUCCESSFULLY HAS A RECORD, AND THE CHECKS
+    PASS IT.  This is the guard for the calls [clone_in_of] gives no
+    record ([Fork.CiNoArgs]): the namespace extension answers those with
+    the core's own clone ([Ns.Clone.clone_ns_exact_no_args], which is
+    [Ns.Ext.released_clone]), and that is sound only because no call
+    without a record creates a child.  An answer that is not
+    error-encoded -- the test [clone_success_b] reads off the successor's
+    a0 -- comes from neither a host refuser nor any -EINVAL or -EFAULT,
+    so for 220 it comes from one of the two admitted words
+    ([Fork.clone_spec_success_record]) and for 435 from the fork image
+    ([Fork.clone3_spec_success_record]); both decode to a record no check
+    refuses.  [Ns.Clone.clone_ns_exact_core_gate] is the other half: for
+    a record the checks pass, an answered call is one the core's own gate
+    admits. *)
+Theorem clone_success_has_record : forall segs c x8 eff model' evs,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  clone_sysno (bv_unsigned x8) = true ->
+  syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists r, clone_in_of c = CiArgs r /\ clone_arg_checks r = false.
+Proof.
+  intros segs c x8 eff model' evs Hp Hno Hsp Herr.
+  assert (Hsys : in_sysno (sys_input segs (cfg_ms c) x8) = x8) by reflexivity.
+  unfold clone_sysno in Hno. apply orb_true_iff in Hno as [Hno | Hno];
+    apply Z.eqb_eq in Hno.
+  - (* clone (220) *)
+    assert (Hlk : lookup_arm spec_table
+                    (bv_unsigned (in_sysno (sys_input segs (cfg_ms c) x8)))
+                  = Some (mkSpecArm 220%Z (fun i => clone_spec (in_arg i 0) i)))
+      by (rewrite Hsys, Hno; reflexivity).
+    unfold syscall_spec in Hsp.
+    apply (proj1 (dispatch_arm _ _ _ _ _ Hlk)) in Hsp. cbn [sa_spec] in Hsp.
+    destruct (clone_spec_success_record _ _ _ _ _ _ Hsp Herr) as (r & Hr & Hc).
+    exists r. split; [|exact Hc].
+    rewrite (clone_in_of_input segs c x8 Hp). cbv zeta. rewrite Hno.
+    replace (Z.eqb 220%Z 220%Z) with true by reflexivity. cbv iota.
+    rewrite Hr. reflexivity.
+  - (* clone3 (435) *)
+    assert (Hlk : lookup_arm spec_table
+                    (bv_unsigned (in_sysno (sys_input segs (cfg_ms c) x8)))
+                  = Some (mkSpecArm 435%Z
+                            (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i)))
+      by (rewrite Hsys, Hno; reflexivity).
+    unfold syscall_spec in Hsp.
+    apply (proj1 (dispatch_arm _ _ _ _ _ Hlk)) in Hsp. cbn [sa_spec] in Hsp.
+    destruct (clone3_spec_success_record _ _ _ _ _ _ _ Hsp Herr)
+      as (bs & r & Hsz & Hbs & Ha & Hpre & Hc).
+    exists r. split; [|exact Hc].
+    rewrite (clone_in_of_input segs c x8 Hp). cbv zeta. rewrite Hno.
+    replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
+    replace (Z.eqb 435%Z 435%Z) with true by reflexivity. cbv iota.
+    rewrite Hsz. cbn [negb]. cbv iota.
+    rewrite Hbs. cbv iota. rewrite Hpre. cbv iota. rewrite Ha. cbn [orb]. cbv iota.
+    reflexivity.
+Qed.
+
 (** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
     [clone3] has no record, whatever the released step answers for it.

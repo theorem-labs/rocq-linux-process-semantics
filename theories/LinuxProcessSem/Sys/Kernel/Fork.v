@@ -1238,6 +1238,39 @@ Proof.
   - apply (clone_ns_word_disjoint flags); [exact Hw| |]; vm_compute; reflexivity.
 Qed.
 
+(** AND EVERY ADMITTED WORD HAS ONE: both admitted words lie in the low
+    32 bits, so the raw-input guard of [clone_args_of_clone] passes and
+    the word has a record, which no check refuses.  This is what makes a
+    [clone] (220) that creates a child a call with a record
+    ([clone_spec_success_record], [Procs.clone_success_has_record]). *)
+Lemma clone_admitted_word_record : forall flags a1 a2 a3 a4,
+  clone_fork_flags_b flags = true \/ clone_ns_flags_b flags = true ->
+  exists r, clone_args_of_clone flags a1 a2 a3 a4 = Some r
+            /\ clone_arg_checks r = false.
+Proof.
+  intros flags a1 a2 a3 a4 Hw.
+  assert (Hlt : (bv_unsigned flags <? 2 ^ 32)%Z = true).
+  { destruct Hw as [Hw|Hw].
+    - unfold clone_fork_flags_b in Hw. apply bv_eqb_eq in Hw. subst flags.
+      vm_compute. reflexivity.
+    - assert (Hd : Z.land (bv_unsigned flags) (Z.lnot (Z.ones 32)) = 0%Z)
+        by (apply (clone_ns_word_disjoint flags);
+            [exact Hw | vm_compute; reflexivity | vm_compute; reflexivity]).
+      assert (H32 : (0 < 2 ^ 32)%Z) by reflexivity.
+      apply Z.ltb_lt.
+      rewrite <- (Z.land_m1_r (bv_unsigned flags)), <- (Z.lor_lnot_diag (Z.ones 32)),
+        Z.land_lor_distr_r, Hd, Z.lor_0_r, Z.land_ones by lia.
+      destruct (Z.mod_pos_bound (bv_unsigned flags) (2 ^ 32) H32) as [_ Hm]. exact Hm. }
+  assert (Hr : clone_args_of_clone flags a1 a2 a3 a4
+               = Some (mkCloneArgs
+                         (Z.land (bv_unsigned flags)
+                            (Z.land CLONE_LEGACY_FLAGS (Z.lnot CSIGNAL)))
+                         (Z.land (bv_unsigned flags) CSIGNAL) a2 a4 a2 a1 a3))
+    by (unfold clone_args_of_clone; rewrite Hlt; reflexivity).
+  eexists. split; [exact Hr|].
+  exact (clone_admitted_no_arg_check flags a1 a2 a3 a4 _ Hw Hr).
+Qed.
+
 (** [clone]'s checks are a function of a0 alone: the two pointers K0
     compares are both a2, so K0 reduces to its two bits, and no other row
     reads a pointer.  The checker asks this; [clone_legacy_einval_b_spec]
@@ -1438,6 +1471,59 @@ Theorem clone_spec_default_iff : forall flags i m o,
 Proof.
   intros flags i m o H. unfold clone_spec. apply clone_refusable_absent.
   rewrite H. reflexivity.
+Qed.
+
+(** An errno in [1,4095] reads as an error-encoded return.
+    [Checks.Sys.Prelude.errno_ret_error_b] is the same fact, stated where
+    the checker layer can cite it; this file is below that layer, and the
+    two lemmas below need it here. *)
+Local Lemma errno_ret_is_error : forall e,
+  (1 <= e <= 4095)%Z -> addr_is_error_b (errno_ret e) = true.
+Proof.
+  intros e He. unfold addr_is_error_b, errno_ret, two_pow_64.
+  rewrite Z_to_bv_unsigned. unfold bv_wrap, bv_modulus.
+  change (Z.of_N 64) with 64%Z.
+  replace (- e)%Z with (2 ^ 64 - e + (-1) * 2 ^ 64)%Z by lia.
+  rewrite Z_mod_plus_full, Z.mod_small by lia.
+  apply Z.ltb_lt. lia.
+Qed.
+
+(** A [clone] (220) THAT CREATES A CHILD HAS A RECORD THE CHECKS PASS.
+    An answer that is not error-encoded ([State.addr_is_error_b], the
+    test [Procs.clone_success_b] reads) comes from neither a host
+    refuser nor the argument checks' -EINVAL, so it comes from one of the
+    two admitted words, and those have a record no check refuses
+    ([clone_admitted_word_record]).  This is the guard for a call with no
+    record: the core resolves none successfully
+    ([Procs.clone_success_has_record],
+    [Ns.Clone.clone_ns_exact_core_gate]). *)
+Lemma clone_spec_success_record : forall flags i m eff m' evs,
+  clone_spec flags i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists r, clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4)
+              = Some r
+            /\ clone_arg_checks r = false.
+Proof.
+  intros flags i m eff m' evs H Herr. unfold clone_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { exfalso. apply clone_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret] in Herr.
+    rewrite (errno_ret_is_error e He) in Herr. discriminate Herr. }
+  destruct (clone_fork_flags_b flags) eqn:Hf;
+    [apply (clone_admitted_word_record flags _ _ _ _ (or_introl Hf))|].
+  destruct (clone_ns_flags_b flags) eqn:Hns;
+    [apply (clone_admitted_word_record flags _ _ _ _ (or_intror Hns))|].
+  exfalso. unfold clone_spec_lists in H. rewrite Hf, Hns in H. cbv iota in H.
+  apply bind_input_iff in H. cbv beta in H.
+  destruct (clone_args_of_clone flags (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4))
+    as [r|]; cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  destruct (clone_arg_checks r); cbv iota in H;
+    [|unfold unmodeled in H; discriminate H].
+  unfold clone_einval in H. apply bind_get_model in H. cbv beta in H.
+  destruct (clone_no_shared_file_b (forfeit_inherited (m_fds m)));
+    cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  unfold err_ret, ret_only, pure in H. injection H as -> _ _.
+  cbn [eff_ret] in Herr. vm_compute in Herr. discriminate Herr.
 Qed.
 
 (** [clone3] reaches the same [kernel_clone] through a struct in user
@@ -1933,4 +2019,54 @@ Proof.
     + apply bind_input_iff in H. cbv beta in H. rewrite Hbs in H. cbv iota in H.
       rewrite Ha in H. exact H.
     + apply bind_input_iff. cbv beta. rewrite Hbs. cbv iota. rewrite Ha. exact H.
+Qed.
+
+(** A [clone3] (435) THAT CREATES A CHILD HAS A RECORD THE CHECKS PASS,
+    for the reason [clone_spec_success_record] gives: an answer that is
+    not error-encoded comes from neither a host refuser, nor the -EFAULT
+    of a refused range, nor the -EINVAL of the struct's own tests or the
+    argument checks, so the struct is the fork image, which decodes
+    ([clone3_fork_args_pre_args]) into a record no check refuses
+    ([clone3_fork_args_no_einval]). *)
+Lemma clone3_spec_success_record : forall uargs size i m eff m' evs,
+  clone3_spec uargs size i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists bs r,
+    bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE) = true
+    /\ copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs
+    /\ clone3_fork_args_b bs = true
+    /\ clone3_pre bs = CdArgs r
+    /\ clone_arg_checks r = false.
+Proof.
+  intros uargs size i m eff m' evs H Herr. unfold clone3_spec in H.
+  apply clone_refusable_cases in H as [H | H].
+  { exfalso. apply clone3_refused_fail_inv in H as (e & He & Heq).
+    injection Heq as -> _ _. cbn [eff_ret] in Herr.
+    rewrite (errno_ret_is_error e He) in Herr. discriminate Herr. }
+  unfold clone3_spec_lists in H.
+  destruct (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) eqn:Hsz; cbn [negb] in H;
+    cbv iota in H; [|unfold unmodeled in H; discriminate H].
+  apply bind_input_iff in H. cbv beta in H.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|] eqn:Hbs;
+    cbv iota in H.
+  2: { exfalso. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota in H;
+         [|unfold unmodeled in H; discriminate H].
+       unfold err_ret, ret_only, pure in H. injection H as -> _ _.
+       cbn [eff_ret] in Herr. vm_compute in Herr. discriminate Herr. }
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H.
+  2: { exfalso. destruct (clone3_einval_b bs); cbv iota in H;
+         [|unfold unmodeled in H; discriminate H].
+       unfold clone3_einval, record_copyins, bind in H. cbv beta iota in H.
+       destruct H as (core & m1 & evs1 & evs2 & H0 & Hp & _).
+       unfold err_ret, ret_only, pure in H0. injection H0 as -> -> ->.
+       unfold pure in Hp. injection Hp as -> _ _.
+       cbn [eff_ret with_copyins] in Herr. vm_compute in Herr. discriminate Herr. }
+  pose proof (clone3_fork_args_pre_args bs Ha) as Hpre.
+  destruct (clone3_pre bs) as [| |r] eqn:Hp;
+    [ exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
+    | exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
+    | ].
+  pose proof (clone3_fork_args_no_einval bs Ha) as Hne.
+  unfold clone3_einval_b in Hne. rewrite Hp in Hne.
+  exists bs, r. repeat split; assumption.
 Qed.

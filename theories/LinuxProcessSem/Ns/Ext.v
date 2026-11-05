@@ -117,6 +117,16 @@ Definition makes_ns (f : Fork.CloneIn) : bool :=
   | Fork.CiNoArgs => false
   end.
 
+(** A RECORD WHOSE FLAGS HOLD NO NAMESPACE BIT MAKES NO NAMESPACE.  This
+    is the direction the statements restated for [makes_ns] need: every
+    record the old premise [has_ns_bits] admitted, the new premise admits
+    too, so each of those statements still covers what it covered.  The
+    converse fails, and deliberately: a record the argument checks refuse
+    makes no namespace however its flags read. *)
+Lemma makes_ns_no_ns_bits : forall r,
+  has_ns_bits (Fork.cla_flags r) = false -> makes_ns (Fork.CiArgs r) = false.
+Proof. intros r H. cbn [makes_ns]. rewrite H. reflexivity. Qed.
+
 (** A task is in the released world when each of its namespaces is the
     host's: its mount namespace is not in the tables or is marked
     [mntns_released]; its user namespace and pid namespace are not in the

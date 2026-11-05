@@ -414,7 +414,16 @@ Qed.
     core admits, including namespace-creating clones from the host's
     namespaces.  That fast path remains unrestricted, as
     [Ext.ext_clone_coherent] requires.  A record the checks refuse is
-    answered -EINVAL ([clone_ns_exact_arg_checks]). *)
+    answered -EINVAL ([clone_ns_exact_arg_checks]), and
+    [clone_ns_exact_core_gate_word] puts the two together: for every
+    decoded word, an answered call is one the core's gate admits or the
+    one the core itself answers -EINVAL.
+
+    THE CALLS WITH NO RECORD are guarded elsewhere, because this gate
+    says nothing about them: [Procs.clone_success_has_record] is the
+    theorem that the core resolves none of them successfully, so the
+    core's own answer that [clone_ns_exact Fork.CiNoArgs] gives
+    ([clone_ns_exact_no_args]) can create no child. *)
 Theorem clone_ns_exact_core_gate : forall flags a1 a2 a3 a4 r m ctx st hq,
   Fork.clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
   Fork.clone_arg_checks r = false ->
@@ -466,6 +475,32 @@ Theorem clone_ns_exact_arg_checks : forall r m ctx st hq,
 Proof.
   intros r m ctx st hq Hfast Hc.
   unfold clone_ns_exact. rewrite Hfast. cbv beta iota. rewrite Hc. reflexivity.
+Qed.
+
+(** THE OLD CORE GATE, FOR EVERY DECODED [clone] (220) WORD.  Before the
+    argument checks this file stated the gate for every answered word
+    outside the released fast path; with them, a word the checks refuse
+    is answered -EINVAL, which the old statement did not admit.  This is
+    that statement with exactly that one answer added: no answered word
+    bypasses the core, because it is a word the core's own gate admits or
+    the word the core itself answers -EINVAL
+    ([Fork.clone_legacy_einval_b], which [Fork.clone_einval] answers).
+    The first two disjuncts alone are [clone_ns_exact_core_gate], for a
+    record the checks pass. *)
+Theorem clone_ns_exact_core_gate_word : forall flags a1 a2 a3 a4 r m ctx st hq,
+  Fork.clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
+  (flat_view ctx st && negb (has_ns_bits (bv_unsigned flags))) = false ->
+  clone_ns_exact (Fork.CiArgs r) m ctx st hq <> CnUnmodeled ->
+  Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true
+  \/ Fork.clone_legacy_einval_b flags = true.
+Proof.
+  intros flags a1 a2 a3 a4 r m ctx st hq Hdec Hfast Hanswer.
+  destruct (Fork.clone_arg_checks r) eqn:Hc.
+  - right. right.
+    rewrite (Fork.clone_legacy_einval_b_spec flags a1 a2 a3 a4), Hdec. exact Hc.
+  - destruct (clone_ns_exact_core_gate flags a1 a2 a3 a4 r m ctx st hq
+                Hdec Hc Hfast Hanswer) as [H|H];
+      [left; exact H | right; left; exact H].
 Qed.
 
 
@@ -533,9 +568,16 @@ Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
     Linux v6.18.46).  A partial allocation resets an empty innermost
     namespace's cursor; freeing a completed first allocation closes it.
     A call with no record ([Fork.CiNoArgs]) is the core's own: any errno,
-    with the namespace state unchanged ([Ext.released_clone]); such a call
-    fails before [copy_process] (a [clone3] struct its own tests refuse,
-    or one that cannot be copied), so before [alloc_pid]. *)
+    with the namespace state unchanged ([Ext.released_clone]).  Such a
+    call never reaches [alloc_pid] in this model, for one of two reasons.
+    Either it fails before [copy_process], as a [clone3] whose own tests
+    refuse its struct does, or one whose struct cannot be copied; or THE
+    CORE DECLINES IT, which is what happens to the calls Linux would take
+    into [copy_process] -- a [clone3] record with a namespace bit, and a
+    [clone] a0 with a bit above 31.  Those declines are what makes the
+    core's own answer sound here: the core resolves no call without a
+    record ([Procs.clone_success_has_record]), so none of them creates a
+    child. *)
 Definition clone_ns (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     (o : CloneNs) : Prop :=
   match f with
@@ -676,6 +718,36 @@ Proof.
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
 Qed.
 
+(** THE THREE ABOVE AS THEY READ BEFORE, over a record whose FLAGS hold
+    no namespace bit.  Each was stated with the premise
+    [has_ns_bits f = false] on the flag word the core passed; the record
+    it passes now makes no namespace wherever that held
+    ([Ext.makes_ns_no_ns_bits]), so each old statement is still provable,
+    and these are its proof. *)
+Lemma clone_ns_exact_flat_fork_word : forall r m ctx st hq,
+  flat_view ctx st = true -> has_ns_bits (Fork.cla_flags r) = false ->
+  clone_ns_exact (Fork.CiArgs r) m ctx st hq = CnOk ctx None st.
+Proof.
+  intros r m ctx st hq Hf Hb.
+  apply clone_ns_exact_flat_fork; [exact Hf | apply makes_ns_no_ns_bits; exact Hb].
+Qed.
+
+Lemma clone_ns_flat_fork_ok_word : forall r m ctx st hq,
+  flat_view ctx st = true -> has_ns_bits (Fork.cla_flags r) = false ->
+  clone_ns (Fork.CiArgs r) m ctx st hq (CnOk ctx None st).
+Proof.
+  intros r m ctx st hq Hf Hb.
+  apply clone_ns_flat_fork_ok; [exact Hf | apply makes_ns_no_ns_bits; exact Hb].
+Qed.
+
+Lemma clone_ns_coherent_word : forall r m ctx st hq o,
+  flat_view ctx st = true -> has_ns_bits (Fork.cla_flags r) = false ->
+  (clone_ns (Fork.CiArgs r) m ctx st hq o <-> released_clone ctx st o).
+Proof.
+  intros r m ctx st hq o Hf Hb.
+  apply clone_ns_coherent; [exact Hf | apply makes_ns_no_ns_bits; exact Hb].
+Qed.
+
 (** Where [clone_creds]'s count check is not decided by the tables
     ([ucount_check] gives [ChargeEither]: a level's count is at its limit,
     but the namespaces the tables hold for the caller are under it), Linux
@@ -728,3 +800,32 @@ Definition clone_tables_failures : CloneEnv := fun f m ctx st hq e st' =>
 Lemma clone_tables_failures_flat : forall f m ctx st hq e st',
   flat_view ctx st = true -> makes_ns f = false -> clone_tables_failures f m ctx st hq e st'.
 Proof. intros f m ctx st hq e st' Hf Hb. left. rewrite Hf, Hb. reflexivity. Qed.
+
+(** EVERY FAILURE THE OLD ENVIRONMENT ADMITTED, IT STILL ADMITS.  The
+    definition above reads the record where it read the flag word, and
+    it gained a fourth disjunct for a call with no record.  Its three old
+    disjuncts, read over a record's flags, still hold of it: the first
+    through [Ext.makes_ns_no_ns_bits], the other two unchanged.  So no
+    statement that takes [clone_tables_failures] as its environment
+    premise covers fewer runs than it did. *)
+Lemma clone_tables_failures_record : forall r m ctx st hq e st',
+  ((flat_view ctx st && negb (has_ns_bits (Fork.cla_flags r))) = true
+   \/ CnErr e st' = clone_ns_exact (Fork.CiArgs r) m ctx st hq
+   \/ (e = ENOSPC /\ st' = st
+       /\ clone_count_undecided (Fork.cla_flags r) m ctx st = true)) ->
+  clone_tables_failures (Fork.CiArgs r) m ctx st hq e st'.
+Proof.
+  intros r m ctx st hq e st' [H | [H | H]].
+  - left. apply andb_true_iff in H as [Hf Hb]. apply negb_true_iff in Hb.
+    rewrite Hf, (makes_ns_no_ns_bits r Hb). reflexivity.
+  - right. left. exact H.
+  - right. right. left. cbn [clone_in_flags]. exact H.
+Qed.
+
+Lemma clone_tables_failures_flat_word : forall r m ctx st hq e st',
+  flat_view ctx st = true -> has_ns_bits (Fork.cla_flags r) = false ->
+  clone_tables_failures (Fork.CiArgs r) m ctx st hq e st'.
+Proof.
+  intros r m ctx st hq e st' Hf Hb.
+  apply clone_tables_failures_flat; [exact Hf | apply makes_ns_no_ns_bits; exact Hb].
+Qed.

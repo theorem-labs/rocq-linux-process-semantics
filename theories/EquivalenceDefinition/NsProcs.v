@@ -109,6 +109,45 @@ Proof.
   - intros _ hq en st'. apply Hce; assumption.
 Qed.
 
+(** THE OLD STATEMENTS, AS THEY READ BEFORE THE RECORD.  Each was
+    written with the premise [has_ns_bits (clone_flags_of c) = false] on
+    the flag word the core passed; the three below prove exactly those
+    texts from the new ones and [clone_in_of_no_ns], so nothing they
+    covered is lost.  [cenv_flat_ok] and [Ext.ExtSpec.ext_clone_coherent]
+    are retyped, so their own old texts no longer typecheck: these are
+    what they said at the call sites, where the clone's input is
+    [clone_in_of] of the caller's configuration. *)
+Lemma cenv_flat_ok_word : forall cenv c m ctx st hq e st',
+  cenv_flat_ok cenv ->
+  flat_view ctx st = true ->
+  has_ns_bits (clone_flags_of c) = false ->
+  cenv (clone_in_of c) m ctx st hq e st'.
+Proof.
+  intros cenv c m ctx st hq e st' Hce Hf Hb.
+  apply Hce; [exact Hf | apply clone_in_of_no_ns; exact Hb].
+Qed.
+
+Lemma ext_clone_coherent_word : forall (E : ExtSpec) c m ctx st hq o,
+  flat_view ctx st = true ->
+  has_ns_bits (clone_flags_of c) = false ->
+  (ext_clone E (clone_in_of c) m ctx st hq o <-> released_clone ctx st o).
+Proof.
+  intros E c m ctx st hq o Hf Hb.
+  apply (ext_clone_coherent E); [exact Hf | apply clone_in_of_no_ns; exact Hb].
+Qed.
+
+Theorem ns_flat_iff_word : forall cenv segs cfg p P evs r,
+  cenv_flat_ok cenv ->
+  (forall e, look P (pe_pid e) = Some e ->
+     flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
+     /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false) ->
+  (pstep_x_at ns_ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
+Proof.
+  intros cenv segs cfg p P evs r Hce H. apply ns_flat_iff; [exact Hce|].
+  intros e Hl. destruct (H e Hl) as [Hf Hb].
+  split; [exact Hf | apply clone_in_of_no_ns; exact Hb].
+Qed.
+
 (** UNDER [ns_ext] A FAILED CLONE'S FILTER KEEPS WHAT THE TABLES DECIDE,
     and nothing more: [ns_ext]'s clone ([clone_ns]) admits no success where
     [clone_ns_exact] is [CnErr] or [CnUnmodeled], so
