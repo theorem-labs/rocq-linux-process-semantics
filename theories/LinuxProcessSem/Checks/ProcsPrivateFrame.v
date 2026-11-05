@@ -187,9 +187,9 @@ Proof.
   intros fd cmd arg eff m m' evs H. unfold check_fcntl in H. sh_frame2 H.
 Qed.
 
-Lemma check_ioctl_sh : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> sh_of m' = sh_of m.
-Proof. intros fd req eff m m' evs H. unfold check_ioctl in H. sh_frame2 H. Qed.
+Lemma check_ioctl_sh : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof. intros i fd req eff m m' evs H. unfold check_ioctl in H. sh_frame2 H. Qed.
 
 Lemma check_close_sh : forall fd eff m m' evs,
   check_close fd eff m = CheckOk m' evs -> sh_of m' = sh_of m.
@@ -424,19 +424,19 @@ Proof.
   unfold check_connect in H. sh_frame2 H.
 Qed.
 
-Lemma check_getsockname_sh : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs ->
+Lemma check_getsockname_sh : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd eff m m' evs H.
+  intros i fd eff m m' evs H.
   unfold check_getsockname, check_getsockname_core in H. sh_frame2 H.
 Qed.
 
-Lemma check_getpeername_sh : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs ->
+Lemma check_getpeername_sh : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros fd eff m m' evs H.
+  intros i fd eff m m' evs H.
   unfold check_getpeername, check_getpeername_core in H. sh_frame2 H.
 Qed.
 

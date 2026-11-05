@@ -649,6 +649,7 @@ Proof.
   unfold check_read, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H
+          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])
           || nf_use nf_read_urandom H || nf_use nf_socket_pending_error H
           || nf_use nf_read_proc H || nf_use nf_eventfd_read H);
   nf_finish.
@@ -661,6 +662,7 @@ Proof.
   unfold check_write, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H
+          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])
           || nf_use nf_write_fault_extend H || nf_use nf_eventfd_write H
           || nf_use nf_anon_write_fault H);
   nf_finish.
@@ -917,9 +919,9 @@ Lemma check_fsync_nf : forall fd eff m m' evs,
   check_fsync fd eff m = CheckOk m' evs -> ns_post m m'.
 Proof. intros fd eff m m' evs H. unfold check_fsync in H. nf_frame H. Qed.
 
-Lemma check_getdents64_nf : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> ns_post m m'.
-Proof. intros fd count eff m m' evs H. unfold check_getdents64 in H. nf_frame H. Qed.
+Lemma check_getdents64_nf : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> ns_post m m'.
+Proof. intros i fd dirent count eff m m' evs H. unfold check_getdents64 in H. nf_frame H. Qed.
 
 Lemma check_flock_nf : forall fd cmd eff m m' evs,
   check_flock fd cmd eff m = CheckOk m' evs -> ns_post m m'.
@@ -1366,10 +1368,10 @@ Proof.
   unfold check_recvfrom, check_access_ok_zero, check_recv_fd_answer in H. nf_frame H.
 Qed.
 
-Lemma check_recvmsg_nf : forall fd flags eff m m' evs,
-  check_recvmsg fd flags eff m = CheckOk m' evs -> ns_post m m'.
+Lemma check_recvmsg_nf : forall i fd flags eff m m' evs,
+  check_recvmsg i fd flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros fd flags eff m m' evs H. unfold check_recvmsg, check_recv_fd_answer in H.
+  intros i fd flags eff m m' evs H. unfold check_recvmsg, check_recv_fd_answer in H.
   nf_frame H.
 Qed.
 

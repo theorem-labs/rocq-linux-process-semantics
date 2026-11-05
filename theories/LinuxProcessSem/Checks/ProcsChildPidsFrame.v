@@ -398,9 +398,9 @@ Proof.
   intros eff m m' evs H. unfold check_set_tid_address in H. cp_frame2 H.
 Qed.
 
-Lemma check_ioctl_cp : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> cps_of m' = cps_of m.
-Proof. intros fd req eff m m' evs H. unfold check_ioctl in H. cp_frame2 H. Qed.
+Lemma check_ioctl_cp : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> cps_of m' = cps_of m.
+Proof. intros i fd req eff m m' evs H. unfold check_ioctl in H. cp_frame2 H. Qed.
 
 Lemma check_writev_cp : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs ->
@@ -902,19 +902,19 @@ Proof.
   cp_frame2 H.
 Qed.
 
-Lemma check_getsockname_cp : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs ->
+Lemma check_getsockname_cp : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros fd eff m m' evs H.
+  intros i fd eff m m' evs H.
   unfold check_getsockname, check_getsockname_core in H. cp_frame2 H.
 Qed.
 
-Lemma check_getpeername_cp : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs ->
+Lemma check_getpeername_cp : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros fd eff m m' evs H.
+  intros i fd eff m m' evs H.
   unfold check_getpeername, check_getpeername_core in H. cp_frame2 H.
 Qed.
 
