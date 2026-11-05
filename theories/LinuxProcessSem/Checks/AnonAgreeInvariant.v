@@ -314,29 +314,28 @@ Proof.
            | discriminate Hunlink ]
          end; fail).
   (* FdAnon case: unlink_open_entry returns the entry unchanged *)
-  - (* Hunlink : FdAnon id' af' = FdAnon id0 af0, so id0 = id', af0 = af' *)
-    assert (id0 = ltac:(match type of Hunlink with FdAnon ?x _ = _ => exact x end))
-      by congruence.
-    assert (af0 = ltac:(match type of Hunlink with FdAnon _ ?x = _ => exact x end))
-      by congruence.
-    subst.
-    (* Now need: anon_agree on the mapped table for this entry *)
+  - (* Hunlink : FdAnon id' af' = FdAnon id0 af0; extract id0 and af0 *)
     destruct (bv_eqb id0 id) eqn:Eid0.
-    + (* id0 = id: contradicts anon_id_live *)
-      apply bv_eqb_eq in Eid0. subst id0. exfalso.
+    + apply bv_eqb_eq in Eid0. subst id0. exfalso.
       unfold anon_id_live in Hlive.
-      assert (existsb (fun p => match entry_anon_id (snd p) with
-                                | Some id' => bv_eqb id' id
-                                | None => false end) fds = true) as Htrue.
+      assert (existsb (fun p0 => match entry_anon_id (snd p0) with
+                                 | Some xid => bv_eqb xid id
+                                 | None => false end) fds = true) as Htrue.
       { apply existsb_exists.
-        eexists; split; [exact Hin'|]; cbn;
+        match type of Hunlink with FdAnon ?x _ = _ =>
+          assert (Hx : x = id) by congruence;
+          rewrite Hx in Hin'
+        end.
+        eexists; split; [exact Hin'|]; cbn.
         rewrite (proj2 (bv_eqb_eq id id) eq_refl); reflexivity. }
       rewrite Htrue in Hlive. discriminate Hlive.
-    + (* id0 ≠ id *)
-      apply anon_agree_unlink_open_other.
+    + apply anon_agree_unlink_open_other.
       * intros E; subst; rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid0; discriminate.
-      * exact (Hall _ _ _ Hin').
-Qed.
+      * match type of Hunlink with FdAnon ?x ?y = FdAnon id0 af0 =>
+          replace id0 with x by congruence;
+          replace af0 with y by congruence
+        end.
+        exact (Hall _ _ _ Hin').
 
 (** Reopen with same data/pin. *)
 Lemma anon_agree_all_reopen : forall fds k id af o r w a,
