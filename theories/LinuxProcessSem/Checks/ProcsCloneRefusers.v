@@ -290,11 +290,11 @@ Proof.
   inversion H; subst.
   - (* px_other *)
     unfold refusers_all, absorb_x; cbn [pcfg_procs].
-    apply refusers_in_orphan. apply refusers_in_replace; [exact Hall | rr_eq_x Hall Hext].
+    apply refusers_in_orphan. apply refusers_in_replace; [rr_tab Hall | rr_eq_x Hall Hext].
   - (* px_clone *)
     unfold refusers_all, clone_result_x; cbn [pcfg_procs].
     apply Forall_app. split.
-    + apply refusers_in_replace; [exact Hall|].
+    + apply refusers_in_replace; [rr_tab Hall|].
       match goal with
       | Hs : sstep_cfg _ _ _ _ (SNext ?c'), Hl : look _ (pe_pid ?e) = Some ?e
         |- m_clone_refusers (pe_model (pe_absorb _ (with_ret ?c' ?ret))) = _ =>
@@ -305,7 +305,7 @@ Proof.
     + constructor; [cbn [snd]; rr_eq Hall | constructor].
   - (* px_clone_fail: the released step under the filter *)
     unfold refusers_all, absorb_x; cbn [pcfg_procs].
-    apply refusers_in_orphan. apply refusers_in_replace; [exact Hall|].
+    apply refusers_in_orphan. apply refusers_in_replace; [rr_tab Hall|].
     match goal with
     | Hf : clone_fail_step _ _ _ _ _ _ _ _ _ ?c', Hl : look _ (pe_pid ?e) = Some ?e |- _ =>
         unfold clone_fail_step in Hf;
@@ -316,20 +316,20 @@ Proof.
     end.
   - (* px_wait_reap *)
     unfold refusers_all; cbn [pcfg_procs].
-    apply refusers_in_drop. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_drop. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* px_wait_nohang_reap *)
     unfold refusers_all, wait4_reap_result; cbn [pcfg_procs].
-    apply refusers_in_drop. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_drop. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* px_wait_nohang_zero *)
     unfold refusers_all, wait4_zero_result, absorb; cbn [pcfg_procs].
-    apply refusers_in_orphan. apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_orphan. apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
   - (* px_sync *)
     unfold refusers_all, sync_result; cbn [pcfg_procs].
-    apply refusers_in_replace; [exact Hall|].
+    apply refusers_in_replace; [rr_tab Hall|].
     rewrite sync_entry_clone_refusers. rr_eq Hall.
   - (* px_pin_root *)
     unfold refusers_all, pin_root; cbn [pcfg_procs].
-    apply refusers_in_replace; [exact Hall | rr_eq Hall].
+    apply refusers_in_replace; [rr_tab Hall | rr_eq Hall].
 Qed.
 
 Corollary pstep_x_cfg_preserves_clone_refusers : forall r ext cenv segs cfg P evs P',
