@@ -151,9 +151,7 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
               end)
       end
   | Some (FdOpaque _) => Unmodeled   (* declined: see [Net.Socket.bind_spec] *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled   (* an AF_UNIX end: see [Net.Socket.bind_spec] *)
-=======
   | Some (FdStream _ _ _) =>
       (* [unix_bind]: every errno is fixed by the input; the autobind and
          an AF_UNIX name are the spec's own [Unmodeled] *)
@@ -175,7 +173,6 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
            else Unmodeled)
       end
   | Some (FdDgram _) => Unmodeled               (* a socket: an address it lacks *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -185,11 +182,7 @@ Proof.
   intros. unfold bind_spec, bind_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|];
-    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
   2: { (* the stream-pair end *)
     destruct (orb (Z.ltb (sint32 addrlen) 0)
@@ -204,7 +197,6 @@ Proof.
                   (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))); [apply pure_ok|].
     destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX));
       [apply pure_ok|apply unmodeled_intro]. }
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   (* socket *)
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].
@@ -249,12 +241,9 @@ Definition listen_witness (fd : word) (m : Model) : outcome SyscallEffect :=
       | SkFresh => ret_outcome (errno_ret EADDRINUSE) m   (* the autobind's failure *)
       end
   | Some (FdOpaque _) => Unmodeled   (* declined, as [bind_witness]'s *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled   (* as [bind_witness]'s *)
-=======
   | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m   (* unbound pair end *)
   | Some (FdDgram _) => Unmodeled                              (* a socket: declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -263,13 +252,8 @@ Lemma listen_witness_ok : forall fd backlog i m,
 Proof.
   intros. unfold listen_spec, listen_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|];
-    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct sk as [| | |peer ch rx|peer ch]; try apply pure_ok.
   - (* fresh: the autobind's -EADDRINUSE *)
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
@@ -306,12 +290,9 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
           | SkListening => ret_outcome (errno_ret witness_errno) m
           | _ => ret_outcome (errno_ret EINVAL) m
           end
-<<<<<<< HEAD
       | FdSeqpacket _ _ _ => Unmodeled   (* see [Net.Socket.accept4_spec] *)
-=======
       | FdStream _ _ _ => Unmodeled              (* a socket: see [accept4_spec] *)
       | FdDgram _ => Unmodeled                   (* a socket: see [accept4_spec] *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then Unmodeled
              else ret_outcome (errno_ret ENOTSOCK) m
@@ -330,12 +311,8 @@ Proof.
                            (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)); [apply pure_ok|].
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) SOCK_NONBLOCK) 0));
     [apply unmodeled_intro|].
-<<<<<<< HEAD
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st];
     (* an AF_UNIX SEQPACKET end: declined *)
-=======
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     try apply unmodeled_intro;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
          [apply unmodeled_intro | apply alt_l; apply pure_ok]).
@@ -388,12 +365,9 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
                      then ret_outcome (errno_ret EAFNOSUPPORT) m
                      else Unmodeled
                  end
-<<<<<<< HEAD
            | FdSeqpacket _ _ _ => Unmodeled   (* see [Net.Socket.connect_spec] *)
-=======
            | FdStream _ _ _ => Unmodeled        (* [unix_stream_connect]: a name lookup *)
            | FdDgram _ => Unmodeled             (* a peer [State.FdDgram] lacks *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
            | _ => ret_outcome (errno_ret ENOTSOCK) m
            end)
       end
@@ -405,14 +379,9 @@ Proof.
   intros. unfold connect_spec, connect_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|];
-    cbv beta iota zeta; [ | | | | | | | | | | apply unmodeled_intro | | apply pure_ok ].
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv beta iota zeta;
-    [ | | | | | | | | | | | | | | apply unmodeled_intro | apply pure_ok ].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    [ | | | | | | | | | | | | | | apply unmodeled_intro | | apply pure_ok ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
@@ -422,10 +391,7 @@ Proof.
   (* every non-socket entry answers -ENOTSOCK below the copy, and the
      stream-pair end and the datagram socket decline there *)
   all: try apply pure_ok.
-<<<<<<< HEAD
   (* an AF_UNIX SEQPACKET end declines below the copy *)
-=======
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   all: try apply unmodeled_intro.
   (* the socket arm *)
   destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE); [apply pure_ok|].
@@ -776,16 +742,11 @@ Proof.
   destruct (fd_is_seqpacket_end (m_fds m) fd); [apply unmodeled_intro|exact Hw].
 Qed.
 
-<<<<<<< HEAD
-Definition getsockname_witness (fd : word) (m : Model) : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled
-  else if fd_is_seqpacket_end (m_fds m) fd then Unmodeled
-  else getsockname_core_witness fd m.
-=======
 Definition getsockname_witness (fd : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled else getsockname_core_witness fd i m.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  if fd_is_ns_file (m_fds m) fd then Unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then Unmodeled
+  else getsockname_core_witness fd i m.
 Lemma getsockname_witness_ok : forall fd i m,
   getsockname_spec fd i m (getsockname_witness fd i m).
 Proof.
@@ -793,16 +754,11 @@ Proof.
   apply sock_guard_witness_ok. apply getsockname_core_witness_ok.
 Qed.
 
-<<<<<<< HEAD
-Definition getpeername_witness (fd : word) (m : Model) : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled
-  else if fd_is_seqpacket_end (m_fds m) fd then Unmodeled
-  else getpeername_core_witness fd m.
-=======
 Definition getpeername_witness (fd : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled else getpeername_core_witness fd i m.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  if fd_is_ns_file (m_fds m) fd then Unmodeled
+  else if fd_is_seqpacket_end (m_fds m) fd then Unmodeled
+  else getpeername_core_witness fd i m.
 Lemma getpeername_witness_ok : forall fd i m,
   getpeername_spec fd i m (getpeername_witness fd i m).
 Proof.
@@ -810,7 +766,6 @@ Proof.
   apply sock_guard_witness_ok. apply getpeername_core_witness_ok.
 Qed.
 
-<<<<<<< HEAD
 (** [Net.Socket.seqpacket_setsockopt] read straight off: every arm is an
     errno, the decline, or the one store. *)
 Definition seqpacket_setsockopt_witness (i : SyscallInput) (fd id : word)
@@ -856,18 +811,10 @@ Definition setsockopt_witness (i : SyscallInput) (fd level optlen : word) (m : M
   else match fd_lookup (m_fds m) fd with
        | Some (FdSeqpacket id side st) =>
            seqpacket_setsockopt_witness i fd id side st level optlen m
-       | _ => setsockopt_core_witness fd level optlen m
+       | _ => setsockopt_core_witness fd level optlen i m
        end.
 Lemma setsockopt_witness_ok : forall fd level optlen i m,
   setsockopt_spec fd level optlen i m (setsockopt_witness i fd level optlen m).
-=======
-Definition setsockopt_witness (fd level optlen : word) (i : SyscallInput)
-    (m : Model) : outcome SyscallEffect :=
-  if fd_is_ns_file (m_fds m) fd then Unmodeled
-  else setsockopt_core_witness fd level optlen i m.
-Lemma setsockopt_witness_ok : forall fd level optlen i m,
-  setsockopt_spec fd level optlen i m (setsockopt_witness fd level optlen i m).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 Proof.
   intros. unfold setsockopt_spec, setsockopt_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
@@ -1000,16 +947,13 @@ Definition sendto_witness (fd buf count flags addrp : word)
            send_on_socket_witness [] (fun n => [(buf, n)]) fd sk count
              (readable_bytes (in_mem i) buf count) m
        | Some (FdOpaque _) => Unmodeled   (* declined, as [bind_witness]'s *)
-<<<<<<< HEAD
        | Some (FdSeqpacket _ _ _) => Unmodeled   (* see [Net.Socket.sendto_spec] *)
-=======
        | Some (FdStream id side st) =>
            if negb (stream_send_flags_ok flags) then Unmodeled
            else witness_stream_write id side st
                   (se_nonblock st || send_flag flags MSG_DONTWAIT)%bool
                   (send_flag flags MSG_NOSIGNAL) buf count i m
        | Some (FdDgram _) => Unmodeled        (* a socket with no peer: declined *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
        | Some _ => ret_outcome (errno_ret ENOTSOCK) m
        end).
 
@@ -1026,12 +970,7 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   unfold access_ok_zero, access_ok_zero_witness.
   destruct (access_okb buf (bv_unsigned count)); [|apply pure_ok].
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|];
-    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
-  apply send_on_socket_witness_ok.
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv beta iota zeta; try apply pure_ok.
   - destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
     apply send_on_socket_witness_ok.
@@ -1039,7 +978,7 @@ Proof.
     apply witness_stream_write_ok.
   - apply unmodeled_intro.                   (* the datagram socket *)
   - apply unmodeled_intro.                   (* the opaque kinds *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  - apply unmodeled_intro.                   (* an AF_UNIX SEQPACKET end *)
 Qed.
 
 (** [sendmsg]'s fd comes FIRST and the header second — the opposite
@@ -1058,12 +997,9 @@ Definition sendmsg_witness (fd msgp flags : word)
   | Some (FdEventfd _) | Some (FdAnon _ _) =>
       ret_outcome (errno_ret ENOTSOCK) m
   | Some (FdOpaque _) => Unmodeled   (* declined: see [Net.Socket.sendmsg_spec] *)
-<<<<<<< HEAD
   | Some (FdSeqpacket _ _ _) => Unmodeled   (* see [Net.Socket.sendmsg_spec] *)
-=======
   | Some (FdStream _ _ _) => Unmodeled          (* SCM_RIGHTS: see [sendmsg_spec] *)
   | Some (FdDgram _) => Unmodeled               (* see [sendmsg_spec] *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   | Some (FdSocket sk) =>
       match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => ret_outcome (errno_ret EFAULT) m
@@ -1120,13 +1056,8 @@ Proof.
   destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|];
-    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE);
     cbv beta iota zeta; [|apply pure_ok].
   (* Six independent reads, so 64 shapes; 63 of them are the total-match
@@ -1160,20 +1091,15 @@ Qed.
 
    Each witness takes the arm its spec decides first, and on socketpair
    the [alt]s LEFT branch — the reservation errno — so it never has to
-<<<<<<< HEAD
-   build the two descriptor writes; the AF_UNIX SEQPACKET pair takes the
-   same branch.  An AF_UNIX SEQPACKET end's recvmsg is deterministic, so
-   its witness is the spec read straight off. *)
-=======
    build the two descriptor writes, for the AF_UNIX triple as for the
-   AF_INET ones. *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+   AF_INET ones; the AF_UNIX SEQPACKET pair takes the same branch.  An
+   AF_UNIX SEQPACKET end's recvmsg is deterministic, so its witness is the
+   spec read straight off. *)
 
 
 Definition socketpair_witness (family type protocol sv : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   if negb (socketpair_flags_ok type) then ret_outcome (errno_ret EINVAL) m
-<<<<<<< HEAD
   else if socketpair_seqpacket_b family type protocol then
     match socketpair_fds (m_fds m) with
     | None => Unmodeled
@@ -1189,11 +1115,8 @@ Definition socketpair_witness (family type protocol sv : word)
         | _ => ret_outcome (errno_ret EMFILE) m
         end
     end
-  else if negb (socketpair_modeled_b family type protocol) then Unmodeled
-=======
   else if negb (socketpair_modeled_b family type protocol
                 || socketpair_unix_b family type protocol)%bool then Unmodeled
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   else
   match socketpair_fds (m_fds m) with
   | None => Unmodeled
@@ -1217,7 +1140,6 @@ Proof.
   intros. unfold socketpair_spec, socketpair_witness.
   destruct (negb (socketpair_flags_ok type)) eqn:Hfl; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
-<<<<<<< HEAD
   destruct (socketpair_seqpacket_b family type protocol) eqn:Hsq; cbv beta iota.
   { unfold socketpair_unix_spec.
     eapply bind_step; [apply input_ok|]. cbv beta.
@@ -1236,18 +1158,15 @@ Proof.
     destruct (seq_id_live (m_fds m) (seq_new_id (m_fds m))); cbv beta iota;
       [apply unmodeled_intro|].
     destruct (socketpair_dest_writable (in_wmem i) sv); cbv beta iota.
-    - unfold socketpair_unix_written. apply alt_l.
+    - unfold socketpair_seqpacket_written. apply alt_l.
       eapply bind_step; [apply choose_ok; left; reflexivity|].
       cbv beta. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
     - destruct (negb (access_okb sv 4)); cbv beta iota; [|apply unmodeled_intro].
       unfold socketpair_faulted. apply alt_l.
       eapply bind_step; [apply choose_ok; left; reflexivity|].
       cbv beta. unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
-  destruct (negb (socketpair_modeled_b family type protocol)) eqn:Hmo;
-=======
   destruct (negb (socketpair_modeled_b family type protocol
                   || socketpair_unix_b family type protocol)%bool) eqn:Hmo;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     cbv beta iota; [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
@@ -1311,7 +1230,7 @@ Proof.
   unfold access_ok_zero.
   destruct (access_okb buf (bv_unsigned size)) eqn:Hok; cbv beta iota.
   { destruct (fd_lookup (m_fds m) fd)
-      as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+      as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
       cbv beta iota zeta;
       (* every kind but the stream-pair end: its errno, or a socket's
          decline *)
