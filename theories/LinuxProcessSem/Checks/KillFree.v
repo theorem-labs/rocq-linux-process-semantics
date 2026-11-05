@@ -301,8 +301,9 @@ Ltac kf_stream H Hoff Hk :=
 Lemma kill_off_with_sigpipe_install : forall a m,
   kill_off m -> kill_off (with_sigpipe_install a m).
 Proof.
-  intros a m (Ha & Hp & Ht & Hq).
+  intros a m (Ha & Hp & Ht & Hq & Hs).
   split; [exact Ha|]. split; [exact Hp|]. split; [exact Ht|].
+  split; [|exact Hs].
   change ((m_sigpipe_pending m && spa_default a)%bool = false).
   rewrite Hq. reflexivity.
 Qed.

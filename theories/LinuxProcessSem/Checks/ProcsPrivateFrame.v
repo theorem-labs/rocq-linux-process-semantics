@@ -127,11 +127,11 @@ Proof.
   intros size eff m m' evs H. unfold check_getcwd in H. sh_frame2 H.
 Qed.
 
-Lemma check_eventfd2_sh : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs ->
+Lemma check_eventfd2_sh : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs ->
   sh_of m' = sh_of m.
 Proof.
-  intros flags eff m m' evs H.
+  intros i flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. sh_frame2 H.
 Qed.
 

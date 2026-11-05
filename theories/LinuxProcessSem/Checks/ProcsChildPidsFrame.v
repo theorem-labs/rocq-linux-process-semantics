@@ -511,11 +511,11 @@ Proof.
   unfold check_timerfd_create in H. cp_frame2 H.
 Qed.
 
-Lemma check_eventfd2_cp : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs ->
+Lemma check_eventfd2_cp : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs ->
   cps_of m' = cps_of m.
 Proof.
-  intros flags eff m m' evs H.
+  intros i flags eff m m' evs H.
   unfold check_eventfd2, check_new_fd_result in H. cp_frame2 H.
 Qed.
 

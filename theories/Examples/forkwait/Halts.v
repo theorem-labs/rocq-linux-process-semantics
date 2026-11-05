@@ -892,14 +892,18 @@ Qed.
     The two pids differ because the arm required the child's to be FREE:
     [look P q = None] against the parent's own entry. *)
 (** The child's model is the parent's with a fresh [State.ProcState]
-    that keeps the halt flag, so all three clauses come through. *)
+    that keeps the halt flag, and the parent's table with its eventfds
+    shared ([Procs.child_entry]), which the clone gate reads the same
+    ([Kernel.Fork.share_eventfds_gate]), so all clauses come through. *)
 Lemma fw_model_ok_child : forall e c c' q,
   fw_model_ok (pe_model e) ->
   fw_model_ok (pe_model (child_entry e c c' q)).
 Proof.
   intros e c c' q (Hh & Hl & Hc & Ht).
   split; [exact Hh|]. split; [exact Hl|].
-  split; [exact Hc | reflexivity].
+  split; [|reflexivity].
+  change (clone_no_shared_file_b (share_eventfds (m_fds (pe_model e))) = true).
+  rewrite share_eventfds_gate. exact Hc.
 Qed.
 
 Lemma fw_clone_target : forall P e c' q,
