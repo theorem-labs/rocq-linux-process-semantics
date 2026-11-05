@@ -1634,17 +1634,22 @@ Proof.
     exact (ns_kept_trans _ _ _ (sstep_ns_kept _ _ _ _ _ Hstep) IH).
 Qed.
 
-(** A launch holds the three standard channels and nothing else. *)
+(** A launch holds the three standard channels and the descriptors it
+    inherits ([State.inherited_table]), none of them a namespace file. *)
 Lemma init_config_ns_free : forall segs pc ph sp brk0 mbase rnd lim inp,
   ns_free (m_fds (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp))).
 Proof.
   intros segs pc ph sp brk0 mbase rnd lim inp h [fd Hin].
   change (In (fd, FdOpaque (ONsFile h))
-            [(Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
-             (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-             (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2))]) in Hin.
-  repeat (destruct Hin as [Hin|Hin]; [discriminate Hin|]).
-  exact Hin.
+            ([(Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+              (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+              (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2))]
+             ++ inherited_table (in_inherited_fds inp))) in Hin.
+  apply in_app_or in Hin. destruct Hin as [Hin | Hin].
+  - repeat (destruct Hin as [Hin|Hin]; [discriminate Hin|]).
+    exact Hin.
+  - unfold inherited_table in Hin. apply in_map_iff in Hin.
+    destruct Hin as (kv & Heq & _). discriminate Heq.
 Qed.
 
 (** EVERY MODEL A RUN REACHES HOLDS NO [ONsFile]. *)
