@@ -316,21 +316,14 @@ Proof.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
-<<<<<<< HEAD
-     too, and so does a pipe READ end, an O_RDWR file, a /proc/sys file
-     ([State.OProcFile]), an eventfd ([State.OEventFd]) and a live inherited
-     file ([State.OInherited]), so each gets a bullet rather than a one-line
-     dismissal.  The two write-only kinds ([FdFileW] and the append
-     [FdFileA]) are the -EBADF pair; a sequenced-packet end declines. *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|id sd st]|] eqn:Hfd;
-=======
-     too, and so does a pipe READ end, a stream-pair end, an O_RDWR file
-     and a /proc/sys file ([State.OProcFile]), so each gets a bullet
+     too, and so does a pipe READ end, a stream-pair end, an O_RDWR file,
+     a /proc/sys file ([State.OProcFile]), an eventfd ([State.OEventFd])
+     and a live inherited file ([State.OInherited]), so each gets a bullet
      rather than a one-line dismissal.  The two write-only kinds
-     ([FdFileW] and the append [FdFileA]) are the -EBADF pair. *)
+     ([FdFileW] and the append [FdFileA]) are the -EBADF pair; a
+     sequenced-packet end declines. *)
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|] eqn:Hfd;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -345,18 +338,6 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
-<<<<<<< HEAD
-      | (* the opaque kinds: a /proc/sys file delivers at most [count]
-           bytes under the count gate, an eventfd 8, a live inherited file
-           the shared file read's prefix *)
-        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv iota in Hspec;
-        try exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws);
-        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
-        [ now destruct (Hro _ _ _ Hspec)
-        | exact (check_read_file_data_delivery_clamped
-                   _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
-      | discriminate Hspec
-=======
       | (* stream-pair end: the range verdict, the zero count, then a
            delivery of [pipe_take] of the queue at the clamped count *)
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
@@ -373,14 +354,17 @@ Proof.
       | (* datagram socket: declined, never an [Ok] *)
         discriminate Hspec
       |
-      | (* the opaque kinds: only a /proc/sys file delivers, at most
-           [count] bytes under the count gate *)
-        destruct o; cbv iota in Hspec;
-        [ discriminate Hspec
-        | exact (check_read_proc_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws)
-        | discriminate Hspec
-        | discriminate Hspec ]
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+      | (* the opaque kinds: a /proc/sys file delivers at most [count]
+           bytes under the count gate, an eventfd 8, a live inherited file
+           the shared file read's prefix *)
+        destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; cbv iota in Hspec;
+        try exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws);
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+        [ now destruct (Hro _ _ _ Hspec)
+        | exact (check_read_file_data_delivery_clamped
+                   _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* an AF_UNIX SEQPACKET end: declined, never an [Ok] *)
+        discriminate Hspec
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -2694,19 +2678,11 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-<<<<<<< HEAD
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|id sd st]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o|i0 sd st]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
-  (* the opaque kinds and the sequenced-packet ends, fifth and sixth of
-     the survivors: [CheckUnmodeled] *)
-  5-6: discriminate.
-=======
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af|o]|];
-    cbv iota in H; try (now destruct (Hro _ _ _ H)).
-  (* the opaque kinds, sixth of the survivors (after the unnamed file):
-     [CheckUnmodeled] *)
-  6: discriminate.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  (* the opaque kinds and the sequenced-packet ends, sixth and seventh
+     of the survivors (after the unnamed file): [CheckUnmodeled] *)
+  6-7: discriminate.
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two
      TRANSFERRING kinds -- the O_WRONLY and O_RDWR descriptions, which
