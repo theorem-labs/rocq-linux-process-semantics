@@ -5,7 +5,8 @@ theories/LinuxProcessSem/Checks/SelfkillEmbedding.v proves that the
 self-kill declaration (State.ProcInput field 24) changes no statement
 written before it.  It proves that against COPIES: each `<name>_pre` is the
 body of `<name>` at commit 604b5c3, and `spec_table_pre_numbers` lists the
-syscall numbers of that commit's table.  A proof about a wrong copy says
+syscall numbers of that commit's table plus C1's pwritev2 (287), which
+this script removes, once, before comparing.  A proof about a wrong copy says
 nothing about the old definition, and Rocq cannot read an old commit, so
 this script compares each copy with `git show 604b5c3:<file>`, ignoring
 only whitespace, and FAILS on any difference, or on a copy or a source it
@@ -22,6 +23,10 @@ EMBEDDING = "theories/LinuxProcessSem/Checks/SelfkillEmbedding.v"
 RUN = "theories/LinuxProcessSem/Run.v"
 FIN_INPUT = "theories/EquivalenceDefinition/FinInput.v"
 TABLE = "theories/LinuxProcessSem/Sys/SyscallTable.v"
+# The one arm added to the table after BASE besides 129 (kill): C1's
+# pwritev2.  spec_table_pre keeps it, so its number list holds it exactly
+# once, at its place in table order, and is compared without it.
+C1_PWRITEV2 = 287
 
 # Each definition the change touched, and the file it lived in at BASE.
 COPIES = [
@@ -104,17 +109,23 @@ def main():
             got = [int(n) for n in numbers.group(1).split(";")]
         except ValueError:
             got = None
-        if got != table_numbers:
-            bad.append("spec_table_pre_numbers in %s is not the number list of %s at %s"
-                       % (EMBEDDING, TABLE, BASE[:7]))
+        if got is not None and got.count(C1_PWRITEV2) != 1:
+            bad.append("spec_table_pre_numbers in %s must list C1's pwritev2 %d exactly once"
+                       % (EMBEDDING, C1_PWRITEV2))
+        else:
+            if got is not None:
+                got.remove(C1_PWRITEV2)
+            if got != table_numbers:
+                bad.append("spec_table_pre_numbers in %s, without %d, is not the number list"
+                           " of %s at %s" % (EMBEDDING, C1_PWRITEV2, TABLE, BASE[:7]))
 
     for line in bad:
         print("::error::" + line)
     if bad:
         print("Copy each definition word for word from `git show %s:<file>`." % BASE[:7])
         return 1
-    print("%d pre-change copies and the table's %d numbers match %s"
-          % (len(COPIES), len(table_numbers), BASE[:7]))
+    print("%d pre-change copies and the table's %d numbers match %s, plus C1's pwritev2 %d"
+          % (len(COPIES), len(table_numbers), BASE[:7], C1_PWRITEV2))
     return 0
 
 
