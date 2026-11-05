@@ -300,17 +300,16 @@ Proof.
   1-4: (match type of Hunlink with
          | context [path_eqb ?a ?b] =>
            destruct (path_eqb a b) eqn:Epc; cbv iota in Hunlink;
-           [ (* converted to FdAnon *)
-             assert (id0 = id) by congruence; subst id0;
-             match type of Hunlink with
-             | FdAnon _ ?x = FdAnon _ af0 =>
-               assert (af0 = x) by congruence; subst af0
-             | _ = FdAnon _ af0 =>
-               let v := fresh in
-               assert (v : af0 = ltac:(match type of Hunlink with _ = FdAnon _ ?x => exact x end))
-                 by congruence;
-               rewrite v; clear v
+           [ (* converted to FdAnon id <record> = FdAnon id0 af0 *)
+             (* Extract id0 = id and the af equality *)
+             let Hid := fresh in assert (Hid : id0 = id) by congruence;
+             rewrite Hid in *; clear Hid;
+             (* Now Hunlink : FdAnon id <rec> = FdAnon id af0 *)
+             let Haf := fresh in
+             match type of Hunlink with FdAnon _ ?lhs = FdAnon _ ?rhs =>
+               assert (Haf : rhs = lhs) by congruence
              end;
+             rewrite Haf;
              apply anon_agree_unlink_open; exact Hlive
            | discriminate Hunlink ]
          end; fail).
