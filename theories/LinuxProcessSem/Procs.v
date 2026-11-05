@@ -20,22 +20,20 @@
     rather than restated.
 
     THE WARNING THIS FILE OWES A READER, and why it does not fire.
-    [Sys.Kernel.Exit.wait4_spec]'s header says, of a child becoming a
-    configuration: "If a child ever becomes a configuration in this model,
-    this spec is wrong rather than incomplete, and it is the first thing that
-    has to change" (Exit.v:237-243).  [Sys.Kernel.Fork]'s header says the same
-    from the other side: "No second process is created.  [Run.config] holds
-    one [machine_state] and one [Model], and nothing here adds a second of
+    [Sys.Kernel.Exit.wait4_spec] answers the single-process question: what
+    [wait4(-1, st, WNOHANG, NULL)] gives a caller when the model holds only
+    the FACT of its children and the pids its clones returned, never the
+    children themselves.  [Sys.Kernel.Fork]'s header says the same from the
+    other side: "No second process is created.  [Run.config] holds one
+    [machine_state] and one [Model], and nothing here adds a second of
     either" (Fork.v:138-145).  BOTH REMAIN TRUE.  A child here is an ENTRY OF
     A NEW RELATION, not a configuration of the released one: [Run.config] is
-    unchanged, no [Run.sstep_cfg] rule produces a second of either, and
-    [wait4_spec] keeps answering the single-process question with the answer
-    it always gave.  The two never apply to the same configuration -- the
-    released arm is [unmodeled] unless the option word is WNOHANG, unless the
-    pid is the any-child value, unless the usage pointer is null, and then
-    [unmodeled] AGAIN if the model has children (Exit.v:244-252), while the
-    reap arm of this file requires the option word to be 0 and requires an own
-    halted child.  There is no configuration at which both say anything.
+    unchanged, and no [Run.sstep_cfg] rule produces a second of either.  The
+    two never answer the same call -- the released arm is [unmodeled] unless
+    the option word is WNOHANG, unless the pid is the any-child value, unless
+    the usage pointer is null, while the blocking reap arm of this file
+    requires the option word to be 0, and the [wait4] gate below keeps every
+    call of a caller with a child in the table away from the released arm.
 
     WHY THE CLONE ARM CONSUMES THE RELEASED STEP.  It fires only under
     [clone_success_b], which reads the value [Run.apply_effect] put in a0
@@ -776,6 +774,11 @@ Definition child_ms (c c' : config) : machine_state :=
     [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
     a child cloned before its parent's first [getpid] would otherwise start
     at 0.  The inheritable capability set copies with the credentials.
+    [procst_sigchld_dfl] is copied: [copy_sighand] (kernel/fork.c) gives
+    the child a [memcpy] of its parent's signal actions, since the
+    released clone arms admit neither CLONE_SIGHAND nor
+    CLONE_CLEAR_SIGHAND, so a SIGCHLD the parent set to SIG_DFL with
+    SA_NOCLDWAIT clear is the child's too.
     The host's clone refusers ([procst_clone_refusers]) are copied: a
     child inherits the inheritable perf events ([perf_event_init_task]),
     and a BPF [task_alloc] program and a sched_ext scheduler are the
@@ -801,7 +804,8 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps) (procst_clone_refusers ps).
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps)
+              (procst_sigchld_dfl ps) (procst_clone_refusers ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
@@ -1005,13 +1009,13 @@ Proof. intros m p ps H. unfold orphan_at_exit. rewrite H. reflexivity. Qed.
 
 (** DESIGN NOTE: THE CORE DECIDES EVERY [wait4] OF A CALLER WITH A CHILD.
 
-    [Exit.wait4_spec] is the ONE-PROCESS answer, right only for a caller
-    with nothing to reap (Exit.v:234-246).  Here a child is an entry of
-    [pcfg_procs], so a caller with one must never reach that spec: whatever
-    it answers -- [unmodeled] today, an environment choice of 0 or a pid
-    with an invented status once it is given one -- is an answer about
-    children it cannot see, while the table holds the real ones and their
-    real statuses.  So, for a caller with at least one child in the table
+    [Exit.wait4_spec] is the ONE-PROCESS answer: -ECHILD for a caller with
+    no child, and for a caller with a recorded child the environment's
+    choice of 0 or a recorded pid with an environment-chosen status word.
+    Here a child is an entry of [pcfg_procs], so a caller with one must
+    never reach that spec: its answer is about children it cannot see,
+    while the table holds the real ones and their real statuses.  So, for
+    a caller with at least one child in the table
     ([wait4_owned_b]), every call numbered 260 is answered by an arm of
     this core:
 
