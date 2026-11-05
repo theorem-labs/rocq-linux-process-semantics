@@ -135,12 +135,13 @@ Example uname_unterminated_release_rejected :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Once pinned, a later uname must repeat it exactly.  The defector
-    below is itself well-formed — [uts_demo_b] would have been accepted
-    as the FIRST answer — so it is refused for disagreeing with the
-    record, not for being a bad name.  That is the whole content of "a
-    machine has one kernel for the life of a process", and it is the
-    conjunct a per-call [choose] would have dropped. *)
+(** Once pinned, a later uname must repeat the pin's [release] and
+    [version].  The defector below is itself well-formed — [uts_demo_b]
+    would have been accepted as the FIRST answer — so it is refused for
+    disagreeing with the record about the release, not for being a bad
+    name.  That is the whole content of "a machine has one kernel for
+    the life of a process", and it is the conjunct a per-call [choose]
+    would have dropped. *)
 
 Example uname_pinned_copy_repeats :
   check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
@@ -153,6 +154,37 @@ Example uname_pinned_copy_defector_rejected :
     (mkEffect 0 [(4096, uts_demo_b)] []) uts_pinned
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
+
+(** The pin holds [version] too: the same release with version "#1" is
+    refused, so [uts_kernel_agree] compares member 3 and not member 2
+    twice. *)
+
+Example uname_pinned_copy_other_version_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_name_of [] uts_release_a [35; 49]%Z [])] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …and a later answer must still be a name Linux can hold: "Linuy" has
+    the pin's release and version, so only the [utsname_wf] conjunct of
+    [Kernel.Sys.uts_repeat_ok] refuses it. *)
+
+Example uname_pinned_copy_wrong_sysname_rejected :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_bad_sysname)] []) uts_pinned
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** …but [nodename] and [domainname] are NOT held to the pin: another
+    process in the same UTS namespace may rename the machine between two
+    calls of this one ([Kernel.Sys.uts_kernel_agree]), so the renamed
+    name is a repeat the pin admits, and the pin itself does not change. *)
+
+Example uname_pinned_copy_renamed_host :
+  check_syscall (mkInput 160 [4096; 0; 0; 0; 0; 0] (fun _ => None) uts_out)
+    (mkEffect 0 [(4096, uts_demo_renamed)] []) uts_pinned
+  = CheckOk uts_pinned [].
+Proof. check_eq. Qed.
 
 (** …and the defector is refused for THAT reason and no other: offered as
     a first answer it is accepted, and pins itself. *)
@@ -1063,7 +1095,10 @@ Definition suid2_kernel : KernelBuild :=
   mkKernelBuild (kb_thp default_kernel) (kb_vdso default_kernel)
                 (kb_aslr default_kernel) (kb_guard default_kernel)
                 (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
-                (kb_vlenb default_kernel) (kb_cache default_kernel) SuidDumpRoot.
+                (kb_vlenb default_kernel) (kb_cache default_kernel)
+                (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
+                (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
+                (kb_rmem_max default_kernel) SuidDumpRoot.
 Definition suid2_root_model : Model := with_kernel suid2_kernel root_model.
 Example dumpable_reset_to_suid_dumpable :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]

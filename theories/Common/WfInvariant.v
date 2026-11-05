@@ -974,7 +974,7 @@ destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
 (* From here every arm is MAP_FIXED-shaped: the same four argument gates,
    so [addr] is page aligned and [addr + nZ] is below [alloc_top]. *)
 destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
-{ difn H Enomem; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+{ difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact (conj HL HM)|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
   difn H Epos; [discriminate|].
@@ -1015,7 +1015,7 @@ destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
 destruct (mmap_fixed_rw_b prot flags off) eqn:Efixrw.
 2: {
   destruct (mmap_noreplace_noaccess_b prot flags off) eqn:Enrn.
-  { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+  { difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact (conj HL HM)|].
     difn H Eceil; [discriminate|].
     difn H Ealign; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
     difn H Epos; [discriminate|].
@@ -1031,7 +1031,7 @@ destruct (mmap_fixed_rw_b prot flags off) eqn:Efixrw.
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
   destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
-  difn H Enomem; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+  difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact (conj HL HM)|].
   difn H Eceil; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
   difn H Epos; [discriminate|].
@@ -1046,7 +1046,7 @@ destruct (mmap_fixed_rw_b prot flags off) eqn:Efixrw.
       apply ledger_mmap_add; [exact HW | reflexivity | rewrite HU; lia].
   - destruct ws, zs, us, cs, ci; try discriminate.
     difn H Eerr; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
-difn H Enomem; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+difn H Enomem; [apply check_mmap_fixed_overflow_model in H; subst m'; exact (conj HL HM)|].
 difn H Eceil; [discriminate|].
 difn H Ealign; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
 difn H Epos; [discriminate|].

@@ -4,7 +4,7 @@
       itself, the argument-leaf SINV1, the main-phase SINVm), with AsanInit's [argH0],
       for ANY image (segs, A, ph) given the two loops' code facts. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes with CONFIG_RSEQ and 27 pairs / 432 bytes without it ([StackLayout.auxv_size]), and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
@@ -20,6 +20,12 @@ Import AX2. Import AX2S. Import AP. Import APS.
 Open Scope Z_scope.
 
 Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(false).
+
+(** [AsanNodesAux.edenot_ev_agree] asks that [e_str0 r] read only the initial
+    variables, which is a computation once [r] is a literal; at the run's flag
+    it is one per layout *)
+Lemma nb_lt_e_str0 : forall b, nb_lt NX0 (e_str0 (rseq_z b)) = true.
+Proof. intros [|]; reflexivity. Qed.
 
 Section GenericInit.
   (** the image *)
@@ -68,8 +74,11 @@ Section GenericInit.
   Variable hw : word.   (* AT_HWCAP *)
   Variable groups : list word.
   Variable net : NetQueue.
+  (** the kernel build, free in the launch facts and in CONFIG_RSEQ:
+      [AsanInit.inp] runs on [Run.recorded_kernel kb] *)
+  Variable kb : KernelBuild.
 
-  Let INP := inp argv envp fs stdin uid gid hw groups net.
+  Let INP := inp argv envp fs stdin uid gid hw groups net kb.
   Let entryw := Z_to_bv 64 (Z.of_N apc).
 
   Hypothesis Hsp : valid_sp sp.
@@ -91,15 +100,19 @@ Section GenericInit.
   (** the class invariant: anything implying SINV0 and stable like it *)
   Variable SINV : env -> (word -> option byte) -> Prop.
   Hypothesis SINV_SINV0 : forall E M, SINV E M ->
-    SINV0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net E M.
-  Hypothesis SINV_frame : forall E M M', (forall a, argH0 sp rdraw argv envp E a = true -> M' a = M a) -> SINV E M -> SINV E M'.
+    SINV0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net kb E M.
+  Hypothesis SINV_frame : forall E M M', (forall a, argH0 sp rdraw argv envp kb E a = true -> M' a = M a) -> SINV E M -> SINV E M'.
   Hypothesis SINV_agree : forall E E' M, env_agree NX0 E E' -> SINV E M -> SINV E' M.
 
   Let usp := bv_unsigned sp.
   Let argc := Z.of_nat (length argv).
   Let envc := Z.of_nat (length envp).
   Let s0 := nth 0 argv [].
-  Let rseq := kb_rseq (in_kernel INP).
+  (** the run's CONFIG_RSEQ flag, spelled as [AsanInit] spells it
+      ([kb_rseq kb], which is [kb_rseq (in_kernel INP)] by conversion), and as
+      the plan's 0 or 1 *)
+  Let rseq := kb_rseq kb.
+  Let RZ := rseq_z rseq.
   Let execfn := in_execfn INP.
   Let top := ed_top rdraw.
   (** argv[0]: the top of the AT_RANDOM bytes plus the [arch_align_stack] pad.
@@ -123,25 +136,25 @@ Section GenericInit.
   Lemma SINV0_vals : forall E M, SINV E M ->
     uE E e_envp = usp + 8 * argc + 16
     /\ ev E V_ENVC = Z_to_bv 64 envc
-    /\ uE E e_str0 = STR0.
+    /\ uE E (e_str0 RZ) = STR0.
   Proof.
     intros E M HS. apply SINV_SINV0 in HS. destruct HS as [Hev _].
-    assert (U1 : uE (E0 sp rdraw brk0 argv envp uid) e_envp = usp + 8 * argc + 16)
-      by (unfold usp, argc; exact (u_e_envp ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
-    assert (U3 : uE (E0 sp rdraw brk0 argv envp uid) e_str0
+    assert (U1 : uE (E0 sp rdraw brk0 argv envp uid kb) e_envp = usp + 8 * argc + 16)
+      by (unfold usp, argc; exact (u_e_envp ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
+    assert (U3 : uE (E0 sp rdraw brk0 argv envp uid kb) (e_str0 RZ)
                  = usp + Z.of_nat (block_head_size rseq argv envp)
                    + Z.of_nat (block_pad_len rseq sp top argv envp execfn))
-      by (unfold usp, rseq, execfn, top; exact (u_e_str0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
-    assert (U2 : uE (E0 sp rdraw brk0 argv envp uid) (EVar V_ENVC) = envc)
-      by (unfold envc; exact (uE0_envc ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
-    assert (Hev7 : forall n, (n < NX0)%nat -> ev E n = ev (E0 sp rdraw brk0 argv envp uid) n)
+      by (unfold usp, rseq, execfn, top; exact (u_e_str0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
+    assert (U2 : uE (E0 sp rdraw brk0 argv envp uid kb) (EVar V_ENVC) = envc)
+      by (unfold envc; exact (uE0_envc ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve kb Hlau)).
+    assert (Hev7 : forall n, (n < NX0)%nat -> ev E n = ev (E0 sp rdraw brk0 argv envp uid kb) n)
       by (intros n Hn; apply Hev; exact Hn).
     unfold uE in *.
-    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid) e_envp eq_refl Hev7).
-    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid) e_str0 eq_refl Hev7).
+    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid kb) e_envp eq_refl Hev7).
+    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid kb) (e_str0 RZ) (nb_lt_e_str0 rseq) Hev7).
     split; [exact U1|]. split; [|rewrite U3; symmetry; exact str0_split].
     change (ev E V_ENVC) with (edenot E (EVar V_ENVC)).
-    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid) (EVar V_ENVC) eq_refl Hev7).
+    rewrite (edenot_ev_agree NX0 E (E0 sp rdraw brk0 argv envp uid kb) (EVar V_ENVC) eq_refl Hev7).
     apply bv_eq. rewrite U2. unfold envc. destruct Hve as [H _]. rewrite u64_lit by lia. reflexivity.
   Qed.
 
@@ -163,7 +176,7 @@ Section GenericInit.
     intros E M a HS Ha. apply SINV_SINV0 in HS. destruct HS as [_ HM]. apply HM. unfold argH0. apply orb_true_intro. right.
     assert (HS0 : Z.of_nat (length (nth 0 argv [])) + 1
                   <= Z.of_nat (launch_string_bytes argv envp execfn))
-      by (unfold execfn; apply (s0_in_strings apc sp rdraw argv envp Hva Hfit)).
+      by (unfold execfn; eapply (s0_in_strings apc sp rdraw argv envp Hva Hfit); eassumption).
     assert (HT : usp + Z.of_nat (block_head_size rseq argv envp)
                  + Z.of_nat (block_pad_len rseq sp top argv envp execfn)
                  + Z.of_nat (launch_string_bytes argv envp execfn) + 8 = bv_unsigned top)
@@ -174,18 +187,23 @@ Section GenericInit.
           error far from its cause.  Same shape as the two copies of
           [AsanNodesMmLib.reserved_free_above] / [AsanNodesMmB.reserved_free_above]
           — two things that must agree with nothing to say so. *)
-      by (unfold usp, rseq, execfn, top; apply (AsanInit.str0_hi apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hlau)).
+      by (unfold usp, rseq, execfn, top; apply (AsanInit.str0_hi apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net kb Hlau)).
     rewrite str0_split in Ha. unfold s0 in Ha.
-    (** AsanInit's [argH0] carries the kernel build and the exec name INLINED
-        ([State.default_kernel], [State.default_execfn]), because they are
-        variable-free [Let]s of its Section; the hypotheses above carry them as
-        projections of [INP].  The two are convertible, so [change] lines them
-        up for [lia]. *)
+    (** AsanInit's [argH0] carries the run's flag and the exec name INLINED
+        ([kb_rseq kb], [State.default_execfn]), because they are [Let]s of its
+        Section; the hypotheses above carry the exec name as a projection of
+        [INP].  The two are convertible, so [change] lines them up for [lia]. *)
     unfold rseq, execfn, top, usp in Ha, HT, HS0.
-    change (in_kernel INP) with default_kernel in Ha, HT, HS0.
     change (in_execfn INP) with default_execfn in Ha, HT, HS0.
     apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
   Qed.
+
+  (** [AsanInit.argH0_high] at this Section's names.  [argH0] reads [kb] now
+      (the run's own CONFIG_RSEQ flag), so the lemma takes it too; [eapply]
+      places it from [H] rather than by its position. *)
+  Lemma argH0_high_sp : forall E (a : word),
+    argH0 sp rdraw argv envp kb E a = true -> CEIL sp <= bv_unsigned a.
+  Proof. intros E a H. eapply (argH0_high apc sp rdraw argv envp Hva); eassumption. Qed.
 
   (** THE RUN'S CEILING for the start extensions.  [AsanInit.CEIL] is
       [page_round_down_Z (sp - stack_max_size)], so these two are what
@@ -210,9 +228,9 @@ Section GenericInit.
   Proof. apply page_round_down_Z_le. Qed.
 
   Theorem init_x_sound_envscan :
-    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XEnvScan.
+    x_stmt segs A NX0 LIMIT (CEIL sp) RZ SINV (argH0 sp rdraw argv envp kb) FS0 XEnvScan.
   Proof.
-    apply (x_sound_envscan segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0
+    apply (x_sound_envscan segs A NX0 LIMIT (CEIL sp) RZ SINV (argH0 sp rdraw argv envp kb) FS0
               SEGS_wx SEGS_in_hull HULL_ok SINV_frame
               we1 we2 we3 Xenv Fe1 Fe2 Fe3 Ee De1 De2 De3
               ph INP mbase entryw sp brk0 rdraw);
@@ -222,11 +240,11 @@ Section GenericInit.
   Qed.
 
   Theorem init_x_sound_pnscan :
-    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XPnScan.
+    x_stmt segs A NX0 LIMIT (CEIL sp) RZ SINV (argH0 sp rdraw argv envp kb) FS0 XPnScan.
   Proof.
-    apply (x_sound_pnscan segs A NX0 LIMIT (CEIL sp) ceil_ok_sp SINV (argH0 sp rdraw argv envp) FS0
+    apply (x_sound_pnscan segs A NX0 LIMIT (CEIL sp) ceil_ok_sp RZ SINV (argH0 sp rdraw argv envp kb) FS0
               SEGS_wx SEGS_in_hull HULL_ok
-              (argH0_high apc sp rdraw argv envp Hva) (argH0_agree sp rdraw argv envp)
+              argH0_high_sp (argH0_agree sp rdraw argv envp kb)
               SINV_frame SINV_agree
               wp0 wp1 wp2 wp3 wp4 Xpn Fp0 Fp1 Fp2 Fp3 Fp4 Ep Dp0 Dp1 Dp2 Dp3 Dp4
               ph INP mbase entryw sp brk0 rdraw);
@@ -236,6 +254,6 @@ Section GenericInit.
   Qed.
 
   Theorem init_x_sound_layout :
-    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XLayout.
+    x_stmt segs A NX0 LIMIT (CEIL sp) RZ SINV (argH0 sp rdraw argv envp kb) FS0 XLayout.
   Proof. apply x_sound_layout. Qed.
 End GenericInit.

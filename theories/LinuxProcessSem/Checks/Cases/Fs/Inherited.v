@@ -319,16 +319,16 @@ Definition inh_clone_key : Model :=
     description's offset ([dup_fd], fs/file.c, v6.18.46), which the model
     holds in one entry, so with either word the clone answers the pid and
     the caller keeps the key as [OInherited None]
-    ([Kernel.Fork.forfeit_model]): the child, built from the table before
-    the call, holds the offset.  THE CONTROL is the answer a fork word
-    that forgot to forfeit would give, with the caller's key still live:
-    it is not the checker's. *)
+    ([Kernel.Fork.clone_child_made], through [Kernel.Fork.forfeit_inherited]):
+    the child, built from the table before the call, holds the offset.
+    THE CONTROL is the answer a fork word that forgot to forfeit would
+    give, with the caller's key still live: it is not the checker's. *)
 Example inherited_key_clone_forfeits_either_word :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_key
-  = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) []
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) inh_clone_key) []
   /\ check_syscall (clone_in inh_ns_clone_flags) (mkEffect 4242 [] []) inh_clone_key
-     = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) []
-  /\ fd_lookup (m_fds (forfeit_model inh_clone_key)) 3
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) inh_clone_key) []
+  /\ fd_lookup (m_fds (clone_child_made (Z_to_bv 64 4242) inh_clone_key)) 3
      = Some (FdOpaque (OInherited None))
   (* the control *)
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_key
@@ -350,7 +350,7 @@ Example inherited_key_clone3_forfeits :
     (mkEffectU (Z_to_bv 64 4242) [] [] [] []
                [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
     inh_clone_key
-  = CheckOk (with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key)) [].
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) inh_clone_key) [].
 Proof. check_eq. Qed.
 
 (** A FAILED fork created no child and forfeits nothing: after -EAGAIN
@@ -374,7 +374,7 @@ Proof. vm_compute. split; check_eq. Qed.
     slot.  THE CONTROL is the same read before the clone, which answers
     the four bytes. *)
 Definition inh_after_clone : Model :=
-  with_child (Z_to_bv 64 4242) (forfeit_model inh_clone_key).
+  clone_child_made (Z_to_bv 64 4242) inh_clone_key.
 
 Example inherited_caller_after_clone :
   check_syscall (inh_read 3) (mkEffect 4 [(4096, inh_key)] []) inh_after_clone
@@ -396,13 +396,13 @@ Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 Example inherited_forfeited_key_passes_the_fork_word :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] [])
     (forfeit_model inh_clone_key)
-  = CheckOk (with_child (Z_to_bv 64 4243) (forfeit_model inh_clone_key)) [].
+  = CheckOk (clone_child_made (Z_to_bv 64 4243) (forfeit_model inh_clone_key)) [].
 Proof. check_eq. Qed.
 
 (** THE CONTROL: the same clones without the key answer the pid. *)
 Example inherited_no_key_clone_answers :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) inh_clone_plain
-  = CheckOk (with_child (Z_to_bv 64 4242) inh_clone_plain) []
+  = CheckOk (clone_child_made (Z_to_bv 64 4242) inh_clone_plain) []
   /\ check_syscall (clone_in inh_ns_clone_flags) (mkEffect 4242 [] []) inh_clone_plain
-     = CheckOk (with_child (Z_to_bv 64 4242) inh_clone_plain) [].
+     = CheckOk (clone_child_made (Z_to_bv 64 4242) inh_clone_plain) [].
 Proof. split; check_eq. Qed.

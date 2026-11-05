@@ -16,7 +16,8 @@
     F_SETFL mask, which needs two neighbouring flag words compared
     against each other; and (e) F_GETFD, which admits both of Linux's
     answers on an open fd and nothing else, and is -EBADF on a closed
-    one.
+    one.  (A shared eventfd is the one kind on which F_GETFD declines;
+    [Checks.Cases.Fs.EventFd.eventfd_getfd_declines_after_a_clone].)
 
     The directory fd and the socket fd are here because
     [Fcntl.setfl_noop_on] ENUMERATES its fd kinds, so each kind's answer
@@ -468,10 +469,19 @@ Qed.
     is rejected.
 
     THE CONTROL is answered alike by the old text and the new: F_GETFL
-    on an eventfd ([State.OEventFd]) at the same number declines. *)
+    on a signalfd ([State.OSignalFd]) at the same number declines.  A
+    shared eventfd ([State.OEventFd]) at that number is no control: it
+    answers F_GETFL from its word ([Fcntl.oeventfd_f_flags]), O_RDWR
+    plus the O_NONBLOCK bit, 0x802 for the word 0x80800, so the
+    0x80802 below is rejected rather than declined. *)
 Definition procfd_fcntl_model : Model :=
   with_fds (fd_insert (m_fds fcntl_model) 9
               (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+    fcntl_model.
+
+Definition sigfd_fcntl_model : Model :=
+  with_fds (fd_insert (m_fds fcntl_model) 9
+              (FdOpaque (OSignalFd (Z_to_bv 64 0) (Z_to_bv 64 0x80800))))
     fcntl_model.
 
 Definition efd_fcntl_model : Model :=
@@ -486,5 +496,80 @@ Example fcntl_getfl_proc_self_fd_directory :
        (mkEffect 0x98900 [] []) procfd_fcntl_model = CheckReject
   (* the control *)
   /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0x80802 [] []) efd_fcntl_model = CheckUnmodeled.
+       (mkEffect 0x80802 [] []) sigfd_fcntl_model = CheckUnmodeled
+  (* the shared eventfd: answered, and not with this word *)
+  /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0x80802 [] []) efd_fcntl_model = CheckReject
+  /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0x802 [] []) efd_fcntl_model = CheckOk efd_fcntl_model [].
 Proof. repeat split; check_eq. Qed.
+
+(* ===================================== F_GETFL / F_SETFL on a stream-pair end
+
+   The one kind whose F_SETFL CHANGES the model: the end records its
+   O_NONBLOCK, the read and write arms answer -EAGAIN by it, and
+   F_GETFL reads it back. *)
+
+(** One AF_UNIX stream pair: side [false] at fd 3 BLOCKING, side [true]
+    at fd 4 NON-BLOCKING (a [socketpair] asked for SOCK_NONBLOCK, or an
+    earlier F_SETFL).  Both empty and open both ways. *)
+Definition fcntl_pair_end (nb : bool) : StreamEnd :=
+  mkStreamEnd [] nb 212992%Z 212992%Z false false RsUnknown.
+
+Definition fcntl_pair_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1);
+           (3, FdStream 0 false (fcntl_pair_end false));
+           (4, FdStream 0 true (fcntl_pair_end true))]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** F_GETFL ON A STREAM END is O_RDWR plus O_NONBLOCK exactly when the
+    end carries it ([Fcntl.stream_f_flags]): 2 on fd 3, 2050 on fd 4.
+    Each answer is the other's reject twin, so an arm that ignored
+    [se_nonblock] -- answering [socket_f_flags] for every end -- fails
+    the second line, and one that always set the bit fails the first. *)
+Example fcntl_getfl_on_a_stream_end_reads_its_nonblock_bit :
+  check_syscall (mkInput 25 [3; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 2 [] []) fcntl_pair_model = CheckOk fcntl_pair_model []
+  /\ check_syscall (mkInput 25 [4; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2050 [] []) fcntl_pair_model = CheckOk fcntl_pair_model []
+  /\ check_syscall (mkInput 25 [3; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2050 [] []) fcntl_pair_model = CheckReject
+  /\ check_syscall (mkInput 25 [4; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2 [] []) fcntl_pair_model = CheckReject.
+Proof.
+  split; [check_eq|split; [check_eq|split; vm_compute; reflexivity]].
+Qed.
+
+(** F_SETFL RECORDS O_NONBLOCK ON A STREAM END, both ways.  The first
+    conjunct is the idiom [fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) |
+    O_NONBLOCK)] on the blocking fd 3: arg 2050 carries O_RDWR, which
+    [setfl] masks off, and O_NONBLOCK, which it sets; the answer is 0
+    and fd 3's end now carries the bit.  The second clears it on fd 4
+    with arg 2.  Neither touches the other end. *)
+Example fcntl_setfl_on_a_stream_end_records_o_nonblock :
+  check_syscall (mkInput 25 [3; 4; 2050; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) fcntl_pair_model
+  = CheckOk (with_fds (fd_insert (m_fds fcntl_pair_model) 3
+                         (FdStream 0 false (fcntl_pair_end true)))
+               fcntl_pair_model) []
+  /\ check_syscall (mkInput 25 [4; 4; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) fcntl_pair_model
+     = CheckOk (with_fds (fd_insert (m_fds fcntl_pair_model) 4
+                            (FdStream 0 true (fcntl_pair_end false)))
+                  fcntl_pair_model) [].
+Proof. split; check_eq. Qed.
+
+(** ...and DECLINES any other bit [setfl] acts on: O_APPEND (1024) would
+    set a bit [Fcntl.stream_f_flags] does not carry, and FASYNC (8192)
+    would need [sock_fasync]'s state.  Both offered WITH O_NONBLOCK, so
+    the decline is about the extra bit, not the one the end records.
+    An error return is the reject twin of the answered call: [setfl] on
+    a socket file has no errno for O_NONBLOCK alone. *)
+Example fcntl_setfl_on_a_stream_end_declines_other_bits :
+  check_syscall (mkInput 25 [3; 4; 3072; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) fcntl_pair_model = CheckUnmodeled
+  /\ check_syscall (mkInput 25 [3; 4; 10240; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) fcntl_pair_model = CheckUnmodeled
+  /\ check_syscall (mkInput 25 [3; 4; 2048; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) fcntl_pair_model = CheckReject.
+Proof. split; [|split]; vm_compute; reflexivity. Qed.
