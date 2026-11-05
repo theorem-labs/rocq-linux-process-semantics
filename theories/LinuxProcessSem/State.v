@@ -2796,11 +2796,20 @@ Definition PipeBuf : Type := list byte * Z.
       ([Kernel.Fork.share_eventfds]), carrying the part of its flag word
       the model keeps: [EFD_SEMAPHORE] and O_NONBLOCK, rebuilt from the
       [FdEventfd] context it replaced.  After the clone the description
-      is shared by two tasks, so the counter is not modeled: read, write
-      and readiness decline on it, and fcntl's F_GETFL and F_SETFL answer
-      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  F_GETFD declines on it
-      ([Fs.Fcntl.getfd_declines]): its close-on-exec bit came from the
-      [eventfd2] word's EFD_CLOEXEC, which [w] does not carry.
+      is shared by two tasks, so the counter is not modeled: it is the
+      environment's.  A read of a non-blocking eventfd answers from any
+      counter value, a blocking read declines, and a write answers under
+      the counter exclusion SCOPE.md states
+      ([Fs.ReadWrite.read_eventfd_spec], [Fs.ReadWrite.write_eventfd_spec]);
+      readiness declines on it, and fcntl's F_GETFL and F_SETFL answer
+      from [w] ([Fs.Fcntl.oeventfd_f_flags]).  No arm on it reads a
+      counter the model stores, and a non-blocking read is a free choice
+      over every answer Linux can give (-EAGAIN, or any nonzero count,
+      exactly 1 under [EFD_SEMAPHORE]), never one modeled value (the LPS
+      owner's rulings of 2026-11-03, 08:33Z option 1 and 14:25Z).
+      F_GETFD declines on it ([Fs.Fcntl.getfd_declines]): its
+      close-on-exec bit came from the [eventfd2] word's EFD_CLOEXEC,
+      which [w] does not carry.
     - [ONsFile h]: a descriptor on an open file that the namespace and
       mount model holds under handle
       [h].  No arm of [spec_table] mints it: only that model's child

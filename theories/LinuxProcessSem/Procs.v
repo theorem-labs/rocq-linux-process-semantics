@@ -680,7 +680,8 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdEventfd _ => None
     (* per-process too: the clone shares it ([Kernel.Fork.share_eventfds]),
        which turns it into [FdOpaque (OEventFd _)] in both tables, a kind on
-       which every arm that reads or moves the counter declines *)
+       which no arm reads a counter the model stores: read and write answer
+       from the environment's counter ([Fs.ReadWrite.read_eventfd_spec]) *)
   | FdSeqpacket _ _ _ | FdStream _ _ _ | FdDgram _ | FdAnon _ _ => None
     (* unreachable: the clone gate declines while one is open
        ([Kernel.Fork.clone_no_shared_file_b]) *)
