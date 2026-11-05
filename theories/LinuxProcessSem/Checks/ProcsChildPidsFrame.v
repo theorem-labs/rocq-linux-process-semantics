@@ -10,7 +10,7 @@
       value and the host's clone refusers ([cps_of]), except
       a clone's, which leaves the model alone with an errno or is
       [State.with_child] of the pid it returns, and a [wait4]'s (260),
-      which keeps the launch values and keeps the list or removes one
+      which keeps the declaration and keeps the list or removes one
       recorded pid ([Kernel.Exit.remove_pid]).  A [Forall] over
       [checked_table], one checker lemma per arm, so a new arm that
       writes either fails the build by name.
