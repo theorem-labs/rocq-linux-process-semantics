@@ -749,13 +749,23 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          shares the [f_pos] that [read] moves, and the
                          model holds that offset in the entry
                          ([ReadWrite.read_spec]), for the [FdFile] reason
-                         above.  Both words ask this gate of the
+                         above. Both words ask this gate of the
                          table [forfeit_inherited] leaves the
                          caller, which holds no live one
-                         ([clone_resolve], [clone_ns_resolve]). *)
+                         ([clone_resolve], [clone_ns_resolve]).
+                       - an alias ([OAlias], left by [Fs.File.dup3_spec]'s
+                         move) names a regular file's description whose
+                         [f_pos] its partner's entry carries; the child
+                         would hold a third descriptor of it, and the
+                         one-descriptor argument the alias rests on
+                         ([State.OAlias]) would not hold. In a run its
+                         partner holds that regular file, which declines
+                         above as well; the alias declines on its own so
+                         that the gate says so. *)
                     | FdOpaque (OProcPath _ | OProcFile _ | OEventFd _ | ONsFile _
                                 | OInherited None) => true
-                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)) => false
+                    | FdOpaque (OProcFdDir _ _ | OSignalFd _ _ | OInherited (Some _)
+                                | OAlias _) => false
                     (* AN AF_UNIX SEQPACKET END DECLINES, for the pipe
                        reason: the child's second reference names the
                        same socket, whose peer and queue both copies
@@ -836,13 +846,13 @@ Definition forfeit_model (m : Model) : Model :=
 Lemma forfeit_entry_not_live : forall e, inherited_live_b (forfeit_entry e) = false.
 Proof.
   intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st]; try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; reflexivity.
 Qed.
 
 Lemma forfeit_entry_id : forall e, inherited_live_b e = false -> forfeit_entry e = e.
 Proof.
   intros [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st] H; try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; try reflexivity.
   discriminate H.
 Qed.
 
@@ -891,7 +901,7 @@ Proof.
   intros kv Hin. specialize (H kv Hin). cbv beta in H |- *.
   destruct (snd kv) as [ch|p off|p off|p off|p off| |sk|id w|rd wr| |o|i0 sd st];
     try reflexivity.
-  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]]; try reflexivity.
+  destruct o as [q|q|fl|h|fl pos|mk fl|[[data off]|]|pt]; try reflexivity.
   cbn in H. discriminate H.
 Qed.
 

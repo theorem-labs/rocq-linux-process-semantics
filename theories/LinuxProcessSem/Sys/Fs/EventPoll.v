@@ -308,8 +308,9 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          /proc/self/fd directory's [proc_fd_operations] (fs/proc/fd.c)
          has no [.poll], so [file_can_poll] is false and ADD is -EPERM.
          All read at v6.18.44; identical at v6.18.46.  An [ONsFile]'s
-         answer depends on an object of unknown type.  None of the six
-         answers is written. *)
+         answer depends on an object of unknown type, and an alias's
+         description is used through its partner only ([State.OAlias]).
+         None of the seven answers is written. *)
   | FdSeqpacket _ _ _ => None
       (* DECLINED.  The socket file has [.poll = sock_poll]
          (net/socket.c [socket_file_ops], v6.18.46), so [file_can_poll]
@@ -532,8 +533,9 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
            fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an
            eventfd, a /proc/sys file, the /proc/self/fd directory or a
            signalfd goes on to the target as any non-epoll file does.
-           The split is not written, and an [ONsFile]'s object is of
-           unknown type, so all six decline. *)
+           The split is not written, an [ONsFile]'s object is of
+           unknown type, and an alias ([State.OAlias]) is used through
+           its partner only, so all seven decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)
