@@ -438,13 +438,9 @@ Definition rec_kernel : KernelBuild :=
       ({l1d})
       ({l2})
       ({l3}))
-<<<<<<< HEAD
-    (kb_suid_dumpable default_kernel).
-=======
     (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
     (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
-    (kb_rmem_max default_kernel).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    (kb_rmem_max default_kernel) (kb_suid_dumpable default_kernel).
 
 (** The argument vector, the environment and the exec file name, byte for
     byte as the probe recorded them. *)

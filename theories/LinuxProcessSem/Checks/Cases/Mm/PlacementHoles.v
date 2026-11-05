@@ -55,13 +55,9 @@ Definition place_thp : Model :=
                  (kb_aslr default_kernel) (kb_guard default_kernel)
                  (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
                  (kb_vlenb default_kernel) (kb_cache default_kernel)
-<<<<<<< HEAD
-                 (kb_suid_dumpable default_kernel))
-=======
                  (kb_skb_head default_kernel) (kb_wmem_default default_kernel)
                  (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
-                 (kb_rmem_max default_kernel))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+                 (kb_rmem_max default_kernel) (kb_suid_dumpable default_kernel))
     place_model.
 
 (** The three addresses every case below is written against, as the
