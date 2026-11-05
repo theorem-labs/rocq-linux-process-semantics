@@ -1279,17 +1279,21 @@ Proof.
   intros i sig act oact ss eff m m' evs H. unfold check_rt_sigaction in H. fr_frame2 H.
 Qed.
 
-Lemma check_getsockname_fr : forall fd eff m m' evs,
-  check_getsockname fd eff m = CheckOk m' evs -> fd_rel m m'.
+Lemma check_getsockname_fr : forall i fd eff m m' evs,
+  check_getsockname i fd eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros fd eff m m' evs H. unfold check_getsockname, check_getsockname_core in H.
+  intros i fd eff m m' evs H.
+  unfold check_getsockname, check_getsockname_core, check_stream_getname,
+    check_ret_writes_copyins in H. cbv zeta in H.
   fr_frame2 H.
 Qed.
 
-Lemma check_getpeername_fr : forall fd eff m m' evs,
-  check_getpeername fd eff m = CheckOk m' evs -> fd_rel m m'.
+Lemma check_getpeername_fr : forall i fd eff m m' evs,
+  check_getpeername i fd eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros fd eff m m' evs H. unfold check_getpeername, check_getpeername_core in H.
+  intros i fd eff m m' evs H.
+  unfold check_getpeername, check_getpeername_core, check_stream_getname,
+    check_ret_writes_copyins in H. cbv zeta in H.
   fr_frame2 H.
 Qed.
 
@@ -1300,7 +1304,9 @@ Lemma check_setsockopt_fr : forall i fd level optlen eff m m' evs,
   check_setsockopt i fd level optlen eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core in H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core,
+    check_stream_setsockopt in H.
+  cbv zeta in H.
   fr_frame2 H.
 Qed.
 
@@ -1308,13 +1314,17 @@ Lemma check_getsockopt_fr : forall i fd level optlenp eff m m' evs,
   check_getsockopt i fd level optlenp eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt, check_getsockopt_core in H. fr_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core, check_stream_getsockopt,
+    check_ret_writes_copyins in H.
+  cbv zeta in H.
+  fr_frame2 H.
 Qed.
 
 Lemma check_shutdown_fr : forall fd how eff m m' evs,
   check_shutdown fd how eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros fd how eff m m' evs H. unfold check_shutdown, check_shutdown_core in H.
+  intros fd how eff m m' evs H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H. cbv zeta in H.
   fr_frame2 H.
 Qed.
 
@@ -1338,8 +1348,10 @@ Lemma check_socketpair_fr : forall i family type protocol sv eff m m' evs,
   check_socketpair i family type protocol sv eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i family type protocol sv eff m m' evs H.
-  unfold check_socketpair, check_socketpair_unix, check_socketpair_unix_written,
-    check_socketpair_written, check_socketpair_faulted, check_errno_only in H.
+  unfold check_socketpair, check_socketpair_unix, check_socketpair_seqpacket_written,
+    check_socketpair_unix_written, check_socketpair_written, check_socketpair_faulted,
+    check_errno_only in H.
+  cbv zeta in H.
   fr_frame2 H.
 Qed.
 
@@ -1570,7 +1582,8 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD); cbv beta iota in H.
     + apply check_ret_only_model in H. subst m'.
       apply ck_set_open; [exact Hk | rewrite Hfd; discriminate].
-    + repeat vm_step H; exact Hk.
+    + repeat vm_step H;
+        first [exact Hk | apply (ck_of_fd_rel m); [fr_leaf | exact Hk]].
   - apply check_ret_only_model in H. subst m'. exact Hk.
 Qed.
 
