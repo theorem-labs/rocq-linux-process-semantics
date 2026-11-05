@@ -432,7 +432,8 @@ Lemma check_getsockname_sh : forall i fd eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getsockname, check_getsockname_core, check_ret_writes_copyins, check_stream_getname in H.
+  unfold check_getsockname, check_getsockname_core, check_stream_getname,
+    check_ret_writes_copyins in H.
   cbv zeta in H. sh_frame2 H.
 Qed.
 
@@ -441,7 +442,8 @@ Lemma check_getpeername_sh : forall i fd eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd eff m m' evs H.
-  unfold check_getpeername, check_getpeername_core, check_ret_writes_copyins, check_stream_getname in H.
+  unfold check_getpeername, check_getpeername_core, check_stream_getname,
+    check_ret_writes_copyins in H.
   cbv zeta in H. sh_frame2 H.
 Qed.
 
@@ -485,8 +487,9 @@ Lemma check_setsockopt_sh : forall i fd level optlen eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd level optlen eff m m' evs H.
-  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core
-   , check_stream_setsockopt in H. sh_frame2 H.
+  unfold check_setsockopt, check_seqpacket_setsockopt, check_setsockopt_core,
+    check_stream_setsockopt in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_getsockopt_sh : forall i fd level optlenp eff m m' evs,
@@ -494,7 +497,9 @@ Lemma check_getsockopt_sh : forall i fd level optlenp eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt, check_getsockopt_core, check_ret_writes_copyins, check_stream_getsockopt in H. sh_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core, check_stream_getsockopt,
+    check_ret_writes_copyins in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_shutdown_sh : forall fd how eff m m' evs,
@@ -502,7 +507,8 @@ Lemma check_shutdown_sh : forall fd how eff m m' evs,
   sh_of m' = sh_of m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H. sh_frame2 H.
+  unfold check_shutdown, check_shutdown_core, check_stream_shutdown in H.
+  cbv zeta in H. sh_frame2 H.
 Qed.
 
 Lemma check_sendmsg_sh : forall i fd msgp flags eff m m' evs,

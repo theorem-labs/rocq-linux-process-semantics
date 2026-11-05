@@ -1183,7 +1183,9 @@ Lemma check_fstat_nf : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
   cbv beta iota zeta in H;
-  repeat (kf_step H || nf_done H || nf_use nf_fstat_file H
+  repeat (kf_step H || nf_done H
+          || (apply check_fstat_opaque_keeps in H; destruct H as [-> ->])
+          || nf_use nf_fstat_file H
           || nf_use nf_fstat_devnull H || nf_use nf_fstat_urandom H
           || nf_use nf_fstat_anon H);
   nf_finish.
