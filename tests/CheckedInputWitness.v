@@ -239,12 +239,8 @@ Definition raw_cache_absent : RawCacheView :=
   mkRawCacheView raw_leaf_absent raw_leaf_absent raw_leaf_absent
     raw_leaf_absent.
 Definition raw_kernel_default : RawKernelBuild :=
-<<<<<<< HEAD
-  mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent SuidDumpDisable.
-=======
   mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-    224 212992 212992 4194304 4194304.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    224 212992 212992 4194304 4194304 SuidDumpDisable.
 
 Definition raw_seed : RawProcInput :=
   mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
@@ -432,12 +428,9 @@ Proof. vm_compute. reflexivity. Qed.
 (** A machine, rather than the absent default: transparent huge pages,
     vDSO image 3, randomizing, a one-page guard gap, 20 bits of mmap
     randomization, CONFIG_RSEQ, a 128-bit vector unit, four cache
-<<<<<<< HEAD
-    leaves the L3 of which ACPI PPTT reported, and fs.suid_dumpable 2.
-=======
     leaves the L3 of which ACPI PPTT reported, a 256-byte
-    [struct sk_buff], and buffer sysctls that are not the defaults.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    [struct sk_buff], buffer sysctls that are not the defaults, and
+    fs.suid_dumpable 2.
     [[47; 97]] is the exec file name "/a". *)
 Definition raw_kernel_live : RawKernelBuild :=
   mkRawKernelBuild true 3 true 1 20 true 4
@@ -445,11 +438,7 @@ Definition raw_kernel_live : RawKernelBuild :=
                     (mkRawCacheLeaf false 32768 8 64)
                     (mkRawCacheLeaf false 1048576 8 64)
                     (mkRawCacheLeaf true 33554432 16 64))
-<<<<<<< HEAD
-    SuidDumpRoot.
-=======
-    256 425984 425984 8388608 8388608.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    256 425984 425984 8388608 8388608 SuidDumpRoot.
 
 (* the in-range control for the seed's structured fields *)
 Definition raw_seed_full : RawProcInput :=
@@ -489,12 +478,8 @@ Definition seed_with_execfn (fn : list Z) : RawProcInput :=
 Example seed_kernel_vdso_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
-<<<<<<< HEAD
-       (mkRawKernelBuild false (-1) true 256 0 true 0 raw_cache_absent SuidDumpDisable))
-=======
        (mkRawKernelBuild false (-1) true 256 0 true 0 raw_cache_absent
-          224 212992 212992 4194304 4194304))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+          224 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -502,27 +487,18 @@ Example seed_kernel_vdso_zero_converted :
   option_map in_kernel
     (proc_input_of_raw
        (seed_with_kernel
-<<<<<<< HEAD
-          (mkRawKernelBuild false 0 true 256 0 true 0 raw_cache_absent SuidDumpDisable)))
-  = Some (mkKernelBuild false 0%N true 256%N 0%N true 0%N cache_view_absent SuidDumpDisable).
-=======
           (mkRawKernelBuild false 0 true 256 0 true 0 raw_cache_absent
-             224 212992 212992 4194304 4194304)))
+             224 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 0%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 212992%N 4194304%N 4194304%N).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+            224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: the [stack_guard_gap] boot parameter, in pages *)
 Example seed_kernel_guard_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
-<<<<<<< HEAD
-       (mkRawKernelBuild false 1 true (-1) 0 true 0 raw_cache_absent SuidDumpDisable))
-=======
        (mkRawKernelBuild false 1 true (-1) 0 true 0 raw_cache_absent
-          224 212992 212992 4194304 4194304))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+          224 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -530,27 +506,18 @@ Example seed_kernel_guard_zero_converted :
   option_map in_kernel
     (proc_input_of_raw
        (seed_with_kernel
-<<<<<<< HEAD
-          (mkRawKernelBuild false 1 true 0 0 true 0 raw_cache_absent SuidDumpDisable)))
-  = Some (mkKernelBuild false 1%N true 0%N 0%N true 0%N cache_view_absent SuidDumpDisable).
-=======
           (mkRawKernelBuild false 1 true 0 0 true 0 raw_cache_absent
-             224 212992 212992 4194304 4194304)))
+             224 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 0%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 212992%N 4194304%N 4194304%N).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+            224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: vm.mmap_rnd_bits *)
 Example seed_kernel_rnd_bits_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
-<<<<<<< HEAD
-       (mkRawKernelBuild false 1 true 256 (-1) true 0 raw_cache_absent SuidDumpDisable))
-=======
        (mkRawKernelBuild false 1 true 256 (-1) true 0 raw_cache_absent
-          224 212992 212992 4194304 4194304))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+          224 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -558,27 +525,18 @@ Example seed_kernel_rnd_bits_zero_converted :
   option_map in_kernel
     (proc_input_of_raw
        (seed_with_kernel
-<<<<<<< HEAD
-          (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent SuidDumpDisable)))
-  = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent SuidDumpDisable).
-=======
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             224 212992 212992 4194304 4194304)))
+             224 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 212992%N 4194304%N 4194304%N).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+            224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: the vector unit's VLENB *)
 Example seed_kernel_vlenb_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
-<<<<<<< HEAD
-       (mkRawKernelBuild false 1 true 256 0 true (-1) raw_cache_absent SuidDumpDisable))
-=======
        (mkRawKernelBuild false 1 true 256 0 true (-1) raw_cache_absent
-          224 212992 212992 4194304 4194304))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+          224 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -586,15 +544,10 @@ Example seed_kernel_vlenb_four_converted :
   option_map in_kernel
     (proc_input_of_raw
        (seed_with_kernel
-<<<<<<< HEAD
-          (mkRawKernelBuild false 1 true 256 0 true 4 raw_cache_absent SuidDumpDisable)))
-  = Some (mkKernelBuild false 1%N true 256%N 0%N true 4%N cache_view_absent SuidDumpDisable).
-=======
           (mkRawKernelBuild false 1 true 256 0 true 4 raw_cache_absent
-             224 212992 212992 4194304 4194304)))
+             224 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 4%N cache_view_absent
-            224%N 212992%N 212992%N 4194304%N 4194304%N).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+            224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: one of the twelve numbers of the four cache leaves *)
@@ -603,12 +556,8 @@ Example seed_kernel_cache_assoc_negative_refused :
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0
           (mkRawCacheView raw_leaf_absent raw_leaf_absent
-<<<<<<< HEAD
-             (mkRawCacheLeaf false 1048576 (-1) 64) raw_leaf_absent) SuidDumpDisable))
-=======
              (mkRawCacheLeaf false 1048576 (-1) 64) raw_leaf_absent)
-          224 212992 212992 4194304 4194304))
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+          224 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -618,18 +567,12 @@ Example seed_kernel_cache_assoc_zero_converted :
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0
              (mkRawCacheView raw_leaf_absent raw_leaf_absent
-<<<<<<< HEAD
-                (mkRawCacheLeaf false 1048576 0 64) raw_leaf_absent) SuidDumpDisable)))
-  = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N
-            (mkCacheView cache_leaf_absent cache_leaf_absent
-               (mkCacheLeaf false 1048576%N 0%N 64%N) cache_leaf_absent) SuidDumpDisable).
-=======
                 (mkRawCacheLeaf false 1048576 0 64) raw_leaf_absent)
-             224 212992 212992 4194304 4194304)))
+             224 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N
             (mkCacheView cache_leaf_absent cache_leaf_absent
                (mkCacheLeaf false 1048576%N 0%N 64%N) cache_leaf_absent)
-            224%N 212992%N 212992%N 4194304%N 4194304%N).
+            224%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: [sizeof(struct sk_buff)], in bytes *)
@@ -637,7 +580,7 @@ Example seed_kernel_skb_head_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-          (-1) 212992 212992 4194304 4194304))
+          (-1) 212992 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -646,9 +589,9 @@ Example seed_kernel_skb_head_zero_converted :
     (proc_input_of_raw
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             0 212992 212992 4194304 4194304)))
+             0 212992 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            0%N 212992%N 212992%N 4194304%N 4194304%N).
+            0%N 212992%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: net.core.wmem_default *)
@@ -656,7 +599,7 @@ Example seed_kernel_wmem_default_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-          224 (-1) 212992 4194304 4194304))
+          224 (-1) 212992 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -665,9 +608,9 @@ Example seed_kernel_wmem_default_zero_converted :
     (proc_input_of_raw
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             224 0 212992 4194304 4194304)))
+             224 0 212992 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 0%N 212992%N 4194304%N 4194304%N).
+            224%N 0%N 212992%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: net.core.rmem_default *)
@@ -675,7 +618,7 @@ Example seed_kernel_rmem_default_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-          224 212992 (-1) 4194304 4194304))
+          224 212992 (-1) 4194304 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -684,9 +627,9 @@ Example seed_kernel_rmem_default_zero_converted :
     (proc_input_of_raw
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             224 212992 0 4194304 4194304)))
+             224 212992 0 4194304 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 0%N 4194304%N 4194304%N).
+            224%N 212992%N 0%N 4194304%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: net.core.wmem_max *)
@@ -694,7 +637,7 @@ Example seed_kernel_wmem_max_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-          224 212992 212992 (-1) 4194304))
+          224 212992 212992 (-1) 4194304 SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -703,9 +646,9 @@ Example seed_kernel_wmem_max_zero_converted :
     (proc_input_of_raw
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             224 212992 212992 0 4194304)))
+             224 212992 212992 0 4194304 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 212992%N 0%N 4194304%N).
+            224%N 212992%N 212992%N 0%N 4194304%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* [N]: net.core.rmem_max *)
@@ -713,7 +656,7 @@ Example seed_kernel_rmem_max_negative_refused :
   init_model_checked [] 4096 4096 4096 0
     (seed_with_kernel
        (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-          224 212992 212992 4194304 (-1)))
+          224 212992 212992 4194304 (-1) SuidDumpDisable))
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -722,10 +665,9 @@ Example seed_kernel_rmem_max_zero_converted :
     (proc_input_of_raw
        (seed_with_kernel
           (mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
-             224 212992 212992 4194304 0)))
+             224 212992 212992 4194304 0 SuidDumpDisable)))
   = Some (mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
-            224%N 212992%N 212992%N 4194304%N 0%N).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+            224%N 212992%N 212992%N 4194304%N 0%N SuidDumpDisable).
 Proof. reflexivity. Qed.
 
 (* the exec file name: the empty name [getname_flags] refuses with

@@ -49,14 +49,10 @@ let () =
 (* The kernel build the launch ran on, as State.default_kernel names it:
    no transparent huge pages, vDSO image 1, randomizing, the 256-page
    stack_guard_gap, no extra mmap_rnd_bits, CONFIG_RSEQ, no vector unit,
-<<<<<<< HEAD
-   the four cache leaves absent, and fs.suid_dumpable 0.  Each N of the
-   model arrives as a Z and is refused here when negative. *)
-=======
-   the four cache leaves absent, a 224-byte struct sk_buff, and the
-   net.core buffer sysctls at their defaults.  Each N of the model
-   arrives as a Z and is refused here when negative. *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+   the four cache leaves absent, a 224-byte struct sk_buff, the
+   net.core buffer sysctls at their defaults, and fs.suid_dumpable 0.
+   Each N of the model arrives as a Z and is refused here when
+   negative. *)
 let leaf_absent : M.rawCacheLeaf = {
   M.rcl_acpi = false; rcl_size = z "0"; rcl_assoc = z "0"; rcl_line = z "0" }
 
@@ -65,13 +61,10 @@ let kernel_default : M.rawKernelBuild = {
   rkb_rnd_bits = z "0"; rkb_rseq = true; rkb_vlenb = z "0";
   rkb_cache = { M.rcv_l1i = leaf_absent; rcv_l1d = leaf_absent;
                 rcv_l2 = leaf_absent; rcv_l3 = leaf_absent };
-<<<<<<< HEAD
-  rkb_suid_dumpable = M.SuidDumpDisable }
-=======
   rkb_skb_head = z "224"; rkb_wmem_default = z "212992";
   rkb_rmem_default = z "212992"; rkb_wmem_max = z "4194304";
-  rkb_rmem_max = z "4194304" }
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  rkb_rmem_max = z "4194304";
+  rkb_suid_dumpable = M.SuidDumpDisable }
 
 (* The exec file name, without its NUL: the one-byte relative name "a",
    which Run.valid_execfn admits. *)
@@ -294,13 +287,10 @@ let () =
                                  rcl_assoc = z "8"; rcl_line = z "64" };
                       rcv_l3 = { M.rcl_acpi = true; rcl_size = z "33554432";
                                  rcl_assoc = z "16"; rcl_line = z "64" } };
-<<<<<<< HEAD
-                  rkb_suid_dumpable = M.SuidDumpRoot };
-=======
                   rkb_skb_head = z "256"; rkb_wmem_default = z "425984";
                   rkb_rmem_default = z "425984"; rkb_wmem_max = z "8388608";
-                  rkb_rmem_max = z "8388608" };
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+                  rkb_rmem_max = z "8388608";
+                  rkb_suid_dumpable = M.SuidDumpRoot };
               rpi_execfn = [z "47"; z "97"];
               rpi_channel_reader = true; rpi_sigpipe_default = true;
               rpi_sigpipe_terminal = false; rpi_ppid = z "0";

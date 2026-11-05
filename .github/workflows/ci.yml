@@ -65,7 +65,6 @@ jobs:
             exit 1
           fi
           echo "no conflict markers (searched every tracked file)"
-<<<<<<< HEAD
       # A record that grows (the process record went from 15 to 20 fields in
       # two days) breaks every positional builder, and one that compiles by
       # accident binds a value to the wrong field. New code reads and writes
@@ -82,11 +81,9 @@ jobs:
         run: python3 tools/check_pre_copies.py
       - name: Pre-hook predicate and option bodies match their commit
         run: python3 -m unittest discover -s tests -p test_bpf_pre_copies.py && python3 tools/check_bpf_pre_copies.py
-=======
       # Here because this job always runs and no route can skip it.
       - name: The route decides what it is meant to decide
         run: python3 .github/test_ci.py
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
       - id: route
         env:
           EVENT: ${{ github.event_name }}

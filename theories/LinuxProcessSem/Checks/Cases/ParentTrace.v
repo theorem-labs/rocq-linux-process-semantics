@@ -431,21 +431,13 @@ Proof. vm_compute. reflexivity. Qed.
    What the computed states hold
    ========================================================================= *)
 
-<<<<<<< HEAD
 (** The clone's answer is the pid with the child recorded (the child
-    bit, and 320 in the list of unreaped children), and nothing else of
-    the model moves. *)
+    bit, and 320 in the list of unreaped children) and the two eventfds
+    shared ([Fork.clone_child_made]), and nothing else of the model
+    moves. *)
 Example parent_trace_clone_records_the_child :
-  parent_trace_s35 = with_child (Z_to_bv 64 320) parent_trace_s34.
+  parent_trace_s35 = clone_child_made (Z_to_bv 64 320) parent_trace_s34.
 Proof. check_eq. Qed.
-=======
-(** The clone's answer is the pid with the child recorded and the two
-    eventfds shared ([Fork.clone_child_made]), and nothing else of the
-    model moves. *)
-Example parent_trace_clone_records_the_child :
-  parent_trace_s35 = clone_child_made parent_trace_s34.
-Proof. vm_compute. reflexivity. Qed.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
 
 (** The clone runs with the descriptors the trace has open then: the
     O_PATH descriptor on "/proc" at 3 and the two eventfds at 4 and 5,
@@ -453,7 +445,8 @@ Proof. vm_compute. reflexivity. Qed.
     descriptor gate with them.  Before the clone the eventfds hold their
     counters ([State.FdEventfd]: 0x80800 is non-blocking, 0x80000 is
     not); after it they are the shared kind ([State.OEventFd]), with w
-    the O_NONBLOCK bit and 0, so every counter call on them declines. *)
+    the O_NONBLOCK bit and 0: read and write on them answer from the
+    environment's counter, and readiness and F_GETFD decline. *)
 Example parent_trace_clone_descriptors :
   fd_lookup (m_fds parent_trace_s34) 3 = Some (FdOpaque (OProcPath s_proc))
   /\ fd_lookup (m_fds parent_trace_s34) 4
@@ -490,11 +483,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
     ends in the clone's answer: the model with the child recorded. *)
 Lemma parent_trace_replays_to_the_clone :
   parent_trace_run parent_trace_calls parent_trace_s00
-<<<<<<< HEAD
-  = Some (with_child (Z_to_bv 64 320) parent_trace_s34).
-=======
-  = Some (clone_child_made parent_trace_s34).
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  = Some (clone_child_made (Z_to_bv 64 320) parent_trace_s34).
 Proof.
   rewrite <- parent_trace_clone_records_the_child.
   unfold parent_trace_calls.

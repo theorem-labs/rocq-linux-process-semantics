@@ -273,11 +273,7 @@ Definition urandom_path : path :=
     generates only unistd_32.h and unistd_64.h — so every constant here
     is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
-<<<<<<< HEAD
-Definition AF_UNIX   : Z := 1%Z.    (* include/linux/socket.h:191 *)
-=======
-Definition AF_UNIX   : Z := 1%Z.    (* = AF_LOCAL, include/linux/socket.h *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+Definition AF_UNIX   : Z := 1%Z.    (* = AF_LOCAL, include/linux/socket.h:191 *)
 Definition AF_INET   : Z := 2%Z.
 Definition AF_INET6  : Z := 10%Z.   (* include/linux/socket.h *)
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
