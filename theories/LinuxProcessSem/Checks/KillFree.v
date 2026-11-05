@@ -780,15 +780,28 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_openat_kf : forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_openat_table_kf : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_openat in H.
+  unfold check_openat_table in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || kf_done H Hoff Hk
           || (eapply kf_openat_body in H; exact (H Hoff Hk))).
   all: kf_close m Hoff Hk.
+Qed.
+
+(** The close-on-exec step after the table writes [State.m_cloexec]
+    alone, so the gates come across by conversion. *)
+Lemma check_openat_kf : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i dirfd pathp flags eff m m' evs H. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-. apply check_openat_table_kf in E.
+  unfold open_cloexec_model. destruct (addr_is_error_b (eff_ret eff)); [exact E|].
+  destruct (fd_lookup (m_fds m0) (eff_ret eff)); exact E.
 Qed.
 
 Lemma check_close_kf : forall fd eff m m' evs,
@@ -846,6 +859,7 @@ Proof.
   unfold check_fsync in H.
   kf_frame H m Hoff Hk.
 Qed.
+
 
 Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
   check_getdents64 i fd dirent count eff m = CheckOk m' evs -> kill_post m m' evs.
@@ -1130,7 +1144,7 @@ Lemma check_getsid_kf : forall pid eff m m' evs,
   check_getsid pid eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros pid eff m m' evs H Hoff Hk.
-  unfold check_getsid, check_getppid in H.
+  unfold check_getsid, check_pid_choice in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1250,11 +1264,13 @@ Lemma check_clone_kf : forall i flags eff m m' evs,
   check_clone i flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i flags eff m m' evs H Hoff Hk.
-  destruct (check_clone_ok_inv _ _ _ _ _ _ H) as [(e & He & _)|[(e & He & _)|[He|He]]];
-    clear H;
-    unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
-      check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
-    kf_frame He m Hoff Hk.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H)
+    as [(-> & -> & _)|[(e & He & _)|[(e & He & _)|[He|He]]]];
+    [ kf_close m Hoff Hk
+    | clear H;
+      unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+        check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
+      kf_frame He m Hoff Hk .. ].
 Qed.
 
 Lemma check_clone3_kf : forall i uargs size eff m m' evs,
@@ -1262,10 +1278,11 @@ Lemma check_clone3_kf : forall i uargs size eff m m' evs,
 Proof.
   intros i uargs size eff m m' evs H Hoff Hk.
   destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
-    as [(reads & He)|[(reads & en & _ & He)|(e & He & _)]];
-    clear H;
-    unfold check_clone3_resolve, check_clone_resolve, check_clone_answer in He;
-    kf_frame He m Hoff Hk.
+    as [(-> & -> & _)|[(reads & He)|[(reads & en & _ & He)|(e & He & _)]]];
+    [ kf_close m Hoff Hk
+    | clear H;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer in He;
+      kf_frame He m Hoff Hk .. ].
 Qed.
 
 Lemma check_getsockname_kf : forall fd eff m m' evs,

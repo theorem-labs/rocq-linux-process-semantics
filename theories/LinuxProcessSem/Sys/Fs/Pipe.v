@@ -35,11 +35,12 @@ Definition pipe2_flags_mask : Z :=
     :956).  The second reads only O_CLOEXEC, which [alloc_fd] turns into
     the new descriptor's close-on-exec bit and nothing else
     (fs/file.c:606, :322-340).  No errno, descriptor number, [f_flags] or
-    copied byte depends on it.  The model records no close-on-exec bit:
-    [Fcntl.fcntl_spec]'s F_GETFD admits both answers, and execve has no
-    arm ([Run.execve_boundary_stops]).  So a pair made with O_CLOEXEC is
-    the pair made with 0, the treatment [Open.open_ignored_flags] gives
-    openat and [File.dup3_spec] gives dup3. *)
+    copied byte depends on it.  The model records no close-on-exec bit
+    for a pipe end, where [Open.openat_spec] and [File.dup3_spec] record
+    theirs in [State.m_cloexec]: [Fcntl.fcntl_spec]'s F_GETFD admits both
+    answers on a descriptor with no recorded bit, and execve has no arm
+    ([Run.execve_boundary_stops]).  So a pair made with O_CLOEXEC is the
+    pair made with 0. *)
 Definition pipe2_ignored_flags : Z := O_CLOEXEC.
 
 (** pipe2's injectable failures: environment conditions the model does

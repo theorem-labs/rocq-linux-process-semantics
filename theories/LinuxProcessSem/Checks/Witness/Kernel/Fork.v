@@ -144,10 +144,14 @@ Definition clone_witness (i : SyscallInput) (flags : word) (m : Model)
        | None => Unmodeled
        end.
 
+(** The witness is an answer from the lists, which [Kernel.Fork.clone_refusable]
+    and [Kernel.Fork.clone_refusable_arm] keep whatever the host's refusers
+    are. *)
 Lemma clone_witness_ok : forall i flags m,
   clone_spec flags i m (clone_witness i flags m).
 Proof.
-  intros. unfold clone_spec, clone_witness.
+  intros. unfold clone_spec. apply clone_refusable_lists.
+  unfold clone_spec_lists, clone_witness.
   destruct (clone_fork_flags_b flags); cbv iota;
     [apply clone_resolve_witness_ok|].
   destruct (clone_ns_flags_b flags); cbv iota;
@@ -157,9 +161,11 @@ Proof.
     as [r|]; cbv iota; [|apply unmodeled_intro].
   destruct (clone_arg_checks r); cbv iota; [apply clone_einval_witness_ok|].
   destruct (clone_class r); cbv iota.
-  - apply clone_stores_witness_ok, clone_resolve_witness_ok.
-  - apply clone_stores_witness_ok, clone_ns_resolve_witness_ok.
-  - apply clone_ns_refused_witness_ok.
+  - apply clone_stores_witness_ok. unfold clone_refusable_arm.
+    apply clone_refusable_lists, clone_resolve_witness_ok.
+  - apply clone_stores_witness_ok. unfold clone_refusable_arm.
+    apply clone_refusable_lists, clone_ns_resolve_witness_ok.
+  - unfold clone_refusable_arm. apply clone_refusable_lists, clone_ns_refused_witness_ok.
   - apply unmodeled_intro.
 Qed.
 
@@ -200,13 +206,15 @@ Proof.
     destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg; cbv iota.
     + apply record_copyins_unmodeled. apply clone_with_stores_iff. left.
       split; [exact Hok|]. cbv iota.
+      unfold clone_refusable_arm. apply clone_refusable_lists.
       unfold clone_resolve. eapply bind_unmodeled2; [apply get_model_ok|].
       cbv beta. rewrite Hg. cbv iota. apply unmodeled_intro.
     + apply record_copyins_ok_empty with (eff := mkEffect (errno_ret EAGAIN) [] []);
         [reflexivity|].
       apply clone_with_stores_iff. left. split; [exact Hok|]. cbv iota.
       exists (mkEffect (errno_ret EAGAIN) [] []). split.
-      * pose proof (clone_resolve_witness_ok i m) as H.
+      * unfold clone_refusable_arm. apply clone_refusable_lists.
+        pose proof (clone_resolve_witness_ok i m) as H.
         unfold clone_resolve_witness in H. rewrite Hg in H. exact H.
       * unfold tid_store_effect. cbn [eff_ret].
         replace (addr_is_error_b (errno_ret EAGAIN)) with true by (vm_compute; reflexivity).
@@ -256,7 +264,8 @@ Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
 Lemma clone3_witness_ok : forall i uargs size m,
   clone3_spec uargs size i m (clone3_witness i uargs size m).
 Proof.
-  intros. unfold clone3_spec, clone3_witness.
+  intros. unfold clone3_spec. cbv beta. apply clone_refusable_lists.
+  unfold clone3_spec_lists, clone3_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
     cbv iota.

@@ -20,22 +20,20 @@
     rather than restated.
 
     THE WARNING THIS FILE OWES A READER, and why it does not fire.
-    [Sys.Kernel.Exit.wait4_spec]'s header says, of a child becoming a
-    configuration: "If a child ever becomes a configuration in this model,
-    this spec is wrong rather than incomplete, and it is the first thing that
-    has to change" (Exit.v:237-243).  [Sys.Kernel.Fork]'s header says the same
-    from the other side: "No second process is created.  [Run.config] holds
-    one [machine_state] and one [Model], and nothing here adds a second of
+    [Sys.Kernel.Exit.wait4_spec] answers the single-process question: what
+    [wait4(-1, st, WNOHANG, NULL)] gives a caller when the model holds only
+    the FACT of its children and the pids its clones returned, never the
+    children themselves.  [Sys.Kernel.Fork]'s header says the same from the
+    other side: "No second process is created.  [Run.config] holds one
+    [machine_state] and one [Model], and nothing here adds a second of
     either" (Fork.v:138-145).  BOTH REMAIN TRUE.  A child here is an ENTRY OF
     A NEW RELATION, not a configuration of the released one: [Run.config] is
-    unchanged, no [Run.sstep_cfg] rule produces a second of either, and
-    [wait4_spec] keeps answering the single-process question with the answer
-    it always gave.  The two never apply to the same configuration -- the
-    released arm is [unmodeled] unless the option word is WNOHANG, unless the
-    pid is the any-child value, unless the usage pointer is null, and then
-    [unmodeled] AGAIN if the model has children (Exit.v:244-252), while the
-    reap arm of this file requires the option word to be 0 and requires an own
-    halted child.  There is no configuration at which both say anything.
+    unchanged, and no [Run.sstep_cfg] rule produces a second of either.  The
+    two never answer the same call -- the released arm is [unmodeled] unless
+    the option word is WNOHANG, unless the pid is the any-child value, unless
+    the usage pointer is null, while the blocking reap arm of this file
+    requires the option word to be 0, and the [wait4] gate below keeps every
+    call of a caller with a child in the table away from the released arm.
 
     WHY THE CLONE ARM CONSUMES THE RELEASED STEP.  It fires only under
     [clone_success_b], which reads the value [Run.apply_effect] put in a0
@@ -485,8 +483,10 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
 
     PIDS ([multiproc_pid_sysnos]): 96 set_tid_address, 172 getpid, 178
     gettid, 157 setsid, 156 getsid, 173 getppid.  The released specs pin
-    the tid by a free choice and answer getsid and getppid by a fresh one;
-    with a peer the answer is fixed by the table.  A non-root entry's pid
+    the tid by a free choice and answer getsid by a fresh one; getppid
+    answers the held parent pid, or, once per reparent window, another
+    pid ([Kernel.Sys.getppid_spec]); with a peer the answer is fixed by
+    the table.  A non-root entry's pid
     is its key, the value its parent's clone returned; the root's is its
     tid, pinned by its own first call.  So [answer_ok_b] keeps only the
     released answers that agree: a non-root entry pins its key; the root
@@ -494,7 +494,13 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     pid (an orphan, whose parent exited, keeps the released choice: Linux
     reparents it to a reaper the model does not name); getsid answers the
     session the entry inherited at its clone ([pm_sid]) until its own
-    setsid, and the released choice when no ancestor led one.  A child of
+    setsid, and the released choice when no ancestor led one.  The
+    released getppid has the table's answer while the parent runs: the
+    child's parent pid is its parent's, so the answer is the held pid,
+    and a parent whose running child holds a signal cannot exit
+    ([step_refused_b]).  An orphan's window is open (its signal is 0, by
+    that refusal) with its one move unspent, so the released choice
+    includes the reaper's pid.  A child of
     the root asking getppid while the root's tid is unpinned first takes
     a silent step, [pstep_pin_root], that pins it.  What cannot be
     answered is refused ([peer_refused_b]): a pid call in a new pid
@@ -858,12 +864,24 @@ Qed.
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
-    parent's own).  The child's parent pid is its parent's pid [ppid], the
-    parent's key in the process table, which the core always knows:
-    [copy_process] sets [p->real_parent = current] (kernel/fork.c), and
-    [getppid] answers that task's tgid.  It is not the parent's PINNED tid:
-    a child cloned before its parent's first [getpid] would otherwise start
-    at 0.  The inheritable capability set copies with the credentials.
+    parent's own). The child's parent pid [ppid] is the parent's pinned
+    tid when known, otherwise its provisional table key. [copy_process]
+    sets [p->real_parent = current] (v6.18.46:kernel/fork.c); the table
+    aligns that provisional pid when the root is first pinned. This is
+    not a getppid observation and does not consume the child's reparent
+    move. The reparent window is open in a new child, with nothing moved:
+    its parent-death signal is 0, and [procst_reparent_unseen] and
+    [procst_reparent_moved] start [false]. The inheritable capability set
+    copies with the credentials.
+    [procst_sigchld_dfl] is copied: [copy_sighand] (kernel/fork.c) gives
+    the child a [memcpy] of its parent's signal actions, since the
+    released clone arms admit neither CLONE_SIGHAND nor
+    CLONE_CLEAR_SIGHAND, so a SIGCHLD the parent set to SIG_DFL with
+    SA_NOCLDWAIT clear is the child's too.
+    The host's clone refusers ([procst_clone_refusers]) are copied: a
+    child inherits the inheritable perf events ([perf_event_init_task]),
+    and a BPF [task_alloc] program and a sched_ext scheduler are the
+    host's, not the task's.
     Kernel citations, read at v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
@@ -885,7 +903,8 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
               ppid
               (procst_cap_inheritable ps)
               false false
-              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps).
+              (procst_selfkill_terminal ps) (procst_cgroup_bpf_setsockopt ps)
+              (procst_sigchld_dfl ps) (procst_clone_refusers ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
@@ -893,80 +912,50 @@ Definition with_proc (ps : ProcState) (m : Model) : Model :=
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
-          (clear_shared (with_proc (child_proc (pe_pid e) (m_proc (pe_model e)))
-                                   (child_model (pe_model e) (cfg_model c) (child_tid_store c c'))))
+          (clear_shared (with_proc (child_proc
+             (match m_tid (pe_model e) with Some t => t | None => pe_pid e end)
+             (m_proc (pe_model e)))
+             (child_model (pe_model e) (cfg_model c) (child_tid_store c c'))))
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);
     [SIGCHLD] for [clone3] (435), the word of the one image it resolves.
 
-    KNOWN GAP until the namespace extension takes the decoded argument
-    record ([Fork.CloneIn]) in place of this word.  Closing it takes two
-    answers of the extension, not one.  The first is [CnErr EINVAL]
-    where [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record.  It
-    does not reach every call the core now answers: a [clone3] struct
-    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose size
-    tests or struct copy fail ([Fork.C3Err] of [Fork.clone3_copy]:
-    -E2BIG, -EINVAL or -EFAULT) have no record at all
-    ([clone_in_of] gives [Fork.CiNoArgs]), so no rule over a record can
-    run for them.  The second answer covers those: for a caller in the
-    NAMESPACE world whose [clone_in_of] is [Fork.CiNoArgs] while the
-    released step answers, [CnUnmodeled].  For a caller in the released
-    world the extension keeps [Ns.Ext.released_clone], which has no
-    [CnUnmodeled] (Ns/Ext.v) and which [NsProcs.ns_flat_iff] rests on;
-    there these calls keep today's released answer.  (A struct whose own
-    tests pass and whose record the argument checks refuse is not in
-    this class: [clone_in_of] gives its record, and the first answer
-    reaches it.)  The released step now answers -EINVAL for a word the
-    argument checks refuse (and, for [clone3], a struct its own tests
-    refuse: [Fork.clone3_einval_sz]), while the extension still sees this
-    word, so:
-    - a [clone3] struct [Fork.clone3_einval_sz] refuses reaches the
-      extension as [SIGCHLD].  For a namespace-world caller under [Ns.Spec.ns_ext]
-      whose [clone_ns_exact] is [CnOk] there, the -EINVAL has no step
-      under the clone environment [Ns.Clone.clone_tables_failures]
-      (before, the call was the error step), and under
-      [Ext.any_clone_failure] it is a failure step whose state may be
-      [Ns.Clone]'s cursor advance, a state Linux does not reach, since
-      these checks come before [alloc_pid]; where [clone_ns_exact] is
-      [CnUnmodeled] it is still the error step;
-    - under [Ext.no_ext], whose clone is [Ns.Ext.released_clone], a
-      refused [clone] (220) word with a namespace bit (for example
-      CLONE_NEWNS or CLONE_NEWUSER with CLONE_FS) has no step under
-      [Ns.Clone.clone_tables_failures], for which [clone_ns_exact] is
-      [CnUnmodeled] (before, the call was the error step).  Under
-      [Ns.Spec.ns_ext] such a word keeps the error step
-      ([px_clone_unmodeled]): every refused word holds a bit outside
-      [Ns.Clone]'s mask.
-    - under [Ext.no_ext] and [Ns.Clone.clone_tables_failures], a
-      namespace-world caller's refused [clone] or [clone3], with or
-      without a namespace bit, has no step either: [clone_ns_exact] is
-      not [CnErr EINVAL] for its word, and [Ns.Ext.released_clone] never
-      gives [CnUnmodeled].
-    - a [clone3] whose size tests or struct copy fail reaches the
-      extension as [SIGCHLD] too: -E2BIG above [PAGE_SIZE], -EINVAL
-      below [Fork.CLONE_ARGS_SIZE_VER0], the tail test's -E2BIG or
-      -EFAULT, or -EFAULT for a struct range [access_ok] refuses.  The
-      tables' [CnErr] errnos are EPERM, EINVAL and ENOSPC only, so for a
-      namespace-world caller these failures have the missing and extra
-      outcomes the -EINVAL bullets above name: no step under
-      [Ns.Clone.clone_tables_failures] where [clone_ns_exact] is [CnOk]
-      (under [Ns.Spec.ns_ext]) or under [Ext.no_ext], and under
-      [Ext.any_clone_failure] a failure step whose state may be
-      [Ns.Clone]'s cursor advance, which Linux does not reach, since
-      the copy comes before [alloc_pid].
-    Each is a missing or an extra outcome of a call the model declined
-    before, never a changed answer to a call it answered, except the
-    -EFAULT of a size-88 struct range [access_ok] refuses, which the
-    released step answered before this note was written. *)
+    THE EXTENSION NO LONGER READS THIS WORD.  It reads the decoded
+    input [clone_in_of] gives ([Fork.CloneIn]), and the word is left to
+    the one reader that wants a word: the stale-namespace mark of a
+    child's metadata ([child_meta], [ns_stale_child],
+    [Checks.ProcsNsGate.clone_result_userns_stale]), which reads
+    CLONE_NEWUSER, CLONE_NEWNET and CLONE_NEWPID off it (a0 for
+    [clone], the constant [SIGCHLD] for [clone3]).
+
+    The gap this comment carried, between the word and the record, is
+    closed.  A [clone3] no longer reaches the extension as [SIGCHLD].
+    A record the argument checks refuse reaches
+    [Ns.Clone.clone_ns_exact], which answers [CnErr EINVAL] for a
+    caller in the namespace world; in the released world that record
+    makes no namespace, so the exact answer is the released [CnOk] and
+    the core's own -EINVAL stands.  A call with no record at all (a
+    [clone3] its own tests refuse, and a [clone3] whose size tests or
+    struct copy fail: [Fork.C3Err] of [Fork.clone3_copy], -E2BIG, -EINVAL
+    or -EFAULT) reaches [Ns.Clone.clone_ns] as [Fork.CiNoArgs], whose
+    answer is [Ns.Ext.released_clone] and whose failure
+    [Ns.Clone.clone_tables_failures] admits.
+
+    [clone_in_of_flags] and [clone_in_of_ns_bits] tie the word and the
+    record together: the record keeps flags and exit signal apart and
+    gives this word back for [clone], and where this word had no
+    namespace bit the record makes no namespace
+    ([NsProcs.clone_in_of_no_ns]), which is why every statement whose
+    premise moved to [Ns.Ext.makes_ns] still covers what it covered. *)
 Definition clone_flags_of (c : config) : Z :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD
   | None => 0%Z
   end.
 
-(** THE DECODED ARGUMENTS of a pending clone, as the namespace extension
-    is to receive them ([Fork.CloneIn]).
+(** THE DECODED ARGUMENTS of a pending clone: what the clone rules hand
+    the namespace extension ([Fork.CloneIn]).
     - [clone] (220): the record of its registers
       ([Fork.clone_args_of_clone]); none for an a0 with a bit above 31.
     - [clone3] (435): the record of its struct ([Fork.clone3_pre_sz]),
@@ -984,7 +973,9 @@ Definition clone_flags_of (c : config) : Z :=
       struct its own tests refuse or decline, a size or a copy that fails
       or declines, and any other record give none.
     - Any other call, and no pending call: none.
-    No rule of the core reads it yet. *)
+    Every clone rule the extension answers reads it, and so do the
+    run's clone environment and the forced-only filter of a failed
+    clone; [px_clone_claimed], which has no answer at all, does not. *)
 Definition clone_in_of (c : config) : CloneIn :=
   let ms := cfg_ms c in
   match ms_svc_pending ms with
@@ -1040,15 +1031,76 @@ Proof.
   intros segs c x8 H. unfold clone_in_of. cbv zeta. rewrite H. reflexivity.
 Qed.
 
+(** A CLONE THE CORE RESOLVES SUCCESSFULLY HAS A RECORD, AND THE CHECKS
+    PASS IT.  This is the guard for the calls [clone_in_of] gives no
+    record ([Fork.CiNoArgs]): the namespace extension answers those with
+    the core's own clone ([Ns.Clone.clone_ns_exact_no_args], which is
+    [Ns.Ext.released_clone]), and that is sound only because no call
+    without a record creates a child.  An answer that is not
+    error-encoded -- the test [clone_success_b] reads off the successor's
+    a0 -- comes from neither a host refuser nor any -EINVAL, -EFAULT or
+    -E2BIG, so for 220 it comes from one of the two admitted words or an
+    arm of a decoded record the checks pass
+    ([Fork.clone_spec_success_record]) and for 435, at any size the copy
+    takes, from the fork image or a record of [Fork.clone_class]'s fork
+    class ([Fork.clone3_spec_success_record]); each decodes to a record
+    no check refuses, which [clone_in_of] gives.
+    [Ns.Clone.clone_ns_exact_core_gate] is the other half: for
+    a record the checks pass, an answered call is one the core's own gate
+    admits. *)
+Theorem clone_success_has_record : forall segs c x8 eff model' evs,
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  clone_sysno (bv_unsigned x8) = true ->
+  syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists r, clone_in_of c = CiArgs r /\ clone_arg_checks r = false.
+Proof.
+  intros segs c x8 eff model' evs Hp Hno Hsp Herr.
+  assert (Hsys : in_sysno (sys_input segs (cfg_ms c) x8) = x8) by reflexivity.
+  unfold clone_sysno in Hno. apply orb_true_iff in Hno as [Hno | Hno];
+    apply Z.eqb_eq in Hno.
+  - (* clone (220) *)
+    assert (Hlk : lookup_arm spec_table
+                    (bv_unsigned (in_sysno (sys_input segs (cfg_ms c) x8)))
+                  = Some (mkSpecArm 220%Z (fun i => clone_spec (in_arg i 0) i)))
+      by (rewrite Hsys, Hno; reflexivity).
+    unfold syscall_spec in Hsp.
+    apply (proj1 (dispatch_arm _ _ _ _ _ Hlk)) in Hsp. cbn [sa_spec] in Hsp.
+    destruct (clone_spec_success_record _ _ _ _ _ _ Hsp Herr) as (r & Hr & Hc).
+    exists r. split; [|exact Hc].
+    rewrite (clone_in_of_input segs c x8 Hp). cbv zeta. rewrite Hno.
+    replace (Z.eqb 220%Z 220%Z) with true by reflexivity. cbv iota.
+    rewrite Hr. reflexivity.
+  - (* clone3 (435) *)
+    assert (Hlk : lookup_arm spec_table
+                    (bv_unsigned (in_sysno (sys_input segs (cfg_ms c) x8)))
+                  = Some (mkSpecArm 435%Z
+                            (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i)))
+      by (rewrite Hsys, Hno; reflexivity).
+    unfold syscall_spec in Hsp.
+    apply (proj1 (dispatch_arm _ _ _ _ _ Hlk)) in Hsp. cbn [sa_spec] in Hsp.
+    destruct (clone3_spec_success_record _ _ _ _ _ _ _ Hsp Herr)
+      as (reads & short & bs & r & Hc3 & Ha & Hpre & Hc).
+    exists r. split; [|exact Hc].
+    rewrite (clone_in_of_input segs c x8 Hp). cbv zeta. rewrite Hno.
+    replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
+    replace (Z.eqb 435%Z 435%Z) with true by reflexivity. cbv iota.
+    rewrite Hc3. cbv iota. rewrite Hpre. cbv iota.
+    destruct Ha as [Ha | Ha]; rewrite Ha;
+      [cbn [orb] | rewrite Bool.orb_true_r]; cbv iota; reflexivity.
+Qed.
+
 (** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
     the copied struct gives [Fork.CdErr] or [Fork.CdDecline], a pending
     [clone3] has no record, whatever the released step answers for it.
-    The [Fork.CdErr] half is the second answer the namespace extension
-    owes a NAMESPACE-WORLD caller: the core answers -EINVAL
-    ([Fork.clone3_einval_sz]) while the call's [Fork.CloneIn] is
-    [Fork.CiNoArgs], as for the exit signal of 65 in
-    [Checks.Cases.Kernel.Fork.clone3_einval_words].  The [Fork.CdDecline]
-    half owes nothing: the core declines there, as
+    The [Fork.CdErr] half is the case the extension answers without a
+    record: the core answers -EINVAL ([Fork.clone3_einval_sz]) while the
+    call's [Fork.CloneIn] is [Fork.CiNoArgs], as for the exit signal of
+    65 in [Checks.Cases.Kernel.Fork.clone3_einval_words];
+    [Ns.Clone.clone_ns] gives [Ns.Ext.released_clone] for such an input
+    and [Ns.Clone.clone_tables_failures] admits its failure, so the
+    core's answer stands.  The [Fork.CdDecline] half is answered by
+    nobody: the core declines there, as
     [Checks.Cases.Kernel.Fork.clone3_newtime_declines] shows for the
     CLONE_NEWTIME image.  [clone_in_of_no_record] is the 88-byte struct's
     case, [clone_in_of_no_record_sized] every size's: a size whose copy
@@ -1090,7 +1142,7 @@ Proof.
   injection Hc as _ <- <-. exact (Hno r).
 Qed.
 
-(** THE RECORD AND THE WORD THE CORE PASSES TODAY ([clone_flags_of]).  The
+(** THE RECORD AND THE WORD THE CORE ONCE PASSED ([clone_flags_of]).  The
     record keeps flags and exit signal apart ([Fork.clone_args_split]), so
     the word [Z.lor flags exit_signal] gives both back.  For [clone] that
     word is [clone_flags_of]'s.  For [clone3], [clone_flags_of] is
@@ -1136,11 +1188,13 @@ Proof.
     exact (clone_args_word_sigchld r0 Hs).
 Qed.
 
-(** THE NAMESPACE PREMISE CARRIES OVER.  Where the word the core passes
-    today has no namespace bit ([Ns.Ext.has_ns_bits], over
+(** THE NAMESPACE PREMISE CARRIES OVER.  Where the word the core once
+    passed has no namespace bit ([Ns.Ext.has_ns_bits], over
     [Ns.Ext.clone_ns_bits]), a record [clone_in_of] gives has none
-    either, or the argument checks refuse it.  The second case is
-    [clone3]'s only: its word today is [SIGCHLD] whatever the struct
+    either, or the argument checks refuse it.  This is what
+    [NsProcs.clone_in_of_no_ns] turns into [Ns.Ext.makes_ns], the
+    premise the statements now carry.  The second case is
+    [clone3]'s only: its word was [SIGCHLD] whatever the struct
     holds, and several refusing rows need a namespace bit (CLONE_NEWNS
     or CLONE_NEWUSER with CLONE_FS, CLONE_THREAD with CLONE_NEWUSER or
     CLONE_NEWPID).  A refused record makes no namespace.  A [clone3]
@@ -1331,9 +1385,158 @@ Definition orphan_at_exit (m : Model) (p : Pid) (ps : list (Pid * ProcessEntry))
   | None => ps
   end.
 
+(** A first root-tid pin resolves its children's provisional parent pid.
+    Only running children of this root change. This is table bookkeeping,
+    not an observed reparent: [with_ppid] preserves both reparent flags. *)
+Definition root_child_ppid_one (root t : Pid) (kv : Pid * ProcessEntry)
+    : Pid * ProcessEntry :=
+  if negb (bv_eqb (fst kv) root)
+     && match pe_parent (snd kv) with Some p => bv_eqb p root | None => false end
+     && match m_halted (pe_model (snd kv)) with None => true | Some _ => false end
+  then (fst kv, mkEntry (pe_pid (snd kv)) (pe_parent (snd kv)) (pe_ms (snd kv))
+                       (with_ppid t (pe_model (snd kv)))
+                       (pe_ofd (snd kv)) (pe_nsctx (snd kv)))
+  else kv.
+
+Definition root_children_ppid (root t : Pid) (ps : list (Pid * ProcessEntry))
+    : list (Pid * ProcessEntry) :=
+  List.map (root_child_ppid_one root t) ps.
+
+Definition first_root_pin_children (P : pconfig) (e : ProcessEntry) (m' : Model)
+    (ps : list (Pid * ProcessEntry)) : list (Pid * ProcessEntry) :=
+  if bv_eqb (pe_pid e) (pcfg_root P) then
+    match m_tid (pe_model e), m_tid m' with
+    | None, Some t => root_children_ppid (pcfg_root P) t ps
+    | _, _ => ps
+    end
+  else ps.
+
+Lemma root_children_ppid_single : forall root t e,
+  root_children_ppid root t [(root, e)] = [(root, e)].
+Proof.
+  intros root t e. unfold root_children_ppid, root_child_ppid_one.
+  cbn [List.map fst]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+Lemma first_root_pin_children_single : forall P e m' x,
+  first_root_pin_children P e m' [(pe_pid e, x)] = [(pe_pid e, x)].
+Proof.
+  intros P e m' x. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:E; [|reflexivity].
+  destruct (m_tid (pe_model e)); [reflexivity|].
+  destruct (m_tid m'); [|reflexivity].
+  unfold root_children_ppid, root_child_ppid_one. cbn [List.map fst].
+  rewrite E. reflexivity.
+Qed.
+
+Lemma look_in_root_children_ppid : forall root t ps q,
+  look_in (root_children_ppid root t ps) q =
+  option_map (fun e => snd (root_child_ppid_one root t (q, e))) (look_in ps q).
+Proof.
+  intros root t ps q. unfold root_children_ppid.
+  induction ps as [|[k e] ps IH]; [reflexivity|].
+  cbn [List.map look_in fst snd].
+  unfold root_child_ppid_one at 1. cbn [fst snd].
+  destruct (negb (bv_eqb k root)
+    && match pe_parent e with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model e) with None => true | Some _ => false end) eqn:E;
+    cbn [look_in fst snd]; destruct (bv_eqb k q) eqn:Hk; try exact IH;
+    apply bv_eqb_true_eq in Hk; subst q;
+    cbn [option_map]; unfold root_child_ppid_one; cbn [fst snd]; rewrite E;
+    reflexivity.
+Qed.
+
+Lemma look_in_root_children_ppid_root : forall root t ps,
+  look_in (root_children_ppid root t ps) root = look_in ps root.
+Proof.
+  intros root t ps. rewrite look_in_root_children_ppid.
+  destruct (look_in ps root) as [f|]; [|reflexivity]. cbn [option_map].
+  unfold root_child_ppid_one. cbn [fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+Lemma first_root_pin_children_same_tid : forall P e m' ps,
+  m_tid m' = m_tid (pe_model e) -> first_root_pin_children P e m' ps = ps.
+Proof.
+  intros P e m' ps Htid. unfold first_root_pin_children. rewrite Htid.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)), (m_tid (pe_model e)); reflexivity.
+Qed.
+
+Lemma root_child_ppid_one_fst : forall root t kv,
+  fst (root_child_ppid_one root t kv) = fst kv.
+Proof.
+  intros root t [q f]. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    reflexivity.
+Qed.
+
+Lemma root_children_ppid_keys : forall root t ps,
+  List.map fst (root_children_ppid root t ps) = List.map fst ps.
+Proof.
+  intros root t ps. unfold root_children_ppid. rewrite List.map_map.
+  apply List.map_ext. intros kv. apply root_child_ppid_one_fst.
+Qed.
+
+Lemma root_children_ppid_length : forall root t ps,
+  List.length (root_children_ppid root t ps) = List.length ps.
+Proof.
+  intros root t ps. unfold root_children_ppid.
+  induction ps as [|kv ps IH]; [reflexivity|].
+  cbn [List.map List.length]. rewrite IH. reflexivity.
+Qed.
+
+Lemma first_root_pin_children_length : forall P e m' ps,
+  List.length (first_root_pin_children P e m' ps) = List.length ps.
+Proof.
+  intros P e m' ps. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+    (m_tid (pe_model e)), (m_tid m'); try reflexivity;
+    apply root_children_ppid_length.
+Qed.
+
+Lemma root_child_ppid_one_fields : forall root t q f,
+  let f' := snd (root_child_ppid_one root t (q, f)) in
+  pe_pid f' = pe_pid f /\ pe_parent f' = pe_parent f /\ pe_ms f' = pe_ms f
+  /\ pe_ofd f' = pe_ofd f /\ pe_nsctx f' = pe_nsctx f
+  /\ m_halted (pe_model f') = m_halted (pe_model f)
+  /\ m_child_pids (pe_model f') = m_child_pids (pe_model f).
+Proof.
+  intros root t q f. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    repeat split; reflexivity.
+Qed.
+
+Lemma root_child_ppid_one_model : forall root t q f,
+  pe_model (snd (root_child_ppid_one root t (q, f))) = pe_model f
+  \/ pe_model (snd (root_child_ppid_one root t (q, f))) = with_ppid t (pe_model f).
+Proof.
+  intros root t q f. unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent f with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model f) with None => true | Some _ => false end);
+    [right|left]; reflexivity.
+Qed.
+
+Lemma look_in_first_root_pin_children_self : forall P e m' ps f,
+  look_in ps (pe_pid e) = Some f ->
+  look_in (first_root_pin_children P e m' ps) (pe_pid e) = Some f.
+Proof.
+  intros P e m' ps f Hl. unfold first_root_pin_children.
+  destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:E; [|exact Hl].
+  destruct (m_tid (pe_model e)); [exact Hl|].
+  destruct (m_tid m'); [|exact Hl].
+  rewrite look_in_root_children_ppid, Hl. cbn [option_map].
+  unfold root_child_ppid_one. cbn [fst snd]. rewrite E. reflexivity.
+Qed.
+
+
 Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')))
+            (replace_in (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+              (pe_pid e) (pe_absorb e c')))
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
 
@@ -1372,13 +1575,13 @@ Proof. intros m p ps H. unfold orphan_at_exit. rewrite H. reflexivity. Qed.
 
 (** DESIGN NOTE: THE CORE DECIDES EVERY [wait4] OF A CALLER WITH A CHILD.
 
-    [Exit.wait4_spec] is the ONE-PROCESS answer, right only for a caller
-    with nothing to reap (Exit.v:234-246).  Here a child is an entry of
-    [pcfg_procs], so a caller with one must never reach that spec: whatever
-    it answers -- [unmodeled] today, an environment choice of 0 or a pid
-    with an invented status once it is given one -- is an answer about
-    children it cannot see, while the table holds the real ones and their
-    real statuses.  So, for a caller with at least one child in the table
+    [Exit.wait4_spec] is the ONE-PROCESS answer: -ECHILD for a caller with
+    no child, and for a caller with a recorded child the environment's
+    choice of 0 or a recorded pid with an environment-chosen status word.
+    Here a child is an entry of [pcfg_procs], so a caller with one must
+    never reach that spec: its answer is about children it cannot see,
+    while the table holds the real ones and their real statuses.  So, for
+    a caller with at least one child in the table
     ([wait4_owned_b]), every call numbered 260 is answered by an arm of
     this core:
 
@@ -1691,7 +1894,11 @@ Definition root_pin_pending_b (P : pconfig) (e : ProcessEntry) : bool :=
 
 (** The table with the root's tid pinned to [t]. *)
 Definition pin_root (P : pconfig) (r : ProcessEntry) (t : word) : pconfig :=
-  mkPCfg (replace_in (pcfg_procs P) (pcfg_root P)
+  let ps := match m_tid (pe_model r) with
+            | None => root_children_ppid (pcfg_root P) t (pcfg_procs P)
+            | Some _ => pcfg_procs P
+            end in
+  mkPCfg (replace_in ps (pcfg_root P)
             (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
                      (pe_ofd r) (pe_nsctx r)))
          (pcfg_root P) (pcfg_shared P).
@@ -2277,11 +2484,10 @@ Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
   intros c c'. unfold absorb.
-  replace (replace_in (pcfg_procs (one_proc c)) (pe_pid (one_entry c))
-             (pe_absorb (one_entry c) c'))
-    with [(one_pid, pe_absorb (one_entry c) c')]
-    by (cbn; rewrite bv_eqb_same; reflexivity).
+  change (pcfg_procs (one_proc c)) with [(pe_pid (one_entry c), one_entry c)].
+  rewrite first_root_pin_children_single.
   change (pe_pid (one_entry c)) with one_pid.
+  cbn [replace_in fst snd]. rewrite ?bv_eqb_same.
   rewrite orphan_at_exit_single.
   unfold one_proc, one_entry. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
@@ -3026,7 +3232,8 @@ Definition with_nsctx (e : ProcessEntry) (ctx : NsCtx) : ProcessEntry :=
 Definition absorb_x (P : pconfig) (e : ProcessEntry) (c' : config) (ctx' : NsCtx)
     (st' : NsState) : pconfig :=
   mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
-            (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx')))
+            (replace_in (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+              (pe_pid e) (with_nsctx (pe_absorb e c') ctx')))
          (pcfg_root P)
          (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
 
@@ -3084,6 +3291,26 @@ Definition clone_parent_rewrite (segs : list Segment) (c c1 : config) (ret : opt
           end
       end
   end.
+
+(** The rewritten parent's model is the successor's, or the successor's
+    with the store accounted ([State.materialize_model_accesses]). *)
+Lemma clone_parent_rewrite_model : forall segs c c1 ret c2,
+  clone_parent_rewrite segs c c1 ret = Some c2 ->
+  cfg_model c2 = cfg_model c1
+  \/ exists acc, materialize_model_accesses (cfg_model c1) acc = Some (cfg_model c2).
+Proof.
+  intros segs c c1 ret c2 H. unfold clone_parent_rewrite in H.
+  destruct ret as [v|]; [|injection H as <-; left; reflexivity].
+  destruct (match clone_args_of_cfg c with Some r => clone_parent_tid r | None => None end)
+    as [p|]; [|injection H as <-; left; reflexivity].
+  destruct (tid_store_case (ms_writable_byte segs (cfg_ms c)) p);
+    [injection H as <-; left; reflexivity | | discriminate H].
+  cbv zeta in H.
+  destruct (materialize_model_accesses (cfg_model c1)
+              (write_accesses [(p, le32_bytes (ms_gpr (cfg_ms c1) 0))])) as [m|] eqn:Hm;
+    [|discriminate H].
+  injection H as <-. right. eexists. exact Hm.
+Qed.
 
 Local Lemma clone_has_sub : forall f B b,
   Z.land f B = 0%Z -> Z.land B b = b -> clone_has f b = false.
@@ -3179,15 +3406,13 @@ Qed.
     outcome when its errno is in the clone's refusal list
     ([Fork.clone_errnos]), the clone's family is forced-only in the run's
     configuration, and the released spec admits a non-refusal at the same
-    input.  That filter cannot see the namespace state, so once an errno
-    the namespace tables decide is in the refusal list (a closed pid
-    namespace's ENOMEM, which the tables do not answer yet) it can remove
-    an answer the tables force, and then [px_clone_fail] has no step to
-    match the extension's answer.  Today no [CnErr] errno of
-    [clone_ns_exact] (EPERM, EINVAL, ENOSPC) is in [Fork.clone_errnos], and
-    where [clone_ns_exact] is [CnUnmodeled], [Ns.Spec.ns_ext]'s clone admits
-    no failure; so under [ns_ext] the premise of [px_clone_fail] is the
-    released step for every failure [ns_ext] admits
+    input.  That filter cannot see the namespace state: it would remove
+    a closed children's pid namespace's forced ENOMEM.  The tables now
+    answer that errno after advancing the pid cursors, and
+    [clone_table_kept] keeps it.  At the default launch, where the
+    children's namespace is the active namespace, [clone_ns_exact]
+    answers only EPERM, EINVAL and ENOSPC, none in [Fork.clone_errnos].
+    There [ns_ext]'s failed-clone premise is still the released step
     ([NsProcs.ns_clone_fail_step_released], over
     [NsProcs.clone_ns_exact_errno]).
 
@@ -3207,7 +3432,7 @@ Qed.
     first conjunct of [clone_table_kept]: the extension's clone admits no
     success at this call.  [no_ext]'s clone ([released_clone]) admits one
     at every call, and so does every extension's for a caller in the
-    released world whose word has no namespace bit
+    released world whose clone makes no namespace
     ([Ns.Ext.ext_clone_coherent]); there the filter is the released one,
     unchanged ([clone_fail_step_unchanged]).  [Ns.Spec.ns_ext]'s clone
     admits no success whenever [clone_ns_exact] is [CnErr] or
@@ -3222,7 +3447,7 @@ Qed.
     filter under [no_ext] ([clone_fail_step_unchanged]), and those are the
     only extensions today.  A future [ExtSpec] must re-prove that equality
     for itself, or state how it differs. *)
-Definition clone_table_kept (ext : ExtSpec) (f : Z) (m : Model) (ctx : NsCtx)
+Definition clone_table_kept (ext : ExtSpec) (f : CloneIn) (m : Model) (ctx : NsCtx)
     (st : NsState) (hq en : Z) : Prop :=
   (forall child ret st', ~ ext_clone ext f m ctx st hq (CnOk child ret st'))
   /\ ((exists st', Ns.Clone.clone_ns_exact f m ctx st hq = CnErr en st')
@@ -3237,13 +3462,13 @@ Definition clone_fail_step (ext : ExtSpec) (segs : list Segment) (cfg : Spurious
     (c' : config) : Prop :=
   sstep_cfg segs cfg c evs (SNext c')
   \/ (sstep_cfg segs may_fail_cfg c evs (SNext c')
-      /\ clone_table_kept ext (clone_flags_of c) (cfg_model c) ctx st hq en).
+      /\ clone_table_kept ext (clone_in_of c) (cfg_model c) ctx st hq en).
 
 (** Where the extension's clone admits a success, the filter is the
     released one. *)
 Lemma clone_fail_step_success_iff : forall ext segs cfg c ctx st hq en evs c',
   (exists child ret st',
-     ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq (CnOk child ret st')) ->
+     ext_clone ext (clone_in_of c) (cfg_model c) ctx st hq (CnOk child ret st')) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext segs cfg c ctx st hq en evs c' (child & ret & st' & Hok). split.
@@ -3254,7 +3479,7 @@ Qed.
 
 (** ... so it is wherever the extension's clone is the released clone. *)
 Lemma clone_fail_step_released_clone : forall ext segs cfg c ctx st hq en evs c',
-  (forall o, ext_clone ext (clone_flags_of c) (cfg_model c) ctx st hq o
+  (forall o, ext_clone ext (clone_in_of c) (cfg_model c) ctx st hq o
              <-> released_clone ctx st o) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
@@ -3263,11 +3488,11 @@ Proof.
 Qed.
 
 (** NO PUBLISHED ANSWER CHANGES: under [no_ext], and for a caller in the
-    released world whose word has no namespace bit, the premise of
+    released world whose clone makes no namespace, the premise of
     [px_clone_fail] is the released step under the run's configuration, as
     it was before the filter above. *)
 Theorem clone_fail_step_unchanged : forall ext segs cfg c ctx st hq en evs c',
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits (clone_flags_of c) = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns (clone_in_of c) = false) ->
   (clone_fail_step ext segs cfg c ctx st hq en evs c' <-> sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext segs cfg c ctx st hq en evs c' H. apply clone_fail_step_released_clone.
@@ -3302,11 +3527,11 @@ Qed.
     which are not decidable in general, so each case states the one it
     proves. *)
 Definition clone_kept (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
-    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+    (f : CloneIn) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
   ~ spurious_refusal_cfg cfg i m eff \/ clone_table_kept ext f m ctx st hq en.
 
 Definition clone_removed (ext : ExtSpec) (cfg : SpuriousCfg) (i : SyscallInput) (m : Model)
-    (f : Z) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
+    (f : CloneIn) (ctx : NsCtx) (st : NsState) (hq en : Z) (eff : SyscallEffect) : Prop :=
   spurious_refusal_cfg cfg i m eff /\ ~ clone_table_kept ext f m ctx st hq en.
 
 Lemma clone_kept_not_removed : forall ext cfg i m f ctx st hq en eff,
@@ -3322,7 +3547,7 @@ Lemma clone_fail_step_kept : forall ext segs cfg ms model x8 eff model' model'' 
   syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
   m_halted model' = None ->
   materialize_model_accesses model' (syscall_effect_accesses eff) = Some model'' ->
-  clone_kept ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+  clone_kept ext cfg (sys_input segs ms x8) model (clone_in_of (mkCfg ms model))
     ctx st hq en eff ->
   clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
     (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
@@ -3337,7 +3562,7 @@ Qed.
 Lemma clone_fail_step_removed : forall ext segs cfg ms model x8 eff evs model''
                                        ctx st hq en,
   ms_svc_pending ms = Some x8 ->
-  clone_removed ext cfg (sys_input segs ms x8) model (clone_flags_of (mkCfg ms model))
+  clone_removed ext cfg (sys_input segs ms x8) model (clone_in_of (mkCfg ms model))
     ctx st hq en eff ->
   ~ clone_fail_step ext segs cfg (mkCfg ms model) ctx st hq en evs
       (mkCfg (advance_past_svc (apply_effect ms eff)) model'').
@@ -3386,11 +3611,11 @@ Lemma clone_kept_not_refusal : forall ext cfg i m f ctx st hq en eff,
   refusal_b i m (eff_ret eff) = false -> clone_kept ext cfg i m f ctx st hq en eff.
 Proof. intros ext cfg i m f ctx st hq en eff Hr. left. exact (spurious_refusal_not_refusal _ _ _ _ Hr). Qed.
 
-(** Under [no_ext], and for a caller in the released world whose word
-    has no namespace bit, the extension's clone admits a success, so the
+(** Under [no_ext], and for a caller in the released world whose clone
+    makes no namespace, the extension's clone admits a success, so the
     tables keep nothing and both decisions are the released filter's. *)
 Lemma clone_success_unchanged : forall ext f m ctx st hq,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   ext_clone ext f m ctx st hq (CnOk ctx None st).
 Proof.
   intros ext f m ctx st hq H.
@@ -3400,7 +3625,7 @@ Proof.
 Qed.
 
 Lemma clone_kept_unchanged : forall ext cfg i m f ctx st hq en eff,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   (clone_kept ext cfg i m f ctx st hq en eff <-> ~ spurious_refusal_cfg cfg i m eff).
 Proof.
   intros ext cfg i m f ctx st hq en eff H. split; [|intros Hn; left; exact Hn].
@@ -3409,7 +3634,7 @@ Proof.
 Qed.
 
 Lemma clone_removed_unchanged : forall ext cfg i m f ctx st hq en eff,
-  ext = no_ext \/ (flat_view ctx st = true /\ has_ns_bits f = false) ->
+  ext = no_ext \/ (flat_view ctx st = true /\ makes_ns f = false) ->
   (clone_removed ext cfg i m f ctx st hq en eff <-> spurious_refusal_cfg cfg i m eff).
 Proof.
   intros ext cfg i m f ctx st hq en eff H. split; [intros (Hs & _); exact Hs|].
@@ -3451,7 +3676,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     child_pid_core c' q ->
     look P q = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child ret st') ->
     clone_parent_rewrite segs (pe_cfg (pcfg_shared P) e) (with_ret c' ret) ret = Some c'' ->
@@ -3473,10 +3698,10 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
     ms_gpr (cfg_ms c') 0 = errno_ret en ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq (CnErr en st') ->
-    cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st' ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' (pe_nsctx e) st'))
 | px_clone_unmodeled : forall P e evs c' hq,
@@ -3485,7 +3710,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
     clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq CnUnmodeled ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
@@ -3613,7 +3838,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     child_pid_core c' q ->
     look P q = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child ret st') ->
     clone_parent_rewrite segs (pe_cfg (pcfg_shared P) e) (with_ret c' ret) ret = None ->
@@ -3901,12 +4126,12 @@ Definition ext_agrees (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (P
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ multiproc_ok ext segs P e = multiproc_allowed P (pe_cfg (pcfg_shared P) e)
     /\ (forall hq o,
-          ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
@@ -4064,12 +4289,12 @@ Definition ext_released_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segmen
   forall e, look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false
     /\ (forall hq o,
-          ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Lemma ext_released_agrees : forall ext cenv segs P,
@@ -4101,14 +4326,14 @@ Definition ext_flat_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (
     : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
-    /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false
+    /\ makes_ns (clone_in_of (pe_cfg (pcfg_shared P) e)) = false
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true ->
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         forall hq en st',
-          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+          cenv (clone_in_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Lemma ext_flat_agrees : forall ext cenv segs P,
@@ -4187,11 +4412,11 @@ Qed.
 (** A one-process system is in the released world ([one_proc] uses
     [init_nsctx] and [empty_nsstate]). *)
 Lemma ext_flat_one : forall ext cenv segs c,
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   ext_flat_at ext cenv segs (one_proc c).
 Proof.
   intros ext cenv segs c Hns Hcp Hwt Hce e Hl.
@@ -4205,12 +4430,12 @@ Qed.
     pending clone makes no namespace, is left to the core, and may fail as
     the core's own clone does. *)
 Theorem pstep_x_single_next : forall ext cenv segs cfg c evs P',
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs (PNext P')
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
@@ -4226,11 +4451,11 @@ Proof.
 Qed.
 
 Theorem pstep_x_single_err : forall ext cenv segs cfg c evs,
-  has_ns_bits (clone_flags_of c) = false ->
+  makes_ns (clone_in_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
   (clone_pending_b c = true ->
-   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+   forall hq en st', cenv (clone_in_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError
    <-> sstep_cfg segs cfg c evs SError).
 Proof.
@@ -4247,8 +4472,11 @@ Qed.
 
 (** At an instruction nothing is pending, so nothing is claimed and no
     clone makes a namespace: the extended relation is the released step. *)
-Lemma no_ns_bits_instr : forall c, at_instruction c -> has_ns_bits (clone_flags_of c) = false.
-Proof. intros c H. unfold at_instruction, clone_flags_of in *. rewrite H. reflexivity. Qed.
+Lemma makes_no_ns_instr : forall c, at_instruction c -> makes_ns (clone_in_of c) = false.
+Proof.
+  intros c H. unfold at_instruction in H. unfold clone_in_of. cbv zeta.
+  rewrite H. reflexivity.
+Qed.
 
 Lemma clone_pending_instr : forall c, at_instruction c -> clone_pending_b c = false.
 Proof. intros c H. unfold at_instruction, clone_pending_b in *. rewrite H. reflexivity. Qed.
@@ -4259,7 +4487,7 @@ Theorem pstep_x_instr_single_next : forall ext cenv segs cfg c evs P',
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros ext cenv segs cfg c evs P' H. apply pstep_x_single_next.
-  - apply no_ns_bits_instr. exact H.
+  - apply makes_no_ns_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - intros c' _. apply clone_success_b_instr. exact H.
   - apply wait4_intercept_b_instr. exact H.
@@ -4271,7 +4499,7 @@ Theorem pstep_x_instr_single_err : forall ext cenv segs cfg c evs,
   (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError <-> sstep_cfg segs cfg c evs SError).
 Proof.
   intros ext cenv segs cfg c evs H. apply pstep_x_single_err.
-  - apply no_ns_bits_instr. exact H.
+  - apply makes_no_ns_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - apply wait4_intercept_b_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.

@@ -2873,6 +2873,285 @@ Proof.
 Qed.
 
 (* =========================================================================
+   A parent that may die: [ParentEnv] and [run_pcfg]
+   =========================================================================
+
+   [Run.valid_input]'s environment is a parent that dies only while the
+   parent-death signal is 0 ("Assumptions that the model does not
+   check" in SCOPE.md).  Such a death kills nothing and shows only at a
+   [getppid], which [Kernel.Sys.getppid_spec] answers inside its
+   reparent window, so the run relation needs no step for it.
+
+   [ParentEnv] is the other reading, as a premise a statement NAMES: the
+   parent may die at ANY moment the process runs, whatever the signal.
+   It is a claim about the environment's future, so it is a
+   configuration of the run in the pattern of [SpuriousCfg] above, and
+   not a launch predicate.  [parent_lives] is the default and changes
+   nothing ([sstep_pcfg_lives_iff], [run_pcfg_lives]); [parent_may_die]
+   is the premise.
+
+   [sstep_pcfg cfg p] is [sstep_cfg cfg] with three more steps, each
+   only under [parent_may_die] and at a running configuration, each the
+   caller's part of [forget_original_parent] (kernel/exit.c):
+   - the signal is 0: the death sends nothing and moves the parent pid
+     to a reaper ([find_new_reaper]), any pid below the envelope but the
+     held one, recorded as a [getppid] answer records it
+     ([State.with_ppid_answered]); no event;
+   - the signal is SIGKILL (9): [group_send_sig_info] kills the process,
+     and the step is [sstep_cfg_killed]'s ending with [KillEv 9]
+     ([State.with_killed]);
+   - any other signal: the model runs no handler and keeps no pending
+     set for it, so the step is the error transition, fail-closed
+     ([unmodeled_pat]).
+   Kernel citations: kernel/exit.c [forget_original_parent],
+   [find_new_reaper]; kernel/signal.c [group_send_sig_info]; read at
+   v6.18.44, identical at v6.18.46.  Nothing under [Sys/] reads a
+   [ParentEnv], and [sstep], [sstep_cfg] and every statement above are
+   unchanged. *)
+
+Record ParentEnv := mkParentEnv {
+  pa_dies : bool
+}.
+
+(** The default reading: the parent dies only while the signal is 0. *)
+Definition parent_lives : ParentEnv := mkParentEnv false.
+
+(** The named premise: the parent may die at any moment. *)
+Definition parent_may_die : ParentEnv := mkParentEnv true.
+
+(** The signal the parent's death sends and the model delivers. *)
+Definition SIGKILL_W : word := Z_to_bv 64 9.
+
+Section StepPCfg.
+Variable segs : list Segment.
+
+(** [sstep_cfg] under a parent environment: every step of [sstep_cfg],
+    and under [parent_may_die] the parent's death at a running
+    configuration. *)
+Inductive sstep_pcfg (cfg : SpuriousCfg) (p : ParentEnv)
+    : config -> list event -> step_to -> Prop :=
+| sstep_pcfg_base : forall c evs r,
+    sstep_cfg segs cfg c evs r ->
+    sstep_pcfg cfg p c evs r
+| sstep_pcfg_reparent : forall ms model q,
+    pa_dies p = true ->
+    m_halted model = None ->
+    bv_unsigned (m_pdeath_signal model) = 0%Z ->
+    (bv_unsigned q < PID_MAX_ENVELOPE)%Z ->
+    q <> m_ppid model ->
+    sstep_pcfg cfg p (mkCfg ms model) []
+      (SNext (mkCfg ms (with_ppid_answered q model)))
+| sstep_pcfg_parent_kill : forall ms model,
+    pa_dies p = true ->
+    m_halted model = None ->
+    bv_unsigned (m_pdeath_signal model) = 9%Z ->
+    sstep_pcfg cfg p (mkCfg ms model)
+      [KillEv SIGKILL_W (m_fs (with_killed SIGKILL_W model))]
+      (SNext (mkCfg ms (with_killed SIGKILL_W model)))
+| sstep_pcfg_parent_signal : forall ms model,
+    pa_dies p = true ->
+    m_halted model = None ->
+    bv_unsigned (m_pdeath_signal model) <> 0%Z ->
+    bv_unsigned (m_pdeath_signal model) <> 9%Z ->
+    sstep_pcfg cfg p (mkCfg ms model) [] SError.
+
+(** MEANING: under [parent_lives] the relation is [sstep_cfg]. *)
+Lemma sstep_pcfg_lives_iff : forall cfg c evs r,
+  sstep_pcfg cfg parent_lives c evs r <-> sstep_cfg segs cfg c evs r.
+Proof.
+  intros cfg c evs r; split; intros H.
+  - destruct H as [? ? ? Hs | ? ? ? Hd | ? ? Hd | ? ? Hd];
+      [exact Hs | discriminate Hd | discriminate Hd | discriminate Hd].
+  - apply sstep_pcfg_base; exact H.
+Qed.
+
+(** Under [parent_may_die] the parent can die at every running
+    configuration: one of the three death steps applies. *)
+Lemma sstep_pcfg_death_progress : forall cfg ms model,
+  m_halted model = None ->
+  exists evs st, sstep_pcfg cfg parent_may_die (mkCfg ms model) evs st.
+Proof.
+  intros cfg ms model Hh.
+  destruct (Z.eq_dec (bv_unsigned (m_pdeath_signal model)) 0) as [H0|H0].
+  - set (q := if bv_eqb (m_ppid model) (Z_to_bv 64 0) then Z_to_bv 64 1
+              else Z_to_bv 64 0).
+    exists [], (SNext (mkCfg ms (with_ppid_answered q model))).
+    apply sstep_pcfg_reparent; [reflexivity | exact Hh | exact H0 | |].
+    + unfold q. destruct (bv_eqb (m_ppid model) (Z_to_bv 64 0));
+        vm_compute; reflexivity.
+    + unfold q. destruct (bv_eqb (m_ppid model) (Z_to_bv 64 0)) eqn:E;
+        intro Hq.
+      * apply bv_eqb_eq in E. rewrite <- Hq in E.
+        apply (f_equal bv_unsigned) in E. vm_compute in E. discriminate E.
+      * rewrite <- Hq in E. vm_compute in E. discriminate E.
+  - destruct (Z.eq_dec (bv_unsigned (m_pdeath_signal model)) 9) as [H9|H9].
+    + eexists _, _. apply sstep_pcfg_parent_kill; [reflexivity | exact Hh | exact H9].
+    + eexists _, _. apply sstep_pcfg_parent_signal; [reflexivity | exact Hh | exact H0 | exact H9].
+Qed.
+
+Inductive star_pcfg (cfg : SpuriousCfg) (p : ParentEnv)
+    : config -> list event -> config -> Prop :=
+| star_pcfg_refl : forall c, star_pcfg cfg p c [] c
+| star_pcfg_step : forall c1 evs c2 tr c3,
+    sstep_pcfg cfg p c1 evs (SNext c2) ->
+    star_pcfg cfg p c2 tr c3 ->
+    star_pcfg cfg p c1 (evs ++ tr) c3.
+
+Lemma star_pcfg_lives_iff : forall cfg c tr c',
+  star_pcfg cfg parent_lives c tr c' <-> star_cfg segs cfg c tr c'.
+Proof.
+  intros cfg c tr c'; split; intros H; induction H.
+  - apply star_cfg_refl.
+  - eapply star_cfg_step; [apply sstep_pcfg_lives_iff; eassumption | assumption].
+  - apply star_pcfg_refl.
+  - eapply star_pcfg_step; [apply sstep_pcfg_lives_iff; eassumption | assumption].
+Qed.
+
+(** The uncovered points of the run under [p]: [unmodeled_at]'s, and
+    under [parent_may_die] a running configuration whose parent-death
+    signal the model does not deliver. *)
+Definition unmodeled_pat (p : ParentEnv) (c : config) : Prop :=
+  unmodeled_at segs c
+  \/ (pa_dies p = true /\ m_halted (cfg_model c) = None
+      /\ bv_unsigned (m_pdeath_signal (cfg_model c)) <> 0%Z
+      /\ bv_unsigned (m_pdeath_signal (cfg_model c)) <> 9%Z).
+
+Lemma unmodeled_pat_lives : forall c,
+  unmodeled_pat parent_lives c <-> unmodeled_at segs c.
+Proof.
+  intros c; split.
+  - intros [H | (Hd & _)]; [exact H | discriminate Hd].
+  - intros H. left. exact H.
+Qed.
+
+Definition obs_trace_pcfg (cfg : SpuriousCfg) (p : ParentEnv) (c0 : config)
+    (tr : list event) : Prop :=
+  exists tr' c, star_pcfg cfg p c0 tr' c /\ is_prefix tr tr'.
+
+Definition reaches_error_pcfg (cfg : SpuriousCfg) (p : ParentEnv) (c0 : config) : Prop :=
+  exists tr c evs, star_pcfg cfg p c0 tr c /\ sstep_pcfg cfg p c evs SError.
+
+Inductive all_traces_error_pcfg (cfg : SpuriousCfg) (p : ParentEnv) : config -> Prop :=
+| all_traces_error_pcfg_intro : forall c,
+    (exists evs to, sstep_pcfg cfg p c evs to) ->
+    (forall evs c', sstep_pcfg cfg p c evs (SNext c') -> all_traces_error_pcfg cfg p c') ->
+    all_traces_error_pcfg cfg p c.
+
+Definition reaches_unmodeled_pcfg (cfg : SpuriousCfg) (p : ParentEnv) (c0 : config) : Prop :=
+  exists tr c, star_pcfg cfg p c0 tr c /\ unmodeled_pat p c.
+
+(** ... and under [parent_lives] each of the four is [sstep_cfg]'s. *)
+Lemma obs_trace_pcfg_lives : forall cfg c0 tr,
+  obs_trace_pcfg cfg parent_lives c0 tr <-> obs_trace_cfg segs cfg c0 tr.
+Proof.
+  intros cfg c0 tr; split; intros (tr' & c & Hs & Hp); exists tr', c;
+    (split; [apply star_pcfg_lives_iff; exact Hs | exact Hp]).
+Qed.
+
+Lemma reaches_error_pcfg_lives : forall cfg c0,
+  reaches_error_pcfg cfg parent_lives c0 <-> reaches_error_cfg segs cfg c0.
+Proof.
+  intros cfg c0; split; intros (tr & c & evs & Hs & He); exists tr, c, evs;
+    (split; [apply star_pcfg_lives_iff; exact Hs | apply sstep_pcfg_lives_iff; exact He]).
+Qed.
+
+Lemma all_traces_error_pcfg_lives : forall cfg c,
+  all_traces_error_pcfg cfg parent_lives c <-> all_traces_error_cfg segs cfg c.
+Proof.
+  intros cfg c; split; intros H.
+  - induction H as [c (evs & to & Hstep) _ IH].
+    constructor.
+    + exists evs, to. apply sstep_pcfg_lives_iff; exact Hstep.
+    + intros evs' c' Hss. apply (IH evs' c'). apply sstep_pcfg_lives_iff; exact Hss.
+  - induction H as [c (evs & to & Hstep) _ IH].
+    constructor.
+    + exists evs, to. apply sstep_pcfg_lives_iff; exact Hstep.
+    + intros evs' c' Hss. apply (IH evs' c'). apply sstep_pcfg_lives_iff; exact Hss.
+Qed.
+
+Lemma reaches_unmodeled_pcfg_lives : forall cfg c0,
+  reaches_unmodeled_pcfg cfg parent_lives c0 <-> reaches_unmodeled_cfg segs cfg c0.
+Proof.
+  intros cfg c0; split; intros (tr & c & Hs & Hu); exists tr, c;
+    (split; [apply star_pcfg_lives_iff; exact Hs | apply unmodeled_pat_lives; exact Hu]).
+Qed.
+
+(** Under every parent environment, an uncovered point is an error, and
+    a run all of whose executions error reaches an error. *)
+Lemma reaches_unmodeled_pcfg_reaches_error_pcfg : forall cfg p c0,
+  reaches_unmodeled_pcfg cfg p c0 -> reaches_error_pcfg cfg p c0.
+Proof.
+  intros cfg p c0 (tr & [ms model] & Hstar & [Hu | (Hd & Hh & H0 & H9)]);
+    cbn [cfg_ms cfg_model] in *.
+  - destruct Hu as (Hh &
+      [(Hsvc & Hacc & Hv) | [(Hsvc & Hacc2 & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
+      cbn [cfg_ms cfg_model] in *;
+      exists tr, (mkCfg ms model), []; (split; [exact Hstar |]); apply sstep_pcfg_base.
+    + apply sstep_cfg_instr_unmodeled; assumption.
+    + apply (sstep_cfg_vdso_unmodeled segs cfg ms model fn); assumption.
+    + apply (sstep_cfg_syscall_unmodeled segs cfg ms model x8); assumption.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    apply sstep_pcfg_parent_signal; assumption.
+Qed.
+
+Lemma all_traces_error_pcfg_reaches_error_pcfg : forall cfg p c,
+  all_traces_error_pcfg cfg p c -> reaches_error_pcfg cfg p c.
+Proof.
+  intros cfg p c Hall. induction Hall as [c Hprogress Hnext IH].
+  destruct Hprogress as (evs & to & Hstep). destruct to as [c' |].
+  - destruct (IH evs c' Hstep) as (tr & c2 & err_evs & Hstar & Herr).
+    exists (evs ++ tr), c2, err_evs. split; [| exact Herr].
+    econstructor; eauto.
+  - exists [], c, evs. split; [apply star_pcfg_refl | exact Hstep].
+Qed.
+
+End StepPCfg.
+
+(** [run] under a spurious-failure configuration and a parent
+    environment, written as the same [match] as [run_scfg]. *)
+Definition run_pcfg (cfg : SpuriousCfg) (p : ParentEnv) (img : Image) (lim : Z)
+    (en : ExecEntry) (inp : ProcInput) : behavior :=
+  match img, en with
+  | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace_pcfg vsegs cfg p c0;
+       bh_errors := reaches_error_pcfg vsegs cfg p c0;
+       bh_all_errors := all_traces_error_pcfg vsegs cfg p c0;
+       bh_unmodeled := reaches_unmodeled_pcfg vsegs cfg p c0 |}
+  end.
+
+(** MEANING PRESERVED: [run_pcfg cfg parent_lives] is [run_scfg cfg],
+    observation by observation. *)
+Lemma run_pcfg_lives : forall cfg img lim en inp,
+  behavior_equiv (run_pcfg cfg parent_lives img lim en inp)
+                 (run_scfg cfg img lim en inp).
+Proof.
+  intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp.
+  cbn [run_pcfg run_scfg bh_traces bh_errors bh_all_errors bh_unmodeled].
+  split; [intros tr; apply obs_trace_pcfg_lives |].
+  split; [apply reaches_error_pcfg_lives |].
+  split; [apply all_traces_error_pcfg_lives |].
+  apply reaches_unmodeled_pcfg_lives.
+Qed.
+
+Lemma run_pcfg_unmodeled_errors : forall cfg p img lim en inp,
+  bh_unmodeled (run_pcfg cfg p img lim en inp) -> bh_errors (run_pcfg cfg p img lim en inp).
+Proof.
+  intros cfg p [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  cbn [run_pcfg bh_unmodeled bh_errors] in *.
+  eapply reaches_unmodeled_pcfg_reaches_error_pcfg; exact H.
+Qed.
+
+Lemma run_pcfg_all_errors_errors : forall cfg p img lim en inp,
+  bh_all_errors (run_pcfg cfg p img lim en inp) -> bh_errors (run_pcfg cfg p img lim en inp).
+Proof.
+  intros cfg p [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  cbn [run_pcfg bh_all_errors bh_errors] in *.
+  eapply all_traces_error_pcfg_reaches_error_pcfg; exact H.
+Qed.
+
+(* =========================================================================
    The budget mark: where a run is refused for exceeding its budget
    =========================================================================
 
@@ -4691,7 +4970,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4789,7 +5069,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4814,7 +5095,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4892,7 +5174,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4914,7 +5197,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -5011,7 +5295,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -5029,7 +5314,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -5125,7 +5411,8 @@ Definition valid_input_paths (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_paths_of_valid_input : forall inp,
   valid_input inp -> valid_input_paths inp.
@@ -5240,7 +5527,8 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = true
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
   valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
@@ -5283,7 +5571,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5300,7 +5589,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5316,7 +5606,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5615,7 +5906,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5632,7 +5924,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5730,7 +6023,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5747,7 +6041,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_inherited_fds inp = []
   /\ in_selfkill_terminal inp = false
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])
@@ -5853,11 +6148,32 @@ Definition valid_input_inherited (inp : ProcInput) : Prop :=
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ inherited_fds_ok (in_inherited_fds inp) = true
-  /\ in_cgroup_bpf_setsockopt inp = false.
+  /\ in_cgroup_bpf_setsockopt inp = false
+  /\ in_clone_refusers inp = no_clone_refusers.
 
 (** THE PIN, as an accessor rather than as a position. *)
 Lemma valid_input_no_inherited : forall inp,
   valid_input inp -> in_inherited_fds inp = [].
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** THE CLONE-REFUSER PIN, as an accessor rather than as a position: every
+    launch predicate of this file pins [State.in_clone_refusers] to
+    [State.no_clone_refusers], so its clones answer from the model's lists
+    ([Kernel.Fork.clone_spec_default_iff]). *)
+Lemma valid_input_no_clone_refusers : forall inp,
+  valid_input inp -> in_clone_refusers inp = no_clone_refusers.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_inherited_no_clone_refusers : forall inp,
+  valid_input_inherited inp -> in_clone_refusers inp = no_clone_refusers.
 Proof.
   intros inp Hv. red in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.

@@ -17,7 +17,8 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
 (** fcntl: a closed fd is -EBADF whatever the command; on an open one
-    F_SETFD answers 0 for any arg, F_GETFD answers 0 or FD_CLOEXEC, an
+    F_SETFD answers 0 for any arg and records the bit, F_GETFD answers
+    the recorded bit or, where none is recorded, 0 or FD_CLOEXEC, an
     F_SETFL that provably changes nothing answers 0, F_GETFL answers the
     flag word on the fd kinds [Fcntl.getfl_f_flags] can derive it for,
     and every other command is unmodeled. *)
@@ -26,13 +27,19 @@ Definition check_fcntl (fd cmd arg : word) (eff : SyscallEffect) (m : Model)
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some e =>
-      if bv_eqb cmd F_SETFD then check_ret_only eff (Z_to_bv 64 0) m []
+      if bv_eqb cmd F_SETFD
+      then check_ret_only eff (Z_to_bv 64 0)
+             (with_cloexec (cloexec_set (m_cloexec m) fd (setfd_cloexec_b arg)) m) []
       else if bv_eqb cmd F_GETFD then
-        match eff with
-        | mkEffectU r [] [] [] [] [] =>
-            if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
-            then CheckOk m [] else CheckReject
-        | _ => CheckReject
+        match cloexec_lookup (m_cloexec m) fd with
+        | Some b => check_ret_only eff (getfd_word b) m []
+        | None =>
+            match eff with
+            | mkEffectU r [] [] [] [] [] =>
+                if bv_eqb r (Z_to_bv 64 0) || bv_eqb r FD_CLOEXEC
+                then CheckOk m [] else CheckReject
+            | _ => CheckReject
+            end
         end
       else if bv_eqb cmd F_SETFL && setfl_noop_on e arg
       then check_ret_only eff (Z_to_bv 64 0) m []
@@ -53,18 +60,23 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. apply pure_ok.
+      srw Hfd. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd.
-        destruct eff as [r ws zs us cs ci];
-          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
-        destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
-          [|destruct (bv_eqb r FD_CLOEXEC) eqn:H1]; try discriminate.
-        -- apply bv_eqb_eq in H0; subst r. inversion H; subst.
-           apply alt_l. apply pure_ok.
-        -- apply bv_eqb_eq in H1; subst r. inversion H; subst.
-           apply alt_r. apply pure_ok.
+      * destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota in H.
+        -- apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+           eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hcl. apply pure_ok.
+        -- eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+           srw Hfd. srw Hcl.
+           destruct eff as [r ws zs us cs ci];
+             destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+           destruct (bv_eqb r (Z_to_bv 64 0)) eqn:H0;
+             [|destruct (bv_eqb r FD_CLOEXEC) eqn:H1]; try discriminate.
+           ++ apply bv_eqb_eq in H0; subst r. inversion H; subst.
+              apply alt_l. apply pure_ok.
+           ++ apply bv_eqb_eq in H1; subst r. inversion H; subst.
+              apply alt_r. apply pure_ok.
       * destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl.
         -- apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
            eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
@@ -88,10 +100,13 @@ Proof.
   - destruct (bv_eqb cmd F_SETFD) eqn:Hd.
     + now apply check_ret_only_no_unmodeled in H.
     + destruct (bv_eqb cmd F_GETFD) eqn:Hgd.
-      * destruct eff as [r ws zs us cs ci];
-          destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
-        destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
-          discriminate.
+      * destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+          cbv beta iota in H.
+        -- now apply check_ret_only_no_unmodeled in H.
+        -- destruct eff as [r ws zs us cs ci];
+             destruct ws, zs, us, cs, ci; cbv beta iota in H; try discriminate.
+           destruct (bv_eqb r (Z_to_bv 64 0)); destruct (bv_eqb r FD_CLOEXEC);
+             discriminate.
       * destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl.
         -- now apply check_ret_only_no_unmodeled in H.
         -- destruct (bv_eqb cmd F_GETFL) eqn:Hg.
@@ -113,6 +128,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+                   hall Hcl; inv_ok);
               try (destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl;
                    hall Hl; inv_ok;
                    try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;
@@ -130,6 +147,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; hall Hfd; inv_ok;
     try (destruct (bv_eqb cmd F_SETFD) eqn:Hd; hall Hd; inv_ok;
          try (destruct (bv_eqb cmd F_GETFD) eqn:Hgd; hall Hgd; inv_ok;
+              try (destruct (cloexec_lookup (m_cloexec m) fd) as [b|] eqn:Hcl;
+                   hall Hcl; inv_ok);
               try (destruct (bv_eqb cmd F_SETFL && setfl_noop_on e arg) eqn:Hl;
                    hall Hl; inv_ok;
                    try (destruct (bv_eqb cmd F_GETFL) eqn:Hg; hall Hg; inv_ok;

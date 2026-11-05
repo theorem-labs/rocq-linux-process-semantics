@@ -37,7 +37,8 @@ Definition O_TRUNC   : Z := 512%Z.
 Definition O_CLOEXEC : Z := 524288%Z.
 (** musl's syscall layer ORs O_LARGEFILE into EVERY open it issues
     (src/internal/syscall.h); it is meaningless on a 64-bit ABI, so it
-    is accepted and ignored like O_CLOEXEC. *)
+    is accepted and ignored.  (O_CLOEXEC is accepted too, and recorded
+    as the new descriptor's close-on-exec bit: [Open.open_cloexec_b].) *)
 Definition O_LARGEFILE : Z := 32768%Z.
 
 (** O_NONBLOCK: 2048.  riscv64 takes the asm-generic ABI
@@ -46,7 +47,7 @@ Definition O_LARGEFILE : Z := 32768%Z.
     riscv supplies no asm/fcntl.h of its own to override it — checked at
     v5.10 and v6.17, and only meaningful from v4.15, which is where
     arch/riscv first exists.  Accepted and IGNORED like
-    O_CLOEXEC and O_LARGEFILE, but for a reason that is a property of
+    O_LARGEFILE, but for a reason that is a property of
     this model's FILE SYSTEM rather than of the flag, so it is spelled
     out here and has to be re-checked whenever that file system grows.
     [Open.open_ignored_flags] is the mask that carries it.
@@ -929,8 +930,9 @@ Definition sigpipe_blocked (mask : word) : bool :=
     Linux accepts — WUNTRACED, WCONTINUED, __WNOTHREAD, __WCLONE,
     __WALL — are not named here because no arm reads them: they select
     which children are eligible and which state changes are reportable,
-    questions about children this model does not have.  Anything but
-    WNOHANG declines; see [Kernel.Exit.wait4_spec]. *)
+    and the model asks neither: every child it records is eligible
+    without them, and it holds no stop or continue of a child.  Anything
+    but WNOHANG declines; see [Kernel.Exit.wait4_spec]. *)
 Definition WNOHANG : Z := 1%Z.
 (** MSG_CMSG_COMPAT (include/linux/socket.h).  Its VALUE depends on the
     kernel's configuration: [0x80000000] under CONFIG_COMPAT and [0]

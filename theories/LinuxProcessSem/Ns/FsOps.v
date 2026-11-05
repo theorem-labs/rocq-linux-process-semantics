@@ -115,17 +115,58 @@ Definition file_can_write (f : NsFile) : bool :=
 
 Inductive CreatedKind := CDir | CLink (target : list byte).
 
-(** [may_create], [vfs_mkdir] and [vfs_symlink] first refuse unsupported
-    directory operations on procfs and devpts, then create a tmpfs inode.
-    Linux 6.18.44: fs/namei.c [may_create], [vfs_prepare_mode], [vfs_mkdir],
-    [vfs_symlink]; mm/shmem.c [shmem_mkdir], [shmem_symlink]; fs/inode.c
-    [inode_init_owner].  A host directory declines. *)
+(** [filename_create] returns a procfs lookup error before its deferred
+    write error (Linux v6.18.46, fs/namei.c:4231-4237). Procfs absence is
+    decided only by listed non-root directories or the caller's fd
+    table; incomplete root/task listings decline. Devpts has a negative
+    lookup, then the deferred EROFS, [may_create]'s EOVERFLOW and write
+    permission (3315-3318), before the absent operation's EPERM
+    ([vfs_mkdir], 4444-4446; [vfs_symlink], 4814-4815). Devpts, like
+    tmpfs, declines after its NAME_MAX test when an outside task may
+    change the mount's or the superblock's read-only state
+    ([Propagation.flags_open]): every later answer depends on it. A host
+    directory declines. Tmpfs creation keeps its existing decision. *)
 Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
     (p : Loc) (name : list byte) (mode : Z) (ck : CreatedKind) : OpenRes :=
   match loc_mnt_sb st p with
   | Some (mt, sb) =>
       match sb_kind sb with
-      | SbProc _ | SbDevpts => ORErr EPERM
+      | SbProc _ =>
+          match child_exists st p name with
+          | Some false => ORErr ENOENT
+          | Some true => ORErr EEXIST
+          | None =>
+              match p with
+              | LProcTask mn pid [entry] =>
+                  if bytes_eqb entry proc_fd_name && proc_own st ctx mn pid
+                  then match lookup_proc_task ctx (fd_loc_of m st) mn pid [entry] name with
+                       | LIError e => ORErr e
+                       | LIOver => OROver
+                       | _ => ORErr EEXIST
+                       end
+                  else OROver
+              | _ => OROver
+              end
+          end
+      | SbDevpts =>
+          match p with
+          | LDentry _ d =>
+              match find_dentry st d, dentry_inode st d with
+              | Some dx, Some parent =>
+                  if Nat.ltb NAME_MAX (length name) then ORErr ENAMETOOLONG
+                  else if flags_open st mt then OROver
+                  else if mf_ro (mnt_flags mt) || sb_rdonly sb then ORErr EROFS
+                  else if negb (fsuidgid_mapped st (sb_owner sb) cr) then ORErr EOVERFLOW
+                  else let attr := mkObj (ino_kind parent) (ino_perm parent) (ino_uid parent)
+                                         (ino_gid parent) None (Zpos (d_sb dx)) in
+                       match inode_permission st ctx cr (task_eff ctx) p sb attr (MAY_WRITE + MAY_EXEC) with
+                       | Some e => ORErr e
+                       | None => ORErr EPERM
+                       end
+              | _, _ => OROver
+              end
+          | _ => OROver
+          end
       | SbHost => OROver
       | SbTmpfs =>
           match p with
@@ -171,10 +212,11 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
   | None => OROver
   end.
 
-(** [filename_create] performs the parent walk, gives a non-normal last
-    component EEXIST, preserves a positive lookup's EEXIST ahead of its
-    deferred read-only error, and gives ENOENT for a missing trailing name.
-    Linux 6.18.44: fs/namei.c [filename_create], [lookup_one_qstr_excl]. *)
+(** [filename_create] preserves a positive lookup's EEXIST ahead of its
+    deferred read-only error. A missing trailing name suppresses creation
+    only without a directory request, after the filesystem lookup's errors
+    (Linux v6.18.46, fs/namei.c:1705-1719, 4228-4237). [do_mkdirat] requests
+    LOOKUP_DIRECTORY (4479); [do_symlinkat] uses zero lookup flags. *)
 Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (dfd pathp : word) (mode : Z) (ck : CreatedKind) (reads : list (word * nat)) : ext_outcome :=
   match path_arg i pathp with
@@ -191,7 +233,12 @@ Definition create_at (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
               match child_exists st parent name with
               | Some true => err reads EEXIST m ctx st
               | Some false =>
-                  if path_trailing_slash p then err reads ENOENT m ctx st
+                  if match ck with CDir => false | CLink _ => path_trailing_slash p end
+                  then match lookup_child st ctx (fd_loc_of m st) parent name with
+                       | LIError e => err reads e m ctx st
+                       | LIOver => EUnmodeled
+                       | _ => err reads EEXIST m ctx st
+                       end
                   else match create_tmpfs m ctx st (walk_creds m) parent name mode ck with
                        | ORErr e => err reads e m ctx st
                        | OROver => EUnmodeled
@@ -421,9 +468,12 @@ Definition eventfd_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
     of the same open file see one text when no mount changed between
     them; [propagate_from] is computed from the state and the captured
     root while a slave's master chain stays in the tables
-    ([Propagation.dominating_id]).  No answer for a namespace that holds a
-    mount which can receive a mount event from an open group
-    ([Mountinfo.mountinfo_text]).  Kind: exact given those values. *)
+    ([Propagation.dominating_id]).  No answer for a namespace that an
+    outside task entered or that holds a mount which can receive a mount
+    event from an open group ([Propagation.ns_open]), nor for one that
+    holds a mount whose superblock's read-only state an outside task may
+    change ([Propagation.flags_open]); see [Mountinfo.mountinfo_text].
+    Kind: exact given those values. *)
 Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
     (h : N) (f : NsFile) (l : Loc) (ns : positive) (root : positive * positive) (off : Z)
     (o : ext_outcome) : Prop :=

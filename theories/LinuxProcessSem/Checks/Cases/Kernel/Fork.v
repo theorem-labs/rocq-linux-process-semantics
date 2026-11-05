@@ -14,6 +14,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require ProcessCreation.
+From LinuxProcessSemantics.LinuxProcessSem Require Procs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
 Import ListNotations.
@@ -807,3 +808,264 @@ Example clone3_size_96_zero_tail_fork_image :
        [(Z_to_bv 64 0x1058, 8%nat); (clone3_args_base, CLONE_ARGS_SIZE_nat)]) clone3_model
   = CheckOk (with_child 4242 (forfeit_model clone3_model)) [].
 Proof. check_eq. Qed.
+
+(* -------------------------------------------------------------------------
+   The host's clone refusers ([State.CloneRefusers])
+
+   One case per launch value.  With the value present, a clone answers an
+   errno outside the model's lists; with every value at its default,
+   [State.no_clone_refusers], the same call has today's answer.  The
+   models are [clone_case_model] (no descriptor, so the gate is open) with
+   the refuser set by [State.with_clone_refusers], as [State.init_model]
+   sets it from [State.ProcInput.in_clone_refusers].
+   ------------------------------------------------------------------------- *)
+
+Definition perf_refusers : CloneRefusers := mkCloneRefusers true false false.
+Definition bpf_refusers : CloneRefusers := mkCloneRefusers false true false.
+Definition scx_refusers : CloneRefusers := mkCloneRefusers false false true.
+
+(** A model built without a launch input has no refuser, and a launch
+    the launch predicates admit starts with none ([Run.valid_input]'s pin
+    reaches the model through [State.init_model]). *)
+Example clone_case_model_has_no_refuser :
+  m_clone_refusers clone_case_model = no_clone_refusers.
+Proof. reflexivity. Qed.
+
+Example valid_launch_has_no_refuser : forall reserved brk0 mbase sp lim inp,
+  valid_input inp ->
+  m_clone_refusers (init_model reserved brk0 mbase sp lim inp) = no_clone_refusers.
+Proof.
+  intros reserved brk0 mbase sp lim inp Hv.
+  rewrite m_clone_refusers_init_model. exact (valid_input_no_clone_refusers inp Hv).
+Qed.
+
+(** THE LAUNCH PATH: a launch that declares a refuser reaches the model
+    with it, and the clone then admits the refuser's errno.  THE CONTROL:
+    the same launch at the default refuses it. *)
+Example clone_launch_with_perf_refuser_admits_einval :
+  let inp := with_inherited_fds [] (demo_input [] IEof) in
+  let inp' := input_with_clone_refusers perf_refusers inp in
+  let m := init_model [] 0 0 demo_sp demo_limit inp' in
+  let m0 := init_model [] 0 0 demo_sp demo_limit inp in
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] []) m
+  = CheckOk m []
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] []) m0
+     = CheckReject.
+Proof. cbv zeta. split; check_eq. Qed.
+
+(** (1) INHERITABLE PERF EVENTS: the fork word admits -EINVAL,
+    [perf_event_init_task]'s own ([State.cr_perf_inherit]); so does
+    [clone3]'s fork image, with its ledger.  THE CONTROL: at the default
+    -EINVAL is not in [Fork.clone_errnos] and the fork word refuses it. *)
+Example clone_perf_events_admit_einval :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] [])
+    (with_clone_refusers perf_refusers clone_case_model)
+  = CheckOk (with_clone_refusers perf_refusers clone_case_model) []
+  /\ check_syscall clone3_top_call
+       (mkEffectU (errno_ret EINVAL) [] [] [] []
+                  [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
+       (with_clone_refusers perf_refusers clone3_model)
+     = CheckOk (with_clone_refusers perf_refusers clone3_model) []
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] [])
+       clone_case_model = CheckReject
+  /\ check_syscall clone3_top_call
+       (mkEffectU (errno_ret EINVAL) [] [] [] []
+                  [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
+       clone3_model = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** (2) A BPF PROGRAM ON [task_alloc]: ANY errno from 1 to 4095, for both
+    words ([State.cr_bpf_task_alloc]), stated over every errno at the spec
+    and read off at the checker for -EPERM on the fork word and -EINTR on
+    the namespace word.  THE CONTROL: at the default the fork word refuses
+    -EPERM and the namespace word refuses -EINTR. *)
+Definition bpf_model : Model := with_clone_refusers bpf_refusers clone_case_model.
+
+Example clone_bpf_task_alloc_any_errno : forall e i,
+  (1 <= e <= 4095)%Z ->
+  clone_spec (Z_to_bv 64 SIGCHLD) i bpf_model
+    (Ok (mkEffect (errno_ret e) [] []) bpf_model [])
+  /\ clone_spec bwrap_clone_flags i bpf_model
+       (Ok (mkEffect (errno_ret e) [] []) bpf_model []).
+Proof.
+  intros e i He. split; unfold clone_spec;
+    (apply clone_refusable_refused;
+     [vm_compute; reflexivity | vm_compute; reflexivity | vm_compute; reflexivity
+     | apply clone_refused_fail_ok; exact He]).
+Qed.
+
+Example clone_bpf_task_alloc_at_the_checker :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EPERM) [] [])
+    bpf_model = CheckOk bpf_model []
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
+       bpf_model = CheckOk bpf_model []
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EPERM) [] [])
+       clone_case_model = CheckReject
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EINTR) [] [])
+       clone_case_model = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** (3) A SCHED_EXT SCHEDULER, which the host can attach during the run
+    ([State.cr_sched_ext]): any errno at every clone, the one after a
+    successful clone included (the model then holds the child, and still
+    the refuser).  THE CONTROL: at the default the same later clone
+    refuses -E2BIG (7). *)
+Definition scx_model : Model := with_clone_refusers scx_refusers clone_case_model.
+
+Example clone_sched_ext_at_every_clone :
+  let m1 := with_child (Z_to_bv 64 4242) scx_model in
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] []) scx_model
+    = CheckOk m1 []
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret 7) [] []) m1
+     = CheckOk m1 []
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret 4095) [] []) m1
+     = CheckOk m1 []
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret 7) [] [])
+       (with_child (Z_to_bv 64 4242) clone_case_model) = CheckReject.
+Proof. cbv zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** A refuser adds no answer where the model declines: a word outside
+    both classes, and the descriptor gate, still decline. *)
+Example clone_refusers_keep_the_declines :
+  check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + SIGCHLD)))
+    (mkEffect (errno_ret EINVAL) [] []) bpf_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EINVAL) [] [])
+       (with_fds [(3, FdFile [] 0)] bpf_model) = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** The fork word's answer to -EPERM, at any model whose descriptor gate
+    is open: accepted, the model unchanged, exactly when a refuser is
+    present. *)
+Local Lemma clone_sigchld_eperm_at : forall m,
+  clone_no_shared_file_b (forfeit_inherited (m_fds m)) = true ->
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EPERM) [] []) m
+  = if clone_refused_b (m_clone_refusers m) then CheckOk m [] else CheckReject.
+Proof.
+  intros m Hg.
+  rewrite LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.DispatchCompute.check_syscall_clone
+    by (vm_compute; reflexivity).
+  unfold check_clone, check_refusable, check_clone_lists, check_clone_resolve.
+  rewrite Hg.
+  destruct (clone_refused_b (m_clone_refusers m)); vm_compute; reflexivity.
+Qed.
+
+(** A child made at a step of the core has its parent's refusers
+    ([Procs.child_proc]) and, when the parent's model is the caller's
+    record, its parent's descriptor table ([Procs.child_model_frame]). *)
+Local Lemma child_refusers_and_gate : forall S (e : Procs.ProcessEntry) c' q,
+  let m := Procs.pe_model (Procs.child_entry e (Procs.pe_cfg S e) c' q) in
+  m_clone_refusers m = m_clone_refusers (Procs.pe_model e)
+  /\ m_fds m = m_fds (Procs.pe_model e).
+Proof.
+  intros S e c' q. cbv zeta. split; [reflexivity|].
+  destruct (Procs.child_model_frame (Procs.pe_model e) (cfg_model (Procs.pe_cfg S e))
+              (Procs.child_tid_store (Procs.pe_cfg S e) c') eq_refl eq_refl) as [Hfd _].
+  unfold m_fds.
+  change (m_fd (Procs.pe_model (Procs.child_entry e (Procs.pe_cfg S e) c' q)))
+    with (m_fd (Procs.child_model (Procs.pe_model e) (cfg_model (Procs.pe_cfg S e))
+                  (Procs.child_tid_store (Procs.pe_cfg S e) c'))).
+  rewrite Hfd. reflexivity.
+Qed.
+
+(** IN A CHILD TOO.  In a run of the multi-process core every clone is a
+    step of one entry, a child the core made included, and the child's
+    model is [Procs.child_proc] of its parent's, which copies the
+    refusers.  So a child of a parent whose host has a BPF program on
+    [task_alloc] gets the widened answer at its own clone: -EPERM on the
+    fork word.  THE CONTROL: the child of a parent at the default refuses
+    it.  [Checks.ProcsCloneRefusers.clone_refusers_reachable] is the same
+    fact for every entry of every reachable state.  The parent's
+    configuration is its own ([Procs.pe_cfg]), as at every step of the
+    core: the child's model accounts its [CLONE_CHILD_SETTID] store on it
+    ([Procs.child_model]). *)
+Example clone_child_sees_the_refuser : forall S (e : Procs.ProcessEntry) c' q,
+  Procs.pe_model e = bpf_model -> Procs.pe_pid e = Z_to_bv 64 1 ->
+  let m := Procs.pe_model (Procs.child_entry e (Procs.pe_cfg S e) c' q) in
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EPERM) [] []) m
+  = CheckOk m [].
+Proof.
+  intros S e c' q He _. cbv zeta.
+  destruct (child_refusers_and_gate S e c' q) as [Hr Hf]. cbv zeta in Hr, Hf.
+  rewrite clone_sigchld_eperm_at by (rewrite Hf, He; vm_compute; reflexivity).
+  rewrite Hr, He. reflexivity.
+Qed.
+
+Example clone_child_at_the_default_refuses : forall S (e : Procs.ProcessEntry) c' q,
+  Procs.pe_model e = clone_case_model -> Procs.pe_pid e = Z_to_bv 64 1 ->
+  let m := Procs.pe_model (Procs.child_entry e (Procs.pe_cfg S e) c' q) in
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect (errno_ret EPERM) [] []) m
+  = CheckReject.
+Proof.
+  intros S e c' q He _. cbv zeta.
+  destruct (child_refusers_and_gate S e c' q) as [Hr Hf]. cbv zeta in Hr, Hf.
+  rewrite clone_sigchld_eperm_at by (rewrite Hf, He; vm_compute; reflexivity).
+  rewrite Hr, He. reflexivity.
+Qed.
+
+(** THE REFUSERS AT THE WORDS [Kernel.Fork.clone_class] ADMITS
+    ([Kernel.Fork.clone_refusable_arm]).  With a BPF program on
+    [task_alloc], [clone(SIGCHLD | CLONE_SYSVSEM)] admits -EPERM with the
+    model unchanged, and, as a separate answer, still a child; [clone3]'s
+    struct with a stack admits -EPERM with its ledger; and CLONE_NEWIPC
+    with CLONE_SYSVSEM admits -EINTR, which [Syscall.errno_any] leaves
+    out.  THE CONTROL: at the default the same calls refuse those errnos,
+    and the CLONE_SYSVSEM word still gets a child. *)
+Example clone_sysvsem_with_a_refuser :
+  check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+    (mkEffect (errno_ret EPERM) [] []) bpf_model = CheckOk bpf_model []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+       (mkEffect 4242 [] []) bpf_model
+     = CheckOk (with_child 4242 (forfeit_model bpf_model)) []
+  /\ check_syscall
+       (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0x8000%Z; 0x1000%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       (mkEffectU (errno_ret EPERM) [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       (with_clone_refusers bpf_refusers clone3_model)
+     = CheckOk (with_clone_refusers bpf_refusers clone3_model) []
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret EINTR) [] []) bpf_model = CheckOk bpf_model []
+  (* the control *)
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_SYSVSEM)))
+       (mkEffect 4242 [] []) clone_case_model = CheckOk tid_pid_model []
+  /\ check_syscall
+       (clone3_args_call [0%Z; 0%Z; 0%Z; 0%Z; (SIGCHLD)%Z; 0x8000%Z; 0x1000%Z; 0%Z; 0%Z; 0%Z; 0%Z])
+       (mkEffectU (errno_ret EPERM) [] [] [] [] [(clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       clone3_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 (SIGCHLD + CLONE_NEWIPC + CLONE_SYSVSEM)))
+       (mkEffect (errno_ret EINTR) [] []) clone_case_model = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** THE REFUSERS AT EVERY SIZE THE COPY TAKES ([Kernel.Fork.clone3_answered_b]).
+    With a BPF program on [task_alloc], the fork image in an 80-byte
+    struct, and in a 96-byte struct with a zero tail, admits -EPERM with
+    the model unchanged and the ledger of the copy's reads, as the 88-byte
+    image does.  THE CONTROL: at the default the 80-byte call refuses
+    -EPERM and gives a child, and a size the copy refuses (63) is -EINVAL
+    whatever the host holds, so -EPERM is refused there with the refuser
+    present. *)
+Example clone3_refusers_other_sizes :
+  check_syscall (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+    (c3_err EPERM [(clone3_args_base, 80%nat)]) (with_clone_refusers bpf_refusers clone3_model)
+  = CheckOk (with_clone_refusers bpf_refusers clone3_model) []
+  /\ check_syscall
+       (c3_call clone3_args_base 96 (c3_mem 0x1000 96 (fun o => Some (c3_fork_byte o))))
+       (c3_err EPERM [(Z_to_bv 64 0x1058, 8%nat); (clone3_args_base, CLONE_ARGS_SIZE_nat)])
+       (with_clone_refusers bpf_refusers clone3_model)
+     = CheckOk (with_clone_refusers bpf_refusers clone3_model) []
+  (* the control *)
+  /\ check_syscall
+       (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+       (c3_err EPERM [(clone3_args_base, 80%nat)]) clone3_model = CheckReject
+  /\ check_syscall
+       (c3_call clone3_args_base 80 (c3_mem 0x1000 80 (fun o => Some (c3_fork_byte o))))
+       (mkEffectU 4242 [] [] [] [] [(clone3_args_base, 80%nat)]) clone3_model
+     = CheckOk (with_child 4242 (forfeit_model clone3_model)) []
+  /\ check_syscall
+       (c3_call clone3_args_base 63 (c3_mem 0x1000 88 (fun o => Some (c3_fork_byte o))))
+       (c3_err EPERM []) (with_clone_refusers bpf_refusers clone3_model) = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.

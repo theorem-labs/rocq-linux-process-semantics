@@ -91,7 +91,7 @@ Open Scope sys_scope.
     [fdget], which refuses an FMODE_PATH file before [vfs_fsync] runs
     (fs/sync.c and fs/file.c, read at v6.18.44; identical at
     v6.18.46).  The model's one O_PATH kind, [State.OProcPath], is
-    declined below with the other three opaque objects.)  This is
+    declined below with the other opaque objects.)  This is
     the arm where copying [ReadWrite.write_spec]'s -EBADF-on-a-read-only-fd would
     be a confident wrong answer.
 
@@ -244,8 +244,9 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdOpaque _) => unmodeled                (* FAIL-CLOSED: an O_PATH file is [do_fsync]'s
                                                      -EBADF ([fdget] refuses FMODE_PATH), an
                                                      eventfd has no [.fsync] (-EINVAL), and a
-                                                     /proc/sys file has none either, and an
-                                                     [ONsFile]'s object is of unknown type; the
+                                                     /proc/sys file has none either, an
+                                                     [ONsFile]'s object is of unknown type, and an
+                                                     alias is used through its partner only; the
                                                      split is not written (fs/sync.c, fs/eventfd.c,
                                                      fs/proc/proc_sysctl.c, read at v6.18.44; identical at v6.18.46) *)
   | Some (FdFile _ _)  => ret_only (Z_to_bv 64 0) (* O_RDONLY is not an error here: no [f_mode] check *)

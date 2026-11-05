@@ -8,9 +8,11 @@
 
     ** What this pins, and why it is not decoration
 
-    [Exit.wait4_spec] is the one-process answer to [wait4]: correct only
-    for a caller with nothing to reap.  In [Procs] a child is an entry of
-    the process table, so a caller with one must never reach that spec,
+    [Exit.wait4_spec] is the one-process answer to [wait4]: -ECHILD for a
+    caller with no child, and for a caller with a recorded child an
+    environment's choice of 0 or a recorded pid with an invented status.
+    In [Procs] a child is an entry of the process table, so a caller with
+    one must never reach that spec,
     and nothing in the type of [Procs.pstep_at] says so: the gate is a
     premise ([Procs.wait4_owned_b] = false) on two arms among eight, and
     deleting it from either leaves every proof of [Procs] closing.  These

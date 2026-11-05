@@ -89,6 +89,14 @@ Proof.
   destruct (bv_eqb (fst kv) p); cbn; [reflexivity | f_equal; apply IH].
 Qed.
 
+Lemma pin_root_procs_length : forall P r t,
+  List.length (pcfg_procs (pin_root P r t)) = List.length (pcfg_procs P).
+Proof.
+  intros P r t. unfold pin_root. cbn [pcfg_procs].
+  rewrite replace_in_length.
+  destruct (m_tid (pe_model r)); [reflexivity|apply root_children_ppid_length].
+Qed.
+
 Lemma drop_in_length_le : forall ps p,
   (List.length (drop_in ps p) <= List.length ps)%nat.
 Proof.
@@ -352,14 +360,14 @@ Proof.
   - apply IH.
 Qed.
 
-(** An ordinary step of one entry leaves every other entry's lookup alone,
-    EXCEPT that a step ending the entry orphans its children
-    ([Procs.orphan_at_exit]).  [absorb] replaces exactly the stepping entry
-    and rebuilds the shared state; at every other key the table is
-    untouched unless the successor is over and the entry there is a child
-    of the stepping one. *)
-Lemma look_absorb_other : forall P e c' q,
+(** A tid-stable ordinary step leaves every other entry's lookup alone,
+    except that an exit orphans its children. Tid stability rules out a
+    first root pin, which deliberately aligns children's parent pids.
+    The instruction consumer derives this fact from the released machine
+    model frame; its transition contract takes no additional premise. *)
+Lemma look_absorb_other_tid_stable : forall P e c' q,
   bv_eqb (pe_pid e) q = false ->
+  m_tid (cfg_model c') = m_tid (pe_model e) ->
   (m_halted (cfg_model c') = None
    \/ match look P q with
       | Some eq => pe_parent eq <> Some (pe_pid e)
@@ -367,7 +375,8 @@ Lemma look_absorb_other : forall P e c' q,
       end) ->
   look (absorb P e c') q = look P q.
 Proof.
-  intros P e c' q Hne Hcase. unfold look, absorb. cbn [pcfg_procs].
+  intros P e c' q Hne Htid Hcase. unfold look, absorb. cbn [pcfg_procs].
+  rewrite first_root_pin_children_same_tid by exact Htid.
   unfold orphan_at_exit. destruct (m_halted (cfg_model c')) as [w|] eqn:Hm.
   - destruct Hcase as [Hc|Hc]; [discriminate Hc|].
     rewrite look_in_orphan, look_in_replace_other by exact Hne.
@@ -607,13 +616,10 @@ Qed.
 Definition pmeasure (f : ProcessEntry -> nat) (P : pconfig) : nat :=
   msum f (pcfg_procs P).
 
-(** An ordinary step decreases it exactly when the stepping entry's own
-    count decreases, for a count that does not read parent links.  This is
-    the whole of the two-entry argument: the schedule cannot matter,
-    because whichever entry steps, the sum falls by that entry's own
-    decrease and nothing else moves -- a step that ends the entry orphans
-    its children ([Procs.orphan_at_exit]), which changes their parent link
-    and nothing a parent-blind count sees. *)
+(** An ordinary step decreases the sum when the stepping entry's count
+    decreases and the count ignores parent bookkeeping. Exiting orphans
+    children by changing their parent link; a first root-tid pin resolves
+    their model ppid. Neither operation changes a bookkeeping-blind count. *)
 Lemma msum_orphan : forall f m p ps,
   (forall x, f (with_parent x None) = f x) ->
   msum f (orphan_at_exit m p ps) = msum f ps.
@@ -627,15 +633,44 @@ Proof.
     [apply Hf | reflexivity].
 Qed.
 
+Lemma msum_root_children_ppid : forall f root t ps,
+  (forall x t', f (mkEntry (pe_pid x) (pe_parent x) (pe_ms x)
+    (with_ppid t' (pe_model x)) (pe_ofd x) (pe_nsctx x)) = f x) ->
+  msum f (root_children_ppid root t ps) = msum f ps.
+Proof.
+  intros f root t ps Hf. unfold root_children_ppid.
+  induction ps as [|[q e] ps IH]; [reflexivity|].
+  cbn [List.map]. rewrite !msum_cons, IH. f_equal.
+  unfold root_child_ppid_one. cbn [fst snd].
+  destruct (negb (bv_eqb q root)
+    && match pe_parent e with Some p => bv_eqb p root | None => false end
+    && match m_halted (pe_model e) with None => true | Some _ => false end);
+    cbn [snd]; [apply Hf | reflexivity].
+Qed.
+
 Lemma pmeasure_absorb_lt : forall f P e c',
   (forall x, f (with_parent x None) = f x) ->
+  (forall x t, f (mkEntry (pe_pid x) (pe_parent x) (pe_ms x)
+    (with_ppid t (pe_model x)) (pe_ofd x) (pe_nsctx x)) = f x) ->
   look P (pe_pid e) = Some e ->
   (f (pe_absorb e c') < f e)%nat ->
   (pmeasure f (absorb P e c') < pmeasure f P)%nat.
 Proof.
-  intros f P e c' Hf Hl Hlt. unfold pmeasure, absorb. cbn [pcfg_procs].
+  intros f P e c' Hf Hppid Hl Hlt.
+  assert (Hsum : msum f (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+    = msum f (pcfg_procs P)).
+  { unfold first_root_pin_children.
+    destruct (bv_eqb (pe_pid e) (pcfg_root P)),
+      (m_tid (pe_model e)), (m_tid (cfg_model c')); try reflexivity;
+      apply msum_root_children_ppid; exact Hppid. }
+  pose proof (look_in_first_root_pin_children_self P e (cfg_model c')
+    (pcfg_procs P) e Hl) as Hl'.
+  unfold pmeasure, absorb. cbn [pcfg_procs].
   rewrite (msum_orphan f _ _ _ Hf).
-  pose proof (msum_replace f (pcfg_procs P) (pe_pid e) e (pe_absorb e c') Hl).
+  pose proof (msum_replace f
+    (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+    (pe_pid e) e (pe_absorb e c') Hl') as Hrep.
+  rewrite Hsum in Hrep.
   lia.
 Qed.
 
@@ -734,17 +769,22 @@ Qed.
     [k].  Each step of the chain changes the entry, so the NEXT step's
     premises are about a different configuration: [look] has to find the
     absorbed entry, and the shared state has been rebuilt by [absorb].
-    [look_absorb_other] and [view_frame_absorb] are what carry those
+    [look_absorb_other_tid_stable] and [view_frame_absorb] carry those
     across, and they are stated for the OTHER entry -- the stepping
     entry's own lookup after its own step is this lemma. *)
 Lemma look_absorb_self : forall P e c',
   look P (pe_pid e) = Some e ->
   look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
 Proof.
-  intros P e c' Hl. unfold look, absorb. cbn [pcfg_procs].
-  assert (Hr : look_in (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')) (pe_pid e)
-               = Some (pe_absorb e c')).
-  { revert Hl. unfold look. generalize (pcfg_procs P) as ps. clear P.
+  intros P e c' Hl.
+  pose proof (look_in_first_root_pin_children_self P e (cfg_model c')
+    (pcfg_procs P) e Hl) as Hl'. clear Hl.
+  unfold look, absorb. cbn [pcfg_procs].
+  assert (Hr : look_in (replace_in
+                 (first_root_pin_children P e (cfg_model c') (pcfg_procs P))
+                 (pe_pid e) (pe_absorb e c')) (pe_pid e) = Some (pe_absorb e c')).
+  { revert Hl'. generalize (first_root_pin_children P e (cfg_model c') (pcfg_procs P)) as ps.
+    clear P.
     induction ps as [|kv r IH]; cbn; [discriminate|].
     destruct (bv_eqb (fst kv) (pe_pid e)) eqn:Hb; cbn.
     - intros Hs. injection Hs as <-. rewrite bv_eqb_same. reflexivity.
