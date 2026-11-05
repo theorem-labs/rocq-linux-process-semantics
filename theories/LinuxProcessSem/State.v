@@ -6190,8 +6190,9 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
       so a clone with either end open is [unmodeled], except a [clone3]
-      struct [Fork.clone3_einval_sz] refuses, which is -EINVAL and creates
-      no process; and
+      whose size tests or struct copy fail ([Fork.clone3_copy]: -E2BIG,
+      -EINVAL or -EFAULT) or whose struct [Fork.clone3_einval_sz]
+      refuses (-EINVAL); neither creates a process; and
       [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
       most namespace bits, so
       CLONE_FILES and CLONE_THREAD never share a table and no second

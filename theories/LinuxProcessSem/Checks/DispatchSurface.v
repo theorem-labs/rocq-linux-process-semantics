@@ -240,7 +240,8 @@ Definition probe_mem : word -> option byte :=
 
     The exceptions are the arms that DECLINE what the default registers
     hold rather than answering with it, so none of them reaches an error
-    gate without help:
+    gate without help, and [clone3], which reaches one and still needs
+    an entry, for the reason its bullet gives:
 
     - mmap (222) and mremap (216) decline the default FLAG WORD.
       [mmap_spec] at zero length answers only for an anonymous mapping
@@ -259,10 +260,12 @@ Definition probe_mem : word -> option byte :=
     - clone (220) declines the default FLAG WORD: [clone_fork_flags_b]
       admits the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
       namespace bits, and AT_FDCWD is neither.
-    - clone3 (435) does not reach [kernel_clone] with the default SIZE
-      (AT_FDCWD is above [PAGE_SIZE]: -E2BIG) and declines the default
-      STRUCT: it resolves only a readable fork-shaped [struct clone_args],
-      which is why [probe_mem] above carries one.
+    - clone3 (435) answers the default registers by themselves: its SIZE
+      is [a1], 0 by default, below [Fork.CLONE_ARGS_SIZE_VER0], so
+      [Fork.clone3_copy] answers -EINVAL before it reads anything.  That
+      answer stops before [kernel_clone], and this probe measures the
+      RESOLUTION, so it passes the full size and the readable fork-shaped
+      [struct clone_args] that [probe_mem] above carries.
     - wait4 (260) declines the default ARGUMENT WORDS, before anything
       else: [Kernel.Exit.wait4_spec] answers only when [upid] is the
       32-bit -1 [Kernel.Exit.WAIT_ANY32] and [options] is exactly
@@ -414,11 +417,12 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 435 then
     (* clone3 reaches [kernel_clone] through a struct in user memory
        rather than through registers: its size tests and its copy answer
-       first ([Fork.clone3_copy]; AT_FDCWD as the size is -E2BIG), and of
+       first ([Fork.clone3_copy]; the default size 0 is -EINVAL), and of
        the structs no argument check refuses it declines every one but
-       the fork-shaped one.  A refused [uargs] answers -EFAULT without
-       reaching [kernel_clone], so the probe points at the struct
-       [probe_mem] carries at [clone3_probe_uargs], at the full size. *)
+       the fork-shaped one.  Neither that -EINVAL nor the -EFAULT of a
+       refused [uargs] reaches [kernel_clone], so the probe points at the
+       struct [probe_mem] carries at [clone3_probe_uargs], at the full
+       size. *)
     [clone3_probe_uargs; Z_to_bv 64 CLONE_ARGS_SIZE; z; z; z; z]
   else if Z.eqb n 260 then
     (* wait4 decides on the ARGUMENT WORDS before it decides anything else:

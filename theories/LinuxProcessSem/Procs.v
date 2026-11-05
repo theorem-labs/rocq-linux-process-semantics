@@ -905,8 +905,9 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     answers of the extension, not one.  The first is [CnErr EINVAL]
     where [Fork.clone_arg_checks] fires on a [Fork.CiArgs] record.  It
     does not reach every call the core now answers: a [clone3] struct
-    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose struct
-    range [access_ok] refuses (-EFAULT) have no record at all
+    whose own tests refuse it ([Fork.CdErr]) and a [clone3] whose size
+    tests or struct copy fail ([Fork.C3Err] of [Fork.clone3_copy]:
+    -E2BIG, -EINVAL or -EFAULT) have no record at all
     ([clone_in_of] gives [Fork.CiNoArgs]), so no rule over a record can
     run for them.  The second answer covers those: for a caller in the
     NAMESPACE world whose [clone_in_of] is [Fork.CiNoArgs] while the
@@ -942,8 +943,22 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
       without a namespace bit, has no step either: [clone_ns_exact] is
       not [CnErr EINVAL] for its word, and [Ns.Ext.released_clone] never
       gives [CnUnmodeled].
+    - a [clone3] whose size tests or struct copy fail reaches the
+      extension as [SIGCHLD] too: -E2BIG above [PAGE_SIZE], -EINVAL
+      below [Fork.CLONE_ARGS_SIZE_VER0], the tail test's -E2BIG or
+      -EFAULT, or -EFAULT for a struct range [access_ok] refuses.  The
+      tables' [CnErr] errnos are EPERM, EINVAL and ENOSPC only, so for a
+      namespace-world caller these failures have the missing and extra
+      outcomes the -EINVAL bullets above name: no step under
+      [Ns.Clone.clone_tables_failures] where [clone_ns_exact] is [CnOk]
+      (under [Ns.Spec.ns_ext]) or under [Ext.no_ext], and under
+      [Ext.any_clone_failure] a failure step whose state may be
+      [Ns.Clone]'s cursor advance, which Linux does not reach, since
+      the copy comes before [alloc_pid].
     Each is a missing or an extra outcome of a call the model declined
-    before, never a changed answer to a call it answered. *)
+    before, never a changed answer to a call it answered, except the
+    -EFAULT of a size-88 struct range [access_ok] refuses, which the
+    released step answered before this note was written. *)
 Definition clone_flags_of (c : config) : Z :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD
