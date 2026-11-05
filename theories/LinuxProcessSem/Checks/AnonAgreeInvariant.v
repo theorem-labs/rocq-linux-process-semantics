@@ -284,12 +284,12 @@ Proof.
 Qed.
 
 (** The unlink_open map preserves agreement. *)
-Lemma anon_agree_all_unlink_open : forall c id data pin fds,
-  anon_id_live fds id = false ->
+Lemma anon_agree_all_unlink_open : forall c fid data pin fds,
+  anon_id_live fds fid = false ->
   anon_agree_all fds ->
-  anon_agree_all (map (fun q => (fst q, unlink_open_entry c id data pin (snd q))) fds).
+  anon_agree_all (map (fun q => (fst q, unlink_open_entry c fid data pin (snd q))) fds).
 Proof.
-  intros c id data pin fds Hlive Hall.
+  intros c fid data pin fds Hlive Hall.
   unfold anon_agree_all. intros fd0 id0 af0 Hin.
   apply in_map_iff in Hin.
   destruct Hin as [[k e] [Heq Hin']]. cbn [fst snd] in Heq.
@@ -300,11 +300,9 @@ Proof.
   1-4: (match type of Hunlink with
          | context [path_eqb ?a ?b] =>
            destruct (path_eqb a b) eqn:Epc; cbv iota in Hunlink;
-           [ (* converted to FdAnon id <record> = FdAnon id0 af0 *)
-             (* Extract id0 = id and the af equality *)
-             let Hid := fresh in assert (Hid : id0 = id) by congruence;
+           [ (* converted to FdAnon fid <record> = FdAnon id0 af0 *)
+             let Hid := fresh in assert (Hid : id0 = fid) by congruence;
              rewrite Hid in *; clear Hid;
-             (* Now Hunlink : FdAnon id <rec> = FdAnon id af0 *)
              let Haf := fresh in
              match type of Hunlink with FdAnon _ ?lhs = FdAnon _ ?rhs =>
                assert (Haf : rhs = lhs) by congruence
@@ -314,23 +312,22 @@ Proof.
            | discriminate Hunlink ]
          end; fail).
   (* FdAnon case: unlink_open_entry returns the entry unchanged *)
-  - (* Hunlink : FdAnon id' af' = FdAnon id0 af0; extract id0 and af0 *)
-    destruct (bv_eqb id0 id) eqn:Eid0.
+  - destruct (bv_eqb id0 fid) eqn:Eid0.
     + apply bv_eqb_eq in Eid0. subst id0. exfalso.
       unfold anon_id_live in Hlive.
       assert (existsb (fun p0 => match entry_anon_id (snd p0) with
-                                 | Some xid => bv_eqb xid id
+                                 | Some xid => bv_eqb xid fid
                                  | None => false end) fds = true) as Htrue.
       { apply existsb_exists.
         match type of Hunlink with FdAnon ?x _ = _ =>
-          assert (Hx : x = id) by congruence;
+          assert (Hx : x = fid) by congruence;
           rewrite Hx in Hin'
         end.
         eexists; split; [exact Hin'|]; cbn.
-        rewrite (proj2 (bv_eqb_eq id id) eq_refl); reflexivity. }
+        rewrite (proj2 (bv_eqb_eq fid fid) eq_refl); reflexivity. }
       rewrite Htrue in Hlive. discriminate Hlive.
     + apply anon_agree_unlink_open_other.
-      * intros E; subst; rewrite (proj2 (bv_eqb_eq id id) eq_refl) in Eid0; discriminate.
+      * intros E; subst; rewrite (proj2 (bv_eqb_eq fid fid) eq_refl) in Eid0; discriminate.
       * match type of Hunlink with FdAnon ?x ?y = FdAnon id0 af0 =>
           replace id0 with x by congruence;
           replace af0 with y by congruence
