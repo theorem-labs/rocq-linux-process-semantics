@@ -1285,7 +1285,8 @@ Qed.
 
 (** [clone]'s checks are a function of a0 alone: the two pointers K0
     compares are both a2, so K0 reduces to its two bits, and no other row
-    reads a pointer.  The checker asks this; [clone_legacy_einval_b_spec]
+    reads a pointer.  The namespace model asks this
+    ([Ns.Clone.clone_ns_exact_core_gate_word]); [clone_legacy_einval_b_spec]
     states that it is the record's answer whatever a1 to a4 hold. *)
 Definition clone_legacy_einval_b (a0 : word) : bool :=
   match clone_args_of_clone a0 a0 a0 a0 a0 with
