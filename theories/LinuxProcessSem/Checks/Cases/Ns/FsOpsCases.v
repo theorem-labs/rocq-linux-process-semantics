@@ -342,10 +342,13 @@ Proof. vm_compute. reflexivity. Qed.
     mount 2 of mount namespace 2.  The caller creates through mount 1 of
     namespace 1.  With namespace 2 entered from outside, namespace 1 holds
     no open mount and the walk answers, but an outside task in namespace 2
-    can make superblock 1 read-only through mount 2 ([do_reconfigure_mnt],
-    fs/namespace.c:3211-3241, Linux v6.18.46), and [filename_create]'s
-    deferred [mnt_want_write] then answers EROFS (fs/namei.c:4223,
-    4236-4237).  So no answer is given ([Propagation.flags_open]).  The
+    can remount superblock 1 read-only through mount 2 ([do_remount],
+    fs/namespace.c:3248-3294, whose [reconfigure_super] at 3280 sets
+    SB_RDONLY, Linux v6.18.46).  [__mnt_is_readonly] (365-368) then
+    refuses write access through every mount of that superblock, so
+    [filename_create]'s deferred [mnt_want_write] answers EROFS
+    (fs/namei.c:4223, 4236-4237).  So no answer is given
+    ([Propagation.flags_open]).  The
     control enters only namespace 9, which holds no mount on superblock 1,
     and keeps the EPERM. *)
 Definition devpts_shared_state (entered : list positive) : NsState :=
