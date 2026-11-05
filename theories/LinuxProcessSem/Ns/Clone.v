@@ -570,13 +570,29 @@ Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
     A call with no record ([Fork.CiNoArgs]) is the core's own: any errno,
     with the namespace state unchanged ([Ext.released_clone]).  Such a
     call never reaches [alloc_pid] in this model, for one of two reasons.
-    Either it fails before [copy_process], as a [clone3] whose own tests
-    refuse its struct does, or one whose struct cannot be copied; or THE
-    CORE DECLINES IT, which is what happens to the calls Linux would take
-    into [copy_process] -- a [clone3] record with a namespace bit, and a
-    [clone] a0 with a bit above 31.  Those declines are what makes the
-    core's own answer sound here: the core resolves no call without a
-    record ([Procs.clone_success_has_record]), so none of them creates a
+
+    Either it FAILS before [copy_process]: a [clone3] whose own tests
+    refuse its struct ([Fork.clone3_pre] gives [Fork.CdErr]), or one
+    whose [uargs] range [access_ok] refuses, which is -EFAULT before a
+    field is read.
+
+    Or THE CORE DECLINES IT, which is what happens to every other call
+    without a record, the ones Linux would take into [copy_process]
+    among them.  The whole set, from [Procs.clone_in_of]: a [clone]
+    (220) a0 with a bit above 31 (the raw-input guard of
+    [Fork.clone_args_of_clone]); a [clone3] (435) of any size but
+    [Fork.CLONE_ARGS_SIZE]; a [clone3] whose range [access_ok] admits
+    and whose memory does not wholly back it (a DECLINE, not a failure:
+    which bytes Linux read before it faulted is not something the ledger
+    can state); a [clone3] struct [clone3_pre] declines -- a non-zero
+    [set_tid], CLONE_INTO_CGROUP or CLONE_NEWTIME; and every [clone3]
+    record that is neither the fork image ([Fork.clone3_fork_args_b])
+    nor refused by the argument checks, for example CLONE_VM alone, a
+    namespace bit, or a non-zero stack.
+
+    Those declines are what makes the core's own answer sound here: the
+    core resolves no call without a record
+    ([Procs.clone_success_has_record]), so none of them creates a
     child. *)
 Definition clone_ns (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     (o : CloneNs) : Prop :=
