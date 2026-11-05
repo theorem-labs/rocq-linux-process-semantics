@@ -335,6 +335,7 @@ Proof.
           replace af0 with y by congruence
         end.
         exact (Hall _ _ _ Hin').
+Qed.
 
 (** Reopen with same data/pin. *)
 Lemma anon_agree_all_reopen : forall fds k id af o r w a,
