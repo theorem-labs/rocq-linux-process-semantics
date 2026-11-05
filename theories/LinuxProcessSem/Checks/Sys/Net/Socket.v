@@ -1090,14 +1090,8 @@ Proof.
   intros fd backlog eff m m' evs i H.
   unfold check_listen in H. unfold listen_spec. cbv zeta in H.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    cbv beta iota zeta in H |- *;
-    try discriminate;
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *; try discriminate;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H |- *.
@@ -1117,22 +1111,13 @@ Lemma check_listen_sound_unmodeled : forall fd backlog eff m i,
   listen_spec fd backlog i m Unmodeled.
 Proof.
   intros fd backlog eff m i H.
-<<<<<<< HEAD
-  unfold check_listen in H. cbv zeta in H.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
-    cbv beta iota zeta in H;
-    try (now apply check_ret_only_no_unmodeled in H);
-    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
-    try (unfold listen_spec; eapply bind_unmodeled2; [apply get_model_ok|];
-         cbv beta zeta; srw Hfd; apply unmodeled_intro).
-=======
   unfold check_listen in H. unfold listen_spec. cbv zeta in H.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H);
+    (* the opaque kinds and an AF_UNIX SEQPACKET end: declined on both sides *)
     try apply unmodeled_intro.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H;
     try (now apply check_ret_only_no_unmodeled in H).
   now apply check_errno_or_success_no_unmodeled in H.
@@ -1189,14 +1174,8 @@ Proof.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 SOCK_NONBLOCK) 0)) eqn:E2;
     cbv beta iota zeta in H |- *; [discriminate|].
-<<<<<<< HEAD
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in H |- *;
-    (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] *)
-    try discriminate;
-=======
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st];
     cbv beta iota zeta in H |- *; try discriminate;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
          [discriminate | now apply check_errno_or_list_sound_ok]).
   destruct (negb (w_is0 addrp)) eqn:E3; cbv beta iota zeta in H |- *;
@@ -1283,22 +1262,15 @@ Proof.
   (* [cbn] must not reach the listening arm: that goal carries
      [alloc_fd]'s 4096-step fuel and [with_accepted], and normalising it
      costs gigabytes.  Select the arms that need it instead. *)
-<<<<<<< HEAD
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in *; inv_ok.
-  (* every non-socket kind, the pipe end (8), /dev/null (9) and the
-     opaque kinds (11, which [Eop] says are not here) included, takes
-     -ENOTSOCK; an AF_UNIX SEQPACKET end (12) declines, so [inv_ok]
-     closed it.
-=======
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st];
     cbv beta iota zeta in *; inv_ok.
   (* every non-socket kind, the pipe end (8), /dev/null (9), the eventfd
      (12), the unnamed file (14) and the opaque kinds (15, which [Eop]
      says are not here) included, takes -ENOTSOCK; the stream-pair end
-     (11) and the datagram socket (13) decline, so [inv_ok] has already
-     closed them, and the eventfd, the unnamed file and the opaque kinds
-     are the eleventh to thirteenth goals left.
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+     (11), the datagram socket (13) and an AF_UNIX SEQPACKET end (16)
+     decline, so [inv_ok] has already closed them, and the eventfd, the
+     unnamed file and the opaque kinds are the eleventh to thirteenth
+     goals left.
      THE INDICES MOVE WITH [State.FdEntry]: a constructor added ahead of
      [FdSocket] shifts every number here, and a stale selector silently
      addresses a different arm. *)
@@ -1345,12 +1317,8 @@ Proof.
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags))
                                 SOCK_NONBLOCK) 0)) eqn:E2; hall E2; inv_ok;
     try discriminate; [reflexivity|].
-<<<<<<< HEAD
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]; cbv beta iota zeta in *; inv_ok;
-=======
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st];
     cbv beta iota zeta in *; inv_ok;
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
     try discriminate;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
            eqn:Ecap; hall Ecap; inv_ok; first [reflexivity | discriminate]).
@@ -1378,17 +1346,10 @@ Proof.
   unfold check_connect in H. unfold connect_spec. cbv zeta in H.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     (* the opaque kinds are [CheckUnmodeled], ahead of the copy *)
-    [ | | | | | | | | | | discriminate | | connect_ret H ].
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
-    cbv beta iota zeta in H |- *;
-    (* the opaque kinds are [CheckUnmodeled], ahead of the copy *)
-    [ | | | | | | | | | | | | | | discriminate | connect_ret H ].
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    [ | | | | | | | | | | | | | | discriminate | | connect_ret H ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *; [ connect_ret H | ].
@@ -1397,11 +1358,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try connect_ret_c H.
-<<<<<<< HEAD
-  (* an AF_UNIX SEQPACKET end: [CheckUnmodeled] past the copy *)
-=======
-  (* the stream-pair end and the datagram socket decline once past the copy *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  (* the stream-pair end, the datagram socket and an AF_UNIX SEQPACKET
+     end decline once past the copy *)
   all: try discriminate.
   (* the socket arm, both ledger shapes *)
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
@@ -1426,15 +1384,9 @@ Proof.
   unfold check_connect in H. unfold connect_spec. cbv zeta in H.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-<<<<<<< HEAD
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o|i0 sd st]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o|i0 sd st]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
-    [ | | | | | | | | | | apply unmodeled_intro |
-=======
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af|o]|] eqn:Hfd;
-    cbv beta iota zeta in H |- *;
-    [ | | | | | | | | | | | | | | apply unmodeled_intro
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+    [ | | | | | | | | | | | | | | apply unmodeled_intro |
     | now apply check_ret_only_no_unmodeled in H ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
@@ -1446,12 +1398,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try (now apply check_ret_only_copyins_no_unmodeled in H).
-<<<<<<< HEAD
-  (* an AF_UNIX SEQPACKET end: declined on both sides past the copy *)
-=======
-  (* the stream-pair end and the datagram socket: declined past the copy,
-     the ledger kept *)
->>>>>>> 2a71b4cf2e546af59f9d63c281c4e6afef9e5492
+  (* the stream-pair end, the datagram socket and an AF_UNIX SEQPACKET
+     end: declined past the copy, the ledger kept *)
   all: try (apply record_copyins_unmodeled; apply unmodeled_intro).
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
        cbv beta iota zeta in H |- *;
