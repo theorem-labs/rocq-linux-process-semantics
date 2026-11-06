@@ -476,23 +476,12 @@ Proof.
   assert (Hext : Fork.clone_has (Fork.cla_flags r)
     (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)) = false).
   { unfold Fork.clone_has. apply negb_false_iff. apply Z.eqb_eq.
-    apply Z.bits_inj_iff. intros n Hn.
-    rewrite Z.land_spec by lia. rewrite Z.bits_0.
-    pose proof (Z.land_spec (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) n Hn) as Ha.
-    rewrite Hmask in Ha. rewrite Z.bits_0 in Ha.
-    pose proof (Z.land_spec clone_ns_ext_flags
-      (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)) n Hn) as Hb.
-    rewrite Hcov in Hb. rewrite Z.bits_0 in Hb.
-    destruct (Z.testbit (Fork.cla_flags r) n) eqn:Ef; [|reflexivity].
-    rewrite Ef in Ha. simpl in Ha.
-    rewrite Z.lnot_spec in Ha by lia.
-    destruct (Z.testbit clone_ns_ext_flags n) eqn:Ee;
-      [|simpl in Ha; discriminate].
-    rewrite Ee in Hb. simpl in Hb.
-    rewrite Z.lnot_spec in Hb by lia.
-    destruct (Z.testbit (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask) n) eqn:Eu;
-      [|simpl in Hb; discriminate].
-    rewrite Z.lnot_spec by lia. rewrite Eu. reflexivity. }
+    (* ext_flags ⊆ extra|mask, so lnot(extra|mask) ⊆ lnot(ext_flags). *)
+    assert (Hmon : Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask) =
+      Z.land (Z.lnot clone_ns_ext_flags)
+             (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)))
+      by (vm_compute; reflexivity).
+    rewrite Hmon. rewrite Z.land_assoc. rewrite Hmask. apply Z.land_0_l. }
   rewrite Hext in Hclass. cbn [negb] in Hclass.
   (* Step 4: after the first two CcNone tests pass, clone_class is not CcNone. *)
   destruct (negb (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask));
