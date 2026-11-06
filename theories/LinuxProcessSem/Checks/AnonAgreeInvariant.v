@@ -688,18 +688,37 @@ Local Ltac aa_done_or_unfold H :=
     end
   ].
 
-(* Before kf_step's injection fires on CheckOk (wrapper ...) = CheckOk m' evs,
-   unwrap so the inner if/match gets processed first. *)
-Local Ltac aa_pre_inject H :=
-  match type of H with
-  | CheckOk (open_cloexec_model _ _ _) _ = CheckOk _ _ =>
-      unfold open_cloexec_model in H; cbv beta iota zeta in H
-  end.
-
+(* The generic frame tactic: cbv + repeat kf_step/unfold/close. *)
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H | aa_close; fail]);
+  repeat (first [kf_step H | aa_done_or_unfold H | aa_close; fail]);
   aa_close.
+
+(* [check_openat] wraps its inner table in [open_cloexec_model], which
+   does not touch [m_fds] but prevents [kf_step] from reaching the
+   inner model before injection fires.  Handle it separately. *)
+Local Lemma check_openat_preserves_aa :
+  forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H Hinv.
+  unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) eqn:E;
+    [|discriminate H..].
+  injection H as <- <-.
+  (* m' = open_cloexec_model flags (eff_ret eff) m0 *)
+  unfold open_cloexec_model.
+  destruct (addr_is_error_b (eff_ret eff));
+    [|destruct (fd_lookup (m_fds m0) (eff_ret eff));
+      [autorewrite with model|]].
+  (* All three cases: need anon_agree_all (m_fds m0) from E *)
+  all: rename E into H;
+       unfold check_openat_table in H;
+       cbv beta iota zeta in H;
+       repeat (kf_step H || aa_done_or_unfold H);
+       aa_close.
+Qed.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
@@ -708,13 +727,12 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
+  (* check_openat: handle the open_cloexec_model wrapper *)
+  all: try (eapply check_openat_preserves_aa; [exact H | exact Hinv]; fail).
+  (* All other arms: the generic frame tactic *)
   all: try (aa_frame H; fail).
-  (* Diagnostic: print remaining goals *)
-  all: cbv beta iota zeta in H.
-  all: repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H]).
-  all: try aa_close.
-  all: match goal with |- ?G => idtac "STUCK_GOAL:" G end.
-  all: match goal with H0 : _ |- _ => let T := type of H0 in idtac "STUCK_HYP:" T end.
+  (* Diagnostic for any remaining arms *)
+  all: match goal with |- ?G => idtac "STUCK:" G end.
 Admitted.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
