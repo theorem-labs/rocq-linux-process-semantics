@@ -546,15 +546,7 @@ Definition ftruncate_witness (fd len : word) (m : Model)
           else ret_outcome (Z_to_bv 64 0)
                  (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
       end
-  | Some (FdFileA p _) =>
-      (* a writable regular file too: see [Open.ftruncate_spec] *)
-      match fs_lookup (m_fs m) p with
-      | None => Unmodeled
-      | Some data =>
-          if negb (modeled_truncate_gap data len) then Unmodeled
-          else ret_outcome (Z_to_bv 64 0)
-                 (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
-      end
+  | Some (FdFileA _ _) => Unmodeled
   | Some (FdAnon id af) =>
       (* declined unless the file's descriptors agree; then a regular
          file: see [Open.ftruncate_spec]'s unnamed-file arm *)
@@ -576,7 +568,7 @@ Proof.
     try (eapply bind_step; [apply get_model_ok|];
          cbv beta iota; srw Hfd; apply unmodeled_intro).
   (* the unnamed file *)
-  4: { eapply bind_step; [apply get_model_ok|]; cbv beta iota; srw Hfd.
+  3: { eapply bind_step; [apply get_model_ok|]; cbv beta iota; srw Hfd.
        destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
        destruct (negb (af_wr af)); [apply pure_ok|].
        destruct (negb (modeled_truncate_gap (af_data af) len));
