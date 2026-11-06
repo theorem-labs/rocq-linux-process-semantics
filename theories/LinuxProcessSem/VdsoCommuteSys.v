@@ -57,7 +57,7 @@ Qed.
     input, so its lemma is the one for that specification. *)
 Ltac vc_arm L := intros ? ? ? ? ?; eapply L; eassumption.
 
-(** THE WALK, assembled.  100 arms, in [Sys.SyscallTable.spec_table]'s order.
+(** THE WALK, assembled.  103 arms, in [Sys.SyscallTable.spec_table]'s order.
     A new arm with no lemma in [VdsoCommuteArms.v] fails here. *)
 Lemma spec_table_vdso_commutes :
   Forall (fun a => vdso_commutes (sa_spec a)) spec_table.
@@ -90,6 +90,7 @@ Proof.
   - vc_arm vc_pwrite64_spec.              (* 68  pwrite64 *)
   - vc_arm vc_pselect6_spec.              (* 72  pselect6 *)
   - vc_arm vc_ppoll_spec.                 (* 73  ppoll *)
+  - vc_arm vc_signalfd4_spec.             (* 74  signalfd4 *)
   - vc_arm vc_readlinkat_spec.            (* 78  readlinkat *)
   - vc_arm vc_newfstatat_spec.            (* 79  newfstatat *)
   - vc_arm vc_fstat_spec.                 (* 80  fstat *)
@@ -109,6 +110,7 @@ Proof.
   - vc_arm vc_sched_setscheduler_spec.    (* 119 sched_setscheduler *)
   - vc_arm vc_sched_getaffinity_spec.     (* 123 sched_getaffinity *)
   - vc_arm vc_sched_yield_spec.           (* 124 sched_yield *)
+  - vc_arm vc_kill_spec.                  (* 129 kill *)
   - vc_arm vc_tkill_spec.                 (* 130 tkill *)
   - vc_arm vc_tgkill_spec.                (* 131 tgkill *)
   - vc_arm vc_sigaltstack_spec.           (* 132 sigaltstack *)
@@ -159,6 +161,7 @@ Proof.
   - vc_arm vc_accept4_spec.               (* 242 accept4 *)
   - vc_arm vc_wait4_spec.                 (* 260 wait4 *)
   - vc_arm vc_prlimit64_spec.             (* 261 prlimit64 *)
+  - vc_arm vc_setns_spec.                 (* 268 setns *)
   - vc_arm vc_getrandom_spec.             (* 278 getrandom *)
   - vc_arm vc_pwritev2_spec.              (* 287 pwritev2 *)
   - vc_arm vc_clone3_spec.                (* 435 clone3 *)

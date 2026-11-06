@@ -6,9 +6,9 @@
     each one.  This file is that walk, in [Sys.SyscallTable.spec_table]'s
     order, and [VdsoCommuteSys.v] assembles it.
 
-    85 lemmas for 93 arms: [getid_spec] answers four numbers,
-    [setid_spec], [setresid_spec], [fsync_spec], [exit_spec] and
-    [accept4_spec] two each.  A repeated arm costs nothing here; it is
+    94 lemmas for 103 arms: [getid_spec] answers four numbers,
+    [setid_spec], [setresid_spec], [getresid_spec], [fsync_spec],
+    [exit_spec] and [accept4_spec] two each.  A repeated arm costs nothing here; it is
     applied twice at the dispatcher.
 
     A new arm in [spec_table] with no lemma here fails
@@ -318,6 +318,11 @@ Lemma vc_ppoll_spec : forall ufds nfds tsp sig sigsetsize,
   vdso_commutes (ppoll_spec ufds nfds tsp sig sigsetsize).
 Proof. intros; unfold ppoll_spec; vdso_walk. Qed.
 
+(* ---- fs/signalfd.c ---- *)
+Lemma vc_signalfd4_spec : forall ufd mask sizemask flags,
+  vdso_commutes (signalfd4_spec ufd mask sizemask flags).
+Proof. intros; unfold signalfd4_spec; vdso_walk. Qed.
+
 (* ---- fs/stat.c ---- *)
 Lemma vc_readlinkat_spec : forall dirfd, vdso_commutes (readlinkat_spec dirfd).
 Proof. intros; unfold readlinkat_spec; vdso_walk. Qed.
@@ -350,12 +355,27 @@ Proof. intros; unfold wait4_spec; vdso_walk. Qed.
 Lemma vc_set_tid_address_spec : vdso_commutes set_tid_address_spec.
 Proof. intros; unfold set_tid_address_spec; vdso_walk. Qed.
 
+(** [Sys.Kernel.Fork.clone_refusable] is written as a bare [fun i m o],
+    which the walk cannot enter.  Its test reads [m_clone_refusers] and
+    [m_fds], two fields [with_vdso] leaves alone, so the wrapper is framed
+    whenever the refusal and the answer from the lists are. *)
+Lemma vc_clone_refusable : forall answered fail k,
+  vdso_commutes fail -> vdso_commutes k ->
+  vdso_commutes (clone_refusable answered fail k).
+Proof.
+  intros answered fail k Hf Hk v i m o H. unfold clone_refusable in *.
+  cbv beta in *. vdso_unwrap.
+  match goal with |- context [if ?b then _ else _] => destruct b end.
+  - exact (vc_alt fail k Hf Hk v i m o H).
+  - exact (Hk v i m o H).
+Qed.
+
 Lemma vc_clone_spec : forall flags, vdso_commutes (clone_spec flags).
-Proof. intros; unfold clone_spec; vdso_walk. Qed.
+Proof. intros; unfold clone_spec; apply vc_clone_refusable; vdso_walk. Qed.
 
 Lemma vc_clone3_spec : forall uargs size,
   vdso_commutes (clone3_spec uargs size).
-Proof. intros; unfold clone3_spec; vdso_walk. Qed.
+Proof. intros; unfold clone3_spec; apply vc_clone_refusable; vdso_walk. Qed.
 
 (* ---- kernel/futex/syscalls.c ---- *)
 Lemma vc_futex_spec : forall uaddr op val utime,
@@ -398,6 +418,9 @@ Lemma vc_sched_yield_spec : vdso_commutes sched_yield_spec.
 Proof. intros; unfold sched_yield_spec; vdso_walk. Qed.
 
 (* ---- kernel/signal.c ---- *)
+Lemma vc_kill_spec : forall pid sig, vdso_commutes (kill_spec pid sig).
+Proof. intros; unfold kill_spec; vdso_walk. Qed.
+
 Lemma vc_tkill_spec : forall pid sig, vdso_commutes (tkill_spec pid sig).
 Proof. intros; unfold tkill_spec; vdso_walk. Qed.
 
@@ -416,6 +439,10 @@ Proof. intros; unfold rt_sigaction_spec; vdso_walk. Qed.
 Lemma vc_rt_sigprocmask_spec : forall how nset oset ss,
   vdso_commutes (rt_sigprocmask_spec how nset oset ss).
 Proof. intros; unfold rt_sigprocmask_spec; vdso_walk. Qed.
+
+(* ---- kernel/nsproxy.c ---- *)
+Lemma vc_setns_spec : forall fd, vdso_commutes (setns_spec fd).
+Proof. intros; unfold setns_spec; vdso_walk. Qed.
 
 (* ---- kernel/groups.c ---- *)
 Lemma vc_getgroups_spec : forall gidsetsize,
