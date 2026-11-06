@@ -16,7 +16,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad 
 From LinuxProcessSemantics.LinuxProcessSem Require Import Run Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Dispatch.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  AnonAgree ExecutableSpecs VmMapsDisjoint KillFree.
+  AnonAgree ExecutableSpecs VmMapsDisjoint KillFree NsFileFree.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Dispatch.
 Import ListNotations.
@@ -386,74 +386,142 @@ Local Ltac find_anon_agree_hyp :=
   | H : anon_agree _ _ _ = true |- _ => exact H
   end.
 
+(** A table rewritten entry by entry, where every [FdAnon] entry is kept
+    and no other entry becomes one, keeps the invariant. *)
+Local Lemma anon_agree_all_map_entries : forall (g : word * FdEntry -> FdEntry) fds,
+  (forall k id af, g (k, FdAnon id af) = FdAnon id af) ->
+  (forall p id af, g p = FdAnon id af -> snd p = FdAnon id af) ->
+  anon_agree_all fds ->
+  anon_agree_all (map (fun p => (fst p, g p)) fds).
+Proof.
+  intros g fds Hfix Hback Hall.
+  assert (Hpt : forall id af p,
+            anon_entry_agrees id af (g p) = anon_entry_agrees id af (snd p)).
+  { intros id af [k e]. cbn [snd].
+    destruct (g (k, e)) eqn:Eg;
+      try (destruct e; try reflexivity; rewrite Hfix in Eg; discriminate Eg).
+    pose proof (Hback _ _ _ Eg) as He. cbn [snd] in He. subst e. reflexivity. }
+  intros fd id af Hin.
+  apply in_map_iff in Hin. destruct Hin as [[k e] [Heq Hin']]. cbn [fst] in Heq.
+  injection Heq as Hk Hg. pose proof (Hback _ _ _ Hg) as He. cbn [snd] in He. subst e.
+  pose proof (Hall _ _ _ Hin') as Hagr. unfold anon_agree in Hagr |- *.
+  rewrite forallb_forall in Hagr |- *. intros q Hq.
+  apply in_map_iff in Hq. destruct Hq as [p [Hpq Hp]]. subst q. cbn [snd].
+  rewrite Hpt. exact (Hagr p Hp).
+Qed.
+
+Local Lemma share_eventfds_map : forall fds,
+  share_eventfds fds = map (fun p => (fst p, eventfd_shared_entry (snd p))) fds.
+Proof.
+  induction fds as [|[k e] r IH]; [reflexivity|].
+  cbn [share_eventfds map fst snd]. rewrite IH. reflexivity.
+Qed.
+
+(** The write-back table [ReadWrite.anon_place_fds] builds. *)
+Local Lemma anon_agree_all_anon_place_fds : forall fds fd id af bs fds',
+  anon_place_fds fds fd id af bs = Some fds' ->
+  anon_agree_all fds -> anon_agree fds id af = true -> anon_agree_all fds'.
+Proof.
+  intros fds fd id af bs fds' E Hall Hagr. unfold anon_place_fds in E. cbv zeta in E.
+  destruct (af_append af); cbv iota in E.
+  { injection E as <-. exact (anon_agree_all_anon_write_back _ _ _ _ _ _ Hall Hagr). }
+  match type of E with (if ?b then _ else _) = _ => destruct b; cbv iota in E end;
+    [discriminate E|].
+  injection E as <-. exact (anon_agree_all_anon_write_back _ _ _ _ _ _ Hall Hagr).
+Qed.
+
+(** Inserting a copy of an entry the table already holds: an [FdAnon]
+    copy carries the same contents and pin as its original. *)
+Local Lemma anon_agree_all_fd_insert_copy : forall fds old k e,
+  fd_lookup fds old = Some e -> anon_agree_all fds -> anon_agree_all (fd_insert fds k e).
+Proof.
+  intros fds old k e Hl Hall.
+  destruct e;
+    try (apply anon_agree_all_fd_insert_non_anon;
+         [let a := fresh in let b := fresh in let Habs := fresh in
+          intros a b Habs; discriminate Habs | exact Hall]).
+  match goal with
+  | |- anon_agree_all (fd_insert _ _ (FdAnon ?id ?af)) =>
+      apply (anon_agree_all_fd_insert_anon fds k id af af Hall);
+      [exact (Hall _ _ _ (fd_lookup_In _ _ _ Hl)) | reflexivity | reflexivity]
+  end.
+Qed.
+
+(** The post-model accessors, as [Checks.NsFileFree] rewrites them. *)
+Create HintDb aa_fds.
+#[local] Hint Rewrite m_fds_with_fds m_fds_with_vmmaps m_fds_with_stdin
+  m_fds_with_urandom m_fds_with_fs m_fds_with_halted m_fds_with_tid
+  m_fds_with_rlimit_core m_fds_with_clock m_fds_with_setsid_succeeded
+  m_fds_with_pipes m_fds_with_creds m_fds_with_net m_fds_with_abort_terminal
+  m_fds_with_killed m_fds_with_nofile m_fds_with_sigabrt_pending
+  m_fds_with_sigaltstack_installed m_fds_with_sigmask m_fds_with_statpin
+  m_fds_with_utsname
+  m_fds_forget_vm_ranges_nf m_fds_with_brk_next_nf m_fds_with_mmap_backing_nf
+  m_fds_with_mmap_replacement_nf m_fds_raise_sigpipe_nf
+  m_fds_sigmask_deliver_model_nf m_fds_with_accepted_nf m_fds_with_children_nf
+  m_fds_with_child_nf
+  m_fds_with_pdeath_signal_nf m_fds_with_sigpipe_install_nf
+  m_fds_with_sigpipe_default_nf m_fds_with_sigpipe_terminal_nf
+  m_fds_with_sigpipe_pending_nf m_fds_with_vdso_bump_nf m_fds_with_vm_backing_nf
+  m_fds_with_mmap_destroyed_nf m_fds_with_sigchld_dfl_nf
+  m_fds_sigchld_install_model_nf m_fds_with_cloexec m_fds_open_cloexec_model_nf : aa_fds.
+
+Local Ltac aa_not_anon :=
+  let a := fresh in let b := fresh in let Habs := fresh in
+  intros a b Habs; discriminate Habs.
+
+(** The back condition of [anon_agree_all_map_entries] for the entry
+    rewrites the arms use: none of them makes an [FdAnon]. *)
+Local Ltac aa_back_entry :=
+  let k := fresh in let e := fresh in let a := fresh in let b := fresh in
+  let He := fresh in
+  intros [k e] a b He; cbv beta in He; cbn [fst snd] in He |- *;
+  destruct e;
+  cbv beta iota delta [ppoll_record_entry forfeit_entry eventfd_shared_entry] in He;
+  repeat match type of He with
+         | context [match ?x with _ => _ end] => destruct x; cbv beta iota in He
+         end;
+  first [discriminate He | exact He].
+
+(** Close [anon_agree_all T] by the structure of the table [T]. *)
+Local Ltac aa_tbl :=
+  match goal with
+  | Hinv : anon_agree_all ?F |- anon_agree_all ?F => exact Hinv
+  | E : anon_place_fds _ _ _ _ _ = Some ?v |- anon_agree_all ?v =>
+      eapply anon_agree_all_anon_place_fds; [exact E | aa_tbl | find_anon_agree_hyp]
+  | E : dup3_fds _ _ _ _ = Some ?v |- anon_agree_all ?v =>
+      refine (anon_agree_all_dup3_fds _ _ _ _ _ _ E _); [eassumption | aa_tbl]
+  | |- anon_agree_all (fd_remove _ _) => apply anon_agree_all_fd_remove; aa_tbl
+  | |- anon_agree_all (List.filter _ _) => apply anon_agree_all_filter; aa_tbl
+  | |- anon_agree_all (close_range_fds _ _ _) =>
+      unfold close_range_fds; apply anon_agree_all_filter; aa_tbl
+  | |- anon_agree_all (anon_set_data _ _ _) => apply anon_agree_all_anon_set_data; aa_tbl
+  | |- anon_agree_all (anon_write_back _ _ _ _ _ _) =>
+      eapply anon_agree_all_anon_write_back; [aa_tbl | find_anon_agree_hyp]
+  | |- anon_agree_all (anon_update _ _ _) => apply anon_agree_all_set_pin; aa_tbl
+  | |- anon_agree_all (share_eventfds _) => rewrite share_eventfds_map; aa_tbl
+  | |- anon_agree_all (forfeit_inherited _) => unfold forfeit_inherited; aa_tbl
+  | |- anon_agree_all (ppoll_record _ _ _) => unfold ppoll_record; aa_tbl
+  | |- anon_agree_all (map _ _) =>
+      first
+      [ eapply anon_agree_all_unlink_open; [eassumption | aa_tbl]
+      | apply anon_agree_all_map_entries; [intros; reflexivity | aa_back_entry | aa_tbl] ]
+  | |- anon_agree_all (fd_insert _ _ _) =>
+      first
+      [ apply anon_agree_all_fd_insert_non_anon; [aa_not_anon | aa_tbl]
+      | apply anon_agree_all_fd_insert_set_off; [aa_tbl | find_anon_agree_hyp]
+      | eapply anon_agree_all_reopen_trunc; [aa_tbl | find_anon_agree_hyp]
+      | eapply anon_agree_all_reopen; [aa_tbl | find_anon_agree_hyp]
+      | eapply anon_agree_all_fd_insert_copy; [eassumption | aa_tbl] ]
+  end.
+
 Local Ltac aa_close :=
   match goal with
-  | Hinv : anon_agree_all (m_fds ?m) |- anon_agree_all ?g =>
-    first
-    [ exact Hinv
-    | change g with (m_fds m); exact Hinv
-    | autorewrite with model; exact Hinv
-    | cbn [m_fds]; exact Hinv
-    | cbn [m_fds]; autorewrite with model; exact Hinv
-    | autorewrite with model;
-      first
-      [ apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | exact Hinv ]
-      | apply anon_agree_all_fd_remove; exact Hinv
-      | apply anon_agree_all_filter; exact Hinv
-      | apply anon_agree_all_anon_set_data; exact Hinv
-      | apply anon_agree_all_fd_insert_set_off;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | eapply anon_agree_all_anon_write_back;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | apply anon_agree_all_set_pin; exact Hinv
-      | eapply anon_agree_all_dup3_fds;
-          [ eassumption | reflexivity | exact Hinv ]
-      | eapply anon_agree_all_reopen;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | eapply anon_agree_all_reopen_trunc;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_fd_insert_non_anon;
-            [intros ?? [=] | exact Hinv ] ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_fd_remove; exact Hinv ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_filter; exact Hinv ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_anon_set_data; exact Hinv ]
-      | eapply anon_agree_all_unlink_open; [eassumption | exact Hinv]
-      ]
-    | cbn [m_fds]; autorewrite with model;
-      first
-      [ apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | exact Hinv ]
-      | apply anon_agree_all_fd_remove; exact Hinv
-      | apply anon_agree_all_filter; exact Hinv
-      | apply anon_agree_all_anon_set_data; exact Hinv
-      | apply anon_agree_all_fd_insert_set_off;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | eapply anon_agree_all_anon_write_back;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | apply anon_agree_all_set_pin; exact Hinv
-      | eapply anon_agree_all_dup3_fds;
-          [ eassumption | reflexivity | exact Hinv ]
-      | eapply anon_agree_all_reopen;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | eapply anon_agree_all_reopen_trunc;
-          [ exact Hinv | find_anon_agree_hyp ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_fd_insert_non_anon;
-            [intros ?? [=] | exact Hinv ] ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_fd_remove; exact Hinv ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_filter; exact Hinv ]
-      | apply anon_agree_all_fd_insert_non_anon;
-          [intros ?? [=] | apply anon_agree_all_anon_set_data; exact Hinv ]
-      | eapply anon_agree_all_unlink_open; [eassumption | exact Hinv]
-      ]
-    ]
+  | |- anon_agree_all _ =>
+      cbv beta iota zeta delta [unlink_open_model ppoll_rec Open.procfd_reopen_model
+        Open.procfd_trunc_model pipe2_model pipe2_fds1 clone_child_made stream_reset_seen];
+      autorewrite with aa_fds;
+      aa_tbl
   end.
 
 (* Sub-checker handling: when kf_step gets stuck on a sub-checker call,
@@ -906,20 +974,6 @@ Proof.
   injection H as <- <-.
   rewrite m_fds_open_cloexec_model_aa.
   exact (aa_openat_table _ _ _ _ _ _ _ _ E Hinv).
-Qed.
-
-(** Inserting a copy of an entry the table already holds: an [FdAnon]
-    copy carries the same contents and pin as its original. *)
-Local Lemma anon_agree_all_fd_insert_copy : forall fds old k e,
-  fd_lookup fds old = Some e -> anon_agree_all fds -> anon_agree_all (fd_insert fds k e).
-Proof.
-  intros fds old k e Hl Hall.
-  destruct e; try (apply anon_agree_all_fd_insert_non_anon; [intros ?? [=] | exact Hall]).
-  match goal with
-  | |- anon_agree_all (fd_insert _ _ (FdAnon ?id ?af)) =>
-      apply (anon_agree_all_fd_insert_anon fds k id af af Hall);
-      [exact (Hall _ _ _ (fd_lookup_In _ _ _ Hl)) | reflexivity | reflexivity]
-  end.
 Qed.
 
 (** [dup]: the new descriptor is a copy of the entry at [oldfd]. *)
