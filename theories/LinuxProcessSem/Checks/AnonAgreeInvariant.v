@@ -513,6 +513,10 @@ Local Ltac aa_tbl :=
       | eapply anon_agree_all_reopen_trunc; [aa_tbl | find_anon_agree_hyp]
       | eapply anon_agree_all_reopen; [aa_tbl | find_anon_agree_hyp]
       | eapply anon_agree_all_fd_insert_copy; [eassumption | aa_tbl] ]
+  | |- anon_agree_all (match ?x with _ => _ end) =>
+      (* a table chosen by a case the outcome did not split (shutdown's
+         peer lookup): split it *)
+      destruct x; cbv beta iota; aa_tbl
   end.
 
 Local Ltac aa_close :=
@@ -632,6 +636,7 @@ Local Ltac aa_done H :=
   | context [check_capget_copy] => unfold check_capget_copy in H
   | context [check_futex_wake_private] =>
       unfold check_futex_wake_private, check_futex_wait_private in H
+  | context [check_futex_wait_private] => unfold check_futex_wait_private in H
   | context [Prelude.check_copyins_after] => apply check_copyins_after_model in H
   | context [check_copyin_prefix] => apply check_copyin_prefix_model in H
   | context [check_copyins] => apply check_copyins_model in H
@@ -1025,13 +1030,9 @@ Proof.
   all: try (aa_use check_openat_aa H; fail).
   all: try (aa_use check_dup_aa H; fail).
   all: try (aa_frame H; fail).
-  (* DIAGNOSTIC (wip only): show what is left of every uncovered arm. *)
-  all: let T := type of H in idtac "AA_NO_CASE:" T.
-  all: cbv beta iota zeta in H; repeat (kf_step H || aa_done_or_unfold H);
-       try aa_close.
-  all: match goal with |- ?G => idtac "AA_GOAL:" G end;
-       try (let T := type of H in idtac "AA_H:" T).
-Admitted.
+  all: let T := type of H in
+       fail 1 "checked_table_preserves_aa has no case for this dispatcher arm:" T.
+Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
