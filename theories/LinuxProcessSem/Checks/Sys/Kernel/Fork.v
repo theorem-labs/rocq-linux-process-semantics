@@ -156,11 +156,18 @@ Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
   if clone_fork_flags_b flags then check_clone_resolve eff m
   else CheckUnmodeled.
 
+(** A [uargs] range [access_ok] refuses is -EFAULT with an EMPTY ledger,
+    asked through [State.copy_bytes_map] before the walk; one it admits
+    that the memory does not wholly back declines (see
+    [Fork.clone3_spec]). *)
 Definition check_clone3 (i : SyscallInput) (uargs size : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then CheckUnmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => CheckUnmodeled
+  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+       | None =>
+           if negb (access_okb uargs CLONE_ARGS_SIZE)
+           then check_ret_only eff (errno_ret EFAULT) m []
+           else CheckUnmodeled
        | Some bs =>
            if clone3_fork_args_b bs then check_clone3_resolve uargs eff m
            else CheckUnmodeled
@@ -398,8 +405,13 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|discriminate].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
+  2: { (* the walk declined: only a refused range answers, with -EFAULT *)
+       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
+         cbv iota; cbv iota in H; [|discriminate].
+       apply check_ret_only_ok_iff in H as (-> & -> & ->).
+       unfold err_ret, ret_only. apply pure_ok. }
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|discriminate].
   now apply check_clone3_resolve_sound_ok.
@@ -414,8 +426,11 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
+         cbv iota; cbv iota in H;
+         [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|apply unmodeled_intro].
   now apply check_clone3_resolve_sound_unmodeled with (eff := eff).
@@ -430,8 +445,11 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [unfold unmodeled in H; discriminate|].
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
     as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+  2: { (* -EFAULT with nothing recorded, the only answer of a refused range *)
+       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs; inv_ok.
+       apply check_ret_only_ok_iff. now repeat split. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
   now apply check_clone3_resolve_complete_ok with (i := i).
 Qed.
@@ -445,8 +463,10 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [reflexivity|].
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok; [|reflexivity].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs;
+         inv_ok; reflexivity. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok; [|reflexivity].
   now apply check_clone3_resolve_complete_unmodeled with (i := i).
 Qed.

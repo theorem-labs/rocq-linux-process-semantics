@@ -7,6 +7,9 @@ The Rocq theory LinuxProcessSemantics: a model of a Linux process that runs
 an RV64GC binary (LinuxProcessSem, Riscv), and the statements that proofs
 about such binaries are checked against (EquivalenceDefinition): observable
 equivalence of two binaries, termination, and patch classifiers.
+Also installs LinuxProcessSemantics.Common, the proof library those proofs
+use, in the same package as the model: a proof requires the library from the
+pin that names the model's commit, instead of carrying a copy of it.
 Also installs two helper tools, elf-snapshot and gen-fd-lemmas
 (Python 3, standard library only).
 """

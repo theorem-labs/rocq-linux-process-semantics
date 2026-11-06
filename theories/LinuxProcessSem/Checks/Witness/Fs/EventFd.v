@@ -20,15 +20,16 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
     says why the three layers restate it rather than share one
     predicate.
 
-    [Unmodeled] IS an admissible outcome, so the declined half needs no
-    invented answer — the spec's own arm is [unmodeled], and exhibiting
-    it is what makes this total.  [timerfd_create_witness] takes the
-    same shape for the same reason. *)
+    Past the gate the spec is an [alt] of the injected failure and the
+    new descriptor, and this takes the ERRNO side, as [socket_witness]
+    and [openat_witness] do: [Sys.Fs.EventFd.eventfd2_errnos] is headed
+    by ENOMEM, so [errno_head_witness] supplies the outcome and the
+    success branch's [lowest_fd] never has to be shown inhabited. *)
 Definition eventfd2_witness (flags : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (Z.eqb (Z.ldiff (bv_unsigned flags) EFD_FLAGS_SET) 0)
   then ret_outcome (errno_ret EINVAL) m
-  else Unmodeled.
+  else ret_outcome (errno_ret witness_errno) m.   (* the kmalloc's -ENOMEM *)
 
 Lemma eventfd2_witness_ok : forall flags i m,
   eventfd2_spec flags i m (eventfd2_witness flags m).
@@ -36,6 +37,9 @@ Proof.
   intros flags i m.
   unfold eventfd2_spec, eventfd2_einval_b, eventfd2_witness.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) EFD_FLAGS_SET) 0);
-    cbn [negb];
-    solve [ apply pure_ok | apply unmodeled_intro ].
+    cbn [negb]; cbv beta iota.
+  - eapply bind_step; [apply input_ok|]. cbv beta.
+    eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+    apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
+  - apply pure_ok.
 Qed.

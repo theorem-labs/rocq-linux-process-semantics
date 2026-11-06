@@ -331,6 +331,82 @@ Example sched_setscheduler_pid_is_the_pinned_tid :
                       (sched_param_mem 0)) ok m = CheckOk m [].
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
+(** THE FOUR BYTES THAT WALKED OFF THE TOP.  [param] is read through
+    [State.copy_bytes_map], which asks [State.access_okb] before the
+    walk; [Kernel.Sched.Syscalls.sched_setscheduler_spec]'s note says
+    why, and [State.copy_bytes_map]'s note carries the wrap argument.
+    The group has the shape of [Checks.Cases.Net.Socket]'s wrapping-read
+    groups: the wrapping call refused, a NEIGHBOURING ordinary call at
+    the top of what [State.access_okb] accepts still answered, and the
+    control that the bare walk really would have passed.  Both memories
+    map exactly their own four bytes.
+
+    Two readable bytes below the top and two from 0, all zero: the
+    bare walk reads priority 0, and SCHED_IDLE at priority 0 on the
+    calling task is the one call this arm answers 0 to — so before the
+    guard this call was answered, with the four bytes in the ledger. *)
+Definition sched_setscheduler_wrap_param : word := Z_to_bv 64 (2 ^ 64 - 2).
+
+Definition sched_setscheduler_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 2)%Z || (2 ^ 64 - 2 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example sched_setscheduler_wrap_would_pass_the_bare_walk :
+  read_bytes_map sched_setscheduler_wrap_mem sched_setscheduler_wrap_param
+    (Z_to_bv 64 4) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example sched_setscheduler_wrap_param_is_not_copyable :
+  copy_bytes_map sched_setscheduler_wrap_mem sched_setscheduler_wrap_param 4
+    = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with an empty ledger.  [do_sched_setscheduler]'s
+    [copy_from_user] of [struct sched_param] (kernel/sched/syscalls.c)
+    refuses this range in [access_ok] before it loads a byte.  The 0 the
+    bare walk admitted is refused, and so is an -EFAULT claiming the
+    copy-in. *)
+Example sched_setscheduler_wrapping_param_is_efault :
+  check_syscall (sched_setscheduler_in 0 5 sched_setscheduler_wrap_param
+                   sched_setscheduler_wrap_mem)
+    (mkEffect (errno_ret EFAULT) [] []) demo_model
+  = CheckOk demo_model []
+  /\ check_syscall (sched_setscheduler_in 0 5 sched_setscheduler_wrap_param
+                      sched_setscheduler_wrap_mem)
+       (with_copyins [(sched_setscheduler_wrap_param, 4%nat)]
+          (mkEffect (Z_to_bv 64 0) [] [])) demo_model
+     = CheckReject
+  /\ check_syscall (sched_setscheduler_in 0 5 sched_setscheduler_wrap_param
+                      sched_setscheduler_wrap_mem)
+       (with_copyins [(sched_setscheduler_wrap_param, 4%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) demo_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the last four bytes [State.access_okb] accepts,
+    readable and zero.  The same SCHED_IDLE call is still answered 0
+    with the copy-in recorded, and -EFAULT is refused.  This is the
+    address [sched_setscheduler_fault_is_the_range_verdict] declines on
+    with nothing mapped; mapped, it is answered. *)
+Definition sched_setscheduler_top_param : word := Z_to_bv 64 (TASK_SIZE - 4).
+
+Definition sched_setscheduler_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 4 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example sched_setscheduler_param_at_the_top_still_answers :
+  check_syscall (sched_setscheduler_in 0 5 sched_setscheduler_top_param
+                   sched_setscheduler_top_mem)
+    (with_copyins [(sched_setscheduler_top_param, 4%nat)]
+       (mkEffect (Z_to_bv 64 0) [] [])) demo_model
+  = CheckOk demo_model []
+  /\ check_syscall (sched_setscheduler_in 0 5 sched_setscheduler_top_param
+                      sched_setscheduler_top_mem)
+       (mkEffect (errno_ret EFAULT) [] []) demo_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
 (* -------------------------------------------------------------------------
    sched_yield (124)
 

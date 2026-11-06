@@ -240,6 +240,8 @@ Section NodesD.
   Variable A : atable.
   Variable nx0 : nat.
   Variable LIMIT : Z.
+  Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
+  Hypothesis CEIL_ok : ceil_ok CEIL.
   Variable SINV : env -> (word -> option byte) -> Prop.
   Variable argH : env -> word -> bool.
   Variable FS0 : Fs.Fs.
@@ -255,9 +257,9 @@ Section NodesD.
   (** ** The restriction [negb ∘ vis]                                          *)
   (* ----------------------------------------------------------------------- *)
 
-  Definition Hv (E : env) (cs : acs) (model : Model) : word -> bool := fun a => negb (vis A E cs model a).
+  Definition Hv (E : env) (cs : acs) (model : Model) : word -> bool := fun a => negb (vis A CEIL E cs model a).
 
-  Lemma Hv_hid : forall E cs model a, Hv E cs model a = true -> hid A argH E cs model a = true.
+  Lemma Hv_hid : forall E cs model a, Hv E cs model a = true -> hid A CEIL argH E cs model a = true.
   Proof. intros E cs model a H. unfold hid, Hv in *. rewrite H. apply orb_true_r. Qed.
 
   Lemma Hv_high : forall E cs model (a : word), CEIL <= bv_unsigned a -> Hv E cs model a = false.
@@ -271,20 +273,20 @@ Section NodesD.
   Proof. intros E cs model a Ha. unfold Hv, vis. rewrite Ha. reflexivity. Qed.
 
   Lemma lazy_cover_vis : forall E cs R FULL model,
-    cs_ok SEGS A LIMIT SINV argH FS0 E cs R FULL model -> lazy_cover (Hv E cs model) (m_vm_lazy model) (allowA A E cs).
+    cs_ok SEGS A LIMIT CEIL SINV argH FS0 E cs R FULL model -> lazy_cover (Hv E cs model) (m_vm_lazy model) (allowA A E cs).
   Proof.
     intros E cs R FULL model HC w Hlz Hh. unfold Hv in Hh.
     apply negb_false_iff in Hh. unfold vis in Hh. rename Hh into Hv0.
-    pose proof (page_in_ranges_bounds' w _ _ _ (co_lazyb _ _ _ _ _ _ _ _ _ _ _ HC) Hlz) as [B1 B2].
+    pose proof (page_in_ranges_bounds' w _ _ _ (co_lazyb _ _ _ _ _ _ _ _ _ _ _ _ HC) Hlz) as [B1 B2].
     pose proof HULL_ok as HU; unfold hull_ok in HU; destruct HU as (H0 & H1 & H2 & H3).
     apply orb_prop in Hv0 as [Hv0|Hv0].
     - apply orb_prop in Hv0 as [Hv0|Hv0].
       + unfold in_hull in Hv0. apply andb_prop in Hv0 as [_ Hv0]. apply Z.ltb_lt in Hv0. lia.
-      + apply Z.leb_le in Hv0. unfold CEIL in *.
+      + apply Z.leb_le in Hv0.
         unfold page_in_ranges in Hlz. apply existsb_exists in Hlz as [iv [Hin Hb]].
         apply andb_prop in Hb as [Hb1 Hb2]. apply Z.leb_le in Hb1. apply Z.leb_le in Hb2.
-        pose proof (proj1 (Forall_forall _ _) (co_lazyb _ _ _ _ _ _ _ _ _ _ _ HC) iv Hin) as [L1 L2].
-        pose proof (page_base_le' w) as (P1 & P2 & P3). unfold page_size, CEIL in *. lia.
+        pose proof (proj1 (Forall_forall _ _) (co_lazyb _ _ _ _ _ _ _ _ _ _ _ _ HC) iv Hin) as [L1 L2].
+        pose proof (page_base_le' w) as (P1 & P2 & P3). unfold page_size in *. lia.
     - apply andb_prop in Hv0 as [_ Hv0]. rewrite Hlz in Hv0. cbn [negb orb] in Hv0.
       pose proof (page_base_le' w) as (P1 & P2 & P3).
       unfold page_allowedb, allowA. apply existsb_exists. unfold page_size.
@@ -305,7 +307,7 @@ Section NodesD.
 
   (** the same for [hid] (= APS.lazy_cover_cs, restated without its junk Section parameters) *)
   Lemma lazy_cover_hid : forall E cs R FULL model,
-    cs_ok SEGS A LIMIT SINV argH FS0 E cs R FULL model -> lazy_cover (hid A argH E cs model) (m_vm_lazy model) (allowA A E cs).
+    cs_ok SEGS A LIMIT CEIL SINV argH FS0 E cs R FULL model -> lazy_cover (hid A CEIL argH E cs model) (m_vm_lazy model) (allowA A E cs).
   Proof.
     intros E cs R FULL model HC w Hlz Hh. apply (lazy_cover_vis E cs R FULL model HC w Hlz).
     unfold Hv. unfold hid in Hh. apply orb_false_iff in Hh as [_ Hh]. exact Hh.
@@ -325,10 +327,10 @@ Section NodesD.
 
   (** [Mr] (hidden: argH or not visible) is below [mrestrict Hv] in the definedness order *)
   Lemma Mr_grows_Hv : forall E cs model FULL,
-    mem_grows (Mr A argH E cs model FULL) (mrestrict (Hv E cs model) FULL).
+    mem_grows (Mr A CEIL argH E cs model FULL) (mrestrict (Hv E cs model) FULL).
   Proof.
     intros E cs model FULL a. unfold Mr, mrestrict, hid, Hv.
-    destruct (argH E a), (vis A E cs model a); cbn; auto.
+    destruct (argH E a), (vis A CEIL E cs model a); cbn; auto.
   Qed.
 
   Lemma munrestrict_mrestrict : forall (H : word -> bool) FULL, munrestrict H FULL (mrestrict H FULL) = FULL.

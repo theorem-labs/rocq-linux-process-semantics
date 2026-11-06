@@ -98,7 +98,7 @@ Definition check_prlimit64 (i : SyscallInput)
   else if (w_is0 new_rlim && w_is0 old_rlim)%bool then CheckUnmodeled
   else if (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool then CheckUnmodeled
   else if w_is0 new_rlim then
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16)
         then check_ret_only eff (errno_ret EFAULT) m []
@@ -109,7 +109,7 @@ Definition check_prlimit64 (i : SyscallInput)
     match m_rlimit_core m with
     | None => CheckUnmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16)
             then check_ret_only eff (errno_ret EFAULT) m []
@@ -125,13 +125,26 @@ Definition check_prlimit64 (i : SyscallInput)
         end
     end.
 
+(** [Kernel.Sys.uts_repeat_ok] as a test. *)
+Definition uts_repeat_okb (b0 bs : list byte) : bool :=
+  if utsname_wf b0 then (utsname_wf bs && uts_kernel_agree b0 bs)%bool
+  else listN_eqb bs b0.
+
+Lemma uts_repeat_okb_iff : forall b0 bs,
+  uts_repeat_okb b0 bs = true <-> uts_repeat_ok b0 bs.
+Proof.
+  intros b0 bs. unfold uts_repeat_okb, uts_repeat_ok.
+  destruct (utsname_wf b0); [apply andb_true_iff | apply listN_eqb_eq].
+Qed.
+
 (** uname: the copy-out arm, split out for the same reason
     [check_rlim64_read] is — it answers [CheckOk] or [CheckReject] and
     never [CheckUnmodeled], which is what the fail-closed direction
-    points at.  [bs0] is [m_utsname]: [Some] once the name is pinned, in
-    which case the delivered bytes must be exactly it, and [None] before,
-    in which case any buffer inside [utsname_wf]'s envelope is admissible
-    and becomes the pin. *)
+    points at.  [bs0] is [m_utsname]: [Some b0] once the name is pinned,
+    in which case the delivered bytes must be a name [uts_repeat_ok b0]
+    admits (the pin's release and version, any nodename and domainname),
+    and [None] before, in which case any buffer inside [utsname_wf]'s
+    envelope is admissible and becomes the pin. *)
 
 Definition check_uname_copy (name : word) (bs0 : option (list byte))
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -140,7 +153,7 @@ Definition check_uname_copy (name : word) (bs0 : option (list byte))
       if negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a name)%bool
       then CheckReject
       else match bs0 with
-           | Some b0 => if listN_eqb bs b0 then CheckOk m [] else CheckReject
+           | Some b0 => if uts_repeat_okb b0 bs then CheckOk m [] else CheckReject
            | None => if utsname_wf bs then CheckOk (with_utsname bs m) []
                      else CheckReject
            end
@@ -238,8 +251,9 @@ Qed.
 (** ftruncate: the negative length decided BEFORE the fd lookup, one
     -EINVAL for every fd kind that is not a writable regular file, and on
     a WRITABLE one — [FdFileW], [FdFileA] and [FdFileRW], which share a
-    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE
-    — a bare 0 with the file resized and THE OFFSET LEFT
+    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE,
+    and a writable [FdAnon], whose new contents reach every descriptor of
+    its file — a bare 0 with the file resized and THE OFFSET LEFT
     ALONE (see [Open.ftruncate_spec]).  The size guard is consulted only
     on that arm, as in the spec: a huge length on a channel or a
     directory is still the kernel's -EINVAL, not a decline. *)
@@ -463,18 +477,18 @@ Proof.
   destruct (negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a name)%bool);
     [discriminate|].
   destruct bs0 as [b0|];
-    [destruct (listN_eqb bs b0)|destruct (utsname_wf bs)]; discriminate.
+    [destruct (uts_repeat_okb b0 bs)|destruct (utsname_wf bs)]; discriminate.
 Qed.
 
 (** What a [CheckOk] out of the copy arm tells you: the effect is one
     390-byte write of the utsname at [name] returning 0, and either it
-    repeated the pin or it created one. *)
+    delivered a name the pin admits or it created the pin. *)
 
 Lemma check_uname_copy_ok : forall name bs0 eff m m' evs,
   check_uname_copy name bs0 eff m = CheckOk m' evs ->
   exists bs, eff = mkEffect (Z_to_bv 64 0) [(name, bs)] []
              /\ evs = []
-             /\ ((bs0 = Some bs /\ m' = m)
+             /\ ((exists b0, bs0 = Some b0 /\ uts_repeat_ok b0 bs /\ m' = m)
                  \/ (bs0 = None /\ utsname_wf bs = true
                      /\ m' = with_utsname bs m)).
 Proof.
@@ -489,9 +503,9 @@ Proof.
   apply andb_true_iff in HG as [HR HA].
   apply bv_eqb_eq in HR; subst r. apply bv_eqb_eq in HA; subst a.
   destruct bs0 as [b0|].
-  - destruct (listN_eqb bs b0) eqn:HL; [|discriminate].
-    apply listN_eqb_eq in HL; subst b0.
-    inversion H; clear H; subst. exists bs. repeat split. now left.
+  - destruct (uts_repeat_okb b0 bs) eqn:HL; [|discriminate].
+    apply uts_repeat_okb_iff in HL.
+    inversion H; clear H; subst. exists bs. repeat split. left. now exists b0.
   - destruct (utsname_wf bs) eqn:HW; [|discriminate].
     inversion H; clear H; subst. exists bs. repeat split. right. now repeat split.
 Qed.
@@ -508,9 +522,10 @@ Proof.
   - apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
   - destruct (read_bytes_map (in_wmem i) name (Z_to_bv 64 NEW_UTSNAME_SIZE))
       as [bs1|] eqn:Hw; [|discriminate].
-    apply check_uname_copy_ok in H as (bs & -> & -> & [[Hm ->]|(Hm & HW & ->)]);
+    apply check_uname_copy_ok in H
+      as (bs & -> & -> & [(b0 & Hm & HR & ->)|(Hm & HW & ->)]);
       rewrite Hm.
-    + apply pure_ok.
+    + eapply bind_ok0; [apply (choose_ok _ bs); exact HR|]. apply pure_ok.
     + eapply bind_ok0; [apply (choose_ok _ bs); exact HW|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
@@ -546,7 +561,9 @@ Proof.
       sys_unfold; inv_ok; hall Ho; hall Hw; hall Hm; inv_ok;
       unfold check_uname_copy;
       rewrite !bv_eqb_refl; cbn [andb negb].
-    + rewrite (proj2 (listN_eqb_eq bs0 bs0) eq_refl). reflexivity.
+    + match goal with H : uts_repeat_ok _ _ |- _ =>
+        rewrite (proj2 (uts_repeat_okb_iff _ _) H) end.
+      reflexivity.
     + match goal with H : utsname_wf ?b = true |- _ => rewrite H end.
       reflexivity.
 Qed.
@@ -581,7 +598,7 @@ Proof.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + apply check_rlim64_read_ok in H as (bs & -> & -> & [[Hm ->]|(Hm & HW & ->)]);
         rewrite Hm.
@@ -592,7 +609,7 @@ Proof.
         [|discriminate].
       apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|discriminate].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -630,14 +647,14 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|].
   eapply bind_unmodeled2; [apply get_model_ok|].
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + now apply check_rlim64_read_no_unmodeled in H.
     + destruct (negb (access_okb old_rlim 16)) eqn:Ho.
       * now apply check_ret_only_no_unmodeled in H.
       * apply unmodeled_intro.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -665,7 +682,7 @@ Proof.
   destruct (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool eqn:Hb2;
     [sys_unfold; inv_ok|]. cbv iota in H |- *.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Hm; inv_ok;
@@ -679,7 +696,7 @@ Proof.
       apply check_ret_only_ok_iff. now repeat split.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
       [|sys_unfold; inv_ok; hall Hn; hall Hm; inv_ok].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;
@@ -710,7 +727,7 @@ Proof.
   destruct (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool eqn:Hb2;
     [reflexivity|]. cbv iota in H |- *.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + exfalso. destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Hm; inv_ok.
@@ -718,7 +735,7 @@ Proof.
         [exfalso|reflexivity];
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Ho; inv_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|reflexivity].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;

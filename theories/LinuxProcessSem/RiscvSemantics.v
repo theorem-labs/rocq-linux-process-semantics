@@ -73,7 +73,7 @@
     riscv64 ABI: syscall number in a7, args in a0–a5 (x10–x15). *)
 
 From Stdlib Require Import ZArith NArith List String.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 
 Import ListNotations.
@@ -470,6 +470,94 @@ Definition code_read_ov (m : word -> option byte) (addr : word) (n : N)
   | None => None
   end.
 
+(** ** The pair [execve] installs: the vDSO text and the vvar pages
+
+    Both are segments of [mi_loaded_segments], tagged in [seg_perms]
+    ([MemImageType.seg_vdso_text], [MemImageType.seg_vdso_vvar]);
+    [Run.vdso_segments] is what builds them, and the tag is what keeps
+    them apart from the binary's own LOAD segments.  The three
+    functions here are the whole of what the MACHINE layer needs to
+    know about the pair: where the text is, which function an address
+    in it is the entry of, and whether a load's range meets vvar.
+
+    Everything else about the pair falls out of the ordinary segment
+    rules: the text is readable, so a libc's lookup reads the image's
+    bytes with ordinary loads; neither is writable, so a store into
+    either is [store_ok]'s SIGSEGV; and vvar carries no bytes, so a
+    load from it finds none. *)
+
+(** The run's vDSO text mapping, if it has one.  [Run.vdso_segments]
+    builds at most one, so the first tagged segment is the one. *)
+Definition vdso_text_seg : option Segment :=
+  find seg_vdso_text mi_loaded_segments.
+
+(** The measured image the text mapping holds, if its bytes are one
+    this development measured ([Vdso.vdso_images]).  A kernel whose
+    image is NOT measured therefore exports no entry here, and every
+    address of its text answers [MachineUnmodeled] — which is what
+    "a statement says nothing about such a kernel" means at the step
+    relation. *)
+Definition vdso_image : option (Segment * VdsoImage) :=
+  match vdso_text_seg with
+  | None => None
+  | Some seg =>
+      match vdso_image_of_bytes vdso_images (seg_bytes seg) with
+      | None => None
+      | Some im => Some (seg, im)
+      end
+  end.
+
+(** Is [a] a byte of the vDSO text?  [step_accesses] answers
+    [MachineUnmodeled] for a pc here instead of decoding the image's
+    bytes, and [Run.sstep]'s vDSO arm overrides that at an exported
+    entry. *)
+Definition vdso_text_at (a : word) : bool :=
+  match find_segment mi_loaded_segments (bv_unsigned a) 1 with
+  | Some seg => seg_vdso_text seg
+  | None => false
+  end.
+
+(** Which exported function [pc] is the ENTRY of.  The entry's
+    run-time address is the text base plus the symbol's [st_value],
+    because the image's single [PT_LOAD] starts at file offset 0 and
+    the kernel maps the file at the base it publishes. *)
+Definition vdso_entry_fn (pc : word) : option VdsoFn :=
+  match vdso_image with
+  | None => None
+  | Some (seg, im) =>
+      let base := Z.of_N (seg_base seg) in
+      if (Z.leb base (bv_unsigned pc)
+          && Z.ltb (bv_unsigned pc) (base + Z.of_N (vi_size im)))%bool
+      then vdso_fn_at_off (vi_syms im) (Z.to_N (bv_unsigned pc - base))
+      else None
+  end.
+
+(** Is [a] a byte of the vvar data pages? *)
+Definition vvar_byte_at (a : word) : bool :=
+  match find_segment mi_loaded_segments (bv_unsigned a) 1 with
+  | Some seg => seg_vdso_vvar seg
+  | None => false
+  end.
+
+(** Does [[a, a + n)] meet the vvar pages?  Per byte, like
+    [fetch_failure]'s classification, because a load that straddles the
+    boundary is declined for the vvar byte whatever the others are. *)
+Fixpoint range_meets_vvar (a : word) (n : nat) : bool :=
+  match n with
+  | O => false
+  | S n' => (vvar_byte_at a || range_meets_vvar (a + 1) n')%bool
+  end.
+
+(** F, the chosen image's largest measured frame: the depth below the
+    caller's sp that a vDSO call may leave bytes in ([Vdso.vi_frame]).
+    Zero when the run has no measured vDSO, where there is also no call
+    to leave anything. *)
+Definition vdso_frame : N :=
+  match vdso_image with
+  | Some (_, im) => vi_frame im
+  | None => 0%N
+  end.
+
 (** ** Why a fetch failed: the MODEL declining vs. the PROCESS crashing
 
     The combined fetch ([code_read] for immutable code, [code_read_ov]
@@ -564,10 +652,37 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     those choices, so a program whose recursion or allocation is driven
     by its input diverges from itself between two admissible
     quantifications — and [strong_universal] is then arguably false
-    even for a reference against itself.  Real Linux faults at an
-    ASLR-INDEPENDENT point instead: the RLIMIT_STACK window, which
-    [Run.init_machine_state] already zero-maps as
-    [init_sp - stack_max_size, init_sp).
+    even for a reference against itself.  Real Linux faults at the
+    RLIMIT_STACK limit instead, which [Run.init_machine_state] already
+    zero-maps as the window [[Run.stack_window_lo], init_sp).  That
+    floor is the HIGHER of the two [expand_downwards] (mm/vma.c, Linux
+    v6.18.46, commit 1f99e9ab748f) applies: the RLIMIT_STACK one,
+    [State.stack_max_size] below the stack VMA's end
+    [StackLayout.ed_top], and the stack guard gap above the mmap
+    region, [mmap_base] plus [State.stack_guard_gap_bytes].
+    [Run.entry_page_top] IS that VMA end: the entry image runs from
+    [init_sp] all the way to it, with no page tail above the block.
+
+    That floor is not fully ASLR-independent.  Where the RLIMIT one is
+    the higher of the two, the window's depth below [init_sp] is
+    [stack_max_size] less the WHOLE entry image, [ed_top - init_sp].
+    For one input and one stack top, [Run.valid_launch_sp] admits
+    every 16-aligned [init_sp] from
+    [align_down16(ed_top - 8 - L - 4095) - C] up to
+    [align_down16(ed_top - 8 - L) - C], where [L] is
+    [StackLayout.launch_string_bytes] and [C] is
+    [StackLayout.block_head_size], so the depth moves over a range of
+    between 4080 and 4096 bytes with the pad the launch drew.  A
+    program whose stack, driven by its input, ends in that range
+    faults under some admissible [init_sp] and not under others, so
+    [strong_universal] fails for it even against itself.  The range is
+    LINUX'S OWN, not a modelling artefact: [vm_end] is page aligned
+    ([setup_arg_pages], fs/exec.c) and [init_sp] sits the entry
+    image's own size below it, so the pad [create_elf_tables]
+    (fs/binfmt_elf.c) takes through [arch_align_stack]
+    (arch/riscv/kernel/process.c) is the only term of
+    [vm_end - init_sp] that a second launch with the same argv, envp
+    and exec filename can change.
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant
@@ -888,7 +1003,19 @@ Fixpoint interp_eff_accesses (t : eff) (m : word -> option byte)
         | MachineFault => MachineFault
         | MachineUnmodeled => MachineUnmodeled
         end
-      | None => MachineFault
+      | None =>
+        (* The ONE range that declines a load for the MODEL's reason
+           rather than the process's: the vvar data pages.  They are
+           mapped and readable on Linux, so calling this a fault would
+           let a program that reads them prove [Run.all_traces_error]
+           and take [Equivalence.equiv]'s escape.  What the model has
+           no term for is their CONTENTS — the kernel rewrites the time
+           data while the process runs — so the honest answer is that
+           the model gave up.  Time reaches a program through a vDSO
+           call instead, where it is the environment's choice, as it is
+           through the system call. *)
+        if range_meets_vvar a (width_bytes n)
+        then MachineUnmodeled else MachineFault
       end
   | EStore n a v k =>
       if store_ok m a (width_bytes n)
@@ -1028,7 +1155,20 @@ Definition decode_exec (st : machine_state) (w : bv 32)
     ([MachineUnmodeled]). *)
 Definition fetch_failure (m : word -> option byte) (addr : word)
     : machine_result machine_state :=
-  if negb (Z.eqb (bv_unsigned addr mod 2) 0)%Z then MachineFault
+  (* A pc in the vDSO TEXT is the MODEL declining, before any
+     permission is consulted.  This model does not run the vDSO's
+     instructions (see Vdso.v), and a program that jumps into them
+     runs on Linux, so calling the decline a crash would let it prove
+     [Run.all_traces_error] and take [Equivalence.equiv]'s escape.
+     The mapping is marked without 'x' for exactly this reason: the
+     model's 'x' flag says "the model fetches and executes these
+     bytes", and of the vDSO's bytes it does not.  Linux maps the text
+     PROT_READ|PROT_EXEC, so the flag is NOT a description of the page
+     here, and SCOPE.md names the difference.  [Run.sstep]'s vDSO arm
+     answers at the ENTRY of an exported symbol; everywhere else in the
+     text this is the final answer. *)
+  if vdso_text_at addr then MachineUnmodeled
+  else if negb (Z.eqb (bv_unsigned addr mod 2) 0)%Z then MachineFault
   else
     let traps :=
       (fetch_byte_traps addr || fetch_byte_traps (addr + 1)
@@ -1082,4 +1222,6 @@ Global Strategy 100
    memory_read code_read code_read_wx code_read_ov
    seg_ov_read_bytes fetch_word fetch_word_ov fetch_word_wx fetch_tail
    fetch_half fetch_half_ov fetch_half_any fetch_tail_any
-   fetch_failure fetch_byte_traps interp_eff store_ok wview].
+   fetch_failure fetch_byte_traps interp_eff store_ok wview
+   vdso_text_seg vdso_image vdso_text_at vdso_entry_fn
+   vvar_byte_at range_meets_vvar].

@@ -16,6 +16,11 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
+(** The acceptor for a getrandom call that MOVES NO BYTE: [r0] is the
+    one answer besides the interrupted return — 0 for a zero-byte
+    request the range test admits, -EFAULT for any range it refuses —
+    and the interrupted return stays admissible either way, since
+    [wait_for_random_bytes] runs before [import_ubuf]. *)
 Definition check_getrandom_zero (r0 : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
@@ -32,8 +37,11 @@ Definition check_getrandom (i : SyscallInput) (buf cap flags : word)
   else
   if negb (modeled_rw_count cap) then CheckUnmodeled   (* see [rw_bytes_max] *)
   else
-  match read_bytes_map (in_wmem i) buf cap with
-  | None => CheckUnmodeled   (* unwritable destination buffer *)
+  match copy_bytes_map (in_wmem i) buf (bv_unsigned cap) with
+  | None =>
+      if negb (access_okb buf (bv_unsigned cap))
+      then check_getrandom_zero (errno_ret EFAULT) eff m   (* [import_ubuf]'s [access_ok] *)
+      else CheckUnmodeled   (* admitted, not wholly writable *)
   | Some _ =>
       if negb (w_is0 cap)
       then
@@ -62,9 +70,7 @@ Definition check_getrandom (i : SyscallInput) (buf cap flags : word)
               else CheckReject
           | _ => CheckReject
           end
-      else if access_okb buf (bv_unsigned cap)
-      then check_getrandom_zero (Z_to_bv 64 0) eff m
-      else check_getrandom_zero (errno_ret EFAULT) eff m
+      else check_getrandom_zero (Z_to_bv 64 0) eff m
   end.
 
 (** readlinkat: an unmodeled dirfd fails closed (Linux resolves it and
@@ -100,8 +106,17 @@ Proof.
                   || Z.eqb (bv_unsigned flags) GRND_NONBLOCK)) eqn:Hf;
     [discriminate|]. cbv iota.
   destruct (negb (modeled_rw_count cap)) eqn:Hn; [discriminate|]. cbv iota.
-  destruct (read_bytes_map (in_wmem i) buf cap) as [bs0|] eqn:Hw;
-    [|discriminate].
+  destruct (copy_bytes_map (in_wmem i) buf (bv_unsigned cap)) as [bs0|] eqn:Hw.
+  2: { (* the walk declined: a refused range answers -EFAULT beside
+          -EINTR, and an admitted one the checker declines *)
+       eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hw.
+       destruct (negb (access_okb buf (bv_unsigned cap))) eqn:Hs; cbv iota;
+         [|discriminate].
+       cbv iota in H. apply check_getrandom_zero_sound in H.
+       destruct H as (-> & -> & [(e & HIn & He)|He]); subst eff.
+       - apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
+         apply pure_ok.
+       - apply alt_r. apply pure_ok. }
   eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hw.
   destruct (negb (w_is0 cap)) eqn:Hc.
   - destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm.
@@ -144,13 +159,9 @@ Proof.
       eapply bind_ok0.
       { apply (choose_ok _ bs). cbv beta. split; assumption. }
       apply pure_ok.
-  - (* a zero-byte request: the range verdict decides what joins -EINTR *)
-    destruct (access_okb buf (bv_unsigned cap)) eqn:Hs;
-      apply check_getrandom_zero_sound in H;
-      destruct H as (-> & -> & [(e & HIn & He)|He]); subst eff.
-    + apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
-      apply pure_ok.
-    + apply alt_r. apply pure_ok.
+  - (* a zero-byte request on an admitted range: 0 beside -EINTR *)
+    apply check_getrandom_zero_sound in H.
+    destruct H as (-> & -> & [(e & HIn & He)|He]); subst eff.
     + apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
       apply pure_ok.
     + apply alt_r. apply pure_ok.
@@ -178,7 +189,7 @@ Proof.
   destruct (negb (modeled_rw_count cap)) eqn:Hn.
   { cbv iota. apply unmodeled_intro. }
   cbv iota. cbv iota in H.
-  destruct (read_bytes_map (in_wmem i) buf cap) as [bs0|] eqn:Hw.
+  destruct (copy_bytes_map (in_wmem i) buf (bv_unsigned cap)) as [bs0|] eqn:Hw.
   - eapply bind_unmodeled2; [apply input_ok|]. cbv beta. srw Hw.
     destruct (negb (w_is0 cap)) eqn:Hc.
     + destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm;
@@ -191,9 +202,11 @@ Proof.
       * destruct (bv_eqb a buf && bv_eqb r (len_word bs)
                   && (1 <=? Z.of_nat (length bs))%Z
                   && (Z.of_nat (length bs) <=? bv_unsigned cap)%Z); discriminate.
-    + destruct (access_okb buf (bv_unsigned cap)) eqn:Hs;
-        now apply check_getrandom_zero_no_unmodeled in H.
-  - eapply bind_unmodeled2; [apply input_ok|]. cbv beta. srw Hw. apply unmodeled_intro.
+    + now apply check_getrandom_zero_no_unmodeled in H.
+  - eapply bind_unmodeled2; [apply input_ok|]. cbv beta. srw Hw.
+    destruct (negb (access_okb buf (bv_unsigned cap))) eqn:Hs; cbv iota in H |- *.
+    + now apply check_getrandom_zero_no_unmodeled in H.
+    + apply unmodeled_intro.
 Qed.
 
 Lemma check_getrandom_complete_ok : forall i buf cap flags eff m m' evs,
@@ -207,20 +220,27 @@ Proof.
                   || Z.eqb (bv_unsigned flags) GRND_NONBLOCK)) eqn:Hf; hall Hf;
     inv_ok.
   destruct (negb (modeled_rw_count cap)) eqn:Hn; hall Hn; inv_ok.
-  destruct (read_bytes_map (in_wmem i) buf cap) as [bs0|] eqn:Hw; hall Hw;
-    inv_ok.
-  cbv zeta in *.
-  destruct (negb (w_is0 cap)) eqn:Hc; hall Hc; inv_ok.
-  all: try (destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm;
-            hall Hsm; inv_ok).
-  all: unfold check_getrandom_zero.
-  all: try (destruct (access_okb buf (bv_unsigned cap)) eqn:Hs; hall Hs; inv_ok).
-  all: try solve [ match goal with
-                   | |- context [errno_ret_in ?es (errno_ret ?e)] =>
-                       rewrite (errno_ret_in_intro es e) by assumption
-                   end; reflexivity ].
-  all: try solve [ bool_true; cbn; reflexivity ].
-  all: rewrite bv_eqb_refl, Bool.orb_true_r; reflexivity.
+  destruct (copy_bytes_map (in_wmem i) buf (bv_unsigned cap)) as [bs0|] eqn:Hw;
+    hall Hw; inv_ok.
+  - (* the walk answered *)
+    destruct (negb (w_is0 cap)) eqn:Hc; hall Hc; inv_ok.
+    all: try (destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm;
+              hall Hsm; inv_ok).
+    all: unfold check_getrandom_zero; cbv beta iota zeta in *.
+    all: try solve [ match goal with
+                     | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+                         rewrite (errno_ret_in_intro es e) by assumption
+                     end; reflexivity ].
+    all: try solve [ bool_true; cbn; reflexivity ].
+    all: rewrite bv_eqb_refl, Bool.orb_true_r; reflexivity.
+  - (* the walk declined: only a range [access_okb] refuses is answered *)
+    destruct (negb (access_okb buf (bv_unsigned cap))) eqn:Hs; hall Hs; inv_ok.
+    all: unfold check_getrandom_zero; cbv beta iota zeta in *.
+    all: try solve [ match goal with
+                     | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+                         rewrite (errno_ret_in_intro es e) by assumption
+                     end; reflexivity ].
+    all: rewrite bv_eqb_refl, Bool.orb_true_r; reflexivity.
 Qed.
 
 Lemma check_getrandom_complete_unmodeled : forall i buf cap flags m eff,
@@ -236,14 +256,16 @@ Proof.
   - (* unmodeled flags: both sides fail closed *) reflexivity.
   - destruct (negb (modeled_rw_count cap)) eqn:Hn; hall Hn; inv_ok.
     + (* over the transfer bound: both sides fail closed *) reflexivity.
-    + destruct (read_bytes_map (in_wmem i) buf cap) as [bs0|] eqn:Hw; hall Hw;
-        inv_ok; try discriminate; [|reflexivity].
-      cbv zeta in *.
-      destruct (negb (w_is0 cap)) eqn:Hc; hall Hc; inv_ok; try discriminate.
-      { destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm; hall Hsm;
-          inv_ok; discriminate. }
-      destruct (access_okb buf (bv_unsigned cap)) eqn:Hs; hall Hs; inv_ok;
-        discriminate.
+    + destruct (copy_bytes_map (in_wmem i) buf (bv_unsigned cap)) as [bs0|] eqn:Hw;
+        hall Hw; inv_ok.
+      * cbv zeta in *.
+        destruct (negb (w_is0 cap)) eqn:Hc; hall Hc; inv_ok; try discriminate.
+        destruct (bv_unsigned cap <=? getrandom_small_max)%Z eqn:Hsm; hall Hsm;
+          inv_ok; discriminate.
+      * (* the walk declined: a refused range answers, an admitted one
+           declines on both sides *)
+        destruct (negb (access_okb buf (bv_unsigned cap))) eqn:Hs; hall Hs;
+          inv_ok; try discriminate; reflexivity.
 Qed.
 
 (* ------------------------------------------------------------ readlinkat *)

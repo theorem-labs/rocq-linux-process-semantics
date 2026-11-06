@@ -218,7 +218,7 @@ Proof.
   exists [], (mkCfg ms' model). split.
   - apply ErrEscape.msteps_star_nil; assumption.
   - unfold unmodeled_at; cbn [cfg_ms cfg_model].
-    split; [exact Hh | right; exists x8; split; assumption].
+    split; [exact Hh | right; right; exists x8; split; assumption].
 Qed.
 
 Lemma msteps_spec_err_may_uncovered : forall ms ms' model x8,
@@ -232,7 +232,7 @@ Proof.
   intros ms ms' model x8 Hh Hlazy Hm Hsvc Herr.
   assert (Hun : unmodeled_at segs (mkCfg ms' model)).
   { unfold unmodeled_at; cbn [cfg_ms cfg_model].
-    split; [exact Hh | right; exists x8; split; assumption]. }
+    split; [exact Hh | right; right; exists x8; split; assumption]. }
   destruct (unmodeled_at_sstep_error _ _ Hun) as (evs & Hss).
   exists ([] ++ evs), (OError (mkCfg ms' model)). split.
   - eapply star_mexec with (tr := []) (c' := mkCfg ms' model); [apply ErrEscape.msteps_star_nil; assumption | apply mexec_error; exact Hss].
@@ -568,19 +568,20 @@ End WithSegs.
     erroring branch contributes only the empty trace, which is a prefix
     of every outcome trace). *)
 Lemma fout_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout_mix segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+  to_fout_mix segs (init_machine_state segs pc ph sp mb rnd inp)
+              (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                 (init_model (segments_reserved segs) brk0 mb sp lim inp)) U ->
   (exists o, U o) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (fout_trace o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
-    by reflexivity.
-  assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = [])
-    by reflexivity.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
+  set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+               (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+  assert (Hh : m_halted m0 = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
     destruct (tfm_star_only segs ms _ U Hto Hh Hlazy tr' c Hstar)
@@ -608,12 +609,16 @@ Qed.
 Lemma file_mix_equiv_only :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
-  to_fout_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
-  to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+  to_fout_mix (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          rlim inp)) U ->
+  to_fout (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          alim inp)) U ->
   (exists o, U o) ->
   Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
         (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
@@ -622,7 +627,8 @@ Proof.
     U inp Hsource Htarget Hne.
   right. split.
   - intro tr. cbn.
-    rewrite (fout_mix_obs_iff source_segs rpc rph rsp rbrk rmb rrnd rlim inp U
+    rewrite (fout_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               rlim inp U
                Hsource Hne tr).
     rewrite (fout_obs_iff target_segs apc aph asp abrk amb arnd alim inp U
                Htarget tr).
@@ -640,12 +646,16 @@ Qed.
 Lemma file_mix_omni_equiv_only :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
-  to_fout_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
-  to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+  to_fout_mix (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          rlim inp)) U ->
+  to_fout (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          alim inp)) U ->
   (exists o, U o) ->
   omni_equiv (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd)
              (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp.
@@ -654,7 +664,8 @@ Proof.
     U inp Hsource Htarget Hne.
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (fout_mix_obs_iff source_segs rpc rph rsp rbrk rmb rrnd rlim inp U
+    rewrite (fout_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               rlim inp U
                Hsource Hne tr).
     rewrite (fout_obs_iff target_segs apc aph asp abrk amb arnd alim inp U
                Htarget tr).
@@ -669,11 +680,15 @@ Qed.
     [to_fout_mix] combinator can supply [omni_strong_equiv]'s first
     conjunct for it. *)
 Lemma file_mix_unmodeled_leaf_not_covered : forall segs pc ph sp brk0 mb rnd lim inp ms' x8,
-  msteps segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = Some x8 ->
-  syscall_spec (sys_input segs ms' x8)
-    (init_model (segments_reserved segs) brk0 mb sp lim inp) Unmodeled ->
-  ~ omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered segs).
+  syscall_spec (sys_input (run_segments segs inp sp mb) ms' x8)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+       (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+    Unmodeled ->
+  ~ omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
+      (covered (run_segments segs inp sp mb)).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' x8 Hm Hsvc Herr.
   cbn [omni_corun]. unfold init_config.

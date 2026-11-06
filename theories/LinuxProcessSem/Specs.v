@@ -53,7 +53,7 @@
     kernel defines the syscall, and that is the answer.
 
       Sys/Fs/ReadWrite.v         fs/read_write.c   read write readv writev lseek
-                                                   pread64 pwrite64
+                                                   pread64 pwrite64 pwritev2
       Sys/Fs/Open.v              fs/open.c         openat close ftruncate faccessat faccessat2
       Sys/Fs/Sync.v              fs/sync.c         fsync fdatasync
       Sys/Fs/Stat.v              fs/stat.c         readlinkat newfstatat fstat

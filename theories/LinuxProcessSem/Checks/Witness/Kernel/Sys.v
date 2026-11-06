@@ -75,6 +75,20 @@ Definition utsname_default : list byte :=
 Lemma utsname_default_wf : utsname_wf utsname_default = true.
 Proof. vm_compute. reflexivity. Qed.
 
+Lemma uts_eqb_refl : forall l, uts_eqb l l = true.
+Proof.
+  intros l. unfold uts_eqb. rewrite Nat.eqb_refl. cbn [andb].
+  induction l as [|a r IH]; cbn; [reflexivity|].
+  rewrite IH, Bool.andb_true_r. apply bv_eqb_eq. reflexivity.
+Qed.
+
+(** A pinned name is always one a later call may repeat. *)
+Lemma uts_repeat_ok_refl : forall b0, uts_repeat_ok b0 b0.
+Proof.
+  intros b0. unfold uts_repeat_ok. destruct (utsname_wf b0) eqn:H; [|reflexivity].
+  split; [reflexivity|]. unfold uts_kernel_agree. rewrite !uts_eqb_refl. reflexivity.
+Qed.
+
 Definition uname_witness (name : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if negb (access_okb name NEW_UTSNAME_SIZE)
@@ -100,7 +114,8 @@ Proof.
   destruct (negb (access_okb name NEW_UTSNAME_SIZE)); [apply pure_ok|].
   destruct (read_bytes_map (in_wmem i) name (Z_to_bv 64 NEW_UTSNAME_SIZE))
     as [bs1|]; [|apply unmodeled_intro].
-  destruct (m_utsname m) as [bs|]; [apply pure_ok|].
+  destruct (m_utsname m) as [bs|].
+  { eapply bind_step; [apply (choose_ok _ bs); apply uts_repeat_ok_refl|]. apply pure_ok. }
   eapply bind_step;
     [apply (choose_ok _ utsname_default); exact utsname_default_wf|].
   eapply bind_step; [apply modify_ok|]. apply pure_ok.
@@ -118,7 +133,7 @@ Definition prlimit64_witness (pid resource new_rlim old_rlim : word)
   else if (w_is0 new_rlim && w_is0 old_rlim)%bool then Unmodeled
   else if (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool then Unmodeled
   else if w_is0 new_rlim then
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16)
         then ret_outcome (errno_ret EFAULT) m else Unmodeled
@@ -134,7 +149,7 @@ Definition prlimit64_witness (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => Unmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16)
             then ret_outcome (errno_ret EFAULT) m else Unmodeled
@@ -164,14 +179,14 @@ Proof.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (w_is0 new_rlim).
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|].
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|].
     + destruct (m_rlimit_core m) as [bs|]; [apply pure_ok|].
       eapply bind_step; [apply (choose_ok _ rlim64_zero); exact rlim64_zero_wf|].
       eapply bind_step; [apply modify_ok|]. apply pure_ok.
     + destruct (negb (access_okb old_rlim 16));
         [apply pure_ok|apply unmodeled_intro].
   - destruct (m_rlimit_core m) as [bs0|]; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|].
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|].
     + apply record_copyins_outcome.
       destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z); [apply pure_ok|].

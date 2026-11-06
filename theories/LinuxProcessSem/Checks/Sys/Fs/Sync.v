@@ -22,6 +22,9 @@ Definition check_fsync (fd : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdSocket _)  => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdDgram _)   => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []
@@ -30,6 +33,7 @@ Definition check_fsync (fd : word) (eff : SyscallEffect) (m : Model)
   | Some (FdFile _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdFileW _ _) => check_ret_only eff (Z_to_bv 64 0) m []
   | Some FdDir         => check_ret_only eff (Z_to_bv 64 0) m []
+  | Some (FdAnon _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   end.
 
 Lemma check_fsync_sound_ok : forall fd eff m m' evs i,

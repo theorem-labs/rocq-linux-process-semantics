@@ -16,12 +16,11 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude.
 
-(** Linux checks only [len]; QEMU user mode always returns -ENOSYS. *)
+(** Linux checks only [len]; the -ENOSYS of QEMU user mode is not an
+    answer of this model (see [set_robust_list_spec]). *)
 Definition check_set_robust_list (len : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  if bv_eqb (eff_ret eff) (errno_ret ENOSYS) then
-    check_ret_only eff (errno_ret ENOSYS) m []
-  else if Z.eqb (bv_unsigned len) 24 then
+  if Z.eqb (bv_unsigned len) 24 then
     check_ret_only eff (Z_to_bv 64 0) m []
   else check_ret_only eff (errno_ret EINVAL) m [].
 
@@ -31,13 +30,10 @@ Lemma check_set_robust_list_sound_ok : forall len eff m m' evs i,
 Proof.
   intros len eff m m' evs i H.
   unfold check_set_robust_list in H.
-  unfold set_robust_list_spec, alt.
-  destruct (bv_eqb (eff_ret eff) (errno_ret ENOSYS)) eqn:Hr.
-  - apply check_ret_only_ok_iff in H as (-> & -> & ->).
-    left. unfold err_ret, ret_only. apply pure_ok.
-  - destruct (Z.eqb (bv_unsigned len) 24);
-      apply check_ret_only_ok_iff in H as (-> & -> & ->);
-      right; unfold err_ret, ret_only; apply pure_ok.
+  unfold set_robust_list_spec.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    apply check_ret_only_ok_iff in H as (-> & -> & ->);
+    unfold err_ret, ret_only; apply pure_ok.
 Qed.
 
 Lemma check_set_robust_list_sound_unmodeled : forall len eff m i,
@@ -45,8 +41,7 @@ Lemma check_set_robust_list_sound_unmodeled : forall len eff m i,
   set_robust_list_spec len i m Unmodeled.
 Proof.
   intros len eff m i H. unfold check_set_robust_list in H.
-  destruct (bv_eqb (eff_ret eff) (errno_ret ENOSYS));
-    try destruct (Z.eqb (bv_unsigned len) 24);
+  destruct (Z.eqb (bv_unsigned len) 24);
     now apply check_ret_only_no_unmodeled in H.
 Qed.
 
@@ -55,21 +50,11 @@ Lemma check_set_robust_list_complete_ok : forall len eff m m' evs i,
   check_set_robust_list len eff m = CheckOk m' evs.
 Proof.
   intros len eff m m' evs i H.
-  unfold set_robust_list_spec, alt in H.
+  unfold set_robust_list_spec in H.
   unfold check_set_robust_list.
-  destruct H as [H|H].
-  - unfold err_ret, ret_only, pure in H. inversion H; subst.
-    cbn [eff_ret]. rewrite bv_eqb_refl.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    unfold err_ret, ret_only, pure in H; inversion H; subst;
     now apply check_ret_only_ok_iff.
-  - destruct (Z.eqb (bv_unsigned len) 24) eqn:Hlen.
-    + unfold ret_only, pure in H. inversion H; subst.
-      cbn [eff_ret].
-      change (bv_eqb (Z_to_bv 64 0) (errno_ret ENOSYS)) with false.
-      now apply check_ret_only_ok_iff.
-    + unfold err_ret, ret_only, pure in H. inversion H; subst.
-      cbn [eff_ret].
-      change (bv_eqb (errno_ret EINVAL) (errno_ret ENOSYS)) with false.
-      now apply check_ret_only_ok_iff.
 Qed.
 
 Lemma check_set_robust_list_complete_unmodeled : forall len m i eff,
@@ -77,11 +62,9 @@ Lemma check_set_robust_list_complete_unmodeled : forall len m i eff,
   check_set_robust_list len eff m = CheckUnmodeled.
 Proof.
   intros len m i eff H.
-  unfold set_robust_list_spec, alt in H.
-  destruct H as [H|H];
-    [unfold err_ret, ret_only, pure in H; discriminate|
-     destruct (Z.eqb (bv_unsigned len) 24);
-       unfold err_ret, ret_only, pure in H; discriminate].
+  unfold set_robust_list_spec in H.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    unfold err_ret, ret_only, pure in H; discriminate.
 Qed.
 
 (** The two [get_futex_key] gates are WRITTEN OUT rather than taken from

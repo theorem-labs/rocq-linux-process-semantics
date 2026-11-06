@@ -2,7 +2,7 @@
 (** * Common.ShapeEF — the ERROR-FREE master theorem over [ShapeAlg.realizes].
 
     Image-INDEPENDENT.  ([init_config] / [mkEntry] take the mmap base and
-    the AT_RANDOM draw [en_random] as extra arguments, so every statement
+    the AT_RANDOM draw [ed_random] as extra arguments, so every statement
     carries one more binder of each per side.)
 
     [ShapeAlg.shape_strong_equiv] concludes [modeled /\ equiv]; the checked
@@ -24,7 +24,7 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim ShapeAlg.
 
 Import ListNotations.
@@ -34,10 +34,10 @@ Theorem shape_strong_equiv_ef :
   forall source_segs rpc rph rsp rbrk rmb rrnd (rlim : Z)
          target_segs apc aph asp abrk amb arnd (alim : Z)
          (T : TSet) (inp : ProcInput),
-  realizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
-  realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T ->
+  realizes (run_segments source_segs inp rsp rmb)
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+  realizes (run_segments target_segs inp asp amb)
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T ->
   error_free (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ error_free (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp)
   /\ trace_equiv (bh_traces (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp))
@@ -49,8 +49,8 @@ Proof.
   - cbn. eapply realizes_no_error; exact Hsource.
   - cbn. eapply realizes_no_error; exact Htarget.
   - intro tr. cbn.
-    rewrite (realizes_obs_iff source_segs _ T Hsource tr).
-    rewrite (realizes_obs_iff target_segs _ T Htarget tr).
+    rewrite (realizes_obs_iff (run_segments source_segs inp rsp rmb) _ T Hsource tr).
+    rewrite (realizes_obs_iff (run_segments target_segs inp asp amb) _ T Htarget tr).
     reflexivity.
 Qed.
 
@@ -60,10 +60,10 @@ Corollary shape_strong_equiv_ef_eq :
   forall source_segs rpc rph rsp rbrk rmb rrnd (rlim : Z)
          target_segs apc aph asp abrk amb arnd (alim : Z)
          (T T' : TSet) (inp : ProcInput),
-  realizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
-  realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T' ->
+  realizes (run_segments source_segs inp rsp rmb)
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+  realizes (run_segments target_segs inp asp amb)
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T' ->
   t_eq T T' ->
   error_free (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ error_free (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp)
@@ -78,11 +78,11 @@ Qed.
 (** The single-side facts, for callers that assemble the conjunction
     themselves. *)
 Lemma realizes_error_free : forall segs pc ph sp brk0 mb rnd lim inp T,
-  realizes segs (init_config segs pc ph sp brk0 mb rnd lim inp) T ->
+  realizes (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) T ->
   error_free (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp).
 Proof. intros. cbn. eapply realizes_no_error; eassumption. Qed.
 
 Lemma realizes_traces_iff : forall segs pc ph sp brk0 mb rnd lim inp T tr,
-  realizes segs (init_config segs pc ph sp brk0 mb rnd lim inp) T ->
+  realizes (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) T ->
   bh_traces (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp) tr <-> T tr.
 Proof. intros. cbn. apply realizes_obs_iff. assumption. Qed.

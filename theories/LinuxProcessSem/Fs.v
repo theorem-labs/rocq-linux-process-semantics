@@ -333,6 +333,119 @@ Definition key_is_relative (p : path) : Prop :=
 Definition fs_keys_relative (fs : Fs) : Prop :=
   Forall (fun pf => key_is_relative (fst pf)) fs.
 
+(** [q] is [p], a separator, then anything: [p] names a directory that
+    [q] lives in.  This is the test [Sys.Fs.Namei.dir_prefixb] makes,
+    spelled again because this file sits below Namei.v. *)
+Fixpoint key_dir_prefixb (p q : path) : bool :=
+  match p, q with
+  | [], [] => false
+  | [], c :: _ => bv_eqb c path_slash_byte
+  | _ :: _, [] => false
+  | a :: p', b :: q' => bv_eqb a b && key_dir_prefixb p' q'
+  end.
+
+(** NO KEY OF THE IMAGE IS ALSO A DIRECTORY ANOTHER KEY LIVES IN.  The map
+    implies a directory wherever a key has a separator in it: "a/b" is a
+    file [b] in a directory [a] ([Sys.Fs.Namei.fs_under]).  A key "a"
+    beside it would make [a] a regular file as well, and no file system
+    can hold that: one name in one directory is one inode.  [valid_fs]
+    does not exclude such an image (its keys need only be sorted and
+    NUL-free), and on it the model answers as if both were true: the read
+    open of "a" hands out a regular file ([Sys.Fs.Open.openat_read_spec]
+    reads only [fs_lookup]), while a write-create of "a"
+    ([Sys.Fs.Open.openat_create_spec], [openat_rdwr_spec]) answers -EISDIR
+    through [fs_under], the directory's answer. *)
+Definition fs_no_dir_key (fs0 : Fs) : bool :=
+  forallb (fun pf => negb (existsb (fun qf => key_dir_prefixb (fst pf) (fst qf)) fs0)) fs0.
+
+(** The components of a path: the byte strings between its separators,
+    empty ones included ("a//b" has three, the middle one empty; "a/" has
+    two, the last one empty). *)
+Fixpoint key_components (p : path) : list path :=
+  match p with
+  | [] => [[]]
+  | b :: r =>
+      if bv_eqb b path_slash_byte then [] :: key_components r
+      else match key_components r with
+           | c :: cs => (b :: c) :: cs
+           | [] => [[b]]
+           end
+  end.
+
+(** A component a directory entry can carry: not empty, not ".", not "..".
+    Linux reserves "." and ".." in every directory, and an empty name is
+    no name. *)
+Definition key_component_okb (c : path) : bool :=
+  negb (path_eqb c []) && negb (path_eqb c [Z_to_bv 8 46])
+  && negb (path_eqb c [Z_to_bv 8 46; Z_to_bv 8 46]).
+
+(** A CANONICAL key: one leading separator at most (an absolute key; this
+    clause takes no side on whether an image may hold one, which is
+    [fs_keys_relative]'s question), and then components that are each a
+    name a directory entry can carry.  So no "//", no trailing "/", no
+    "." or ".." component, and no empty key.
+    A key such as "d/../x" or "./x" spells a path that a walk would
+    resolve elsewhere, while the flat map keeps it as a file of its own;
+    a directory entry named "." or ".." cannot exist, so an image holding
+    such a key describes no file system, and the specs that rename or
+    look up keys by their spelling would read it as one
+    ([Sys.Fs.Namei.fs_rmdir_implied], answering an rmdir of "d", renames
+    "d/../x" to "x"). *)
+Definition key_canonicalb (p : path) : bool :=
+  match p with
+  | [] => false
+  | b :: r =>
+      forallb key_component_okb
+        (key_components (if bv_eqb b path_slash_byte then r else p))
+  end.
+
+Definition fs_keys_canonical (fs0 : Fs) : bool :=
+  forallb (fun pf => key_canonicalb (fst pf)) fs0.
+
+(** THE IMAGE DESCRIBES A FILE SYSTEM: every key is canonical, and no key
+    is also a directory another key lives in.  Ported from main LPS
+    (theorem-labs/linux-process-semantics) #1776, commit 9f9a96b29a.
+
+    [Run.valid_input] carries this over [State.in_image_fs], the image
+    BEFORE [State.fs_seed_tmp] inserts the declared /tmp entries, as a
+    conjunct of its own rather than inside [valid_fs], and for the same
+    reason [fs_keys_relative] sits there: [valid_fs] reads the seeded
+    map, and the /tmp declaration is unconstrained by ruling, so a
+    clause there would remove inputs whose declared /tmp names nest
+    ("x" and "x/y") or are not names ("." or "") from every theorem.
+
+    WHY IT IS NEEDED.  Without it [valid_input] admits an image with the
+    keys "a" and "a/b", which no Linux file system can hold, and the
+    model then answers as if "a" were a regular file and a directory at
+    once.  [Checks.Cases.Fs.Open.fs_prefix_key_image_is_not_real] is
+    that image, refused. *)
+Definition fs_image_real (fs0 : Fs) : bool :=
+  fs_keys_canonical fs0 && fs_no_dir_key fs0.
+
+(** What the clause gives a proof: every key is canonical, ... *)
+Lemma fs_image_real_canonical : forall fs0 p d,
+  fs_image_real fs0 = true -> In (p, d) fs0 -> key_canonicalb p = true.
+Proof.
+  intros fs0 p d H Hp. unfold fs_image_real, fs_keys_canonical in H.
+  apply andb_true_iff in H as [H _]. rewrite forallb_forall in H. exact (H (p, d) Hp).
+Qed.
+
+(** ... and no key of the image names a directory another key of it
+    lives in. *)
+Lemma fs_image_real_no_dir_key : forall fs0 p d q e,
+  fs_image_real fs0 = true -> In (p, d) fs0 -> In (q, e) fs0 ->
+  key_dir_prefixb p q = false.
+Proof.
+  intros fs0 p d q e H Hp Hq. unfold fs_image_real, fs_no_dir_key in H.
+  apply andb_true_iff in H as [_ H].
+  rewrite forallb_forall in H. specialize (H (p, d) Hp). cbn [fst] in H.
+  apply Bool.negb_true_iff in H.
+  destruct (key_dir_prefixb p q) eqn:E; [|reflexivity].
+  exfalso. assert (existsb (fun qf => key_dir_prefixb p (fst qf)) fs0 = true) as Hx
+    by (apply existsb_exists; exists (q, e); split; [exact Hq | exact E]).
+  rewrite Hx in H. discriminate.
+Qed.
+
 (* =========================================================================
    File contents: byte-list read/write at an offset
    ========================================================================= *)
@@ -413,6 +526,27 @@ Proof.
   reflexivity.
 Qed.
 
+(** The file grown to [off] with zeros, and left alone at or below its
+    current end: the content [i_size_write(inode, pos)] leaves behind
+    when the page-cache write moved NO bytes.
+
+    Two call sites, and they are the same kernel statement seen twice.
+    [file_write] below pads with this before it overwrites; and a write
+    whose source buffer faults reaches
+    [a_ops->write_end(iocb, mapping, pos, bytes, copied = 0, ...)]
+    (mm/filemap.c, [generic_perform_write]), whose
+    [if (pos + copied > inode->i_size) i_size_write(inode, pos + copied)]
+    (mm/shmem.c, [shmem_write_end]) extends the file to the write's own
+    offset and no further.  The region it opens is a hole, which reads
+    back as zeros, so a byte list of zeros is the right content — the
+    same argument [file_truncate] below makes for a grow.  Linux v6.18.46.
+
+    [word_to_nat off] is built in full here, exactly as [file_write]
+    does; what bounds it is each caller's [ReadWrite.modeled_zero_fill]
+    guard. *)
+Definition file_extend (data : list byte) (off : word) : list byte :=
+  data ++ repeat (Z_to_bv 8 0) (word_to_nat off - length data)%nat.
+
 (** Overwrite [bs] at offset [off], extending the file if needed.  A write
     of a NONEMPTY [bs] past the current end zero-fills the gap
     (sparse-file semantics).
@@ -423,16 +557,37 @@ Qed.
     put it there).  Without the [[]] arm the padding below would zero-
     extend the file out to [off] on a write that Linux makes no change
     for.  For [off <= length data] the two arms agree, so this is exactly
-    the past-EOF corner. *)
+    the past-EOF corner.  A write whose source FAULTS is neither of
+    these two: it moves no byte and still extends the file, and
+    [file_extend] above is that post-state. *)
 Definition file_write (data : list byte) (off : word) (bs : list byte)
     : list byte :=
   match bs with
   | [] => data                                (* zero-length write: no effect *)
   | _ :: _ =>
-      let padded := data ++ repeat (Z_to_bv 8 0) (word_to_nat off - length data)%nat in
+      let padded := file_extend data off in
       firstn (word_to_nat off) padded
         ++ bs ++ skipn (word_to_nat off + length bs)%nat padded
   end.
+
+(** A delivering write's padding IS the faulting write's post-state, so
+    the two arms of the same kernel statement cannot drift apart. *)
+Lemma file_write_padding : forall data off b bs,
+  file_write data off (b :: bs)
+  = firstn (word_to_nat off) (file_extend data off)
+    ++ (b :: bs) ++ skipn (word_to_nat off + length (b :: bs))%nat
+                        (file_extend data off).
+Proof. reflexivity. Qed.
+
+(** At or below end-of-file nothing is added, which is what makes the
+    guard on this padding a PAST-EOF question. *)
+Lemma file_extend_within : forall data off,
+  (word_to_nat off <= length data)%nat -> file_extend data off = data.
+Proof.
+  intros data off H. unfold file_extend.
+  replace (word_to_nat off - length data)%nat with 0%nat by lia.
+  cbn [repeat]. apply app_nil_r.
+Qed.
 
 (** Set the file's length to exactly [len]: a SHRINK drops the tail, a
     GROW zero-fills out to the new length ([ftruncate]; see

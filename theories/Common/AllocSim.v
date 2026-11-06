@@ -412,11 +412,16 @@ Proof.
   rewrite E1, E2, E3. reflexivity.
 Qed.
 
-(** The logical ledger remains byte-granular across the same grow. *)
+(** The ledger records the SAME page-rounded range the zero-fill names:
+    [Mmap.brk_grants] and [Mmap.brk_zeros] are one term, so a grow adds
+    exactly the pages it installs and a grow inside one page adds
+    nothing. *)
 Lemma brk_grants_grow : forall req r old,
   req <> Z_to_bv 64 0 ->
   (0 < bv_unsigned old)%Z -> (bv_unsigned old < bv_unsigned r)%Z ->
-  brk_grants req r old = [(old, r - old)].
+  brk_grants req r old =
+    brk_page_range (page_round_up_Z (bv_unsigned old))
+                   (page_round_up_Z (bv_unsigned r)).
 Proof.
   intros req r old Hreq Hold Hlt. unfold brk_grants, brk_is_grow.
   assert (E1 : w_is0 req = false)
@@ -425,6 +430,11 @@ Proof.
   assert (E3 : (bv_unsigned old <? bv_unsigned r)%Z = true) by (apply Z.ltb_lt; lia).
   rewrite E1, E2, E3. reflexivity.
 Qed.
+
+(** …and that is the same term as the zero-fill, with no hypotheses. *)
+Lemma brk_grants_is_brk_zeros : forall req r old,
+  brk_grants req r old = brk_zeros req r old.
+Proof. reflexivity. Qed.
 
 Lemma brk_zeros_query : forall r old, brk_zeros (Z_to_bv 64 0) r old = [].
 Proof.
@@ -491,7 +501,7 @@ Lemma brk_grow_ok_grow : forall h req r,
                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                              - page_round_up_Z (bv_unsigned (vm_brk h))))
       else true)
-     && (vm_backed_bytes h + bv_unsigned (r - vm_brk h) <=? vm_limit h)%Z)%bool.
+     && (vm_backed_bytes h + brk_grow_bytes h r <=? vm_limit h)%Z)%bool.
 Proof.
   intros h req r Hreq H0 Hlt.
   assert (Hmaps : m_vmmaps (vm_model h) = h) by reflexivity.
@@ -608,7 +618,7 @@ Lemma brk_grow_ok_aligned_grow : forall h req r,
       && region_free (vm_reserved h ++ vm_maps h) (vm_brk h)
            (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                         - bv_unsigned (vm_brk h))))
-     && (vm_backed_bytes h + bv_unsigned (r - vm_brk h) <=? vm_limit h)%Z)%bool.
+     && (vm_backed_bytes h + brk_grow_bytes h r <=? vm_limit h)%Z)%bool.
 Proof.
   intros h req r Hreq Hpos Hlt Halign.
   rewrite brk_grow_ok_grow by assumption.
@@ -740,7 +750,8 @@ Definition growable (reserved : list (word * word)) (lim top : Z) (t r : word)
                                (bv_unsigned r + bv_unsigned t)
                               + page_size - page_round_up_Z (bv_unsigned r)))
       else true)
-     && (bv_unsigned t <=? lim)%Z)%bool = true)).
+     && (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+                  - page_round_up_Z (bv_unsigned r)) <=? lim)%Z)%bool = true)).
 
 (** Branch outcome set after the FIRST brk resolved to [r].  The exit-4
     element is present iff a failing continuation exists: [r = 0],
@@ -828,12 +839,17 @@ Proof.
   rewrite E, andb_false_r. cbn [negb andb]. apply IH. exact Hl.
 Qed.
 
-(** The page-rounded disjunct of [growable], for the shape every example
-    grow site has: a page-aligned established break [r] sitting above
-    every reservation, grown by a positive [t] that fits under both the
-    physical ceiling and the budget.  On a page-aligned [r] the rounded
-    interval starts at [r] itself, so the whole free-region check reduces
-    to [region_free_above_top].  All five hypotheses are what a grow site
+(** The ceiling and free-region test of [growable]'s second disjunct,
+    beside a budget test on the RAW growth [t <= lim], for the shape every
+    example grow site has: a page-aligned established break [r] sitting
+    above every reservation, grown by a positive [t] that fits under both
+    the physical ceiling and the budget.  The budget conjunct here is not
+    [growable]'s: [growable] tests the page-rounded growth
+    [Z.max 0 (page_round_up_Z (r + t) - page_round_up_Z r) <= lim], so
+    this lemma does not discharge [growable]; [growable_aligned_grow_rounded]
+    below does.  On a page-aligned [r] the rounded interval starts at [r]
+    itself, so the whole free-region check reduces to
+    [region_free_above_top].  All five hypotheses are what a grow site
     already holds — alignment and the reservation-top bound from its
     initial-state facts, the rest from its own arithmetic on [t].  The
     ceiling bound is stated on [r + t + page_size - 1], the largest value
@@ -869,6 +885,38 @@ Proof.
   apply andb_true_iff. split; [apply andb_true_iff; split|].
   - apply Z.leb_le. lia.
   - rewrite Z_to_bv_bv_unsigned. apply region_free_above_top. exact Htop.
+  - apply Z.leb_le. exact Hlim.
+Qed.
+
+(** The page-rounded disjunct of [growable], exactly as [growable] states
+    it, for the same grow-site shape as [growable_aligned_grow]: the
+    budget hypothesis is [growable]'s own page-rounded test. *)
+Lemma growable_aligned_grow_rounded : forall reserved lim top (t r : word),
+  (bv_unsigned r mod page_size = 0)%Z ->
+  (reserved_top reserved <= bv_unsigned r)%Z ->
+  (0 < bv_unsigned t)%Z ->
+  (bv_unsigned r + bv_unsigned t + page_size - 1 <= top)%Z ->
+  (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+            - page_round_up_Z (bv_unsigned r)) <= lim)%Z ->
+  ((if (page_round_up_Z (bv_unsigned r)
+        <? page_round_up_Z (bv_unsigned r + bv_unsigned t))%Z
+    then (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+          <=? top)%Z
+         && region_free reserved
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned r)))
+              (Z_to_bv 64 (page_round_up_Z
+                             (bv_unsigned r + bv_unsigned t)
+                            + page_size - page_round_up_Z (bv_unsigned r)))
+    else true)
+   && (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+                - page_round_up_Z (bv_unsigned r)) <=? lim)%Z)%bool = true.
+Proof.
+  intros reserved lim top t r Halign Htop Hpos Hceil Hlim.
+  apply andb_true_iff. split.
+  - pose proof (growable_aligned_grow reserved
+                  (bv_unsigned t) top t r Halign Htop Hpos Hceil
+                  (Z.le_refl _)) as Hg.
+    apply andb_true_iff in Hg as [Hg _]. exact Hg.
   - apply Z.leb_le. exact Hlim.
 Qed.
 
@@ -986,7 +1034,8 @@ Proof.
         rewrite brk_grow_ok_grow;
           cbn [vm_brk vm_reserved vm_maps vm_limit vm_live_bytes live_bytes];
           [| exact Hwant0 | lia | lia].
-        rewrite app_nil_r, word_add_sub_cancel, Huadd, Z.add_0_l.
+        unfold brk_grow_bytes. cbn [vm_brk].
+        rewrite app_nil_r, Huadd, Z.add_0_l.
         exact Hb.
       * left. split; reflexivity.
   - intros (r2 & Hrok & Hb).
@@ -1000,7 +1049,8 @@ Proof.
       rewrite brk_grow_ok_grow in Hgrow;
         cbn [vm_brk vm_reserved vm_maps vm_limit vm_live_bytes live_bytes] in *;
         [| exact Hwant0 | lia | lia].
-      rewrite app_nil_r, word_add_sub_cancel, Huadd, Z.add_0_l in Hgrow.
+      unfold brk_grow_bytes in Hgrow. cbn [vm_brk] in Hgrow.
+      rewrite app_nil_r, Huadd, Z.add_0_l in Hgrow.
       exact Hgrow.
     + (* failure resolution: r2 = r, and t <> 0 or r2 = want *)
       left. split; [reflexivity |].
@@ -1427,46 +1477,53 @@ End WithSegs.
 
 (** The run-level omni judgment of a brk-branching run. *)
 Lemma alloc_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+  to_outcomes (run_segments segs inp sp mb)
+              (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+              (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (outcomes_post (in_fs inp) U).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto.
   cbn [omni_run]. unfold init_config.
-  exact (to_outcomes_exec segs _ _ U Hto eq_refl eq_refl).
+  exact (to_outcomes_exec (run_segments segs inp sp mb) _ _ U Hto eq_refl eq_refl).
 Qed.
 
 Lemma alloc_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  to_outcomes (run_segments segs inp sp mb)
+              (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+              (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+  forall tr, obs_trace (run_segments segs inp sp mb)
+               (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
-    by reflexivity.
-  assert (Hlazy : m_vm_lazy
-      (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
-  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = in_fs inp)
-    by reflexivity.
+  set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) in *.
+  set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) in *.
+  assert (Hh : m_halted m0 = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
+  assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
-    destruct (to_outcomes_star_only segs ms _ U Hto Hh Hlazy tr' c Hstar)
+    destruct (to_outcomes_star_only (run_segments segs inp sp mb) ms _ U Hto Hh Hlazy tr' c Hstar)
       as (o & Ho & Hp').
     exists o. split; [exact Ho|].
     rewrite Hfs in Hp'. eapply is_prefix_trans; eauto.
   - intros (o & Ho & Hp).
-    destruct (to_outcomes_star_admits segs ms _ U Hto Hh Hlazy o Ho) as [c Hstar].
+    destruct (to_outcomes_star_admits (run_segments segs inp sp mb) ms _ U Hto Hh Hlazy o Ho) as [c Hstar].
     rewrite Hfs in Hstar.
     exists (outcome_trace (in_fs inp) o), c. split; assumption.
 Qed.
 
 Lemma alloc_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  to_outcomes (run_segments segs inp sp mb)
+              (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+              (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                 (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+  ~ reaches_error (run_segments segs inp sp mb)
+      (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto. apply exec_no_error.
   eapply exec_conseq; [exact (alloc_omni_run segs pc ph sp brk0 mb rnd lim inp U Hto) |].
@@ -1477,12 +1534,14 @@ Qed.
     outcome set [U], at the two role budgets. *)
 Lemma alloc_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
-  to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
-  to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
+  to_outcomes (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp source_alloc_limit inp)) U ->
+  to_outcomes (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp target_alloc_limit inp)) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
@@ -1511,12 +1570,14 @@ Qed.
 Lemma alloc_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
-  to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
-  to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+  to_outcomes (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp)) U ->
+  to_outcomes (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp)) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
