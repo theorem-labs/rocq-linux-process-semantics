@@ -27,38 +27,38 @@ Open Scope sys_scope.
     file returns a deterministic -ENOENT. *)
 Definition openat_errnos : list Z := [ENOMEM; EACCES; EMFILE; ENFILE].
 
-(** The superset of [openat_errnos] that write-mode opens admit: every
-    errno a read-only open can get, plus three that only a write-mode
-    open can get.
+(** The errnos a write-mode open of an EXISTING name admits, on top of
+    [openat_errnos].  These three apply only when the name resolves to
+    a file that already exists.
 
     - EPERM: [IS_IMMUTABLE(inode)] ([inode_permission],
       fs/namei.c:581-582, v6.18.46); [IS_APPEND(inode)] without
-      [O_APPEND] or with [O_TRUNC] ([may_open], fs/namei.c:3572-3576);
-      an immutable directory on create ([inode_permission] under
-      [may_o_create], fs/namei.c:3622-3625, 581-582).
+      [O_APPEND] or with [O_TRUNC] ([may_open], fs/namei.c:3572-3576).
     - EROFS: a read-only mount or superblock ([mnt_get_write_access],
       fs/namespace.c:476-478; [sb_permission], fs/namei.c:550-551;
       [file_get_write_access], fs/open.c:925-928; [mnt_want_write]
       before [may_open] for O_TRUNC, fs/namei.c:3967-3970).
     - ETXTBSY: a file being executed ([get_write_access],
       include/linux/fs.h:3215-3218, through [file_get_write_access],
-      fs/open.c:883-885).  Applies only to an EXISTING name: a newly
-      created file cannot be executing.
+      fs/open.c:883-885).
 
     All citations: Linux v6.18.46, commit 1f99e9ab748f.
-
-    A READ-ONLY open does not use this set.  Linux gives no -EROFS and
-    no -ETXTBSY to an O_RDONLY open: the mount-write check
-    ([mnt_want_write]) is not reached, [file_get_write_access] is
-    gated on [FMODE_WRITE], and [may_open]'s append-only test reads the
-    access mode.  The read-only arms keep [openat_errnos].
-
-    OVER-ADMISSION: -ETXTBSY is admitted for absent names too, where
-    no executable file exists to deny.  This is sound (the model admits
-    a trace Linux cannot produce) and avoids a per-name errno set split
-    inside each write-open function.  SCOPE.md records this. *)
+    A READ-ONLY open does not use this set. *)
 Definition write_open_errnos : list Z :=
   [ENOMEM; EACCES; EMFILE; ENFILE; EPERM; EROFS; ETXTBSY].
+
+(** The errnos a write-mode open of an ABSENT name admits: the same
+    set WITHOUT -ETXTBSY.  A newly created file cannot be executing,
+    so [get_write_access] never refuses it.  -EPERM stays: an immutable
+    directory refuses the create with MAY_WRITE ([inode_permission]
+    under [may_o_create], fs/namei.c:3622-3625, 581-582).  -EROFS stays:
+    a read-only mount refuses the create ([lookup_open]'s deferred
+    [mnt_want_write], fs/namei.c:3758-3762, 3801-3804).
+
+    Used by every arm that opens a name it knows is absent: the
+    O_EXCL arms, and the absent branch of the O_CREAT arms. *)
+Definition write_open_create_errnos : list Z :=
+  [ENOMEM; EACCES; EMFILE; ENFILE; EPERM; EROFS].
 
 (** The clobbering write-open combination the model covers. *)
 Definition wr_create_flags : Z := (O_WRONLY + O_CREAT + O_TRUNC)%Z.
@@ -416,10 +416,9 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
        modify (mk fd) ;;
        ret_only fd).
 
-(** The effect a modeled WRITE-CREATE open records, shared by the
-    clobbering (O_TRUNC) and the exclusive (O_EXCL) shapes so the two
-    [write_open_errnos] (an environment condition the model does not
-    track, including -EPERM, -EROFS and -ETXTBSY on write-mode opens;
+(** The effect a modeled WRITE-CREATE open of an EXISTING name records:
+    either an errno from [write_open_errnos] (environment conditions
+    the model does not track, including -ETXTBSY on an executing file;
     this alternative also keeps the spec receptive when no free
     fd < 2^31 exists), or the lowest free fd bound to a write-only fd
     on [p], with [p] itself (re)created empty in the file system.
@@ -436,6 +435,15 @@ Definition create_wronly (p : path) (m : Model) : Sys SyscallEffect :=
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (fs_set (m_fs m) p []) ;;   (* (re)create the file empty *)
        set_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0))) ;;  (* write-only fd *)
+       ret_only fd).
+
+(** The same effect for an ABSENT name: [write_open_create_errnos],
+    which omits -ETXTBSY (a newly created file cannot be executing). *)
+Definition create_wronly_absent (p : path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs (fs_set (m_fs m) p []) ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0))) ;;
        ret_only fd).
 
 (** The two paths that name a DIRECTORY without consulting a file
@@ -570,10 +578,15 @@ Definition openat_read_spec (p : path) (m : Model) : Sys SyscallEffect :=
 
 (** Resolve the clobbering O_WRONLY|O_CREAT|O_TRUNC open shape.  A
     directory reference, or a name the map implies is a directory, is
-    -EISDIR ([do_open]'s [d_is_dir], above). *)
+    -EISDIR ([do_open]'s [d_is_dir], above).  An existing file uses
+    [write_open_errnos] (ETXTBSY possible); an absent name uses
+    [write_open_create_errnos] (no file to be executing). *)
 Definition openat_create_spec (p : path) (m : Model) : Sys SyscallEffect :=
   if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
-  else create_wronly p m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => create_wronly p m
+  | None   => create_wronly_absent p m
+  end.
 
 (** The file system after an APPEND open: unchanged when the path is
     already there, and carrying a new empty file when it is not.
@@ -616,6 +629,14 @@ Definition append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
     file. *)
 Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
   alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs (append_open_fs (m_fs m) p) ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
+       ret_only fd).
+
+(** The same for an ABSENT name: [write_open_create_errnos]. *)
+Definition open_append_absent (p : path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (append_open_fs (m_fs m) p) ;;
        set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
@@ -668,10 +689,13 @@ Definition openat_append_spec (excl : bool) (p : path) (m : Model)
      else
        match fs_lookup (m_fs m) p with
        | Some _ => err_ret EEXIST
-       | None => open_append p m
+       | None => open_append_absent p m
        end)
   else if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
-  else open_append p m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => open_append p m
+  | None   => open_append_absent p m
+  end.
 
 (** Resolve an exclusive write-create open after pathname fetch.  A
     directory reference and an implied directory are -EEXIST, not
@@ -684,7 +708,7 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
   else
     match fs_lookup (m_fs m) p with
     | Some _ => err_ret EEXIST
-    | None => create_wronly p m
+    | None => create_wronly_absent p m
     end.
 
 (** The effect a modeled READ-WRITE open records: either an errno from
@@ -709,6 +733,15 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
 Definition open_rdwr (p : path) (fs' : Fs.Fs) (m : Model)
     : Sys SyscallEffect :=
   alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs fs' ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0))) ;;
+       ret_only fd).
+
+(** The same for an ABSENT name: [write_open_create_errnos]. *)
+Definition open_rdwr_absent (p : path) (fs' : Fs.Fs) (m : Model)
+    : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs fs' ;;
        set_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0))) ;;
@@ -753,7 +786,7 @@ Definition openat_rdwr_spec (creat trunc : bool) (p : path) (m : Model)
   else
     match fs_lookup (m_fs m) p with
     | None =>
-        if creat then open_rdwr p (fs_set (m_fs m) p []) m
+        if creat then open_rdwr_absent p (fs_set (m_fs m) p []) m
         else err_ret ENOENT
     | Some _ =>
         open_rdwr p (if trunc then fs_set (m_fs m) p [] else m_fs m) m
@@ -769,7 +802,7 @@ Definition openat_rdwr_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
   else
     match fs_lookup (m_fs m) p with
     | Some _ => err_ret EEXIST
-    | None => open_rdwr p (fs_set (m_fs m) p []) m
+    | None => open_rdwr_absent p (fs_set (m_fs m) p []) m
     end.
 
 (** Resolve an O_RDONLY|O_DIRECTORY open after pathname fetch.

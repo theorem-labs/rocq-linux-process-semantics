@@ -330,14 +330,14 @@ Example openat_rdwr_errnos :
      = CheckOk (base absent) [].
 Proof. vm_compute. repeat split; check_eq. Qed.
 
-(** F2: THE NEW WRITE-OPEN ERRNOS.  [write_open_errnos] now includes
-    -EPERM, -EROFS and -ETXTBSY beside the original four.  A write-create
-    open of an existing file or an absent name admits each of them; a
-    read-only open of the SAME file still refuses them, because
-    [openat_read_spec] uses the narrower [openat_errnos].
+(** F2: THE WRITE-OPEN ERRNO SPLIT.  An existing-name write-open admits
+    -EPERM, -EROFS and -ETXTBSY; an absent-name create admits -EPERM
+    and -EROFS but REJECTS -ETXTBSY (no file to be executing).  A
+    read-only open refuses all three.
 
-    The absent-name case pins each new errno on a create (word 577);
-    the existing-name case pins each on the same word, same model. *)
+    The absent-name case pins EPERM and EROFS on a create (word 577),
+    and pins -ETXTBSY as REJECTED there; the existing-name case pins
+    all three as admitted. *)
 Example openat_write_open_new_errnos :
   let open fs fl eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -347,21 +347,22 @@ Example openat_write_open_new_errnos :
   let have := [([102], [104; 105])] in
   let absent := [] in
   let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
-  (* WRITE CREATE on an absent name: new errnos admitted *)
+  (* WRITE CREATE on an absent name: EPERM and EROFS admitted *)
   open absent wr_create_flags (mkEffect (errno_ret EPERM) [] [])
     = CheckOk (base absent) []
   /\ open absent wr_create_flags (mkEffect (errno_ret EROFS) [] [])
      = CheckOk (base absent) []
+  (* WRITE CREATE on an absent name: ETXTBSY REJECTED *)
   /\ open absent wr_create_flags (mkEffect (errno_ret ETXTBSY) [] [])
-     = CheckOk (base absent) []
-  (* WRITE CREATE on an existing file: new errnos admitted *)
+     = CheckReject
+  (* WRITE CREATE on an existing file: all three admitted *)
   /\ open have wr_create_flags (mkEffect (errno_ret EPERM) [] [])
      = CheckOk (base have) []
   /\ open have wr_create_flags (mkEffect (errno_ret EROFS) [] [])
      = CheckOk (base have) []
   /\ open have wr_create_flags (mkEffect (errno_ret ETXTBSY) [] [])
      = CheckOk (base have) []
-  (* READ-ONLY open of the same existing file: new errnos REJECTED *)
+  (* READ-ONLY open of the same existing file: all three REJECTED *)
   /\ open have 0%Z (mkEffect (errno_ret EPERM) [] []) = CheckReject
   /\ open have 0%Z (mkEffect (errno_ret EROFS) [] []) = CheckReject
   /\ open have 0%Z (mkEffect (errno_ret ETXTBSY) [] []) = CheckReject.

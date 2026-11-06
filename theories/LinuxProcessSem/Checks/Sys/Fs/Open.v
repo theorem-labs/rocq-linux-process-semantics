@@ -109,6 +109,32 @@ Definition check_write_open_result : SyscallEffect -> Model -> (word -> Model)
     -> check_result :=
   check_new_fd_result write_open_errnos.
 
+(** The absent-name create instance: no -ETXTBSY. *)
+
+Definition check_write_open_create_result : SyscallEffect -> Model -> (word -> Model)
+    -> check_result :=
+  check_new_fd_result write_open_create_errnos.
+
+(** Absent-name checkers for the three write-open shapes. *)
+
+Definition check_create_wronly_absent (p : path) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  check_write_open_create_result eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0)))
+                 (with_fs (fs_set (m_fs m) p []) m)).
+
+Definition check_open_append_absent (p : path) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  check_write_open_create_result eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0)))
+                 (with_fs (append_open_fs (m_fs m) p) m)).
+
+Definition check_open_rdwr_absent (p : path) (fs' : Fs.Fs) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  check_write_open_create_result eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0)))
+                 (with_fs fs' m)).
+
 (** The acceptor for [Open.create_wronly]: shared by the clobbering
     (O_TRUNC) and the exclusive (O_EXCL) write-create shapes, mirroring
     the one spec definition they share.  Uses [check_write_open_result]
@@ -254,7 +280,10 @@ Local Definition check_openat_read (p : path) (eff : SyscallEffect)
 Local Definition check_openat_create (p : path) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
-  else check_create_wronly p eff m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => check_create_wronly p eff m
+  | None   => check_create_wronly_absent p eff m
+  end.
 
 (** Mirrors [Open.openat_append_spec]: under [excl], [check_openat_excl]'s
     -EEXIST, with a name over [NAME_MAX] declined; otherwise a
@@ -268,10 +297,13 @@ Local Definition check_openat_append (excl : bool) (p : path)
      else if fs_under (m_fs m) p then check_ret_only eff (errno_ret EEXIST) m []
      else match fs_lookup (m_fs m) p with
           | Some _ => check_ret_only eff (errno_ret EEXIST) m []
-          | None => check_open_append p eff m
+          | None => check_open_append_absent p eff m
           end)
   else if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
-  else check_open_append p eff m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => check_open_append p eff m
+  | None   => check_open_append_absent p eff m
+  end.
 
 Local Definition check_openat_rdwr (creat trunc : bool) (p : path)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -279,7 +311,7 @@ Local Definition check_openat_rdwr (creat trunc : bool) (p : path)
   else
     match fs_lookup (m_fs m) p with
     | None =>
-        if creat then check_open_rdwr p (fs_set (m_fs m) p []) eff m
+        if creat then check_open_rdwr_absent p (fs_set (m_fs m) p []) eff m
         else check_ret_only eff (errno_ret ENOENT) m []
     | Some _ =>
         check_open_rdwr p (if trunc then fs_set (m_fs m) p [] else m_fs m) eff m
@@ -291,7 +323,7 @@ Local Definition check_openat_rdwr_excl (p : path) (eff : SyscallEffect)
   else
     match fs_lookup (m_fs m) p with
     | Some _ => check_ret_only eff (errno_ret EEXIST) m []
-    | None => check_open_rdwr p (fs_set (m_fs m) p []) eff m
+    | None => check_open_rdwr_absent p (fs_set (m_fs m) p []) eff m
     end.
 
 Local Definition check_openat_excl (p : path) (eff : SyscallEffect)
@@ -299,7 +331,7 @@ Local Definition check_openat_excl (p : path) (eff : SyscallEffect)
   if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EEXIST) m []
   else match fs_lookup (m_fs m) p with
        | Some _ => check_ret_only eff (errno_ret EEXIST) m []
-       | None => check_create_wronly p eff m
+       | None => check_create_wronly_absent p eff m
        end.
 
 (** The only openat arm that can DECLINE: [Open.openat_dir_spec] says

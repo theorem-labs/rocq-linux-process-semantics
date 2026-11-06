@@ -1251,6 +1251,28 @@ Proof.
       rewrite Hlk, bv_eqb_refl. reflexivity.
 Qed.
 
+(** Membership and range facts for absent-name write-open errno set. *)
+Lemma ENOMEM_in_write_open_create_errnos : In ENOMEM write_open_create_errnos.
+Proof. left. reflexivity. Qed.
+
+Lemma write_open_create_errno_range : forall e,
+  In e write_open_create_errnos -> (1 <= e)%Z /\ (e <= 4095)%Z.
+Proof. intros e HIn. exact (errnos_ok_range write_open_create_errnos e eq_refl HIn). Qed.
+
+Lemma check_write_open_create_result_never_unmodeled : forall eff m mk,
+  check_write_open_create_result eff m mk <> CheckUnmodeled.
+Proof.
+  intros [ret ws zs us cs copyins] m mk.
+  unfold check_write_open_create_result, check_new_fd_result.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?];
+    destruct copyins as [|? ?];
+    try discriminate.
+  destruct (errno_ret_in write_open_create_errnos ret); [discriminate|].
+  destruct (fd_lookup (m_fds m) ret); [discriminate|].
+  destruct (bv_eqb ret (alloc_fd (m_fds m))); discriminate.
+Qed.
+
 Definition open_copyins (ms : machine_state) : list (word * nat) :=
   [(ms_gpr ms 1,
     cstr_access_len_aux (ms_read_byte ms) (ms_gpr ms 1) path_max)].
