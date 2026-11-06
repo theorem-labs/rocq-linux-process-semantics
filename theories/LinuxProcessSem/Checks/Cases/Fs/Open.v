@@ -330,6 +330,43 @@ Example openat_rdwr_errnos :
      = CheckOk (base absent) [].
 Proof. vm_compute. repeat split; check_eq. Qed.
 
+(** F2: THE NEW WRITE-OPEN ERRNOS.  [write_open_errnos] now includes
+    -EPERM, -EROFS and -ETXTBSY beside the original four.  A write-create
+    open of an existing file or an absent name admits each of them; a
+    read-only open of the SAME file still refuses them, because
+    [openat_read_spec] uses the narrower [openat_errnos].
+
+    The absent-name case pins each new errno on a create (word 577);
+    the existing-name case pins each on the same word, same model. *)
+Example openat_write_open_new_errnos :
+  let open fs fl eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+           mem_open_write (fun _ => None))
+        (with_copyins [(8192, 2%nat)] eff)
+        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+  let have := [([102], [104; 105])] in
+  let absent := [] in
+  let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  (* WRITE CREATE on an absent name: new errnos admitted *)
+  open absent wr_create_flags (mkEffect (errno_ret EPERM) [] [])
+    = CheckOk (base absent) []
+  /\ open absent wr_create_flags (mkEffect (errno_ret EROFS) [] [])
+     = CheckOk (base absent) []
+  /\ open absent wr_create_flags (mkEffect (errno_ret ETXTBSY) [] [])
+     = CheckOk (base absent) []
+  (* WRITE CREATE on an existing file: new errnos admitted *)
+  /\ open have wr_create_flags (mkEffect (errno_ret EPERM) [] [])
+     = CheckOk (base have) []
+  /\ open have wr_create_flags (mkEffect (errno_ret EROFS) [] [])
+     = CheckOk (base have) []
+  /\ open have wr_create_flags (mkEffect (errno_ret ETXTBSY) [] [])
+     = CheckOk (base have) []
+  (* READ-ONLY open of the same existing file: new errnos REJECTED *)
+  /\ open have 0%Z (mkEffect (errno_ret EPERM) [] []) = CheckReject
+  /\ open have 0%Z (mkEffect (errno_ret EROFS) [] []) = CheckReject
+  /\ open have 0%Z (mkEffect (errno_ret ETXTBSY) [] []) = CheckReject.
+Proof. vm_compute. repeat split; check_eq. Qed.
+
 (** A DIRECTORY REFERENCE, whose two answers come from two different
     kernel tests reached in the same call.  "." is [Uapi.dot_path]; the
     path bytes at 8192 are '.', NUL.
@@ -374,6 +411,20 @@ Definition ftruncate_dangling_model : Model :=
 Example ftruncate_on_a_dangling_fd_is_unmodeled :
   check_syscall (mkInput 46 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) ftruncate_dangling_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** F1: ftruncate on an FdFileA is UNMODELED, because IS_APPEND(inode)
+    at fs/open.c:183-184 (v6.18.46) answers -EPERM and the model does
+    not carry the append-only inode attribute.  The Lean twin already
+    declines this arm (Sys/Fs/Open.lean:1312). *)
+Definition ftruncate_append_model : Model :=
+  mkModel [(3, FdFileA [102] 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    [([], [104; 105])] None None None.
+
+Example ftruncate_on_append_fd_is_unmodeled :
+  check_syscall (mkInput 46 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) ftruncate_append_model
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
