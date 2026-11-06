@@ -240,6 +240,30 @@ Proof.
     eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
+Local Lemma check_open_append_absent_sound_ok : forall i p eff m m' evs,
+  check_open_append_absent p eff m = CheckOk m' evs ->
+  open_append_absent p m i m (Ok eff m' evs).
+Proof.
+  intros i p [ret ws zs us cs copyins] m m' evs H.
+  unfold check_open_append_absent, check_write_open_create_result, check_new_fd_result in H.
+  destruct ws as [|w ws']; [destruct zs as [|z zs']|];
+    destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct copyins as [|? ?]; try discriminate.
+  destruct (errno_ret_in write_open_create_errnos ret) eqn:He.
+  - inversion H; clear H; subst.
+    apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    unfold open_append_absent. apply alt_l. eapply bind_ok0.
+    { apply (choose_ok _ e). exact HIn. }
+    apply pure_ok.
+  - destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
+    inversion H; clear H; subst. apply bv_eqb_eq in Heq.
+    unfold open_append_absent. apply alt_r. eapply bind_ok0.
+    { apply (choose_ok _ ret). split; assumption. }
+    cbv beta. eapply bind_ok0; [apply modify_ok|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
 Local Lemma check_open_rdwr_sound_ok : forall i p fs' eff m m' evs,
   check_open_rdwr p fs' eff m = CheckOk m' evs ->
   open_rdwr p fs' m i m (Ok eff m' evs).
@@ -259,6 +283,30 @@ Proof.
     destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
     inversion H; clear H; subst. apply bv_eqb_eq in Heq.
     unfold open_rdwr. apply alt_r. eapply bind_ok0.
+    { apply (choose_ok _ ret). split; assumption. }
+    cbv beta. eapply bind_ok0; [apply modify_ok|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Local Lemma check_open_rdwr_absent_sound_ok : forall i p fs' eff m m' evs,
+  check_open_rdwr_absent p fs' eff m = CheckOk m' evs ->
+  open_rdwr_absent p fs' m i m (Ok eff m' evs).
+Proof.
+  intros i p fs' [ret ws zs us cs copyins] m m' evs H.
+  unfold check_open_rdwr_absent, check_write_open_create_result, check_new_fd_result in H.
+  destruct ws as [|w ws']; [destruct zs as [|z zs']|];
+    destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct copyins as [|? ?]; try discriminate.
+  destruct (errno_ret_in write_open_create_errnos ret) eqn:He.
+  - inversion H; clear H; subst.
+    apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    unfold open_rdwr_absent. apply alt_l. eapply bind_ok0.
+    { apply (choose_ok _ e). exact HIn. }
+    apply pure_ok.
+  - destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
+    inversion H; clear H; subst. apply bv_eqb_eq in Heq.
+    unfold open_rdwr_absent. apply alt_r. eapply bind_ok0.
     { apply (choose_ok _ ret). split; assumption. }
     cbv beta. eapply bind_ok0; [apply modify_ok|].
     eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
@@ -767,10 +815,12 @@ Proof.
       destruct (fs_under (m_fs m) p); [now apply check_ret_only_sound_ok|].
       destruct (fs_lookup (m_fs m) p).
       * now apply check_ret_only_sound_ok.
-      * now apply check_open_append_sound_ok.
+      * now apply check_open_append_absent_sound_ok.
   - destruct (path_is_dirref p || fs_under (m_fs m) p).
     + now apply check_ret_only_sound_ok.
-    + now apply check_open_append_sound_ok.
+    + destruct (fs_lookup (m_fs m) p).
+      * now apply check_open_append_sound_ok.
+      * now apply check_open_append_absent_sound_ok.
 Qed.
 
 Local Lemma check_openat_rdwr_sound_ok : forall i creat trunc p eff m m' evs,
@@ -784,7 +834,7 @@ Proof.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_open_rdwr_sound_ok.
     + destruct creat.
-      * now apply check_open_rdwr_sound_ok.
+      * now apply check_open_rdwr_absent_sound_ok.
       * now apply check_ret_only_sound_ok.
 Qed.
 
@@ -798,7 +848,7 @@ Proof.
   - now apply check_ret_only_sound_ok.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_ret_only_sound_ok.
-    + now apply check_open_rdwr_sound_ok.
+    + now apply check_open_rdwr_absent_sound_ok.
 Qed.
 
 Local Lemma check_openat_localtime_sound_ok : forall i flags eff m m' evs,
