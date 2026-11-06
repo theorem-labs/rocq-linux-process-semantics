@@ -714,7 +714,12 @@ Proof.
       [autorewrite with model|]].
   (* All three cases: need anon_agree_all (m_fds m0) from E *)
   all: rename E into H;
-       unfold check_openat_table, Open.check_openat_body in H;
+       unfold check_openat_table, Open.check_openat_body,
+              Open.check_openat_resolved, Open.check_openat_sep,
+              Open.check_openat_proc, Open.check_proc_open_result,
+              Open.check_openat_tmp, Open.check_openat_excl,
+              Open.check_openat_append, Open.check_openat_rdwr,
+              Open.check_openat_rdwr_excl in H;
        cbv beta iota zeta in H;
        repeat (kf_step H || aa_done_or_unfold H);
        aa_close.
