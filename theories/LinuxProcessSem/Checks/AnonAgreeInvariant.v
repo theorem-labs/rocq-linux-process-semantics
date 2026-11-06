@@ -651,12 +651,20 @@ Local Ltac aa_done H :=
   | context [open_cloexec_model] => unfold open_cloexec_model in H
   end.
 
+(* Sub-checkers whose answer keeps the model, or never answers. *)
+Local Ltac aa_keep H :=
+  first
+  [ (apply check_read_opaque_keeps in H; destruct H as [-> ->])
+  | (apply check_write_opaque_keeps in H; destruct H as [-> ->])
+  | elim (check_readv_gap_frame _ _ H) ].
+
 (* Unfold the top-level check function in H so that kf_step can see
    the match/if structure.  We add the top-level names to aa_done
    so that the repeat loop handles both levels of unfolding. *)
 Local Ltac aa_done_or_unfold H :=
   first
-  [ aa_done H
+  [ aa_keep H
+  | aa_done H
   | (* Top-level check functions: unfold when kf_step gets stuck *)
     match type of H with
     | context [check_getcwd] => unfold check_getcwd in H
@@ -670,6 +678,12 @@ Local Ltac aa_done_or_unfold H :=
     | context [check_ioctl] => unfold check_ioctl in H
     | context [check_flock] => unfold check_flock in H
     | context [check_unlinkat] => unfold check_unlinkat in H
+    | context [Namei.check_unlinkat_body] => unfold Namei.check_unlinkat_body in H
+    | context [Namei.check_unlinkat_tmp] => unfold Namei.check_unlinkat_tmp in H
+    | context [Namei.check_unlink_found] => unfold Namei.check_unlink_found in H
+    | context [check_unlink_result] => unfold check_unlink_result in H
+    | context [check_unlink_open_result] => unfold check_unlink_open_result in H
+    | context [check_unlink_type_result] => unfold check_unlink_type_result in H
     | context [check_ftruncate] => unfold check_ftruncate in H
     | context [check_faccessat] => unfold check_faccessat in H
     | context [check_openat] => unfold check_openat in H
@@ -725,6 +739,13 @@ Local Ltac aa_done_or_unfold H :=
     | context [check_gettid] => unfold check_gettid in H
     | context [check_socket] => unfold check_socket in H
     | context [check_socketpair] => unfold check_socketpair in H
+    | context [check_socketpair_unix] => unfold check_socketpair_unix in H
+    | context [check_socketpair_seqpacket_written] =>
+        unfold check_socketpair_seqpacket_written in H
+    | context [check_socketpair_unix_written] => unfold check_socketpair_unix_written in H
+    | context [check_socketpair_written] => unfold check_socketpair_written in H
+    | context [check_socketpair_faulted] => unfold check_socketpair_faulted in H
+    | context [check_stream_shutdown] => unfold check_stream_shutdown in H
     | context [check_bind] => unfold check_bind in H
     | context [check_listen] => unfold check_listen in H
     | context [check_accept4] => unfold check_accept4 in H
@@ -1004,8 +1025,12 @@ Proof.
   all: try (aa_use check_openat_aa H; fail).
   all: try (aa_use check_dup_aa H; fail).
   all: try (aa_frame H; fail).
-  (* DIAGNOSTIC (wip only): list every uncovered arm, then admit. *)
+  (* DIAGNOSTIC (wip only): show what is left of every uncovered arm. *)
   all: let T := type of H in idtac "AA_NO_CASE:" T.
+  all: cbv beta iota zeta in H; repeat (kf_step H || aa_done_or_unfold H);
+       try aa_close.
+  all: match goal with |- ?G => idtac "AA_GOAL:" G end;
+       try (let T := type of H in idtac "AA_H:" T).
 Admitted.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
