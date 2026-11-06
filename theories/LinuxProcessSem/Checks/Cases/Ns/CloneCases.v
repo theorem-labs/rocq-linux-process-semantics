@@ -277,6 +277,16 @@ Example clone_newipc_sysvsem_unprivileged_eperm : forall m,
     (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EPERM inside.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** Unprivileged with [CLONE_NEWUSER]: [copy_creds] makes the new user
+    namespace, and the child has CAP_FULL_SET there, so the capability
+    gate passes.  Then the [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires:
+    -EINVAL, not -EPERM (Linux v6.18.46, nsproxy.c:150, 162, 172-173:
+    [task_cred_xxx(tsk, user_ns)] is the child's new namespace). *)
+Example clone_newuser_newipc_sysvsem_einval : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EINVAL inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 Example clone_newns_non_sigchld_declines : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWNS 10)) m shell inside 140 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
