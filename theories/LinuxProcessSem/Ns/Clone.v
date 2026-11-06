@@ -482,14 +482,16 @@ Proof.
              (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)))
       by (vm_compute; reflexivity).
     rewrite Hmon. rewrite Z.land_assoc. rewrite Hmask. apply Z.land_0_l. }
-  rewrite Hext in Hclass. cbn [negb] in Hclass.
-  (* Step 4: after the first two CcNone tests pass, clone_class is not CcNone. *)
-  destruct (negb (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask)) eqn:Hns;
-    rewrite Hns in Hclass; cbn in Hclass;
-    [| destruct (Fork.clone_has (Fork.cla_flags r) CLONE_NEWIPC
-                 && Fork.clone_has (Fork.cla_flags r) CLONE_SYSVSEM) eqn:Hipc;
-       rewrite Hipc in Hclass; cbn in Hclass];
-    exact (Hclass eq_refl).
+  rewrite Hext in Hclass.
+  unfold Fork.clone_class in Hclass.
+  rewrite Hsignal, Z.eqb_refl in Hclass.
+  unfold Fork.clone_has in Hext at 1. apply negb_false_iff in Hext.
+  apply Z.eqb_eq in Hext. rewrite Hext in Hclass.
+  destruct (Z.eqb (Z.land (Fork.cla_flags r) Fork.clone_ns_mask) 0);
+    cbn in Hclass; [exact (Hclass eq_refl)|].
+  destruct (negb (Z.eqb (Z.land (Fork.cla_flags r) CLONE_NEWIPC) 0)
+            && negb (Z.eqb (Z.land (Fork.cla_flags r) CLONE_SYSVSEM) 0));
+    cbn in Hclass; exact (Hclass eq_refl).
 Qed.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
