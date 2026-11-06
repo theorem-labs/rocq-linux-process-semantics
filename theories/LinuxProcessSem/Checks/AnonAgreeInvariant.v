@@ -688,9 +688,17 @@ Local Ltac aa_done_or_unfold H :=
     end
   ].
 
+(* Before kf_step's injection fires on CheckOk (wrapper ...) = CheckOk m' evs,
+   unwrap so the inner if/match gets processed first. *)
+Local Ltac aa_pre_inject H :=
+  match type of H with
+  | CheckOk (open_cloexec_model _ _ _) _ = CheckOk _ _ =>
+      unfold open_cloexec_model in H; cbv beta iota zeta in H
+  end.
+
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (first [kf_step H | aa_done_or_unfold H | aa_close; fail]).
+  repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H | aa_close; fail]).
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
