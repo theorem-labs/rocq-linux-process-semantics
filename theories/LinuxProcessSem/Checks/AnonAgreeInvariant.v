@@ -690,8 +690,7 @@ Local Ltac aa_done_or_unfold H :=
 
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (kf_step H || aa_done_or_unfold H);
-  aa_close.
+  repeat (first [kf_step H | aa_done_or_unfold H | aa_close; fail]).
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
@@ -700,10 +699,7 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
-  all: try (aa_frame H; fail).
-  (* Diagnostic: report the stuck goal (H may have been consumed by injection) *)
-  all: first [aa_close |
-    match goal with |- ?G => fail 1 "GOAL:" G end].
+  all: aa_frame H.
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
