@@ -7,8 +7,9 @@
     by the kernel source file the specification answers to;
     [VdsoCommuteSys.v] assembles it in [Sys.SyscallTable.spec_table]'s order.
 
-    94 specification lemmas (102 [vc_] lemmas with the seven helpers of the
-    write family and [vc_clone_refusable]) for 103 arms: [getid_spec] answers four numbers,
+    94 specification lemmas (104 [vc_] lemmas with the seven helpers of the
+    write family and the three of the clone arms, [vc_clone_refusable],
+    [vc_clone_refusable_arm] and [vc_clone_with_stores]) for 103 arms: [getid_spec] answers four numbers,
     [setid_spec], [setresid_spec], [getresid_spec], [fsync_spec],
     [exit_spec] and [accept4_spec] two each.  A repeated arm costs nothing here; it is
     applied twice at the dispatcher.
