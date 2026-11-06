@@ -437,9 +437,17 @@ Ltac clone_walk :=
 Lemma vc_clone_spec : forall flags, vdso_commutes (clone_spec flags).
 Proof. intros; unfold clone_spec; clone_walk. Qed.
 
+(** [clone3_spec] takes the input first, because its refusal carries the
+    copy's own ledger ([clone3_input_reads]): the refusal at that input and
+    the answer from the lists are each framed. *)
 Lemma vc_clone3_spec : forall uargs size,
   vdso_commutes (clone3_spec uargs size).
-Proof. intros; unfold clone3_spec; clone_walk. Qed.
+Proof.
+  intros uargs size v i m o H. unfold clone3_spec in *. cbv beta in *.
+  refine (vc_clone_refusable _ _ _ _ _ v i m o H).
+  - unfold clone3_refused_fail; clone_walk.
+  - unfold clone3_spec_lists; clone_walk.
+Qed.
 
 (* ---- kernel/futex/syscalls.c ---- *)
 Lemma vc_futex_spec : forall uaddr op val utime,
