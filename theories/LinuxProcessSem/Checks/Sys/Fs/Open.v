@@ -685,7 +685,27 @@ Proof.
   unfold check_openat_create, openat_create_spec in *.
   destruct (path_is_dirref p || fs_under (m_fs m) p).
   - now apply check_ret_only_sound_ok.
-  - now apply check_create_wronly_sound_ok.
+  - destruct (fs_lookup (m_fs m) p).
+    + now apply check_create_wronly_sound_ok.
+    + (* absent: check_create_wronly_absent → create_wronly_absent *)
+      unfold check_create_wronly_absent, check_write_open_create_result, check_new_fd_result in H.
+      destruct eff as [ret ws zs us cs copyins].
+      destruct ws as [|w ws']; [destruct zs as [|z zs']|];
+        destruct us as [|? ?]; destruct cs as [|? ?];
+        destruct copyins as [|? ?]; try discriminate.
+      destruct (errno_ret_in write_open_create_errnos ret) eqn:He.
+      * inversion H; clear H; subst.
+        apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+        unfold create_wronly_absent. apply alt_l. eapply bind_ok0.
+        { apply (choose_ok _ e). exact HIn. }
+        apply pure_ok.
+      * destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
+        destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
+        inversion H; clear H; subst. apply bv_eqb_eq in Heq.
+        unfold create_wronly_absent. apply alt_r. eapply bind_ok0.
+        { apply (choose_ok _ ret). split; assumption. }
+        cbv beta. eapply bind_ok0; [apply modify_ok|].
+        eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
 Local Lemma check_openat_excl_sound_ok : forall i p eff m m' evs,
@@ -698,7 +718,24 @@ Proof.
   - now apply check_ret_only_sound_ok.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_ret_only_sound_ok.
-    + now apply check_create_wronly_sound_ok.
+    + unfold check_create_wronly_absent, check_write_open_create_result, check_new_fd_result in H.
+      destruct eff as [ret ws zs us cs copyins].
+      destruct ws as [|w ws']; [destruct zs as [|z zs']|];
+        destruct us as [|? ?]; destruct cs as [|? ?];
+        destruct copyins as [|? ?]; try discriminate.
+      destruct (errno_ret_in write_open_create_errnos ret) eqn:He.
+      * inversion H; clear H; subst.
+        apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+        unfold create_wronly_absent. apply alt_l. eapply bind_ok0.
+        { apply (choose_ok _ e). exact HIn. }
+        apply pure_ok.
+      * destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
+        destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
+        inversion H; clear H; subst. apply bv_eqb_eq in Heq.
+        unfold create_wronly_absent. apply alt_r. eapply bind_ok0.
+        { apply (choose_ok _ ret). split; assumption. }
+        cbv beta. eapply bind_ok0; [apply modify_ok|].
+        eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
 Local Lemma check_openat_dir_sound_ok : forall i p eff m m' evs,
