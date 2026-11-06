@@ -948,7 +948,13 @@ not apply.
   contents live in its descriptors' entries, so the exit event's file
   system does not include it, as Linux's does not. Its contents are
   replicated, one copy per descriptor, and the model answers no call
-  that reads them unless every copy agrees (`State.anon_agree`).
+  that reads them unless every copy agrees (`State.anon_agree`). No
+  single-process run from `init_config` (`Run.star`, `Run.star_cfg`,
+  `Run.star_pcfg`) reaches a state where the copies disagree, so on those
+  runs that decline is never taken
+  (`Checks.AnonAgreeInvariant.anon_agree_reachable` and its `_cfg` and
+  `_pcfg` forms). The multi-process core's runs (`Procs.pstep_cfg`, used by
+  the forkwait statement) are not covered by these theorems.
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1

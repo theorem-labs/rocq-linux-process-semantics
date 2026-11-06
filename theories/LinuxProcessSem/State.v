@@ -7418,7 +7418,10 @@ Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
     gives every descriptor it converts the same contents and pin under one
     fresh id, a close only removes an entry, and [dup3] moves an entry
     whole to [newfd], leaving an alias that is no unnamed file's
-    descriptor.  [Checks.AnonAgree] states these as lemmas. *)
+    descriptor.  [Checks.AnonAgree] states these as lemmas, and
+    [Checks.AnonAgreeInvariant.anon_agree_reachable] (with its [_cfg] and
+    [_pcfg] forms) proves from them that every state a run reaches from
+    [Run.init_config] holds no disagreeing unnamed file. *)
 Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
   forallb (fun p => anon_entry_agrees id af (snd p)) fds.
 (* =========================================================================
