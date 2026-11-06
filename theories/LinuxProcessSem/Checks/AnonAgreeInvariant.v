@@ -393,7 +393,38 @@ Local Ltac aa_close :=
     [ exact Hinv
     | change g with (m_fds m); exact Hinv
     | autorewrite with model; exact Hinv
+    | cbn [m_fds]; exact Hinv
+    | cbn [m_fds]; autorewrite with model; exact Hinv
     | autorewrite with model;
+      first
+      [ apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | exact Hinv ]
+      | apply anon_agree_all_fd_remove; exact Hinv
+      | apply anon_agree_all_filter; exact Hinv
+      | apply anon_agree_all_anon_set_data; exact Hinv
+      | apply anon_agree_all_fd_insert_set_off;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | eapply anon_agree_all_anon_write_back;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | apply anon_agree_all_set_pin; exact Hinv
+      | eapply anon_agree_all_dup3_fds;
+          [ eassumption | reflexivity | exact Hinv ]
+      | eapply anon_agree_all_reopen;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | eapply anon_agree_all_reopen_trunc;
+          [ exact Hinv | find_anon_agree_hyp ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_fd_insert_non_anon;
+            [intros ?? [=] | exact Hinv ] ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_fd_remove; exact Hinv ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_filter; exact Hinv ]
+      | apply anon_agree_all_fd_insert_non_anon;
+          [intros ?? [=] | apply anon_agree_all_anon_set_data; exact Hinv ]
+      | eapply anon_agree_all_unlink_open; [eassumption | exact Hinv]
+      ]
+    | cbn [m_fds]; autorewrite with model;
       first
       [ apply anon_agree_all_fd_insert_non_anon;
           [intros ?? [=] | exact Hinv ]
@@ -670,11 +701,9 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_frame H; fail).
-  (* Diagnostic: step as far as possible and report the stuck hypothesis *)
-  all: cbv beta iota zeta in H.
-  all: repeat (kf_step H || aa_done_or_unfold H).
+  (* Diagnostic: report the stuck goal (H may have been consumed by injection) *)
   all: first [aa_close |
-    let T := type of H in fail 1 "REMAINING:" T].
+    match goal with |- ?G => fail 1 "GOAL:" G end].
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
