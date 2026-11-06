@@ -3,10 +3,11 @@
     Not part of the trusted specification: theorems ABOUT it.
 
     [ProcInput24] has exactly fields 1-24 of the process input before
-    the cgroup-BPF setsockopt field. [embed24] appends false, and the
-    host's clone refusers (field 26) at [State.no_clone_refusers];
-    [forget24] drops fields 25 and 26, and [embeds24] carries field 26's
-    pin after field 25's. No self-kill stance is lost: true and false
+    the cgroup-BPF setsockopt field. [embed24] appends false, the
+    host's clone refusers (field 26) at [State.no_clone_refusers] and
+    the SIGCHLD launch disposition (field 27) at [true], SIG_DFL;
+    [forget24] drops fields 25 to 27, and [embeds24] carries field 26's
+    pin and field 27's frame and pin after field 25's. No self-kill stance is lost: true and false
     both embed. Ordinary input predicates additionally pin self-kill
     false, as they did before field 25. The launch predicates of [Run]
     also restrict the launch to the kernel of record, which the pre-field
@@ -82,7 +83,8 @@ Definition embed24 (o : ProcInput24) : ProcInput :=
      in_inherited_fds := p24_inherited_fds o;
      in_selfkill_terminal := p24_selfkill_terminal o;
      in_cgroup_bpf_setsockopt := false;
-     in_clone_refusers := no_clone_refusers |}.
+     in_clone_refusers := no_clone_refusers;
+     in_sigchld_default := true |}.
 
 Definition forget24 (inp : ProcInput) : ProcInput24 :=
   {| p24_argv := in_argv inp; p24_envp := in_envp inp;
@@ -107,11 +109,14 @@ Proof. intros []. reflexivity. Qed.
 
 Lemma embed24_forget24 : forall inp,
   in_cgroup_bpf_setsockopt inp = false ->
-  in_clone_refusers inp = no_clone_refusers -> embed24 (forget24 inp) = inp.
+  in_clone_refusers inp = no_clone_refusers ->
+  in_sigchld_default inp = true -> embed24 (forget24 inp) = inp.
 Proof.
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf] H Hc.
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st pp ci ifd sk bp crf scd]
+    H Hc Hs.
   cbn [in_cgroup_bpf_setsockopt] in H. cbn [in_clone_refusers] in Hc.
-  subst bp crf. reflexivity.
+  cbn [in_sigchld_default] in Hs.
+  subst bp crf scd. reflexivity.
 Qed.
 
 Lemma embed24_selfkill : forall o,
@@ -121,9 +126,10 @@ Proof. reflexivity. Qed.
 Lemma image_observations24 : forall (A : Type) (observe : ProcInput -> A) inp,
   in_cgroup_bpf_setsockopt inp = false ->
   in_clone_refusers inp = no_clone_refusers ->
+  in_sigchld_default inp = true ->
   observe (embed24 (forget24 inp)) = observe inp.
 Proof.
-  intros A observe inp H Hc. rewrite (embed24_forget24 inp H Hc). reflexivity.
+  intros A observe inp H Hc Hs. rewrite (embed24_forget24 inp H Hc Hs). reflexivity.
 Qed.
 
 Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
@@ -131,48 +137,64 @@ Definition pre24 (V_pre : ProcInput -> Prop) (inp : ProcInput) : Prop :=
 
 Definition embeds24 (V V24 : ProcInput -> Prop) : Prop :=
   (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
+  /\ (forall inp b, V24 (input_with_sigchld_default b inp) <-> V24 inp)
   /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
-                            /\ in_clone_refusers inp = no_clone_refusers).
+                            /\ in_clone_refusers inp = no_clone_refusers
+                            /\ in_sigchld_default inp = true).
 
 (** [embeds24] with #38's kernel clause as its own conjunct: the shape of
-    every launch predicate of [Run] ([SelfkillEmbedding.embeds_recorded]). *)
+    every launch predicate of [Run] ([SelfkillEmbedding.embeds_recorded]).
+    Field 27's frame and pin sit where [embeds24] has them. *)
 Definition embeds24_recorded (V V24 : ProcInput -> Prop) : Prop :=
   (forall inp b, V24 (input_with_cgroup_bpf_setsockopt b inp) <-> V24 inp)
+  /\ (forall inp b, V24 (input_with_sigchld_default b inp) <-> V24 inp)
   /\ (forall inp, V inp <-> V24 inp /\ in_cgroup_bpf_setsockopt inp = false
                             /\ in_kernel inp = recorded_kernel (in_kernel inp)
-                            /\ in_clone_refusers inp = no_clone_refusers).
+                            /\ in_clone_refusers inp = no_clone_refusers
+                            /\ in_sigchld_default inp = true).
 
 Lemma embeds24_of_embeds : forall V V_pre,
   embeds V V_pre -> embeds24 V (pre24 V_pre).
 Proof.
-  intros V V_pre [_ [Hframe HV]]. split.
+  intros V V_pre [_ [Hframe [Hsframe HV]]]. split; [|split].
   - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
     + exact (proj1 (Hframe inp b) Hp).
     + exact Hsk.
     + exact (proj2 (Hframe inp b) Hp).
     + exact Hsk.
+  - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
+    + exact (proj1 (Hsframe inp b) Hp).
+    + exact Hsk.
+    + exact (proj2 (Hsframe inp b) Hp).
+    + exact Hsk.
   - intros inp. unfold pre24. rewrite HV.
     split; intros H.
-    + destruct H as [Hp [Hsk [Hbp Hcrf]]].
-      exact (conj (conj Hp Hsk) (conj Hbp Hcrf)).
-    + destruct H as [[Hp Hsk] [Hbp Hcrf]].
-      exact (conj Hp (conj Hsk (conj Hbp Hcrf))).
+    + destruct H as [Hp [Hsk [Hbp [Hcrf Hscd]]]].
+      exact (conj (conj Hp Hsk) (conj Hbp (conj Hcrf Hscd))).
+    + destruct H as [[Hp Hsk] [Hbp [Hcrf Hscd]]].
+      exact (conj Hp (conj Hsk (conj Hbp (conj Hcrf Hscd)))).
 Qed.
 
 Lemma embeds24_recorded_of_embeds_recorded : forall V V_pre,
   embeds_recorded V V_pre -> embeds24_recorded V (pre24 V_pre).
 Proof.
-  intros V V_pre [_ [Hframe HV]]. split.
+  intros V V_pre [_ [Hframe [Hsframe HV]]]. split; [|split].
   - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
     + exact (proj1 (Hframe inp b) Hp).
     + exact Hsk.
     + exact (proj2 (Hframe inp b) Hp).
     + exact Hsk.
+  - intros inp b. unfold pre24. split; intros [Hp Hsk]; split.
+    + exact (proj1 (Hsframe inp b) Hp).
+    + exact Hsk.
+    + exact (proj2 (Hsframe inp b) Hp).
+    + exact Hsk.
   - intros inp. unfold pre24. split; intros H.
-    + destruct (proj1 (HV inp) H) as [Hp [Hsk [Hbp [Hk Hcrf]]]].
-      exact (conj (conj Hp Hsk) (conj Hbp (conj Hk Hcrf))).
-    + destruct H as [[Hp Hsk] [Hbp [Hk Hcrf]]].
-      exact (proj2 (HV inp) (conj Hp (conj Hsk (conj Hbp (conj Hk Hcrf))))).
+    + destruct (proj1 (HV inp) H) as [Hp [Hsk [Hbp [Hk [Hcrf Hscd]]]]].
+      exact (conj (conj Hp Hsk) (conj Hbp (conj Hk (conj Hcrf Hscd)))).
+    + destruct H as [[Hp Hsk] [Hbp [Hk [Hcrf Hscd]]]].
+      exact (proj2 (HV inp)
+               (conj Hp (conj Hsk (conj Hbp (conj Hk (conj Hcrf Hscd)))))).
 Qed.
 
 Corollary valid_input_embeds24 :
@@ -266,6 +288,7 @@ Lemma valid_input_inherited_embeds24 :
   embeds24_recorded valid_input_inherited valid_input_inherited_pre24.
 Proof.
   split; [intros inp b; split; intros H; exact H|].
+  split; [intros inp b; split; intros H; exact H|].
   intros inp. unfold valid_input_inherited, valid_input_inherited_pre24.
   embeds_conj.
 Qed.
@@ -273,25 +296,25 @@ Qed.
 Corollary embeds24_image : forall V V24, embeds24 V V24 ->
   forall o, V (embed24 o) <-> V24 (embed24 o).
 Proof.
-  intros V V24 [_ HV] o. split.
+  intros V V24 [_ [_ HV]] o. split.
   - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
   - intros H. apply (proj2 (HV (embed24 o))).
-    split; [exact H | split; reflexivity].
+    split; [exact H | split; [reflexivity | split; reflexivity]].
 Qed.
 
 Corollary embeds24_excludes : forall V V24, embeds24 V V24 ->
   forall inp, in_cgroup_bpf_setsockopt inp = true -> ~ V inp.
 Proof.
-  intros V V24 [_ HV] inp Ht Hv.
+  intros V V24 [_ [_ HV]] inp Ht Hv.
   destruct (proj1 (HV inp) Hv) as [_ [Hf _]]. rewrite Ht in Hf. discriminate Hf.
 Qed.
 
 Corollary embeds24_covers_images : forall V V24, embeds24 V V24 ->
   forall inp, V inp -> inp = embed24 (forget24 inp).
 Proof.
-  intros V V24 [_ HV] inp Hv.
-  destruct (proj1 (HV inp) Hv) as [_ [Hf Hc]].
-  symmetry. exact (embed24_forget24 inp Hf Hc).
+  intros V V24 [_ [_ HV]] inp Hv.
+  destruct (proj1 (HV inp) Hv) as [_ [Hf [Hc Hs]]].
+  symmetry. exact (embed24_forget24 inp Hf Hc Hs).
 Qed.
 
 (** A launch predicate's 24-layer embedding is an [embeds24] whose old
@@ -299,17 +322,22 @@ Qed.
 Lemma embeds24_of_embeds24_recorded : forall V V24, embeds24_recorded V V24 ->
   embeds24 V (fun inp => V24 inp /\ in_kernel inp = recorded_kernel (in_kernel inp)).
 Proof.
-  intros V V24 [Hbp HV]. split.
+  intros V V24 [Hbp [Hsc HV]]. split; [|split].
   - intros inp b. split; intros [Hp Hk]; split.
     + exact (proj1 (Hbp inp b) Hp).
     + exact Hk.
     + exact (proj2 (Hbp inp b) Hp).
     + exact Hk.
+  - intros inp b. split; intros [Hp Hk]; split.
+    + exact (proj1 (Hsc inp b) Hp).
+    + exact Hk.
+    + exact (proj2 (Hsc inp b) Hp).
+    + exact Hk.
   - intros inp. split; intros H.
-    + destruct (proj1 (HV inp) H) as [Hp [Hb [Hk Hc]]].
-      exact (conj (conj Hp Hk) (conj Hb Hc)).
-    + destruct H as [[Hp Hk] [Hb Hc]].
-      exact (proj2 (HV inp) (conj Hp (conj Hb (conj Hk Hc)))).
+    + destruct (proj1 (HV inp) H) as [Hp [Hb [Hk [Hc Hd]]]].
+      exact (conj (conj Hp Hk) (conj Hb (conj Hc Hd))).
+    + destruct H as [[Hp Hk] [Hb [Hc Hd]]].
+      exact (proj2 (HV inp) (conj Hp (conj Hb (conj Hk (conj Hc Hd))))).
 Qed.
 
 (** On the image of a 24-field input whose kernel is of record, a launch
@@ -318,10 +346,11 @@ Corollary embeds24_recorded_image : forall V V24, embeds24_recorded V V24 ->
   forall o, p24_kernel o = recorded_kernel (p24_kernel o) ->
   V (embed24 o) <-> V24 (embed24 o).
 Proof.
-  intros V V24 [_ HV] o Hk. split.
+  intros V V24 [_ [_ HV]] o Hk. split.
   - intros H. exact (proj1 (proj1 (HV (embed24 o)) H)).
   - intros H. apply (proj2 (HV (embed24 o))).
-    split; [exact H |]. split; [reflexivity |]. split; [exact Hk | reflexivity].
+    split; [exact H |]. split; [reflexivity |]. split; [exact Hk |].
+    split; reflexivity.
 Qed.
 
 Corollary embeds24_recorded_excludes : forall V V24, embeds24_recorded V V24 ->
@@ -333,7 +362,7 @@ Qed.
 Corollary embeds24_recorded_excludes_kernel : forall V V24, embeds24_recorded V V24 ->
   forall inp, in_kernel inp <> recorded_kernel (in_kernel inp) -> ~ V inp.
 Proof.
-  intros V V24 [_ HV] inp Hk Hv.
+  intros V V24 [_ [_ HV]] inp Hk Hv.
   destruct (proj1 (HV inp) Hv) as [_ [_ [Hr _]]]. exact (Hk Hr).
 Qed.
 
@@ -346,7 +375,7 @@ Corollary embeds24_recorded_covers_images : forall V V24, embeds24_recorded V V2
 Proof.
   intros V V24 Hr inp Hv. split.
   - exact (embeds24_covers_images _ _ (embeds24_of_embeds24_recorded _ _ Hr) inp Hv).
-  - destruct Hr as [_ HV].
+  - destruct Hr as [_ [_ HV]].
     destruct (proj1 (HV inp) Hv) as [_ [_ [Hk _]]]. exact Hk.
 Qed.
 

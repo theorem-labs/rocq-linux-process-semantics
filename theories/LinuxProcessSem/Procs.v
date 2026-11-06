@@ -1641,21 +1641,25 @@ Proof. intros m p ps H. unfold orphan_at_exit. rewrite H. reflexivity. Qed.
     ([wait4_owned_b]), every call numbered 260 is answered by an arm of
     this core:
 
-    - wait4(-1, &st, 0, NULL), the blocking shape: [pstep_wait_reap],
-      unchanged.  A zombie child is reaped; otherwise there is no arm, and
-      no arm is how this core says BLOCKED.
+    - wait4(-1, &st, 0, NULL), the blocking shape: [pstep_wait_reap].  A
+      zombie child is reaped when the caller's SIGCHLD bit
+      ([State.m_sigchld_dfl]) is set; otherwise there is no arm, and no arm is
+      how this core says BLOCKED.
     - wait4(-1, &st, WNOHANG, ru), [ru] NULL or writable for a whole
       [struct rusage] ([wait4_rusage_ok_b]): [pstep_wait_nohang_reap]
-      reaps a zombie child under the blocking reap's own conditions, and
-      with no zombie child [pstep_wait_nohang_zero] returns 0 and changes
-      nothing.
+      reaps a zombie child under the blocking reap's own conditions, the
+      SIGCHLD bit among them, and with no zombie child
+      [pstep_wait_nohang_zero] returns 0 and changes nothing, under either
+      disposition.
     - everything else is [pstep_wait_refuse], an error ([wait4_refused_b]):
       every other argument shape, and a WNOHANG call with a zombie child
-      the reap arm cannot take (a killed child, an unwritable [st], a
-      copy-out the budget refuses).  A non-blocking call must not be left
-      without an arm, because that would model it as blocking; the error
-      is fail-closed, and the status word of a killed child, once it is
-      modeled, narrows it into an answer.
+      the reap arm cannot take (a caller without the SIGCHLD bit, a killed
+      child, an unwritable [st], a copy-out the budget refuses).  A
+      non-blocking call must not be left without an arm, because that
+      would model it as blocking; the error is fail-closed, and the status
+      word of a killed child, once it is modeled, narrows it into an
+      answer.  [wait4_refused_b] says why the bit gates the reaps and not
+      the zero.
 
     [pstep_other] and [pstep_error] are behind [wait4_owned_b = false], so
     the released spec answers a [wait4] only for a caller with NO child in
@@ -1773,14 +1777,38 @@ Definition wait4_nohang_reap_ok_b (segs : list Segment) (P : pconfig)
 
 (** THE FAIL-CLOSED CONDITION: a call the gate owns that no answering arm
     takes.  Not the blocking shape, and either not the WNOHANG shape the
-    core answers, or that shape with a zombie child the reap cannot take. *)
+    core answers, or that shape with a zombie child the reap cannot take:
+    a caller without the SIGCHLD bit, or a child, an
+    [st] or a copy-out the reap declines.
+
+    THE SIGCHLD DISPOSITION.  The two reap arms require the caller's
+    [State.m_sigchld_dfl]: under a SIGCHLD of SIG_IGN, or with
+    SA_NOCLDWAIT, [do_notify_parent] (kernel/signal.c, Linux v6.18.46,
+    lines 2241-2261) sets [autoreap] and the exiting child is reaped at
+    its exit, so the reap answers only where the bit vouches that every
+    child was cloned while SIGCHLD was SIG_DFL ([State.init_model] seeds it from the
+    launch's declared disposition, which [Run.valid_input] pins to
+    SIG_DFL, and the process's own SIG_DFL install sets it only while it
+    has no recorded child ([Kernel.Signal.sigchld_install_model]); see
+    [Kernel.Exit.wait4_spec]'s THE SIGCHLD DISPOSITION;
+    [Checks.ProcsSigchldRule] proves the core keeps that rule).  Without the
+    bit, a WNOHANG call with a zombie child is
+    refused here: Linux may have reaped that child at its exit, and what it
+    answers then depends on the caller's other children.  The WNOHANG
+    zero does not read the bit: it needs no zombie child and a child in
+    the table, which is a live child, and [__do_wait] (kernel/exit.c,
+    lines 1665-1709) answers 0 for a live child ([wait_consider_task]
+    clears [notask_error] for it, lines 1534-1539) under either
+    disposition.  The blocking shape of a caller without the bit and with
+    a zombie child has no arm, as it has none with no zombie child. *)
 Definition wait4_refused_b (segs : list Segment) (P : pconfig) (e : ProcessEntry)
     : bool :=
   wait4_owned_b P e
   && negb (wait4_intercept_b (pe_cfg (pcfg_shared P) e))
   && (negb (wait4_nohang_shape_b segs e)
       || (List.existsb pe_zombie_b (children_of P (pe_pid e))
-          && negb (wait4_nohang_reap_ok_b segs P e))).
+          && (negb (m_sigchld_dfl (pe_model e))
+              || negb (wait4_nohang_reap_ok_b segs P e)))).
 
 (** What WNOHANG with nothing to reap leaves: a0 = 0, the pc past the
     call, and nothing else. *)
@@ -2281,6 +2309,8 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     eff = mkEffect q [(stat_addr, Z_to_le_bytes 4 (bv_unsigned status))] [] ->
     materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
       (syscall_effect_accesses eff) = Some model'' ->
+    (* THE SIGCHLD DISPOSITION: see [wait4_refused_b]. *)
+    m_sigchld_dfl (pe_model e) = true ->
     pstep_at segs cfg (pe_pid e) P []
       (PNext (mkPCfg
                 (drop_in
@@ -2326,6 +2356,8 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     eff = mkEffect q (wait4_nohang_writes stat_addr status ru ru_bytes) [] ->
     materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
       (syscall_effect_accesses eff) = Some model'' ->
+    (* THE SIGCHLD DISPOSITION: see [wait4_refused_b]. *)
+    m_sigchld_dfl (pe_model e) = true ->
     pstep_at segs cfg (pe_pid e) P [] (PNext (wait4_reap_result P e q eff model''))
 (** WNOHANG WITH NO ZOMBIE CHILD: 0, and nothing changes but a0 and the
     pc.  A child exists ([wait4_owned_b]) and has nothing to report, which
@@ -3815,6 +3847,8 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     eff = mkEffect q [(stat_addr, Z_to_le_bytes 4 (bv_unsigned status))] [] ->
     materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
       (syscall_effect_accesses eff) = Some model'' ->
+    (* THE SIGCHLD DISPOSITION: see [wait4_refused_b]. *)
+    m_sigchld_dfl (pe_model e) = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P []
       (PNext (mkPCfg
                 (drop_in
@@ -3856,6 +3890,8 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     eff = mkEffect q (wait4_nohang_writes stat_addr status ru ru_bytes) [] ->
     materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
       (syscall_effect_accesses eff) = Some model'' ->
+    (* THE SIGCHLD DISPOSITION: see [wait4_refused_b]. *)
+    m_sigchld_dfl (pe_model e) = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (wait4_reap_result P e q eff model''))
 | px_wait_nohang_zero : forall P e x8 stat_addr ru,
     look P (pe_pid e) = Some e ->

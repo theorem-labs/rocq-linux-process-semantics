@@ -1097,7 +1097,7 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0
                    default_kernel default_execfn true true false
-                   (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers.
+                   (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers true.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1489,7 +1489,8 @@ Example urandom_same_bytes_on_both_sides :
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                (urandom_stream urandom_decl) [] default_kernel default_execfn
-               true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers in
+               true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers
+               true in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in
