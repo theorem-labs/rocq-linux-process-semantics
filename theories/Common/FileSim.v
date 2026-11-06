@@ -2598,7 +2598,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p
   fs_under (m_fs model) p = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
-  (forall e, In e openat_errnos ->
+  (forall e, In e write_open_errnos ->
      to_fout segs (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4)
                         mem (seg_rom segs))
              model (Te e)) ->
@@ -2608,7 +2608,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p
                 (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
                    (with_fs (fs_set (m_fs model) p []) model))) (Ts fd)) ->
   (forall o, U o <->
-     ((exists e, In e openat_errnos /\ Te e o)
+     ((exists e, In e write_open_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
                      /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
   to_fout segs {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
@@ -2621,7 +2621,7 @@ Proof.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
-  apply (tfo_open_core ms model
+  apply (tfo_write_open_core ms model
            (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
                         (with_fds (fd_insert (m_fds model) fd
                                      (FdFileW p (Z_to_bv 64 0)))
