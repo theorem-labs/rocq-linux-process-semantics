@@ -422,6 +422,103 @@ Proof.
         right. exists fd. auto.
 Qed.
 
+(** Core write-open node: [write_open_errnos] and
+    [check_write_open_result_copyins] (mirror of
+    [FileSim.tfo_write_open_core]). *)
+Lemma tfm_write_open_core : forall ms model (mk : word -> Model) x8 reads
+    (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
+  ms_svc_pending ms = Some x8 ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  (forall eff, check_syscall (sys_input segs ms x8) eff model
+               = check_write_open_result_copyins reads eff model mk) ->
+  (forall fd, m_halted (mk fd) = None /\ m_vm_lazy (mk fd) = []) ->
+  (forall e, In e write_open_errnos ->
+     to_fout_mix (advance_past_svc
+                    (apply_effect ms
+                      (with_copyins reads (mkEffect (errno_ret e) [] []))))
+                 model (Te e)) ->
+  (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
+     to_fout_mix (advance_past_svc
+                    (apply_effect ms (with_copyins reads (mkEffect fd [] []))))
+                 (mk fd) (Ts fd)) ->
+  (forall o, U o <->
+     ((exists e, In e write_open_errnos /\ Te e o)
+      \/ (exists fd, fd_lookup (m_fds model) fd = None
+                     /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
+  to_fout_mix ms model U.
+Proof.
+  intros ms model mk x8 reads Te Ts U Hsvc Hh Hlazy Hchk Hmk Herr Hok HU.
+  apply (tfm_sys ms model x8
+    (fun eff model' =>
+       if addr_is_error_b (eff_ret eff)
+       then Te ((two_pow_64 - bv_unsigned (eff_ret eff))%Z)
+       else Ts (eff_ret eff)) U); [exact Hsvc | | | | |].
+  - intro Hspec.
+    apply (check_syscall_complete_unmodeled _ _ (mkEffect (Z_to_bv 64 0) [] []))
+      in Hspec.
+    rewrite Hchk in Hspec.
+    exact (check_write_open_result_copyins_never_unmodeled _ _ _ _ Hspec).
+  - exists (with_copyins reads (mkEffect (errno_ret ENOMEM) [] [])), model, [].
+    apply check_syscall_ok_iff. rewrite Hchk.
+    apply check_write_open_result_copyins_ok_iff. left. exists ENOMEM.
+    repeat split; try reflexivity. apply ENOMEM_in_write_open_errnos.
+  - intros eff model' evs Hspec.
+    apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+    apply check_write_open_result_copyins_ok_iff in Hspec.
+    destruct Hspec as [ (e & _ & -> & -> & ->)
+                      | (fd & _ & _ & -> & -> & ->) ].
+    + repeat split; assumption.
+    + destruct (Hmk fd) as [Hhalt Hlazy']. repeat split; assumption.
+  - intros eff model' evs Hspec.
+    apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+    apply check_write_open_result_copyins_ok_iff in Hspec.
+    destruct Hspec as [ (e & HIn & -> & -> & _)
+                      | (fd & Hlk & Heq & -> & -> & _) ].
+    + destruct (write_open_errno_range e HIn) as [He1 He2].
+      cbn [eff_ret with_copyins].
+      rewrite (errno_ret_error_b e He1 He2).
+      rewrite (errno_ret_recover e He1 He2).
+      apply Herr; assumption.
+    + cbn [eff_ret with_copyins].
+      assert (Hne : addr_is_error_b fd = false)
+        by (rewrite Heq; apply alloc_fd_not_error_b).
+      rewrite Hne.
+      apply Hok; assumption.
+  - intro o. rewrite HU. split.
+    + intros [ (e & HIn & Ht) | (fd & Hlk & Heq & Ht) ].
+      * destruct (write_open_errno_range e HIn) as [He1 He2].
+        exists (with_copyins reads (mkEffect (errno_ret e) [] [])), model, [].
+        split.
+        { apply check_syscall_ok_iff. rewrite Hchk.
+          apply check_write_open_result_copyins_ok_iff. left. exists e. auto. }
+        { cbn [eff_ret with_copyins]. rewrite (errno_ret_error_b e He1 He2).
+          rewrite (errno_ret_recover e He1 He2). exact Ht. }
+      * exists (with_copyins reads (mkEffect fd [] [])), (mk fd), [].
+        split.
+        { apply check_syscall_ok_iff. rewrite Hchk.
+          apply check_write_open_result_copyins_ok_iff. right. exists fd. auto. }
+        { cbn [eff_ret with_copyins].
+          assert (Hne : addr_is_error_b fd = false)
+            by (rewrite Heq; apply alloc_fd_not_error_b).
+          rewrite Hne. exact Ht. }
+    + intros (eff & model' & evs & Hspec & Ht).
+      apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+      apply check_write_open_result_copyins_ok_iff in Hspec.
+      destruct Hspec as [ (e & HIn & -> & -> & _)
+                        | (fd & Hlk & Heq & -> & -> & _) ].
+      * destruct (write_open_errno_range e HIn) as [He1 He2].
+        cbn [eff_ret with_copyins] in Ht.
+        rewrite (errno_ret_error_b e He1 He2) in Ht.
+        rewrite (errno_ret_recover e He1 He2) in Ht.
+        left. exists e. auto.
+      * cbn [eff_ret with_copyins] in Ht.
+        assert (Hne : addr_is_error_b fd = false)
+          by (rewrite Heq; apply alloc_fd_not_error_b).
+        rewrite Hne in Ht.
+        right. exists fd. auto.
+Qed.
+
 (** O_RDONLY openat of a present file, at the raw ecall record: errno
     branch or any free fd, its close-on-exec bit recorded clear, with
     [to_fout_mix] continuations. *)
@@ -504,7 +601,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
   fs_under (m_fs model) p = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
-  (forall e, In e openat_errnos ->
+  (forall e, In e write_open_errnos ->
      to_fout_mix (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4)
                        mem (seg_rom segs))
                  model (Te e)) ->
@@ -514,7 +611,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
                     (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
                        (with_fs (fs_set (m_fs model) p []) model))) (Ts fd)) ->
   (forall o, U o <->
-     ((exists e, In e openat_errnos /\ Te e o)
+     ((exists e, In e write_open_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
                      /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
   to_fout_mix {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
@@ -527,7 +624,7 @@ Proof.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
-  apply (tfm_open_core ms model
+  apply (tfm_write_open_core ms model
            (fun fd => with_cloexec (cloexec_set (m_cloexec model) fd false)
                         (with_fds (fd_insert (m_fds model) fd
                                      (FdFileW p (Z_to_bv 64 0)))
