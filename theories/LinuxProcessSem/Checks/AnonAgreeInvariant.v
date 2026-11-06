@@ -3,13 +3,17 @@
     [anon_agree_holds] says that every [FdAnon] entry in the descriptor
     table agrees with every other entry of the same unnamed file: every
     descriptor of one file carries the same contents and the same stat
-    pin.  This file proves that predicate is an invariant of
-    [Run.star]: it holds at [Run.init_config] and is preserved by
-    every [Run.sstep].
+    pin.  This file proves that predicate is an invariant of every run
+    from [Run.init_config]: [anon_agree_reachable] for [Run.star],
+    [anon_agree_reachable_cfg] for [Run.star_cfg] (any spurious-failure
+    configuration) and [anon_agree_reachable_pcfg] for [Run.star_pcfg]
+    (any parent environment, the parent's death steps included).
 
     The per-arm preservation lemmas that the init and step cases
     consume are in [Checks.AnonAgree].  This file lifts them to a
-    whole-table predicate and carries the predicate along a run. *)
+    whole-table predicate, proves every arm of
+    [Checks.Sys.Dispatch.checked_table] keeps it
+    ([checked_table_preserves_aa]), and carries it along a run. *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad MemImageType StackLayout.
@@ -59,11 +63,6 @@ Qed.
 (* =========================================================================
    Preservation lemmas for anon_agree_all
    ========================================================================= *)
-
-(** When the fd table is the same. *)
-Lemma anon_agree_all_eq : forall fds fds',
-  fds' = fds -> anon_agree_all fds -> anon_agree_all fds'.
-Proof. intros fds fds' <- H. exact H. Qed.
 
 (** Filter preserves: a subset of an agreeing table agrees. *)
 Lemma anon_agree_all_filter : forall (f : word * FdEntry -> bool) fds,
@@ -981,15 +980,6 @@ Proof.
   aa_close.
 Qed.
 
-(** [open_cloexec_model] writes [m_cloexec] alone. *)
-Local Lemma m_fds_open_cloexec_model_aa : forall flags r m,
-  m_fds (open_cloexec_model flags r m) = m_fds m.
-Proof.
-  intros flags r m. unfold open_cloexec_model.
-  destruct (addr_is_error_b r); [reflexivity|].
-  destruct (fd_lookup (m_fds m) r); reflexivity.
-Qed.
-
 Local Lemma check_openat_aa : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
@@ -998,7 +988,7 @@ Proof.
   destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
     try discriminate H.
   injection H as <- <-.
-  rewrite m_fds_open_cloexec_model_aa.
+  rewrite m_fds_open_cloexec_model_nf.
   exact (aa_openat_table _ _ _ _ _ _ _ _ E Hinv).
 Qed.
 
@@ -1129,3 +1119,48 @@ Proof.
   exact (star_preserves_anon_agree segs _ _ _ Hstar
            (anon_agree_init segs pc ph sp brk0 mb draw lim inp)).
 Qed.
+
+(** The same under any [Run.SpuriousCfg]: every filtered step is a step
+    ([Run.star_cfg_sub]). *)
+Corollary anon_agree_reachable_cfg :
+  forall segs cfg pc ph sp brk0 mb draw lim inp tr c,
+  star_cfg segs cfg (init_config segs pc ph sp brk0 mb draw lim inp) tr c ->
+  anon_agree_holds c.
+Proof.
+  intros segs cfg pc ph sp brk0 mb draw lim inp tr c H.
+  exact (anon_agree_reachable _ _ _ _ _ _ _ _ _ _ _ (star_cfg_sub _ _ _ _ _ H)).
+Qed.
+
+(** One step under a parent environment keeps the invariant: an
+    [sstep_cfg] step is an [sstep]; the reparent and the parent's
+    SIGKILL write [m_ppid] and [m_halted] and keep the descriptor table. *)
+Lemma sstep_pcfg_preserves_anon_agree : forall segs cfg p c evs c',
+  anon_agree_holds c -> sstep_pcfg segs cfg p c evs (SNext c') -> anon_agree_holds c'.
+Proof.
+  intros segs cfg p c evs c' Hinv Hs.
+  inversion Hs; subst.
+  - match goal with
+    | Hc : sstep_cfg _ _ _ _ _ |- _ =>
+        exact (sstep_preserves_anon_agree segs _ _ _ Hinv (sstep_cfg_sub _ _ _ _ _ Hc))
+    end.
+  - exact Hinv.
+  - exact Hinv.
+Qed.
+
+(** The invariant holds at every configuration a run reaches under any
+    spurious-failure configuration and any parent environment. *)
+Corollary anon_agree_reachable_pcfg :
+  forall segs cfg p pc ph sp brk0 mb draw lim inp tr c,
+  star_pcfg segs cfg p (init_config segs pc ph sp brk0 mb draw lim inp) tr c ->
+  anon_agree_holds c.
+Proof.
+  intros segs cfg p pc ph sp brk0 mb draw lim inp tr c H.
+  pose proof (anon_agree_init segs pc ph sp brk0 mb draw lim inp) as Hinit.
+  revert Hinit. induction H as [c0 | c1 evs c2 tr c3 Hs Hstar IH]; intros Hinv.
+  - exact Hinv.
+  - exact (IH (sstep_pcfg_preserves_anon_agree _ _ _ _ _ _ Hinv Hs)).
+Qed.
+
+Print Assumptions anon_agree_reachable.
+Print Assumptions anon_agree_reachable_cfg.
+Print Assumptions anon_agree_reachable_pcfg.

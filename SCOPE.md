@@ -924,7 +924,10 @@ not apply.
   contents live in its descriptors' entries, so the exit event's file
   system does not include it, as Linux's does not. Its contents are
   replicated, one copy per descriptor, and the model answers no call
-  that reads them unless every copy agrees (`State.anon_agree`).
+  that reads them unless every copy agrees (`State.anon_agree`). No run
+  from `init_config` reaches a state where the copies disagree, so that
+  decline is never taken (`Checks.AnonAgreeInvariant.anon_agree_reachable`,
+  with `_cfg` and `_pcfg` forms for the configured runs).
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1
