@@ -57,7 +57,7 @@ Qed.
     input, so its lemma is the one for that specification. *)
 Ltac vc_arm L := intros ? ? ? ? ?; eapply L; eassumption.
 
-(** THE WALK, assembled.  93 arms, in [Sys.SyscallTable.spec_table]'s order.
+(** THE WALK, assembled.  100 arms, in [Sys.SyscallTable.spec_table]'s order.
     A new arm with no lemma in [VdsoCommuteArms.v] fails here. *)
 Lemma spec_table_vdso_commutes :
   Forall (fun a => vdso_commutes (sa_spec a)) spec_table.
@@ -96,6 +96,8 @@ Proof.
   - vc_arm vc_fsync_spec.                 (* 82  fsync *)
   - vc_arm vc_fsync_spec.                 (* 83  fdatasync *)
   - vc_arm vc_timerfd_create_spec.        (* 85  timerfd_create *)
+  - vc_arm vc_capget_spec.                (* 90  capget *)
+  - vc_arm vc_capset_spec.                (* 91  capset *)
   - vc_arm vc_exit_spec.                  (* 93  exit *)
   - vc_arm vc_exit_spec.                  (* 94  exit_group *)
   - vc_arm vc_set_tid_address_spec.       (* 96  set_tid_address *)
@@ -115,7 +117,10 @@ Proof.
   - vc_arm vc_setid_spec.                 (* 144 setgid *)
   - vc_arm vc_setid_spec.                 (* 146 setuid *)
   - vc_arm vc_setresid_spec.              (* 147 setresuid *)
+  - vc_arm vc_getresid_spec.              (* 148 getresuid *)
   - vc_arm vc_setresid_spec.              (* 149 setresgid *)
+  - vc_arm vc_getresid_spec.              (* 150 getresgid *)
+  - vc_arm vc_getsid_spec.                (* 156 getsid *)
   - vc_arm vc_setsid_spec.                (* 157 setsid *)
   - vc_arm vc_getgroups_spec.             (* 158 getgroups *)
   - vc_arm vc_setgroups_spec.             (* 159 setgroups *)
@@ -123,6 +128,7 @@ Proof.
   - vc_arm vc_prctl_spec.                 (* 167 prctl *)
   - vc_arm vc_gettimeofday_spec.          (* 169 gettimeofday *)
   - vc_arm vc_getpid_spec.                (* 172 getpid *)
+  - vc_arm vc_getppid_spec.               (* 173 getppid *)
   - vc_arm vc_getid_spec.                 (* 174 getuid *)
   - vc_arm vc_getid_spec.                 (* 175 geteuid *)
   - vc_arm vc_getid_spec.                 (* 176 getgid *)
@@ -156,6 +162,7 @@ Proof.
   - vc_arm vc_getrandom_spec.             (* 278 getrandom *)
   - vc_arm vc_pwritev2_spec.              (* 287 pwritev2 *)
   - vc_arm vc_clone3_spec.                (* 435 clone3 *)
+  - vc_arm vc_close_range_spec.           (* 436 close_range *)
   - vc_arm vc_faccessat2_spec.            (* 439 faccessat2 *)
   - apply Forall_nil.
 Qed.

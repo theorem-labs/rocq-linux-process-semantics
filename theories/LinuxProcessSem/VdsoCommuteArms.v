@@ -627,3 +627,31 @@ Proof. intros; unfold madvise_spec; vdso_walk. Qed.
 Lemma vc_getrandom_spec : forall buf buflen flags,
   vdso_commutes (getrandom_spec buf buflen flags).
 Proof. intros; unfold getrandom_spec; vdso_walk. Qed.
+
+(* ---- C1 (public #58): seven new spec_table entries ---- *)
+
+(* ---- kernel/capability.c ---- *)
+Lemma vc_capget_spec : forall header dataptr,
+  vdso_commutes (capget_spec header dataptr).
+Proof. intros; unfold capget_spec; vdso_walk. Qed.
+
+Lemma vc_capset_spec : forall header data,
+  vdso_commutes (capset_spec header data).
+Proof. intros; unfold capset_spec; vdso_walk. Qed.
+
+(* ---- kernel/sys.c ---- *)
+Lemma vc_getresid_spec : forall get rp ep sp,
+  vdso_commutes (getresid_spec get rp ep sp).
+Proof. intros; unfold getresid_spec; vdso_walk. Qed.
+
+Lemma vc_getsid_spec : forall pid,
+  vdso_commutes (getsid_spec pid).
+Proof. intros; unfold getsid_spec; vdso_walk. Qed.
+
+Lemma vc_getppid_spec : vdso_commutes getppid_spec.
+Proof. unfold getppid_spec; vdso_walk. Qed.
+
+(* ---- fs/file.c ---- *)
+Lemma vc_close_range_spec : forall fd max_fd flags,
+  vdso_commutes (close_range_spec fd max_fd flags).
+Proof. intros; unfold close_range_spec; vdso_walk. Qed.
