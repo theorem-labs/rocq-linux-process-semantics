@@ -252,18 +252,24 @@ Example fork_inside_advances_last : forall m,
   = Some [0; 2].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** The child-tid form used by some C libraries is not a word the core
-    admits, so the namespace layer declines it too. *)
+(** The child-tid form used by some C libraries: the wider mask admits
+    it, and the child's pid is 2, the same as the plain SIGCHLD fork. *)
 Example libc_fork_inside_pid_2 : forall m,
-  clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD)) m shell inside 140
-  = CnUnmodeled.
+  ret_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD)) m shell inside 140)
+  = Some (Some 2).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** Namespace answers do not bypass the released core's flag gate. *)
-Example clone_child_tid_inside_declines : forall m,
-  clone_ns_exact (cw (Z.lor CLONE_CHILD_SETTID SIGCHLD)) m shell inside 140 = CnUnmodeled /\
-  clone_ns_exact (cw (Z.lor CLONE_CHILD_CLEARTID SIGCHLD)) m shell inside 140 = CnUnmodeled.
+(** The child-tid bits alone also answer, with the same pid. *)
+Example clone_child_tid_inside_answers : forall m,
+  ret_of (clone_ns_exact (cw (Z.lor CLONE_CHILD_SETTID SIGCHLD)) m shell inside 140) = Some (Some 2) /\
+  ret_of (clone_ns_exact (cw (Z.lor CLONE_CHILD_CLEARTID SIGCHLD)) m shell inside 140) = Some (Some 2).
 Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+(** [CLONE_NEWIPC] with [CLONE_SYSVSEM] answers -EINVAL. *)
+Example clone_newipc_sysvsem_refused : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_NEWNS CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    m shell inside 140 = CnErr EINVAL inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWNS 10)) m shell inside 140 = CnUnmodeled.
