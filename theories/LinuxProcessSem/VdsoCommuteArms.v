@@ -95,8 +95,8 @@ Lemma vc_pipe2_spec : forall fildes flags,
 Proof. intros; unfold pipe2_spec; vdso_walk. Qed.
 
 (* ---- fs/readdir.c ---- *)
-Lemma vc_getdents64_spec : forall fd count,
-  vdso_commutes (getdents64_spec fd count).
+Lemma vc_getdents64_spec : forall fd dirent count,
+  vdso_commutes (getdents64_spec fd dirent count).
 Proof. intros; unfold getdents64_spec; vdso_walk. Qed.
 
 (* ---- fs/read_write.c ---- *)
