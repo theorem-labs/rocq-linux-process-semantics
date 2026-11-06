@@ -3,8 +3,9 @@
     [VdsoCommute.v] proves that [State.with_vdso] frames every combinator a
     specification is built from.  [Monad.Sys] is a relational monad, so that
     does not close the question for a specification: the walk has to visit
-    each one.  This file is that walk, in [Sys.SyscallTable.spec_table]'s
-    order, and [VdsoCommuteSys.v] assembles it.
+    each one.  This file is that walk, one lemma per specification, grouped
+    by the kernel source file the specification answers to;
+    [VdsoCommuteSys.v] assembles it in [Sys.SyscallTable.spec_table]'s order.
 
     94 specification lemmas (102 [vc_] lemmas with the seven helpers of the
     write family and [vc_clone_refusable]) for 103 arms: [getid_spec] answers four numbers,
