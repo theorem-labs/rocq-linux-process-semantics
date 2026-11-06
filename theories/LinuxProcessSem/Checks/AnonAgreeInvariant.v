@@ -1033,7 +1033,8 @@ Proof.
 Qed.
 
 (** [clone3]: through [check_clone3_ok_inv], as [Checks.NsFileFree.check_clone3_nf]
-    does; its stores arm is one more [check_clone_resolve]. *)
+    does: the size and copy failures keep the model, the fork image and the
+    stores arm are [check_clone_resolve]s. *)
 Local Lemma check_clone3_aa : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
@@ -1041,11 +1042,10 @@ Proof.
   intros i uargs size eff m m' evs H Hinv.
   destruct (LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork.check_clone3_ok_inv
               _ _ _ _ _ _ _ H)
-    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    as [(-> & _ & _)|[(reads & He)|[(reads & en & _ & He)|(e & He & _)]]];
     [ exact Hinv
     | clear H;
-      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
-        check_clone3_einval in He;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer in He;
       aa_frame He .. ].
 Qed.
 
