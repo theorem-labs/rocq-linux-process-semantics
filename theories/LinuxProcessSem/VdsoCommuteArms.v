@@ -6,7 +6,8 @@
     each one.  This file is that walk, in [Sys.SyscallTable.spec_table]'s
     order, and [VdsoCommuteSys.v] assembles it.
 
-    94 lemmas for 103 arms: [getid_spec] answers four numbers,
+    94 specification lemmas (102 [vc_] lemmas with the seven helpers of the
+    write family and [vc_clone_refusable]) for 103 arms: [getid_spec] answers four numbers,
     [setid_spec], [setresid_spec], [getresid_spec], [fsync_spec],
     [exit_spec] and [accept4_spec] two each.  A repeated arm costs nothing here; it is
     applied twice at the dispatcher.
@@ -52,6 +53,10 @@ Proof. intros; unfold dup_spec; vdso_walk. Qed.
 Lemma vc_dup3_spec : forall oldfd newfd flags,
   vdso_commutes (dup3_spec oldfd newfd flags).
 Proof. intros; unfold dup3_spec; vdso_walk. Qed.
+
+Lemma vc_close_range_spec : forall fd max_fd flags,
+  vdso_commutes (close_range_spec fd max_fd flags).
+Proof. intros; unfold close_range_spec; vdso_walk. Qed.
 
 (* ---- fs/fcntl.c ---- *)
 Lemma vc_fcntl_spec : forall fd cmd a, vdso_commutes (fcntl_spec fd cmd a).
@@ -343,6 +348,15 @@ Lemma vc_timerfd_create_spec : forall clkid flags,
   vdso_commutes (timerfd_create_spec clkid flags).
 Proof. intros; unfold timerfd_create_spec; vdso_walk. Qed.
 
+(* ---- kernel/capability.c ---- *)
+Lemma vc_capget_spec : forall header dataptr,
+  vdso_commutes (capget_spec header dataptr).
+Proof. intros; unfold capget_spec; vdso_walk. Qed.
+
+Lemma vc_capset_spec : forall header data,
+  vdso_commutes (capset_spec header data).
+Proof. intros; unfold capset_spec; vdso_walk. Qed.
+
 (* ---- kernel/exit.c ---- *)
 Lemma vc_exit_spec : forall code, vdso_commutes (exit_spec code).
 Proof. intros; unfold exit_spec; vdso_walk. Qed.
@@ -483,6 +497,17 @@ Proof. intros; unfold gettid_spec; vdso_walk. Qed.
 Lemma vc_prlimit64_spec : forall pid resource new_rlim old_rlim,
   vdso_commutes (prlimit64_spec pid resource new_rlim old_rlim).
 Proof. intros; unfold prlimit64_spec; vdso_walk. Qed.
+
+Lemma vc_getresid_spec : forall get rp ep sp,
+  vdso_commutes (getresid_spec get rp ep sp).
+Proof. intros; unfold getresid_spec; vdso_walk. Qed.
+
+Lemma vc_getsid_spec : forall pid,
+  vdso_commutes (getsid_spec pid).
+Proof. intros; unfold getsid_spec; vdso_walk. Qed.
+
+Lemma vc_getppid_spec : vdso_commutes getppid_spec.
+Proof. unfold getppid_spec; vdso_walk. Qed.
 
 (* ---- net/socket.c ---- *)
 Lemma vc_socket_spec : forall domain type protocol,
@@ -654,31 +679,3 @@ Proof. intros; unfold madvise_spec; vdso_walk. Qed.
 Lemma vc_getrandom_spec : forall buf buflen flags,
   vdso_commutes (getrandom_spec buf buflen flags).
 Proof. intros; unfold getrandom_spec; vdso_walk. Qed.
-
-(* ---- C1 (public #58): seven new spec_table entries ---- *)
-
-(* ---- kernel/capability.c ---- *)
-Lemma vc_capget_spec : forall header dataptr,
-  vdso_commutes (capget_spec header dataptr).
-Proof. intros; unfold capget_spec; vdso_walk. Qed.
-
-Lemma vc_capset_spec : forall header data,
-  vdso_commutes (capset_spec header data).
-Proof. intros; unfold capset_spec; vdso_walk. Qed.
-
-(* ---- kernel/sys.c ---- *)
-Lemma vc_getresid_spec : forall get rp ep sp,
-  vdso_commutes (getresid_spec get rp ep sp).
-Proof. intros; unfold getresid_spec; vdso_walk. Qed.
-
-Lemma vc_getsid_spec : forall pid,
-  vdso_commutes (getsid_spec pid).
-Proof. intros; unfold getsid_spec; vdso_walk. Qed.
-
-Lemma vc_getppid_spec : vdso_commutes getppid_spec.
-Proof. unfold getppid_spec; vdso_walk. Qed.
-
-(* ---- fs/file.c ---- *)
-Lemma vc_close_range_spec : forall fd max_fd flags,
-  vdso_commutes (close_range_spec fd max_fd flags).
-Proof. intros; unfold close_range_spec; vdso_walk. Qed.
