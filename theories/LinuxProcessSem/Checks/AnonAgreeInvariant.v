@@ -605,18 +605,6 @@ Local Ltac aa_done_or_unfold H :=
     | context [check_ftruncate] => unfold check_ftruncate in H
     | context [check_faccessat] => unfold check_faccessat in H
     | context [check_openat] => unfold check_openat in H
-    | context [check_openat_table] => unfold check_openat_table in H
-    | context [Open.check_openat_body] => unfold Open.check_openat_body in H
-    | context [Open.check_openat_resolved] => unfold Open.check_openat_resolved in H
-    | context [Open.check_openat_sep] => unfold Open.check_openat_sep in H
-    | context [Open.check_openat_proc] => unfold Open.check_openat_proc in H
-    | context [Open.check_proc_open_result] => unfold Open.check_proc_open_result in H
-    | context [Open.check_openat_tmp] => unfold Open.check_openat_tmp in H
-    | context [Open.check_openat_excl] => unfold Open.check_openat_excl in H
-    | context [Open.check_openat_append] => unfold Open.check_openat_append in H
-    | context [Open.check_openat_rdwr] => unfold Open.check_openat_rdwr in H
-    | context [Open.check_openat_rdwr_excl] => unfold Open.check_openat_rdwr_excl in H
-    | context [open_cloexec_model] => unfold open_cloexec_model in H
     | context [check_close] => unfold check_close in H
     | context [check_pipe2] => unfold check_pipe2 in H
     | context [check_getdents64] => unfold check_getdents64 in H
@@ -700,13 +688,187 @@ Local Ltac aa_done_or_unfold H :=
     end
   ].
 
-(* The generic frame tactic: cbv + repeat unfold/step/close.
-   We try aa_done_or_unfold BEFORE kf_step so that wrappers like
-   [open_cloexec_model] inside CheckOk get unfolded before injection fires. *)
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (first [aa_done_or_unfold H | kf_step H | aa_close; fail]);
+  repeat (kf_step H || aa_done_or_unfold H);
   aa_close.
+
+(* Close the goal by a lower lemma [L] of this file's shape
+   [check = CheckOk m' evs -> anon_agree_all (m_fds m) -> anon_agree_all (m_fds m')]. *)
+Local Ltac aa_use L H := eapply L; [exact H | assumption].
+
+(* -------------------------------------------------------------------------
+   openat: one lemma per checker of Checks/Sys/Fs/Open.v, from the leaves
+   up, as in [Checks.NsFileFree].  [check_openat] re-wraps the table's
+   [CheckOk] in [open_cloexec_model], which the generic frame cannot see
+   through; [check_openat_aa] rewrites [m_fds] through it before any split.
+   ------------------------------------------------------------------------- *)
+
+Local Lemma aa_openat_read : forall p eff m m' evs,
+  Open.check_openat_read p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_read in H. aa_frame H. Qed.
+
+Local Lemma aa_openat_create : forall p eff m m' evs,
+  Open.check_openat_create p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_create in H. aa_frame H. Qed.
+
+Local Lemma aa_openat_excl : forall p eff m m' evs,
+  Open.check_openat_excl p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_excl in H. aa_frame H. Qed.
+
+Local Lemma aa_openat_append : forall excl p eff m m' evs,
+  Open.check_openat_append excl p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros excl p eff m m' evs H Hinv. unfold Open.check_openat_append in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_rdwr : forall creat trunc p eff m m' evs,
+  Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros creat trunc p eff m m' evs H Hinv. unfold Open.check_openat_rdwr in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_rdwr_excl : forall p eff m m' evs,
+  Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_rdwr_excl in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_dir : forall p eff m m' evs,
+  Open.check_openat_dir p eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_dir in H. aa_frame H. Qed.
+
+Local Lemma aa_openat_localtime : forall flags eff m m' evs,
+  Open.check_openat_localtime flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros flags eff m m' evs H Hinv. unfold Open.check_openat_localtime in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_devnull : forall flags eff m m' evs,
+  Open.check_openat_devnull flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros flags eff m m' evs H Hinv. unfold Open.check_openat_devnull in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_urandom : forall flags eff m m' evs,
+  Open.check_openat_urandom flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros flags eff m m' evs H Hinv. unfold Open.check_openat_urandom in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_tmp : forall n p flags eff m m' evs,
+  Open.check_openat_tmp n p flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros n p flags eff m m' evs H Hinv. unfold Open.check_openat_tmp in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_openat_read H || aa_use aa_openat_create H
+          || aa_use aa_openat_rdwr_excl H || aa_done_or_unfold H);
+  aa_close.
+Qed.
+
+Local Lemma aa_openat_sep : forall p flags eff m m' evs,
+  Open.check_openat_sep p flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros p flags eff m m' evs H Hinv. unfold Open.check_openat_sep in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_openat_localtime H || aa_use aa_openat_devnull H
+          || aa_use aa_openat_urandom H || aa_use aa_openat_tmp H
+          || aa_done_or_unfold H);
+  aa_close.
+Qed.
+
+Local Lemma aa_openat_resolved : forall p flags eff m m' evs,
+  Open.check_openat_resolved p flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros p flags eff m m' evs H Hinv. unfold Open.check_openat_resolved in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_openat_sep H || aa_use aa_openat_read H
+          || aa_use aa_openat_create H || aa_use aa_openat_excl H
+          || aa_use aa_openat_dir H || aa_use aa_openat_append H
+          || aa_use aa_openat_rdwr H || aa_use aa_openat_rdwr_excl H
+          || aa_done_or_unfold H);
+  aa_close.
+Qed.
+
+Local Lemma aa_proc_open_result : forall o eff m m' evs,
+  Open.check_proc_open_result o eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros o eff m m' evs H Hinv. unfold Open.check_proc_open_result in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_procfd : forall n flags eff m m' evs,
+  Open.check_openat_procfd n flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros n flags eff m m' evs H Hinv. unfold Open.check_openat_procfd in H. aa_frame H.
+Qed.
+
+Local Lemma aa_openat_proc : forall c flags eff m m' evs,
+  Open.check_openat_proc c flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros c flags eff m m' evs H Hinv. unfold Open.check_openat_proc in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_proc_open_result H || aa_use aa_openat_procfd H
+          || aa_done_or_unfold H);
+  aa_close.
+Qed.
+
+Local Lemma aa_openat_body : forall i dirfd pathp flags eff m m' evs,
+  Open.check_openat_body i dirfd pathp flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H Hinv. unfold Open.check_openat_body in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_openat_proc H || aa_use aa_openat_resolved H
+          || aa_done_or_unfold H);
+  aa_close.
+Qed.
+
+Local Lemma aa_openat_table : forall i dirfd pathp flags eff m m' evs,
+  check_openat_table i dirfd pathp flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H Hinv. unfold check_openat_table in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || aa_use aa_openat_body H);
+  aa_close.
+Qed.
+
+(** [open_cloexec_model] writes [m_cloexec] alone. *)
+Local Lemma m_fds_open_cloexec_model_aa : forall flags r m,
+  m_fds (open_cloexec_model flags r m) = m_fds m.
+Proof.
+  intros flags r m. unfold open_cloexec_model.
+  destruct (addr_is_error_b r); [reflexivity|].
+  destruct (fd_lookup (m_fds m) r); reflexivity.
+Qed.
+
+Local Lemma check_openat_aa : forall i dirfd pathp flags eff m m' evs,
+  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i dirfd pathp flags eff m m' evs H Hinv. unfold check_openat in H.
+  destruct (check_openat_table i dirfd pathp flags eff m) as [m0 evs0| |] eqn:E;
+    try discriminate H.
+  injection H as <- <-.
+  rewrite m_fds_open_cloexec_model_aa.
+  exact (aa_openat_table _ _ _ _ _ _ _ _ E Hinv).
+Qed.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
@@ -715,9 +877,10 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
+  all: try (aa_use check_openat_aa H; fail).
   all: try (aa_frame H; fail).
-  all: match goal with |- ?G => idtac "STUCK:" G end.
-Admitted.
+  all: fail 1 "checked_table_preserves_aa has no case for this dispatcher arm".
+Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
