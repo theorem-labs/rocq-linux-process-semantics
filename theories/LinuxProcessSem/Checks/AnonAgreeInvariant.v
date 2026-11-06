@@ -810,11 +810,49 @@ Proof.
   intros o eff m m' evs H Hinv. unfold Open.check_proc_open_result in H. aa_frame H.
 Qed.
 
+(** A fresh-descriptor answer keeps the model or builds it with [mk]. *)
+Local Lemma aa_new_fd_result : forall es eff m mk m' evs,
+  check_new_fd_result es eff m mk = CheckOk m' evs ->
+  m' = m \/ exists r, m' = mk r.
+Proof.
+  intros es [ret ws zs us cs cis] m mk m' evs H. unfold check_new_fd_result in H.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; destruct cis as [|? ?]; try discriminate H.
+  destruct (errno_ret_in es ret).
+  { injection H as Hm _. left. symmetry. exact Hm. }
+  destruct (fd_lookup (m_fds m) ret); [discriminate H|].
+  destruct (bv_eqb ret (alloc_fd (m_fds m))); [|discriminate H].
+  injection H as Hm _. right. exists ret. symmetry. exact Hm.
+Qed.
+
+(** The "/proc/self/fd/N" reopen: a new [FdAnon] on an agreeing file,
+    with the contents and pin of the entry at N (or the contents
+    emptied for every descriptor of the file, for O_TRUNC). *)
 Local Lemma aa_openat_procfd : forall n flags eff m m' evs,
   Open.check_openat_procfd n flags eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros n flags eff m m' evs H Hinv. unfold Open.check_openat_procfd in H. aa_frame H.
+  intros n flags eff m m' evs H Hinv. unfold Open.check_openat_procfd in H.
+  cbv zeta in H.
+  match type of H with
+  | (if ?b then _ else _) = _ => destruct b; cbv iota in H; [discriminate H|]
+  end.
+  destruct (fd_lookup (m_fds m) n) as [e|]; cbv iota in H.
+  2: { apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). exact Hinv. }
+  destruct e; cbv iota in H; try discriminate H.
+  match type of H with
+  | context [anon_agree (m_fds m) ?id ?af] =>
+      destruct (anon_agree (m_fds m) id af) eqn:Ea; cbn [negb] in H; cbv iota in H;
+      [|discriminate H]
+  end.
+  repeat match type of H with
+         | (if ?b then _ else _) = _ => destruct b; cbv iota in H
+         end.
+  all: unfold check_open_result in H; apply aa_new_fd_result in H;
+       destruct H as [-> | [r ->]]; [exact Hinv|].
+  all: cbv beta; try unfold Open.procfd_reopen_model; try unfold Open.procfd_trunc_model;
+       rewrite m_fds_with_fds;
+       first [apply anon_agree_all_reopen_trunc | apply anon_agree_all_reopen]; assumption.
 Qed.
 
 Local Lemma aa_openat_proc : forall c flags eff m m' evs,
@@ -879,7 +917,7 @@ Proof.
        autorewrite with arm_unfold in H.
   all: try (aa_use check_openat_aa H; fail).
   all: try (aa_frame H; fail).
-  all: fail 1 "checked_table_preserves_aa has no case for this dispatcher arm".
+  all: let T := type of H in fail 1 "checked_table_preserves_aa has no case for this dispatcher arm:" T.
 Qed.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
