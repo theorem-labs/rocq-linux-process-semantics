@@ -1439,7 +1439,7 @@ Local Lemma check_create_wronly_complete_ok : forall i p eff m m' evs,
 Proof.
   intros i p eff m m' evs H.
   unfold create_wronly in H.
-  unfold check_create_wronly, check_open_result, check_new_fd_result.
+  unfold check_create_wronly, check_write_open_result, check_new_fd_result.
   sys_unfold. cbv iota in H. inv_ok.
   - split.
     + match goal with
@@ -1461,7 +1461,7 @@ Local Lemma check_open_append_complete_ok : forall i p eff m m' evs,
 Proof.
   intros i p eff m m' evs H.
   unfold open_append in H.
-  unfold check_open_append, check_open_result, check_new_fd_result.
+  unfold check_open_append, check_write_open_result, check_new_fd_result.
   sys_unfold. cbv iota in H. inv_ok.
   - split.
     + match goal with
@@ -1483,7 +1483,7 @@ Local Lemma check_open_rdwr_complete_ok : forall i p fs' eff m m' evs,
 Proof.
   intros i p fs' eff m m' evs H.
   unfold open_rdwr in H.
-  unfold check_open_rdwr, check_open_result, check_new_fd_result.
+  unfold check_open_rdwr, check_write_open_result, check_new_fd_result.
   sys_unfold. cbv iota in H. inv_ok.
   - split.
     + match goal with
