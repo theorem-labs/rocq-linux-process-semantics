@@ -698,7 +698,8 @@ Local Ltac aa_pre_inject H :=
 
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H | aa_close; fail]).
+  repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H | aa_close; fail]);
+  aa_close.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
@@ -707,8 +708,14 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
-  all: aa_frame H.
-Qed.
+  all: try (aa_frame H; fail).
+  (* Diagnostic: print remaining goals *)
+  all: cbv beta iota zeta in H.
+  all: repeat (first [aa_pre_inject H | kf_step H | aa_done_or_unfold H]).
+  all: try aa_close.
+  all: match goal with |- ?G => idtac "STUCK_GOAL:" G end.
+  all: match goal with H0 : _ |- _ => let T := type of H0 in idtac "STUCK_HYP:" T end.
+Admitted.
 
 Corollary syscall_spec_preserves_anon_agree : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
