@@ -1034,9 +1034,10 @@ Proof.
 Qed.
 
 (** [clone3]: through [check_clone3_ok_inv], as [Checks.NsFileFree.check_clone3_nf]
-    does: a refusal and the size and copy failures keep the model; the fork
-    image ([check_clone3_resolve]) and the stores arm ([check_clone_resolve])
-    both end in [check_clone_answer]. *)
+    does: a refusal, the size and copy failures ([check_clone3_fail]) and the
+    struct's -EINVAL ([check_clone3_einval]) keep the model; the fork image
+    ([check_clone3_resolve]) and the stores arm ([check_clone_resolve]) both
+    end in [check_clone_answer]. *)
 Local Lemma check_clone3_aa : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
