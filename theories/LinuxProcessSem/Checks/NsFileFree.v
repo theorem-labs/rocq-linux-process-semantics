@@ -1323,9 +1323,10 @@ Proof. intros len eff m m' evs H. unfold check_set_robust_list in H. nf_frame H.
 
 (** A successful clone shares the eventfds ([share_eventfds]); an
     [ONsFile] passes through it unchanged.  A host refuser's errno
-    ([check_clone_ok_inv], [check_clone3_ok_inv]) and the argument
-    checks' -EINVAL ([check_clone_einval], [check_clone3_einval]) leave
-    the model as it was. *)
+    ([check_clone_ok_inv], [check_clone3_ok_inv]), the argument checks'
+    -EINVAL ([check_clone_einval], [check_clone3_einval]) and clone3's
+    size and copy failures (-E2BIG, -EINVAL, -EFAULT,
+    [check_clone3_fail]) leave the model as it was. *)
 Lemma check_clone_nf : forall i flags eff m m' evs,
   check_clone i flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
@@ -1344,11 +1345,10 @@ Lemma check_clone3_nf : forall i uargs size eff m m' evs,
 Proof.
   intros i uargs size eff m m' evs H.
   destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
-    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    as [(-> & _ & _)|[(reads & He)|[(reads & en & _ & He)|(e & He & _)]]];
     [ exact (ns_kept_refl _)
     | clear H;
-      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
-        check_clone3_einval in He;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer in He;
       nf_frame He .. ].
 Qed.
 

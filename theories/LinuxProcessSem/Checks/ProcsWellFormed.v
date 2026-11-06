@@ -572,10 +572,10 @@ Proof.
   apply check_ret_only_ok_iff in H as (_ & -> & _). reflexivity.
 Qed.
 
-Lemma check_clone3_einval_halted : forall uargs eff m m' evs,
-  check_clone3_einval uargs eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Lemma check_clone3_einval_halted : forall reads eff m m' evs,
+  check_clone3_einval reads eff m = CheckOk m' evs -> m_halted m' = m_halted m.
 Proof.
-  intros uargs eff m m' evs H. unfold check_clone3_einval in H.
+  intros reads eff m m' evs H. unfold check_clone3_einval in H.
   apply check_ret_only_copyins_ok_iff in H as (_ & -> & _). reflexivity.
 Qed.
 
@@ -606,12 +606,11 @@ Proof.
   injection H as <- _. reflexivity.
 Qed.
 
-Lemma check_clone3_resolve_halted : forall uargs eff m m' evs,
-  check_clone3_resolve uargs eff m = CheckOk m' evs -> m_halted m' = m_halted m.
+Lemma check_clone3_resolve_halted : forall reads eff m m' evs,
+  check_clone3_resolve reads eff m = CheckOk m' evs -> m_halted m' = m_halted m.
 Proof.
-  intros uargs [ret ws zs us cs ins] m m' evs H. unfold check_clone3_resolve in H.
-  destruct ws as [|? ?], zs as [|? ?], us as [|? ?], cs as [|? ?],
-           ins as [|[a n] [|? ?]];
+  intros reads [ret ws zs us cs ins] m m' evs H. unfold check_clone3_resolve in H.
+  destruct ws as [|? ?], zs as [|? ?], us as [|? ?], cs as [|? ?];
     cbv beta iota in H; repeat dif H; try discriminate H.
   exact (check_clone_answer_halted _ _ _ _ H).
 Qed.
@@ -635,11 +634,10 @@ Proof.
     + exact (check_clone_ns_refused_halted _ _ _ _ He).
   - rewrite (check_syscall_clone3 i _ m Hno) in H.
     destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
-      as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]].
+      as [(-> & _ & _)|[(reads & He)|[(reads & en & _ & He)|(e & He & _)]]].
     + reflexivity.
     + exact (check_clone3_resolve_halted _ _ _ _ _ He).
-    + apply check_ret_only_ok_iff in He as (_ & -> & _). reflexivity.
-    + exact (check_clone3_einval_halted _ _ _ _ _ He).
+    + apply check_ret_only_copyins_ok_iff in He as (_ & -> & _). reflexivity.
     + exact (check_clone_resolve_halted _ _ _ _ He).
 Qed.
 
@@ -824,22 +822,21 @@ Proof.
     destruct Hn as [Hn|Hcp]; [rewrite Hn in H220; discriminate H220|].
     rewrite (check_syscall_clone3 (sys_input segs ms x8) _ _ Hcp) in Hsp.
     rewrite Hcp. cbn [Z.eqb Pos.eqb].
-    destruct (copy_bytes_map (ms_read_byte ms) (ms_gpr ms 0) CLONE_ARGS_SIZE)
-      as [bs|] eqn:Hbs; [|left; reflexivity].
-    destruct (clone3_pre bs) as [| |r] eqn:Hp3; try (left; reflexivity).
+    destruct (clone3_copy (ms_read_byte ms) (ms_gpr ms 0) (bv_unsigned (ms_gpr ms 1)))
+      as [reads en| |reads short bs] eqn:Hbs; try (left; reflexivity).
+    destruct (clone3_pre_sz short bs) as [| |r] eqn:Hp3; try (left; reflexivity).
     destruct (clone_record_admitted r) eqn:Had; [|left; reflexivity].
     destruct (clone_child_tid r) as [p|] eqn:Hp; [|left; reflexivity].
     destruct (access_okb p 4 && all_backed (tid_bytes (ms_read_byte ms) p)) eqn:Hrd;
       [|left; reflexivity].
-    right. unfold check_clone3, check_refusable, check_clone3_lists, clone3_answered_b in Hsp.
-    destruct (bv_eqb (in_arg (sys_input segs ms x8) 1) (Z_to_bv 64 CLONE_ARGS_SIZE));
-      cbn [negb andb] in Hsp; cbv iota in Hsp; [|discriminate Hsp].
-    replace (copy_bytes_map (in_mem (sys_input segs ms x8)) (in_arg (sys_input segs ms x8) 0)
-               CLONE_ARGS_SIZE)
-      with (Some bs) in Hsp by (rewrite <- Hbs; reflexivity).
-    cbv iota in Hsp.
+    right. unfold check_clone3, check_refusable, check_clone3_lists, clone3_answered_b,
+      clone3_input_reads in Hsp.
+    replace (clone3_copy (in_mem (sys_input segs ms x8)) (in_arg (sys_input segs ms x8) 0)
+               (bv_unsigned (in_arg (sys_input segs ms x8) 1)))
+      with (C3Struct reads short bs) in Hsp by (rewrite <- Hbs; reflexivity).
+    cbv iota in Hsp. unfold check_clone3_on_struct in Hsp.
     destruct (clone3_fork_args_b bs) eqn:Ha.
-    { exfalso. pose proof (clone3_pre_flags bs r Hp3) as Hfl.
+    { exfalso. pose proof (clone3_pre_sz_flags short bs r Hp3) as Hfl.
       unfold clone3_fork_args_b, w_is0 in Ha.
       repeat (apply andb_true_iff in Ha as [Ha ?]).
       apply bv_eqb_eq in Ha. rewrite Ha in Hfl.
@@ -847,8 +844,8 @@ Proof.
       vm_compute in Hp. discriminate Hp. }
     unfold clone_record_admitted in Had.
     destruct (clone_arg_checks r) eqn:Hck; [discriminate Had|]. cbn [negb andb] in Had.
-    destruct (clone3_einval_b bs) eqn:He.
-    { unfold clone3_einval_b in He. rewrite Hp3 in He. cbv iota in He.
+    destruct (clone3_einval_sz short bs) eqn:He.
+    { unfold clone3_einval_sz in He. rewrite Hp3 in He. cbv iota in He.
       rewrite Hck in He. discriminate He. }
     cbn [andb] in Hsp. cbv iota in Hsp. rewrite Hp3 in Hsp. cbv iota in Hsp.
     destruct (clone_class r); try discriminate Had; try discriminate Hsp.
@@ -859,17 +856,19 @@ Qed.
 
 (** The clone words the gates admitted before [CLONE_SYSVSEM] and the tid
     bits: [clone]'s fork word and namespace words, and [clone3]'s fork
-    image. *)
+    image at the one size the arm answered then, [CLONE_ARGS_SIZE]. *)
 Definition clone_word_admitted_before (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 =>
       if Z.eqb (bv_unsigned x8) 220%Z then
         clone_fork_flags_b (ms_gpr (cfg_ms c) 0) || clone_ns_flags_b (ms_gpr (cfg_ms c) 0)
       else if Z.eqb (bv_unsigned x8) 435%Z then
-        match copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE with
-        | Some bs => clone3_fork_args_b bs
-        | None => false
-        end
+        bv_eqb (ms_gpr (cfg_ms c) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)
+        && match copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0)
+                   CLONE_ARGS_SIZE with
+           | Some bs => clone3_fork_args_b bs
+           | None => false
+           end
       else false
   | None => false
   end.
@@ -916,11 +915,11 @@ Proof.
     destruct ws, zs, us, cs, ci; try discriminate H; repeat split.
 Qed.
 
-Local Lemma resolve3_no_memory : forall uargs eff m m' evs,
-  check_clone3_resolve uargs eff m = CheckOk m' evs ->
+Local Lemma resolve3_no_memory : forall reads eff m m' evs,
+  check_clone3_resolve reads eff m = CheckOk m' evs ->
   eff_writes eff = [] /\ eff_zeros eff = [] /\ eff_unmaps eff = [] /\ eff_copies eff = [].
 Proof.
-  intros uargs [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
+  intros reads [ret ws zs us cs ci] m m' evs H. unfold check_clone3_resolve in H.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))); try discriminate H.
   destruct ws, zs, us, cs; try discriminate H. repeat split.
 Qed.
@@ -976,18 +975,20 @@ Proof.
         { destruct eff as [ret ws zs us cs ci].
           destruct ws, zs, us, cs; try discriminate Hr. repeat split. }
         unfold check_clone3_lists in Hsp.
-        destruct (negb (bv_eqb (in_arg (sys_input segs ms x8) 1)
-                          (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota in Hsp;
-          [discriminate Hsp|].
-        change (match copy_bytes_map (in_mem (sys_input segs ms x8))
-                        (in_arg (sys_input segs ms x8) 0) CLONE_ARGS_SIZE with
-                | Some bs => clone3_fork_args_b bs
-                | None => false
-                end = true) in Hpre.
+        change ((bv_eqb (in_arg (sys_input segs ms x8) 1) (Z_to_bv 64 CLONE_ARGS_SIZE)
+                 && match copy_bytes_map (in_mem (sys_input segs ms x8))
+                            (in_arg (sys_input segs ms x8) 0) CLONE_ARGS_SIZE with
+                    | Some bs => clone3_fork_args_b bs
+                    | None => false
+                    end) = true) in Hpre.
+        apply andb_true_iff in Hpre as [Hsz Hpre]. apply bv_eqb_eq in Hsz.
+        rewrite Hsz, clone3_size_88_unsigned, clone3_copy_88 in Hsp.
+        unfold clone3_copy_full in Hsp.
         destruct (copy_bytes_map (in_mem (sys_input segs ms x8))
                     (in_arg (sys_input segs ms x8) 0) CLONE_ARGS_SIZE) as [bs|];
           [|discriminate Hpre].
-        cbv iota in Hsp, Hpre. rewrite Hpre in Hsp. cbv iota in Hsp.
+        cbv iota in Hsp, Hpre. unfold check_clone3_on_struct in Hsp.
+        rewrite Hpre in Hsp. cbv iota in Hsp.
         exact (resolve3_no_memory _ _ _ _ _ Hsp). }
     destruct eff as [ret ws zs us cs ci]. cbn [eff_writes eff_zeros eff_unmaps eff_copies] in Hz.
     destruct Hz as (-> & -> & -> & ->). reflexivity.
@@ -1093,12 +1094,14 @@ Proof.
                         (proj1 (bv_unsigned_in_range _ (ms_gpr (cfg_ms c) 0)))) as Hb.
           lia.
     - destruct (Z.eqb (bv_unsigned x8) 435%Z); cbv beta iota in Hpre |- *; [|discriminate Hpre].
+      apply andb_true_iff in Hpre as [Hsz Hpre]. apply bv_eqb_eq in Hsz.
+      rewrite Hsz, clone3_size_88_unsigned, clone3_copy_88. unfold clone3_copy_full.
       destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
         as [bs|]; cbv beta iota in Hpre |- *; [|discriminate Hpre].
       unfold clone3_fork_args_b, w_is0 in Hpre.
       repeat (apply andb_true_iff in Hpre as [Hpre ?]).
       repeat match goal with Hb : bv_eqb _ _ = true |- _ => apply bv_eqb_eq in Hb end.
-      unfold clone3_pre. cbv zeta.
+      unfold clone3_pre_sz. cbv iota. unfold clone3_pre. cbv zeta.
       repeat match goal with Hb : clone_args_field bs _ = _ |- _ => rewrite Hb; clear Hb end.
       lazymatch goal with
       | |- exists r, ?L = Some r /\ _ =>

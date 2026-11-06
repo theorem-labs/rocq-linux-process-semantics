@@ -172,14 +172,13 @@ Qed.
 (** The same witness, carrying the copy-in ledger the [clone3] resolution
     records.  [clone_resolve_witness] answers with [mkEffect], whose
     [eff_copyins] is [], so [record_copyins_ok_empty] applies directly. *)
-Definition clone3_resolve_witness (uargs : word) (m : Model)
+Definition clone3_resolve_witness (reads : list (word * nat)) (m : Model)
     : outcome SyscallEffect :=
   if negb (clone_no_shared_file_b (forfeit_inherited (m_fds m))) then Unmodeled
-  else Ok (with_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
-             (mkEffect (errno_ret EAGAIN) [] [])) m [].
+  else Ok (with_copyins reads (mkEffect (errno_ret EAGAIN) [] [])) m [].
 
-Lemma clone3_resolve_witness_ok : forall i uargs m,
-  clone3_resolve uargs i m (clone3_resolve_witness uargs m).
+Lemma clone3_resolve_witness_ok : forall i reads m,
+  clone3_resolve reads i m (clone3_resolve_witness reads m).
 Proof.
   intros. unfold clone3_resolve, clone3_resolve_witness.
   destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg.
@@ -192,16 +191,16 @@ Proof.
 Qed.
 
 (** A [clone3] record with stores ([Kernel.Fork.clone3_with_stores]):
-    the struct's ledger around the same witness. *)
-Definition clone3_stores_witness (i : SyscallInput) (uargs : word) (r : CloneArgs)
-    (m : Model) : outcome SyscallEffect :=
+    the copy's ledger around the same witness. *)
+Definition clone3_stores_witness (i : SyscallInput) (reads : list (word * nat))
+    (r : CloneArgs) (m : Model) : outcome SyscallEffect :=
   if clone_stores_ok i m r
-  then clone3_resolve_witness uargs m else Unmodeled.
+  then clone3_resolve_witness reads m else Unmodeled.
 
-Lemma clone3_stores_witness_ok : forall i uargs r m,
-  clone3_with_stores uargs r i m (clone3_stores_witness i uargs r m).
+Lemma clone3_stores_witness_ok : forall i reads r m,
+  clone3_with_stores reads r i m (clone3_stores_witness i reads r m).
 Proof.
-  intros i uargs r m. unfold clone3_with_stores, clone3_stores_witness.
+  intros i reads r m. unfold clone3_with_stores, clone3_stores_witness.
   destruct (clone_stores_ok i m r) eqn:Hok; cbv iota.
   - unfold clone3_resolve_witness.
     destruct (negb (clone_no_shared_file_b (forfeit_inherited (m_fds m)))) eqn:Hg; cbv iota.
@@ -224,48 +223,54 @@ Proof.
     split; [exact Hok | reflexivity].
 Qed.
 
+(** [Kernel.Fork.clone3_on_struct]'s witness. *)
+Definition clone3_on_struct_witness (i : SyscallInput) (reads : list (word * nat))
+    (short : bool) (bs : list byte) (m : Model) : outcome SyscallEffect :=
+  if clone3_fork_args_b bs then clone3_resolve_witness reads m
+  else if clone3_einval_sz short bs
+  then Ok (with_copyins reads (mkEffect (errno_ret EINVAL) [] [])) m []
+  else match clone3_pre_sz short bs with
+       | CdArgs r =>
+           match clone_class r with
+           | CcFork => clone3_stores_witness i reads r m
+           | _ => Unmodeled
+           end
+       | _ => Unmodeled
+       end.
+
+Lemma clone3_on_struct_witness_ok : forall i reads short bs m,
+  clone3_on_struct reads short bs i m (clone3_on_struct_witness i reads short bs m).
+Proof.
+  intros. unfold clone3_on_struct, clone3_on_struct_witness.
+  destruct (clone3_fork_args_b bs); cbv iota; [apply clone3_resolve_witness_ok|].
+  destruct (clone3_einval_sz short bs); cbv iota.
+  { unfold clone3_einval. apply record_copyins_ok_empty; [reflexivity|].
+    unfold err_ret, ret_only. apply pure_ok. }
+  destruct (clone3_pre_sz short bs) as [| |r]; cbv iota;
+    [apply unmodeled_intro | apply unmodeled_intro|].
+  destruct (clone_class r); cbv iota;
+    [apply clone3_stores_witness_ok | apply unmodeled_intro | apply unmodeled_intro
+    | apply unmodeled_intro].
+Qed.
+
 Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
     : outcome SyscallEffect :=
-  if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then Unmodeled
-  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
-       | None =>
-           if negb (access_okb uargs CLONE_ARGS_SIZE)
-           then ret_outcome (errno_ret EFAULT) m   (* [access_ok] refuses: nothing read *)
-           else Unmodeled                         (* admitted, not wholly readable *)
-       | Some bs =>
-           if clone3_fork_args_b bs then clone3_resolve_witness uargs m
-           else if clone3_einval_b bs
-           then Ok (with_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
-                      (mkEffect (errno_ret EINVAL) [] [])) m []
-           else match clone3_pre bs with
-                | CdArgs r =>
-                    match clone_class r with
-                    | CcFork => clone3_stores_witness i uargs r m
-                    | _ => Unmodeled
-                    end
-                | _ => Unmodeled
-                end
-       end.
+  match clone3_copy (in_mem i) uargs (bv_unsigned size) with
+  | C3Err reads en => Ok (with_copyins reads (mkEffect (errno_ret en) [] [])) m []
+  | C3Decline => Unmodeled
+  | C3Struct reads short bs => clone3_on_struct_witness i reads short bs m
+  end.
 
 Lemma clone3_witness_ok : forall i uargs size m,
   clone3_spec uargs size i m (clone3_witness i uargs size m).
 Proof.
-  intros. unfold clone3_spec. apply clone_refusable_lists.
+  intros. unfold clone3_spec. cbv beta. apply clone_refusable_lists.
   unfold clone3_spec_lists, clone3_witness.
-  destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota;
-    [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|].
-  2: { cbv iota. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota;
-         [unfold err_ret, ret_only, ret_outcome; apply pure_ok
-         |apply unmodeled_intro]. }
-  cbv iota.
-  destruct (clone3_fork_args_b bs); cbv iota; [apply clone3_resolve_witness_ok|].
-  destruct (clone3_einval_b bs); cbv iota.
-  { unfold clone3_einval. apply record_copyins_ok_empty; [reflexivity|].
-    unfold err_ret, ret_only. apply pure_ok. }
-  destruct (clone3_pre bs) as [| |r]; cbv iota; [apply unmodeled_intro | apply unmodeled_intro|].
-  destruct (clone_class r); cbv iota;
-    [apply clone3_stores_witness_ok | apply unmodeled_intro | apply unmodeled_intro
-    | apply unmodeled_intro].
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size)) as [reads en| |reads short bs];
+    cbv iota.
+  - unfold clone3_fail. apply record_copyins_ok_empty; [reflexivity|].
+    unfold err_ret, ret_only. apply pure_ok.
+  - apply unmodeled_intro.
+  - apply clone3_on_struct_witness_ok.
 Qed.

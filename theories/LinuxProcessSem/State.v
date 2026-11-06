@@ -561,6 +561,7 @@ Definition errno_ret (e : Z) : word := Z_to_bv 64 (- e).
 Definition EPERM  : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
 Definition ESRCH  : Z := 3%Z.
+Definition E2BIG  : Z := 7%Z.
 Definition EBADF  : Z := 9%Z.
 Definition ECHILD : Z := 10%Z.
 Definition EFAULT : Z := 14%Z.
@@ -3329,8 +3330,10 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
 
       AT MOST ONE DESCRIPTOR PER END.  [Fs.File.dup_modeled_entry]
       declines this kind, as it declines a pipe end, and
-      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one,
-      so no second entry ever names [(id, side)] and [socketpair] is the
+      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one
+      (a [clone3] whose size tests or struct copy fail answers an errno
+      and creates no child), so no second entry ever names [(id, side)]
+      and [socketpair] is the
       only constructor.  [stream_peer] relies on that, and so does
       [se_nonblock] living on the end rather than on a file.
     - [FdEventfd ctx]: AN EVENTFD, made by [eventfd2] (see
@@ -3431,8 +3434,9 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       it, as it moves a named file ([Fs.File.dup3_moves_entry]): [newfd]
       takes the entry and [oldfd] becomes an alias ([OAlias]) that reads
       nothing of the file.  A [clone] holding one, or an alias, declines
-      too ([Kernel.Fork.clone_no_shared_file_b]), so the file is this
-      process's alone, an assumption SCOPE.md states.
+      too ([Kernel.Fork.clone_no_shared_file_b]; a [clone3] whose size
+      tests or struct copy fail answers an errno and creates no child),
+      so the file is this process's alone, an assumption SCOPE.md states.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
       contents for, but one; [OpaqueFd] above says which eight objects.
       The descriptor is in the table so that its number is tracked (the
@@ -4679,7 +4683,7 @@ Record ProcState := mkProcState {
                                     [CLONE_SYSVSEM] gets no child), and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
-                                    [clone3_sharing_flags_unmodeled]
+                                    [clone3_sharing_flags_sizes]
                                     the same for 435) forces
                                     [Unmodeled] on any bit of
                                     [unadmitted_bits], [CLONE_THREAD]
@@ -4692,8 +4696,11 @@ Record ProcState := mkProcState {
                                     rest are -EINVAL or declined by
                                     [clone3_own_checks_einval],
                                     [clone_high_bits_unmodeled],
-                                    [clone3_declined_struct_unmodeled]
-                                    and [clone3_other_size_unmodeled].
+                                    [clone3_struct_einval],
+                                    [clone3_declined_struct_sizes]
+                                    and [clone3_other_size_unmodeled]
+                                    (a [clone3] struct the copy does
+                                    not read is an errno or declines).
                                     None of them makes a child.
                                     Widening that predicate
                                     breaks the proof rather than this
@@ -7087,8 +7094,9 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
       so a clone with either end open is [unmodeled], except a [clone3]
-      struct [Fork.clone3_einval_b] refuses, which is -EINVAL and creates
-      no process; and
+      whose size tests or struct copy fail ([Fork.clone3_copy]: -E2BIG,
+      -EINVAL or -EFAULT) or whose struct [Fork.clone3_einval_sz]
+      refuses (-EINVAL); neither creates a process; and
       [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
       most namespace bits, so
       CLONE_FILES and CLONE_THREAD never share a table and no second

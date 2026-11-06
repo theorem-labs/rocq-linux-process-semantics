@@ -191,8 +191,10 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
       outright while any such descriptor is open —
       [clone_no_shared_file_b], stated as
       [Checks.ProcessCreation.clone_open_file_unmodeled] — except a
-      [clone3] struct [clone3_einval_b] refuses, which answers -EINVAL
-      whatever the table holds and creates no child.  An inherited
+      [clone3] whose size tests or struct copy fail ([clone3_copy]:
+      -E2BIG, -EINVAL or -EFAULT) or whose struct [clone3_einval_sz]
+      refuses (-EINVAL); these answer whatever the table holds and
+      create no child.  An inherited
       file's offset ([State.OInherited]) is handed to the child instead:
       the caller keeps the descriptor without it ([forfeit_inherited]).
     - PARENT MEMORY WRITTEN BY THE CALL ITSELF.  [CLONE_PARENT_SETTID]
@@ -2143,11 +2145,10 @@ Qed.
     [CLONE_INTO_CGROUP] additionally demands
     [usize >= CLONE_ARGS_SIZE_VER2].
 
-    This model answers ONE size, the full struct, and declines the
-    short forms.  A short [size] is a different kernel path — the
-    zero-fill in [copy_struct_from_user] — and reproducing it would mean
-    modeling how many fields the caller's headers had.  Declining is
-    fail-closed in the ordinary way, and it costs nothing observed: NO
+    This model answers those size tests and that copy in the kernel's
+    order ([clone3_copy], below), so every [size] reaches an answer or a
+    decline that [clone3_copy]'s note names.  Who reaches the arm at
+    all: NO
     LIBC EMITS A FORK-SHAPED CLONE3.  glibc's [fork] goes through
     [arch_fork] to a raw legacy [clone].  Its clone3 callers are three,
     none of them on a [fork] path.  [__clone_internal] is reached from
@@ -2156,7 +2157,7 @@ Qed.
     CLONE_THREAD | CLONE_SETTLS | CLONE_PARENT_SETTID |
     CLONE_CHILD_CLEARTID] — the opposite of the admitted image, and
     declined on the flags field when its size and stack range are valid
-    (-EINVAL at the one modeled size when [access_ok] refuses the stack
+    (-EINVAL when [access_ok] refuses the stack
     range).  [posix_spawn] is the third, and
     it reaches [__clone3] DIRECTLY (sysdeps/unix/sysv/linux/spawni.c) —
     that one does pass this struct's size with
@@ -2223,34 +2224,311 @@ Definition CLONE_ARGS_SIZE_nat : nat := 88.
 Lemma clone_args_size_nat_ok : Z.of_nat CLONE_ARGS_SIZE_nat = CLONE_ARGS_SIZE.
 Proof. reflexivity. Qed.
 
+(** [CLONE_ARGS_SIZE_VER0] (include/uapi/linux/sched.h): the smallest
+    [size] [copy_clone_args_from_user] takes, the struct up to [tls]. *)
+Definition CLONE_ARGS_SIZE_VER0 : Z := 64.
+
+(** THE TAIL TEST, [check_zeroed_user] (lib/usercopy.c:45-81, Linux
+    v6.18.46), over the bytes of the caller's struct past the kernel's
+    88.  Linux reads the tail in aligned 8-byte words, in address order:
+    the first word with the bytes below the tail masked off (59-61), the
+    last with the bytes past it (73-74).  It stops at the first word it
+    cannot read (-EFAULT, 79-81) or the first word with a non-zero tail
+    byte (-E2BIG, and no later word is read: 63-65, 76-78).  So within one
+    word the fault comes first: a word is read, or faults, as a whole.
+
+    [clone3_tail_words] groups the tail bytes ([State.in_mem] at each
+    address) by the aligned word that holds them: the first group runs to
+    the first 8-byte boundary, each later one is a whole word, the last
+    stops at the tail's end.  [clone3_tail_scan] walks the groups.  A
+    group is unreadable when one of its bytes is: the model's memory is
+    byte-addressed, and an aligned word never straddles a page, so on a
+    memory whose readability is a property of the page (every memory a
+    process has) a word Linux can read is exactly a group whose bytes are
+    all readable.  The bytes of a word outside the tail are never
+    consulted: they share the word's page, so they add no fault, and
+    their values are masked off.
+    - [TsZero]: every tail byte reads as 0.
+    - [TsNonzero n]: a group with a non-zero byte, all earlier groups
+      zero; [n] tail bytes are covered by the words read, that one
+      included.
+    - [TsFault n]: an unreadable group, all earlier groups zero; [n]
+      tail bytes are covered by the words read before it. *)
+Inductive Clone3TailScan := TsZero | TsNonzero (n : nat) | TsFault (n : nat).
+
+(** The groups after the first: whole words, [fuel] bounding the walk (a
+    group takes at least one byte, so the list's length is enough). *)
+Fixpoint clone3_word_groups (fuel : nat) (l : list (option byte))
+    : list (list (option byte)) :=
+  match fuel with
+  | O => []
+  | S f => match l with
+           | [] => []
+           | _ => firstn 8 l :: clone3_word_groups f (skipn 8 l)
+           end
+  end.
+
+Definition clone3_tail_words (mem : word -> option byte) (tail : word) (rest : nat)
+    : list (list (option byte)) :=
+  let tb := map (fun j => mem (Z_to_bv 64 (bv_unsigned tail + Z.of_nat j))) (seq 0 rest) in
+  let c0 := (8 - Z.to_nat (bv_unsigned tail mod 8))%nat in
+  firstn c0 tb :: clone3_word_groups rest (skipn c0 tb).
+
+Fixpoint clone3_tail_scan (ws : list (list (option byte))) (acc : nat) : Clone3TailScan :=
+  match ws with
+  | [] => TsZero
+  | w :: ws' =>
+      if existsb (fun o => match o with None => true | Some _ => false end) w
+      then TsFault acc
+      else if existsb (fun o => match o with
+                                | Some b => negb (bv_eqb b (Z_to_bv 8 0))
+                                | None => false
+                                end) w
+      then TsNonzero (acc + length w)
+      else clone3_tail_scan ws' (acc + length w)
+  end.
+
+(** The tail bytes the words read cover, as a ledger: none when no word
+    was read. *)
+Definition clone3_tail_reads (tail : word) (n : nat) : list (word * nat) :=
+  match n with O => [] | _ => [(tail, n)] end.
+
+(** WHAT THE COPY GIVES.  [C3Err reads en]: the call fails with [en]
+    having read [reads].  [C3Decline]: the model declines.
+    [C3Struct reads short bs]: the 88-byte struct [bs] the kernel's
+    [struct clone_args] holds after the copy, having read [reads];
+    [short] says the caller's [size] was below [CLONE_ARGS_SIZE], which
+    one later test reads ([clone3_pre_sz]). *)
+Inductive Clone3Copy :=
+| C3Err (reads : list (word * nat)) (en : Z)
+| C3Decline
+| C3Struct (reads : list (word * nat)) (short : bool) (bs : list byte).
+
+(** [copy_from_user] of the whole struct, the step the 88-byte call
+    takes alone and a longer call takes after its tail test.  The range
+    test comes before the walk ([State.copy_bytes_map]): a range
+    [access_ok] refuses is -EFAULT having read nothing.
+
+    A KNOWN GAP: a range [access_ok] admits that the memory does not
+    wholly back declines, where Linux answers -EFAULT.  It is answerable
+    on a memory mapped in whole pages, the premise the tail walk below
+    uses: riscv64's scalar copy ([__asm_copy_from_user],
+    arch/riscv/lib/uaccess.S) reads upward, so the readable prefix,
+    [(uargs, k)], charges exactly the pages Linux touched.  The 88-byte
+    call has always declined it, and answering it changes the 88-byte
+    relation, which this model's size work left unchanged
+    ([Checks.ProcessCreation.clone3_spec_88_unchanged]); so every size
+    declines it alike, and answering it at every size is a separate
+    change. *)
+Definition clone3_copy_full (mem : word -> option byte) (uargs : word) : Clone3Copy :=
+  match copy_bytes_map mem uargs CLONE_ARGS_SIZE with
+  | Some bs => C3Struct [(uargs, CLONE_ARGS_SIZE_nat)] false bs
+  | None =>
+      if negb (access_okb uargs CLONE_ARGS_SIZE) then C3Err [] EFAULT
+      else C3Decline
+  end.
+
+Definition clone3_tail (uargs : word) : word :=
+  Z_to_bv 64 (bv_unsigned uargs + CLONE_ARGS_SIZE).
+
+Definition clone3_rest (usize : Z) : nat := Z.to_nat (usize - CLONE_ARGS_SIZE).
+
+(** [check_zeroed_user]'s range test, over the tail widened down to its
+    word. *)
+Definition clone3_tail_ok (uargs : word) (usize : Z) : bool :=
+  let align := (bv_unsigned (clone3_tail uargs) mod 8)%Z in
+  access_okb (Z_to_bv 64 (bv_unsigned (clone3_tail uargs) - align))
+    (Z.of_nat (clone3_rest usize) + align).
+
+(** [check_zeroed_user]'s word walk. *)
+Definition clone3_tail_test (mem : word -> option byte) (uargs : word) (usize : Z)
+    : Clone3TailScan :=
+  clone3_tail_scan (clone3_tail_words mem (clone3_tail uargs) (clone3_rest usize)) 0.
+
+(** THE SIZE TESTS AND THE COPY, in the kernel's order:
+    [copy_clone_args_from_user] (kernel/fork.c:2772-2779, Linux
+    v6.18.46) and [copy_struct_from_user]
+    (include/linux/uaccess.h:400-411), on riscv64, where [PAGE_SIZE] is
+    4096 ([State.page_size]).
+    1. [usize > PAGE_SIZE]: -E2BIG; [usize < CLONE_ARGS_SIZE_VER0]:
+       -EINVAL (2772-2775).  Nothing is read.
+    2. [usize < CLONE_ARGS_SIZE]: the kernel's bytes past [usize] are
+       zeroed (uaccess.h:400-401), then [copy_from_user] of [usize] bytes
+       (408-409): a range [access_ok] refuses is -EFAULT having read
+       nothing, one it admits that the memory does not wholly back
+       declines, as for 88 ([clone3_copy_full]).  The struct is the
+       caller's [usize] bytes and zeros.
+    3. [usize = CLONE_ARGS_SIZE]: [clone3_copy_full].
+    4. [usize > CLONE_ARGS_SIZE]: the tail test runs FIRST (402-405).
+       [check_zeroed_user] widens the tail down to its word
+       ([from -= align; size += align], usercopy.c:53-54) and asks
+       [access_ok] of that range before it reads a word
+       ([user_read_access_begin], 56-57, riscv64's
+       [user_access_begin]): refused, -EFAULT having read nothing.
+       Then the word walk ([clone3_tail_scan]): a non-zero tail byte is
+       -E2BIG and an unreadable word -EFAULT, each having read the words
+       before it (and, for -E2BIG, that word).  Only a tail of zeros
+       reaches [copy_from_user] of the head, the 88 bytes, which is
+       [clone3_copy_full] after the tail's reads.  The tail starts at
+       [uargs + 88] taken modulo 2^64, as the kernel's pointer sum is;
+       a [uargs] that close to the top fails the head's own
+       [access_ok]. *)
+Definition clone3_copy (mem : word -> option byte) (uargs : word) (usize : Z)
+    : Clone3Copy :=
+  if (page_size <? usize)%Z then C3Err [] E2BIG
+  else if (usize <? CLONE_ARGS_SIZE_VER0)%Z then C3Err [] EINVAL
+  else if (usize <? CLONE_ARGS_SIZE)%Z then
+    match copy_bytes_map mem uargs usize with
+    | Some bs =>
+        C3Struct [(uargs, Z.to_nat usize)] true
+          (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - usize)))
+    | None => if negb (access_okb uargs usize) then C3Err [] EFAULT else C3Decline
+    end
+  else if (CLONE_ARGS_SIZE <? usize)%Z then
+    if negb (clone3_tail_ok uargs usize) then C3Err [] EFAULT
+    else match clone3_tail_test mem uargs usize with
+         | TsNonzero n => C3Err (clone3_tail_reads (clone3_tail uargs) n) E2BIG
+         | TsFault n => C3Err (clone3_tail_reads (clone3_tail uargs) n) EFAULT
+         | TsZero =>
+             match clone3_copy_full mem uargs with
+             | C3Struct reads short bs =>
+                 C3Struct ((clone3_tail uargs, clone3_rest usize) :: reads) short bs
+             | C3Err reads en => C3Err ((clone3_tail uargs, clone3_rest usize) :: reads) en
+             | C3Decline => C3Decline
+             end
+         end
+  else clone3_copy_full mem uargs.
+
+(** At 88 the copy is [clone3_copy_full]: no size test fires and there
+    is no tail. *)
+Lemma clone3_copy_88 : forall mem uargs,
+  clone3_copy mem uargs CLONE_ARGS_SIZE = clone3_copy_full mem uargs.
+Proof. reflexivity. Qed.
+
+Lemma clone3_size_88_unsigned :
+  bv_unsigned (Z_to_bv 64 CLONE_ARGS_SIZE) = CLONE_ARGS_SIZE.
+Proof. reflexivity. Qed.
+
+(** [clone3_copy] in each size class. *)
+Lemma clone3_copy_above_page : forall mem uargs usize,
+  (page_size < usize)%Z -> clone3_copy mem uargs usize = C3Err [] E2BIG.
+Proof.
+  intros mem uargs usize H. unfold clone3_copy.
+  replace (page_size <? usize)%Z with true by (symmetry; apply Z.ltb_lt; exact H).
+  reflexivity.
+Qed.
+
+Lemma clone3_copy_below_ver0 : forall mem uargs usize,
+  (usize < CLONE_ARGS_SIZE_VER0)%Z -> clone3_copy mem uargs usize = C3Err [] EINVAL.
+Proof.
+  intros mem uargs usize H. unfold clone3_copy.
+  replace (page_size <? usize)%Z with false
+    by (symmetry; apply Z.ltb_ge; unfold page_size, CLONE_ARGS_SIZE_VER0 in *; lia).
+  replace (usize <? CLONE_ARGS_SIZE_VER0)%Z with true by (symmetry; apply Z.ltb_lt; exact H).
+  reflexivity.
+Qed.
+
+Lemma clone3_copy_short : forall mem uargs usize,
+  (CLONE_ARGS_SIZE_VER0 <= usize < CLONE_ARGS_SIZE)%Z ->
+  clone3_copy mem uargs usize =
+  match copy_bytes_map mem uargs usize with
+  | Some bs =>
+      C3Struct [(uargs, Z.to_nat usize)] true
+        (bs ++ repeat (Z_to_bv 8 0) (Z.to_nat (CLONE_ARGS_SIZE - usize)))
+  | None => if negb (access_okb uargs usize) then C3Err [] EFAULT else C3Decline
+  end.
+Proof.
+  intros mem uargs usize H. unfold clone3_copy.
+  replace (page_size <? usize)%Z with false
+    by (symmetry; apply Z.ltb_ge; unfold page_size, CLONE_ARGS_SIZE in *; lia).
+  replace (usize <? CLONE_ARGS_SIZE_VER0)%Z with false by (symmetry; apply Z.ltb_ge; lia).
+  replace (usize <? CLONE_ARGS_SIZE)%Z with true by (symmetry; apply Z.ltb_lt; lia).
+  reflexivity.
+Qed.
+
+Lemma clone3_copy_long : forall mem uargs usize,
+  (CLONE_ARGS_SIZE < usize <= page_size)%Z ->
+  clone3_copy mem uargs usize =
+  if negb (clone3_tail_ok uargs usize) then C3Err [] EFAULT
+  else match clone3_tail_test mem uargs usize with
+       | TsNonzero n => C3Err (clone3_tail_reads (clone3_tail uargs) n) E2BIG
+       | TsFault n => C3Err (clone3_tail_reads (clone3_tail uargs) n) EFAULT
+       | TsZero =>
+           match clone3_copy_full mem uargs with
+           | C3Struct reads short bs =>
+               C3Struct ((clone3_tail uargs, clone3_rest usize) :: reads) short bs
+           | C3Err reads en => C3Err ((clone3_tail uargs, clone3_rest usize) :: reads) en
+           | C3Decline => C3Decline
+           end
+       end.
+Proof.
+  intros mem uargs usize H. unfold clone3_copy.
+  replace (page_size <? usize)%Z with false by (symmetry; apply Z.ltb_ge; lia).
+  replace (usize <? CLONE_ARGS_SIZE_VER0)%Z with false
+    by (symmetry; apply Z.ltb_ge; unfold CLONE_ARGS_SIZE, CLONE_ARGS_SIZE_VER0 in *; lia).
+  replace (usize <? CLONE_ARGS_SIZE)%Z with false by (symmetry; apply Z.ltb_ge; lia).
+  replace (CLONE_ARGS_SIZE <? usize)%Z with true by (symmetry; apply Z.ltb_lt; lia).
+  reflexivity.
+Qed.
+
+(** The copy fails with one of three errnos. *)
+Lemma clone3_copy_errno : forall mem uargs usize reads en,
+  clone3_copy mem uargs usize = C3Err reads en ->
+  en = E2BIG \/ en = EINVAL \/ en = EFAULT.
+Proof.
+  intros mem uargs usize reads en H.
+  unfold clone3_copy, clone3_copy_full in H. cbv zeta in H.
+  repeat first
+    [ match type of H with
+      | context [if ?b then _ else _] =>
+          lazymatch b with
+          | true => fail
+          | false => fail
+          | _ => destruct b; cbv iota in H
+          end
+      end
+    | match type of H with
+      | context [match copy_bytes_map ?a ?b ?c with _ => _ end] =>
+          destruct (copy_bytes_map a b c); cbv iota in H
+      end
+    | match type of H with
+      | context [match clone3_tail_test ?a ?b ?c with _ => _ end] =>
+          destruct (clone3_tail_test a b c); cbv iota in H
+      end ];
+    try discriminate H; injection H as _ <-; auto.
+Qed.
+
 (** THE STRUCT IS READ, AND THE LEDGER SAYS SO.  [clone3] differs from
     legacy [clone] in exactly one observable way before the resolution:
     it copies [struct clone_args] out of user memory, and
-    [copy_struct_from_user] faults every page of it in.  Recording that
-    range is what stops the model admitting an allocation the kernel
-    refuses -- [eff_copyins] feeds [syscall_effect_accesses] and so
-    [Run.materialize_model_accesses], which is where a straddling
-    struct in a [MAP_NORESERVE] region charges its second page.
+    [copy_struct_from_user] faults every page it reads in.  Recording
+    the ranges read ([clone3_copy]'s [reads]) is what stops the model
+    admitting an allocation the kernel refuses -- [eff_copyins] feeds
+    [syscall_effect_accesses] and so [Run.materialize_model_accesses],
+    which is where a straddling struct in a [MAP_NORESERVE] region
+    charges its second page.
 
-    The ledger goes on the paths PAST a successful read and nowhere
-    else.  A [size] the model declines never reaches the copy; an
-    unreadable struct is a copy that FAILED, and Linux charges nothing
-    for it either.  A range [access_ok] refuses is -EFAULT with no effect
-    beyond the return, and one it admits that the memory does not wholly
-    back is [unmodeled], which carries no effect at all — so the boundary
-    is exactly "the read succeeded". *)
-Definition clone3_resolve (uargs : word) : Sys SyscallEffect :=
-  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] clone_resolve.
+    The ledger names the bytes of the caller's struct that the kernel's
+    reads covered: the head, [min size 88] bytes at [uargs], and for a
+    longer struct the tail bytes its words covered, before the head.  A
+    word of the tail walk also covers bytes outside the struct, but those
+    lie on the word's page, which the ledger already names, so the pages
+    charged are the same.  A range [access_ok] refuses is -EFAULT with no
+    effect beyond the return and the reads before it, and a copy the
+    memory does not wholly back is [unmodeled], which carries no effect
+    at all. *)
+Definition clone3_resolve (reads : list (word * nat)) : Sys SyscallEffect :=
+  record_copyins reads clone_resolve.
 
 (** The ledger is the ONLY thing [clone3_resolve] adds: strip it and what
     is left is the very outcome [clone_resolve] admits, with the same
     return, model and events.  Everything proved about the shared
     resolution therefore carries over to [clone3] unchanged. *)
-Lemma clone3_resolve_inv : forall uargs i m eff m' evs,
-  clone3_resolve uargs i m (Ok eff m' evs) ->
+Lemma clone3_resolve_inv : forall reads i m eff m' evs,
+  clone3_resolve reads i m (Ok eff m' evs) ->
   exists e0, clone_resolve i m (Ok e0 m' evs) /\ eff_ret eff = eff_ret e0.
 Proof.
-  intros uargs i m eff m' evs H.
+  intros reads i m eff m' evs H.
   unfold clone3_resolve, record_copyins in H.
   destruct H as (e0 & m0 & evs0 & evs2 & H0 & Hp & Hevs).
   unfold pure in Hp. inversion Hp; clear Hp; subst.
@@ -2259,11 +2537,11 @@ Qed.
 
 (** [clone3]'s steps before [kernel_clone], read off the copied struct
     [bs] in kernel order ([copy_clone_args_from_user] and
-    [clone3_args_valid], kernel/fork.c, Linux v6.18.46).  At the one size
-    this model answers ([CLONE_ARGS_SIZE], 88, which is
-    [CLONE_ARGS_SIZE_VER2]) the size tests (2772-2775) and the tail test
-    of [copy_struct_from_user] pass, so the first test here is the one
-    after the copy.
+    [clone3_args_valid], kernel/fork.c, Linux v6.18.46), for a [size] of
+    at least [CLONE_ARGS_SIZE] (88, which is [CLONE_ARGS_SIZE_VER2]): the
+    size tests (2772-2775) and the copy ([clone3_copy]) have passed, so
+    the first test here is the one after the copy.  A shorter struct is
+    [clone3_pre_short]'s.
     - [CdErr]: -EINVAL, from a test that reads the struct alone;
     - [CdDecline]: the call declines;
     - [CdArgs r]: every test passed, and [r] is the decoded record.
@@ -2275,7 +2553,7 @@ Qed.
     3. exit_signal with a bit above [CSIGNAL], or above 64 ([_NSIG],
        [valid_signal]): -EINVAL (2794-2796).
     4. CLONE_INTO_CGROUP with cgroup above INT_MAX: -EINVAL (2798-2800;
-       the size half of that test never fires at 88).
+       the size half of that test never fires at 88 or above).
     5. [clone3_args_valid] (2853-2879): a flag outside
        CLONE_LEGACY_FLAGS, CLONE_CLEAR_SIGHAND and CLONE_INTO_CGROUP;
        CLONE_DETACHED, or a [CSIGNAL] bit other than CLONE_NEWTIME;
@@ -2338,9 +2616,62 @@ Definition clone3_einval_b (bs : list byte) : bool :=
   | CdArgs r => clone_arg_checks r
   end.
 
+(** A struct shorter than [CLONE_ARGS_SIZE] (64 to 87 bytes), zero-filled
+    to 88 by the copy ([clone3_copy]), goes through the same steps, and
+    one of them reads the size: step 4 refuses CLONE_INTO_CGROUP when
+    [usize < CLONE_ARGS_SIZE_VER2] (fork.c:2798-2800), whatever the
+    cgroup field holds.  Steps 1, 3 and 4 are all -EINVAL and all come
+    before the set_tid copy and [clone3_args_valid], so on a short struct
+    with CLONE_INTO_CGROUP every struct step 1 passes is -EINVAL.  Where
+    [clone3_pre] gives -EINVAL or a record, the short struct gives the
+    same (a record never has CLONE_INTO_CGROUP: step 6); where it
+    declines, at step 2 (a non-zero set_tid) or step 6, the short struct
+    is -EINVAL if it has CLONE_INTO_CGROUP, and declines otherwise. *)
+Definition clone3_pre_short (bs : list byte) : Clone3Pre :=
+  match clone3_pre bs with
+  | CdDecline =>
+      if clone_has (bv_unsigned (clone_args_field bs 0)) CLONE_INTO_CGROUP
+      then CdErr else CdDecline
+  | d => d
+  end.
+
+(** The steps for the struct [clone3_copy] gives, [short] as it says. *)
+Definition clone3_pre_sz (short : bool) (bs : list byte) : Clone3Pre :=
+  if short then clone3_pre_short bs else clone3_pre bs.
+
+Definition clone3_einval_sz (short : bool) (bs : list byte) : bool :=
+  match clone3_pre_sz short bs with
+  | CdErr => true
+  | CdDecline => false
+  | CdArgs r => clone_arg_checks r
+  end.
+
+Lemma clone3_einval_sz_full : forall bs, clone3_einval_sz false bs = clone3_einval_b bs.
+Proof. reflexivity. Qed.
+
+(** A struct shorter than 88 without CLONE_INTO_CGROUP goes through the
+    steps exactly as the 88-byte struct with the same bytes does. *)
+Lemma clone3_pre_short_no_cgroup : forall bs,
+  clone_has (bv_unsigned (clone_args_field bs 0)) CLONE_INTO_CGROUP = false ->
+  clone3_pre_short bs = clone3_pre bs.
+Proof.
+  intros bs H. unfold clone3_pre_short. rewrite H.
+  destruct (clone3_pre bs); reflexivity.
+Qed.
+
+(** A record of the sized steps is [clone3_pre]'s record. *)
+Lemma clone3_pre_sz_args : forall short bs r,
+  clone3_pre_sz short bs = CdArgs r -> clone3_pre bs = CdArgs r.
+Proof.
+  intros [|] bs r H; cbn [clone3_pre_sz] in H; [|exact H].
+  unfold clone3_pre_short in H. revert H.
+  destruct (clone3_pre bs); intros H; [discriminate H| |exact H].
+  destruct (clone_has _ _); discriminate H.
+Qed.
+
 (** The fork image passes every test and every check, so the order of
-    the image test and [clone3_einval_b] in [clone3_spec] changes no
-    answer. *)
+    the image test and [clone3_einval_sz] in [clone3_on_struct] changes
+    no answer ([clone3_fork_args_no_einval_sz] at every size). *)
 Lemma clone3_fork_args_no_einval : forall bs,
   clone3_fork_args_b bs = true -> clone3_einval_b bs = false.
 Proof.
@@ -2374,6 +2705,33 @@ Proof.
          | context [if ?b then _ else _] => destruct b; cbv iota in H
          end;
     try discriminate H; injection H as <-; reflexivity.
+Qed.
+
+(** The fork image at any size: no -EINVAL, and a record. *)
+Lemma clone3_fork_args_no_einval_sz : forall short bs,
+  clone3_fork_args_b bs = true -> clone3_einval_sz short bs = false.
+Proof.
+  intros short bs H. pose proof (clone3_fork_args_no_einval bs H) as He.
+  pose proof (clone3_fork_args_pre_args bs H) as Ha.
+  unfold clone3_einval_b in He. revert He Ha.
+  unfold clone3_einval_sz, clone3_pre_sz.
+  destruct short; [unfold clone3_pre_short|];
+    destruct (clone3_pre bs); intros He Ha; try contradiction Ha; exact He.
+Qed.
+
+Lemma clone3_fork_args_pre_args_sz : forall short bs,
+  clone3_fork_args_b bs = true ->
+  match clone3_pre_sz short bs with CdArgs _ => True | _ => False end.
+Proof.
+  intros short bs H. pose proof (clone3_fork_args_pre_args bs H) as Ha. revert Ha.
+  unfold clone3_pre_sz. destruct short; [unfold clone3_pre_short|];
+    destruct (clone3_pre bs); intros Ha; try contradiction Ha; exact I.
+Qed.
+
+Lemma clone3_pre_sz_flags : forall short bs r,
+  clone3_pre_sz short bs = CdArgs r -> cla_flags r = bv_unsigned (clone_args_field bs 0).
+Proof.
+  intros short bs r H. exact (clone3_pre_flags bs r (clone3_pre_sz_args short bs r H)).
 Qed.
 
 (** THE TWO FIELDS STAY APART: no flag bit in the exit-signal byte, no
@@ -2484,109 +2842,160 @@ Proof.
        end.
 Qed.
 
-(** [clone3]'s -EINVAL, with the struct in the ledger: every test that
-    refuses it reads the copied struct. *)
-Definition clone3_einval (uargs : word) : Sys SyscallEffect :=
-  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] (err_ret EINVAL).
+Lemma clone3_pre_sz_split : forall short bs r,
+  clone3_pre_sz short bs = CdArgs r -> clone_args_split r.
+Proof.
+  intros short bs r H. exact (clone3_pre_split bs r (clone3_pre_sz_args short bs r H)).
+Qed.
+
+(** A failure after [reads]: the copy's -E2BIG, -EINVAL or -EFAULT
+    ([clone3_copy]). *)
+Definition clone3_fail (reads : list (word * nat)) (en : Z) : Sys SyscallEffect :=
+  record_copyins reads (err_ret en).
+
+(** [clone3]'s -EINVAL from a test that reads the copied struct, with
+    the copy's [reads] in the ledger. *)
+Definition clone3_einval (reads : list (word * nat)) : Sys SyscallEffect :=
+  record_copyins reads (err_ret EINVAL).
 
 (** A [clone3] record [clone_class] gives [CcFork], other than the fork
     image: the fork resolution with the host refusers' errnos
     ([clone_refusable_arm]) and the record's stores ([clone_with_stores]),
-    the struct in the ledger, so a refusal carries the ledger
+    the copy's [reads] in the ledger, so a refusal carries the ledger
     [clone3_refused_fail] gives the fork image.  The record's stack is
     [stack + stack_size] (fork.c:2845-2847) and its tls the struct's; the
     caller's answer reads neither, the child's registers do
     ([Procs.child_ms]).  A [clone3] record with a namespace bit declines:
     [clone3_spec_lists] answers no other class. *)
-Definition clone3_with_stores (uargs : word) (r : CloneArgs) : Sys SyscallEffect :=
-  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)]
-    (clone_with_stores r (clone_refusable_arm clone_resolve)).
+Definition clone3_with_stores (reads : list (word * nat)) (r : CloneArgs)
+    : Sys SyscallEffect :=
+  record_copyins reads (clone_with_stores r (clone_refusable_arm clone_resolve)).
 
-(** THE RANGE TEST COMES BEFORE THE WALK: the struct is read through
-    [State.copy_bytes_map], whose note says why that order is the guard.
-    [copy_clone_args_from_user] (kernel/fork.c, Linux v6.18.46) reads it
-    with [copy_struct_from_user] (include/linux/uaccess.h), which at the
-    one modeled size calls [copy_from_user] over all 88 bytes; the
-    [access_ok] is in [_inline_copy_from_user] (include/linux/uaccess.h),
-    which riscv64 reaches through [_copy_from_user] (lib/usercopy.c) and
-    which asks it because riscv64 defines no [masked_user_access_begin].
-    So a [uargs] whose range wraps past 2^64 and reads back from 0 is
-    -EFAULT with an empty ledger, before the fields are judged — the bare
-    walk read a fork-shaped struct there and the arm resolved the call.
-    A range [access_ok] admits that the memory does not wholly back stays
-    [unmodeled], for the reason [Kernel.Sys.prlimit64_spec] gives: which
-    bytes Linux read before it faulted is not something the ledger can
-    state.  [Checks.Cases.Kernel.Fork]'s [clone3_wrap_] group pins it,
-    beside a neighbour at the top of what [access_ok] accepts.
+(** What [clone3] does with the struct [clone3_copy] gives: the fork
+    image, -EINVAL from its own tests or the argument checks, or a record
+    [clone_class] puts in the fork class; everything else declines. *)
+Definition clone3_on_struct (reads : list (word * nat)) (short : bool) (bs : list byte)
+    : Sys SyscallEffect :=
+  if clone3_fork_args_b bs then clone3_resolve reads
+  else if clone3_einval_sz short bs then clone3_einval reads
+  else match clone3_pre_sz short bs with
+       | CdArgs r =>
+           match clone_class r with
+           | CcFork => clone3_with_stores reads r
+           | _ => unmodeled
+           end
+       | _ => unmodeled
+       end.
+
+(** THE SIZE TESTS AND THE COPY COME FIRST ([clone3_copy]): the call
+    fails, declines, or goes on with the struct.  The copy asks
+    [access_ok] before it walks, through [State.copy_bytes_map] and, for
+    the tail, before its first word: [copy_clone_args_from_user]
+    (kernel/fork.c, Linux v6.18.46) reads the struct with
+    [copy_struct_from_user] (include/linux/uaccess.h), whose
+    [copy_from_user] asks [access_ok] in [_inline_copy_from_user], which
+    riscv64 reaches through [_copy_from_user] (lib/usercopy.c) because it
+    defines no [masked_user_access_begin].  So a [uargs] whose range
+    wraps past 2^64 and reads back from 0 is -EFAULT before the fields
+    are judged — the bare walk read a fork-shaped struct there and the
+    arm resolved the call.  [Checks.Cases.Kernel.Fork]'s [clone3_wrap_]
+    group pins it, beside a neighbour at the top of what [access_ok]
+    accepts; its [clone3_size_] group pins the size tests and the tail
+    test.
 
     This is the answer from the model's lists; [clone3_spec] below adds
     the host refusers' errnos to it ([clone3_spec_default_iff]). *)
 Definition clone3_spec_lists (uargs size : word) : Sys SyscallEffect :=
-  if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled
-  else
-    i <- input ;;
-    match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
-    | None =>
-        if negb (access_okb uargs CLONE_ARGS_SIZE)
-        then err_ret EFAULT      (* [copy_from_user]'s [access_ok]: nothing read *)
-        else unmodeled           (* admitted, not wholly readable *)
-    | Some bs =>
-        if clone3_fork_args_b bs then clone3_resolve uargs
-        else if clone3_einval_b bs then clone3_einval uargs
-        else match clone3_pre bs with
-             | CdArgs r =>
-                 match clone_class r with
-                 | CcFork => clone3_with_stores uargs r
-                 | _ => unmodeled
-                 end
-             | _ => unmodeled
-             end
-    end.
+  i <- input ;;
+  match clone3_copy (in_mem i) uargs (bv_unsigned size) with
+  | C3Err reads en => clone3_fail reads en
+  | C3Decline => unmodeled
+  | C3Struct reads short bs => clone3_on_struct reads short bs
+  end.
 
-(** The calls of 435 that reach [copy_process]: the one modeled size, a
-    struct the copy read whole, and the fork image. *)
+(** The calls of 435 that reach [copy_process] in a class the model
+    answers: a size and a copy that give a struct ([clone3_copy]), and
+    the fork image.  At [CLONE_ARGS_SIZE] that is a struct the copy read
+    whole ([clone3_answered_b_88]); a short struct and a long one with a
+    zero tail reach [copy_process] the same way ([clone3_copy]). *)
 Definition clone3_answered_b (uargs size : word) (i : SyscallInput) : bool :=
-  bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)
-  && match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
-     | Some bs => clone3_fork_args_b bs
-     | None => false
-     end.
+  match clone3_copy (in_mem i) uargs (bv_unsigned size) with
+  | C3Struct _ _ bs => clone3_fork_args_b bs
+  | _ => false
+  end.
+
+(** The ranges the copy read, whatever it gave. *)
+Definition clone3_copy_reads (c : Clone3Copy) : list (word * nat) :=
+  match c with
+  | C3Err reads _ => reads
+  | C3Decline => []
+  | C3Struct reads _ _ => reads
+  end.
+
+(** ...at the call's own input. *)
+Definition clone3_input_reads (uargs size : word) (i : SyscallInput) : list (word * nat) :=
+  clone3_copy_reads (clone3_copy (in_mem i) uargs (bv_unsigned size)).
 
 (** A refusal of 435 comes after the struct was read, so it carries the
-    copy-in ledger [clone3_resolve] carries. *)
-Definition clone3_refused_fail (uargs : word) : Sys SyscallEffect :=
-  record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] clone_refused_fail.
+    copy-in ledger [clone3_resolve] carries: the copy's [reads]. *)
+Definition clone3_refused_fail (reads : list (word * nat)) : Sys SyscallEffect :=
+  record_copyins reads clone_refused_fail.
 
 (** [clone3]: the answer from the lists, and with a refuser present every
-    errno from 1 to 4095 for the fork image. *)
+    errno from 1 to 4095 for the fork image, at every size the copy
+    takes. *)
 Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
-  clone_refusable (clone3_answered_b uargs size) (clone3_refused_fail uargs)
-    (clone3_spec_lists uargs size).
+  fun i => clone_refusable (clone3_answered_b uargs size)
+             (clone3_refused_fail (clone3_input_reads uargs size i))
+             (clone3_spec_lists uargs size) i.
 
-Lemma clone3_refused_fail_inv : forall uargs i m o,
-  clone3_refused_fail uargs i m o ->
-  exists e, (1 <= e <= 4095)%Z
-            /\ o = Ok (mkEffectU (errno_ret e) [] [] [] []
-                                 [(uargs, CLONE_ARGS_SIZE_nat)]) m [].
+(** At [CLONE_ARGS_SIZE] the test and the ledger are the 88-byte ones:
+    the struct the copy read whole, and its one range. *)
+Lemma clone3_answered_b_88 : forall uargs i,
+  clone3_answered_b uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i
+  = match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+    | Some bs => clone3_fork_args_b bs
+    | None => false
+    end.
 Proof.
-  intros uargs i m o H. unfold clone3_refused_fail, record_copyins, bind in H.
+  intros uargs i. unfold clone3_answered_b.
+  rewrite clone3_size_88_unsigned, clone3_copy_88. unfold clone3_copy_full.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE); [reflexivity|].
+  destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); reflexivity.
+Qed.
+
+Lemma clone3_input_reads_struct : forall uargs size i reads short bs,
+  clone3_copy (in_mem i) uargs (bv_unsigned size) = C3Struct reads short bs ->
+  clone3_input_reads uargs size i = reads.
+Proof.
+  intros uargs size i reads short bs H. unfold clone3_input_reads. rewrite H.
+  reflexivity.
+Qed.
+
+Lemma clone3_refused_fail_inv : forall reads i m o,
+  clone3_refused_fail reads i m o ->
+  exists e, (1 <= e <= 4095)%Z
+            /\ o = Ok (mkEffectU (errno_ret e) [] [] [] [] reads) m [].
+Proof.
+  intros reads i m o H. unfold clone3_refused_fail, record_copyins, bind in H.
   destruct o as [eff m' evs|]; cbv beta iota in H.
   - destruct H as (e0 & m1 & evs1 & evs2 & H0 & Hp & Hevs).
     apply clone_refused_fail_inv in H0 as (e & He & Heq).
     injection Heq as -> -> ->.
     unfold pure in Hp. injection Hp as -> -> ->.
-    exists e. split; [exact He|]. cbn in Hevs. subst evs. reflexivity.
+    exists e. split; [exact He|]. cbn in Hevs. subst evs.
+    rewrite app_nil_r. reflexivity.
   - destruct H as [H | (e0 & m1 & evs1 & H0 & Hp)].
     + apply clone_refused_fail_inv in H as (e & _ & Heq). discriminate Heq.
     + unfold pure in Hp. discriminate Hp.
 Qed.
 
-Lemma clone3_refused_fail_ok : forall uargs e i m,
+Lemma clone3_refused_fail_ok : forall reads e i m,
   (1 <= e <= 4095)%Z ->
-  clone3_refused_fail uargs i m
-    (Ok (mkEffectU (errno_ret e) [] [] [] [] [(uargs, CLONE_ARGS_SIZE_nat)]) m []).
+  clone3_refused_fail reads i m
+    (Ok (mkEffectU (errno_ret e) [] [] [] [] reads) m []).
 Proof.
-  intros uargs e i m He. unfold clone3_refused_fail.
+  intros reads e i m He. unfold clone3_refused_fail.
   apply (record_copyins_ok_empty _ _ _ _ (mkEffect (errno_ret e) [] []));
     [reflexivity|].
   apply clone_refused_fail_ok. exact He.
@@ -2597,7 +3006,7 @@ Theorem clone3_spec_default_iff : forall uargs size i m o,
   m_clone_refusers m = no_clone_refusers ->
   (clone3_spec uargs size i m o <-> clone3_spec_lists uargs size i m o).
 Proof.
-  intros uargs size i m o H. unfold clone3_spec. apply clone_refusable_absent.
+  intros uargs size i m o H. unfold clone3_spec. cbv beta. apply clone_refusable_absent.
   rewrite H. reflexivity.
 Qed.
 
@@ -2616,7 +3025,7 @@ Lemma clone_admitted_words_unchanged :
      copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
      clone3_fork_args_b bs = true ->
      (clone3_spec_lists uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m o
-      <-> clone3_resolve uargs i m o)).
+      <-> clone3_resolve [(uargs, CLONE_ARGS_SIZE_nat)] i m o)).
 Proof.
   split; [|split].
   - intros flags i m o Hf. unfold clone_spec_lists. rewrite Hf. cbv iota.
@@ -2626,57 +3035,65 @@ Proof.
     exfalso. unfold clone_fork_flags_b in Hf. apply bv_eqb_eq in Hf. subst flags.
     vm_compute in Hns. discriminate Hns.
   - intros uargs i m o bs Hbs Ha. unfold clone3_spec_lists.
-    rewrite (proj2 (bv_eqb_eq (Z_to_bv 64 CLONE_ARGS_SIZE) _) eq_refl).
-    cbn [negb].
+    rewrite clone3_size_88_unsigned.
     split; intros H.
-    + apply bind_input_iff in H. cbv beta in H. rewrite Hbs in H. cbv iota in H.
-      rewrite Ha in H. exact H.
-    + apply bind_input_iff. cbv beta. rewrite Hbs. cbv iota. rewrite Ha. exact H.
+    + apply bind_input_iff in H. cbv beta in H.
+      rewrite clone3_copy_88 in H. unfold clone3_copy_full in H. rewrite Hbs in H.
+      cbv iota in H. unfold clone3_on_struct in H. rewrite Ha in H. exact H.
+    + apply bind_input_iff. cbv beta.
+      rewrite clone3_copy_88. unfold clone3_copy_full. rewrite Hbs.
+      cbv iota. unfold clone3_on_struct. rewrite Ha. exact H.
 Qed.
 
 (** A [clone3] (435) THAT CREATES A CHILD HAS A RECORD THE CHECKS PASS,
     for the reason [clone_spec_success_record] gives: an answer that is
-    not error-encoded comes from neither a host refuser, nor the -EFAULT
-    of a refused range, nor the -EINVAL of the struct's own tests or the
-    argument checks, so the struct is the fork image, which decodes
-    ([clone3_fork_args_pre_args]) into a record no check refuses
-    ([clone3_fork_args_no_einval]), or a struct whose record the checks
-    pass and [clone_class] puts in the fork class ([clone3_with_stores]). *)
+    not error-encoded comes from neither a host refuser, nor a failure
+    of the size tests or the copy ([clone3_copy]: -E2BIG, -EINVAL,
+    -EFAULT), nor the -EINVAL of the struct's own tests or the argument
+    checks, so the copy gave a struct, at whatever size, and the struct
+    is the fork image, which decodes ([clone3_fork_args_pre_args_sz])
+    into a record no check refuses ([clone3_fork_args_no_einval_sz]), or
+    a struct whose record the checks pass and [clone_class] puts in the
+    fork class ([clone3_with_stores]).  At [CLONE_ARGS_SIZE] the struct
+    is the 88 bytes the copy read whole
+    ([clone3_spec_success_record_88]). *)
 Lemma clone3_spec_success_record : forall uargs size i m eff m' evs,
   clone3_spec uargs size i m (Ok eff m' evs) ->
   addr_is_error_b (eff_ret eff) = false ->
-  exists bs r,
-    bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE) = true
-    /\ copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs
+  exists reads short bs r,
+    clone3_copy (in_mem i) uargs (bv_unsigned size) = C3Struct reads short bs
     /\ (clone3_fork_args_b bs = true \/ clone_class_fork_b r = true)
-    /\ clone3_pre bs = CdArgs r
+    /\ clone3_pre_sz short bs = CdArgs r
     /\ clone_arg_checks r = false.
 Proof.
-  intros uargs size i m eff m' evs H Herr. unfold clone3_spec in H.
+  intros uargs size i m eff m' evs H Herr. unfold clone3_spec in H. cbv beta in H.
   apply clone_refusable_cases in H as [H | H].
   { exfalso. apply clone3_refused_fail_inv in H as (e & He & Heq).
     injection Heq as -> _ _. cbn [eff_ret] in Herr.
     rewrite (errno_ret_is_error e He) in Herr. discriminate Herr. }
   unfold clone3_spec_lists in H.
-  destruct (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) eqn:Hsz; cbn [negb] in H;
-    cbv iota in H; [|unfold unmodeled in H; discriminate H].
   apply bind_input_iff in H. cbv beta in H.
-  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|] eqn:Hbs;
-    cbv iota in H.
-  2: { exfalso. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota in H;
-         [|unfold unmodeled in H; discriminate H].
-       unfold err_ret, ret_only, pure in H. injection H as -> _ _.
-       cbn [eff_ret] in Herr. vm_compute in Herr. discriminate Herr. }
+  destruct (clone3_copy (in_mem i) uargs (bv_unsigned size))
+    as [reads en| |reads short bs] eqn:Hc; cbv iota in H.
+  { exfalso. pose proof (clone3_copy_errno _ _ _ _ _ Hc) as Hen.
+    unfold clone3_fail, record_copyins, bind in H. cbv beta iota in H.
+    destruct H as (core & m1 & evs1 & evs2 & H0 & Hp & _).
+    unfold err_ret, ret_only, pure in H0. injection H0 as -> -> ->.
+    unfold pure in Hp. injection Hp as -> _ _.
+    cbn [eff_ret with_copyins] in Herr.
+    destruct Hen as [-> | [-> | ->]]; vm_compute in Herr; discriminate Herr. }
+  { exfalso. unfold unmodeled in H. discriminate H. }
+  exists reads, short, bs. unfold clone3_on_struct in H.
   destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H.
-  2: { destruct (clone3_einval_b bs) eqn:Hne; cbv iota in H.
+  2: { destruct (clone3_einval_sz short bs) eqn:Hne; cbv iota in H.
        { exfalso.
          unfold clone3_einval, record_copyins, bind in H. cbv beta iota in H.
          destruct H as (core & m1 & evs1 & evs2 & H0 & Hp & _).
          unfold err_ret, ret_only, pure in H0. injection H0 as -> -> ->.
          unfold pure in Hp. injection Hp as -> _ _.
          cbn [eff_ret with_copyins] in Herr. vm_compute in Herr. discriminate Herr. }
-       unfold clone3_einval_b in Hne.
-       destruct (clone3_pre bs) as [| |r] eqn:Hp; cbv iota in H, Hne;
+       unfold clone3_einval_sz in Hne.
+       destruct (clone3_pre_sz short bs) as [| |r] eqn:Hp; cbv iota in H, Hne;
          [ exfalso; unfold unmodeled in H; discriminate H
          | exfalso; unfold unmodeled in H; discriminate H
          | ].
@@ -2684,15 +3101,39 @@ Proof.
          [ | exfalso; unfold unmodeled in H; discriminate H
            | exfalso; unfold unmodeled in H; discriminate H
            | exfalso; unfold unmodeled in H; discriminate H ].
-       exists bs, r. split; [reflexivity|]. split; [reflexivity|].
+       exists r. split; [first [reflexivity | exact Hc]|].
        split; [right; unfold clone_class_fork_b; rewrite Hcl; reflexivity|].
-       split; [exact Hp | exact Hne]. }
-  pose proof (clone3_fork_args_pre_args bs Ha) as Hpre.
-  destruct (clone3_pre bs) as [| |r] eqn:Hp;
+       split; [first [reflexivity | exact Hp] | exact Hne]. }
+  pose proof (clone3_fork_args_pre_args_sz short bs Ha) as Hpre.
+  destruct (clone3_pre_sz short bs) as [| |r] eqn:Hp;
     [ exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
     | exfalso; try rewrite Hp in Hpre; cbv beta iota in Hpre; exact Hpre
     | ].
-  pose proof (clone3_fork_args_no_einval bs Ha) as Hne.
-  unfold clone3_einval_b in Hne. rewrite Hp in Hne.
-  exists bs, r. repeat split; try assumption. left. exact Ha.
+  pose proof (clone3_fork_args_no_einval_sz short bs Ha) as Hne.
+  unfold clone3_einval_sz in Hne. rewrite Hp in Hne.
+  exists r. split; [first [reflexivity | exact Hc]|].
+  split; [left; first [reflexivity | exact Ha]|].
+  split; [first [reflexivity | exact Hp] | exact Hne].
+Qed.
+
+(** At [CLONE_ARGS_SIZE], the struct of a call that creates a child is
+    the 88 bytes the copy read whole, and its record is [clone3_pre]'s. *)
+Lemma clone3_spec_success_record_88 : forall uargs i m eff m' evs,
+  clone3_spec uargs (Z_to_bv 64 CLONE_ARGS_SIZE) i m (Ok eff m' evs) ->
+  addr_is_error_b (eff_ret eff) = false ->
+  exists bs r,
+    copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs
+    /\ (clone3_fork_args_b bs = true \/ clone_class_fork_b r = true)
+    /\ clone3_pre bs = CdArgs r
+    /\ clone_arg_checks r = false.
+Proof.
+  intros uargs i m eff m' evs H Herr.
+  destruct (clone3_spec_success_record _ _ _ _ _ _ _ H Herr)
+    as (reads & short & bs & r & Hc & Ha & Hp & Hk).
+  rewrite clone3_size_88_unsigned, clone3_copy_88 in Hc. unfold clone3_copy_full in Hc.
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs0|] eqn:Hbs.
+  - injection Hc as _ Hs Hb. subst short bs0. cbn [clone3_pre_sz] in Hp.
+    exists bs, r. split; [first [exact Hbs | reflexivity]|]. split; [exact Ha|].
+    split; assumption.
+  - destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); discriminate Hc.
 Qed.

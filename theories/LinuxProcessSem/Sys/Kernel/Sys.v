@@ -83,12 +83,13 @@ Open Scope sys_scope.
     the four tid bits, and the clone statements of [Checks.ProcessCreation]
     ([clone_sharing_flags_unmodeled], [clone_arg_checks_einval],
     [clone_high_bits_unmodeled], [clone_open_file_unmodeled], and for
-    [clone3] [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
-    [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
-    [clone3_other_size_unmodeled]) prove that a word with any bit of
+    [clone3] [clone3_sharing_flags_sizes], [clone3_arg_checks_einval],
+    [clone3_own_checks_einval], [clone3_struct_einval],
+    [clone3_declined_struct_sizes] and [clone3_other_size_unmodeled])
+    prove that a word with any bit of
     [unadmitted_bits], [CLONE_THREAD] and [CLONE_SIGHAND] among them,
     declines or answers -EINVAL (a [clone3] struct the copy does not read
-    answers -EFAULT or declines), and none of these makes a child.  So no
+    is an errno or declines), and none of these makes a child.  So no
     task this
     model describes was ever created with [CLONE_THREAD], and
     [current == current->group_leader] holds throughout.  The premise
@@ -166,11 +167,12 @@ Definition getpid_spec : Sys SyscallEffect := set_tid_address_spec.
     [Checks.ProcessCreation] ([clone_sharing_flags_unmodeled],
     [clone_arg_checks_einval], [clone_high_bits_unmodeled],
     [clone_open_file_unmodeled], and for [clone3]
-    [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
-    [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
-    [clone3_other_size_unmodeled]) prove that a word with any bit of
+    [clone3_sharing_flags_sizes], [clone3_arg_checks_einval],
+    [clone3_own_checks_einval], [clone3_struct_einval],
+    [clone3_declined_struct_sizes] and [clone3_other_size_unmodeled])
+    prove that a word with any bit of
     [unadmitted_bits], [CLONE_THREAD] among them, declines or answers
-    -EINVAL (a [clone3] struct the copy does not read answers -EFAULT or
+    -EINVAL (a [clone3] struct the copy does not read is an errno or
     declines), and none of these makes a child, so no run this model
     describes ever has a second task to ask.  A change that gave the
     model threads owes [gettid] a per-task tid before it owes [getpid]
