@@ -3,8 +3,9 @@
     [anon_agree_holds] says that every [FdAnon] entry in the descriptor
     table agrees with every other entry of the same unnamed file: every
     descriptor of one file carries the same contents and the same stat
-    pin.  This file proves that predicate is an invariant of every run
-    from [Run.init_config]: [anon_agree_reachable] for [Run.star],
+    pin.  This file proves that predicate is an invariant of every
+    single-process run from [Run.init_config]: [anon_agree_reachable]
+    for [Run.star],
     [anon_agree_reachable_cfg] for [Run.star_cfg] (any spurious-failure
     configuration) and [anon_agree_reachable_pcfg] for [Run.star_pcfg]
     (any parent environment, the parent's death steps included).
@@ -1147,8 +1148,9 @@ Proof.
   - exact Hinv.
 Qed.
 
-(** The invariant holds at every configuration a run reaches under any
-    spurious-failure configuration and any parent environment. *)
+(** The invariant holds at every configuration a single-process run
+    ([Run.star_pcfg]) reaches under any spurious-failure configuration
+    and any parent environment. *)
 Corollary anon_agree_reachable_pcfg :
   forall segs cfg p pc ph sp brk0 mb draw lim inp tr c,
   star_pcfg segs cfg p (init_config segs pc ph sp brk0 mb draw lim inp) tr c ->
