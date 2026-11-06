@@ -1195,6 +1195,62 @@ Proof.
       rewrite Hlk, bv_eqb_refl. reflexivity.
 Qed.
 
+(** Membership and range facts for write-open's injectable errno set. *)
+Lemma ENOMEM_in_write_open_errnos : In ENOMEM write_open_errnos.
+Proof. left. reflexivity. Qed.
+
+Lemma write_open_errno_range : forall e,
+  In e write_open_errnos -> (1 <= e)%Z /\ (e <= 4095)%Z.
+Proof. intros e HIn. exact (errnos_ok_range write_open_errnos e eq_refl HIn). Qed.
+
+Lemma check_write_open_result_never_unmodeled : forall eff m mk,
+  check_write_open_result eff m mk <> CheckUnmodeled.
+Proof.
+  intros [ret ws zs us cs copyins] m mk.
+  unfold check_write_open_result, check_new_fd_result.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?];
+    destruct copyins as [|? ?];
+    try discriminate.
+  destruct (errno_ret_in write_open_errnos ret); [discriminate|].
+  destruct (fd_lookup (m_fds m) ret); [discriminate|].
+  destruct (bv_eqb ret (alloc_fd (m_fds m))); discriminate.
+Qed.
+
+Lemma check_write_open_result_ok_iff : forall eff m (mk : word -> Model) m' evs,
+  check_write_open_result eff m mk = CheckOk m' evs <->
+  ((exists e, In e write_open_errnos /\ eff = mkEffect (errno_ret e) [] []
+              /\ m' = m /\ evs = [])
+   \/ (exists fd, fd_lookup (m_fds m) fd = None /\ fd = alloc_fd (m_fds m)
+                  /\ eff = mkEffect fd [] [] /\ m' = mk fd /\ evs = [])).
+Proof.
+  intros [ret ws zs us cs copyins] m mk m' evs.
+  unfold check_write_open_result, check_new_fd_result. split.
+  - intro H.
+    destruct ws as [|? ?]; [|discriminate].
+    destruct zs as [|? ?]; [|discriminate].
+    destruct us as [|? ?]; [|discriminate].
+    destruct cs as [|? ?]; [|discriminate].
+    destruct copyins as [|? ?]; [|discriminate].
+    destruct (errno_ret_in write_open_errnos ret) eqn:Herr; try rewrite Herr in H.
+    + inversion H; subst.
+      apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
+      left. exists e. auto.
+    + destruct (fd_lookup (m_fds m) ret) eqn:Hlk; try rewrite Hlk in H;
+        [discriminate|].
+      destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; try rewrite Heq in H;
+        [|discriminate].
+      inversion H; subst.
+      right. exists ret. apply bv_eqb_eq in Heq. auto.
+  - intros [ (e & HIn & Heff & -> & ->)
+           | (fd & Hlk & Heq & Heff & -> & ->) ].
+    + inversion Heff; subst.
+      rewrite (errno_ret_in_intro _ e HIn). reflexivity.
+    + inversion Heff; subst.
+      rewrite errno_ret_in_alloc_fd by reflexivity.
+      rewrite Hlk, bv_eqb_refl. reflexivity.
+Qed.
+
 Definition open_copyins (ms : machine_state) : list (word * nat) :=
   [(ms_gpr ms 1,
     cstr_access_len_aux (ms_read_byte ms) (ms_gpr ms 1) path_max)].
@@ -1239,6 +1295,55 @@ Proof.
   destruct (access_ranges_eqb (eff_copyins eff) reads) eqn:Hreads.
   - apply access_ranges_eqb_eq in Hreads.
     rewrite check_open_result_ok_iff. split.
+    + intros [(e & HIn & Hcore & -> & ->)
+             | (fd & Hlk & Heq & Hcore & -> & ->)].
+      * left. exists e. repeat split; try assumption.
+        eapply effect_from_copyins_and_clear; eassumption.
+      * right. exists fd. repeat split; try assumption.
+        eapply effect_from_copyins_and_clear; eassumption.
+    + intros [(e & HIn & Heff & -> & ->)
+             | (fd & Hlk & Heq & Heff & -> & ->)].
+      * left. exists e. repeat split; try assumption.
+        rewrite Heff. reflexivity.
+      * right. exists fd. repeat split; try assumption.
+        rewrite Heff. reflexivity.
+  - split; [discriminate|].
+    intros [(e & _ & Heff & _)
+           | (fd & _ & _ & Heff & _)].
+    all: rewrite Heff in Hreads; cbn [eff_copyins with_copyins] in Hreads;
+      pose proof (proj2 (access_ranges_eqb_eq reads reads) eq_refl) as Htrue;
+      congruence.
+Qed.
+
+Definition check_write_open_result_copyins (reads : list (word * nat))
+    (eff : SyscallEffect) (m : Model) (mk : word -> Model) : check_result :=
+  check_copyins reads eff (check_write_open_result (clear_copyins eff) m mk).
+
+Lemma check_write_open_result_copyins_never_unmodeled : forall reads eff m mk,
+  check_write_open_result_copyins reads eff m mk <> CheckUnmodeled.
+Proof.
+  intros reads eff m mk.
+  unfold check_write_open_result_copyins, check_copyins.
+  destruct (access_ranges_eqb (eff_copyins eff) reads);
+    [apply check_write_open_result_never_unmodeled|discriminate].
+Qed.
+
+Lemma check_write_open_result_copyins_ok_iff :
+  forall reads eff m (mk : word -> Model) m' evs,
+  check_write_open_result_copyins reads eff m mk = CheckOk m' evs <->
+  ((exists e, In e write_open_errnos /\
+      eff = with_copyins reads (mkEffect (errno_ret e) [] []) /\
+      m' = m /\ evs = [])
+   \/ (exists fd, fd_lookup (m_fds m) fd = None /\
+      fd = alloc_fd (m_fds m) /\
+      eff = with_copyins reads (mkEffect fd [] []) /\
+      m' = mk fd /\ evs = [])).
+Proof.
+  intros reads eff m mk m' evs.
+  unfold check_write_open_result_copyins, check_copyins.
+  destruct (access_ranges_eqb (eff_copyins eff) reads) eqn:Hreads.
+  - apply access_ranges_eqb_eq in Hreads.
+    rewrite check_write_open_result_ok_iff. split.
     + intros [(e & HIn & Hcore & -> & ->)
              | (fd & Hlk & Heq & Hcore & -> & ->)].
       * left. exists e. repeat split; try assumption.
@@ -1328,6 +1433,38 @@ Proof.
     rewrite (Hmk _ (alloc_fd_not_error_b _)). reflexivity.
 Qed.
 
+(** The write-open version: identical structure, [write_open_errnos]
+    instead of [openat_errnos].  [check_openat_table]'s table result
+    for a write open uses [check_write_open_result], and the cloexec
+    wrapping preserves it. *)
+Lemma check_openat_write_open_result : forall i dirfd pathp flags eff m reads mk mk',
+  (forall fd, addr_is_error_b fd = false ->
+     mk' fd = open_cloexec_model flags fd (mk fd)) ->
+  check_openat_table i dirfd pathp flags eff m
+  = check_write_open_result_copyins reads eff m mk ->
+  check_openat i dirfd pathp flags eff m = check_write_open_result_copyins reads eff m mk'.
+Proof.
+  intros i dirfd pathp flags [ret ws zs us cs copyins] m reads mk mk' Hmk Ht.
+  unfold check_openat. rewrite Ht.
+  unfold check_write_open_result_copyins, check_copyins, check_write_open_result,
+    check_new_fd_result, clear_copyins, with_copyins.
+  cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+  destruct (access_ranges_eqb copyins reads); [|reflexivity].
+  destruct ws as [|? ?]; [|reflexivity].
+  destruct zs as [|? ?]; [|reflexivity].
+  destruct us as [|? ?]; [|reflexivity].
+  destruct cs as [|? ?]; [|reflexivity].
+  cbv beta iota.
+  destruct (errno_ret_in write_open_errnos ret) eqn:He.
+  - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    destruct (write_open_errno_range e HIn) as [He1 He2].
+    unfold open_cloexec_model. rewrite (errno_ret_error_b e He1 He2). reflexivity.
+  - destruct (fd_lookup (m_fds m) ret); [reflexivity|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Hb; [|reflexivity].
+    apply bv_eqb_eq in Hb. subst ret.
+    rewrite (Hmk _ (alloc_fd_not_error_b _)). reflexivity.
+Qed.
+
 (** The two modeled open shapes reduce the checker to
     [check_open_result] with the respective success-model builder: the
     new descriptor installed, and its close-on-exec bit recorded as the
@@ -1395,7 +1532,7 @@ Lemma openat_wr_check : forall segs ms x8 model p,
   fs_under (m_fs model) p = false ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_open_result_copyins (open_copyins ms) eff model
+    = check_write_open_result_copyins (open_copyins ms) eff model
         (fun fd => with_cloexec
                      (cloexec_set (m_cloexec model) fd (open_cloexec_b (ms_gpr ms 2)))
                      (with_fds (fd_insert (m_fds model) fd
@@ -1406,7 +1543,7 @@ Proof.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
   rewrite (check_syscall_56 segs ms x8 eff model Hno).
-  apply (check_openat_open_result _ _ _ _ _ _ _
+  apply (check_openat_write_open_result _ _ _ _ _ _ _
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFileW p (Z_to_bv 64 0)))
                         (with_fs (fs_set (m_fs model) p []) model)));
@@ -1426,8 +1563,8 @@ Proof.
   rewrite Z.eqb_refl. cbv beta iota.
   unfold Open.check_openat_create, check_create_wronly.
   rewrite Hdot, Hun. rewrite orb_false_l. cbv beta iota.
-  unfold check_open_result_copyins, open_copyins.
-  destruct (check_open_result (clear_copyins eff) model
+  unfold check_write_open_result_copyins, open_copyins.
+  destruct (check_write_open_result (clear_copyins eff) model
     (fun fd : word =>
        with_fds
          (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
@@ -1435,7 +1572,7 @@ Proof.
     eqn:Hresult.
   - reflexivity.
   - reflexivity.
-  - exfalso. now apply check_open_result_never_unmodeled in Hresult.
+  - exfalso. now apply check_write_open_result_never_unmodeled in Hresult.
 Qed.
 
 (** The write-create open of a plain name SOME KEY LIVES UNDER: the
@@ -1616,6 +1753,120 @@ Proof.
           by (rewrite Heq; apply alloc_fd_not_error_b).
         rewrite Hne in Ht.
         right. exists fd. auto.
+Qed.
+
+(** The write-open version of [tfo_open_core]: identical except for
+    [write_open_errnos] and [check_write_open_result_copyins]. *)
+Lemma tfo_write_open_core : forall ms model (mk : word -> Model) x8 reads
+    (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
+  ms_svc_pending ms = Some x8 ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  (forall eff, check_syscall (sys_input segs ms x8) eff model
+               = check_write_open_result_copyins reads eff model mk) ->
+  (forall fd, m_halted (mk fd) = None /\ m_vm_lazy (mk fd) = []) ->
+  (forall e, In e write_open_errnos ->
+     to_fout segs (advance_past_svc
+                     (apply_effect ms
+                       (with_copyins reads (mkEffect (errno_ret e) [] []))))
+             model (Te e)) ->
+  (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
+     to_fout segs (advance_past_svc
+                    (apply_effect ms (with_copyins reads (mkEffect fd [] []))))
+             (mk fd) (Ts fd)) ->
+  (forall o, U o <->
+     ((exists e, In e write_open_errnos /\ Te e o)
+      \/ (exists fd, fd_lookup (m_fds model) fd = None
+                     /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
+  to_fout segs ms model U.
+Proof.
+  intros ms model mk x8 reads Te Ts U Hsvc Hh Hlazy Hchk Hmk Herr Hok HU.
+  apply (tfo_sys segs ms model x8
+    (fun eff model' =>
+       if addr_is_error_b (eff_ret eff)
+       then Te ((two_pow_64 - bv_unsigned (eff_ret eff))%Z)
+       else Ts (eff_ret eff)) U); [exact Hsvc | | | | |].
+  - (* no Unmodeled *)
+    intro Hspec.
+    apply (check_syscall_complete_unmodeled _ _ (mkEffect (Z_to_bv 64 0) [] []))
+      in Hspec.
+    rewrite Hchk in Hspec.
+    exact (check_write_open_result_copyins_never_unmodeled _ _ _ _ Hspec).
+  - (* receptive: ENOMEM *)
+    exists (with_copyins reads (mkEffect (errno_ret ENOMEM) [] [])), model, [].
+    apply check_syscall_ok_iff. rewrite Hchk.
+    apply check_write_open_result_copyins_ok_iff. left. exists ENOMEM.
+    repeat split; try reflexivity. apply ENOMEM_in_write_open_errnos.
+  - (* shape *)
+    intros eff model' evs Hspec.
+    apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+    apply check_write_open_result_copyins_ok_iff in Hspec.
+    destruct Hspec as [ (e & _ & -> & -> & ->)
+                      | (fd & _ & _ & -> & -> & ->) ].
+    + repeat split; assumption.
+    + destruct (Hmk fd) as [Hhalt Hlazy']. repeat split; assumption.
+  - (* continuations *)
+    intros eff model' evs Hspec.
+    apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+    apply check_write_open_result_copyins_ok_iff in Hspec.
+    destruct Hspec as [ (e & HIn & -> & -> & _)
+                      | (fd & Hlk & Heq & -> & -> & _) ].
+    + destruct (write_open_errno_range e HIn) as [He1 He2].
+      cbn [eff_ret with_copyins].
+      rewrite (errno_ret_error_b e He1 He2).
+      rewrite (errno_ret_recover e He1 He2).
+      apply Herr; assumption.
+    + cbn [eff_ret with_copyins].
+      assert (Hne : addr_is_error_b fd = false)
+        by (rewrite Heq; apply alloc_fd_not_error_b).
+      rewrite Hne.
+      apply Hok; assumption.
+  - (* outcome set *)
+    intro o. rewrite HU. split.
+    + intros [ (e & HIn & Ht) | (fd & Hlk & Heq & Ht) ].
+      * destruct (write_open_errno_range e HIn) as [He1 He2].
+        exists (with_copyins reads (mkEffect (errno_ret e) [] [])), model, [].
+        split.
+        { apply check_syscall_ok_iff. rewrite Hchk.
+          apply check_write_open_result_copyins_ok_iff. left. exists e. auto. }
+        { cbn [eff_ret with_copyins]. rewrite (errno_ret_error_b e He1 He2).
+          rewrite (errno_ret_recover e He1 He2). exact Ht. }
+      * exists (with_copyins reads (mkEffect fd [] [])), (mk fd), [].
+        split.
+        { apply check_syscall_ok_iff. rewrite Hchk.
+          apply check_write_open_result_copyins_ok_iff. right. exists fd. auto. }
+        { cbn [eff_ret with_copyins].
+          assert (Hne : addr_is_error_b fd = false)
+            by (rewrite Heq; apply alloc_fd_not_error_b).
+          rewrite Hne. exact Ht. }
+    + intros (eff & model' & evs & Hspec & Ht).
+      apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
+      apply check_write_open_result_copyins_ok_iff in Hspec.
+      destruct Hspec as [ (e & HIn & -> & -> & _)
+                        | (fd & Hlk & Heq & -> & -> & _) ].
+      * destruct (write_open_errno_range e HIn) as [He1 He2].
+        cbn [eff_ret with_copyins] in Ht.
+        rewrite (errno_ret_error_b e He1 He2) in Ht.
+        rewrite (errno_ret_recover e He1 He2) in Ht.
+        left. exists e. auto.
+      * cbn [eff_ret with_copyins] in Ht.
+        assert (Hne : addr_is_error_b fd = false)
+          by (rewrite Heq; apply alloc_fd_not_error_b).
+        rewrite Hne in Ht.
+        right. exists fd. auto.
+Qed.
+
+(** A concrete write-open success resolution. *)
+Lemma write_open_ok_fd : forall ms model (mk : word -> Model) x8 reads fd,
+  (forall eff, check_syscall (sys_input segs ms x8) eff model
+               = check_write_open_result_copyins reads eff model mk) ->
+  fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
+  syscall_spec (sys_input segs ms x8) model
+    (Ok (with_copyins reads (mkEffect fd [] [])) (mk fd) []).
+Proof.
+  intros ms model mk x8 reads fd Hchk Hlk Hlt.
+  apply check_syscall_ok_iff. rewrite Hchk.
+  apply check_write_open_result_copyins_ok_iff. right. exists fd. auto.
 Qed.
 
 (** A concrete successful open resolution (used by the escape path). *)
