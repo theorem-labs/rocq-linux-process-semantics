@@ -1032,6 +1032,23 @@ Proof.
       aa_frame He .. ].
 Qed.
 
+(** [clone3]: through [check_clone3_ok_inv], as [Checks.NsFileFree.check_clone3_nf]
+    does; its stores arm is one more [check_clone_resolve]. *)
+Local Lemma check_clone3_aa : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i uargs size eff m m' evs H Hinv.
+  destruct (LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork.check_clone3_ok_inv
+              _ _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    [ exact Hinv
+    | clear H;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+        check_clone3_einval in He;
+      aa_frame He .. ].
+Qed.
+
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
   unfold checked_table.
@@ -1040,10 +1057,11 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_use check_openat_aa H; fail).
-  (* [clone] by its own lemma, picked by the shape of [H] first, so no
-     other arm's [H] is elaborated against it. *)
+  (* [clone] and [clone3] by their own lemmas, picked by the shape of [H]
+     first, so no other arm's [H] is elaborated against them. *)
   all: try (lazymatch type of H with
             | check_clone _ _ _ _ = _ => exact (check_clone_aa _ _ _ _ _ _ H Hinv)
+            | check_clone3 _ _ _ _ _ = _ => exact (check_clone3_aa _ _ _ _ _ _ _ H Hinv)
             end).
   all: try (aa_use check_dup_aa H; fail).
   all: try (aa_frame H; fail).
