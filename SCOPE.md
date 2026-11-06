@@ -613,9 +613,17 @@ not apply.
   recorded child, and the multi-process core's reap arms in `Procs.v`
   (`pstep_wait_reap`, `pstep_wait_nohang_reap` and their `pstep_x_at`
   twins) for a zombie of the table, which `wait4_refused_b` refuses
-  without it. `Checks.ProcsSigchld.sigchld_reachable_valid` proves every
-  entry of every table reachable from a valid launch has the bit, so
-  under the pin those arms answer exactly as before.
+  without it. `Checks.ProcsSigchld.sigchld_reachable_launch` proves every
+  entry of every table reachable from a launch that pins the field has the
+  bit, with one corollary per launch predicate (`sigchld_reachable_valid`
+  and its siblings, `FinInput.finite_input` included), and
+  `pxruns_sigchld_reachable` carries it along runs under an extension
+  that agrees with the core, so under the pin those arms answer exactly as
+  before. At a SIG_IGN launch, which no launch predicate admits, the bit
+  declines more than Linux's `-ECHILD` cases (WNOHANG with a zombie and a
+  live child; blocking; the SIG_DFL install with a recorded child): a known
+  model imprecision for SIG_IGN launches. If a SIG_IGN launch is ever
+  admitted, these must be answered exactly first.
 - Nothing outside the process makes a signal pending for it, or wakes it
   as if one were: no other process sends it a signal; it is not frozen
   (`freeze_task`, `kernel/freezer.c`, for suspend and the cgroup v1

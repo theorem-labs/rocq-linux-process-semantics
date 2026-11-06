@@ -37,7 +37,18 @@
     keeps the model's [ProcState] ([sigchld_launch]).  So
     [sigchld_reachable_valid] holds of every run from a valid launch with
     no start premise ([sigchld_reachable_inherited] likewise for
-    [Run.valid_input_inherited]). *)
+    [Run.valid_input_inherited]).  Every one of the 17 launch predicates of
+    [Run], and [FinInput.finite_input], pins the field the same way:
+    [sigchld_reachable_launch] takes the pin alone, and each predicate has
+    its accessor ([valid_input_abort_sigchld_default] and its siblings) and
+    corollary ([sigchld_reachable_abort] and its siblings).
+
+    UNDER AN EXTENSION.  [pxruns_sigchld_reachable] carries the invariant
+    along a run of [Procs.pstep_x_cfg] wherever the extension agrees with
+    the core at each table of the run ([Procs.ext_agrees], the premise of
+    [pstep_x_at_preserves_sigchld]); [pxruns_sigchld_reachable_launch]
+    starts it from a launch, and [pxruns_sigchld_reachable_no_ext]
+    discharges the agreement for the released extension. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -45,6 +56,9 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Syscall Uapi.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ProcsWellFormed ProcsWait4Gate ProcsChildPids ProcsSigchldFrame.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require NsCloneRefusers.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Ext.
+From LinuxProcessSemantics.EquivalenceDefinition Require FinInput.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -407,6 +421,208 @@ Proof.
               (valid_input_inherited_sigchld_default inp Hv)) Hr).
 Qed.
 
+(** EVERY LAUNCH PREDICATE.  The start case needs only the launch input's
+    [in_sigchld_default inp = true], which each of the 17 launch predicates
+    of [Run] and [FinInput.finite_input] ends with.  [sigchld_reachable_launch]
+    is the one lemma; each predicate gets an accessor for its pin and a
+    corollary ([valid_input] and [valid_input_inherited] have theirs above,
+    through [Run]'s own accessors). *)
+Theorem sigchld_reachable_launch : forall segs pc ph sp brk0 mbase rnd lim inp
+    segs' cfg P,
+  in_sigchld_default inp = true ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P ->
+  sigchld_ok P.
+Proof.
+  intros segs pc ph sp brk0 mbase rnd lim inp segs' cfg P Hd Hr.
+  exact (sigchld_reachable _ _ _ _
+           (sigchld_launch segs pc ph sp brk0 mbase rnd lim inp Hd) Hr).
+Qed.
+
+(** The pin, read by shape from a predicate's conjuncts. *)
+Local Ltac sigchld_pin :=
+  let inp := fresh "inp" in let Hv := fresh "Hv" in
+  intros inp Hv; red in Hv;
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  assumption.
+
+Lemma valid_input_abort_sigchld_default : forall inp,
+  valid_input_abort inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_either_sigchld_default : forall inp,
+  valid_input_either inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_sigpipe_ignored_sigchld_default : forall inp,
+  valid_input_sigpipe_ignored inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_sigpipe_either_sigchld_default : forall inp,
+  valid_input_sigpipe_either inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_channel_closed_sigchld_default : forall inp,
+  valid_input_channel_closed inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_channel_either_sigchld_default : forall inp,
+  valid_input_channel_either inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_paths_sigchld_default : forall inp,
+  valid_input_paths inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_sigpipe_kills_sigchld_default : forall inp,
+  valid_input_sigpipe_kills inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_sv39_sigchld_default : forall inp,
+  valid_input_sv39 inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_sv57_sigchld_default : forall inp,
+  valid_input_sv57 inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_va_any_sigchld_default : forall inp,
+  valid_input_va_any inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_hwcap_rv64gc_sigchld_default : forall inp,
+  valid_input_hwcap_rv64gc inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_hwcap_rv64gcv_sigchld_default : forall inp,
+  valid_input_hwcap_rv64gcv inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_abort_hwcap_rv64gc_sigchld_default : forall inp,
+  valid_input_abort_hwcap_rv64gc inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma valid_input_abort_hwcap_rv64gcv_sigchld_default : forall inp,
+  valid_input_abort_hwcap_rv64gcv inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+Lemma finite_input_sigchld_default : forall inp,
+  FinInput.finite_input inp -> in_sigchld_default inp = true.
+Proof. sigchld_pin. Qed.
+
+(** One corollary per predicate: every reachable table has the bit in
+    every entry. *)
+Local Ltac sigchld_corollary acc :=
+  let segs := fresh "segs" in let pc := fresh "pc" in let ph := fresh "ph" in
+  let sp := fresh "sp" in let brk0 := fresh "brk0" in let mbase := fresh "mbase" in
+  let rnd := fresh "rnd" in let lim := fresh "lim" in let inp := fresh "inp" in
+  let segs' := fresh "segs'" in let cfg := fresh "cfg" in let P := fresh "P" in
+  let Hv := fresh "Hv" in let Hr := fresh "Hr" in
+  intros segs pc ph sp brk0 mbase rnd lim inp segs' cfg P Hv Hr;
+  exact (sigchld_reachable_launch segs pc ph sp brk0 mbase rnd lim inp segs' cfg P
+           (acc inp Hv) Hr).
+
+Corollary sigchld_reachable_abort : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_abort inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_abort_sigchld_default. Qed.
+Corollary sigchld_reachable_either : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_either inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_either_sigchld_default. Qed.
+Corollary sigchld_reachable_sigpipe_ignored : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_sigpipe_ignored inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_sigpipe_ignored_sigchld_default. Qed.
+Corollary sigchld_reachable_sigpipe_either : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_sigpipe_either inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_sigpipe_either_sigchld_default. Qed.
+Corollary sigchld_reachable_channel_closed : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_channel_closed inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_channel_closed_sigchld_default. Qed.
+Corollary sigchld_reachable_channel_either : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_channel_either inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_channel_either_sigchld_default. Qed.
+Corollary sigchld_reachable_paths : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_paths inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_paths_sigchld_default. Qed.
+Corollary sigchld_reachable_sigpipe_kills : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_sigpipe_kills inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_sigpipe_kills_sigchld_default. Qed.
+Corollary sigchld_reachable_sv39 : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_sv39 inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_sv39_sigchld_default. Qed.
+Corollary sigchld_reachable_sv57 : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_sv57 inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_sv57_sigchld_default. Qed.
+Corollary sigchld_reachable_va_any : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_va_any inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_va_any_sigchld_default. Qed.
+Corollary sigchld_reachable_hwcap_rv64gc : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_hwcap_rv64gc inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_hwcap_rv64gc_sigchld_default. Qed.
+Corollary sigchld_reachable_hwcap_rv64gcv : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_hwcap_rv64gcv inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_hwcap_rv64gcv_sigchld_default. Qed.
+Corollary sigchld_reachable_abort_hwcap_rv64gc : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_abort_hwcap_rv64gc inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_abort_hwcap_rv64gc_sigchld_default. Qed.
+Corollary sigchld_reachable_abort_hwcap_rv64gcv : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  valid_input_abort_hwcap_rv64gcv inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary valid_input_abort_hwcap_rv64gcv_sigchld_default. Qed.
+Corollary sigchld_reachable_finite : forall segs pc ph sp brk0 mbase rnd lim inp segs' cfg P,
+  FinInput.finite_input inp ->
+  pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
+Proof. sigchld_corollary finite_input_sigchld_default. Qed.
+
+(** UNDER AN EXTENSION.  A run of [Procs.pstep_x_cfg]
+    ([Checks.NsCloneRefusers.pxruns]) keeps the invariant wherever the
+    extension agrees with the core at every table the run passes through,
+    the premise of [pstep_x_at_preserves_sigchld]. *)
+Theorem pxruns_sigchld_reachable : forall ext cenv segs cfg P Q,
+  (forall R, NsCloneRefusers.pxruns ext cenv segs cfg P R -> ext_agrees ext cenv segs R) ->
+  sigchld_ok P -> NsCloneRefusers.pxruns ext cenv segs cfg P Q -> sigchld_ok Q.
+Proof.
+  intros ext cenv segs cfg P Q Hag H0 Hr. revert Hag H0.
+  induction Hr as [P0 | P0 evs P1 P2 Hs Hr' IH]; intros Hag H0; [exact H0|].
+  apply IH.
+  - intros R HR. apply Hag. exact (NsCloneRefusers.pxruns_step _ _ _ _ _ _ _ _ Hs HR).
+  - destruct Hs as (p & Hs).
+    exact (pstep_x_at_preserves_sigchld _ _ _ _ _ _ _ _
+             (Hag P0 (NsCloneRefusers.pxruns_refl _ _ _ _ _)) H0 Hs).
+Qed.
+
+(** From any launch whose input pins [in_sigchld_default] to [true] (every
+    launch predicate above does), under the same agreement premise. *)
+Corollary pxruns_sigchld_reachable_launch : forall ext cenv segs pc ph sp brk0 mbase rnd lim
+    inp segs' cfg Q,
+  in_sigchld_default inp = true ->
+  (forall R, NsCloneRefusers.pxruns ext cenv segs' cfg
+               (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) R ->
+             ext_agrees ext cenv segs' R) ->
+  NsCloneRefusers.pxruns ext cenv segs' cfg
+    (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) Q ->
+  sigchld_ok Q.
+Proof.
+  intros ext cenv segs pc ph sp brk0 mbase rnd lim inp segs' cfg Q Hd Hag Hr.
+  exact (pxruns_sigchld_reachable _ _ _ _ _ _ Hag
+           (sigchld_ok_one_proc _ (sigchld_launch segs pc ph sp brk0 mbase rnd lim inp Hd)) Hr).
+Qed.
+
+(** The agreement premise is met at every table by the released extension
+    ([Procs.ext_released_agrees], [Procs.ext_released_at_no_ext]), so for it
+    the run lemma needs nothing but the launch's bit. *)
+Corollary pxruns_sigchld_reachable_no_ext : forall segs cfg c Q,
+  m_sigchld_dfl (cfg_model c) = true ->
+  NsCloneRefusers.pxruns Ext.no_ext Ext.any_clone_failure segs cfg (one_proc c) Q ->
+  sigchld_ok Q.
+Proof.
+  intros segs cfg c Q Hc Hr.
+  refine (pxruns_sigchld_reachable _ _ _ _ _ _ _ (sigchld_ok_one_proc c Hc) Hr).
+  intros R _. exact (ext_released_agrees _ _ _ _ (ext_released_at_no_ext segs R)).
+Qed.
+
 Print Assumptions sigchld_reachable.
 Print Assumptions sigchld_clear_wait4_declines.
 Print Assumptions sigchld_reachable_valid.
+Print Assumptions sigchld_reachable_launch.
+Print Assumptions sigchld_reachable_abort.
+Print Assumptions sigchld_reachable_finite.
+Print Assumptions pxruns_sigchld_reachable.
+Print Assumptions pxruns_sigchld_reachable_no_ext.
