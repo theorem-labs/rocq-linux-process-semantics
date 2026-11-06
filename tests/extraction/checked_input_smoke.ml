@@ -82,7 +82,8 @@ let seed : M.rawProcInput = {
   rpi_cap_inheritable = z "0"; rpi_inherited_fds = [];
   rpi_selfkill_terminal = false; rpi_cgroup_bpf_setsockopt = false;
   rpi_clone_refusers = { M.cr_perf_inherit = false; cr_bpf_task_alloc = false;
-                         cr_sched_ext = false } }
+                         cr_sched_ext = false };
+  rpi_sigchld_default = true }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -300,7 +301,8 @@ let () =
               rpi_selfkill_terminal = false; rpi_cgroup_bpf_setsockopt = false;
               rpi_clone_refusers = { M.cr_perf_inherit = false;
                                      cr_bpf_task_alloc = false;
-                                     cr_sched_ext = false } }))
+                                     cr_sched_ext = false };
+              rpi_sigchld_default = true }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

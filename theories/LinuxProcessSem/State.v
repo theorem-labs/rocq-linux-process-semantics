@@ -5405,14 +5405,18 @@ Record ProcState := mkProcState {
        modeled, [Net.Socket.setsockopt_spec] declines when it is present.
        [init_model] seeds this from [in_cgroup_bpf_setsockopt]; every
        transition and a child's construction retain the launch value. *);
-  procst_sigchld_dfl : bool      (* WHETHER THIS PROCESS INSTALLED SIG_DFL
-                                    FOR SIGCHLD with SA_NOCLDWAIT clear
-                                    while it had no recorded child, so the
-                                    bit is set only if every child the
-                                    process has was cloned while SIGCHLD was
-                                    SIG_DFL.
-                                    [false] at launch ([mkModel],
-                                    [init_model]); set by the one SIGCHLD
+  procst_sigchld_dfl : bool      (* WHETHER SIGCHLD IS SIG_DFL WITH
+                                    SA_NOCLDWAIT CLEAR for this process, and
+                                    has been since before its first recorded
+                                    child, so the bit is set only if every
+                                    child the process has was cloned while
+                                    SIGCHLD was SIG_DFL.
+                                    [init_model] seeds it from the launch's
+                                    declared disposition
+                                    ([ProcInput.in_sigchld_default]: [true] at
+                                    SIG_DFL, [false] at SIG_IGN; a launch has
+                                    no child); [mkModel] starts it [false];
+                                    set by the one SIGCHLD
                                     install the model answers
                                     ([Kernel.Signal.sigchld_dfl_install] in
                                     [Kernel.Signal.rt_sigaction_spec]), and
@@ -5426,7 +5430,8 @@ Record ProcState := mkProcState {
                                     disposition a process starts with is its
                                     launcher's: [begin_new_exec] calls
                                     [flush_signal_handlers(me, 0)] (fs/exec.c,
-                                    Linux v6.18.46), which keeps a SIG_IGN
+                                    Linux v6.18.46), which keeps a SIG_IGN and
+                                    clears [sa_flags], SA_NOCLDWAIT included
                                     (kernel/signal.c).  Under SIG_IGN, or with
                                     SA_NOCLDWAIT set, [do_notify_parent]
                                     (kernel/signal.c) reaps an exiting child
@@ -5438,11 +5443,13 @@ Record ProcState := mkProcState {
                                     SIG_IGN may be gone before a later
                                     SIG_DFL install.  So the bit is set only
                                     if every child the process has was cloned
-                                    while SIGCHLD was SIG_DFL, and
-                                    [Kernel.Exit.wait4_spec] answers a caller
+                                    while SIGCHLD was SIG_DFL (the launch seed
+                                    keeps this: [init_model] records no child),
+                                    and [Kernel.Exit.wait4_spec] answers a caller
                                     with a recorded child only when it is
-                                    set; that answer rests on no fact about
-                                    the launch's disposition.
+                                    set, so that answer rests on the launch's
+                                    declared disposition or the process's own
+                                    install, never on an unstated assumption.
 
                                     WHY IT IS NEVER CLEARED.  Once set, SIGCHLD
                                     is SIG_DFL with SA_NOCLDWAIT clear, and no
@@ -5684,11 +5691,13 @@ Definition m_selfkill_terminal (m : Model) : bool :=
   procst_selfkill_terminal (m_proc m).
 Definition m_cgroup_bpf_setsockopt (m : Model) : bool :=
   procst_cgroup_bpf_setsockopt (m_proc m).
-(** Whether this process installed SIG_DFL for SIGCHLD with SA_NOCLDWAIT
-    clear while it had no recorded child, so the bit is set only if every
-    child the process has was cloned while SIGCHLD was SIG_DFL.
-    [Kernel.Exit.wait4_spec] reads it before it answers a caller with a
-    recorded child.  [false] at launch; see [procst_sigchld_dfl]. *)
+
+(** Whether SIGCHLD is SIG_DFL with SA_NOCLDWAIT clear for this process,
+    and has been since before its first recorded child, so the bit is set
+    only if every child the process has was cloned while SIGCHLD was
+    SIG_DFL.  [Kernel.Exit.wait4_spec] reads it before it answers a caller
+    with a recorded child.  At launch, the declared disposition
+    ([ProcInput.in_sigchld_default]); see [procst_sigchld_dfl]. *)
 Definition m_sigchld_dfl (m : Model) : bool :=
   procst_sigchld_dfl (m_proc m).
 
@@ -6366,14 +6375,14 @@ Definition with_cgroup_bpf_setsockopt (b : bool) (m : Model) : Model :=
                          (m_selfkill_terminal m) b (m_sigchld_dfl m) (m_clone_refusers m))
             (m_lim m) (m_time m).
 
-(** Record whether the process installed SIG_DFL for SIGCHLD with
-    SA_NOCLDWAIT clear while it had no recorded child.  Its one writer is
+(** Install the held SIGCHLD bit.  Its transition writer is
     [Kernel.Signal.rt_sigaction_spec]'s [sigchld_dfl_install] arm,
     through [Kernel.Signal.sigchld_install_model], which writes [true]
     in a process with no recorded child and the bit's own value
     otherwise; nothing turns it from [true] to [false], because no
-    answered call can leave SIGCHLD anything else afterwards.  See
-    [procst_sigchld_dfl]. *)
+    answered call can leave SIGCHLD anything else afterwards.
+    [init_model_setter_chain] writes the launch's declared value
+    ([ProcInput.in_sigchld_default]).  See [procst_sigchld_dfl]. *)
 Definition with_sigchld_dfl (b : bool) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -8943,23 +8952,42 @@ Record ProcInput := mkProcInput_full {
        whose clones answer from the model's lists.  A statement about a
        host with a refuser drops that clause and states the field.
        Appended after every field the record had, as [mkProcInput]'s note
-       asks *)
+       asks *);
+  in_sigchld_default : bool
+    (* THE LAUNCHER'S SIGCHLD DISPOSITION, as the program starts.
+       [true]: SIG_DFL.  [false]: SIG_IGN.  No third value: [execve]'s
+       [begin_new_exec] calls [flush_signal_handlers(me, 0)] (fs/exec.c:1252,
+       Linux v6.18.46), which keeps SIG_IGN, writes SIG_DFL over every
+       other handler and clears [sa_flags], SA_NOCLDWAIT included
+       (kernel/signal.c:520-534).  So a SIG_DFL launch has SA_NOCLDWAIT
+       clear, and a SIG_IGN launch makes [do_notify_parent] reap an
+       exiting child itself (kernel/signal.c:2241-2259), so [wait4] never
+       returns its pid.
+
+       [init_model] copies it into [procst_sigchld_dfl], which
+       [Kernel.Exit.wait4_spec] reads before it answers a caller with a
+       recorded child.  [Run.valid_input] and every sibling launch
+       predicate PIN IT TO [true], the SIG_DFL launch SCOPE.md assumes,
+       so every statement keeps its domain.  A statement about a SIG_IGN
+       launch drops that clause and states the field.  Appended after
+       every field the record had, as [mkProcInput]'s note asks *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the thirteen
+(** THE POSITIONAL-LITERAL FORM: every field except the fourteen
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
     [in_kernel], [in_execfn], [in_channel_reader],
     [in_sigpipe_default], [in_sigpipe_terminal], [in_ppid],
     [in_cap_inheritable], [in_inherited_fds], [in_selfkill_terminal],
-    [in_cgroup_bpf_setsockopt], [in_clone_refusers]).
+    [in_cgroup_bpf_setsockopt], [in_clone_refusers], [in_sigchld_default]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last thirteen with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    last fourteen with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
     DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
     SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0, AN EMPTY
     INHERITABLE SET, NO INHERITED DESCRIPTOR, SELF-SENT SIGKILL
-    DECLINED, NO CGROUP-BPF SETSOCKOPT HOOK and NO CLONE REFUSER:
+    DECLINED, NO CGROUP-BPF SETSOCKOPT HOOK, NO CLONE REFUSER and SIGCHLD
+    AT SIG_DFL:
     [default_urandom], which is zero bytes
     forever; a private /tmp that starts empty; [default_kernel], a
     kernel built without transparent huge pages; [default_execfn], the
@@ -8972,10 +9000,11 @@ Record ProcInput := mkProcInput_full {
     inherited descriptors [Run.valid_input] pins
     ([mkProcInput_inherited_fds]); [false], the declined self-sent
     SIGKILL [Run.valid_input] pins ([mkProcInput_selfkill_terminal]);
-    [false], the absent cgroup-BPF setsockopt hook; and
+    [false], the absent cgroup-BPF setsockopt hook;
     [no_clone_refusers], the host without perf events, a BPF [task_alloc]
     program or a sched_ext scheduler that [Run.valid_input] pins
-    ([mkProcInput_clone_refusers]).
+    ([mkProcInput_clone_refusers]); and [true], the SIG_DFL SIGCHLD launch
+    [Run.valid_input] pins ([mkProcInput_sigchld_default]).
     So a literal written
     through this name denotes an input in an environment that holds no
     file of its own, on an ordinary kernel, launched as "a", whose
@@ -8983,7 +9012,8 @@ Record ProcInput := mkProcInput_full {
     write to a reader-less descriptor declines, whose parent is observed
     as pid 0, whose inheritable set is empty, which inherits no
     descriptor above 2, whose [kill] of itself declines, which has no
-    cgroup-BPF setsockopt hook, and whose clones meet no host refuser.
+    cgroup-BPF setsockopt hook, whose clones meet no host refuser, and
+    whose SIGCHLD is at SIG_DFL.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -9010,7 +9040,7 @@ Definition mkProcInput
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
     default_kernel default_execfn true true false (Z_to_bv 64 0)
-    (Z_to_bv 64 0) [] false false no_clone_refusers.
+    (Z_to_bv 64 0) [] false false no_clone_refusers true.
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
@@ -9049,6 +9079,17 @@ Lemma mkProcInput_clone_refusers :
   in_clone_refusers
     (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
        hwcap abort_terminal va_size) = no_clone_refusers.
+Proof. reflexivity. Qed.
+
+(** The SIGCHLD default is the LITERAL [true], SIG_DFL: every input built
+    through [mkProcInput] is a launch whose SIGCHLD is at SIG_DFL, which
+    is what [Run.valid_input] pins. *)
+Lemma mkProcInput_sigchld_default :
+  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_sigchld_default
+    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = true.
 Proof. reflexivity. Qed.
 
 (** The inherited-descriptor default is the LITERAL [[]], not a
@@ -9092,7 +9133,8 @@ Definition with_inherited_fds (l : list (word * list byte)) (inp : ProcInput)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
     (in_ppid inp) (in_cap_inheritable inp) l (in_selfkill_terminal inp)
-    (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp).
+    (in_cgroup_bpf_setsockopt inp) (in_clone_refusers inp)
+    (in_sigchld_default inp).
 
 (** Replace only the cgroup-BPF setsockopt launch value. *)
 Definition input_with_cgroup_bpf_setsockopt (b : bool) (inp : ProcInput)
@@ -9103,7 +9145,8 @@ Definition input_with_cgroup_bpf_setsockopt (b : bool) (inp : ProcInput)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
     (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
-    (in_selfkill_terminal inp) b (in_clone_refusers inp).
+    (in_selfkill_terminal inp) b (in_clone_refusers inp)
+    (in_sigchld_default inp).
 
 Lemma in_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b inp,
   in_cgroup_bpf_setsockopt (input_with_cgroup_bpf_setsockopt b inp) = b.
@@ -9118,10 +9161,27 @@ Definition input_with_clone_refusers (r : CloneRefusers) (inp : ProcInput)
     (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
     (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
     (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
-    (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) r.
+    (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) r
+    (in_sigchld_default inp).
 
 Lemma in_clone_refusers_with_clone_refusers : forall r inp,
   in_clone_refusers (input_with_clone_refusers r inp) = r.
+Proof. reflexivity. Qed.
+
+(** Replace only the launch's SIGCHLD disposition. *)
+Definition input_with_sigchld_default (b : bool) (inp : ProcInput)
+    : ProcInput :=
+  mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) (in_stdin inp)
+    (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp) (in_nofile inp)
+    (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
+    (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+    (in_channel_reader inp) (in_sigpipe_default inp) (in_sigpipe_terminal inp)
+    (in_ppid inp) (in_cap_inheritable inp) (in_inherited_fds inp)
+    (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp)
+    (in_clone_refusers inp) b.
+
+Lemma in_sigchld_default_with_sigchld_default : forall b inp,
+  in_sigchld_default (input_with_sigchld_default b inp) = b.
 Proof. reflexivity. Qed.
 
 Lemma m_cgroup_bpf_setsockopt_with_cgroup_bpf_setsockopt : forall b m,
@@ -9306,8 +9366,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        (sigpipe_action_at_exec (in_sigpipe_default inp)) (in_sigpipe_terminal inp)
        (Z_to_bv 64 0) [] false
        (Z_to_bv 64 1) (in_ppid inp) (in_cap_inheritable inp) false false
-       (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp) false
-       (in_clone_refusers inp))
+       (in_selfkill_terminal inp) (in_cgroup_bpf_setsockopt inp)
+       (in_sigchld_default inp) (in_clone_refusers inp))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -9318,7 +9378,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
     (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_clone_refusers (in_clone_refusers inp)
+  with_sigchld_dfl (in_sigchld_default inp)
+  (with_clone_refusers (in_clone_refusers inp)
   (with_cgroup_bpf_setsockopt (in_cgroup_bpf_setsockopt inp)
   (with_selfkill_terminal (in_selfkill_terminal inp)
   (with_cap_inheritable (in_cap_inheritable inp)
@@ -9346,7 +9407,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))))))))).
+       None))))))))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
@@ -13029,10 +13090,11 @@ Lemma m_selfkill_terminal_init_model : forall reserved brk0 mbase sp lim inp,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_selfkill_terminal_init_model : model.
 
-(** No SIGCHLD install at launch: the process has made none yet, whatever
-    disposition its launcher left ([procst_sigchld_dfl]). *)
+(** The held SIGCHLD bit at launch is the launch's declared disposition,
+    [ProcInput.in_sigchld_default]: [true] exactly at a SIG_DFL launch,
+    whose SA_NOCLDWAIT [execve] has cleared ([procst_sigchld_dfl]). *)
 Lemma m_sigchld_dfl_init_model : forall reserved brk0 mbase sp lim inp,
-  m_sigchld_dfl (init_model reserved brk0 mbase sp lim inp) = false.
+  m_sigchld_dfl (init_model reserved brk0 mbase sp lim inp) = in_sigchld_default inp.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_sigchld_dfl_init_model : model.
 

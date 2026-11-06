@@ -511,6 +511,18 @@ Proof.
        destruct (m_has_children m); [cbn in Hd; discriminate Hd | right; reflexivity]) ].
 Qed.
 
+(** ...and its LAUNCH half: [State.init_model] copies the declared launch
+    disposition ([State.ProcInput.in_sigchld_default]) into the bit in a
+    process with no child, so a set bit at launch holds the invariant with
+    nothing to say about any child.  Every child a SIG_DFL launch then
+    clones is cloned while the bit, and so SIGCHLD at SIG_DFL, holds. *)
+Lemma init_model_sigchld_bit_without_children :
+  forall reserved brk0 mbase sp lim inp,
+  m_sigchld_dfl (init_model reserved brk0 mbase sp lim inp) = in_sigchld_default inp
+  /\ m_has_children (init_model reserved brk0 mbase sp lim inp) = false
+  /\ m_child_pids (init_model reserved brk0 mbase sp lim inp) = [].
+Proof. intros. split; [reflexivity | split; reflexivity]. Qed.
+
 (** A caller with child history admits no -ECHILD return, regardless of
     the effect's stores or the post-model.  The reap's own pid bound
     excludes errno words even when a raw model records one as a pid. *)
@@ -1224,7 +1236,8 @@ Example the_random_clause_is_what_the_fixture_carries :
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
                           false Sv48 IEof [] default_kernel default_execfn
-                          true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers).
+                          true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false no_clone_refusers
+                          true).
 Proof.
   split.
   - valid_urandom_default.
