@@ -602,6 +602,7 @@ Definition EACCES : Z := 13%Z.
 Definition EBUSY  : Z := 16%Z.
 Definition ENFILE : Z := 23%Z.
 Definition EMFILE : Z := 24%Z.
+Definition ETXTBSY : Z := 26%Z.
 Definition EROFS  : Z := 30%Z.
 Definition EOVERFLOW : Z := 75%Z.
 
