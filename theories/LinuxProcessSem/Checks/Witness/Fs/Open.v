@@ -327,6 +327,9 @@ Proof.
                           wr_create_flags).
               { destruct (path_is_dirref p || fs_under (m_fs m) p).
                 { apply pure_ok. }
+                destruct (fs_lookup (m_fs m) p).
+                { apply alt_l. eapply bind_step; [apply errno_head_witness|].
+                  apply pure_ok. }
                 apply alt_l. eapply bind_step; [apply errno_head_witness|].
                 apply pure_ok. }
               (* musl's [tmpfile()] word *)
@@ -397,6 +400,8 @@ Proof.
                   wr_create_flags) eqn:Hfw.
       * destruct (path_is_dirref p || fs_under (m_fs m) p) eqn:Hdot.
         { apply pure_ok. }
+        destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
+        { apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
         apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
       * destruct (is_excl_create
                     (Z.ldiff (bv_unsigned flags) open_ignored_flags)) eqn:Hfx.
@@ -422,6 +427,9 @@ Proof.
               ** cbv iota.
                  destruct (path_is_dirref p || fs_under (m_fs m) p) eqn:Hdot.
                  { apply pure_ok. }
+                 destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
+                 { apply alt_l. eapply bind_step; [apply errno_head_witness|].
+                   apply pure_ok. }
                  apply alt_l. eapply bind_step; [apply errno_head_witness|].
                  apply pure_ok.
               ** destruct (rdwr_open_word

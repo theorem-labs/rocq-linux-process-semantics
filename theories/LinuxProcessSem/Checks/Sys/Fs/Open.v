@@ -1126,8 +1126,11 @@ Proof.
   intros p eff m H. unfold check_openat_create in H.
   destruct (path_is_dirref p || fs_under (m_fs m) p).
   - now apply check_ret_only_no_unmodeled in H.
-  - unfold check_create_wronly in H.
-    now apply check_open_result_no_unmodeled in H.
+  - destruct (fs_lookup (m_fs m) p).
+    + unfold check_create_wronly, check_write_open_result in H.
+      now apply check_new_fd_result_no_unmodeled in H.
+    + unfold check_create_wronly_absent, check_write_open_create_result in H.
+      now apply check_new_fd_result_no_unmodeled in H.
 Qed.
 
 Local Lemma check_openat_excl_no_unmodeled : forall p eff m,
@@ -1138,8 +1141,8 @@ Proof.
   - now apply check_ret_only_no_unmodeled in H.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_ret_only_no_unmodeled in H.
-    + unfold check_create_wronly in H.
-      now apply check_open_result_no_unmodeled in H.
+    + unfold check_create_wronly_absent, check_write_open_create_result in H.
+      now apply check_new_fd_result_no_unmodeled in H.
 Qed.
 
 (** Like [check_openat_dir] below, this checker CAN decline (the
@@ -1159,12 +1162,15 @@ Proof.
         [now apply check_ret_only_no_unmodeled in H|].
       destruct (fs_lookup (m_fs m) p).
       * now apply check_ret_only_no_unmodeled in H.
-      * unfold check_open_append in H.
-        now apply check_open_result_no_unmodeled in H.
+      * unfold check_open_append_absent, check_write_open_create_result in H.
+        now apply check_new_fd_result_no_unmodeled in H.
   - exfalso. destruct (path_is_dirref p || fs_under (m_fs m) p).
     + now apply check_ret_only_no_unmodeled in H.
-    + unfold check_open_append in H.
-      now apply check_open_result_no_unmodeled in H.
+    + destruct (fs_lookup (m_fs m) p).
+      * unfold check_open_append, check_write_open_result in H.
+        now apply check_new_fd_result_no_unmodeled in H.
+      * unfold check_open_append_absent, check_write_open_create_result in H.
+        now apply check_new_fd_result_no_unmodeled in H.
 Qed.
 
 (** Unlike its three neighbours this checker CAN decline, so the
@@ -1187,8 +1193,8 @@ Qed.
 Local Lemma check_open_rdwr_no_unmodeled : forall p fs' eff m,
   check_open_rdwr p fs' eff m <> CheckUnmodeled.
 Proof.
-  intros p fs' eff m H. unfold check_open_rdwr in H.
-  now apply check_open_result_no_unmodeled in H.
+  intros p fs' eff m H. unfold check_open_rdwr, check_write_open_result in H.
+  now apply check_new_fd_result_no_unmodeled in H.
 Qed.
 
 Local Lemma check_openat_rdwr_no_unmodeled : forall creat trunc p eff m,
@@ -1200,7 +1206,8 @@ Proof.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_open_rdwr_no_unmodeled in H.
     + destruct creat.
-      * now apply check_open_rdwr_no_unmodeled in H.
+      * unfold check_open_rdwr_absent, check_write_open_create_result in H.
+        now apply check_new_fd_result_no_unmodeled in H.
       * now apply check_ret_only_no_unmodeled in H.
 Qed.
 
@@ -1212,7 +1219,8 @@ Proof.
   - now apply check_ret_only_no_unmodeled in H.
   - destruct (fs_lookup (m_fs m) p).
     + now apply check_ret_only_no_unmodeled in H.
-    + now apply check_open_rdwr_no_unmodeled in H.
+    + unfold check_open_rdwr_absent, check_write_open_create_result in H.
+      now apply check_new_fd_result_no_unmodeled in H.
 Qed.
 
 Local Lemma check_openat_localtime_sound_unmodeled : forall i flags eff m,
@@ -1524,6 +1532,28 @@ Proof.
     + reflexivity.
 Qed.
 
+Local Lemma check_create_wronly_absent_complete_ok : forall i p eff m m' evs,
+  create_wronly_absent p m i m (Ok eff m' evs) ->
+  check_create_wronly_absent p eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i p eff m m' evs H.
+  unfold create_wronly_absent in H.
+  unfold check_create_wronly_absent, check_write_open_create_result, check_new_fd_result.
+  sys_unfold. cbv iota in H. inv_ok.
+  - split.
+    + match goal with
+      | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+          rewrite (errno_ret_in_intro es e) by assumption
+      end.
+      reflexivity.
+    + reflexivity.
+  - split.
+    + rewrite errno_ret_in_alloc_fd by reflexivity.
+      match goal with H : fd_lookup _ _ = None |- _ => rewrite H end.
+      rewrite bv_eqb_refl. reflexivity.
+    + reflexivity.
+Qed.
+
 Local Lemma check_open_append_complete_ok : forall i p eff m m' evs,
   open_append p m i m (Ok eff m' evs) ->
   check_open_append p eff m = CheckOk m' evs /\ eff_copyins eff = [].
@@ -1546,6 +1576,28 @@ Proof.
     + reflexivity.
 Qed.
 
+Local Lemma check_open_append_absent_complete_ok : forall i p eff m m' evs,
+  open_append_absent p m i m (Ok eff m' evs) ->
+  check_open_append_absent p eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i p eff m m' evs H.
+  unfold open_append_absent in H.
+  unfold check_open_append_absent, check_write_open_create_result, check_new_fd_result.
+  sys_unfold. cbv iota in H. inv_ok.
+  - split.
+    + match goal with
+      | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+          rewrite (errno_ret_in_intro es e) by assumption
+      end.
+      reflexivity.
+    + reflexivity.
+  - split.
+    + rewrite errno_ret_in_alloc_fd by reflexivity.
+      match goal with H : fd_lookup _ _ = None |- _ => rewrite H end.
+      rewrite bv_eqb_refl. reflexivity.
+    + reflexivity.
+Qed.
+
 Local Lemma check_open_rdwr_complete_ok : forall i p fs' eff m m' evs,
   open_rdwr p fs' m i m (Ok eff m' evs) ->
   check_open_rdwr p fs' eff m = CheckOk m' evs /\ eff_copyins eff = [].
@@ -1553,6 +1605,28 @@ Proof.
   intros i p fs' eff m m' evs H.
   unfold open_rdwr in H.
   unfold check_open_rdwr, check_write_open_result, check_new_fd_result.
+  sys_unfold. cbv iota in H. inv_ok.
+  - split.
+    + match goal with
+      | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+          rewrite (errno_ret_in_intro es e) by assumption
+      end.
+      reflexivity.
+    + reflexivity.
+  - split.
+    + rewrite errno_ret_in_alloc_fd by reflexivity.
+      match goal with H : fd_lookup _ _ = None |- _ => rewrite H end.
+      rewrite bv_eqb_refl. reflexivity.
+    + reflexivity.
+Qed.
+
+Local Lemma check_open_rdwr_absent_complete_ok : forall i p fs' eff m m' evs,
+  open_rdwr_absent p fs' m i m (Ok eff m' evs) ->
+  check_open_rdwr_absent p fs' eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i p fs' eff m m' evs H.
+  unfold open_rdwr_absent in H.
+  unfold check_open_rdwr_absent, check_write_open_create_result, check_new_fd_result.
   sys_unfold. cbv iota in H. inv_ok.
   - split.
     + match goal with
@@ -1629,11 +1703,25 @@ Proof.
   unfold openat_create_spec, check_openat_create.
   refine (refine_if (path_is_dirref p || fs_under (m_fs m) p)
     (fun b => completes_ok i m eff m' evs
-      (if b then err_ret EISDIR else create_wronly p m)
+      (if b then err_ret EISDIR
+       else match fs_lookup (m_fs m) p with
+            | Some _ => create_wronly p m
+            | None => create_wronly_absent p m end)
       (if b then check_ret_only eff (errno_ret EISDIR) m []
-       else check_create_wronly p eff m)) _ _).
+       else match fs_lookup (m_fs m) p with
+            | Some _ => check_create_wronly p eff m
+            | None => check_create_wronly_absent p eff m end)) _ _).
   - unfold completes_ok. apply check_ret_only_complete_ok.
-  - unfold completes_ok. apply check_create_wronly_complete_ok.
+  - refine (refine_option (fs_lookup (m_fs m) p)
+      (fun o => completes_ok i m eff m' evs
+        (match o with
+         | Some _ => create_wronly p m
+         | None => create_wronly_absent p m end)
+        (match o with
+         | Some _ => check_create_wronly p eff m
+         | None => check_create_wronly_absent p eff m end)) _ _).
+    + intro data. unfold completes_ok. apply check_create_wronly_complete_ok.
+    + unfold completes_ok. apply check_create_wronly_absent_complete_ok.
 Qed.
 
 Local Lemma check_openat_excl_complete_ok : forall i p eff m m' evs,
@@ -1646,21 +1734,20 @@ Proof.
     (fun b => completes_ok i m eff m' evs
       (if b then err_ret EEXIST
        else match fs_lookup (m_fs m) p with
-            | Some _ => err_ret EEXIST | None => create_wronly p m end)
+            | Some _ => err_ret EEXIST | None => create_wronly_absent p m end)
       (if b then check_ret_only eff (errno_ret EEXIST) m []
        else match fs_lookup (m_fs m) p with
             | Some _ => check_ret_only eff (errno_ret EEXIST) m []
-            | None => check_create_wronly p eff m end)) _ _).
+            | None => check_create_wronly_absent p eff m end)) _ _).
   - unfold completes_ok. apply check_ret_only_complete_ok.
   - refine (refine_option (fs_lookup (m_fs m) p)
       (fun o => completes_ok i m eff m' evs
-        (match o with Some _ => err_ret EEXIST | None => create_wronly p m end)
+        (match o with Some _ => err_ret EEXIST | None => create_wronly_absent p m end)
         (match o with
          | Some _ => check_ret_only eff (errno_ret EEXIST) m []
-         | None => check_create_wronly p eff m
-         end)) _ _).
+         | None => check_create_wronly_absent p eff m
     + intro data. unfold completes_ok. apply check_ret_only_complete_ok.
-    + unfold completes_ok. apply check_create_wronly_complete_ok.
+    + unfold completes_ok. apply check_create_wronly_absent_complete_ok.
 Qed.
 
 Local Lemma check_openat_dir_complete_ok : forall i p eff m m' evs,
@@ -1692,14 +1779,28 @@ Proof.
       destruct (fs_under (m_fs m) p); [apply check_ret_only_complete_ok|].
       destruct (fs_lookup (m_fs m) p).
       * apply check_ret_only_complete_ok.
-      * apply check_open_append_complete_ok.
+      * apply check_open_append_absent_complete_ok.
   - refine (refine_if (path_is_dirref p || fs_under (m_fs m) p)
       (fun b => completes_ok i m eff m' evs
-        (if b then err_ret EISDIR else open_append p m)
+        (if b then err_ret EISDIR
+         else match fs_lookup (m_fs m) p with
+              | Some _ => open_append p m
+              | None => open_append_absent p m end)
         (if b then check_ret_only eff (errno_ret EISDIR) m []
-         else check_open_append p eff m)) _ _).
+         else match fs_lookup (m_fs m) p with
+              | Some _ => check_open_append p eff m
+              | None => check_open_append_absent p eff m end)) _ _).
     + unfold completes_ok. apply check_ret_only_complete_ok.
-    + unfold completes_ok. apply check_open_append_complete_ok.
+    + refine (refine_option (fs_lookup (m_fs m) p)
+        (fun o => completes_ok i m eff m' evs
+          (match o with
+           | Some _ => open_append p m
+           | None => open_append_absent p m end)
+          (match o with
+           | Some _ => check_open_append p eff m
+           | None => check_open_append_absent p eff m end)) _ _).
+      * intro data. unfold completes_ok. apply check_open_append_complete_ok.
+      * unfold completes_ok. apply check_open_append_absent_complete_ok.
 Qed.
 
 Local Lemma check_openat_rdwr_complete_ok : forall i creat trunc p eff m m' evs,
@@ -1713,7 +1814,7 @@ Proof.
   - destruct (fs_lookup (m_fs m) p).
     + apply check_open_rdwr_complete_ok.
     + destruct creat.
-      * apply check_open_rdwr_complete_ok.
+      * apply check_open_rdwr_absent_complete_ok.
       * apply check_ret_only_complete_ok.
 Qed.
 
@@ -1727,7 +1828,7 @@ Proof.
   - apply check_ret_only_complete_ok.
   - destruct (fs_lookup (m_fs m) p).
     + apply check_ret_only_complete_ok.
-    + apply check_open_rdwr_complete_ok.
+    + apply check_open_rdwr_absent_complete_ok.
 Qed.
 
 Local Lemma check_openat_localtime_complete_ok : forall i flags eff m m' evs,
@@ -2139,6 +2240,13 @@ Proof.
   cbv iota in H. inv_ok.
 Qed.
 
+Local Lemma create_wronly_absent_no_unmodeled : forall p m i,
+  ~ create_wronly_absent p m i m Unmodeled.
+Proof.
+  intros p m i H. unfold create_wronly_absent in H. sys_unfold.
+  cbv iota in H. inv_ok.
+Qed.
+
 Local Lemma openat_read_spec_no_unmodeled : forall p m i,
   ~ openat_read_spec p m i m Unmodeled.
 Proof.
@@ -2159,7 +2267,9 @@ Proof.
   intros p m i H. unfold openat_create_spec in H.
   destruct (path_is_dirref p || fs_under (m_fs m) p).
   - exact (ret_only_no_unmodeled (errno_ret EISDIR) i m H).
-  - exact (create_wronly_no_unmodeled p m i H).
+  - destruct (fs_lookup (m_fs m) p).
+    + exact (create_wronly_no_unmodeled p m i H).
+    + exact (create_wronly_absent_no_unmodeled p m i H).
 Qed.
 
 Local Lemma openat_excl_spec_no_unmodeled : forall p m i,
@@ -2170,7 +2280,7 @@ Proof.
   - exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H).
   - destruct (fs_lookup (m_fs m) p).
     + exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H).
-    + exact (create_wronly_no_unmodeled p m i H).
+    + exact (create_wronly_absent_no_unmodeled p m i H).
 Qed.
 
 Local Lemma check_openat_dir_complete_unmodeled : forall i p eff m,
@@ -2197,6 +2307,13 @@ Proof.
   cbv iota in H. inv_ok.
 Qed.
 
+Local Lemma open_append_absent_no_unmodeled : forall p m i,
+  ~ open_append_absent p m i m Unmodeled.
+Proof.
+  intros p m i H. unfold open_append_absent in H. sys_unfold.
+  cbv iota in H. inv_ok.
+Qed.
+
 Local Lemma check_openat_append_complete_unmodeled : forall i excl p eff m,
   openat_append_spec excl p m i m Unmodeled ->
   check_openat_append excl p eff m = CheckUnmodeled.
@@ -2211,16 +2328,25 @@ Proof.
         [intro H; exfalso; exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)|].
       destruct (fs_lookup (m_fs m) p); intro H; exfalso;
         [exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H)
-        |exact (open_append_no_unmodeled p m i H)].
-  - destruct (path_is_dirref p || fs_under (m_fs m) p); intro H; exfalso;
-      [exact (ret_only_no_unmodeled (errno_ret EISDIR) i m H)
-      |exact (open_append_no_unmodeled p m i H)].
+        |exact (open_append_absent_no_unmodeled p m i H)].
+  - destruct (path_is_dirref p || fs_under (m_fs m) p); [intro H; exfalso|];
+      [exact (ret_only_no_unmodeled (errno_ret EISDIR) i m H)|].
+    destruct (fs_lookup (m_fs m) p); intro H; exfalso;
+      [exact (open_append_no_unmodeled p m i H)
+      |exact (open_append_absent_no_unmodeled p m i H)].
 Qed.
 
 Local Lemma open_rdwr_no_unmodeled : forall p fs' m i,
   ~ open_rdwr p fs' m i m Unmodeled.
 Proof.
   intros p fs' m i H. unfold open_rdwr in H. sys_unfold.
+  cbv iota in H. inv_ok.
+Qed.
+
+Local Lemma open_rdwr_absent_no_unmodeled : forall p fs' m i,
+  ~ open_rdwr_absent p fs' m i m Unmodeled.
+Proof.
+  intros p fs' m i H. unfold open_rdwr_absent in H. sys_unfold.
   cbv iota in H. inv_ok.
 Qed.
 
@@ -2233,7 +2359,7 @@ Proof.
   - destruct (fs_lookup (m_fs m) p).
     + exact (open_rdwr_no_unmodeled p _ m i H).
     + destruct creat.
-      * exact (open_rdwr_no_unmodeled p _ m i H).
+      * exact (open_rdwr_absent_no_unmodeled p _ m i H).
       * exact (ret_only_no_unmodeled (errno_ret ENOENT) i m H).
 Qed.
 
@@ -2245,7 +2371,7 @@ Proof.
   - exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H).
   - destruct (fs_lookup (m_fs m) p).
     + exact (ret_only_no_unmodeled (errno_ret EEXIST) i m H).
-    + exact (open_rdwr_no_unmodeled p _ m i H).
+    + exact (open_rdwr_absent_no_unmodeled p _ m i H).
 Qed.
 
 Local Lemma check_openat_localtime_complete_unmodeled : forall i flags eff m,
