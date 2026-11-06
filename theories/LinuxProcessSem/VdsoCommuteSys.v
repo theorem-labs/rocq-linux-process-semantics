@@ -10,7 +10,7 @@
     - [sstep_with_vdso] and [star_with_vdso], at [Run.sstep] and [Run.star].
       These DO carry a hypothesis, and they have to.  [Run.sstep]'s vDSO arms
       bump the count ([State.with_vdso_bump]) and read the draw
-      ([Run.vdso_post], Run.v:608, through [vdr_draw] and [vdr_calls]), so at
+      ([Run.vdso_post], through [vdr_draw] and [vdr_calls]), so at
       a pc that is an exported vDSO entry the commutation is FALSE, not
       merely unproved.  The hypothesis is per state —
       [vdso_entry_fn segs (ms_pc ms) = None] — so a caller discharges it node
@@ -380,7 +380,7 @@ Qed.
 
     It does NOT apply to a run whose segment list is [Run.run_segments]:
     that appends [Run.vdso_segments], and the pair is empty only for a
-    launch [Run.vdso_segments] declines (Run.v:290-295), which Run.v:285-289
+    launch [Run.vdso_segments] declines, which its own comment in Run.v
     says Linux does not make.  A consumer over [run_segments] wants
     [vdso_entry_fn_none_below_base] instead. *)
 Lemma vdso_entry_fn_none_of_no_text : forall segs pc,

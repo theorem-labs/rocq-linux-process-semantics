@@ -6,7 +6,7 @@
     the appended pair can do — the W^X and NX side conditions over
     [Run.run_segments] are the usual callers — and reaching for it otherwise
     means making [Run.vdso_segments] transparent at the use site, which
-    Run.v:308-322 says costs a [vm_compute] of the measured image.  Stated
+    its comment in Run.v says costs a [vm_compute] of the measured image.  Stated
     here, the cost is paid once.
 
     [Run.vdso_segments] is [Global Opaque]; the [Local Transparent] below is

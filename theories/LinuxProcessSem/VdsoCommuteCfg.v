@@ -13,7 +13,7 @@
 
     THE SYSCALL LAYER IS REUSED UNCHANGED.  [syscall_spec_vdso_commutes]
     carries no hypothesis and says nothing about which step relation
-    consumes it, so the 93-arm walk is not repeated here.  What this file
+    consumes it, so the 103-arm walk is not repeated here.  What this file
     adds is the eleven arms of [Run.sstep_cfg] and the two premises that
     [Run.sstep] does not have:
 
@@ -24,8 +24,8 @@
       carrying it back out;
 
     - [sstep_cfg_instr_unmodeled] carries [vdso_entry_fn segs (ms_pc ms) =
-      None] as a premise OF ITS OWN (Run.v:2236, the arm at 2232-2237),
-      which [Run.sstep]'s corresponding arm also has (Run.v:669).  That arm
+      None] as a premise OF ITS OWN, which [Run.sstep]'s corresponding arm
+      ([Run.sstep_instr_unmodeled]) also has.  That arm
       is therefore PROVED, not excluded: it reuses its own premise and never
       consults this file's.
 
@@ -201,7 +201,7 @@ Qed.
 
     NOTE WHAT THE SECOND PREMISE ASKS, and that it asks LESS here than at
     [Run.star].  [P] must survive every successor of the FILTERED relation,
-    not of [Run.sstep] — and [Run.sstep_cfg_sub] (Run.v:2316) makes the
+    not of [Run.sstep] — and [Run.sstep_cfg_sub] makes the
     filtered relation the smaller one, so an invariant that already serves
     [star_with_vdso] serves this outright.  A caller holding only one trace
     still wants [P] to be a property of the segment list and the pc rather
@@ -224,9 +224,9 @@ Qed.
 (* =========================================================================
    The budget observable
 
-   [Run.budget_refused_at] (Run.v:2849-2869) is not an arm of either step
+   [Run.budget_refused_at] is not an arm of either step
    relation, but it gained a vDSO disjunct in the same revision
-   (Run.v:2855-2863) and a consumer carrying it across the wrapper meets
+   and a consumer carrying it across the wrapper meets
    that disjunct.  It needs NO premise: the disjunct's own first conjunct
    is [vdso_entry_fn … = Some fn], and every clause under it reads the
    model only through frames this development already has.
