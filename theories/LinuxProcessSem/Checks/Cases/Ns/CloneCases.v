@@ -271,6 +271,12 @@ Example clone_newipc_sysvsem_refused : forall m,
     m shell inside 140 = CnErr EINVAL inside.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** Unprivileged: the capability gate fires first, returning -EPERM. *)
+Example clone_newipc_sysvsem_unprivileged_eperm : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_NEWNS CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EPERM inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 Example clone_newns_non_sigchld_declines : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWNS 10)) m shell inside 140 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.

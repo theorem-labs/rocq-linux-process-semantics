@@ -251,6 +251,10 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
         let cred := mkIdCred (cc_user cc) (bv_unsigned (cr_euid (m_creds m)))
                              (bv_unsigned (cr_egid (m_creds m))) (cap_effective (cc_caps cc)) in
         if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM st
+        (* [CLONE_NEWIPC] with [CLONE_SYSVSEM]: [copy_namespaces] refuses
+           the pair after the capability gate (kernel/nsproxy.c:162,
+           172-173, Linux v6.18.46). *)
+        else if has_flag f CLONE_NEWIPC && has_flag f CLONE_SYSVSEM then CnErr EINVAL st
         else
           (* the mount namespace, and the order data of its copies
              ([Propagation.copy_ns_links]) *)
@@ -381,10 +385,11 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
       [copy_process] (kernel/fork.c:1951-1999, and [kernel_clone]'s K0
       at 2588-2591, Linux v6.18.46), so before [copy_creds] and
       [copy_namespaces] (2188).  Then the wider mask [clone_ns_ext_flags]
-      reads its flags and the SIGCHLD test its exit signal.
-      [CLONE_NEWIPC] with [CLONE_SYSVSEM] answers -EINVAL
-      ([copy_namespaces], kernel/nsproxy.c:161-162, 171-173, Linux
-      v6.18.46); then [clone_ns_answer] its flags. *)
+      reads its flags and the SIGCHLD test its exit signal, then
+      [clone_ns_answer] its flags; there [CLONE_NEWIPC] with
+      [CLONE_SYSVSEM] answers -EINVAL after the capability gate
+      ([copy_namespaces], kernel/nsproxy.c:162, 172-173, Linux
+      v6.18.46). *)
 Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     : CloneNs :=
   if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
@@ -394,9 +399,6 @@ Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsS
       if Fork.clone_arg_checks r then CnErr EINVAL st
       else if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) =? 0) then CnUnmodeled
       else if negb (Fork.cla_exit_signal r =? Fork.SIGCHLD) then CnUnmodeled
-      else if has_flag (Fork.cla_flags r) CLONE_NEWIPC
-              && has_flag (Fork.cla_flags r) CLONE_SYSVSEM
-           then CnErr EINVAL st
       else clone_ns_answer (Fork.cla_flags r) m ctx st hq
   end.
 
@@ -533,26 +535,6 @@ Proof.
   destruct (Fork.clone_arg_checks r) eqn:Hc.
   - right. reflexivity.
   - left. exact (clone_ns_exact_core_gate r m ctx st hq Hc Hfast Hanswer).
-Qed.
-
-(** [CLONE_NEWIPC] with [CLONE_SYSVSEM], outside the released fast path:
-    -EINVAL, because [copy_namespaces] refuses the pair
-    (kernel/nsproxy.c:161-162, 171-173, Linux v6.18.46).  The check
-    comes after the argument checks and the wider mask. *)
-Lemma clone_ns_exact_ns_refused : forall r m ctx st hq,
-  Fork.clone_arg_checks r = false ->
-  (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
-  Z.land (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) = 0 ->
-  Fork.cla_exit_signal r = Fork.SIGCHLD ->
-  has_flag (Fork.cla_flags r) CLONE_NEWIPC = true ->
-  has_flag (Fork.cla_flags r) CLONE_SYSVSEM = true ->
-  clone_ns_exact (Fork.CiArgs r) m ctx st hq = CnErr EINVAL st.
-Proof.
-  intros r m ctx st hq Hc Hfast Hmask Hsig Hipc Hsem.
-  unfold clone_ns_exact. rewrite Hfast. cbv beta iota. rewrite Hc.
-  rewrite Hmask, Z.eqb_refl. cbn [negb].
-  rewrite Hsig, Z.eqb_refl. cbn [negb].
-  rewrite Hipc, Hsem. reflexivity.
 Qed.
 
 
