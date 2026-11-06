@@ -314,9 +314,8 @@ Definition wait4_stat_store (stat_addr : word) (s : Z)
     which Linux may have reaped at its exit, therefore keeps the bit
     clear, and the caller is declined.  [flush_signal_handlers] clears
     [sa_flags] at [execve], so a launcher's SA_NOCLDWAIT does not
-    survive either.  SCOPE.md still lists "At launch SIGCHLD is not at
-    SIG_IGN" for the multi-process core's own [wait4] arms in [Procs],
-    which do not read the bit, until the fix tracked in #125 lands.
+    survive either.  The multi-process core's reap arms in [Procs] read
+    the same bit.
 
     THE TRACEE LIST IS CLOSED BY A DECLINE.  [ptrace] (117) is the only
     route to the caller's [current->ptraced] a modeled syscall could
