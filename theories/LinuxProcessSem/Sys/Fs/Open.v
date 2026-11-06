@@ -27,6 +27,39 @@ Open Scope sys_scope.
     file returns a deterministic -ENOENT. *)
 Definition openat_errnos : list Z := [ENOMEM; EACCES; EMFILE; ENFILE].
 
+(** The superset of [openat_errnos] that write-mode opens admit: every
+    errno a read-only open can get, plus three that only a write-mode
+    open can get.
+
+    - EPERM: [IS_IMMUTABLE(inode)] ([inode_permission],
+      fs/namei.c:581-582, v6.18.46); [IS_APPEND(inode)] without
+      [O_APPEND] or with [O_TRUNC] ([may_open], fs/namei.c:3572-3576);
+      an immutable directory on create ([inode_permission] under
+      [may_o_create], fs/namei.c:3622-3625, 581-582).
+    - EROFS: a read-only mount or superblock ([mnt_get_write_access],
+      fs/namespace.c:476-478; [sb_permission], fs/namei.c:550-551;
+      [file_get_write_access], fs/open.c:925-928; [mnt_want_write]
+      before [may_open] for O_TRUNC, fs/namei.c:3967-3970).
+    - ETXTBSY: a file being executed ([get_write_access],
+      include/linux/fs.h:3215-3218, through [file_get_write_access],
+      fs/open.c:883-885).  Applies only to an EXISTING name: a newly
+      created file cannot be executing.
+
+    All citations: Linux v6.18.46, commit 1f99e9ab748f.
+
+    A READ-ONLY open does not use this set.  Linux gives no -EROFS and
+    no -ETXTBSY to an O_RDONLY open: the mount-write check
+    ([mnt_want_write]) is not reached, [file_get_write_access] is
+    gated on [FMODE_WRITE], and [may_open]'s append-only test reads the
+    access mode.  The read-only arms keep [openat_errnos].
+
+    OVER-ADMISSION: -ETXTBSY is admitted for absent names too, where
+    no executable file exists to deny.  This is sound (the model admits
+    a trace Linux cannot produce) and avoids a per-name errno set split
+    inside each write-open function.  SCOPE.md records this. *)
+Definition write_open_errnos : list Z :=
+  [ENOMEM; EACCES; EMFILE; ENFILE; EPERM; EROFS; ETXTBSY].
+
 (** The clobbering write-open combination the model covers. *)
 Definition wr_create_flags : Z := (O_WRONLY + O_CREAT + O_TRUNC)%Z.
 
@@ -385,8 +418,8 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
 
 (** The effect a modeled WRITE-CREATE open records, shared by the
     clobbering (O_TRUNC) and the exclusive (O_EXCL) shapes so the two
-    provably record the same thing: either an errno from
-    [openat_errnos] (an environment condition the model does not track;
+    [write_open_errnos] (an environment condition the model does not
+    track, including -EPERM, -EROFS and -ETXTBSY on write-mode opens;
     this alternative also keeps the spec receptive when no free
     fd < 2^31 exists), or the lowest free fd bound to a write-only fd
     on [p], with [p] itself (re)created empty in the file system.
@@ -399,7 +432,7 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
     and [write] for the base it splices onto — answers for a file that
     is not there. *)
 Definition create_wronly (p : path) (m : Model) : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (fs_set (m_fs m) p []) ;;   (* (re)create the file empty *)
        set_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0))) ;;  (* write-only fd *)
@@ -562,7 +595,7 @@ Definition append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
   end.
 
 (** The effect a modeled APPEND write-open records: either an errno from
-    [openat_errnos] (the same untracked environment conditions the other
+    [write_open_errnos] (the same untracked environment conditions the other
     write-open shapes admit, this alternative also keeping the spec
     receptive when no free fd < 2^31 exists), or the lowest free fd bound
     to a [State.FdFileA] on [p], with [p] created empty only if it was
@@ -582,7 +615,7 @@ Definition append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
     device, FIFO or kernfs attribute is recorded here as an ordinary
     file. *)
 Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (append_open_fs (m_fs m) p) ;;
        set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
@@ -655,7 +688,7 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
     end.
 
 (** The effect a modeled READ-WRITE open records: either an errno from
-    [openat_errnos], or the lowest free fd bound to a [State.FdFileRW]
+    [write_open_errnos], or the lowest free fd bound to a [State.FdFileRW]
     on [p], with the file system left as [fs'].
 
     THE OFFSET STARTS AT 0 for both directions, and it is the same
@@ -675,7 +708,7 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
     way at a time. *)
 Definition open_rdwr (p : path) (fs' : Fs.Fs) (m : Model)
     : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs fs' ;;
        set_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0))) ;;
@@ -2367,36 +2400,13 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     unknown type; the split is not written
                                                     (fs/open.c, read at v6.18.44; identical at
                                                     v6.18.46) *)
-  | Some (FdFileA p _) =>
-      (* AN APPEND FD IS A WRITABLE REGULAR FILE, so it takes the arm
-         below rather than the -EINVAL the five kinds above get:
-         [do_ftruncate]'s condition is
-         [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
-         (fs/open.c), and an [FdFileA] fails neither half — O_APPEND
-         rides on O_WRONLY, which is what sets FMODE_WRITE.  The flag is
-         read nowhere on this path: [do_truncate] sets the size
-         outright, and O_APPEND is consulted only by the write path's
-         [generic_write_checks].  The inode's APPEND-ONLY attribute is a
-         different thing and does bite here — [IS_APPEND(inode)] is
-         [do_ftruncate]'s own -EPERM — but it is an inode attribute this
-         model does not carry, exactly as for [FdFileW], and the header's
-         list of unmodeled failures already names it.
-
-         THE OFFSET IS UNTOUCHED as it is for every other kind, so a
-         shrink can leave [f_pos] past end-of-file — this arm writes no
-         [set_fds] at all, exactly as the [FdFileW] one does not.  On an
-         append fd that is not observable through a later WRITE, which
-         repositions itself, but it IS observable through
-         [lseek(fd, 0, SEEK_CUR)], so leaving the entry alone is a
-         decision here rather than a spare line. *)
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled                        (* an FdFileA always points into the fs; see openat *)
-      | Some data =>
-          if negb (modeled_truncate_gap data len) then unmodeled
-          else
-            set_fs (fs_set (m_fs m) p (file_truncate data len)) ;;
-            ret_only (Z_to_bv 64 0)
-      end
+  | Some (FdFileA _ _) => unmodeled
+      (* DECLINED.  An [FdFileA] is a writable regular file, so
+         [do_ftruncate]'s [!S_ISREG || !FMODE_WRITE] gate passes.  But
+         [IS_APPEND(inode)] (fs/open.c:183-184, v6.18.46) answers -EPERM
+         before [do_truncate], and this model does not carry the
+         append-only inode attribute.  The Lean twin already declines
+         this arm (Sys/Fs/Open.lean:1312). *)
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
       (* ONE ARM FOR TWO KINDS.  [do_ftruncate]'s test is
          [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
