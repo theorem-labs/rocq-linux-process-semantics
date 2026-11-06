@@ -43,12 +43,14 @@
     its accessor ([valid_input_abort_sigchld_default] and its siblings) and
     corollary ([sigchld_reachable_abort] and its siblings).
 
-    UNDER AN EXTENSION.  [pxruns_sigchld_reachable] carries the invariant
-    along a run of [Procs.pstep_x_cfg] wherever the extension agrees with
-    the core at each table of the run ([Procs.ext_agrees], the premise of
-    [pstep_x_at_preserves_sigchld]); [pxruns_sigchld_reachable_launch]
-    starts it from a launch, and [pxruns_sigchld_reachable_no_ext]
-    discharges the agreement for the released extension. *)
+    UNDER AN EXTENSION.  [pstep_x_at_preserves_sigchld_ext] keeps the
+    invariant over every step of [Procs.pstep_x_at], with no agreement
+    with the core, for any extension whose own answers keep a set bit
+    ([ext_keeps_sigchld]; [no_ext_keeps_sigchld] here, and
+    [Checks.NsSigchld.ns_ext_keeps_sigchld] for the namespace extension).
+    [pxruns_sigchld_reachable] carries it along a run of
+    [Procs.pstep_x_cfg], and [pxruns_sigchld_reachable_launch] starts it
+    from a launch with any shared state. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -57,7 +59,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Syscall Uapi.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ProcsWellFormed ProcsWait4Gate ProcsChildPids ProcsSigchldFrame.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require NsCloneRefusers.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Ext.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Ext.
 From LinuxProcessSemantics.EquivalenceDefinition Require FinInput.
 Import ListNotations.
 Open Scope bv_scope.
@@ -571,51 +573,184 @@ Corollary sigchld_reachable_finite : forall segs pc ph sp brk0 mbase rnd lim inp
   pruns segs' cfg (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) P -> sigchld_ok P.
 Proof. sigchld_corollary finite_input_sigchld_default. Qed.
 
-(** UNDER AN EXTENSION.  A run of [Procs.pstep_x_cfg]
-    ([Checks.NsCloneRefusers.pxruns]) keeps the invariant wherever the
-    extension agrees with the core at every table the run passes through,
-    the premise of [pstep_x_at_preserves_sigchld]. *)
+(* =========================================================================
+   Under an extension
+   ========================================================================= *)
+
+(** An extension whose own answers keep a set bit.  The core's arms keep
+    it by the lemmas above; what an extension answers for a call it claims
+    is the extension's, so this is its obligation (as
+    [Checks.ProcsCloneRefusers.ext_keeps_clone_refusers] is for the
+    refusers).  [Checks.NsSigchld.ns_ext_keeps_sigchld] discharges it for
+    the namespace extension. *)
+Definition ext_keeps_sigchld (ext : ExtSpec) : Prop :=
+  forall i m ctx st eff m' ctx' st' evs,
+    ext_spec ext i m ctx st (EOk eff m' ctx' st' evs) ->
+    m_sigchld_dfl m = true -> m_sigchld_dfl m' = true.
+
+Lemma no_ext_keeps_sigchld : ext_keeps_sigchld no_ext.
+Proof. intros i m ctx st eff m' ctx' st' evs H. hnf in H. destruct H. Qed.
+
+(** A process's step under such an extension keeps a set bit. *)
+Lemma xsstep_sigchld_mono : forall ext segs cfg ctx st c evs c' ctx' st',
+  ext_keeps_sigchld ext ->
+  xsstep ext segs cfg ctx st c evs (SNext c') ctx' st' ->
+  m_sigchld_dfl (cfg_model c) = true -> m_sigchld_dfl (cfg_model c') = true.
+Proof.
+  intros ext segs cfg ctx st c evs c' ctx' st' Hext H Hb.
+  inversion H; subst; cbn [cfg_model] in *.
+  - match goal with Hs : sstep_cfg _ _ _ _ _ |- _ =>
+      exact (sstep_sigchld_mono _ _ _ _ _ Hs Hb) end.
+  - match goal with
+    | He : ext_spec _ _ _ _ _ (EOk _ ?m1 _ _ _),
+      Hm : materialize_model_accesses ?m1 _ = Some _ |- _ =>
+        rewrite (sd_materialize _ _ _ Hm); exact (Hext _ _ _ _ _ _ _ _ _ He Hb)
+    end.
+  - match goal with He : ext_spec _ _ _ _ _ (EOk _ _ _ _ _) |- _ =>
+      exact (Hext _ _ _ _ _ _ _ _ _ He Hb) end.
+  - match goal with He : ext_spec _ _ _ _ _ (EOk _ _ _ _ _) |- _ =>
+      exact (Hext _ _ _ _ _ _ _ _ _ He Hb) end.
+Qed.
+
+(** THE STEP UNDER AN EXTENSION: every step of [Procs.pstep_x_at] keeps
+    the invariant, for any extension whose own answers keep a set bit.  No
+    agreement with the core is assumed. *)
+Theorem pstep_x_at_preserves_sigchld_ext : forall ext cenv segs cfg p P evs P',
+  ext_keeps_sigchld ext ->
+  sigchld_ok P -> pstep_x_at ext cenv segs cfg p P evs (PNext P') -> sigchld_ok P'.
+Proof.
+  intros ext cenv segs cfg p P evs P' Hext H Hs.
+  inversion Hs; subst.
+  - (* px_other: the extension's step or the released one, absorbed *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e, Hx : xsstep _ _ _ _ _ _ _ (SNext ?c') _ _ |- _ =>
+        unfold absorb_x, sigchld_ok; cbn [pcfg_procs];
+        apply sigchld_orphan_at_exit;
+        apply Forall_replace_in; [apply sigchld_first_root_pin; exact H|];
+        exact (xsstep_sigchld_mono _ _ _ _ _ _ _ _ _ _ Hext Hx (sigchld_caller _ _ _ H Hl))
+    end.
+  - (* px_clone: the parent's released step, and [child_proc] copies the bit *)
+    match goal with |- context [with_ret _ ?rt] => destruct rt end;
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e, Hss : sstep_cfg _ _ _ _ (SNext ?c') |- _ =>
+        unfold clone_result_x, sigchld_ok; cbn [pcfg_procs];
+        apply List.Forall_app; split;
+        [ apply Forall_replace_in; [exact H|];
+          exact (sstep_sigchld_mono _ _ _ _ _ Hss (sigchld_caller _ _ _ H Hl))
+        | constructor; [exact (sigchld_caller _ _ _ H Hl) | constructor] ]
+    end.
+  - (* px_clone_fail: the released step under the clone's filter *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e, Hf : clone_fail_step _ _ _ _ _ _ _ _ _ ?c' |- _ =>
+        unfold clone_fail_step in Hf;
+        unfold absorb_x, sigchld_ok; cbn [pcfg_procs];
+        apply sigchld_orphan_at_exit;
+        apply Forall_replace_in; [apply sigchld_first_root_pin; exact H|];
+        destruct Hf as [Hs' | (Hs' & _)];
+        exact (sstep_sigchld_mono _ _ _ _ _ Hs' (sigchld_caller _ _ _ H Hl))
+    end.
+  - (* px_wait_reap *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e,
+      Hm : materialize_model_accesses _ _ = Some ?model'' |- _ =>
+        unfold sigchld_ok; cbn [pcfg_procs];
+        apply Forall_drop_in; apply Forall_replace_in; [exact H|];
+        cbv beta; cbn [snd pe_model];
+        rewrite (sigchld_reap_entry _ _ _ _ _ Hm);
+        exact (sigchld_caller _ _ _ H Hl)
+    end.
+  - (* px_wait_nohang_reap *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e,
+      Hm : materialize_model_accesses _ _ = Some ?model'' |- _ =>
+        unfold wait4_reap_result, sigchld_ok; cbn [pcfg_procs];
+        apply Forall_drop_in; apply Forall_replace_in; [exact H|];
+        cbv beta; cbn [snd pe_model];
+        rewrite (sigchld_reap_entry _ _ _ _ _ Hm);
+        exact (sigchld_caller _ _ _ H Hl)
+    end.
+  - (* px_wait_nohang_zero *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e |- _ =>
+        unfold wait4_zero_result; apply sigchld_absorb; [exact H|];
+        exact (sigchld_caller _ _ _ H Hl)
+    end.
+  - (* px_sync *)
+    match goal with
+    | Hl : look ?Q (pe_pid ?e) = Some ?e |- _ =>
+        unfold sync_result, sigchld_ok; cbn [pcfg_procs];
+        apply Forall_replace_in; [exact H|];
+        cbv beta; cbn [snd]; rewrite sigchld_sync_entry;
+        exact (sigchld_caller _ _ _ H Hl)
+    end.
+  - (* px_pin_root *)
+    match goal with
+    | Hr : look ?Q (pcfg_root ?Q) = Some ?r |- _ =>
+        unfold pin_root, sigchld_ok; cbn [pcfg_procs];
+        apply Forall_replace_in;
+        [ first
+          [ exact H
+          | match goal with
+            | |- List.Forall _ (match ?x with _ => _ end) =>
+                destruct x; first [exact H | apply sigchld_root_children; exact H]
+            end ]
+        | exact (sigchld_caller _ _ _ H Hr) ]
+    end.
+Qed.
+
+Corollary pstep_x_cfg_preserves_sigchld_ext : forall ext cenv segs cfg P evs P',
+  ext_keeps_sigchld ext ->
+  sigchld_ok P -> pstep_x_cfg ext cenv segs cfg P evs (PNext P') -> sigchld_ok P'.
+Proof.
+  intros ext cenv segs cfg P evs P' Hext H (p & Hs).
+  exact (pstep_x_at_preserves_sigchld_ext _ _ _ _ _ _ _ _ Hext H Hs).
+Qed.
+
+(** Along any run of [Procs.pstep_x_cfg] ([Checks.NsCloneRefusers.pxruns])
+    under such an extension. *)
 Theorem pxruns_sigchld_reachable : forall ext cenv segs cfg P Q,
-  (forall R, NsCloneRefusers.pxruns ext cenv segs cfg P R -> ext_agrees ext cenv segs R) ->
+  ext_keeps_sigchld ext ->
   sigchld_ok P -> NsCloneRefusers.pxruns ext cenv segs cfg P Q -> sigchld_ok Q.
 Proof.
-  intros ext cenv segs cfg P Q Hag H0 Hr. revert Hag H0.
-  induction Hr as [P0 | P0 evs P1 P2 Hs Hr' IH]; intros Hag H0; [exact H0|].
-  apply IH.
-  - intros R HR. apply Hag. exact (NsCloneRefusers.pxruns_step _ _ _ _ _ _ _ _ Hs HR).
-  - destruct Hs as (p & Hs).
-    exact (pstep_x_at_preserves_sigchld _ _ _ _ _ _ _ _
-             (Hag P0 (NsCloneRefusers.pxruns_refl _ _ _ _ _)) H0 Hs).
+  intros ext cenv segs cfg P Q Hext H0 Hr.
+  induction Hr as [P0 | P0 evs P1 P2 Hs _ IH]; [exact H0|].
+  apply IH. exact (pstep_x_cfg_preserves_sigchld_ext _ _ _ _ _ _ _ Hext H0 Hs).
 Qed.
+
+(** The launch, with any shared state: its one entry has the launch's bit. *)
+Lemma sigchld_ok_one_proc_shared : forall c sh,
+  m_sigchld_dfl (cfg_model c) = true ->
+  sigchld_ok (mkPCfg (pcfg_procs (one_proc c)) (pcfg_root (one_proc c)) sh).
+Proof. intros c sh H. exact (sigchld_ok_one_proc c H). Qed.
 
 (** From any launch whose input pins [in_sigchld_default] to [true] (every
-    launch predicate above does), under the same agreement premise. *)
+    launch predicate above does), with any shared state, under any
+    extension whose own answers keep a set bit. *)
 Corollary pxruns_sigchld_reachable_launch : forall ext cenv segs pc ph sp brk0 mbase rnd lim
-    inp segs' cfg Q,
+    inp sh segs' cfg Q,
+  ext_keeps_sigchld ext ->
   in_sigchld_default inp = true ->
-  (forall R, NsCloneRefusers.pxruns ext cenv segs' cfg
-               (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) R ->
-             ext_agrees ext cenv segs' R) ->
   NsCloneRefusers.pxruns ext cenv segs' cfg
-    (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)) Q ->
+    (mkPCfg (pcfg_procs (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp)))
+            (pcfg_root (one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp))) sh) Q ->
   sigchld_ok Q.
 Proof.
-  intros ext cenv segs pc ph sp brk0 mbase rnd lim inp segs' cfg Q Hd Hag Hr.
-  exact (pxruns_sigchld_reachable _ _ _ _ _ _ Hag
-           (sigchld_ok_one_proc _ (sigchld_launch segs pc ph sp brk0 mbase rnd lim inp Hd)) Hr).
+  intros ext cenv segs pc ph sp brk0 mbase rnd lim inp sh segs' cfg Q Hext Hd Hr.
+  exact (pxruns_sigchld_reachable _ _ _ _ _ _ Hext
+           (sigchld_ok_one_proc_shared _ sh
+              (sigchld_launch segs pc ph sp brk0 mbase rnd lim inp Hd)) Hr).
 Qed.
 
-(** The agreement premise is met at every table by the released extension
-    ([Procs.ext_released_agrees], [Procs.ext_released_at_no_ext]), so for it
-    the run lemma needs nothing but the launch's bit. *)
-Corollary pxruns_sigchld_reachable_no_ext : forall segs cfg c Q,
+(** The extension that claims nothing ([Ext.no_ext]). *)
+Corollary pxruns_sigchld_reachable_no_ext : forall cenv segs cfg c sh Q,
   m_sigchld_dfl (cfg_model c) = true ->
-  NsCloneRefusers.pxruns Ext.no_ext Ext.any_clone_failure segs cfg (one_proc c) Q ->
+  NsCloneRefusers.pxruns no_ext cenv segs cfg
+    (mkPCfg (pcfg_procs (one_proc c)) (pcfg_root (one_proc c)) sh) Q ->
   sigchld_ok Q.
 Proof.
-  intros segs cfg c Q Hc Hr.
-  refine (pxruns_sigchld_reachable _ _ _ _ _ _ _ (sigchld_ok_one_proc c Hc) Hr).
-  intros R _. exact (ext_released_agrees _ _ _ _ (ext_released_at_no_ext segs R)).
+  intros cenv segs cfg c sh Q Hc Hr.
+  exact (pxruns_sigchld_reachable _ _ _ _ _ _ no_ext_keeps_sigchld
+           (sigchld_ok_one_proc_shared c sh Hc) Hr).
 Qed.
 
 Print Assumptions sigchld_reachable.
@@ -624,5 +759,6 @@ Print Assumptions sigchld_reachable_valid.
 Print Assumptions sigchld_reachable_launch.
 Print Assumptions sigchld_reachable_abort.
 Print Assumptions sigchld_reachable_finite.
+Print Assumptions pstep_x_at_preserves_sigchld_ext.
 Print Assumptions pxruns_sigchld_reachable.
-Print Assumptions pxruns_sigchld_reachable_no_ext.
+Print Assumptions pxruns_sigchld_reachable_launch.
