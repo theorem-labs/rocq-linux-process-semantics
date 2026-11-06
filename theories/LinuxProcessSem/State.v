@@ -7412,7 +7412,8 @@ Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
     whole to [newfd], leaving an alias that is no unnamed file's
     descriptor.  [Checks.AnonAgree] states these as lemmas, and
     [Checks.AnonAgreeInvariant.anon_agree_reachable] (with its [_cfg] and
-    [_pcfg] forms) proves from them that every state a run reaches from
+    [_pcfg] forms) proves from them that every state a single-process
+    run ([Run.star], [star_cfg], [star_pcfg]) reaches from
     [Run.init_config] holds no disagreeing unnamed file. *)
 Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
   forallb (fun p => anon_entry_agrees id af (snd p)) fds.
