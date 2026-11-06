@@ -488,12 +488,14 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     process with no recorded child ([sigchld_install_model]): the bit
     is set only if every child the process has was cloned while SIGCHLD
     was SIG_DFL.  [Exit.wait4_spec] reads it: a caller with a recorded
-    child is answered only when it is set, because under the launch's
-    disposition -- SIG_DFL, or a SIG_IGN [execve] kept --
-    [do_notify_parent] may already have reaped a child cloned before the
-    install.  The bit is never cleared: no answered call leaves SIGCHLD
-    anything but SIG_DFL with SA_NOCLDWAIT clear afterwards (see WHAT
-    STAYS DECLINED).
+    child is answered only when it is set, because under a SIG_IGN
+    [execve] kept [do_notify_parent] may already have reaped a child
+    cloned before the install.  [State.init_model] seeds it from the
+    launch's declared disposition ([State.ProcInput.in_sigchld_default]),
+    in a process with no child, so at a SIG_IGN launch it is this install,
+    made before the first clone, that sets it.  The bit is never cleared:
+    no answered call leaves SIGCHLD anything but SIG_DFL with SA_NOCLDWAIT
+    clear afterwards (see WHAT STAYS DECLINED).
     Nothing else about the disposition is stored, because a SIG_DFL
     SIGCHLD is the disposition every other SIGCHLD argument in this
     model is written against, so the install moves the process TOWARDS
@@ -538,8 +540,9 @@ Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
     recorded once this arm has set [State.procst_sigchld_dfl].  Admitting
     the install would make that arm unsound with no failing proof; the
     decline here is what keeps it sound, and the launch's own SIG_IGN
-    is covered by the bit: it is set only by an install made while the
-    process has no recorded child ([sigchld_install_model]), and while it is clear
+    is covered by the bit: [State.init_model] starts it clear at a
+    SIG_IGN launch, it is set only by an install made while the process
+    has no recorded child ([sigchld_install_model]), and while it is clear
     [Exit.wait4_spec] declines a caller with a recorded child.  Nothing in
     scope needs it: bwrap 0.13.1 and musl
     pass a flag word without it.  The tripwires are

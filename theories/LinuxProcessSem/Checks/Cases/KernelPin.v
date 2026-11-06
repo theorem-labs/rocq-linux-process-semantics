@@ -51,7 +51,7 @@ Definition launch_on (kb : KernelBuild) : ProcInput :=
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] kb default_execfn
                    true true false (Z_to_bv 64 0) (Z_to_bv 64 0) [] false false
-                   no_clone_refusers.
+                   no_clone_refusers true.
 
 Lemma ordinary_launch_valid : valid_input ordinary_launch.
 Proof. exact demo_input_valid. Qed.
