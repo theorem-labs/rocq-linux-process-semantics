@@ -1455,10 +1455,8 @@ Proof.
     inversion H; subst; autorewrite with model; reflexivity.
 Qed.
 
-(** The clone arms: the model as it was with an errno, or
-    [Kernel.Fork.clone_child_made] of a pid in the envelope (the child
-    recorded over the caller's forfeited table with its eventfds
-    shared), for either word. *)
+(** An errno of [Kernel.Fork.clone_errnos], or one [errno_any_b] admits, is
+    error-encoded. *)
 Lemma clone_errno_error : forall r,
   errno_ret_in clone_errnos r = true -> addr_is_error_b r = true.
 Proof.
@@ -1470,33 +1468,17 @@ Qed.
 Lemma errno_any_error : forall r, errno_any_b r = true -> addr_is_error_b r = true.
 Proof. intros r H. unfold errno_any_b in H. apply andb_true_iff in H as [H _]. exact H. Qed.
 
-Local Ltac clone_leaf :=
-  first
-  [ left; split; [reflexivity | first [ apply clone_errno_error; assumption
-                                       | apply errno_any_error; assumption ]]
-  | right; split; [reflexivity | assumption] ].
-
-Lemma check_clone_cp : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs ->
+(** The clone arms: the model as it was with an errno, or
+    [Kernel.Fork.clone_child_made] of a pid in the envelope (the child
+    recorded over the caller's forfeited table with its eventfds
+    shared), for either word ([Checks.Sys.Kernel.Fork.check_clone_shape]). *)
+Lemma check_clone_cp : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs ->
   (m' = m /\ addr_is_error_b (eff_ret eff) = true)
   \/ (m' = clone_child_made (eff_ret eff) m
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
-  intros flags [ret ws zs us cs ci] m m' evs H.
-  apply check_clone_cases in H as [(-> & _ & Hr) | H];
-    [left; split; [reflexivity | exact Hr]|].
-  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  repeat (lazymatch type of H with
-          | check_ret_only _ _ _ _ = CheckOk _ _ =>
-              apply check_ret_only_ok_iff in H;
-              let Heq := fresh "Heq" in
-              destruct H as (Heq & -> & ->); inversion Heq; subst
-          | _ => vm_step H
-          end).
-  all: first
-    [ clone_leaf
-    | left; split; [reflexivity | vm_compute; reflexivity] ].
+  intros i flags eff m m' evs H. exact (proj2 (check_clone_shape _ _ _ _ _ _ H)).
 Qed.
 
 Lemma check_clone3_cp : forall i uargs size eff m m' evs,
@@ -1505,21 +1487,7 @@ Lemma check_clone3_cp : forall i uargs size eff m m' evs,
   \/ (m' = clone_child_made (eff_ret eff) m
       /\ clone_pid_ok_b m (eff_ret eff) = true).
 Proof.
-  intros i uargs size eff m m' evs H.
-  apply check_clone3_cases in H as [(-> & _ & Hr) | H];
-    [left; split; [reflexivity | exact Hr]|].
-  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  repeat (lazymatch type of H with
-          | check_ret_only _ _ _ _ = CheckOk _ _ =>
-              apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->)
-          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ =>
-              apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->)
-          | _ => vm_step H
-          end).
-  all: first
-    [ clone_leaf
-    | left; split; [reflexivity | vm_compute; reflexivity] ].
+  intros i uargs size eff m m' evs H. exact (proj2 (check_clone3_shape _ _ _ _ _ _ _ H)).
 Qed.
 
 
@@ -1544,7 +1512,7 @@ Proof.
   all: try exact (Forall_nil arm_cp).
   all: unfold arm_cp; intros i eff m m' evs H; autorewrite with arm_unfold in H.
   all: first
-    [ right; split; [vm_compute; reflexivity | exact (check_clone_cp _ _ _ _ _ H)]
+    [ right; split; [vm_compute; reflexivity | exact (check_clone_cp _ _ _ _ _ _ H)]
     | right; split; [vm_compute; reflexivity | exact (check_clone3_cp _ _ _ _ _ _ _ H)]
     | left; split; [vm_compute; reflexivity | eapply check_wait4_cp; eassumption]
     | left; split; [vm_compute; reflexivity|]; unfold cps_kept; left;

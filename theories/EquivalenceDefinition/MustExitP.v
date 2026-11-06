@@ -175,14 +175,30 @@ Proof.
   erewrite bvmap_get_set_same' by (apply bv_eq; reflexivity). reflexivity.
 Qed.
 
+(** And writing another register afterwards does not disturb it: the
+    stack pointer x2 and the thread pointer x4 are not x10. *)
+Lemma ms_gpr_set_reg_other_a0 : forall ms (k : reg) v,
+  bv_unsigned k <> 10%Z -> ms_gpr (set_reg ms k v) 0 = ms_gpr ms 0.
+Proof.
+  intros ms k v Hk. unfold set_reg. destruct (bv_eqb k 0); [reflexivity|].
+  unfold ms_gpr, reg_get. simpl.
+  erewrite bvmap_get_set_other'
+    by (intros Hkk; apply Hk; rewrite Hkk; reflexivity).
+  reflexivity.
+Qed.
+
 Lemma child_entry_a0_zero : forall e c c' q,
   entry_a0_zero (child_entry e c c' q).
 Proof.
   intros e c c' q.
   unfold entry_a0_zero, child_entry, child_ms. cbn [pe_ms].
-  destruct (clone_child_sp c).
-  - apply ms_gpr_set_reg_sp_a0.
-  - apply ms_gpr_set_reg_a0.
+  change (ms_gpr (child_regs (clone_args_of_cfg c)
+                    (set_reg (cfg_ms c') 10 (Z_to_bv 64 0))) 0 = Z_to_bv 64 0).
+  destruct (clone_args_of_cfg c) as [a|]; cbn [child_regs]; cbv zeta;
+    [|apply ms_gpr_set_reg_a0].
+  destruct (w_is0 (cla_stack a)); destruct (clone_has (cla_flags a) CLONE_SETTLS);
+    rewrite ?ms_gpr_set_reg_other_a0 by (intro Hx; vm_compute in Hx; discriminate Hx);
+    apply ms_gpr_set_reg_a0.
 Qed.
 
 (* =========================================================================

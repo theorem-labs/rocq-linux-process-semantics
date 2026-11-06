@@ -1011,6 +1011,45 @@ Proof.
   exact (anon_agree_all_fd_insert_copy _ _ _ _ Hl Hinv).
 Qed.
 
+(** [clone]: through [check_clone_ok_inv], as [Checks.NsFileFree.check_clone_nf]
+    does.  The checker's refusal arms keep the model; every other answer is
+    one of the base's clone sub-checkers, which the generic frame reads.
+    The generic frame cannot open [check_clone] itself: its arms sit under
+    the stores gate and [check_refusable_arm]. *)
+Local Lemma check_clone_aa : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i flags eff m m' evs H Hinv.
+  destruct (LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork.check_clone_ok_inv
+              _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[(e & He & _)|[(e & He & _)|[He|He]]]];
+    [ exact Hinv
+    | clear H;
+      unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+        check_clone_ns_answer, check_clone_einval,
+        LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork.check_clone_ns_refused
+        in He;
+      aa_frame He .. ].
+Qed.
+
+(** [clone3]: through [check_clone3_ok_inv], as [Checks.NsFileFree.check_clone3_nf]
+    does; its stores arm is one more [check_clone_resolve]. *)
+Local Lemma check_clone3_aa : forall i uargs size eff m m' evs,
+  check_clone3 i uargs size eff m = CheckOk m' evs ->
+  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
+Proof.
+  intros i uargs size eff m m' evs H Hinv.
+  destruct (LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork.check_clone3_ok_inv
+              _ _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    [ exact Hinv
+    | clear H;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+        check_clone3_einval in He;
+      aa_frame He .. ].
+Qed.
+
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
   unfold checked_table.
@@ -1019,6 +1058,12 @@ Proof.
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
   all: try (aa_use check_openat_aa H; fail).
+  (* [clone] and [clone3] by their own lemmas, picked by the shape of [H]
+     first, so no other arm's [H] is elaborated against them. *)
+  all: try (lazymatch type of H with
+            | check_clone _ _ _ _ = _ => exact (check_clone_aa _ _ _ _ _ _ H Hinv)
+            | check_clone3 _ _ _ _ _ = _ => exact (check_clone3_aa _ _ _ _ _ _ _ H Hinv)
+            end).
   all: try (aa_use check_dup_aa H; fail).
   all: try (aa_frame H; fail).
   all: let T := type of H in

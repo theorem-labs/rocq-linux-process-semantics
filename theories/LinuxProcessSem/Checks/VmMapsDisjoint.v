@@ -3056,24 +3056,30 @@ Proof.
   vm_frame2 H.
 Qed.
 
-Lemma check_clone_frame : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_clone_frame : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros flags eff m m' evs H.
-  apply check_clone_cases in H as [(-> & _ & _) | H]; [reflexivity|].
-  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  vm_frame2 H.
+  intros i flags eff m m' evs H.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[(e & He & _)|[(e & He & _)|[He|He]]]];
+    [ reflexivity
+    | clear H;
+      unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+        check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
+      vm_frame2 He .. ].
 Qed.
 
 Lemma check_clone3_frame : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i uargs size eff m m' evs H.
-  apply check_clone3_cases in H as [(-> & _ & _) | H]; [reflexivity|].
-  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  vm_frame2 H.
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    [ reflexivity
+    | clear H;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+        check_clone3_einval in He;
+      vm_frame2 He .. ].
 Qed.
 
 (* -------------------------------------------------------------------------

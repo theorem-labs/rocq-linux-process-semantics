@@ -612,6 +612,22 @@ Proof.
       exact (Hext _ _ _ _ _ _ _ _ _ He Hb) end.
 Qed.
 
+(** The parent after [px_clone]'s [CLONE_PARENT_SETTID] rewrite
+    ([Procs.clone_parent_rewrite]) keeps the bit of the released
+    successor: [with_ret] moves only a0, and the rewrite's store is
+    accounted through [State.materialize_model_accesses]. *)
+Lemma clone_parent_rewrite_sigchld : forall segs c c' ret c2,
+  clone_parent_rewrite segs c (with_ret c' ret) ret = Some c2 ->
+  m_sigchld_dfl (cfg_model c') = true -> m_sigchld_dfl (cfg_model c2) = true.
+Proof.
+  intros segs c c' ret c2 Hw Hb.
+  assert (H1 : m_sigchld_dfl (cfg_model (with_ret c' ret)) = true)
+    by (destruct ret; exact Hb).
+  destruct (clone_parent_rewrite_model _ _ _ _ _ Hw) as [Hm | (acc & Hm)].
+  - rewrite Hm. exact H1.
+  - rewrite (sd_materialize _ _ _ Hm). exact H1.
+Qed.
+
 (** THE STEP UNDER AN EXTENSION: every step of [Procs.pstep_x_at] keeps
     the invariant, for any extension whose own answers keep a set bit.  No
     agreement with the core is assumed. *)
@@ -629,14 +645,17 @@ Proof.
         apply Forall_replace_in; [apply sigchld_first_root_pin; exact H|];
         exact (xsstep_sigchld_mono _ _ _ _ _ _ _ _ _ _ Hext Hx (sigchld_caller _ _ _ H Hl))
     end.
-  - (* px_clone: the parent's released step, and [child_proc] copies the bit *)
-    match goal with |- context [with_ret _ ?rt] => destruct rt end;
+  - (* px_clone: the parent's released step, its [CLONE_PARENT_SETTID]
+       rewrite of the extension's value ([clone_parent_rewrite_sigchld]),
+       and [child_proc] copies the bit *)
     match goal with
-    | Hl : look ?Q (pe_pid ?e) = Some ?e, Hss : sstep_cfg _ _ _ _ (SNext ?c') |- _ =>
+    | Hl : look ?Q (pe_pid ?e) = Some ?e, Hss : sstep_cfg _ _ _ _ (SNext ?c'),
+      Hw : clone_parent_rewrite _ _ (with_ret ?c' ?ret) ?ret = Some ?c2 |- _ =>
         unfold clone_result_x, sigchld_ok; cbn [pcfg_procs];
         apply List.Forall_app; split;
         [ apply Forall_replace_in; [exact H|];
-          exact (sstep_sigchld_mono _ _ _ _ _ Hss (sigchld_caller _ _ _ H Hl))
+          exact (clone_parent_rewrite_sigchld _ _ _ _ _ Hw
+                   (sstep_sigchld_mono _ _ _ _ _ Hss (sigchld_caller _ _ _ H Hl)))
         | constructor; [exact (sigchld_caller _ _ _ H Hl) | constructor] ]
     end.
   - (* px_clone_fail: the released step under the clone's filter *)

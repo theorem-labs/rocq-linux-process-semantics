@@ -520,7 +520,9 @@ Definition sched_setscheduler_spec (pid policy param : word)
     of this process's observations.  That costs nothing here because
     this model has one process — [Fork.clone_fork_flags_b] admits
     [SIGCHLD] alone, [Fork.clone_ns_flags_b] adds only namespace bits,
-    and every sharing flag forces [Unmodeled] or -EINVAL, so there
+    [Fork.clone_class] adds only [CLONE_SYSVSEM] and the four tid bits,
+    none of them [CLONE_VM] or [CLONE_THREAD], and every other sharing
+    flag forces [Unmodeled] or -EINVAL, so there
     is no second thread whose interleaving a yield could expose.  The
     day a shared-memory clone is modeled, this comment is what has to be
     re-read.

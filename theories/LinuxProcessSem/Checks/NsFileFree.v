@@ -1323,27 +1323,33 @@ Proof. intros len eff m m' evs H. unfold check_set_robust_list in H. nf_frame H.
 
 (** A successful clone shares the eventfds ([share_eventfds]); an
     [ONsFile] passes through it unchanged.  A host refuser's errno
-    ([check_clone_cases]) and the argument checks' -EINVAL
-    ([check_clone_einval], [check_clone3_einval]) leave the model as it
-    was. *)
-Lemma check_clone_nf : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs -> ns_post m m'.
+    ([check_clone_ok_inv], [check_clone3_ok_inv]) and the argument
+    checks' -EINVAL ([check_clone_einval], [check_clone3_einval]) leave
+    the model as it was. *)
+Lemma check_clone_nf : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
-  intros flags eff m m' evs H.
-  apply check_clone_cases in H as [(-> & _ & _) | H]; [exact (ns_kept_refl _)|].
-  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  nf_frame H.
+  intros i flags eff m m' evs H.
+  destruct (check_clone_ok_inv _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[(e & He & _)|[(e & He & _)|[He|He]]]];
+    [ exact (ns_kept_refl _)
+    | clear H;
+      unfold check_clone_resolve, check_clone_answer, check_clone_ns_resolve,
+        check_clone_ns_answer, check_clone_einval, check_clone_ns_refused in He;
+      nf_frame He .. ].
 Qed.
 
 Lemma check_clone3_nf : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
   intros i uargs size eff m m' evs H.
-  apply check_clone3_cases in H as [(-> & _ & _) | H]; [exact (ns_kept_refl _)|].
-  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  nf_frame H.
+  destruct (check_clone3_ok_inv _ _ _ _ _ _ _ H)
+    as [(-> & _ & _)|[He|[He|[He|(e & He & _)]]]];
+    [ exact (ns_kept_refl _)
+    | clear H;
+      unfold check_clone3_resolve, check_clone_resolve, check_clone_answer,
+        check_clone3_einval in He;
+      nf_frame He .. ].
 Qed.
 
 Lemma check_getsockname_nf : forall i fd eff m m' evs,

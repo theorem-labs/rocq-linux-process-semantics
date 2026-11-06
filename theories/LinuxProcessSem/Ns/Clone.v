@@ -21,8 +21,12 @@
     with CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
     CLONE_NEWPID and CLONE_NEWNET, and no other bit: the mask reads the
     record's flags and the SIGCHLD test its exit signal.  Child-tid flags
-    decline: the core does not admit them or model their memory effects.
-    Linux's
+    decline here, in the namespace model only: the process core admits
+    CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID without CLONE_VM
+    ([Kernel.Fork.clone_tid_bits]) and makes the child's
+    CLONE_CHILD_SETTID store into the child's own copy of the memory
+    ([Procs.child_tid_store]), but this model does not answer a
+    namespace clone that carries either bit.  Linux's
     [copy_process] stores their pointers (kernel/fork.c:2040,2044);
     [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
     and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
@@ -586,9 +590,9 @@ Definition clone_pid_failure_can_move (o : CloneNs) (en : Z) : bool :=
     which bytes Linux read before it faulted is not something the ledger
     can state); a [clone3] struct [clone3_pre] declines -- a non-zero
     [set_tid], CLONE_INTO_CGROUP or CLONE_NEWTIME; and every [clone3]
-    record that is neither the fork image ([Fork.clone3_fork_args_b])
-    nor refused by the argument checks, for example CLONE_VM alone, a
-    namespace bit, or a non-zero stack.
+    record that is neither the fork image ([Fork.clone3_fork_args_b]),
+    nor refused by the argument checks, nor in [Fork.clone_class]'s fork
+    class, for example CLONE_VM alone or a namespace bit.
 
     Those declines are what makes the core's own answer sound here: the
     core resolves no call without a record

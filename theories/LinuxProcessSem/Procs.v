@@ -740,40 +740,126 @@ Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
    The child a successful clone creates
    ========================================================================= *)
 
-(** The child's machine state: the parent's successor with a0 = 0, and the
-    stack pointer the call gives the child.  [set_reg] takes a PHYSICAL
-    register number; a0 is x10 and sp is x2.
+(** The machine state [ms] with the memory [mem]. *)
+Definition ms_with_mem (ms : machine_state) (mem : word -> option byte) : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms; ms_pc_val := ms_pc_val ms;
+     ms_svc_pending := ms_svc_pending ms; ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := mem; ms_rom := ms_rom ms |}.
 
-    WHICH CALL MOVES THE CHILD'S STACK, and the reason the argument is not
-    read blindly.  Linux's [copy_thread] (arch/riscv/kernel/process.c)
-    seats [usp] in the child's sp only when it is non-zero; otherwise the
-    child keeps the parent's.
-    - [clone] (220): [usp] is argument 1, [newsp].  Legacy [clone] accepts
-      an arbitrary one and it changes the CHILD's stack pointer
-      (Fork.v:753-764); zero, which musl's [fork] passes, keeps the
-      parent's.
-    - [clone3] (435): argument 1 is the SIZE of [struct clone_args], 88
-      at the one modeled size, not a stack.  [usp] is the struct's
-      [stack] field, which the released spec requires to be zero
-      (Fork.v:957), so the child keeps the parent's.
-    Reading argument 1 for both gave every [clone3] child sp = 88.
-    [clone_child_sp] is the stack a successful call seats, [None] for the
-    parent's. *)
-Definition clone_child_sp (c : config) : option word :=
-  match ms_svc_pending (cfg_ms c) with
+(** THE DECODED ARGUMENT RECORD of the clone pending at [c]
+    ([Fork.CloneArgs]), read as the released step reads it: [clone]
+    (220) from its registers ([Fork.clone_args_of_clone]), [clone3] (435)
+    from the struct at a0 ([Fork.clone3_pre], over the caller's memory as
+    the call began, [Run.sys_input]'s [in_mem]).  [None] when the call
+    has no record; such a call gets no child. *)
+Definition clone_args_of_cfg (c : config) : option CloneArgs :=
+  let ms := cfg_ms c in
+  match ms_svc_pending ms with
   | Some x8 =>
       if Z.eqb (bv_unsigned x8) 220%Z then
-        if w_is0 (ms_gpr (cfg_ms c) 1) then None else Some (ms_gpr (cfg_ms c) 1)
+        clone_args_of_clone (ms_gpr ms 0) (ms_gpr ms 1) (ms_gpr ms 2) (ms_gpr ms 3)
+          (ms_gpr ms 4)
+      else if Z.eqb (bv_unsigned x8) 435%Z then
+        match copy_bytes_map (ms_read_byte ms) (ms_gpr ms 0) CLONE_ARGS_SIZE with
+        | Some bs => match clone3_pre bs with CdArgs r => Some r | _ => None end
+        | None => None
+        end
       else None
   | None => None
   end.
 
-Definition child_ms (c c' : config) : machine_state :=
-  let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
-  match clone_child_sp c with
-  | None => base
-  | Some sp => set_reg base 2 sp
+(** THE CHILD'S REGISTERS, from [copy_thread] (arch/riscv/kernel/process.c:
+    224-263, Linux v6.18.46): the caller's (248), with sp the record's
+    stack when it is not 0 (251-252) and tp the record's tls under
+    [CLONE_SETTLS] (253-254); a0 = 0 is set by [child_ms].  The record's
+    stack is a1 for [clone] and [stack + stack_size] for [clone3]
+    ([Fork.clone3_pre], fork.c:2845-2847).  [set_reg] takes a PHYSICAL
+    register number: sp is x2 and tp is x4. *)
+Definition child_regs (r : option CloneArgs) (ms : machine_state) : machine_state :=
+  match r with
+  | Some a =>
+      let ms1 := if w_is0 (cla_stack a) then ms else set_reg ms 2 (cla_stack a) in
+      if clone_has (cla_flags a) CLONE_SETTLS then set_reg ms1 4 (cla_tls a) else ms1
+  | None => ms
   end.
+
+(** A record the core answers with a child: the argument checks pass it
+    and [Fork.clone_class] admits it ([Fork.clone_spec], [Fork.clone3_spec]). *)
+Definition clone_record_admitted (r : CloneArgs) : bool :=
+  negb (clone_arg_checks r)
+  && match clone_class r with CcFork | CcNs => true | _ => false end.
+
+(** THE CHILD'S [CLONE_CHILD_SETTID] STORE, of [v], the value the call
+    returns to the caller ([c']'s a0), into the child's copy of the memory:
+    [schedule_tail] writes the child's pid in its own pid namespace at its
+    first run, before its first instruction (kernel/sched/core.c:5272-5273;
+    arch/riscv/kernel/entry.S:337-341).  Without [CLONE_VM] no other task
+    reads that copy, so the store made when the child is created gives the
+    same answers; and without [CLONE_NEWPID], which the released step
+    declines with [CLONE_CHILD_SETTID] ([Fork.child_tid_ok]), the child's
+    pid namespace is the caller's, so its pid there is the caller's
+    answer.  The store is made, for a record the core answers with a
+    child, when [access_ok] admits the slot and the caller's memory as the
+    call began backs all four bytes readably; the released step admits the
+    word only where that is Linux's answer ([Fork.child_tid_ok]: all four
+    writable, or none and none readable). *)
+Definition child_tid_store (c c' : config) : list (word * list byte) :=
+  match clone_args_of_cfg c with
+  | Some r =>
+      if clone_record_admitted r then
+        match clone_child_tid r with
+        | Some p =>
+            if access_okb p 4 && all_backed (tid_bytes (ms_read_byte (cfg_ms c)) p)
+            then [(p, le32_bytes (ms_gpr (cfg_ms c') 0))]
+            else []
+        | None => []
+        end
+      else []
+  | None => []
+  end.
+
+(** The child's machine state: the registers, pc and pending-call state
+    of the caller's successor [c'] (the state after the ecall), with a0 =
+    0 and [child_regs]; and the memory of the caller as the call began
+    ([cfg_ms c]), not after the call's effect.  [copy_mm] copies a private
+    mm at fork.c:1547-1549, before the call writes the caller's memory
+    ([CLONE_PARENT_SETTID], fork.c:2626-2627), so that write is not in
+    the child's copy; its own [CLONE_CHILD_SETTID] store is
+    ([child_tid_store]). *)
+Definition child_ms (c c' : config) : machine_state :=
+  ms_with_mem (child_regs (clone_args_of_cfg c) (set_reg (cfg_ms c') 10 (Z_to_bv 64 0)))
+              (apply_writes (ms_mem (cfg_ms c)) (child_tid_store c c')).
+
+(** The child's model: [m0], the caller's own record, when the child
+    makes no store; else the caller's model as the call began, [m], with
+    the store accounted ([State.materialize_model_accesses], as
+    [Run.sstep_cfg_syscall] accounts every store).  The [None] arm is not
+    reached from a clone the released step answered with a child:
+    [Checks.ProcsWellFormed.child_tid_store_accounted] proves the
+    accounting succeeds there, because the released step admits the word
+    only when it does ([Fork.child_tid_ok]). *)
+Definition child_model (m0 m : Model) (ws : list (word * list byte)) : Model :=
+  match ws with
+  | [] => m0
+  | _ => match materialize_model_accesses m (write_accesses ws) with
+         | Some m' => m'
+         | None => m0
+         end
+  end.
+
+(** The child's accounting moves neither its descriptor table nor its
+    lazy ledger, when the caller's model as the call began holds the
+    caller's own. *)
+Lemma child_model_frame : forall m0 m ws,
+  m_fd m = m_fd m0 -> m_vm_lazy m = m_vm_lazy m0 ->
+  m_fd (child_model m0 m ws) = m_fd m0 /\ m_vm_lazy (child_model m0 m ws) = m_vm_lazy m0.
+Proof.
+  intros m0 m [|w ws] Hfd Hlz; cbn [child_model]; [split; reflexivity|].
+  destruct (materialize_model_accesses m (write_accesses (w :: ws))) as [m'|] eqn:Hm;
+    [|split; reflexivity].
+  destruct (materialize_model_accesses_frame _ _ _ Hm) as (Hf & _ & Hl & _).
+  rewrite Hf, Hl. split; [exact Hfd | exact Hlz].
+Qed.
 
 (** The child's process record: the parent's, with the NINE fields that
     are the CHILD's own cleared, and every other field copied.
@@ -857,26 +943,33 @@ Definition child_proc (ppid : Pid) (ps : ProcState) : ProcState :=
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
 
-(** THE CHILD'S DESCRIPTOR TABLE is the parent's table BEFORE the call,
-    [pe_model e], with each eventfd shared ([Kernel.Fork.share_eventfds]):
-    the child names the same [eventfd_ctx] as the parent, so neither may
-    answer from a counter.  Nothing else of the table changes: a live
-    inherited entry keeps its bytes and offset here, because the parent's
-    successful clone forfeits its own copy ([Kernel.Fork.clone_child_made]),
-    and the child is the one holder left.  The close-on-exec bits the
-    model knows ([State.m_cloexec]) are carried with the table, as
-    [dup_fd] copies the close-on-exec bitmap (fs/file.c, read at
-    v6.18.44; identical at v6.18.46); [share_eventfds] rewrites entries
-    in place, so every key still names an open descriptor.  The child's
-    parent pid is the parent's pinned tid, or its key in the process
-    table before the first root-tid pin ([child_proc]). *)
+(** THE CHILD'S MODEL is [child_model]'s: the parent's model BEFORE the
+    call, [pe_model e], with the child's own [CLONE_CHILD_SETTID] store
+    accounted when it makes one, on the caller's model as the call began
+    ([cfg_model c]); where that model holds [pe_model e]'s table, the
+    accounting moves no descriptor ([child_model_frame]).  THE CHILD'S
+    DESCRIPTOR TABLE is that model's, so the parent's table before the
+    call, with each eventfd shared
+    ([Kernel.Fork.share_eventfds]): the child names the same
+    [eventfd_ctx] as the parent, so neither may answer from a counter.
+    Nothing else of the table changes: a live inherited entry keeps its
+    bytes and offset here, because the parent's successful clone forfeits
+    its own copy ([Kernel.Fork.clone_child_made]), and the child is the
+    one holder left.  The close-on-exec bits the model knows
+    ([State.m_cloexec]) are carried with the table, as [dup_fd] copies
+    the close-on-exec bitmap (fs/file.c, read at v6.18.44; identical at
+    v6.18.46); [share_eventfds] rewrites entries in place, so every key
+    still names an open descriptor.  The child's parent pid is the
+    parent's pinned tid, or its key in the process table before the
+    first root-tid pin ([child_proc]). *)
 Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
     : ProcessEntry :=
   mkEntry q (Some (pe_pid e)) (child_ms c c')
           (clear_shared (with_proc (child_proc
              (match m_tid (pe_model e) with Some t => t | None => pe_pid e end)
              (m_proc (pe_model e)))
-             (with_fds (share_eventfds (m_fds (pe_model e))) (pe_model e))))
+             (let m := child_model (pe_model e) (cfg_model c) (child_tid_store c c') in
+              with_fds (share_eventfds (m_fds m)) m)))
           (pe_ofd e) (pe_nsctx e).
 
 (** The flag word of a pending clone: argument 0 of [clone] (220);
@@ -926,10 +1019,12 @@ Definition clone_flags_of (c : config) : Z :=
       [Fork.clone3_spec] takes further: the fork image, which it takes
       to [Fork.clone3_resolve] off the raw struct
       ([Fork.clone3_fork_args_b]), whether or not that resolution then
-      declines, or a record the argument checks refuse, which it
-      answers -EINVAL.  A struct its own tests refuse or decline, a
-      size or a copy it declines or refuses, and any other record give
-      none.
+      declines; a record the argument checks refuse, which it answers
+      -EINVAL; or a record [Fork.clone_class] puts in the fork class (a
+      stack, or bits of [Fork.clone_extra_bits]), which it takes to
+      [Fork.clone3_with_stores], whether or not that then declines.  A
+      struct its own tests refuse or decline, a size or a copy it
+      declines or refuses, and any other record give none.
     - Any other call, and no pending call: none.
     Every clone rule the extension answers reads it, and so do the
     run's clone environment and the forced-only filter of a failed
@@ -951,7 +1046,8 @@ Definition clone_in_of (c : config) : CloneIn :=
           | Some bs =>
               match clone3_pre bs with
               | CdArgs r =>
-                  if clone3_fork_args_b bs || clone_arg_checks r then CiArgs r
+                  if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
+                  then CiArgs r
                   else CiNoArgs
               | _ => CiNoArgs
               end
@@ -980,7 +1076,8 @@ Lemma clone_in_of_input : forall segs c x8,
        | Some bs =>
            match clone3_pre bs with
            | CdArgs r =>
-               if clone3_fork_args_b bs || clone_arg_checks r then CiArgs r
+               if clone3_fork_args_b bs || clone_arg_checks r || clone_class_fork_b r
+               then CiArgs r
                else CiNoArgs
            | _ => CiNoArgs
            end
@@ -999,10 +1096,12 @@ Qed.
     without a record creates a child.  An answer that is not
     error-encoded -- the test [clone_success_b] reads off the successor's
     a0 -- comes from neither a host refuser nor any -EINVAL or -EFAULT,
-    so for 220 it comes from one of the two admitted words
-    ([Fork.clone_spec_success_record]) and for 435 from the fork image
-    ([Fork.clone3_spec_success_record]); both decode to a record no check
-    refuses.  [Ns.Clone.clone_ns_exact_core_gate] is the other half: for
+    so for 220 it comes from one of the two admitted words or an arm of
+    a decoded record the checks pass ([Fork.clone_spec_success_record])
+    and for 435 from the fork image or a record of [Fork.clone_class]'s
+    fork class ([Fork.clone3_spec_success_record]); each decodes to a
+    record no check refuses, which [clone_in_of] gives.
+    [Ns.Clone.clone_ns_exact_core_gate] is the other half: for
     a record the checks pass, an answered call is one the core's own gate
     admits. *)
 Theorem clone_success_has_record : forall segs c x8 eff model' evs,
@@ -1043,8 +1142,9 @@ Proof.
     replace (Z.eqb 435%Z 220%Z) with false by reflexivity.
     replace (Z.eqb 435%Z 435%Z) with true by reflexivity. cbv iota.
     rewrite Hsz. cbn [negb]. cbv iota.
-    rewrite Hbs. cbv iota. rewrite Hpre. cbv iota. rewrite Ha. cbn [orb]. cbv iota.
-    reflexivity.
+    rewrite Hbs. cbv iota. rewrite Hpre. cbv iota.
+    destruct Ha as [Ha | Ha]; rewrite Ha;
+      [cbn [orb] | rewrite Bool.orb_true_r]; cbv iota; reflexivity.
 Qed.
 
 (** NO RECORD FOR A STRUCT [clone3]'S OWN TESTS REFUSE OR DECLINE.  Where
@@ -1117,7 +1217,8 @@ Proof.
     destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
       as [bs|]; cbv iota in H; [|discriminate H].
     destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
-    destruct (clone3_fork_args_b bs || clone_arg_checks r0); cbv iota in H;
+    destruct (clone3_fork_args_b bs || clone_arg_checks r0 || clone_class_fork_b r0);
+      cbv iota in H;
       [|discriminate H].
     injection H as <-.
     pose proof (clone3_pre_split _ _ Hp3) as Hs.
@@ -1137,7 +1238,9 @@ Qed.
     [clone3]'s only: its word was [SIGCHLD] whatever the struct
     holds, and several refusing rows need a namespace bit (CLONE_NEWNS
     or CLONE_NEWUSER with CLONE_FS, CLONE_THREAD with CLONE_NEWUSER or
-    CLONE_NEWPID).  A refused record makes no namespace. *)
+    CLONE_NEWPID).  A refused record makes no namespace.  A [clone3]
+    record of [Fork.clone_class]'s fork class has no namespace bit
+    ([Fork.clone_class_fork_b_ns]). *)
 Theorem clone_in_of_ns_bits : forall c r,
   has_ns_bits (clone_flags_of c) = false ->
   clone_in_of c = CiArgs r ->
@@ -1166,14 +1269,19 @@ Proof.
     destruct (copy_bytes_map (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) CLONE_ARGS_SIZE)
       as [bs|]; cbv iota in H; [|discriminate H].
     destruct (clone3_pre bs) as [| |r0] eqn:Hp3; cbv iota in H; try discriminate H.
-    destruct (clone3_fork_args_b bs || clone_arg_checks r0) eqn:Hor; cbv iota in H;
-      [|discriminate H].
+    destruct (clone3_fork_args_b bs || clone_arg_checks r0 || clone_class_fork_b r0) eqn:Hor;
+      cbv iota in H; [|discriminate H].
     injection H as <-.
-    apply orb_true_iff in Hor as [Ha|Hc0]; [|rewrite Hc0 in Hc; discriminate Hc].
-    rewrite (clone3_pre_flags bs r0 Hp3).
-    unfold clone3_fork_args_b, w_is0 in Ha.
-    repeat (apply andb_true_iff in Ha as [Ha ?]).
-    apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity.
+    apply orb_true_iff in Hor as [Hor|Hcf].
+    + apply orb_true_iff in Hor as [Ha|Hc0]; [|rewrite Hc0 in Hc; discriminate Hc].
+      rewrite (clone3_pre_flags bs r0 Hp3).
+      unfold clone3_fork_args_b, w_is0 in Ha.
+      repeat (apply andb_true_iff in Ha as [Ha ?]).
+      apply bv_eqb_eq in Ha. rewrite Ha. vm_compute. reflexivity.
+    + pose proof (clone_class_fork_b_ns r0 Hcf) as Hm.
+      unfold clone_has in Hm. apply negb_false_iff in Hm. apply Z.eqb_eq in Hm.
+      replace clone_ns_bits with clone_ns_mask by (vm_compute; reflexivity).
+      exact Hm.
 Qed.
 
 (** The metadata of [p]; an absent pid reads as no stale namespace. *)
@@ -3240,6 +3348,108 @@ Definition with_ret (c : config) (ret : option Z) : config :=
   | Some v => mkCfg (set_reg (cfg_ms c) 10 (Z_to_bv 64 v)) (cfg_model c)
   end.
 
+(** THE [CLONE_PARENT_SETTID] STORE OF THE EXTENSION'S RETURN VALUE.  The
+    released step stored the core's pid at the record's parent-tid
+    pointer ([Fork.clone_with_stores]) where [Fork.tid_store_case] says
+    the memory backs all four bytes writably.  [kernel_clone] stores the
+    call's final return value there (fork.c:2623-2627), which is the
+    extension's [ret] when it gives one; so with [ret = Some _] the four
+    bytes of the caller's successor [c1] (whose a0 already holds [ret],
+    [with_ret]) are written again with it, accounted through
+    [State.materialize_model_accesses] as [Run.sstep_cfg_syscall] accounts
+    a store.  [None] is a store the model does not state: the four bytes
+    backed writably in part, which the released step already declined, or
+    an accounting the model refuses; [px_clone_store_refuse] makes it the
+    error step.  [c] is the caller as the call began. *)
+Definition clone_parent_rewrite (segs : list Segment) (c c1 : config) (ret : option Z)
+    : option config :=
+  match ret with
+  | None => Some c1
+  | Some _ =>
+      match match clone_args_of_cfg c with
+            | Some r => clone_parent_tid r
+            | None => None
+            end with
+      | None => Some c1
+      | Some p =>
+          match tid_store_case (ms_writable_byte segs (cfg_ms c)) p with
+          | TsSkip => Some c1
+          | TsPartial => None
+          | TsWrite =>
+              let ws := [(p, le32_bytes (ms_gpr (cfg_ms c1) 0))] in
+              match materialize_model_accesses (cfg_model c1) (write_accesses ws) with
+              | Some m => Some (mkCfg (ms_with_mem (cfg_ms c1)
+                                         (apply_writes (ms_mem (cfg_ms c1)) ws)) m)
+              | None => None
+              end
+          end
+      end
+  end.
+
+(** The rewritten parent's model is the successor's, or the successor's
+    with the store accounted ([State.materialize_model_accesses]). *)
+Lemma clone_parent_rewrite_model : forall segs c c1 ret c2,
+  clone_parent_rewrite segs c c1 ret = Some c2 ->
+  cfg_model c2 = cfg_model c1
+  \/ exists acc, materialize_model_accesses (cfg_model c1) acc = Some (cfg_model c2).
+Proof.
+  intros segs c c1 ret c2 H. unfold clone_parent_rewrite in H.
+  destruct ret as [v|]; [|injection H as <-; left; reflexivity].
+  destruct (match clone_args_of_cfg c with Some r => clone_parent_tid r | None => None end)
+    as [p|]; [|injection H as <-; left; reflexivity].
+  destruct (tid_store_case (ms_writable_byte segs (cfg_ms c)) p);
+    [injection H as <-; left; reflexivity | | discriminate H].
+  cbv zeta in H.
+  destruct (materialize_model_accesses (cfg_model c1)
+              (write_accesses [(p, le32_bytes (ms_gpr (cfg_ms c1) 0))])) as [m|] eqn:Hm;
+    [|discriminate H].
+  injection H as <-. right. eexists. exact Hm.
+Qed.
+
+Local Lemma clone_has_sub : forall f B b,
+  Z.land f B = 0%Z -> Z.land B b = b -> clone_has f b = false.
+Proof.
+  intros f B b H Hb. unfold clone_has. rewrite <- Hb, Z.land_assoc, H, Z.land_0_l.
+  reflexivity.
+Qed.
+
+(** THE WORDS ADMITTED BEFORE [CLONE_SYSVSEM] AND THE TID BITS KEEP THEIR
+    CLONE STEP.  A record whose flags hold none of [Fork.clone_extra_bits]
+    (the fork word and every namespace word, [Fork.clone_admitted_no_extra_bits],
+    and [clone3]'s fork image, whose flags are 0) makes no child store, has
+    no parent-tid store to rewrite, and seats no tls: its child is the
+    caller's successor with a0 = 0 and the record's stack, over the memory
+    the caller had when the call began, which for those words is the
+    memory after the call, since their released effect writes none
+    ([Kernel.Fork.clone_admitted_words_unchanged] keeps their released
+    answers outcome for outcome). *)
+Lemma clone_no_extra_bits_unchanged : forall segs c c' c1 ret r,
+  clone_args_of_cfg c = Some r -> Z.land (cla_flags r) clone_extra_bits = 0%Z ->
+  child_tid_store c c' = []
+  /\ clone_parent_rewrite segs c c1 ret = Some c1
+  /\ child_ms c c' = ms_with_mem (child_regs (Some r) (set_reg (cfg_ms c') 10 (Z_to_bv 64 0)))
+                                 (ms_mem (cfg_ms c))
+  /\ clone_has (cla_flags r) CLONE_SETTLS = false.
+Proof.
+  intros segs c c' c1 ret r Hr H0.
+  assert (Hc : clone_child_tid r = None).
+  { unfold clone_child_tid.
+    rewrite (clone_has_sub _ _ CLONE_CHILD_SETTID H0 ltac:(vm_compute; reflexivity)).
+    reflexivity. }
+  assert (Hpt : clone_parent_tid r = None).
+  { unfold clone_parent_tid.
+    rewrite (clone_has_sub _ _ CLONE_PARENT_SETTID H0 ltac:(vm_compute; reflexivity)).
+    reflexivity. }
+  assert (Hs : clone_has (cla_flags r) CLONE_SETTLS = false)
+    by (apply (clone_has_sub _ _ _ H0); vm_compute; reflexivity).
+  unfold child_ms, child_tid_store, clone_parent_rewrite. rewrite Hr. cbv beta iota.
+  rewrite Hc, Hpt.
+  split; [destruct (clone_record_admitted r); reflexivity|].
+  split; [destruct ret; reflexivity|].
+  split; [|exact Hs].
+  destruct (clone_record_admitted r); reflexivity.
+Qed.
+
 Definition clone_pending_b (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => clone_sysno (bv_unsigned x8)
@@ -3552,7 +3762,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     answer_ok_b P e c' = true ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
-| px_clone : forall P e evs c' q child ret st',
+| px_clone : forall P e evs c' q child ret st' c'',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
@@ -3563,8 +3773,9 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child ret st') ->
+    clone_parent_rewrite segs (pe_cfg (pcfg_shared P) e) (with_ret c' ret) ret = Some c'' ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs
-      (PNext (clone_result_x P e (with_ret c' ret) q child st'))
+      (PNext (clone_result_x P e c'' q child st'))
 (** A FAILED clone is the released failure, with the state [ext_clone]
     says the failure leaves.  Its errno comes from the released step under
     the clone's forced-only filter ([clone_fail_step]): under a forced-only
@@ -3712,7 +3923,24 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     look P (pcfg_root P) = Some r ->
     (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
     key_taken_b P t = false ->
-    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (pin_root P r t)).
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (pin_root P r t))
+(** A clone whose [CLONE_PARENT_SETTID] store of the extension's return
+    value the model does not state ([clone_parent_rewrite]): the error
+    step.  It needs the extension to give a return value of its own, so
+    an extension that keeps the released pid never reaches it. *)
+| px_clone_store_refuse : forall P e evs c' q child ret st',
+    look P (pe_pid e) = Some e ->
+    claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
+    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+    clone_success_b (pe_cfg (pcfg_shared P) e) c' = true ->
+    child_pid_core c' q ->
+    look P q = None ->
+    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+    ext_clone ext (clone_in_of (pe_cfg (pcfg_shared P) e))
+      (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
+      (bv_unsigned q) (CnOk child ret st') ->
+    clone_parent_rewrite segs (pe_cfg (pcfg_shared P) e) (with_ret c' ret) ret = None ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
@@ -3730,7 +3958,7 @@ Proof.
               | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
               | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse
               | eapply px_peer_refuse | eapply px_sync | eapply px_step_refuse
-              | eapply px_pin_root];
+              | eapply px_pin_root | eapply px_clone_store_refuse];
     eauto.
 Qed.
 
@@ -4011,7 +4239,7 @@ Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
       [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hst Han Hmp
-      | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
+      | Q e ev c' q child ret st' c'' Hl Hcl Hs Hsucc Hq Hfree Hma Hec Hrw
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
       | Q e Hl Hh Hcp Hcl
@@ -4026,7 +4254,8 @@ Proof.
       | Q e Hl Hh Hns
       | Q e Hl Hh Hsy
       | Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp Hst Han
-      | Q e r t Hl Hh Hpin Hlr Ht Hkt ]; intros Hag;
+      | Q e r t Hl Hh Hpin Hlr Ht Hkt
+      | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec Hrw ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -4036,7 +4265,8 @@ Proof.
     + (* px_clone *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; [|discriminate Heq].
-      injection Heq as -> -> ->. cbn [with_ret]. rewrite clone_result_x_same.
+      injection Heq as -> -> ->. cbn [with_ret clone_parent_rewrite] in Hrw.
+      injection Hrw as <-. rewrite clone_result_x_same.
       apply pstep_clone; assumption.
     + (* px_clone_fail *)
       apply (proj1 (clone_fail_step_released_clone ext segs cfg _ _ _ hq en ev c' (Hcln hq)))
@@ -4080,6 +4310,12 @@ Proof.
       * rewrite <- Hmpe. exact Hmp.
     + (* px_pin_root: the core's own arm, on both sides *)
       eapply pstep_pin_root; eassumption.
+    + (* px_clone_store_refuse: the extension keeps the released pid, so
+         there is no store of its own to refuse *)
+      apply (proj1 (Hcln _ _)) in Hec.
+      destruct Hec as [Heq | (en & _ & Heq)]; [|discriminate Heq].
+      injection Heq as -> -> ->. cbn [with_ret clone_parent_rewrite] in Hrw.
+      discriminate Hrw.
   - intros H. revert Hag. destruct H as
       [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst Han
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
@@ -4111,12 +4347,10 @@ Proof.
         -- rewrite Hmpe. exact Hma.
     + (* pstep_clone *)
       rewrite <- clone_result_x_same.
-      replace (clone_result_x Q e c' q (pe_nsctx e) (sh_ns (pcfg_shared Q)))
-        with (clone_result_x Q e (with_ret c' None) q (pe_nsctx e) (sh_ns (pcfg_shared Q)))
-        by reflexivity.
-      apply px_clone; try assumption.
+      apply px_clone with (evs := ev) (c' := c') (ret := None); try assumption.
       * exact (Hclp (clone_success_pending _ _ Hsucc)).
       * apply (proj2 (Hcln _ _)). left. reflexivity.
+      * reflexivity.
     + (* pstep_wait_reap *)
       eapply px_wait_reap; try eassumption. exact (Hwtp Hwt).
     + (* pstep_error *)

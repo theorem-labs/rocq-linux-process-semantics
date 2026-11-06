@@ -1108,8 +1108,9 @@ Definition MAX_RT_PRIO : Z := 100%Z.
 Definition CLONE_VM : Z := 256%Z.
 
 (** The other bits of a clone flag word that [Kernel.Fork]'s argument
-    decoding and checks read ([clone_args_of_clone], [clone3_pre],
-    [clone_arg_checks]; include/uapi/linux/sched.h, Linux v6.18.46).  [CSIGNAL]
+    decoding, checks and admission read ([clone_args_of_clone], [clone3_pre],
+    [clone_arg_checks], [clone_class]; include/uapi/linux/sched.h, Linux
+    v6.18.46).  [CSIGNAL]
     is the exit-signal byte of legacy [clone]'s register.
     [CLONE_CLEAR_SIGHAND] and [CLONE_INTO_CGROUP] are [clone3]'s own,
     above bit 31.  [CLONE_LEGACY_FLAGS] is
@@ -1121,8 +1122,12 @@ Definition CLONE_SIGHAND       : Z := 0x00000800%Z.
 Definition CLONE_PIDFD         : Z := 0x00001000%Z.
 Definition CLONE_PARENT        : Z := 0x00008000%Z.
 Definition CLONE_THREAD        : Z := 0x00010000%Z.
+Definition CLONE_SYSVSEM       : Z := 0x00040000%Z.
+Definition CLONE_SETTLS        : Z := 0x00080000%Z.
 Definition CLONE_PARENT_SETTID : Z := 0x00100000%Z.
+Definition CLONE_CHILD_CLEARTID : Z := 0x00200000%Z.
 Definition CLONE_DETACHED      : Z := 0x00400000%Z.
+Definition CLONE_CHILD_SETTID  : Z := 0x01000000%Z.
 Definition CLONE_CLEAR_SIGHAND : Z := 0x100000000%Z.
 Definition CLONE_INTO_CGROUP   : Z := 0x200000000%Z.
 Definition CLONE_LEGACY_FLAGS  : Z := 0xffffffff%Z.

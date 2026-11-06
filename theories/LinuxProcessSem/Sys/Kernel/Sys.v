@@ -77,14 +77,16 @@ Open Scope sys_scope.
     its [thread_pid] is its own, so [getpid] and [gettid] disagree
     there.  The model admits no such process.  It DOES have [clone]
     (220) and [clone3] (435), but they give a child only for a flag word
-    that shares nothing -- [Fork.clone_fork_flags_b] admits [SIGCHLD]
-    alone, and the clone statements of [Checks.ProcessCreation]
+    that shares no address space and makes no thread --
+    [Fork.clone_fork_flags_b] admits [SIGCHLD] alone,
+    [Fork.clone_class] adds at most namespace bits, [CLONE_SYSVSEM] and
+    the four tid bits, and the clone statements of [Checks.ProcessCreation]
     ([clone_sharing_flags_unmodeled], [clone_arg_checks_einval],
     [clone_high_bits_unmodeled], [clone_open_file_unmodeled], and for
     [clone3] [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
     [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
     [clone3_other_size_unmodeled]) prove that a word with any bit of
-    [clone_sharing_bits], [CLONE_THREAD] and [CLONE_SIGHAND] among them,
+    [unadmitted_bits], [CLONE_THREAD] and [CLONE_SIGHAND] among them,
     declines or answers -EINVAL (a [clone3] struct the copy does not read
     answers -EFAULT or declines), and none of these makes a child.  So no
     task this
@@ -167,7 +169,7 @@ Definition getpid_spec : Sys SyscallEffect := set_tid_address_spec.
     [clone3_sharing_flags_unmodeled], [clone3_arg_checks_einval],
     [clone3_own_checks_einval], [clone3_declined_struct_unmodeled] and
     [clone3_other_size_unmodeled]) prove that a word with any bit of
-    [clone_sharing_bits], [CLONE_THREAD] among them, declines or answers
+    [unadmitted_bits], [CLONE_THREAD] among them, declines or answers
     -EINVAL (a [clone3] struct the copy does not read answers -EFAULT or
     declines), and none of these makes a child, so no run this model
     describes ever has a second task to ask.  A change that gave the

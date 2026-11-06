@@ -171,3 +171,21 @@ Proof.
   unfold w_is0, bv_eqb in H. apply Z.eqb_eq in H. rewrite H.
   vm_compute. reflexivity.
 Qed.
+
+(** The words [clone_class] admits: bits of [clone_extra_bits] and of
+    [clone_ns_mask] only, none of which is [CLONE_VM]. *)
+Lemma clone_class_grants_no_shared_mm : forall r,
+  clone_class r <> CcNone -> Z.land (cla_flags r) CLONE_VM = 0%Z.
+Proof.
+  intros r H. unfold clone_class in H. cbv zeta in H.
+  destruct (negb (cla_exit_signal r =? SIGCHLD)%Z); [exfalso; apply H; reflexivity|].
+  destruct (clone_has (cla_flags r) (Z.lnot (Z.lor clone_extra_bits clone_ns_mask))) eqn:Hh;
+    [exfalso; apply H; reflexivity|].
+  unfold clone_has in Hh. apply negb_false_iff, Z.eqb_eq in Hh.
+  rewrite <- (Z.land_m1_r (cla_flags r)),
+    <- (Z.lor_lnot_diag (Z.lor clone_extra_bits clone_ns_mask)),
+    Z.land_lor_distr_r, Hh, Z.lor_0_r, <- Z.land_assoc.
+  replace (Z.land (Z.lor clone_extra_bits clone_ns_mask) CLONE_VM) with 0%Z
+    by (vm_compute; reflexivity).
+  apply Z.land_0_r.
+Qed.

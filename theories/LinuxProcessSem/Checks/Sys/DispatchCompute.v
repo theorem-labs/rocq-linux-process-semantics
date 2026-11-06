@@ -620,12 +620,12 @@ Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_clone : forall i eff m,
   bv_unsigned (in_sysno i) = 220%Z ->
-  check_syscall i eff m = check_clone (in_arg i 0) eff m.
+  check_syscall i eff m = check_clone i (in_arg i 0) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_clone : forall i m,
   bv_unsigned (in_sysno i) = 220%Z ->
-  syscall_spec_witness i m = clone_witness (in_arg i 0) m.
+  syscall_spec_witness i m = clone_witness i (in_arg i 0) m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_mmap : forall i eff m,

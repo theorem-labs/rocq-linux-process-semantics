@@ -1338,7 +1338,7 @@ Qed.
     makes it has to come back here.
     [clone] (220) and [clone3] (435) ARE in [Specs.modeled_sysnos], but
     give a child only for flag words that share no address space
-    ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b],
+    ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b], [Fork.clone_class],
     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]; a word the
     argument checks refuse is -EINVAL or declines, and makes no child,
     [Checks.ProcessCreation.clone_arg_checks_einval] with
@@ -4672,13 +4672,17 @@ Record ProcState := mkProcState {
                                     [Fork.clone_fork_flags_b] admits
                                     [SIGCHLD] alone,
                                     [Fork.clone_ns_flags_b] [SIGCHLD]
-                                    plus namespace bits only, and
+                                    plus namespace bits only,
+                                    [Fork.clone_class] either of those
+                                    with [CLONE_SYSVSEM] and the four
+                                    tid bits (but [CLONE_NEWIPC] with
+                                    [CLONE_SYSVSEM] gets no child), and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
                                     [clone3_sharing_flags_unmodeled]
                                     the same for 435) forces
                                     [Unmodeled] on any bit of
-                                    [clone_sharing_bits], [CLONE_THREAD]
+                                    [unadmitted_bits], [CLONE_THREAD]
                                     among them, that the argument checks
                                     do not refuse and that the call
                                     decodes to a record; those the

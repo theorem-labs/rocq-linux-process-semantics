@@ -63,8 +63,9 @@ Definition cw (f : Z) : Fork.CloneIn :=
 (** A [struct clone_args] image with [flags] and [exit_signal] and every
     other field 0, and the input the core gives the namespace model for
     a [clone3] (435) that copies it, as [Procs.clone_in_of] reads a copied
-    struct: the record of a fork image or of a record the argument checks
-    refuse, else none. *)
+    struct: the record of a fork image, of a record the argument checks
+    refuse, or of a record [Fork.clone_class] puts in the fork class, else
+    none. *)
 Definition c3_image (flags es : Z) :=
   flat_map (Z_to_le_bytes 8%nat) [flags; 0; 0; 0; es; 0; 0; 0; 0; 0; 0].
 
@@ -72,6 +73,7 @@ Definition c3_in (flags es : Z) : Fork.CloneIn :=
   match Fork.clone3_pre (c3_image flags es) with
   | Fork.CdArgs r =>
       if Fork.clone3_fork_args_b (c3_image flags es) || Fork.clone_arg_checks r
+         || Fork.clone_class_fork_b r
       then Fork.CiArgs r else Fork.CiNoArgs
   | _ => Fork.CiNoArgs
   end.

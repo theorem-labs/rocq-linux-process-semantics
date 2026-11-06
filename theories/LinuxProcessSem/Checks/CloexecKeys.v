@@ -1565,26 +1565,20 @@ Proof.
   intros fd eff m m' evs H. unfold check_setns in H. fr_frame2 H.
 Qed.
 
-Lemma check_clone_fr : forall flags eff m m' evs,
-  check_clone flags eff m = CheckOk m' evs -> fd_rel m m'.
+(** The clone arms: the model as it was, or the child recorded over the
+    model the caller keeps ([Checks.Sys.Kernel.Fork.check_clone_shape]). *)
+Lemma check_clone_fr : forall i flags eff m m' evs,
+  check_clone i flags eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
-  intros flags [ret ws zs us cs ci] m m' evs H.
-  apply check_clone_cases in H as [(-> & _ & _) | H]; [fr_leaf|].
-  unfold check_clone_lists, check_clone_resolve, check_clone_answer,
-    check_clone_ns_resolve, check_clone_ns_answer, check_clone_einval in H.
-  repeat vm_step H.
-  all: fr_leaf.
+  intros i flags eff m m' evs H.
+  destruct (check_clone_shape _ _ _ _ _ _ H) as (_ & [(-> & _) | (-> & _)]); fr_leaf.
 Qed.
 
 Lemma check_clone3_fr : forall i uargs size eff m m' evs,
   check_clone3 i uargs size eff m = CheckOk m' evs -> fd_rel m m'.
 Proof.
   intros i uargs size eff m m' evs H.
-  apply check_clone3_cases in H as [(-> & _ & _) | H]; [fr_leaf|].
-  unfold check_clone3_lists, check_clone3_resolve, check_clone_answer,
-    check_clone3_einval in H.
-  repeat vm_step H.
-  all: fr_leaf.
+  destruct (check_clone3_shape _ _ _ _ _ _ _ H) as (_ & [(-> & _) | (-> & _)]); fr_leaf.
 Qed.
 
 (* =========================================================================

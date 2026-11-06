@@ -1469,7 +1469,7 @@ Proof.
   | |- sd_kept ?n _ _ =>
     first
     [ assert_succeeds (assert ((n =? 220)%Z = true) by (vm_compute; reflexivity));
-      destruct (clone_answer_sd _ _ _ (check_clone_cp _ _ _ _ _ H)) as [E | E];
+      destruct (clone_answer_sd _ _ _ (check_clone_cp _ _ _ _ _ _ H)) as [E | E];
       [ left; exact E | right; right; split; [vm_compute; reflexivity | exact E] ]
     | assert_succeeds (assert ((n =? 435)%Z = true) by (vm_compute; reflexivity));
       destruct (clone_answer_sd _ _ _ (check_clone3_cp _ _ _ _ _ _ _ H)) as [E | E];
