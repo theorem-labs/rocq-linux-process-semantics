@@ -484,11 +484,13 @@ Proof.
     rewrite Hmon. rewrite Z.land_assoc. rewrite Hmask. apply Z.land_0_l. }
   rewrite Hext in Hclass. cbn [negb] in Hclass.
   (* Step 4: after the first two CcNone tests pass, clone_class is not CcNone. *)
-  destruct (negb (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask));
-    [discriminate Hclass|].
-  destruct (Fork.clone_has (Fork.cla_flags r) CLONE_NEWIPC
-            && Fork.clone_has (Fork.cla_flags r) CLONE_SYSVSEM);
-    discriminate Hclass.
+  destruct (negb (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask)) eqn:Hns.
+  - (* no ns bit: CcFork *) discriminate Hclass.
+  - (* has ns bit: CcNs or CcNsRefused *)
+    destruct (Fork.clone_has (Fork.cla_flags r) CLONE_NEWIPC
+              && Fork.clone_has (Fork.cla_flags r) CLONE_SYSVSEM) eqn:Hipc.
+    + (* CcNsRefused *) discriminate Hclass.
+    + (* CcNs *) discriminate Hclass.
 Qed.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
