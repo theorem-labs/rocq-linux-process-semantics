@@ -370,12 +370,76 @@ Proof.
   - exact (Hk v i m o H).
 Qed.
 
+(** [Sys.Kernel.Fork.clone_refusable_arm] is [clone_refusable] at the
+    always-answered test, the refusers of a [Fork.clone_class] arm. *)
+Lemma vc_clone_refusable_arm : forall body,
+  vdso_commutes body -> vdso_commutes (clone_refusable_arm body).
+Proof.
+  intros body Hb. unfold clone_refusable_arm.
+  apply vc_clone_refusable; [unfold clone_refused_fail; vdso_walk | exact Hb].
+Qed.
+
+(** The accounting of a list of accesses reads no field [with_vdso]
+    writes.  The same statement and proof as
+    [VdsoCommuteSys.materialize_model_accesses_with_vdso], which this file
+    cannot import (that file imports this one). *)
+Local Lemma materialize_model_accesses_vdso : forall v m acc,
+  materialize_model_accesses (with_vdso v m) acc
+  = option_map (with_vdso v) (materialize_model_accesses m acc).
+Proof.
+  intros v m acc. unfold materialize_model_accesses.
+  change (m_vm_lazy (with_vdso v m)) with (m_vm_lazy m).
+  change (m_vm_materialized (with_vdso v m)) with (m_vm_materialized m).
+  change (vm_backing_used (with_vdso v m)) with (vm_backing_used m).
+  change (m_vmmaps (with_vdso v m)) with (m_vmmaps m).
+  destruct (materialize_accesses (m_vm_lazy m) (m_vm_materialized m)
+              (vm_backing_used m) (vm_limit (m_vmmaps m)) acc); reflexivity.
+Qed.
+
+(** [Sys.Kernel.Fork.clone_stores_ok] reads the model only through
+    [child_tid_ok]'s accounting of the child's slot, so the wrapper leaves
+    its answer. *)
+Lemma clone_stores_ok_with_vdso : forall v i m r,
+  clone_stores_ok i (with_vdso v m) r = clone_stores_ok i m r.
+Proof.
+  intros v i m r. unfold clone_stores_ok, child_tid_ok.
+  destruct (clone_child_tid r) as [p|]; [|reflexivity].
+  rewrite materialize_model_accesses_vdso.
+  destruct (materialize_model_accesses m [(p, 4%nat)]); reflexivity.
+Qed.
+
+(** [Sys.Kernel.Fork.clone_with_stores]: the stores gate, then the body
+    with the parent-tid store added to its effect, which the wrapper does
+    not touch. *)
+Lemma vc_clone_with_stores : forall r body,
+  vdso_commutes body -> vdso_commutes (clone_with_stores r body).
+Proof.
+  intros r body Hb. unfold clone_with_stores.
+  apply vc_bind_input; intros i.
+  apply vc_bind_get_model;
+    [intros v m; cbn beta; rewrite clone_stores_ok_with_vdso; reflexivity | intros m].
+  cbv beta. destruct (clone_stores_ok i m r); [|apply vc_unmodeled].
+  apply vc_bind; [exact Hb | intros eff; apply vc_pure].
+Qed.
+
+(** The clone arms' own combinators, tried before the walk unfolds them. *)
+Ltac clone_step :=
+  match goal with
+  | |- vdso_commutes (clone_with_stores _ _) => apply vc_clone_with_stores
+  | |- vdso_commutes (clone_refusable_arm _) => apply vc_clone_refusable_arm
+  | |- vdso_commutes (clone_refusable _ _ _) => apply vc_clone_refusable
+  end.
+
+Ltac clone_walk :=
+  intros;
+  repeat (cbn beta zeta iota; first [ clone_step | vdso_extra_step | vdso_step ]).
+
 Lemma vc_clone_spec : forall flags, vdso_commutes (clone_spec flags).
-Proof. intros; unfold clone_spec; apply vc_clone_refusable; vdso_walk. Qed.
+Proof. intros; unfold clone_spec; clone_walk. Qed.
 
 Lemma vc_clone3_spec : forall uargs size,
   vdso_commutes (clone3_spec uargs size).
-Proof. intros; unfold clone3_spec; apply vc_clone_refusable; vdso_walk. Qed.
+Proof. intros; unfold clone3_spec; clone_walk. Qed.
 
 (* ---- kernel/futex/syscalls.c ---- *)
 Lemma vc_futex_spec : forall uaddr op val utime,
