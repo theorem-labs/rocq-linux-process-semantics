@@ -605,6 +605,18 @@ Local Ltac aa_done_or_unfold H :=
     | context [check_ftruncate] => unfold check_ftruncate in H
     | context [check_faccessat] => unfold check_faccessat in H
     | context [check_openat] => unfold check_openat in H
+    | context [check_openat_table] => unfold check_openat_table in H
+    | context [Open.check_openat_body] => unfold Open.check_openat_body in H
+    | context [Open.check_openat_resolved] => unfold Open.check_openat_resolved in H
+    | context [Open.check_openat_sep] => unfold Open.check_openat_sep in H
+    | context [Open.check_openat_proc] => unfold Open.check_openat_proc in H
+    | context [Open.check_proc_open_result] => unfold Open.check_proc_open_result in H
+    | context [Open.check_openat_tmp] => unfold Open.check_openat_tmp in H
+    | context [Open.check_openat_excl] => unfold Open.check_openat_excl in H
+    | context [Open.check_openat_append] => unfold Open.check_openat_append in H
+    | context [Open.check_openat_rdwr] => unfold Open.check_openat_rdwr in H
+    | context [Open.check_openat_rdwr_excl] => unfold Open.check_openat_rdwr_excl in H
+    | context [open_cloexec_model] => unfold open_cloexec_model in H
     | context [check_close] => unfold check_close in H
     | context [check_pipe2] => unfold check_pipe2 in H
     | context [check_getdents64] => unfold check_getdents64 in H
@@ -688,42 +700,13 @@ Local Ltac aa_done_or_unfold H :=
     end
   ].
 
-(* The generic frame tactic: cbv + repeat kf_step/unfold/close. *)
+(* The generic frame tactic: cbv + repeat unfold/step/close.
+   We try aa_done_or_unfold BEFORE kf_step so that wrappers like
+   [open_cloexec_model] inside CheckOk get unfolded before injection fires. *)
 Local Ltac aa_frame H :=
   cbv beta iota zeta in H;
-  repeat (first [kf_step H | aa_done_or_unfold H | aa_close; fail]);
+  repeat (first [aa_done_or_unfold H | kf_step H | aa_close; fail]);
   aa_close.
-
-(* [check_openat] wraps its inner table in [open_cloexec_model], which
-   does not touch [m_fds] but prevents [kf_step] from reaching the
-   inner model before injection fires.  Handle it separately. *)
-Local Lemma check_openat_preserves_aa :
-  forall i dirfd pathp flags eff m m' evs,
-  check_openat i dirfd pathp flags eff m = CheckOk m' evs ->
-  anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
-Proof.
-  intros i dirfd pathp flags eff m m' evs H Hinv.
-  unfold check_openat in H.
-  destruct (check_openat_table i dirfd pathp flags eff m) eqn:E;
-    [|discriminate H..].
-  injection H as <- <-.
-  (* m' = open_cloexec_model flags (eff_ret eff) m0 *)
-  unfold open_cloexec_model.
-  destruct (addr_is_error_b (eff_ret eff));
-    [|destruct (fd_lookup (m_fds m0) (eff_ret eff));
-      [autorewrite with model|]].
-  (* All three cases: need anon_agree_all (m_fds m0) from E *)
-  all: rename E into H;
-       unfold check_openat_table, Open.check_openat_body,
-              Open.check_openat_resolved, Open.check_openat_sep,
-              Open.check_openat_proc, Open.check_proc_open_result,
-              Open.check_openat_tmp, Open.check_openat_excl,
-              Open.check_openat_append, Open.check_openat_rdwr,
-              Open.check_openat_rdwr_excl in H;
-       cbv beta iota zeta in H;
-       repeat (kf_step H || aa_done_or_unfold H);
-       aa_close.
-Qed.
 
 Lemma checked_table_preserves_aa : Forall arm_preserves_aa checked_table.
 Proof.
@@ -732,11 +715,7 @@ Proof.
   all: try exact (Forall_nil arm_preserves_aa).
   all: unfold arm_preserves_aa; intros i eff m m' evs H Hinv;
        autorewrite with arm_unfold in H.
-  (* check_openat: handle the open_cloexec_model wrapper *)
-  all: try (eapply check_openat_preserves_aa; [exact H | exact Hinv]; fail).
-  (* All other arms: the generic frame tactic *)
   all: try (aa_frame H; fail).
-  (* Diagnostic for any remaining arms *)
   all: match goal with |- ?G => idtac "STUCK:" G end.
 Admitted.
 
