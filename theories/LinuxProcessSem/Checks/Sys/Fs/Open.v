@@ -1796,6 +1796,7 @@ Proof.
         (match o with
          | Some _ => check_ret_only eff (errno_ret EEXIST) m []
          | None => check_create_wronly_absent p eff m
+         end)) _ _).
     + intro data. unfold completes_ok. apply check_ret_only_complete_ok.
     + unfold completes_ok. apply check_create_wronly_absent_complete_ok.
 Qed.
