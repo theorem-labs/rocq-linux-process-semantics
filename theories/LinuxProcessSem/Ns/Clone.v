@@ -485,12 +485,9 @@ Proof.
      body without unfolding [clone_has] (the constant names inside
      [clone_class] differ from this file's imports). *)
   revert Hclass. cbv beta iota zeta.
-  destruct (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask),
-           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_NEWIPC),
-           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_SYSVSEM);
-  cbv beta delta [negb andb] iota; intros H; exact (
-    match H in (_ = c) return match c with CcNone => False | _ => True end
-    with eq_refl => I end).
+  (* DIAGNOSTIC: Fail exact I shows the goal type in the error *)
+  Set Printing All.
+  Fail (exact I).
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
     outside the released fast path, answers exactly -EINVAL with the
