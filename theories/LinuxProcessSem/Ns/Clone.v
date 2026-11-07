@@ -481,16 +481,16 @@ Proof.
   (* Step 4: collapse the two if-false branches (signal and external mask)
      and destruct the remaining boolean tests.  Every remaining branch
      gives a class other than [CcNone]: [CcFork], [CcNsRefused] or [CcNs].
-     We unfold [clone_has] so the destructed terms are the bare [Z.eqb]
-     values, not hidden under a [let]-bound [f]. *)
-  revert Hclass. unfold Fork.clone_has. cbv beta iota zeta.
-  destruct (Z.eqb (Z.land (Fork.cla_flags r) Fork.clone_ns_mask) 0),
-           (Z.eqb (Z.land (Fork.cla_flags r) CLONE_NEWIPC) 0),
-           (Z.eqb (Z.land (Fork.cla_flags r) CLONE_SYSVSEM) 0);
-  cbv beta delta [negb andb] iota zeta; intros H; exact (
+     Destruct the [clone_has] applications from the unfolded [clone_class]
+     body without unfolding [clone_has] (the constant names inside
+     [clone_class] differ from this file's imports). *)
+  revert Hclass. cbv beta iota zeta.
+  destruct (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask),
+           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_NEWIPC),
+           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_SYSVSEM);
+  cbv beta delta [negb andb] iota; intros H; exact (
     match H in (_ = c) return match c with CcNone => False | _ => True end
     with eq_refl => I end).
-Qed.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
     outside the released fast path, answers exactly -EINVAL with the
