@@ -814,32 +814,52 @@ Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_read in H. aa_fram
 Local Lemma aa_openat_create : forall p eff m m' evs,
   Open.check_openat_create p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
-Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_create in H. aa_frame H. Qed.
+Proof.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_create in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
+Qed.
 
 Local Lemma aa_openat_excl : forall p eff m m' evs,
   Open.check_openat_excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
-Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_excl in H. aa_frame H. Qed.
+Proof.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_excl in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
+Qed.
 
 Local Lemma aa_openat_append : forall excl p eff m m' evs,
   Open.check_openat_append excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros excl p eff m m' evs H Hinv. unfold Open.check_openat_append in H. aa_frame H.
+  intros excl p eff m m' evs H Hinv. unfold Open.check_openat_append in H.
+  destruct excl; cbv iota in H.
+  - destruct (path_is_dirref p); [aa_frame H|].
+    destruct (Nat.ltb NAME_MAX (length p)); [aa_frame H|].
+    destruct (fs_under (m_fs m) p); [aa_frame H|].
+    destruct (fs_lookup (m_fs m) p); aa_frame H.
+  - destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+    destruct (fs_lookup (m_fs m) p); aa_frame H.
 Qed.
 
 Local Lemma aa_openat_rdwr : forall creat trunc p eff m m' evs,
   Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros creat trunc p eff m m' evs H Hinv. unfold Open.check_openat_rdwr in H. aa_frame H.
+  intros creat trunc p eff m m' evs H Hinv. unfold Open.check_openat_rdwr in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); [aa_frame H|].
+  destruct creat; aa_frame H.
 Qed.
 
 Local Lemma aa_openat_rdwr_excl : forall p eff m m' evs,
   Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros p eff m m' evs H Hinv. unfold Open.check_openat_rdwr_excl in H. aa_frame H.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_rdwr_excl in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
 Qed.
 
 Local Lemma aa_openat_dir : forall p eff m m' evs,
