@@ -238,15 +238,54 @@ jobs:
                 echo "stack limit is $soft/$hard, refusing"; exit 2; }
             endGroup
             startGroup "Build everything (dune build)"
-              # Rocq 9.2 at the default job count died with OCaml
-              # 'Fatal error: out of memory' on ProcsWait4Sigchld.v
-              # in three attempts of run 42346696719; -j 2 passed in
-              # run 42366166572; 9.3 and dev passed at the default.
-              # Cause not known.
+              # Rocq 9.2: three runs at the default job count died with OCaml
+              # 'Fatal error: out of memory' on ProcsWait4Sigchld.v in run
+              # 42346696719.  A diagnostic run at default -j (42409448797)
+              # passed with 9.7 GB cgroup peak on a 16 GB runner.  Cause
+              # unknown; sampler stays to record any future failure.
               if [ "${{ matrix.rocq }}" = "9.2" ]; then
-                opam exec -- dune build --display short -j 2
-              else
-                opam exec -- dune build --display short
+                # Background sampler: record peak memory every 15s (no procps).
+                (
+                  while true; do
+                    ts=$(date -u '+%H:%M:%S')
+                    cgpeak=""; for f in /sys/fs/cgroup/memory.peak \
+                      /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                      [ -r "$f" ] && cgpeak="$(basename "$f")=$(cat "$f")" && break
+                    done
+                    for p in /proc/[0-9]*/status; do
+                      awk '/^Name:/{n=$2} /^VmHWM:/{printf "%s=%s%s ", n, $2, $3}' "$p" 2>/dev/null
+                    done 2>/dev/null | tr ' ' '\n' | grep -i rocq | sort -t= -k2 -rn | head -3 | tr '\n' ' ' > /tmp/_top
+                    echo "$ts $cgpeak $(cat /tmp/_top)"
+                    sleep 15
+                  done
+                ) > /tmp/mem-sampler.log 2>&1 &
+                _sampler_pid=$!
+              fi
+              opam exec -- dune build --display short || {
+                _rc=$?
+                if [ "${{ matrix.rocq }}" = "9.2" ]; then
+                  kill -9 $_sampler_pid 2>/dev/null || true; wait $_sampler_pid 2>/dev/null || true
+                  echo "=== BUILD FAILED (exit $_rc) — 9.2 memory sampler ==="
+                  cat /proc/meminfo
+                  for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.peak \
+                           /sys/fs/cgroup/memory/memory.limit_in_bytes \
+                           /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                    [ -r "$f" ] && echo "$f: $(cat "$f")"
+                  done
+                  echo "--- sampler log ---"
+                  cat /tmp/mem-sampler.log
+                  dmesg 2>/dev/null | grep -i -E 'oom|killed|out.of.memory' || true
+                fi
+                exit $_rc
+              }
+              if [ "${{ matrix.rocq }}" = "9.2" ]; then
+                kill -9 $_sampler_pid 2>/dev/null || true; wait $_sampler_pid 2>/dev/null || true
+                echo "=== 9.2 memory sampler (build passed) ==="
+                for f in /sys/fs/cgroup/memory.peak \
+                         /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                  [ -r "$f" ] && echo "$(basename "$f"): $(cat "$f")"
+                done
+                tail -5 /tmp/mem-sampler.log
               fi
             endGroup
             startGroup "Check the generated Checker.v files"
