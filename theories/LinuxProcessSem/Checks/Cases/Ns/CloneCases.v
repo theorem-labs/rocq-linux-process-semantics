@@ -282,17 +282,11 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     gate passes.  Then the [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires:
     -EINVAL, not -EPERM (Linux v6.18.46, nsproxy.c:150, 162, 172-173:
     [task_cred_xxx(tsk, user_ns)] is the child's new namespace). *)
-(* DIAGNOSTIC: check errno and state separately *)
-Definition diag_newuser_ipc_sysvsem (m : Model) :=
-  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
-    (with_creds (creds 65534) m) no_admin_inside inside 140.
-(* DIAG: what tag, then try each errno *)
-Example diag_is_cnerr : forall m,
-  match diag_newuser_ipc_sysvsem m with CnErr _ _ => true | _ => false end = true.
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example diag_is_eperm : forall m,
-  match diag_newuser_ipc_sysvsem m with CnErr e _ => (e =? 1)%Z | _ => false end = true.
-Proof. intros m. vm_compute. reflexivity. Qed.
+(* DIAGNOSTIC: trace each gate in clone_creds for NEWUSER+NEWIPC+SYSVSEM *)
+Definition diag_flags : Z := Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD.
+(* 1: current_chrooted *)
+Example diag_chrooted : current_chrooted inside no_admin_inside = Some true.
+Proof. vm_compute. reflexivity. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWNS 10)) m shell inside 140 = CnUnmodeled.
