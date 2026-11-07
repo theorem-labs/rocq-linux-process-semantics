@@ -86,7 +86,11 @@ repository, in `linux/` or in `qemu/`.
    `linux/` or `qemu/`, say so. A comment says what the Rocq code next to it
    does. When the change opens or closes a gap, `SCOPE.md` records it in the
    right section: where the model is narrower, an assumption that the model
-   does not check, or a known gap in precision.
+   does not check, or a known gap in precision. `README.md` says `SCOPE.md`
+   lists EACH difference from QEMU user mode, so where the change makes the
+   model answer a call differently from QEMU's `linux-user/`, "Where QEMU
+   user mode differs" gets an entry. A missing entry is a finding here, not
+   a soundness finding.
 3. **What else changes?** Name each existing definition whose meaning
    changes, and the statements in `theories/EquivalenceDefinition/` and the
    lemmas in `theories/Common/` that use it. A change to a statement, to
@@ -94,9 +98,10 @@ repository, in `linux/` or in `qemu/`.
    model proves: say so. For each term the change redefines, grep the WHOLE
    TREE for it — every `.v` file, `README.md`, `SCOPE.md`, `tools/` — and
    not only the diff: a sentence outside the diff is made false BY the diff
-   and a diff-scoped reading cannot see it. A merged change that dropped
-   `in_sigpipe_default` from the launch predicates left `README.md` saying
-   that `Run.valid_input` still pinned it, which no reviewer caught. Report
+   and a diff-scoped reading cannot see it. #38 dropped
+   `in_sigpipe_default` from the launch predicates and left `README.md:282`
+   saying that the default statements still pinned it; the sentence was
+   outside the diff. Report
    each new `Admitted`, `admit`, `Axiom`,
    `Parameter`, and each `Hypothesis`, `Variable` or `Context` outside a
    section.

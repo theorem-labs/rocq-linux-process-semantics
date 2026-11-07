@@ -724,17 +724,22 @@ equivalence) can be true of the model and false of Linux.
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
 - **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
-  stack window now counts its 8 MiB from the end of the entry block, as
-  Linux counts it from the end of the stack VMA
-  (`Run.stack_window_lo`, which takes `StackLayout.ed_top` less
-  `stack_max_size` against a guard-gap floor); LPS pull request #25,
-  which made that change, is merged. The gap stays open because the
-  ALLOCATION ceiling was not moved with it: `State.alloc_top` is still
-  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB`
-  (`State.alloc_top`). Linux's `mm->mmap_base` is measured from the end
-  of the stack VMA, which is above `sp` by the entry image, so with an
-  entry image of more than about 1 MiB and a high base draw it can lie
-  above `State.alloc_top`, while the model searches below `alloc_top`.
+  stack window now counts its 8 MiB from the end of the entry block
+  (`Run.stack_window_lo`: `StackLayout.ed_top` less `stack_max_size`,
+  against a guard-gap floor), as Linux counts RLIMIT_STACK from the stack
+  VMA's `vm_end` (`expand_downwards` through `acct_stack_growth`,
+  `mm/vma.c`). LPS pull request #25, which moved that count off `sp` and
+  onto the entry block, is merged; `ed_top` and the guard-gap floor came
+  after it. The gap stays open because the ALLOCATION ceiling was not
+  moved with the window: `State.alloc_top` is still
+  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB` (`State.alloc_top`),
+  while `sp` sits below the stack VMA's end by the entry image. The model
+  admits exactly Linux's bases (`Run.valid_launch_base`, which mirrors
+  `mmap_base`, `mm/util.c`: `STACK_TOP` less a gap of the stack rlimit,
+  the guard gap and the stack randomization maximum, less a base draw),
+  and with a large stack draw and an entry image of more than about 1 MiB
+  — the guard-gap pad in that gap — an admitted `mm->mmap_base` lies above
+  `State.alloc_top`, below which the model searches.
   The model's top-down addresses are then lower than Linux's by at most
   the entry image size less 1 MiB. The refusals differ only when no free
   range of the requested size is left. Raising `State.alloc_top` to the

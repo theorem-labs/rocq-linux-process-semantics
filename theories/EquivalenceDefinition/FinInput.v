@@ -1140,8 +1140,9 @@ Qed.
     [State.default_execfn], the one-byte name "a" that
     [Run.valid_execfn] admits and whose launch is eleven bytes, far
     under [Run.e2big_limit], a live reader on descriptors 1 and 2,
-    SIGPIPE at SIG_DFL, the disposition [Run.valid_input] pins, and the
-    SIGPIPE death declined, as [Run.valid_input] pins it too.
+    SIGPIPE at SIG_DFL, a disposition [Run.valid_input] leaves free and
+    this witness simply chooses, and the
+    SIGPIPE death declined, which [Run.valid_input] does pin.
 
     It is written here rather than borrowed from
     theories/LinuxProcessSem/Checks/Cases/Prelude.v because that file is

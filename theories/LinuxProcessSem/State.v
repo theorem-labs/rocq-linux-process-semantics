@@ -5537,7 +5537,8 @@ Definition with_sigpipe_install (a : SigpipeAction) (m : Model) : Model :=
     ENVIRONMENT's -- whether anything still reads descriptors 1 and 2 --
     and [Run.valid_input] pins it present.  [procst_sigpipe_action]'s
     handler is the TASK's at launch -- whether SIGPIPE is still at
-    SIG_DFL -- and [Run.valid_input] pins it to [true]; under
+    SIG_DFL -- and [Run.valid_input] does NOT pin it, so both starts are
+    covered; under
     [Run.valid_input_sigpipe_ignored], or after an install of SIG_IGN
     inside the run ([with_sigpipe_install]), this setter is never
     reached for signal 13 because [raise_sigpipe] discards the signal.
@@ -7610,8 +7611,10 @@ Record ProcInput := mkProcInput_full {
     kernel built without transparent huge pages; [default_execfn], the
     one-byte name "a"; [true], the reading every literal written before
     [in_channel_reader] existed was already assuming; [true] again,
-    the SIG_DFL launch [Run.valid_input] pins; and [false], the
-    declined SIGPIPE death [Run.valid_input] pins
+    the SIG_DFL launch, which [Run.valid_input] does NOT pin -- it
+    leaves the disposition free, so this is a choice of the fixture and
+    not a forced value; and [false], the
+    declined SIGPIPE death [Run.valid_input] does pin
     ([mkProcInput_sigpipe_terminal] proves it is the literal).  So a
     literal written
     through this name denotes an input in an environment that holds no
