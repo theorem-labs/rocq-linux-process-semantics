@@ -487,7 +487,9 @@ Proof.
   destruct (Z.eqb (Z.land (Fork.cla_flags r) Fork.clone_ns_mask) 0),
            (Z.eqb (Z.land (Fork.cla_flags r) CLONE_NEWIPC) 0),
            (Z.eqb (Z.land (Fork.cla_flags r) CLONE_SYSVSEM) 0);
-  simpl; intro H; discriminate H.
+  cbv beta delta [negb andb] iota zeta; intros H; exact (
+    match H in (_ = c) return match c with CcNone => False | _ => True end
+    with eq_refl => I end).
 Qed.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
