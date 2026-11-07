@@ -1151,10 +1151,16 @@ Lemma strong_universal_T_sigpipe_either_splits :
 Proof.
   split.
   - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
-      try assumption;
-      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
-      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
-                 _ Hv) ].
+      (* NOT a two-goal selector.  Since the disposition came off
+         [Run.valid_input], [Run.valid_input_sigpipe_either] IS that
+         predicate, so the first branch's premise closes by
+         [assumption] and leaves ONE goal where a [ | ] expects two.
+         [first] takes whichever obligation is actually in front of
+         it, however many there are. *)
+      first [ assumption
+            | exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+            | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                       _ Hv) ].
   - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
     destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
       [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
@@ -1186,10 +1192,12 @@ Lemma strong_universal_error_free_T_sigpipe_either_splits :
 Proof.
   split.
   - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
-      try assumption;
-      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
-      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
-                 _ Hv) ].
+      (* [first] rather than a two-goal selector, for the reason the
+         twin above gives. *)
+      first [ assumption
+            | exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+            | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                       _ Hv) ].
   - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
     destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
       [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
