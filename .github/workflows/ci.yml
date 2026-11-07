@@ -238,7 +238,16 @@ jobs:
                 echo "stack limit is $soft/$hard, refusing"; exit 2; }
             endGroup
             startGroup "Build everything (dune build)"
-              opam exec -- dune build --display short
+              # Rocq 9.2 at the default job count died with OCaml
+              # 'Fatal error: out of memory' on ProcsWait4Sigchld.v
+              # in three attempts of run 42346696719; -j 2 passed in
+              # run 42366166572; 9.3 and dev passed at the default.
+              # Cause not known.
+              if [ "${{ matrix.rocq }}" = "9.2" ]; then
+                opam exec -- dune build --display short -j 2
+              else
+                opam exec -- dune build --display short
+              fi
             endGroup
             startGroup "Check the generated Checker.v files"
               python3 tools/gen_checker.py --check
