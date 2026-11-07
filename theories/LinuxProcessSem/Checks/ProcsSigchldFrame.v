@@ -95,13 +95,33 @@ Proof.
   repeat vm_step H; try apply Hmk; reflexivity.
 Qed.
 
+Lemma check_write_open_result_sd : forall eff m mk m' evs,
+  (forall fd, sd_of (mk fd) = sd_of m) ->
+  check_write_open_result eff m mk = CheckOk m' evs -> sd_of m' = sd_of m.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; reflexivity.
+Qed.
+
+Lemma check_write_open_create_result_sd : forall eff m mk m' evs,
+  (forall fd, sd_of (mk fd) = sd_of m) ->
+  check_write_open_create_result eff m mk = CheckOk m' evs -> sd_of m' = sd_of m.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_create_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; reflexivity.
+Qed.
+
 Ltac sd_done H :=
   first
   [ apply check_efault_or_sd in H; exact H
   | apply check_sigpipe_write_sd in H; exact H
   | apply check_sigpipe_writev_sd in H; exact H
   | elim (check_readv_gap_sd _ _ H)
-  | (eapply check_open_result_sd in H; [exact H | intros; reflexivity]) ].
+  | (eapply check_open_result_sd in H; [exact H | intros; reflexivity])
+  | (eapply check_write_open_result_sd in H; [exact H | intros; reflexivity])
+  | (eapply check_write_open_create_result_sd in H; [exact H | intros; reflexivity]) ].
 
 Ltac sd_frame2 H :=
   repeat (vm_step H || sd_done H); try reflexivity.

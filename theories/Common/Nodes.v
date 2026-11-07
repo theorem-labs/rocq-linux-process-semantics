@@ -428,4 +428,82 @@ Proof.
   - intros []. cbn [open_nx]. exact HB.
 Qed.
 
+(** The write-open node: identical except for [write_open_errnos] and
+    [check_write_open_result_copyins]. *)
+Definition write_open_I (model : Model) : Type := {e : Z | In e write_open_errnos} + unit.
+
+Definition write_open_nx (ms : machine_state) (model : Model) (mk : word -> Model)
+  (i : write_open_I model) : config :=
+  match i with
+  | inl (exist _ e _) => mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model
+  | inr _ => mkCfg (advance_past_svc (set_gpr0 ms (alloc_fd (m_fds model))))
+                   (mk (alloc_fd (m_fds model)))
+  end.
+
+Lemma node_write_open : forall ms model x8 reads (mk : word -> Model),
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  ms_svc_pending ms = Some x8 ->
+  (forall eff, check_syscall (sys_input segs ms x8) eff model
+               = check_write_open_result_copyins reads eff model mk) ->
+  (forall fd, m_halted (mk fd) = None) ->
+  (forall fd, m_vm_lazy (mk fd) = []) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
+  node_ok segs (mkCfg ms model) (write_open_I model) (fun _ => []) (write_open_nx ms model mk).
+Proof.
+  intros ms model x8 reads mk Hh Hlazy Hsvc Hchk Hmk Hmklazy Hfree. split.
+  - intros [[e He] | []]; cbn [write_open_nx].
+    + rewrite <- (apply_effect_copyins_no_write ms (errno_ret e) reads).
+      apply (sstep_of_check ms model x8); [exact Hh | exact Hsvc | | exact Hh | exact Hlazy].
+      rewrite Hchk. apply check_write_open_result_copyins_ok_iff. left. exists e. auto.
+    + rewrite <- (apply_effect_copyins_no_write ms (alloc_fd (m_fds model)) reads).
+      apply (sstep_of_check ms model x8); [exact Hh | exact Hsvc | | apply Hmk | apply Hmklazy].
+      rewrite Hchk. apply check_write_open_result_copyins_ok_iff.
+      right. exists (alloc_fd (m_fds model)). auto.
+  - intros e st Hss.
+    destruct (sstep_svc_inv ms model x8 e st Hsvc Hss)
+      as [(eff & model' & ev & Hc & [(m'' & Hh2 & -> & Hmat & ->) | [(Hh2 & -> & Hmat & ->) | (code & Hh2 & -> & ->)]])
+         | (eff & Hc & -> & ->)].
+    + rewrite Hchk in Hc. apply check_write_open_result_copyins_ok_iff in Hc.
+      destruct Hc as [(er & Her & -> & -> & ->) | (fd & Hlk & Heq & -> & -> & ->)].
+      * rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hmat. injection Hmat as <-.
+        exists (inl (exist _ er Her)). cbn [write_open_nx].
+        rewrite apply_effect_copyins_no_write. split; reflexivity.
+      * subst fd. rewrite (materialize_model_accesses_no_lazy _ _ (Hmklazy _)) in Hmat.
+        injection Hmat as <-.
+        exists (inr tt). cbn [write_open_nx]. rewrite apply_effect_copyins_no_write. split; reflexivity.
+    + rewrite Hchk in Hc. apply check_write_open_result_copyins_ok_iff in Hc.
+      destruct Hc as [(er & Her & -> & -> & ->) | (fd & Hlk & Heq & -> & -> & ->)].
+      * rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hmat. discriminate.
+      * rewrite (materialize_model_accesses_no_lazy _ _ (Hmklazy _)) in Hmat. discriminate.
+    + rewrite Hchk in Hc. apply check_write_open_result_copyins_ok_iff in Hc.
+      destruct Hc as [(er & Her & -> & -> & ->) | (fd & Hlk & Heq & -> & -> & ->)].
+      * congruence.
+      * rewrite Hmk in Hh2. discriminate.
+    + exfalso. rewrite Hchk in Hc. exact (check_write_open_result_copyins_never_unmodeled _ _ _ _ Hc).
+Qed.
+
+Lemma rz_write_open : forall ms model x8 reads (mk : word -> Model) A B,
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  ms_svc_pending ms = Some x8 ->
+  (forall eff, check_syscall (sys_input segs ms x8) eff model
+               = check_write_open_result_copyins reads eff model mk) ->
+  (forall fd, m_halted (mk fd) = None) ->
+  (forall fd, m_vm_lazy (mk fd) = []) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
+  (forall e, In e write_open_errnos ->
+     realizes segs (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
+  realizes segs (mkCfg (advance_past_svc (set_gpr0 ms (alloc_fd (m_fds model))))
+                       (mk (alloc_fd (m_fds model)))) B ->
+  realizes segs (mkCfg ms model) (t_alt2 A B).
+Proof.
+  intros ms model x8 reads mk A B Hh Hlazy Hsvc Hchk Hmk Hmklazy Hfree HA HB.
+  apply (rz_alt2 segs (mkCfg ms model) {e : Z | In e write_open_errnos} unit
+           (write_open_nx ms model mk) A B (exist _ ENOMEM ENOMEM_in_write_open_errnos) tt).
+  - eapply node_write_open; eassumption.
+  - intros [e He]. cbn [write_open_nx]. apply HA. exact He.
+  - intros []. cbn [write_open_nx]. exact HB.
+Qed.
+
 End WithSegs.

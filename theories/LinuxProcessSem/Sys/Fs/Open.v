@@ -27,6 +27,39 @@ Open Scope sys_scope.
     file returns a deterministic -ENOENT. *)
 Definition openat_errnos : list Z := [ENOMEM; EACCES; EMFILE; ENFILE].
 
+(** The errnos a write-mode open of an EXISTING name admits, on top of
+    [openat_errnos].  These three apply only when the name resolves to
+    a file that already exists.
+
+    - EPERM: [IS_IMMUTABLE(inode)] ([inode_permission],
+      fs/namei.c:581-582, v6.18.46); [IS_APPEND(inode)] without
+      [O_APPEND] or with [O_TRUNC] ([may_open], fs/namei.c:3572-3576).
+    - EROFS: a read-only mount or superblock ([mnt_get_write_access],
+      fs/namespace.c:476-478; [sb_permission], fs/namei.c:550-551;
+      [file_get_write_access], fs/open.c:925-928; [mnt_want_write]
+      before [may_open] for O_TRUNC, fs/namei.c:3967-3970).
+    - ETXTBSY: a file being executed ([get_write_access],
+      include/linux/fs.h:3215-3218, through [file_get_write_access],
+      fs/open.c:883-885).
+
+    All citations: Linux v6.18.46, commit 1f99e9ab748f.
+    A READ-ONLY open does not use this set. *)
+Definition write_open_errnos : list Z :=
+  [ENOMEM; EACCES; EMFILE; ENFILE; EPERM; EROFS; ETXTBSY].
+
+(** The errnos a write-mode open of an ABSENT name admits: the same
+    set WITHOUT -ETXTBSY.  A newly created file cannot be executing,
+    so [get_write_access] never refuses it.  -EPERM stays: an immutable
+    directory refuses the create with MAY_WRITE ([inode_permission]
+    under [may_o_create], fs/namei.c:3622-3625, 581-582).  -EROFS stays:
+    a read-only mount refuses the create ([lookup_open]'s deferred
+    [mnt_want_write], fs/namei.c:3758-3762, 3801-3804).
+
+    Used by every arm that opens a name it knows is absent: the
+    O_EXCL arms, and the absent branch of the O_CREAT arms. *)
+Definition write_open_create_errnos : list Z :=
+  [ENOMEM; EACCES; EMFILE; ENFILE; EPERM; EROFS].
+
 (** The clobbering write-open combination the model covers. *)
 Definition wr_create_flags : Z := (O_WRONLY + O_CREAT + O_TRUNC)%Z.
 
@@ -89,7 +122,7 @@ Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
     [is_excl_create]), while O_APPEND survives into [f_flags]:
     [do_dentry_open] (fs/open.c, Linux v6.18.46) clears only
     O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC there.  So the created descriptor is
-    the append kind on a new empty file, which is what [open_append]
+    the append kind on a new empty file, which is what [open_append_absent]
     records for an absent name.
 
     The descriptor is a [State.FdFileA] for the reason
@@ -383,10 +416,9 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
        modify (mk fd) ;;
        ret_only fd).
 
-(** The effect a modeled WRITE-CREATE open records, shared by the
-    clobbering (O_TRUNC) and the exclusive (O_EXCL) shapes so the two
-    provably record the same thing: either an errno from
-    [openat_errnos] (an environment condition the model does not track;
+(** The effect a modeled WRITE-CREATE open of an EXISTING name records:
+    either an errno from [write_open_errnos] (environment conditions
+    the model does not track, including -ETXTBSY on an executing file;
     this alternative also keeps the spec receptive when no free
     fd < 2^31 exists), or the lowest free fd bound to a write-only fd
     on [p], with [p] itself (re)created empty in the file system.
@@ -399,10 +431,19 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
     and [write] for the base it splices onto — answers for a file that
     is not there. *)
 Definition create_wronly (p : path) (m : Model) : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (fs_set (m_fs m) p []) ;;   (* (re)create the file empty *)
        set_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0))) ;;  (* write-only fd *)
+       ret_only fd).
+
+(** The same effect for an ABSENT name: [write_open_create_errnos],
+    which omits -ETXTBSY (a newly created file cannot be executing). *)
+Definition create_wronly_absent (p : path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs (fs_set (m_fs m) p []) ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 0))) ;;
        ret_only fd).
 
 (** The two paths that name a DIRECTORY without consulting a file
@@ -537,10 +578,15 @@ Definition openat_read_spec (p : path) (m : Model) : Sys SyscallEffect :=
 
 (** Resolve the clobbering O_WRONLY|O_CREAT|O_TRUNC open shape.  A
     directory reference, or a name the map implies is a directory, is
-    -EISDIR ([do_open]'s [d_is_dir], above). *)
+    -EISDIR ([do_open]'s [d_is_dir], above).  An existing file uses
+    [write_open_errnos] (ETXTBSY possible); an absent name uses
+    [write_open_create_errnos] (no file to be executing). *)
 Definition openat_create_spec (p : path) (m : Model) : Sys SyscallEffect :=
   if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
-  else create_wronly p m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => create_wronly p m
+  | None   => create_wronly_absent p m
+  end.
 
 (** The file system after an APPEND open: unchanged when the path is
     already there, and carrying a new empty file when it is not.
@@ -562,7 +608,7 @@ Definition append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
   end.
 
 (** The effect a modeled APPEND write-open records: either an errno from
-    [openat_errnos] (the same untracked environment conditions the other
+    [write_open_errnos] (the same untracked environment conditions the other
     write-open shapes admit, this alternative also keeping the spec
     receptive when no free fd < 2^31 exists), or the lowest free fd bound
     to a [State.FdFileA] on [p], with [p] created empty only if it was
@@ -582,7 +628,15 @@ Definition append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
     device, FIFO or kernfs attribute is recorded here as an ordinary
     file. *)
 Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs (append_open_fs (m_fs m) p) ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
+       ret_only fd).
+
+(** The same for an ABSENT name: [write_open_create_errnos]. *)
+Definition open_append_absent (p : path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs (append_open_fs (m_fs m) p) ;;
        set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
@@ -590,7 +644,7 @@ Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
 
 (** Resolve the two APPEND write-create open shapes: the plain word
     ([excl] false) and the exclusive one ([excl] true).  Both
-    create an absent name with [open_append]; they differ in what an
+    create an absent name with [open_append_absent]; they differ in what an
     existing name gets.  The exclusive half is ported from main LPS
     (theorem-labs/linux-process-semantics) commit 4d80c33d83 (#1760).
 
@@ -635,10 +689,13 @@ Definition openat_append_spec (excl : bool) (p : path) (m : Model)
      else
        match fs_lookup (m_fs m) p with
        | Some _ => err_ret EEXIST
-       | None => open_append p m
+       | None => open_append_absent p m
        end)
   else if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
-  else open_append p m.
+  else match fs_lookup (m_fs m) p with
+  | Some _ => open_append p m
+  | None   => open_append_absent p m
+  end.
 
 (** Resolve an exclusive write-create open after pathname fetch.  A
     directory reference and an implied directory are -EEXIST, not
@@ -651,11 +708,11 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
   else
     match fs_lookup (m_fs m) p with
     | Some _ => err_ret EEXIST
-    | None => create_wronly p m
+    | None => create_wronly_absent p m
     end.
 
 (** The effect a modeled READ-WRITE open records: either an errno from
-    [openat_errnos], or the lowest free fd bound to a [State.FdFileRW]
+    [write_open_errnos], or the lowest free fd bound to a [State.FdFileRW]
     on [p], with the file system left as [fs'].
 
     THE OFFSET STARTS AT 0 for both directions, and it is the same
@@ -675,7 +732,16 @@ Definition openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
     way at a time. *)
 Definition open_rdwr (p : path) (fs' : Fs.Fs) (m : Model)
     : Sys SyscallEffect :=
-  alt (e <- errno_from openat_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+  alt (e <- errno_from write_open_errnos ;; err_ret e)  (* untracked env failure or no free fd *)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs fs' ;;
+       set_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0))) ;;
+       ret_only fd).
+
+(** The same for an ABSENT name: [write_open_create_errnos]. *)
+Definition open_rdwr_absent (p : path) (fs' : Fs.Fs) (m : Model)
+    : Sys SyscallEffect :=
+  alt (e <- errno_from write_open_create_errnos ;; err_ret e)
       (fd <- lowest_fd (m_fds m) ;;
        set_fs fs' ;;
        set_fds (fd_insert (m_fds m) fd (FdFileRW p (Z_to_bv 64 0))) ;;
@@ -720,7 +786,7 @@ Definition openat_rdwr_spec (creat trunc : bool) (p : path) (m : Model)
   else
     match fs_lookup (m_fs m) p with
     | None =>
-        if creat then open_rdwr p (fs_set (m_fs m) p []) m
+        if creat then open_rdwr_absent p (fs_set (m_fs m) p []) m
         else err_ret ENOENT
     | Some _ =>
         open_rdwr p (if trunc then fs_set (m_fs m) p [] else m_fs m) m
@@ -736,7 +802,7 @@ Definition openat_rdwr_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
   else
     match fs_lookup (m_fs m) p with
     | Some _ => err_ret EEXIST
-    | None => open_rdwr p (fs_set (m_fs m) p []) m
+    | None => open_rdwr_absent p (fs_set (m_fs m) p []) m
     end.
 
 (** Resolve an O_RDONLY|O_DIRECTORY open after pathname fetch.
@@ -2367,36 +2433,13 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     unknown type; the split is not written
                                                     (fs/open.c, read at v6.18.44; identical at
                                                     v6.18.46) *)
-  | Some (FdFileA p _) =>
-      (* AN APPEND FD IS A WRITABLE REGULAR FILE, so it takes the arm
-         below rather than the -EINVAL the five kinds above get:
-         [do_ftruncate]'s condition is
-         [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
-         (fs/open.c), and an [FdFileA] fails neither half — O_APPEND
-         rides on O_WRONLY, which is what sets FMODE_WRITE.  The flag is
-         read nowhere on this path: [do_truncate] sets the size
-         outright, and O_APPEND is consulted only by the write path's
-         [generic_write_checks].  The inode's APPEND-ONLY attribute is a
-         different thing and does bite here — [IS_APPEND(inode)] is
-         [do_ftruncate]'s own -EPERM — but it is an inode attribute this
-         model does not carry, exactly as for [FdFileW], and the header's
-         list of unmodeled failures already names it.
-
-         THE OFFSET IS UNTOUCHED as it is for every other kind, so a
-         shrink can leave [f_pos] past end-of-file — this arm writes no
-         [set_fds] at all, exactly as the [FdFileW] one does not.  On an
-         append fd that is not observable through a later WRITE, which
-         repositions itself, but it IS observable through
-         [lseek(fd, 0, SEEK_CUR)], so leaving the entry alone is a
-         decision here rather than a spare line. *)
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled                        (* an FdFileA always points into the fs; see openat *)
-      | Some data =>
-          if negb (modeled_truncate_gap data len) then unmodeled
-          else
-            set_fs (fs_set (m_fs m) p (file_truncate data len)) ;;
-            ret_only (Z_to_bv 64 0)
-      end
+  | Some (FdFileA _ _) => unmodeled
+      (* DECLINED.  An [FdFileA] is a writable regular file, so
+         [do_ftruncate]'s [!S_ISREG || !FMODE_WRITE] gate passes.  But
+         [IS_APPEND(inode)] (fs/open.c:183-184, v6.18.46) answers -EPERM
+         before [do_truncate], and this model does not carry the
+         append-only inode attribute.  The Lean twin already declines
+         this arm (Sys/Fs/Open.lean:1312). *)
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
       (* ONE ARM FOR TWO KINDS.  [do_ftruncate]'s test is
          [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
@@ -2422,8 +2465,8 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       (* AN UNNAMED FILE IS A REGULAR FILE, so [do_ftruncate]'s
          [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
          (fs/open.c, Linux v6.18.46) turns on the access mode alone: a
-         read-only descriptor is -EINVAL, a writable one (O_APPEND or
-         not, as for [FdFileA] above) sets the size.  The size is the
+         read-only descriptor is -EINVAL, a writable one sets the size
+         (the [FdFileA] arm above declines with unmodeled).  The size is the
          inode's, so the new contents go to EVERY descriptor of the file
          ([State.anon_set_data]); the offsets stay, for the header's
          reason.  The grow bound is the one the file arms above use. *)

@@ -543,7 +543,15 @@ Local Ltac aa_done H :=
       unfold check_stream_read_empty, check_stream_read_reset in H
   | context [check_eventfd_read] => unfold check_eventfd_read in H
   | context [check_eventfd_write] => unfold check_eventfd_write in H
+  | context [check_create_wronly_absent] => unfold check_create_wronly_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_create_wronly] => unfold check_create_wronly, check_write_open_result, check_new_fd_result in H
+  | context [check_open_append_absent] => unfold check_open_append_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_open_append] => unfold check_open_append, check_write_open_result, check_new_fd_result in H
+  | context [check_open_rdwr_absent] => unfold check_open_rdwr_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_open_rdwr] => unfold check_open_rdwr, check_write_open_result, check_new_fd_result in H
   | context [check_open_result] => unfold check_open_result, check_new_fd_result in H
+  | context [check_write_open_result] => unfold check_write_open_result, check_new_fd_result in H
+  | context [check_write_open_create_result] => unfold check_write_open_create_result, check_new_fd_result in H
   | context [check_new_fd_result] => unfold check_new_fd_result in H
   | context [check_readv_imported] => unfold check_readv_imported in H
   | context [check_read_file_data] => unfold check_read_file_data in H
@@ -806,32 +814,52 @@ Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_read in H. aa_fram
 Local Lemma aa_openat_create : forall p eff m m' evs,
   Open.check_openat_create p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
-Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_create in H. aa_frame H. Qed.
+Proof.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_create in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
+Qed.
 
 Local Lemma aa_openat_excl : forall p eff m m' evs,
   Open.check_openat_excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
-Proof. intros p eff m m' evs H Hinv. unfold Open.check_openat_excl in H. aa_frame H. Qed.
+Proof.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_excl in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
+Qed.
 
 Local Lemma aa_openat_append : forall excl p eff m m' evs,
   Open.check_openat_append excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros excl p eff m m' evs H Hinv. unfold Open.check_openat_append in H. aa_frame H.
+  intros excl p eff m m' evs H Hinv. unfold Open.check_openat_append in H.
+  destruct excl; cbv iota in H.
+  - destruct (path_is_dirref p); [aa_frame H|].
+    destruct (Nat.ltb NAME_MAX (length p)); [aa_frame H|].
+    destruct (fs_under (m_fs m) p); [aa_frame H|].
+    destruct (fs_lookup (m_fs m) p); aa_frame H.
+  - destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+    destruct (fs_lookup (m_fs m) p); aa_frame H.
 Qed.
 
 Local Lemma aa_openat_rdwr : forall creat trunc p eff m m' evs,
   Open.check_openat_rdwr creat trunc p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros creat trunc p eff m m' evs H Hinv. unfold Open.check_openat_rdwr in H. aa_frame H.
+  intros creat trunc p eff m m' evs H Hinv. unfold Open.check_openat_rdwr in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); [aa_frame H|].
+  destruct creat; aa_frame H.
 Qed.
 
 Local Lemma aa_openat_rdwr_excl : forall p eff m m' evs,
   Open.check_openat_rdwr_excl p eff m = CheckOk m' evs ->
   anon_agree_all (m_fds m) -> anon_agree_all (m_fds m').
 Proof.
-  intros p eff m m' evs H Hinv. unfold Open.check_openat_rdwr_excl in H. aa_frame H.
+  intros p eff m m' evs H Hinv. unfold Open.check_openat_rdwr_excl in H.
+  destruct (path_is_dirref p || fs_under (m_fs m) p); [aa_frame H|].
+  destruct (fs_lookup (m_fs m) p); aa_frame H.
 Qed.
 
 Local Lemma aa_openat_dir : forall p eff m m' evs,

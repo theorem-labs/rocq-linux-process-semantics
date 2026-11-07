@@ -130,13 +130,33 @@ Proof.
   repeat vm_step H; try apply Hmk; fs_leaf.
 Qed.
 
+Lemma check_write_open_result_fs : forall eff m mk m' evs,
+  (forall fd, fs_tid_frame m (mk fd)) ->
+  check_write_open_result eff m mk = CheckOk m' evs -> fs_tid_frame m m'.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; fs_leaf.
+Qed.
+
+Lemma check_write_open_create_result_fs : forall eff m mk m' evs,
+  (forall fd, fs_tid_frame m (mk fd)) ->
+  check_write_open_create_result eff m mk = CheckOk m' evs -> fs_tid_frame m m'.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_create_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; fs_leaf.
+Qed.
+
 Ltac fs_done H :=
   first
   [ apply check_efault_or_fs in H; exact H
   | apply check_sigpipe_write_fs in H; exact H
   | apply check_sigpipe_writev_fs in H; exact H
   | elim (check_readv_gap_sh _ _ H)
-  | (eapply check_open_result_fs in H; [exact H | intros; fs_leaf]) ].
+  | (eapply check_open_result_fs in H; [exact H | intros; fs_leaf])
+  | (eapply check_write_open_result_fs in H; [exact H | intros; fs_leaf])
+  | (eapply check_write_open_create_result_fs in H; [exact H | intros; fs_leaf]) ].
 
 Ltac fs_frame H :=
   repeat (vm_step H || fs_done H); try fs_leaf.
