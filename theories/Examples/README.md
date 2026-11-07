@@ -284,7 +284,11 @@ these:
   `access_ok`. This case is reachable only under
   `Run.valid_input_channel_closed`, the launch whose reader has gone and
   which declares the death: `Run.valid_input` rules it out, because it
-  pins the reader present and the death declined.
+  pins the reader present and the death declined. That predicate no
+  longer gives the `SIG_DFL` disposition for free, though — it leaves
+  `State.in_sigpipe_default` unpinned, as every launch predicate now
+  does, so that conjunct of `sigpipe_fatal` comes from the launch the
+  proof names rather than from the validity premise.
 
 The lemma does not cover a program that writes when the reader is gone
 and signal 13 is blocked or ignored. There the first write returns -EPIPE

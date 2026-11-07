@@ -4718,10 +4718,16 @@ Record ProcState := mkProcState {
                                     the handler from it, the flags and the mask
                                     0, which is what [flush_signal_handlers]
                                     leaves.  The launch gains no free choice.
-                                    [Run.valid_input] pins the declaration to
-                                    SIG_DFL, the world every statement in this
-                                    tree was written under; the other world is
-                                    [Run.valid_input_sigpipe_ignored].
+                                    [Run.valid_input] PINS NOTHING here:
+                                    both dispositions are starts Linux
+                                    produces, since SIG_IGN survives execve,
+                                    so a statement over it covers both and
+                                    the write that would raise the signal
+                                    declines under each while the death is
+                                    undeclared.
+                                    [Run.valid_input_sigpipe_ignored] names
+                                    the SIG_IGN start for a statement that
+                                    wants to say which start it is about.
 
                                     THE ONE WRITER INSIDE A RUN is
                                     [with_sigpipe_install], and its only caller
@@ -4771,8 +4777,13 @@ Record ProcState := mkProcState {
                                     ([Run.valid_input_sigpipe_kills],
                                     [Run.valid_input_channel_closed]).
                                     Under SIG_IGN ([procst_sigpipe_action]'s
-                                    handler) nothing is raised and the write is
-                                    answered -EPIPE whatever this field says. *)
+                                    handler) nothing is raised, so with this
+                                    field [true] the write is answered -EPIPE
+                                    and the program runs on; with it [false]
+                                    the write declines there as it does at
+                                    SIG_DFL, and THAT is what lets
+                                    [Run.valid_input] leave the disposition
+                                    free. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4931,8 +4942,9 @@ Definition m_sigpipe_action (m : Model) : SigpipeAction :=
 (** Whether SIGPIPE's handler is SIG_DFL -- the one bit of the action
     [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
     The same meaning this name had when the handler was a bare launch
-    declaration: [Run.valid_input] pins the declaration to SIG_DFL, the
-    other reading is [Run.valid_input_sigpipe_ignored], and a run that
+    declaration: no launch predicate pins it -- both dispositions are
+    starts Linux produces -- [Run.valid_input_sigpipe_ignored] names
+    the SIG_IGN one, and a run that
     installs nothing keeps the seeded value ([with_sigpipe_install] is
     the only writer after [init_model]). *)
 Definition m_sigpipe_default (m : Model) : bool :=

@@ -534,11 +534,11 @@ Record FinProcInput := mkFinProcInput {
   fin_sigpipe_default : bool
     (* whether SIGPIPE is still at its default disposition when the
        program starts, mirroring [State.in_sigpipe_default].  A FIELD
-       RATHER THAN A PIN for [fin_abort_terminal]'s reason, although
-       [Run.valid_input] pins it to [true]: the other world has a
-       predicate of its own, [Run.valid_input_sigpipe_ignored], so a
-       finite input must be able to denote the launch whose launcher ran
-       `signal(SIGPIPE, SIG_IGN)` before execve.  Pinning it to [true]
+       RATHER THAN A PIN for [fin_abort_terminal]'s reason, and now for
+       a stronger one: [Run.valid_input] does NOT pin it, so the launch
+       whose launcher ran `signal(SIGPIPE, SIG_IGN)` before execve is
+       one the ordinary statements already cover, and a finite input
+       must be able to denote it.  Pinning it to [true]
        here would put that launch out of reach of every classifier and
        measure shape while leaving it in reach of the equivalence
        shapes, and would make [finite_input_surjection] false, since a
@@ -612,9 +612,12 @@ Definition valid_fin_input_abort (f : FinProcInput) : Prop :=
     ([Run.valid_input_sv39], [Run.valid_input_sv57],
     [Run.valid_input_va_any]), the capability ones
     ([Run.valid_input_hwcap_rv64gc], [Run.valid_input_hwcap_rv64gcv])
-    and the SIGPIPE ones ([Run.valid_input_sigpipe_ignored],
-    [Run.valid_input_sigpipe_either]) are [Run.valid_input] with one
-    field's clause moved, and every statement in the measure and
+    and the SIGPIPE ones ([Run.valid_input_sigpipe_ignored], which
+    ADDS a clause [Run.valid_input] does not carry, and
+    [Run.valid_input_sigpipe_either], which since the disposition came
+    off [Run.valid_input] IS [Run.valid_input]) are that predicate
+    with one field's clause moved, dropped or added, and every
+    statement in the measure and
     classifier layers that this record serves is issued under
     [Run.valid_input] or [Run.valid_input_abort].
     A twin here would be a definition nothing quantifies over.  The day a

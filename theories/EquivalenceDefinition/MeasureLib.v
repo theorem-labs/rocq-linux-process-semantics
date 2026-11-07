@@ -2151,8 +2151,8 @@ Qed.
       and envp rather than by this choice.
     - [fin_abort_terminal] is [false], the task declaration
       [Run.valid_input] pins and so the one this embedding has to make
-      if the record is to be valid at all.  It, [fin_va_size] and
-      [fin_sigpipe_default] are declarations rather than environment
+      if the record is to be valid at all.  It and [fin_va_size] are
+      declarations rather than environment
       facts, and the only fields [Run.valid_input] fixes rather than
       bounds.
     - [fin_channel_reader] is [true], the launch whose standard output
@@ -2162,11 +2162,13 @@ Qed.
       [Run.valid_input_channel_closed], which this library's callers
       do not discharge.  A measure statement is about a list of CORES,
       and the core forgets this field like the others here.
-    - [fin_sigpipe_default] is [true], SIGPIPE at SIG_DFL.
-      [Run.valid_input] fixes it, so it is forced in the way
-      [fin_abort_terminal] is: [false] would be valid only under
-      [Run.valid_input_sigpipe_ignored], which this library's callers
-      do not discharge.
+    - [fin_sigpipe_default] is [true], SIGPIPE at SIG_DFL.  Unlike the
+      declarations above, [Run.valid_input] does NOT fix it: both
+      dispositions are starts the ordinary statements cover, since
+      SIG_IGN survives execve.  So the value here is a FREE choice this
+      embedding makes, arbitrary in the way the paragraph below says,
+      and [false] would be as valid.  [Run.valid_input_sigpipe_ignored]
+      is where [false] is the only valid value.
     - [fin_sigpipe_terminal] is [false], the SIGPIPE death declined.
       [Run.valid_input] fixes it too, so it is forced in the same way:
       [true] would be valid only under [Run.valid_input_sigpipe_kills]
@@ -2202,11 +2204,14 @@ Definition core_input (c : FinCore) : FinProcInput :=
     every core's input unprovable, whatever its argv said.  Choosing a
     value that CAN be valid is not the same as claiming it is.
 
-    [fin_abort_terminal] is [false], [fin_sigpipe_default] is [true] and
-    [fin_sigpipe_terminal] is [false], declarations [Run.valid_input]
+    [fin_abort_terminal] is [false] and [fin_sigpipe_terminal] is
+    [false], declarations [Run.valid_input]
     pins, for the same reason:
     each is the only value that can be valid under the predicate this
-    library's callers discharge.  [fin_execfn] is
+    library's callers discharge.  [fin_sigpipe_default] is [true] on a
+    weaker ground -- [Run.valid_input] leaves the disposition free, so
+    either value is valid and this one is simply chosen.
+    [fin_execfn] is
     [State.default_execfn] on the same ground -- the empty name is
     one [Run.valid_execfn] refuses, so a caller that wanted validity
     could not get there from it. *)

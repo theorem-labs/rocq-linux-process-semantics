@@ -2910,17 +2910,19 @@ Definition noreader_input : ProcInput :=
 
 (** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
-    ([State.in_sigpipe_default]).  No named predicate admits this one:
-    [Run.valid_input] and [Run.valid_input_sigpipe_ignored] both pin
-    the reader PRESENT, and [Run.valid_input_channel_closed], which
-    admits the launch above, pins SIGPIPE at SIG_DFL.  The pair below
-    is about what one CALL answers on it, which the check layer judges
-    on a model rather than on a validity premise. *)
+    ([State.in_sigpipe_default]).  [Run.valid_input_channel_closed]
+    ADMITS THIS ONE TOO: that predicate pins the reader gone and the
+    death declared and says NOTHING about the disposition, so these
+    two inputs are the two starts it covers and the pair below is what
+    separates them.  The death declaration has to be on here as it is
+    above -- with it off the write declines at either disposition
+    ([Sys.Fs.ReadWrite.sigpipe_declines]), which is what keeps
+    [Run.valid_input] able to leave the disposition free. *)
 Definition noreader_ignored_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
                    default_urandom [] default_kernel default_execfn
-                   false false false.
+                   false false true.
 
 Definition noreader_model : Model :=
   init_model [] 0 0 demo_sp demo_limit noreader_input.
@@ -2963,8 +2965,10 @@ Proof. split; [check_eq | split; check_eq]. Qed.
 (** PAIR 2 — THE SAME WRITE UNDER THE OTHER LAUNCH DECLARATION.
 
     [State.in_sigpipe_default] is the task's declaration that signal 13
-    is still at SIG_DFL, and [Run.valid_input] pins it.  Under
-    [Run.valid_input_sigpipe_ignored] it is SIG_IGN, and then the
+    is still at SIG_DFL, and NO launch predicate pins it: both starts
+    are ones Linux produces, so [Run.valid_input_channel_closed]
+    admits this input and the one above alike and the DISPOSITION
+    ALONE separates them.  At SIG_IGN the
     kernel never delivers the signal at all --
     kernel/signal.c [prepare_signal]/[sig_ignored] drops it unblocked,
     [get_signal]'s [if (ka->sa.sa_handler == SIG_IGN) continue] drops it

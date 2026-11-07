@@ -308,13 +308,15 @@ Qed.
     pins the reader PRESENT, so it is the half with a reader that it
     quantifies over; the reader-gone half asks for
     [Run.valid_input_channel_closed] by name, and THIS IS A PROOF THAT
-    ASKS FOR THAT WORLD AND PROVES A WHOLE RUN OF IT.  Both predicates
-    pin [in_sigpipe_default] to [true]
-    ([Run.valid_input_sigpipe_default] for the first), so the SIG_DFL
-    half of the [sigpipe_fatal] premise the kill path needs costs a
-    caller nothing; the other half is the launch mask, empty here.
-    Under [Run.valid_input_sigpipe_ignored] the disposition is SIG_IGN
-    instead, and the reader-gone write would return -EPIPE and the
+    ASKS FOR THAT WORLD AND PROVES A WHOLE RUN OF IT.  NEITHER
+    PREDICATE PINS [in_sigpipe_default]: both admit the SIG_IGN start
+    too, because a launcher that ran `signal(SIGPIPE, SIG_IGN)` before
+    execve starts an ordinary Linux process.  So the SIG_DFL half of
+    the [sigpipe_fatal] premise the kill path needs does NOT come free
+    from the predicate; it is discharged from the LAUNCH, which names
+    the disposition, and [w1x_fatal] closes it by computation.  The
+    other half is the launch mask, empty here.  On the SIG_IGN start of
+    the same reader-gone launch the write would return -EPIPE and the
     program run on, which this pair does not cover. *)
 Example w1x_sigpipe_pair : forall lim,
   valid_input_channel_closed (w1x_input false) /\ valid_input (w1x_input true)

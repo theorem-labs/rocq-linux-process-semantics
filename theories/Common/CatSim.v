@@ -1150,7 +1150,10 @@ Lemma fd1dead_with_vdso : forall v m, fd1dead m -> fd1dead (with_vdso v m).
 Proof. intros v m H; exact H. Qed.
 
 (** SIGPIPE kills at this launch: its disposition is SIG_DFL
-    ([State.in_sigpipe_default], which [Run.valid_input] pins), the
+    ([State.in_sigpipe_default], which NO launch predicate pins, since
+    both dispositions are starts Linux produces -- so a caller
+    discharges this conjunct from the launch it names, not from a
+    validity premise), the
     launch declares the death ([State.in_sigpipe_terminal], which
     [Run.valid_input_channel_closed] pins and [Run.valid_input] does
     not) and the launch mask leaves signal 13 open. *)

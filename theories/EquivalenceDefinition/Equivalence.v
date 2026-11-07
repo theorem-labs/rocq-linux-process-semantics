@@ -1087,29 +1087,34 @@ Proof. intros (_ & H). exact H. Qed.
 
 (** THE QUANTIFIER IS AGAIN THE WHOLE DIFFERENCE, and here it is the
     TASK'S launch declaration rather than the environment's.
-    [Run.valid_input] pins [State.in_sigpipe_default] to [true]: the
-    launch left signal 13 at SIG_DFL, and with the death not declared
-    ([State.in_sigpipe_terminal] [false]) a write whose far end has no
-    reader DECLINES ([Sys.Fs.ReadWrite.sigpipe_write]).
-    [Run.valid_input_sigpipe_ignored] pins it to [false]: the launcher
-    ran `signal(SIGPIPE, SIG_IGN)` before execve -- which execve
-    preserves, see [State.in_sigpipe_default] -- so the same write
-    answers -EPIPE and the program runs on.
+    [Run.valid_input] says NOTHING about [State.in_sigpipe_default]:
+    both dispositions execve can hand a program are starts Linux
+    produces -- SIG_IGN survives execve -- so a statement over it
+    covers both.  What it DOES pin is the death declaration
+    ([State.in_sigpipe_terminal] [false]), and with that clear a write
+    whose far end has no reader DECLINES at EITHER disposition
+    ([Sys.Fs.ReadWrite.sigpipe_write]).
+    [Run.valid_input_sigpipe_ignored] pins the disposition to [false]:
+    the launcher ran `signal(SIGPIPE, SIG_IGN)` before execve -- which
+    execve preserves, see [State.in_sigpipe_default] -- and it names
+    that start for a statement that wants to SAY which start it is
+    about.
 
-    WHAT A PROOF OF THIS BUYS, AND WHAT IT COSTS.  It buys a world in
-    which no write arm ends the run or declines, so a program that
-    writes to a channel, a pipe or a socket with no reader is still
-    running afterwards and its halting is decided by its own code.  It
-    costs the program's own handling: the -EPIPE is returned, and what
-    the program does next is then part of the obligation, where under
-    [Run.valid_input] the same write is an error.  Neither statement
-    implies the other, and that is why both exist.
+    WHAT A PROOF OF THIS BUYS, AND WHAT IT COSTS.  It buys the NAME:
+    the statement says out loud that it is about the SIG_IGN start, so
+    a reader does not have to ask.  It costs coverage, and strictly:
+    every clause of [Run.valid_input] is a clause of
+    [Run.valid_input_sigpipe_ignored], so [strong_universal_T] implies
+    the obligation below and the converse fails.  Both exist because
+    naming the start is worth having, not because neither implies the
+    other.
 
     ONE PER-TRIPLE OBLIGATION, UNLIKE THE ABORT PAIR.  The abort
     stances needed two, because the declaration-on statement had to ask
     [error_free_unkilled] where the other asked [error_free].  Neither
-    SIGPIPE stance can reach a death -- under SIG_IGN nothing is raised,
-    and under [Run.valid_input] the raising write declines -- so both
+    SIGPIPE stance can reach a death -- both pin the death declaration
+    clear, and with it clear the raising write declines at either
+    disposition -- so both
     ask [error_free], these shapes are quantifier shells over the SAME
     triple obligation, and the either shape below is a shell too. *)
 Definition strong_universal_T_sigpipe_ignored : Prop :=
@@ -1127,9 +1132,12 @@ Definition strong_universal_error_free_T_sigpipe_ignored : Prop :=
     strong_equiv_error_free en_source en_target inp.
 
 (** Neither SIGPIPE stance pinned: the obligation over every input the
-    shared clauses accept.  It is exactly the conjunction of the two
-    stances, so a task that says nothing about the disposition its
-    launcher left is held to both readings. *)
+    shared clauses accept.  Since the disposition came off
+    [Run.valid_input] this is the SAME input class [strong_universal_T]
+    quantifies over, and the equivalence below records that: it is
+    exactly the conjunction of the two stances, so a task that says
+    nothing about the disposition its launcher left is held to both
+    readings and loses nothing by it. *)
 Definition strong_universal_T_sigpipe_either : Prop :=
   forall en_source en_target inp,
     valid_entry source_image en_source inp ->

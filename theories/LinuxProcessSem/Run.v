@@ -1137,23 +1137,31 @@ Definition reaches_error (c0 : config) : Prop :=
     process it kills where Linux returns -EPIPE and continues, an
     ACCEPTANCE of a trace Linux cannot produce.
 
-    SO IT IS [State.in_sigpipe_default], and [valid_input] pins it to
-    [true].  A statement quantified over [valid_input] now SAYS which
-    world it is about rather than assuming one, and the other world has
-    its own predicate, [valid_input_sigpipe_ignored], under which
-    [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
-    arm kills the process.  If the program itself installs SIG_DFL, a
-    later write that would raise the signal declines (an error step,
-    not a death), because that launch pins [State.in_sigpipe_terminal]
-    to [false] too.
+    SO IT IS [State.in_sigpipe_default], A FIELD THE INPUT CARRIES AND
+    [valid_input] LEAVES FREE.  Both dispositions are launches Linux
+    produces today -- SIG_IGN survives execve, so
+    `signal(SIGPIPE, SIG_IGN)` before exec is as ordinary a start as
+    SIG_DFL -- and a predicate that pinned one of them would quietly
+    stop covering the other, which is exactly the acceptance of a
+    statement narrower than it reads that the field was added to
+    prevent.  So the field says what the LAUNCH did, and no named
+    predicate but [valid_input_sigpipe_ignored] constrains it; that one
+    names the SIG_IGN start for a task that means that start and only
+    that one, and is a NARROWING of [valid_input] rather than a world
+    beside it.
 
-    WHETHER THE MODEL FOLLOWS THE DEATH is a second declared field,
-    [State.in_sigpipe_terminal], and [valid_input] pins it to [false]:
-    at SIG_DFL a write that would raise the signal DECLINES, whatever
-    the mask, so it lands HERE, in [unmodeled_at], and no run under
-    [valid_input] ends in [KillEv 13] -- the reading every error-free
-    statement in this tree was written under.  The launch that follows
-    the death is [valid_input_sigpipe_kills].  BLOCKING is a third,
+    WHAT KEEPS EVERY STATEMENT SAYING WHAT IT SAID is therefore not a
+    pin on the disposition but the SECOND declared field,
+    [State.in_sigpipe_terminal], which [valid_input] pins to [false]: a
+    write that would raise the signal DECLINES -- at SIG_DFL and at
+    SIG_IGN alike, and whatever the mask -- so it lands HERE, in
+    [unmodeled_at], and no run under [valid_input] ends in [KillEv 13],
+    the reading every error-free statement in this tree was written
+    under.  The launch that follows the death is
+    [valid_input_sigpipe_kills], and THERE the disposition decides the
+    outcome: at SIG_DFL the write kills, at SIG_IGN
+    [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and the write
+    is a plain -EPIPE the program runs on from.  BLOCKING is a third,
     independent matter: on that launch a blocked signal 13 makes the
     write answer -EPIPE, and [State.procst_sigpipe_pending] carries the
     signal to the [rt_sigprocmask] that uncovers it. *)
@@ -4620,16 +4628,18 @@ Definition valid_input (inp : ProcInput) : Prop :=
     trace of a run under this predicate
     ([Checks.KillFree.valid_input_no_kill], a closed theorem).
 
-    THE SIGPIPE DECLARATIONS ARE PINNED HERE TOO, and they are
-    independent stances from the abort one.  [State.in_sigpipe_default]
-    is [true] under this predicate: the launch left signal 13 at
-    SIG_DFL, the world every statement in this tree was written under;
-    with SIG_IGN the same write would return -EPIPE and the program run
-    on, a different OUTCOME and not a different number.
+    THE SIGPIPE DEATH DECLARATION IS PINNED HERE TOO, and it is an
+    independent stance from the abort one.  THE DISPOSITION IS NOT
+    PINNED, here or in [valid_input]: [State.in_sigpipe_default] is
+    left FREE, because a launcher that ran `signal(SIGPIPE, SIG_IGN)`
+    before execve starts an ordinary Linux process -- execve keeps the
+    disposition -- and a predicate that pinned SIG_DFL would stop
+    covering it.
     [State.in_sigpipe_terminal] is [false]: a write that would raise
-    SIGPIPE at SIG_DFL DECLINES, on every descriptor and under every
-    mask ([Sys.Fs.ReadWrite.sigpipe_write]), as [tkill] declines with
-    the abort declaration off.  So NO run under [valid_input] carries a
+    SIGPIPE DECLINES, at EITHER disposition, on every descriptor and
+    under every mask ([Sys.Fs.ReadWrite.sigpipe_write]), as [tkill]
+    declines with the abort declaration off.  So NO run under
+    [valid_input] carries a
     [KillEv] -- a closed theorem, [Checks.KillFree.valid_input_no_kill],
     proved over every arm of the dispatcher -- nor ever holds a pending
     signal ([star_kill_off] with [Checks.KillFree.kill_frame_holds]), and
@@ -4672,9 +4682,11 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
     task takes -- which is what makes forgetting to choose the safe
     failure rather than the dangerous one.
 
-    IT STILL PINS THE SIGPIPE DECLARATION, because it is the abort
-    question it leaves open and only that one.  The SIGPIPE pair is
-    [valid_input_sigpipe_either] below. *)
+    IT STILL PINS THE SIGPIPE DEATH DECLARATION, because it is the
+    abort question it leaves open and only that one.  The DISPOSITION
+    it leaves free, as [valid_input] does; [valid_input_sigpipe_either]
+    below is what that leaving-free is named when a reader wants the
+    name. *)
 Definition valid_input_either (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4733,28 +4745,29 @@ Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
 
-    THE OTHER WORLD A LAUNCH CAN PUT THIS PROGRAM IN, written the way
-    the abort stance above is, and for the same reason: what a proof was
-    made under has to be readable in the statement.  Here the launcher
-    ran `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
-    survived it, so [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal
-    and a write to a far end with no reader is -EPIPE with the process
-    STILL RUNNING.  If the program itself installs SIG_DFL
-    ([Kernel.Signal.rt_sigaction_sigpipe]), a later such write declines,
-    because [State.in_sigpipe_terminal] is pinned [false] here as in
-    [valid_input]: that decline is an error step, not a death, and no
-    run under this launch dies
+    THE SIG_IGN START NAMED, written the way the abort stance above is,
+    and for the same reason: what a proof was made under has to be
+    readable in the statement.  Here the launcher ran
+    `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
+    survived it.  [valid_input] ADMITS THIS START TOO, since it says
+    nothing about the disposition: every clause of [valid_input] is a
+    clause here, with [in_sigpipe_default inp = false] added, so this
+    predicate is a NARROWING of it rather than a world beside it.
+    [State.in_sigpipe_terminal] is pinned [false] here as in
+    [valid_input], so a write whose far end has no reader DECLINES --
+    an error step, not a death -- and no run under this launch dies
     ([Checks.KillFree.valid_input_sigpipe_ignored_no_kill]).  Every
     other clause is [valid_input]'s, the abort declaration included.
 
-    WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  It is the
-    reading a program that handles -EPIPE itself was written for -- a
-    daemon, a filter under a service manager -- and under it no write
-    arm ends the run while the handler stays SIG_IGN, so a halts
-    statement is not refuted by a reader-less channel for a program that
-    keeps it so.  It is NOT the safer predicate: it asserts
-    something about the launch that the ordinary one does not, and a
-    proof made under it says nothing about the ordinary launch. *)
+    WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  Strictly less
+    than one over [valid_input], now that the disposition is off that
+    predicate: every input this one accepts [valid_input] accepts too,
+    so a proof made here says nothing about the SIG_DFL start while a
+    proof made there covers both.  What it is FOR is a statement that
+    wants to NAME the start it describes -- the reading a program that
+    handles -EPIPE itself was written for, a daemon or a filter under
+    a service manager.  It is NOT the safer predicate: it asserts
+    something about the launch that the ordinary one does not. *)
 Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4770,12 +4783,15 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
-(** Neither SIGPIPE stance pinned: the clauses both share, and nothing
-    about the disposition.  A statement quantified over this one is the
-    CONJUNCTION of [valid_input] and [valid_input_sigpipe_ignored], so a
-    task that forgets to say which launch it means is held to both --
-    the same safe failure [valid_input_either] gives for the abort
-    stance. *)
+(** Neither SIGPIPE stance pinned, which since the disposition came off
+    [valid_input] is the SAME predicate, conjunct for conjunct.  It is
+    kept, and kept as its own name, because statements were published
+    over it ([Equivalence.strong_universal_T_sigpipe_either] and its
+    error-free twin) and because the name says out loud what
+    [valid_input] now also says: the disposition is not constrained, so
+    a task that forgets to say which launch it means is held to both
+    starts -- the same safe failure [valid_input_either] gives for the
+    abort stance. *)
 Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4997,10 +5013,10 @@ Qed.
 (** * THE SIGPIPE-DEATH DECLARATION: the launch that follows the death
 
     [State.in_sigpipe_terminal] says whether the model follows a SIGPIPE
-    at SIG_DFL into the death it causes.  [valid_input] pins it to
-    [false]: a write that would raise the signal there DECLINES
-    ([Sys.Fs.ReadWrite.sigpipe_write]), on every descriptor and under
-    every mask, as [tkill] declines with [State.in_abort_terminal]
+    into the death it causes.  [valid_input] pins it to
+    [false]: a write that would raise the signal DECLINES, at EITHER
+    disposition ([Sys.Fs.ReadWrite.sigpipe_write]), on every descriptor
+    and under every mask, as [tkill] declines with [State.in_abort_terminal]
     clear.  So no run under [valid_input] carries [KillEv 13]
     ([Checks.KillFree.valid_input_no_kill], which proves it for every
     signal), none holds a pending SIGPIPE ([star_kill_off] with
@@ -5014,7 +5030,11 @@ Qed.
     pinned to [true].  What it ADDS is the death: a write to a pipe the
     program left unread, or to a socket with no connection, ends the
     run in [KillEv 13] at SIG_DFL with signal 13 open, and leaves it
-    pending with the signal blocked.  It is NOT the safer predicate: a
+    pending with the signal blocked.  THE DISPOSITION IS FREE HERE as
+    it is in [valid_input], and here it is what decides between those
+    two and a third: at SIG_IGN nothing is raised, the same write
+    answers -EPIPE and the program runs on.  It is NOT the safer
+    predicate: a
     statement over it that asks [Equivalence.error_free] alone does not
     see that death, which is why the statements that quantify over a
     death-following launch ask [Equivalence.error_free_unkilled].
