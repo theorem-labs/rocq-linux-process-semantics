@@ -122,7 +122,7 @@ Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
     [is_excl_create]), while O_APPEND survives into [f_flags]:
     [do_dentry_open] (fs/open.c, Linux v6.18.46) clears only
     O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC there.  So the created descriptor is
-    the append kind on a new empty file, which is what [open_append]
+    the append kind on a new empty file, which is what [open_append_absent]
     records for an absent name.
 
     The descriptor is a [State.FdFileA] for the reason
@@ -644,7 +644,7 @@ Definition open_append_absent (p : path) (m : Model) : Sys SyscallEffect :=
 
 (** Resolve the two APPEND write-create open shapes: the plain word
     ([excl] false) and the exclusive one ([excl] true).  Both
-    create an absent name with [open_append]; they differ in what an
+    create an absent name with [open_append_absent]; they differ in what an
     existing name gets.  The exclusive half is ported from main LPS
     (theorem-labs/linux-process-semantics) commit 4d80c33d83 (#1760).
 
@@ -2465,8 +2465,8 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       (* AN UNNAMED FILE IS A REGULAR FILE, so [do_ftruncate]'s
          [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
          (fs/open.c, Linux v6.18.46) turns on the access mode alone: a
-         read-only descriptor is -EINVAL, a writable one (O_APPEND or
-         not, as for [FdFileA] above) sets the size.  The size is the
+         read-only descriptor is -EINVAL, a writable one sets the size
+         (the [FdFileA] arm above declines with unmodeled).  The size is the
          inode's, so the new contents go to EVERY descriptor of the file
          ([State.anon_set_data]); the offsets stay, for the header's
          reason.  The grow bound is the one the file arms above use. *)

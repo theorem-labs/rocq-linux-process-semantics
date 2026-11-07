@@ -421,7 +421,7 @@ Proof. vm_compute. reflexivity. Qed.
     declines this arm (Sys/Fs/Open.lean:1312). *)
 Definition ftruncate_append_model : Model :=
   mkModel [(3, FdFileA [102] 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([], [104; 105])] None None None.
+    [([102], [104; 105])] None None None.
 
 Example ftruncate_on_append_fd_is_unmodeled :
   check_syscall (mkInput 46 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
