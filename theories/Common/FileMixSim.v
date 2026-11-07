@@ -599,6 +599,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
   path_eqb p [] = false ->
   openat_plain_name p = true ->
   fs_under (m_fs model) p = false ->
+  fs_lookup (m_fs model) p <> None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e write_open_errnos ->
@@ -620,7 +621,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
               model U.
 Proof.
   intros regs pc mem model p Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hun Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hun Hfsl Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -647,6 +648,7 @@ Proof.
       vm_compute. reflexivity.
     + exact Hdot.
     + exact Hun.
+    + exact Hfsl.
   - intro fd. split.
     + exact Hh.
     + exact Hlazy.

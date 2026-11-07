@@ -1552,6 +1552,7 @@ Lemma openat_wr_check : forall segs ms x8 model p,
   Z.ldiff (bv_unsigned (ms_gpr ms 2)) open_ignored_flags = wr_create_flags ->
   openat_plain_name p = true ->
   fs_under (m_fs model) p = false ->
+  fs_lookup (m_fs model) p <> None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
     = check_write_open_result_copyins (open_copyins ms) eff model
@@ -1561,7 +1562,7 @@ Lemma openat_wr_check : forall segs ms x8 model p,
                                   (FdFileW p (Z_to_bv 64 0)))
                         (with_fs (fs_set (m_fs model) p []) model))).
 Proof.
-  intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun eff.
+  intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun Hfsl eff.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
   rewrite (check_syscall_56 segs ms x8 eff model Hno).
@@ -1585,6 +1586,7 @@ Proof.
   rewrite Z.eqb_refl. cbv beta iota.
   unfold Open.check_openat_create, check_create_wronly.
   rewrite Hdot, Hun. rewrite orb_false_l. cbv beta iota.
+  destruct (fs_lookup (m_fs model) p) as [data|]; [|contradiction].
   unfold check_write_open_result_copyins, open_copyins.
   destruct (check_write_open_result (clear_copyins eff) model
     (fun fd : word =>
@@ -2618,6 +2620,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p
   path_eqb p [] = false ->
   openat_plain_name p = true ->
   fs_under (m_fs model) p = false ->
+  fs_lookup (m_fs model) p <> None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e write_open_errnos ->
@@ -2639,7 +2642,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p
           model U.
 Proof.
   intros regs pc mem model p Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hun Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hun Hfsl Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -2666,6 +2669,7 @@ Proof.
       vm_compute. reflexivity.
     + exact Hdot.
     + exact Hun.
+    + exact Hfsl.
   - intro fd. split.
     + exact Hh.
     + exact Hlazy.
