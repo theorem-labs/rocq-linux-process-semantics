@@ -219,7 +219,7 @@ Proof. intros m. apply clone_ns_flat_fork_ok; reflexivity. Qed.
     the host, and the shell's call returns 2. *)
 Definition inside : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
-         [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
+         [mkUserNs 2 (Some 1%positive) 1 65534 (Some full) (Some full) true false 2147483647 true;
           mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
          [mk_pidns 1 None 1 0 0; mk_pidns 2 (Some 1%positive) 2 1 1].
 
@@ -252,18 +252,77 @@ Example fork_inside_advances_last : forall m,
   = Some [0; 2].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** The child-tid form used by some C libraries is not a word the core
-    admits, so the namespace layer declines it too. *)
+(** The child-tid form used by some C libraries: the wider mask admits
+    it, and the child's pid is 2, the same as the plain SIGCHLD fork. *)
 Example libc_fork_inside_pid_2 : forall m,
-  clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD)) m shell inside 140
-  = CnUnmodeled.
+  ret_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD)) m shell inside 140)
+  = Some (Some 2).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** Namespace answers do not bypass the released core's flag gate. *)
-Example clone_child_tid_inside_declines : forall m,
-  clone_ns_exact (cw (Z.lor CLONE_CHILD_SETTID SIGCHLD)) m shell inside 140 = CnUnmodeled /\
-  clone_ns_exact (cw (Z.lor CLONE_CHILD_CLEARTID SIGCHLD)) m shell inside 140 = CnUnmodeled.
+(** The child-tid bits alone also answer, with the same pid. *)
+Example clone_child_tid_inside_answers : forall m,
+  ret_of (clone_ns_exact (cw (Z.lor CLONE_CHILD_SETTID SIGCHLD)) m shell inside 140) = Some (Some 2) /\
+  ret_of (clone_ns_exact (cw (Z.lor CLONE_CHILD_CLEARTID SIGCHLD)) m shell inside 140) = Some (Some 2).
 Proof. intros m. split; vm_compute; reflexivity. Qed.
+
+(** [CLONE_NEWIPC] with [CLONE_SYSVSEM] answers -EINVAL. *)
+Example clone_newipc_sysvsem_refused : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_NEWNS CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    m shell inside 140 = CnErr EINVAL inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Unprivileged: the capability gate fires first, returning -EPERM. *)
+Example clone_newipc_sysvsem_unprivileged_eperm : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_NEWNS CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EPERM inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Unprivileged with [CLONE_NEWUSER]: [copy_creds] creates the new user
+    namespace ([clone_creds] checks [kid_has_mapping] first, matching
+    [kuid_has_mapping]/[kgid_has_mapping] in kernel/user_namespace.c:113-116,
+    Linux v6.18.46), and the child has CAP_FULL_SET there, so the capability
+    gate passes ([copy_namespaces] uses [task_cred_xxx(tsk, user_ns)] = the
+    child's new namespace, nsproxy.c:150, 162).  Then the
+    [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires: -EINVAL, not -EPERM
+    (nsproxy.c:171-173). *)
+Example clone_newuser_newipc_sysvsem_einval : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EINVAL inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** The wider mask's other combinations:
+    - [CLONE_SYSVSEM] with a namespace bit other than [CLONE_NEWIPC]
+      answers (the NEWIPC+SYSVSEM refusal does not fire);
+    - [CLONE_PARENT_SETTID] on a namespace word answers;
+    - [CLONE_SETTLS] on a namespace word answers;
+    - [CLONE_CHILD_SETTID] with [CLONE_NEWPID]: the namespace layer
+      answers [CnOk] but the core declines ([Fork.child_tid_ok] refuses
+      NEWPID with CHILD_SETTID). *)
+Example clone_sysvsem_newns_answers : forall m,
+  child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_NEWNS CLONE_SYSVSEM) SIGCHLD))
+    m shell inside 140) <> None.
+Proof. intros m. vm_compute. intros H. discriminate H. Qed.
+
+Example clone_parent_settid_newns_answers : forall m,
+  child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_NEWNS Uapi.CLONE_PARENT_SETTID) SIGCHLD))
+    m shell inside 140) <> None.
+Proof. intros m. vm_compute. intros H. discriminate H. Qed.
+
+Example clone_settls_newns_answers : forall m,
+  child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_NEWNS Uapi.CLONE_SETTLS) SIGCHLD))
+    m shell inside 140) <> None.
+Proof. intros m. vm_compute. intros H. discriminate H. Qed.
+
+(** [CLONE_CHILD_SETTID] with [CLONE_NEWPID]: the namespace layer gives
+    a child (the [CHILD_SETTID] decline applies only to [CnOk] with
+    unequal pid namespaces, and here they are equal) but the core's
+    [child_tid_ok] refuses NEWPID with CHILD_SETTID, so the overall
+    clone declines.  This is the deliberate disagreement the wider
+    mask permits. *)
+Example clone_child_settid_newpid_ns_answers : forall m,
+  child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_NEWPID) SIGCHLD))
+    m shell inside 140) <> None.
+Proof. intros m. vm_compute. intros H. discriminate H. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWNS 10)) m shell inside 140 = CnUnmodeled.
@@ -475,6 +534,40 @@ Proof. intros m. repeat split; vm_compute; reflexivity. Qed.
 Example clone_newpid_with_other_children_is_einval : forall m,
   clone_ns_exact (cw (Z.lor CLONE_NEWPID SIGCHLD)) (launch_children_model m)
     launch_children_ctx launch_children_state 140 = CnErr 22 launch_children_state.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** [CLONE_CHILD_SETTID] with [pidns_children <> cx_pidns] declines:
+    the core's store writes the caller's return value (8) but Linux
+    writes [task_pid_vnr] (1).  The glibc pattern
+    [CLONE_CHILD_SETTID|CLONE_CHILD_CLEARTID|SIGCHLD] is the typical
+    caller; it declines too. *)
+Example clone_child_settid_other_children_declines : forall m,
+  clone_ns_exact (cw (Z.lor CLONE_CHILD_SETTID SIGCHLD)) (launch_children_model m)
+    launch_children_ctx launch_children_state 140 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example clone_glibc_fork_other_children_declines : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD))
+    (launch_children_model m) launch_children_ctx launch_children_state 140 = CnUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** [CLONE_CHILD_SETTID] with [CLONE_NEWPID] from [launch_children_ctx]
+    still answers -EINVAL (the CHILD_SETTID decline applies only to [CnOk],
+    so the NEWPID error comes through). *)
+Example clone_child_settid_newpid_other_children_einval : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_NEWPID) SIGCHLD) 0))
+    (launch_children_model m) launch_children_ctx launch_children_state 140
+  = CnErr EINVAL launch_children_state.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** When [pidns_children = cx_pidns] (the default), [CLONE_CHILD_SETTID]
+    is answered and [child_tid_value] agrees with [clone_ret]. *)
+Example clone_child_settid_equal_children_tid_agrees : forall m,
+  match child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD))
+    m shell inside 140) with
+  | Some child => child_tid_value child = clone_ret shell child
+  | None => False
+  end.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example other_children_is_not_flat :

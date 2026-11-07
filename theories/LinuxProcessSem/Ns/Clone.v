@@ -19,16 +19,19 @@
     [copy_process] refuse ([Fork.clone_arg_checks]) answers -EINVAL.
     Otherwise, in the namespace world the model answers SIGCHLD alone or
     with CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
-    CLONE_NEWPID and CLONE_NEWNET, and no other bit: the mask reads the
-    record's flags and the SIGCHLD test its exit signal.  Child-tid flags
-    decline here, in the namespace model only: the process core admits
-    CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID without CLONE_VM
-    ([Kernel.Fork.clone_tid_bits]) and makes the child's
-    CLONE_CHILD_SETTID store into the child's own copy of the memory
-    ([Procs.child_tid_store]), but this model does not answer a
-    namespace clone that carries either bit.  Linux's
-    [copy_process] stores their pointers (kernel/fork.c:2040,2044);
-    [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
+    CLONE_NEWPID and CLONE_NEWNET, and no other bit of the namespace
+    flags, and with bits of [Fork.clone_extra_bits] ([CLONE_SYSVSEM] and
+    the four tid bits [CLONE_PARENT_SETTID], [CLONE_CHILD_SETTID],
+    [CLONE_CHILD_CLEARTID], [CLONE_SETTLS]): the wider mask is
+    [clone_ns_ext_flags].  [CLONE_NEWIPC] with [CLONE_SYSVSEM] is
+    refused by [copy_namespaces] (kernel/nsproxy.c:161-162, 171-173,
+    Linux v6.18.46) and answers -EINVAL.  [CLONE_CHILD_SETTID] is
+    declined when [pidns_children ctx <> cx_pidns ctx], because the
+    core's store writes the caller's return value while Linux writes
+    [task_pid_vnr] (kernel/sched/core.c:5272-5273); the two agree only
+    when the children's namespace is the active one.  Linux's
+    [copy_process] stores the tid pointers (kernel/fork.c:2040,2044);
+    [schedule_tail] writes the child's pid,
     and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
     The IPC namespace is not in the tables: no modelled call reads it.
 
@@ -84,6 +87,12 @@ Definition clone_ns_flags : Z :=
   fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWUSER; CLONE_NEWPID;
                    CLONE_NEWNET] 0.
 
+
+(** The namespace flags widened with the core's extra bits:
+    [CLONE_SYSVSEM] and the four tid bits.  A record whose flags have
+    no bit outside this mask and whose exit signal is SIGCHLD is one
+    [Fork.clone_class] classifies. *)
+Definition clone_ns_ext_flags : Z := Z.lor clone_ns_flags Fork.clone_extra_bits.
 Definition has_flag (f k : Z) : bool := negb (Z.land f k =? 0).
 
 Definition any_new_ns (f : Z) : bool :=
@@ -219,6 +228,16 @@ Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
     pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
 Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
 
+(** The child's own pid: its pid in its own pid namespace, the value
+    Linux's [CLONE_CHILD_SETTID] store writes at [schedule_tail]
+    (kernel/sched/core.c:5272-5273, Linux v6.18.46).  The core's store
+    uses the caller's return value instead; the two agree only when the
+    children's pid namespace is the active one.  [clone_ns_exact]
+    declines [CLONE_CHILD_SETTID] whenever they disagree; the fuller
+    fix is to carry this value into the core's [child_tid_store]. *)
+Definition child_tid_value (child : NsCtx) : option Z :=
+  pid_in (cx_pids child) (cx_pidns child).
+
 (** The tables' answer for a clone flag word [f] (the record's flags, no
     exit signal) that the namespace mask and the SIGCHLD test of
     [clone_ns_exact] passed.  The parent's return value is the core's pid
@@ -235,6 +254,10 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
         let cred := mkIdCred (cc_user cc) (bv_unsigned (cr_euid (m_creds m)))
                              (bv_unsigned (cr_egid (m_creds m))) (cap_effective (cc_caps cc)) in
         if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM st
+        (* [CLONE_NEWIPC] with [CLONE_SYSVSEM]: [copy_namespaces] refuses
+           the pair after the capability gate (kernel/nsproxy.c:162,
+           172-173, Linux v6.18.46). *)
+        else if has_flag f CLONE_NEWIPC && has_flag f CLONE_SYSVSEM then CnErr EINVAL st
         else
           (* the mount namespace, and the order data of its copies
              ([Propagation.copy_ns_links]) *)
@@ -364,9 +387,14 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
       unchanged: those checks come before every other step of
       [copy_process] (kernel/fork.c:1951-1999, and [kernel_clone]'s K0
       at 2588-2591, Linux v6.18.46), so before [copy_creds] and
-      [copy_namespaces] (2188).  Then the namespace mask reads its flags
-      and the SIGCHLD test its exit signal, then [clone_ns_answer] its
-      flags. *)
+      [copy_namespaces] (2188).  Then the wider mask [clone_ns_ext_flags]
+      reads its flags and the SIGCHLD test its exit signal;
+      [clone_ns_answer] answers the flags, where [CLONE_NEWIPC] with
+      [CLONE_SYSVSEM] answers -EINVAL after the capability gate
+      ([copy_namespaces], kernel/nsproxy.c:162, 172-173, Linux v6.18.46);
+      then a [CnOk] with [CLONE_CHILD_SETTID] and
+      [pidns_children ctx <> cx_pidns ctx] declines (the core's store
+      writes the caller's return value, not [child_tid_value]). *)
 Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     : CloneNs :=
   if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
@@ -374,9 +402,26 @@ Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsS
   | Fork.CiNoArgs => CnOk ctx None st
   | Fork.CiArgs r =>
       if Fork.clone_arg_checks r then CnErr EINVAL st
-      else if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0) then CnUnmodeled
+      else if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) =? 0) then CnUnmodeled
       else if negb (Fork.cla_exit_signal r =? Fork.SIGCHLD) then CnUnmodeled
-      else clone_ns_answer (Fork.cla_flags r) m ctx st hq
+      else
+        let result := clone_ns_answer (Fork.cla_flags r) m ctx st hq in
+        (* [CLONE_CHILD_SETTID]: the core writes the caller's return value
+           but Linux writes [task_pid_vnr] (kernel/sched/core.c:5272-5273).
+           These differ when the children's pid namespace is not the active
+           one ([pidns_children ctx <> cx_pidns ctx]).  Until the model
+           carries [child_tid_value] into the core's store, decline the
+           successful answer; error answers still come from [clone_ns_answer],
+           as in Linux, where the store happens only after [copy_process]
+           succeeds. *)
+        match result with
+        | CnOk _ _ _ =>
+            if has_flag (Fork.cla_flags r) CLONE_CHILD_SETTID
+               && negb (Pos.eqb (pidns_children ctx) (cx_pidns ctx))
+            then CnUnmodeled
+            else result
+        | _ => result
+        end
   end.
 
 (** A call with no record is the core's own in either world. *)
@@ -386,8 +431,11 @@ Proof.
   intros m ctx st hq. unfold clone_ns_exact. destruct (flat_view ctx st); reflexivity.
 Qed.
 
-(** The namespace mask and signal tests imply the core's gate.  This is
-    derived from the masks, not another test in [clone_ns_exact]. *)
+(** A word whose bits lie within the NARROW namespace mask
+    ([clone_ns_flags], without the tid and SYSVSEM bits) and whose
+    signal byte is SIGCHLD implies the core's gate.  [clone_ns_exact]
+    now tests the wider [clone_ns_ext_flags]; this lemma is kept for
+    the narrow subset. *)
 Lemma clone_ns_mask_core_gate : forall flags,
   Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) = 0 ->
   Z.land (bv_unsigned flags) CSIGNAL = Fork.SIGCHLD ->
@@ -413,58 +461,61 @@ Proof.
   - right. unfold Fork.clone_ns_flags_b. rewrite Hout, Z.eqb_refl, Hns. reflexivity.
 Qed.
 
-(** Every answered [clone] (220) outside the released no-namespace fast
-    path whose decoded record the argument checks pass is a word the
-    core admits, including namespace-creating clones from the host's
-    namespaces.  That fast path remains unrestricted, as
-    [Ext.ext_clone_coherent] requires.  A record the checks refuse is
-    answered -EINVAL ([clone_ns_exact_arg_checks]), and
-    [clone_ns_exact_core_gate_word] puts the two together: for every
-    decoded word, an answered call is one the core's gate admits or the
-    one the core itself answers -EINVAL.
+(** Every answered record outside the released no-namespace fast
+    path whose argument checks pass is one the core classifies
+    ([Fork.clone_class]): a fork-image record, a namespace record, or
+    the refused [CLONE_NEWIPC] with [CLONE_SYSVSEM] record.  That fast
+    path remains unrestricted, as [Ext.ext_clone_coherent] requires.
+    A record the checks refuse is answered -EINVAL
+    ([clone_ns_exact_arg_checks]).
 
     THE CALLS WITH NO RECORD are guarded elsewhere, because this gate
     says nothing about them: [Procs.clone_success_has_record] is the
     theorem that the core resolves none of them successfully, so the
     core's own answer that [clone_ns_exact Fork.CiNoArgs] gives
     ([clone_ns_exact_no_args]) can create no child. *)
-Theorem clone_ns_exact_core_gate : forall flags a1 a2 a3 a4 r m ctx st hq,
-  Fork.clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
+Theorem clone_ns_exact_core_gate : forall r m ctx st hq,
   Fork.clone_arg_checks r = false ->
-  (flat_view ctx st && negb (has_ns_bits (bv_unsigned flags))) = false ->
+  (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
   clone_ns_exact (Fork.CiArgs r) m ctx st hq <> CnUnmodeled ->
-  Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true.
+  Fork.clone_class r <> Fork.CcNone.
 Proof.
-  intros flags a1 a2 a3 a4 r m ctx st hq Hdec Hc Hfast Hanswer.
-  destruct (Fork.clone_args_of_clone_split _ _ _ _ _ _ Hdec) as [Hf He].
-  pose proof (Fork.clone_args_of_clone_word _ _ _ _ _ _ Hdec) as Hw.
-  destruct (Fork.flags_signal_split _ _ Hf He) as [Hfl Hes].
-  rewrite Hw in Hfl, Hes.
-  (* The core's [CSIGNAL] is this file's: 255. *)
-  match type of Hes with Z.land _ ?c = _ => change c with 255 in Hfl, Hes, He end.
-  (* With the checks passed, the record makes a namespace exactly when the
-     word has a namespace bit: those bits lie outside the signal byte. *)
-  assert (Hm : makes_ns (Fork.CiArgs r) = has_ns_bits (bv_unsigned flags)).
-  { cbn [makes_ns]. rewrite Hc. change (negb false) with true. rewrite andb_true_r.
-    unfold has_ns_bits. rewrite <- Hfl, <- Z.land_assoc.
-    replace (Z.land (Z.lnot 255) clone_ns_bits) with clone_ns_bits
-      by (vm_compute; reflexivity).
-    reflexivity. }
-  rewrite <- Hm in Hfast.
+  intros r m ctx st hq Hc Hfast Hanswer Hclass.
+  (* Step 1: unfold clone_ns_exact and use Hanswer to extract the mask
+     and signal hypotheses. *)
   unfold clone_ns_exact in Hanswer. rewrite Hfast in Hanswer. cbv beta iota in Hanswer.
-  rewrite ?Hc in Hanswer.
-  destruct (negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_flags) =? 0))
-    eqn:Hmask; [exfalso; apply Hanswer; reflexivity|].
+  rewrite Hc in Hanswer.
+  destruct (negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) =? 0))
+    eqn:Hmask; [apply Hanswer; reflexivity|].
   destruct (negb (Fork.cla_exit_signal r =? Fork.SIGCHLD))
-    eqn:Hsignal; [exfalso; apply Hanswer; reflexivity|].
+    eqn:Hsignal; [apply Hanswer; reflexivity|].
   apply negb_false_iff in Hmask, Hsignal. apply Z.eqb_eq in Hmask, Hsignal.
-  apply clone_ns_mask_core_gate.
-  - unfold CSIGNAL. rewrite <- Hw.
-    replace (Z.lnot (Z.lor 255 clone_ns_flags))
-      with (Z.land (Z.lnot clone_ns_flags) (Z.lnot 255)) by (vm_compute; reflexivity).
-    rewrite Z.land_lor_distr_l, Z.land_assoc, Hmask, Z.land_0_l, Z.lor_0_l.
-    now rewrite (Z.land_comm (Z.lnot clone_ns_flags)), Z.land_assoc, He, Z.land_0_l.
-  - unfold CSIGNAL. rewrite Hes. exact Hsignal.
+  (* Step 2: unfold clone_class and discharge its first two branches. *)
+  unfold Fork.clone_class in Hclass.
+  rewrite Hsignal, Z.eqb_refl in Hclass. cbn [negb] in Hclass.
+  (* Step 3: the wider mask implies no bit outside extra|ns_mask. *)
+  assert (Hext : Fork.clone_has (Fork.cla_flags r)
+    (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)) = false).
+  { unfold Fork.clone_has. apply negb_false_iff. apply Z.eqb_eq.
+    assert (Hmon : Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask) =
+      Z.land (Z.lnot clone_ns_ext_flags)
+             (Z.lnot (Z.lor Fork.clone_extra_bits Fork.clone_ns_mask)))
+      by (vm_compute; reflexivity).
+    rewrite Hmon. rewrite Z.land_assoc. rewrite Hmask. apply Z.land_0_l. }
+  rewrite Hext in Hclass.
+  (* Step 4: collapse the two if-false branches (signal and external mask)
+     and destruct the remaining boolean tests.  Every remaining branch
+     gives a class other than [CcNone]: [CcFork], [CcNsRefused] or [CcNs].
+     Destruct the [clone_has] applications from the unfolded [clone_class]
+     body without unfolding [clone_has] (the constant names inside
+     [clone_class] differ from this file's imports). *)
+  revert Hclass. cbv beta iota zeta.
+  destruct (Fork.clone_has (Fork.cla_flags r) Fork.clone_ns_mask),
+           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_NEWIPC),
+           (Fork.clone_has (Fork.cla_flags r) Uapi.CLONE_SYSVSEM);
+  cbv beta delta [negb andb] iota; intros H; exact (
+    match H in (_ = c) return match c with CcNone => False | _ => True end
+    with eq_refl => I end).
 Qed.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
@@ -481,30 +532,23 @@ Proof.
   unfold clone_ns_exact. rewrite Hfast. cbv beta iota. rewrite Hc. reflexivity.
 Qed.
 
-(** THE OLD CORE GATE, FOR EVERY DECODED [clone] (220) WORD.  Before the
-    argument checks this file stated the gate for every answered word
-    outside the released fast path; with them, a word the checks refuse
-    is answered -EINVAL, which the old statement did not admit.  This is
-    that statement with exactly that one answer added: no answered word
-    bypasses the core, because it is a word the core's own gate admits or
-    the word the core itself answers -EINVAL
-    ([Fork.clone_legacy_einval_b], which [Fork.clone_einval] answers).
-    The first two disjuncts alone are [clone_ns_exact_core_gate], for a
-    record the checks pass. *)
-Theorem clone_ns_exact_core_gate_word : forall flags a1 a2 a3 a4 r m ctx st hq,
-  Fork.clone_args_of_clone flags a1 a2 a3 a4 = Some r ->
-  (flat_view ctx st && negb (has_ns_bits (bv_unsigned flags))) = false ->
+(** THE CORE GATE.  No answered record bypasses the core: it is one the
+    core classifies ([Fork.clone_class r <> CcNone]) or one the argument
+    checks refuse ([Fork.clone_arg_checks r = true]; the core answers
+    -EINVAL or declines for those through [Fork.clone_einval] for
+    legacy [clone], and -EINVAL through [Fork.clone3_einval] for
+    [clone3]).  The first disjunct alone is
+    [clone_ns_exact_core_gate], for a record the checks pass. *)
+Theorem clone_ns_exact_core_gate_word : forall r m ctx st hq,
+  (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
   clone_ns_exact (Fork.CiArgs r) m ctx st hq <> CnUnmodeled ->
-  Fork.clone_fork_flags_b flags = true \/ Fork.clone_ns_flags_b flags = true
-  \/ Fork.clone_legacy_einval_b flags = true.
+  Fork.clone_class r <> Fork.CcNone
+  \/ Fork.clone_arg_checks r = true.
 Proof.
-  intros flags a1 a2 a3 a4 r m ctx st hq Hdec Hfast Hanswer.
+  intros r m ctx st hq Hfast Hanswer.
   destruct (Fork.clone_arg_checks r) eqn:Hc.
-  - right. right.
-    rewrite (Fork.clone_legacy_einval_b_spec flags a1 a2 a3 a4), Hdec. exact Hc.
-  - destruct (clone_ns_exact_core_gate flags a1 a2 a3 a4 r m ctx st hq
-                Hdec Hc Hfast Hanswer) as [H|H];
-      [left; exact H | right; left; exact H].
+  - right. reflexivity.
+  - left. exact (clone_ns_exact_core_gate r m ctx st hq Hc Hfast Hanswer).
 Qed.
 
 
