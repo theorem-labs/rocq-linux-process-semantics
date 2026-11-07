@@ -242,9 +242,9 @@ Proof.
 Qed.
 
 (** The executable form of [ReadWrite.sigpipe_write], shared by the
-    arms that can raise signal 13.  First the declaration: at
-    SIG_DFL with the SIGPIPE death not declared
-    ([ReadWrite.sigpipe_declines]) the write declines.  Otherwise the
+    arms that can raise signal 13.  First the declaration: with the
+    SIGPIPE death not declared ([ReadWrite.sigpipe_declines]) the write
+    declines, at EITHER disposition.  Otherwise the
     answer is -EPIPE with an
     EMPTY ledger -- no byte of the source is read on this path, on
     Linux or here -- over the model [ReadWrite.raise_sigpipe] produced,
@@ -350,22 +350,23 @@ Proof.
   apply check_ret_only_ok_iff in H. exact H.
 Qed.
 
-(** A SEND THAT RAISES SIGPIPE IS ANSWERED, never declined, once the
-    launch declares the death ([State.m_sigpipe_terminal]) or SIGPIPE's
-    handler is SIG_IGN -- the case cURL is in after it installs SIG_IGN,
-    whatever the launch declares.  With neither, at SIG_DFL under the
-    plain [Run.valid_input], the write declines
-    ([ReadWrite.sigpipe_write_off_unmodeled]). *)
+(** A SEND THAT RAISES SIGPIPE IS ANSWERED, never declined, exactly when
+    the launch declares the death ([State.m_sigpipe_terminal]).  Without
+    that declaration the write declines at either disposition
+    ([ReadWrite.sigpipe_write_off_unmodeled]), and THAT is what lets
+    [Run.valid_input] leave the disposition free rather than pin it: a
+    launch whose launcher ran `signal(SIGPIPE, SIG_IGN)` before execve
+    is an ordinary Linux start, and a statement over [Run.valid_input]
+    has to cover it. *)
 Lemma sigpipe_write_no_unmodeled : forall i m,
-  m_sigpipe_default m = false \/ m_sigpipe_terminal m = true ->
+  m_sigpipe_terminal m = true ->
   ~ sigpipe_write i m Unmodeled.
 Proof.
   intros i m Hg H.
   apply (check_of_sigpipe_write_unmodeled i m (mkEffect (errno_ret EPIPE) [] [])) in H.
   unfold check_sigpipe_write, sigpipe_declines in H.
-  destruct Hg as [Hg|Hg]; rewrite Hg in H;
-    [|destruct (m_sigpipe_default m)]; cbn [andb negb] in H;
-    exact (check_ret_only_no_unmodeled _ _ _ _ H).
+  rewrite Hg in H. cbn [negb] in H.
+  exact (check_ret_only_no_unmodeled _ _ _ _ H).
 Qed.
 
 Lemma bind_choose_ok_inv {A B} : forall (P : A -> Prop) (k : A -> Sys B) i m y m' evs,

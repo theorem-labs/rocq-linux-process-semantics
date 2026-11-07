@@ -1334,9 +1334,10 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     and not here.  This was read from kernel/signal.c ([sig_ignored],
     [prepare_signal], [do_sigaction], Linux v6.18.46); no run in the
     model shows it, since the model has no call ([rt_sigpending]) that
-    could see the hidden signal.  [Run.valid_input] pins the launch
-    declaration to SIG_DFL; [Run.valid_input_sigpipe_ignored] is the
-    other world.
+    could see the hidden signal.  [Run.valid_input] says NOTHING about
+    the launch declaration -- both dispositions are launches Linux can
+    start -- and [Run.valid_input_sigpipe_ignored] is the SIG_IGN one
+    named, for a task that means that start and only that one.
 
     NO LEDGER AND NO EVENT.  Both kernel sites raise the signal before
     any byte is copied out of user memory, so the call reads nothing
@@ -1355,10 +1356,11 @@ Definition raise_sigpipe (m : Model) : Model :=
 
 (** WHETHER THE MODEL FOLLOWS THE SIGNAL AT ALL, and the test every
     write that would raise it makes first.  A write that would RAISE
-    SIGPIPE at SIG_DFL declines unless the task declared that the model
-    covers the death ([State.m_sigpipe_terminal]), whatever the mask
-    says -- the same stance [Kernel.Signal.tkill_spec] takes with
-    [State.m_abort_terminal] clear.  Declining the BLOCKED case too is
+    SIGPIPE declines unless the task declared that the model covers the
+    death ([State.m_sigpipe_terminal]), whatever the mask says and
+    WHATEVER THE DISPOSITION -- the same stance
+    [Kernel.Signal.tkill_spec] takes with [State.m_abort_terminal]
+    clear.  Declining the BLOCKED case too is
     what keeps the death out rather than postponing it: a blocked
     SIGPIPE is left pending, and the [rt_sigprocmask] that uncovers it
     kills there ([Kernel.Signal.sigmask_deliver_model]).  With the
@@ -1366,34 +1368,48 @@ Definition raise_sigpipe (m : Model) : Model :=
     and no run carries [KillEv 13]; [sigpipe_write_off_unmodeled] is
     that, at the spec.
 
-    WHY THE ORDINARY LAUNCH DECLINES.  [Run.valid_input] pins the
-    declaration clear, so that no statement quantified over it sees a
-    death by signal: [Equivalence.error_free] sees an error transition
-    and not a death, and a declined step is an error.  That is how a
-    reader-less write was answered before this arm existed, and it is
-    what keeps those statements saying what they said.  The launches
-    that want the death name it ([Run.valid_input_sigpipe_kills],
-    [Run.valid_input_channel_closed]).
+    THE DISPOSITION IS NOT READ HERE, AND THAT IS THE POINT.  An earlier
+    revision declined only at SIG_DFL and answered -EPIPE at SIG_IGN,
+    and paid for that one extra answer by pinning
+    [State.in_sigpipe_default] to SIG_DFL in [Run.valid_input] -- which
+    silently dropped the ordinary Linux launch whose launcher ran
+    `signal(SIGPIPE, SIG_IGN)` before execve, a disposition execve
+    KEEPS (kernel/signal.c [flush_signal_handlers] :526-532, called
+    with [force_default = 0] from fs/exec.c [begin_new_exec] :1298).
+    Declining under BOTH dispositions while the death is undeclared
+    gives that answer up and buys the launch back: [Run.valid_input]
+    says nothing about the disposition, and every statement quantified
+    over it covers both starts.  A declined write is an error step, and
+    that is how a reader-less write was answered before this arm
+    existed, so no statement over [Run.valid_input] changes what it
+    says.
 
-    SIG_IGN IS NOT DECLINED: nothing is raised, the write answers
-    -EPIPE and the process runs on, whatever the declaration says. *)
+    THE DISPOSITION STILL DECIDES THE OUTCOME once a launch DOES declare
+    the death ([Run.valid_input_sigpipe_kills],
+    [Run.valid_input_channel_closed]): there this test is [false] and
+    [raise_sigpipe] runs, which KILLS at SIG_DFL with signal 13 open,
+    records it pending with signal 13 blocked, and leaves the model
+    alone at SIG_IGN so the write is a plain -EPIPE and the program
+    runs on. *)
 Definition sigpipe_declines (m : Model) : bool :=
-  (m_sigpipe_default m && negb (m_sigpipe_terminal m))%bool.
+  negb (m_sigpipe_terminal m).
 
 Definition sigpipe_write : Sys SyscallEffect :=
   m <- get_model ;;
   if sigpipe_declines m then unmodeled
   else (modify raise_sigpipe ;; err_ret EPIPE).
 
-(** With the declaration clear and SIGPIPE at SIG_DFL the only outcome
-    is [Unmodeled], the twin of [Kernel.Signal.tkill_spec_off_unmodeled]. *)
+(** With the death undeclared the only outcome is [Unmodeled], at either
+    disposition -- the twin of [Kernel.Signal.tkill_spec_off_unmodeled].
+    The disposition does not enter, because [sigpipe_declines] does not
+    read it; that is what lets [Run.valid_input] leave it free. *)
 Lemma sigpipe_write_off_unmodeled : forall i m o,
-  m_sigpipe_default m = true -> m_sigpipe_terminal m = false ->
+  m_sigpipe_terminal m = false ->
   sigpipe_write i m o -> o = Unmodeled.
 Proof.
-  intros i m o Hdfl Hoff H. unfold sigpipe_write in H.
+  intros i m o Hoff H. unfold sigpipe_write in H.
   rewrite bind_get_model in H. cbv beta in H. unfold sigpipe_declines in H.
-  rewrite Hdfl, Hoff in H. exact H.
+  rewrite Hoff in H. exact H.
 Qed.
 
 (** The two outcomes, one per value of the declaration test. *)

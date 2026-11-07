@@ -4590,7 +4590,6 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -4663,7 +4662,6 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -4686,7 +4684,6 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -4883,7 +4880,6 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = false
   /\ in_sigpipe_terminal inp = true
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -4900,7 +4896,6 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_sigpipe_terminal inp = negb (in_channel_reader inp)
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
@@ -4964,20 +4959,15 @@ Proof.
   assumption.
 Qed.
 
-(** THE SIGPIPE DECLARATION, as an accessor rather than as a position,
-    for the reason [valid_input_abort_terminal] below is one: this
-    predicate grows a conjunct whenever the input class learns to say
-    something new, and a caller that reached in by position would then
-    name a DIFFERENT clause rather than fail. *)
-Lemma valid_input_sigpipe_default : forall inp,
-  valid_input inp -> in_sigpipe_default inp = true.
-Proof.
-  intros inp Hv. red in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  assumption.
-Qed.
-
-(** The same clause under the ignoring stance, where it is [false]. *)
+(** THE SIGPIPE DISPOSITION under the stance that names it.  There is no
+    such accessor for [valid_input]: that predicate says NOTHING about
+    [State.in_sigpipe_default], because both dispositions are launches
+    Linux can start and a statement over [valid_input] covers both.  The
+    accessor exists here, where the clause does, and it reads the clause
+    BY SHAPE rather than by position: this predicate grows a conjunct
+    whenever the input class learns to say something new, and a caller
+    that reached in by position would then name a DIFFERENT clause
+    rather than fail. *)
 Lemma valid_input_sigpipe_ignored_sigpipe_default : forall inp,
   valid_input_sigpipe_ignored inp -> in_sigpipe_default inp = false.
 Proof.
@@ -5040,7 +5030,6 @@ Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = true
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5081,7 +5070,6 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv39
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5096,7 +5084,6 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv57
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5110,7 +5097,6 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_abort_terminal inp = false
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5406,7 +5392,6 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5421,7 +5406,6 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5517,7 +5501,6 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
@@ -5532,7 +5515,6 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
