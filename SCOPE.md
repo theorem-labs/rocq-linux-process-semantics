@@ -1436,6 +1436,13 @@ equivalence) can be true of the model and false of Linux.
   `-EPERM` to `kill` even for a signal to the caller itself
   (`security_task_kill`, `kernel/signal.c:832`). The model answers
   instead, as it does for `tkill`.
+- **`CLONE_CHILD_SETTID` with unequal pid namespaces.** When the
+  children's pid namespace (`pid_ns_for_children`) is not the active one,
+  the core's store writes the caller's return value but Linux writes
+  `task_pid_vnr(child)` (kernel/sched/core.c:5272-5273), which is the
+  child's pid in its OWN namespace. `clone_ns_exact` declines in that
+  state. The fuller fix is to carry `child_tid_value` into
+  `Procs.child_tid_store`.
 
 ## What the proofs do not check
 

@@ -795,14 +795,17 @@ Definition clone_record_admitted (r : CloneArgs) : bool :=
     first run, before its first instruction (kernel/sched/core.c:5272-5273;
     arch/riscv/kernel/entry.S:337-341).  Without [CLONE_VM] no other task
     reads that copy, so the store made when the child is created gives the
-    same answers; and without [CLONE_NEWPID], which the released step
-    declines with [CLONE_CHILD_SETTID] ([Fork.child_tid_ok]), the child's
-    pid namespace is the caller's, so its pid there is the caller's
-    answer.  The store is made, for a record the core answers with a
-    child, when [access_ok] admits the slot and the caller's memory as the
-    call began backs all four bytes readably; the released step admits the
-    word only where that is Linux's answer ([Fork.child_tid_ok]: all four
-    writable, or none and none readable). *)
+    same answers.  Without [CLONE_NEWPID], which the released step
+    declines with [CLONE_CHILD_SETTID] ([Fork.child_tid_ok]), and with
+    the children's pid namespace equal to the active one, the child's pid
+    in its own namespace is the caller's return value, so the store is
+    right; [Ns.Clone.clone_ns_exact] declines [CLONE_CHILD_SETTID] when
+    the two namespaces differ.  The store is made, for a record the core
+    answers with a child, when [access_ok] admits the slot and the
+    caller's memory as the call began backs all four bytes readably; the
+    released step admits the word only where that is Linux's answer
+    ([Fork.child_tid_ok]: all four writable, or none and none
+    readable). *)
 Definition child_tid_store (c c' : config) : list (word * list byte) :=
   match clone_args_of_cfg c with
   | Some r =>

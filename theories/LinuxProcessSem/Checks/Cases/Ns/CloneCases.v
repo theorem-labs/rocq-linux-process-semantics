@@ -313,13 +313,15 @@ Example clone_settls_newns_answers : forall m,
     m shell inside 140) <> None.
 Proof. intros m. vm_compute. intros H. discriminate H. Qed.
 
-(** [CLONE_CHILD_SETTID] with [CLONE_NEWPID]: the namespace layer answers
-    ([CnOk], not [CnUnmodeled]) but the core's [child_tid_ok] refuses
-    NEWPID with CHILD_SETTID, so the overall clone declines.  This is
-    the deliberate disagreement the wider mask permits. *)
+(** [CLONE_CHILD_SETTID] with [CLONE_NEWPID]: the namespace layer gives
+    a child (the [CHILD_SETTID] decline applies only to [CnOk] with
+    unequal pid namespaces, and here they are equal) but the core's
+    [child_tid_ok] refuses NEWPID with CHILD_SETTID, so the overall
+    clone declines.  This is the deliberate disagreement the wider
+    mask permits. *)
 Example clone_child_settid_newpid_ns_answers : forall m,
-  clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_NEWPID) SIGCHLD))
-    m shell inside 140 <> CnUnmodeled.
+  child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_NEWPID) SIGCHLD))
+    m shell inside 140) <> None.
 Proof. intros m. vm_compute. intros H. discriminate H. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
@@ -549,11 +551,23 @@ Example clone_glibc_fork_other_children_declines : forall m,
     (launch_children_model m) launch_children_ctx launch_children_state 140 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** [CLONE_CHILD_SETTID] with [CLONE_NEWPID] from [launch_children_ctx]
+    still answers -EINVAL (the CHILD_SETTID decline applies only to [CnOk],
+    so the NEWPID error comes through). *)
+Example clone_child_settid_newpid_other_children_einval : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_NEWPID) SIGCHLD) 0))
+    (launch_children_model m) launch_children_ctx launch_children_state 140
+  = CnErr EINVAL launch_children_state.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 (** When [pidns_children = cx_pidns] (the default), [CLONE_CHILD_SETTID]
-    is answered: the core's store value and [task_pid_vnr] agree. *)
-Example clone_child_settid_equal_children_answers : forall m,
-  ret_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD))
-    m shell inside 140) = Some (Some 2).
+    is answered and [child_tid_value] agrees with [clone_ret]. *)
+Example clone_child_settid_equal_children_tid_agrees : forall m,
+  match child_of (clone_ns_exact (cw (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD))
+    m shell inside 140) with
+  | Some child => child_tid_value child = clone_ret shell child
+  | None => False
+  end.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example other_children_is_not_flat :
