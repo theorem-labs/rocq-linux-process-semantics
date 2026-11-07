@@ -45,7 +45,7 @@ Definition sched_setscheduler_witness (pid policy param : word)
   else if (w_is0 param || (sint32 pid <? 0)%Z)%bool
   then ret_outcome (errno_ret EINVAL) m
   else
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
+  match copy_bytes_map (in_mem i) param 4 with
   | None =>
       if negb (access_okb param 4)
       then ret_outcome (errno_ret EFAULT) m
@@ -72,7 +72,7 @@ Proof.
     [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (copy_bytes_map (in_mem i) param 4) as [bs|] eqn:Hread.
   - destruct (negb (sched_targets_self_b pid m)) eqn:Hself;
       [apply record_copyins_unmodeled; apply unmodeled_intro|].
     destruct (sched_setscheduler_answer (bv_unsigned (abi_low32 policy))

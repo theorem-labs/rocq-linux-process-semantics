@@ -191,17 +191,18 @@ Open Scope sys_scope.
     not an optimization.
 
     -EINVAL FOR A PIPE END, and here the missing [.fsync] the channel
-    arm ASSUMES is instead a fact the model owns.  [pipeanon_fops], the
-    table [create_pipe_files] installs on both ends of an anonymous pipe
-    (fs/pipe.c:1257-1266, installed at :946 and :957, v6.18.46), has no
-    [.fsync] line — nor does the FIFO table [pipefifo_fops] (:1246-1255),
+    arm ASSUMES is instead a fact the model owns.  The file-scope
+    initializer [static const struct file_operations pipeanon_fops] in
+    fs/pipe.c -- the table [create_pipe_files] installs on both ends of
+    an anonymous pipe -- has no [.fsync] line, nor does the FIFO table
+    [pipefifo_fops] beside it,
     which a [pipe2] fd never gets.  That is the same table
     [ReadWrite.lseek_spec]'s -ESPIPE arm reads, and for the same reason:
     both errnos come from an absent method rather than from a test on the
-    file.  So [vfs_fsync_range] (fs/sync.c:179-188, v6.18.46) takes its
-    opening [if (!file->f_op->fsync) return -EINVAL] (:183-184) before it
+    file.  So [vfs_fsync_range] (fs/sync.c) takes its
+    opening [if (!file->f_op->fsync) return -EINVAL] before it
     does anything else, on both ends and whatever the pipe holds.  That
-    test also precedes the [datasync] read at :185, so fdatasync agrees —
+    test also precedes the [datasync] read, so fdatasync agrees --
     the sharing argument above needs no pipe-specific clause.
 
     THE DIRECTORY ARM IS WHAT THIS MUST NOT BE CONFUSED WITH.  Three of
@@ -219,6 +220,12 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe, socket or terminal *)
   | Some (FdSocket _)  => err_ret EINVAL          (* nor on a socket: [socket_file_ops] carries no
                                                      [.fsync], so [vfs_fsync_range] is -EINVAL *)
+  | Some (FdStream _ _ _) => err_ret EINVAL       (* a stream-pair end has [socket_file_ops] too *)
+  | Some (FdDgram _)   => err_ret EINVAL          (* and so does a datagram socket *)
+  | Some (FdEventfd _) => err_ret EINVAL          (* nor on an eventfd: [eventfd_fops] (fs/eventfd.c,
+                                                     v6.18.46) lists [.show_fdinfo], [.release],
+                                                     [.poll], [.read_iter], [.write] and [.llseek]
+                                                     and no [.fsync] *)
   | Some (FdPipe _ _)  => err_ret EINVAL          (* no [.fsync] on a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL        (* no [.fsync] on /dev/null either: [null_fops]
                                                      (drivers/char/mem.c, v6.18.46) lists [.llseek],
@@ -243,5 +250,11 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdFileRW _ _) => ret_only (Z_to_bv 64 0) (* and opened O_RDWR: it reads no access mode
                                                       either, which is why the read-only arm
                                                       above is not an error *)
+  | Some (FdAnon _ _) => ret_only (Z_to_bv 64 0)   (* the [FdFile] answer carries over unchanged:
+                                                      [vfs_fsync_range] (fs/sync.c) reads
+                                                      [f_op->fsync], which an unnamed file keeps
+                                                      from its regular-file table, and nothing
+                                                      about a name; on a tmpfs /tmp that is
+                                                      [noop_fsync] (mm/shmem.c, v6.18.46) *)
   | Some FdDir         => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
   end.

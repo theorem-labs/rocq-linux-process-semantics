@@ -355,7 +355,12 @@ Definition rlim64_wf (bs : list byte) : bool :=
 
     - [RLIMIT_STACK] is ALREADY modeled, as [State.stack_max_size] = 8
       MiB.  It is observable — [Run.init_machine_state] zero-maps exactly
-      [[init_sp - stack_max_size, init_sp)] and a store outside that
+      [[Run.stack_window_lo], init_sp)], whose floor is the higher of
+      [stack_max_size] below the stack VMA's end [StackLayout.ed_top]
+      and the guard gap above the mmap base, so under a launch
+      [Run.entry_launch_ok_va] admits it is what is left below
+      [init_sp] of the [stack_max_size] bytes under that end, and a
+      store outside that
       window is a [RiscvSemantics.MachineFault] — and it also fixes
       [State.alloc_top] relative to the run's stack pointer.  It is a
       CONSTANT, so a [setrlimit] that
@@ -536,6 +541,21 @@ Definition rlim64_wf (bs : list byte) : bool :=
     -EFAULT, but which bytes of the mask the kernel read is not something
     the ledger can state, so it declines the same way.
 
+    THE RANGE TEST COMES BEFORE THE WALK in both arms: each reads
+    through [State.copy_bytes_map], whose note says why that order is
+    the guard and not a style choice.  Asked only after a failed walk,
+    the test would let a 16-byte range that wraps past 2^64 and reads
+    back from 0 reach the answering branch.  Both copies are
+    [SYSCALL_DEFINE4(prlimit64)]'s own (kernel/sys.c at v6.18.46): the
+    [copy_from_user] of [new_rlim] before the pid lookup, and the
+    [copy_to_user] of [old_rlim] after [do_prlimit] returns, each of
+    which tests [access_ok] over all 16 bytes before it moves one.  So a
+    wrapping [old_rlim] is -EFAULT with nothing stored and no limit
+    pinned, and a wrapping [new_rlim] is -EFAULT with an empty copy-in
+    ledger and the record unchanged.  [Checks.Cases.Kernel.Sys]'s
+    [prlimit64_wrap_] groups pin both, each beside a neighbour at the
+    top of what [access_ok] accepts.
+
     WHAT THE DECLINES COST THE EQUIVALENCE THEOREM.  Not an escape — a
     REFUSAL TO CERTIFY.  [Equivalence.strong_equiv] is [modeled] of the
     SOURCE conjoined with [equiv], and [modeled] is an obligation to
@@ -565,7 +585,7 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
   m <- get_model ;;
   if w_is0 new_rlim then
     (* (5) the READ *)
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16) then err_ret EFAULT
         else unmodeled
@@ -583,7 +603,7 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => unmodeled          (* no recorded hard limit to compare against *)
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16) then err_ret EFAULT
             else unmodeled
@@ -973,6 +993,34 @@ Definition utsname_wf (bs : list byte) : bool :=
    && bv_eqb (nth 64 (uts_field 3 bs) uts_nul) uts_nul
    && bv_eqb (nth 64 (uts_field 5 bs) uts_nul) uts_nul)%bool.
 
+(** WHAT A LATER [uname] MUST REPEAT, given the name [b0] the first one
+    pinned: [release] (member 2) and [version] (member 3), byte for
+    byte.  [sysname] and [machine] need no comparison, since
+    [utsname_wf] already fixes both to their literals.  [nodename]
+    (member 1) and [domainname] (member 5) are NOT repeated: another
+    process that shares this process's UTS namespace (the host's, or a
+    sandbox's) may change them at any time during the run, by
+    [sethostname] (161) or [setdomainname] (162) when it holds
+    CAP_SYS_ADMIN over the user namespace that owns that UTS namespace
+    ([ns_capable(current->nsproxy->uts_ns->user_ns, CAP_SYS_ADMIN)],
+    kernel/sys.c:1419-1443, 1424, 1473-1497, 1478, Linux v6.18.46), or by
+    a write to /proc/sys/kernel/hostname or /proc/sys/kernel/domainname
+    (mode 0644, kernel/utsname_sysctl.c:107-122).  The next [uname] of
+    this process copies the new member out.  That is an event of the
+    environment, which the model may not assume away. *)
+Definition uts_kernel_agree (b0 bs : list byte) : bool :=
+  (uts_eqb (uts_field 2 bs) (uts_field 2 b0)
+   && uts_eqb (uts_field 3 bs) (uts_field 3 b0))%bool.
+
+(** The names a [uname] may deliver once [b0] is pinned: a name inside
+    [utsname_wf] whose kernel members agree with [b0]'s.  A pin outside
+    [utsname_wf] is never written by [uname_spec] (it pins only a name
+    [utsname_wf] admits); a model built with one by hand keeps the old
+    exact repeat, so that this predicate is never empty. *)
+Definition uts_repeat_ok (b0 bs : list byte) : Prop :=
+  if utsname_wf b0 then utsname_wf bs = true /\ uts_kernel_agree b0 bs = true
+  else bs = b0.
+
 (** [uname name] — syscall 160, which riscv64 routes to [sys_newuname]
     (include/uapi/asm-generic/unistd.h, [__NR_uname 160],
     [__SYSCALL(__NR_uname, sys_newuname)], Linux v6.18.46, commit
@@ -1013,9 +1061,9 @@ Definition utsname_wf (bs : list byte) : bool :=
       word arithmetic while [State.access_okb] subtracts in [Z], so a
       [name] near 2^64 whose 390 bytes wrap round onto mapped low
       addresses reads as "wholly writable" to the walk and is refused by
-      Linux.  Asking the walk first is a known defect, and both
-      [prlimit64_spec] arms have it; this arm is written the way
-      [Net.Socket.socketpair_spec] and [Fs.Pipe.pipe2_spec] are,
+      Linux.  Asking the walk first is a defect; this arm is written the
+      way [Net.Socket.socketpair_spec], [Fs.Pipe.pipe2_spec] and
+      [prlimit64_spec] are,
       and [Checks.Cases.Kernel.Sys]'s [uname_wrap_] group pins both
       directions.
     - [access_ok] admits the range and it is WHOLLY WRITABLE: the modeled
@@ -1027,14 +1075,18 @@ Definition utsname_wf (bs : list byte) : bool :=
       for the same reason, and this one is worse, because the prefix may
       end anywhere in 390 bytes rather than at one of two fields.
 
-    WHICH UTSNAME: the environment's, recorded once.  On the first
-    [uname] of a run the model CHOOSES any buffer [utsname_wf] admits and
-    pins it in [State.procst_utsname]; every later [uname] must deliver
-    exactly those bytes.  That pin is the whole reason this spec is not a
-    per-call [choose]: two calls that disagreed about the running kernel
-    would be a trace no Linux machine produces.  [State.procst_utsname]
-    argues the mechanism and the note above [State.Model] compares it
-    against the two alternatives.
+    WHICH UTSNAME: the environment's.  On the first [uname] of a run the
+    model CHOOSES any buffer [utsname_wf] admits and pins it in
+    [State.procst_utsname].  Every later [uname] delivers a name inside
+    [utsname_wf] whose [release] and [version] are the pin's
+    ([uts_repeat_ok]): those two, with [sysname] and [machine], are the
+    running kernel's and no call changes them, so two calls that
+    disagreed about them would be a trace no Linux machine produces.
+    [nodename] and [domainname] are CHOSEN AGAIN at each call: another
+    process that shares this process's UTS namespace may change them
+    between two calls of this one ([uts_kernel_agree]'s note).  [State.procst_utsname] argues the
+    mechanism and the note above [State.Model] compares it against the
+    two alternatives.
 
     WHAT IS NOT MODELED, and it is one thing rather than a list: a
     program that DEPENDS ON THE CONTENT of [nodename], [release],
@@ -1054,7 +1106,9 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     | None => unmodeled       (* a partial [copy_to_user] then -EFAULT *)
     | Some _ =>
         match m_utsname m with
-        | Some bs => pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
+        | Some b0 =>
+            bs <- choose (uts_repeat_ok b0) ;;
+            pure (mkEffect (Z_to_bv 64 0) [(name, bs)] [])
         | None =>
             bs <- choose (fun bs : list byte => utsname_wf bs = true) ;;
             set_utsname bs ;;

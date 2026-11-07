@@ -123,20 +123,33 @@ Definition mem_clear (m : word -> option byte) (lo hi : Z) : Prop :=
   forall a : word, (lo <= bv_unsigned a < hi)%Z -> m a = None.
 
 (** Established at [init_machine_state]: the initial overlay is the
-    stack image plus its zero window, both inside the [valid_sp] ASLR
-    window far above every loaded segment. *)
-Lemma mem_clear_wrap : forall ph (sp : word) argv envp lo hi uid hw rnd,
+    stack image plus the zero window below it, both inside the launch's
+    stack VMA, far above every loaded segment.
+
+    The window's floor [Run.stack_window_lo] counts RLIMIT_STACK from
+    the stack VMA's end [ed_top] rather than from [sp]
+    ([expand_downwards], mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f),
+    so the launch conjunct is what puts [sp] at or below [ed_top] and
+    the floor therefore at or above [sp - 8 MiB]. *)
+Lemma mem_clear_wrap :
+  forall v inp mbase ph entry (sp brk : word) draw lo hi,
+  entry_launch_ok_va v (mkEntry sp brk mbase draw) inp ->
   (hi <= bv_unsigned sp - stack_max_size)%Z ->
-  mem_clear (wrap_mem ph sp argv envp uid hw rnd) lo hi.
+  mem_clear (wrap_mem inp mbase ph entry sp draw) lo hi.
 Proof.
-  intros ph sp argv envp lo hi uid hw rnd Hhi a Ha.
+  intros v inp mbase ph entry sp brk draw lo hi Hlaunch Hhi a Ha.
+  pose proof (launch_sp_le_ed_top v inp mbase sp brk draw Hlaunch) as Htop.
   unfold wrap_mem, stack_to_mem.
   unfold stack_max_size in Hhi.
   assert (Hblo : Z.leb (bv_unsigned sp) (bv_unsigned a) = false)
     by (apply Z.leb_gt; lia).
   rewrite Hblo.
-  assert (Hwlo : Z.leb (bv_unsigned sp - stack_max_size) (bv_unsigned a) = false)
-    by (apply Z.leb_gt; unfold stack_max_size; lia).
+  assert (Hwlo : Z.leb (stack_window_lo (in_kernel inp) mbase draw)
+                       (bv_unsigned a) = false).
+  { apply Z.leb_gt. unfold stack_window_lo.
+    pose proof (Z.le_max_l (bv_unsigned (ed_top draw) - stack_max_size)
+                  (bv_unsigned mbase + stack_guard_gap_bytes (in_kernel inp))).
+    unfold stack_max_size in *. lia. }
   rewrite Hwlo. reflexivity.
 Qed.
 

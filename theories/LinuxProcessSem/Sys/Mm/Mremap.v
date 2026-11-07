@@ -23,104 +23,150 @@ Open Scope sys_scope.
     failure condition beyond address-space exhaustion.  Bad arguments and
     unsupported VMA shapes are handled deterministically/fail-closed below.
 
-    Traced through [SYSCALL_DEFINE5(mremap, ...)] (mm/mremap.c:1961-1994,
-    Linux v6.18.46; the walk is its body [do_mremap], :1911-1952, and the
-    helpers it calls, in mm/mremap.c unless another file is named) for
+    Traced through [SYSCALL_DEFINE5(mremap, ...)] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f; the walk is its body [do_mremap] and
+    the helpers that function calls, in mm/mremap.c unless another file
+    is named) for
     exactly that shape — flags exactly MREMAP_MAYMOVE, [old] page
     aligned, both sizes nonzero, the source one tracked private anonymous
     rw mapping.  Every errno the call can still reach at RUN time is
     ENOMEM, and only on a RESIZING call:
 
-    - equal size: NONE.  [check_prep_vma] returns at :1676-1677 before
-      any allocation, split or accounting, and [mremap_at] answers [addr]
-      at :1559, so nothing on that branch can fail — see [mremap_spec],
-      which is why the equal-size arm sits outside the [alt] that offers
-      this list;
-    - shrink: a failed [do_vmi_munmap] ([shrink_vma], :1337-1338), which
+    - equal size: NONE.  [check_prep_vma] returns 0 at its
+      [vrm_will_map_new] test, before any allocation, split or
+      accounting, and [mremap_at] answers [addr] from its
+      MREMAP_NO_RESIZE arm, so nothing on that branch can fail — see
+      [mremap_spec], which is why the equal-size arm sits outside the
+      [alt] that offers this list;
+    - shrink: a failed [do_vmi_munmap] ([shrink_vma]), which
       has to split the vma, so it can fail to allocate ([__split_vma],
-      mm/vma.c:510-512, 523-524, 530-532) and, when the kernel's vma
+      mm/vma.c) and, when the kernel's vma
       extends past the modeled entry, exceed [sysctl_max_map_count]
-      ([vms_gather_munmap_vmas], mm/vma.c:1389-1393);
+      ([vms_gather_munmap_vmas], mm/vma.c);
     - grow in place: [security_vm_enough_memory_mm] ([vrm_calc_charge],
-      :990, overcommit) and a failed [vma_merge_extend]
-      ([expand_vma_in_place], :1470, answered at :1471-1473);
-    - grow by moving: [may_expand_vm] (mm/mmap.c:1326-1330 —
-      RLIMIT_AS / RLIMIT_DATA) reached through [check_prep_vma] at
-      :1742-1743, a failed [get_unmapped_area] ([vrm_set_new_addr],
-      :957-960), and [move_vma]'s map-count check ([prep_move_vma],
-      :1043-1044), its overcommit check (:1281-1282), a failed [copy_vma]
-      ([copy_vma_and_data], :1193-1198), and a short [move_page_tables]
-      (:1208-1209).
+      overcommit) and a failed [vma_merge_extend]
+      ([expand_vma_in_place], which uncharges and answers -ENOMEM);
+    - grow by moving: [may_expand_vm] (mm/mmap.c —
+      RLIMIT_AS / RLIMIT_DATA) reached through [check_prep_vma]'s
+      last test, a failed [get_unmapped_area] ([vrm_set_new_addr]),
+      and [move_vma]'s map-count check ([prep_move_vma]), its
+      overcommit check ([vrm_calc_charge] again), a failed [copy_vma]
+      ([copy_vma_and_data]) and a short [move_page_tables] (the same
+      function).
 
     Every other errno the function can return is a GATE this shape has
     already passed, or one the spec answers itself — not a runtime
     failure, so none of them is injectable:
 
-    - EINVAL: unknown flag bits ([check_mremap_params], :1759-1760),
-      FIXED without MAYMOVE (:1791-1792) and DONTUNMAP resizing
-      (:1795-1796) are all excluded by the exact-flags test;
-      [offset_in_page(addr)] (:1763-1764) and a zero [new_len]
-      (:1771-1772) are the deterministic -EINVAL the spec returns itself;
-      a rounded [new_len] above TASK_SIZE (:1775-1776) is deterministic
+    - EINVAL: unknown flag bits ([check_mremap_params]),
+      FIXED without MAYMOVE and DONTUNMAP resizing (the same function,
+      both behind its [vrm_implies_new_addr] test) are all excluded by
+      the exact-flags test;
+      [offset_in_page(addr)] and a zero [new_len] (both
+      [check_mremap_params]) are the deterministic -EINVAL the spec
+      returns itself;
+      a rounded [new_len] above TASK_SIZE ([check_mremap_params]'s test
+      of [vrm->new_len] against TASK_SIZE) is deterministic
       -EINVAL too, which the spec returns itself; that gate is younger
       than the MAYMOVE-only path (a v2.5 kernel tested it only when the
       caller gave [new_addr], and the request went on to -ENOMEM from
       [get_unmapped_area]), and v6.18.46 tests it before any VMA is
       looked up;
-      a zero [old_len] on a private vma ([check_prep_vma], :1690-1693) is
+      a zero [old_len] on a private vma ([check_prep_vma]) is
       excluded by the clone gate; DONTUNMAP over a VM_DONTEXPAND /
-      VM_PFNMAP vma (:1696-1698) is excluded for the same reason as :1795,
+      VM_PFNMAP vma ([check_prep_vma]) is excluded for the same reason
+      as the DONTUNMAP-resizing gate above,
       the exact-flags test never lets DONTUNMAP through;
-      the pgoff-overflow check (:1733-1734) needs [pgoff + (new_len >> 12)]
+      the pgoff-overflow check ([check_prep_vma]) needs
+      [pgoff + (new_len >> 12)]
       to wrap 64 bits, and for an anonymous vma [do_mmap] sets
       [pgoff = addr >> PAGE_SHIFT] (mm/mmap.c [do_mmap]), so [alloc_top]
       ([State.alloc_top_lt]) caps it under 2^52 against a
       [new_len >> 12] below 2^52.
-    - EFAULT: no vma at [addr] ([check_prep_vma], :1658-1659, after
-      [vma_lookup] at :1931) and [old_len] running past the vma end
-      (:1720-1721) are both excluded by [mremap_source_b], which demands
-      the source be exactly one tracked mapping; VM_DONTEXPAND /
-      VM_PFNMAP (:1736-1737) is never set on an anonymous mmap grant —
+    - EFAULT: no vma at [addr] ([check_prep_vma], after [do_mremap]'s
+      [vma_lookup]) and [old_len] running past the vma end
+      ([check_prep_vma] again) are both excluded by [mremap_source_b],
+      which demands the source be exactly one tracked mapping;
+      VM_DONTEXPAND / VM_PFNMAP ([check_prep_vma]) is never set on an
+      anonymous mmap grant —
       their only setters are [remap_pfn_range_internal]
-      (mm/memory.c:2953), [remap_vmalloc_range_partial]
-      (mm/vmalloc.c:4615) and [__install_special_mapping]
-      (mm/mmap.c:1440, flags at :1454-1455), and the anonymous leg of
+      (mm/memory.c), [remap_vmalloc_range_partial]
+      (mm/vmalloc.c) and [__install_special_mapping]
+      (mm/mmap.c), and the anonymous leg of
       [do_mmap] reaches none of them: the driver hook sits behind
-      [if (map->file)] at mm/vma.c:2520 ([__mmap_new_vma]), and the
-      anonymous path is [vma_set_anonymous] at :2525.
-    - EAGAIN: [mlock_future_ok] (:1739-1740) returns true immediately
-      unless VM_LOCKED (mm/mmap.c:233-234), which can only arrive via
-      MAP_LOCKED or [mlockall] (mm/mlock.c:747) — both outside the modeled
+      [if (map->file)] in [__mmap_new_vma] (mm/vma.c), and the
+      anonymous path is that function's [vma_set_anonymous].
+    - EAGAIN: [mlock_future_ok] ([check_prep_vma]) returns true
+      immediately
+      unless VM_LOCKED (mm/mmap.c [mlock_future_ok]), which can only
+      arrive via MAP_LOCKED or [mlockall] (mm/mlock.c
+      [SYSCALL_DEFINE1(mlockall)]) — both outside the modeled
       surface, so no vma here is ever locked.
 
     Two errnos a real kernel CAN still return are deliberately outside the
     modeled surface, rather than silently absorbed:
 
     - EINTR from [mmap_write_lock_killable] ([do_mremap],
-      mm/mremap.c:1924-1925) cannot be observed by any program.  That
-      helper (include/linux/mmap_lock.h:325-332) is a thin wrapper around
-      [down_write_killable] (kernel/locking/rwsem.c:1598-1610), whose wait
-      state is TASK_KILLABLE (:1331, :1496), and
+      mm/mremap.c) cannot be observed by any program.  That
+      helper (include/linux/mmap_lock.h [mmap_write_lock_killable]) is a
+      thin wrapper around
+      [down_write_killable] (kernel/locking/rwsem.c), whose wait
+      state is TASK_KILLABLE ([__down_write_killable], in both the
+      spinlock and the PREEMPT_RT definition), and
       [signal_pending_state] aborts a TASK_KILLABLE wait only on a FATAL
-      signal (include/linux/sched/signal.h:408-416: TASK_KILLABLE lacks
+      signal (include/linux/sched/signal.h [signal_pending_state]:
+      TASK_KILLABLE lacks
       TASK_INTERRUPTIBLE, so the result is [__fatal_signal_pending]).  A
       fatal signal kills the task before it returns to userspace, so the
       -EINTR never reaches a register the program can read.  This is the
       same argument [Mprotect.mprotect_errnos] makes for its own killable lock.
 
     - EPERM for an mseal'd VMA ([vma_is_sealed] in [check_prep_vma],
-      mm/mremap.c:1662-1663, testing VM_SEALED, include/linux/mm.h:447-448;
-      v6.12's [can_modify_vma]) is unreachable because
-      [mseal] (__NR_mseal, 462) is not in [syscall_spec]'s modeled surface
-      (mm/mseal.c:71-78 is its only setter), so VM_SEALED is never set
+      testing VM_SEALED, include/linux/mm.h) is unreachable because
+      [mseal] (__NR_mseal, 462) is not in [syscall_spec]'s modeled
+      surface, and [mseal_apply] (mm/mseal.c) is the only thing that
+      seals a mapping the process asked for.  The kernel's other setter
+      is VM_SEALED_SYSMAP (include/linux/mm.h, VM_SEALED under
+      CONFIG_MSEAL_SYSTEM_MAPPINGS and VM_NONE without it), and it seals
+      only mappings the kernel installs itself — the vdso
+      (arch/riscv/kernel/vdso.c), the vdso data store
+      (lib/vdso/datastore.c) and the uprobe XOL area
+      (kernel/events/uprobes.c) — none of which is a modeled anonymous
+      grant.  So VM_SEALED is never set
       on a modeled run. *)
 Definition mremap_errnos : list Z := [ENOMEM].
 
-(** Replace the one mapping based at [old] with [(dst,new_n)].  The source
-    is required below to have no [vm_noaccess] overlap, while a moved
-    destination is fresh, so the no-access ledger is preserved verbatim. *)
-Definition mremap_maps_next (h : VmMaps) (old dst new_n : word) : VmMaps :=
-  mkVmMapsFull (vm_reserved h) ((dst, new_n) :: map_remove (vm_maps h) old)
+(** Cut the source range [[old, old+old_n)] out of the ledger and record
+    [(dst,new_n)].  The cut is [maps_subtract] over the whole source range
+    rather than the removal of the one entry based at [old].  The entry
+    [mremap_source_b] matched is the only one owning a page-aligned byte
+    there ([Checks/VmMapsDisjoint]).  Another entry can still meet the
+    range if it starts inside it at an address that is not page aligned.
+    Only a move of the break makes such a start: a brk grant starts at the
+    old break ([Mmap.brk_grow_ok] tests nothing below the first new page,
+    so the old break can lie inside this mapping), and a brk shrink's
+    logical cut leaves a remnant that starts at the old break
+    ([Checks/VmMapsDisjoint]'s [wit_step6]).  In the kernel such an entry
+    is no VMA of its own, only bytes of the VMAs it lies in.  An entry that
+    runs past the range's end keeps the part outside.  So:
+    - a shrink in place unmaps [[addr+new_len, addr+old_len)] with
+      [do_vmi_munmap] ([shrink_vma], mm/mremap.c, Linux
+      v6.18.46, commit 1f99e9ab748f), and a move unmaps the whole
+      source [[addr, addr+old_len)]
+      ([unmap_source_vma]): the entry's bytes there are gone,
+      and a ledger that kept them would charge them once the source's lazy
+      provenance stops covering them ([Checks/Cases/Mm/Mremap.v]'s
+      [mremap_shrink_takes_the_grant_inside_the_tail]);
+    - a grow in place extends the source VMA, which already holds the
+      entry's bytes inside the source, so the re-recorded entry covers them
+      and keeping them would count them twice.
+    The source is required below to have no [vm_noaccess] overlap, while a
+    moved destination is fresh, so the no-access ledger is preserved
+    verbatim. *)
+Definition mremap_maps_next (h : VmMaps) (old old_n dst new_n : word) : VmMaps :=
+  mkVmMapsFull (vm_reserved h)
+    ((dst, new_n) :: maps_subtract (vm_maps h) (bv_unsigned old)
+                       (bv_unsigned old + bv_unsigned old_n))
     (vm_noaccess h) (vm_start_brk h) (vm_brk h) (vm_limit h)
     (vm_mmap_base h) (vm_init_sp h).
 
@@ -141,16 +187,18 @@ Definition mremap_source_lazy_b (m : Model) (old old_n : word) : bool :=
     without eagerly charging its tail. *)
 Definition mremap_model_next (m : Model) (old old_n dst new_n : word) : Model :=
   vm_resize_backing (mremap_source_lazy_b m old old_n) old old_n dst new_n
-    (with_vmmaps (mremap_maps_next (m_vmmaps m) old dst new_n) m).
+    (with_vmmaps (mremap_maps_next (m_vmmaps m) old old_n dst new_n) m).
 
 (** The grown delta reads as fresh zeroes.  Neither [vma_merge_extend]
-    ([expand_vma_in_place], mm/mremap.c:1470, Linux v6.18.46) on the
-    in-place path nor [copy_vma] ([copy_vma_and_data], mm/mremap.c:1193)
+    ([expand_vma_in_place], mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f) on the
+    in-place path nor [copy_vma] ([copy_vma_and_data], mm/mremap.c)
     on the move path installs page tables for it, and a [pte_none] fault
     on a PRIVATE|ANONYMOUS VMA is served by [do_anonymous_page]
-    (mm/memory.c:5149-5262) — a read from the shared zero page
-    (mm/memory.c:5170-5172), a write from a zeroed folio
-    ([alloc_anon_folio], mm/memory.c:5059, called at :5198).
+    (mm/memory.c) — a read from the shared zero page (that function's
+    [my_zero_pfn] arm, taken when FAULT_FLAG_WRITE is clear), a write
+    from a zeroed folio ([alloc_anon_folio], mm/memory.c, called from
+    [do_anonymous_page]).
 
     The [old_nZ < new_nZ] guard never fires false where this is used:
     [mremap_spec] answers the equal case before [mremap_inplace_effect] is
@@ -164,22 +212,25 @@ Definition mremap_tail (base old_n : word) (old_nZ new_nZ : Z)
   then [(base + old_n, Z_to_bv 64 (new_nZ - old_nZ))]
   else [].
 
-(** Linux's [PAGE_ALIGN(len)] ([do_mremap], mm/mremap.c:1917-1918, Linux
-    v6.18.46) expands to [(len + 4095) & ~4095] on an [unsigned long]
-    (include/linux/mm.h:222 -> include/vdso/align.h:8 ->
-    include/uapi/linux/const.h:48-49), which
+(** Linux's [PAGE_ALIGN(len)] ([do_mremap], mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) expands to [(len + 4095) & ~4095] on
+    an [unsigned long]
+    (include/linux/mm.h [PAGE_ALIGN] -> include/vdso/align.h [ALIGN] ->
+    include/uapi/linux/const.h [__ALIGN_KERNEL]), which
     WRAPS.  It yields zero on exactly two kinds of input: [len = 0], and
     [len] in the top partial page [[2^64-4095, 2^64-1]].  (Not the whole
     top page: [2^64-4096] is already aligned and survives.)  Computing the
     round in [Z], that is [page_round_up_Z len = 0 \/ = 2^64], which is
-    what this decides — so the two arms of Linux's [!new_len] test at
-    mm/mremap.c:1771-1772 ([check_mremap_params]) need no separate
+    what this decides — so the two arms of Linux's [!new_len] test in
+    [check_mremap_params] (mm/mremap.c) need no separate
     treatment. *)
 Definition page_align_is0_b (len : word) : bool :=
   w_is0 len || (two_pow_64 <=? page_round_up_Z (bv_unsigned len))%Z.
 
-(** The modeled source.  Linux needs only [vma_lookup(mm, addr)] to
-    succeed (mm/mremap.c:1043, v6.12); requiring an EXACT tracked entry is
+(** The modeled source.  Linux needs only [vma_lookup(mm, addr)] in
+    [do_mremap] to succeed, with [check_prep_vma] answering -EFAULT when
+    it does not (mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f);
+    requiring an EXACT tracked entry is
     stricter, hence fail closed, and it is what lets [mremap_model_next]
     carry [vm_noaccess] over untouched.  The [vm_reserved] and
     [vm_noaccess] conjuncts keep the image and PROT_NONE guards out: the
@@ -208,34 +259,43 @@ Definition mremap_source_b (h : VmMaps) (old old_n : word)
   && map_has (vm_maps h) old old_n
   && region_free (vm_noaccess h) old old_n.
 
-(** The budget analogue of [may_expand_vm] (mm/mmap.c:1324-1346, Linux
-    v6.18.46), which mremap reaches from [check_prep_vma] at
-    mm/mremap.c:1742-1743 (v6.12's [vma_to_resize]) with
+(** The budget analogue of [may_expand_vm] (mm/mmap.c, Linux
+    v6.18.46, commit 1f99e9ab748f), which mremap reaches from
+    [check_prep_vma]'s last test (mm/mremap.c) with
     [npages = delta >> PAGE_SHIFT] — i.e. Linux charges the
     NET DELTA, never a transient peak of both mappings.  The model checks the
     complete post-state instead: that is the same delta for eager mappings,
     while a MAP_NORESERVE tail remains lazy and costs nothing until touched.
-    Since [check_prep_vma] runs from [do_mremap] at mm/mremap.c:1932, before
-    [mremap_at] (:1937) picks the in-place or the move branch
-    ([expand_vma], :1512), the same gate applies to both
+    Since [check_prep_vma] runs from [do_mremap], before
+    [mremap_at] picks the in-place or the move branch
+    ([expand_vma]), the same gate applies to both
     paths; the model does the same. *)
 Definition mremap_final_budget_b (m : Model)
     (old old_n dst new_n : word) : bool :=
   vm_backing_within_limit (mremap_model_next m old old_n dst new_n).
 
-(** Linux grows in place when [old_len == vma->vm_end - addr]
-    (mm/mremap.c:1116, v6.12) and [vma_expandable] holds (:1120, defined at
-    :966-978).  This is a coarser predicate in both directions — see
+(** Linux grows in place when [old_len] reaches the end of the source
+    VMA and [vma_expandable] holds — the two tests of
+    [vrm_can_expand_in_place] (mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f), the second defined just above it in the same file.
+    This is a coarser predicate in both directions — see
     [mremap_spec] for why the resulting over-admission is presented as an
     [alt] rather than a claim.
 
+    The [vm_maps] half reads the ledger the in-place post-state is built
+    on ([mremap_maps_next]): the live mappings with the source range cut
+    out, so what it tests is the grown tail.  Testing the ledger with
+    only the source ENTRY removed would also refuse a grow for a
+    byte-granular brk grant inside the source's own pages — a same-page
+    move of [mm->brk] over the source VMA, which is no VMA of its own in
+    the kernel and so no neighbour [vma_expandable] could meet.
+
     Both halves of the [region_free] conjunct are LIVE.  The [vm_maps] half
     is the ordinary case; the [vm_reserved]
-    half — an in-place grow running into the binary image — no trace reaches,
-    because the only modeled way to choose an anonymous mapping's address is
-    the PROT_NONE MAP_FIXED guard ([Mmap.mmap_fixed_noaccess_b]), which must land
-    inside a mapping the process already owns, so no trace can put a tracked
-    mapping below a LOAD segment.  It is not dead either:
+    half — an in-place grow running into the binary image — a trace can
+    reach: a hinted [mmap] whose range ends just below a LOAD segment
+    lands at the hint ([Mmap.linux_place] honours a free hint), and a
+    grow of that mapping then meets the segment.  The check also pins it:
     [Checks/Examples.v]'s [mremap_inplace_grow_into_image_rejected] flips
     [mremap_inplace_grow_accepts] to [CheckReject] by adding one reserved
     entry and changing nothing else.
@@ -250,11 +310,27 @@ Definition mremap_final_budget_b (m : Model)
     [mremap_inplace_grow_to_ceiling_accepts] one page below: the pair
     differs only in the source's base address, so the flipped verdict is
     attributable to this conjunct alone. *)
-Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
+(** THE ROOM TEST ALONE, with no budget in it.  Linux asks the two
+    questions in this order and answers them differently: no room means
+    MOVE, a failing charge means REFUSE and do not move
+    (mm/mremap.c, [vrm_can_expand_in_place] and the accounting failure
+    beside it, Linux v6.18.46, commit 1f99e9ab748f).  Keeping them in
+    one predicate made a failing budget look like missing room, and the
+    model then offered a move Linux does not make. *)
+Definition mremap_inplace_room_b (m : Model) (old old_n new_n : word)
     (old_nZ new_nZ : Z) : bool :=
   let h := m_vmmaps m in
   (bv_unsigned old + new_nZ <=? alloc_top h)%Z
-  && region_free (vm_reserved h ++ map_remove (vm_maps h) old) old new_n
+  && region_free (vm_reserved h
+                  ++ maps_subtract (vm_maps h) (bv_unsigned old)
+                       (bv_unsigned old + bv_unsigned old_n)) old new_n.
+
+(** Room AND the budget: what the in-place resolution needs.  Its
+    meaning is unchanged, so every consumer of this name still reads
+    the same predicate. *)
+Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
+    (old_nZ new_nZ : Z) : bool :=
+  mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
   && mremap_final_budget_b m old old_n old new_n.
 
 (** A moved destination, and the argument for what this guard says is
@@ -262,8 +338,8 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
 
     A MAYMOVE destination IS a preference-free placement: Linux picks it
     with [get_unmapped_area] at [addr = 0] and no MAP_FIXED
-    ([vrm_set_new_addr], mm/mremap.c:957-960, Linux v6.18.46; some line
-    citations in this file are against v6.12 instead).
+    ([vrm_set_new_addr], mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f).
     So the conditions that hold of one
     hold of the other — page-aligned, nonzero, below
     [State.alloc_top], disjoint from every recorded mapping — and
@@ -279,11 +355,11 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     DISJOINTNESS DOES MORE WORK HERE than in an ordinary grant, and that
     is the mremap-specific half.  [dst] can never overlap the source:
     Linux picks it
-    with [get_unmapped_area] in [vrm_set_new_addr] (mm/mremap.c:957-960,
+    with [get_unmapped_area] in [vrm_set_new_addr] (mm/mremap.c,
     Linux v6.18.46), passing [addr = 0] and no
     MAP_FIXED, so the search runs over the maple tree while the source VMA
     is still live (it is not unmapped until [move_vma] reaches
-    [unmap_source_vma], mm/mremap.c:1122).  The model gets the same
+    [unmap_source_vma], mm/mremap.c).  The model gets the same
     exclusion for free, because
     [old] is still in [vm_maps h] when [region_free] is evaluated.
 
@@ -296,38 +372,57 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
 
     [vm_noaccess] is deliberately ABSENT from the [region_free] list, and
     that is not an oversight this predicate gets away with.  [State.v]'s
-    purpose (c) says protected ranges are ORDINARILY subranges of
-    [vm_maps], which the [vm_maps] half already excludes.  It names ONE
-    exception, and it is a real one: a brk shrink inside its final page
-    drops the byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
-    (page-rounded) removes nothing from [vm_noaccess], so a strict
-    sub-page slice [[r, PAGE_ALIGN r)] is left protected and owned by no
-    [vm_maps] entry.  [Checks/Examples.v]'s [m_brk_same_page_shrunk] is a
-    checked-in state in exactly that shape.
+    purpose (c) says protected ranges are subranges of [vm_maps], which
+    the [vm_maps] half already excludes.  That held with ONE exception
+    until this revision: a brk shrink inside its final page dropped the
+    byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
+    (page-rounded) removed nothing from [vm_noaccess], leaving a strict
+    sub-page slice [[r, PAGE_ALIGN r)] protected and owned by no
+    [vm_maps] entry.  [Mmap.brk_maps_next] no longer makes that cut — it
+    takes out exactly the pages [Mmap.brk_unmaps] names — so the two
+    lists now lose the same interval and no brk shrink produces such a
+    slice.
 
-    No destination can reach such a slice, for a reason this predicate
-    does check.  [dst] is page aligned, and the entry that owned the
-    protected range is TRUNCATED to [[e0, r)], never removed — a nonempty
-    orphan forces the protected base [a] to satisfy
-    [a <= page_floor r < r], so [[page_floor r, r)] is still in
-    [vm_maps].  A page-aligned [dst] overlapping the orphan needs
+    THE GUARD IS STILL WHAT IT WAS, and what it leans on is still worth
+    stating, because the states are hand-buildable even if no step
+    reaches them.  THEY ARE UNREACHABLE BY TWO SEPARATE ROUTES, and a
+    reader who sees one will think the other state is reachable:
+    [Checks/Cases/Mm/Mmap.m_brk_orphan_without_residual] was already
+    unreachable before this revision, by the [a <= page_floor r < r]
+    argument below — a nonempty orphan forces the truncated entry to
+    survive — and [m_brk_orphan_with_source] joined it when
+    [Mmap.brk_maps_next] became page-granular.
+    [dst] is page aligned, and an entry that owns a
+    protected range and is TRUNCATED rather than removed forces the
+    protected base [a] to satisfy [a <= page_floor r < r], so
+    [[page_floor r, r)] is still in
+    [vm_maps].  A page-aligned [dst] overlapping such an orphan needs
     [dst <= page_floor r] and [dst + new_n > r], which puts it across
-    [[e0, r)], and [region_free] refuses it.  The pair
-    [mremap_move_onto_brk_orphan_page_rejected] /
-    [mremap_move_above_brk_orphan_accepts] in [Checks/Examples.v] pins
-    that boundary: the two differ only in the destination, one page apart
-    across the orphan's end.
+    [[e0, r)], and [region_free] refuses it.
+    [mremap_fresh_above_brk_orphan_accepts] in [Checks/Examples.v] pins
+    that boundary ON THIS GUARD: its two destinations differ only in
+    the page, one apart across the orphan's end, and the guard answers
+    true above the end and false onto it.
 
-    Note WHICH half of that does the work.
-    [mremap_move_onto_orphan_without_residual_accepts] takes the residual
-    entry out of the same state, and the move onto the orphan page is
-    then ACCEPTED — so the property this predicate leans on is "the
-    shrink TRUNCATES the owning entry rather than removing it", not the
-    containment prose itself.  The orphan's presence in [vm_noaccess]
-    contributes nothing here, because the predicate never reads it.  That
-    state is unreachable, for the [a <= page_floor r < r] reason above;
-    the example is checked in so the load-bearing property is visible
-    rather than inferred.
+    IT IS STATED ON THE GUARD AND NOT ON A SYSCALL because no syscall
+    reaches the guard on that state.  [mremap_inplace_room_b] is true
+    there, so [check_mremap] expands in place and refuses every moved
+    destination before this predicate is consulted:
+    [mremap_move_onto_brk_orphan_page_rejected] and
+    [mremap_move_above_brk_orphan_rejected] are BOTH [CheckReject], and
+    for the room above the source, not for the orphan
+    ([mremap_orphan_input_has_room_above_the_source]).
+
+    Note WHICH half of the guard's pair does the work.
+    [mremap_fresh_onto_orphan_without_residual_accepts] takes the
+    residual entry out of the same state, and the guard then ADMITS the
+    destination onto the orphan page — so the property this predicate
+    leans on is "the shrink TRUNCATES the owning entry rather than
+    removing it", not the containment prose itself.  The orphan's
+    presence in [vm_noaccess] contributes nothing here, because the
+    predicate never reads it.  That state is unreachable, for the
+    [a <= page_floor r < r] reason above; the example is checked in so
+    the load-bearing property is visible rather than inferred.
 
     Adding [region_free (vm_noaccess h) dst new_n] here would be
     redundant on every reachable state by the argument above, and it
@@ -350,6 +445,26 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
   && (bv_unsigned dst + new_nZ <=? alloc_top h)%Z
   && region_free (vm_reserved h ++ vm_maps h) dst new_n
   && mremap_final_budget_b m old old_n dst new_n.
+
+(** WHERE A MOVE GOES.  [vrm_set_new_addr] asks
+    [get_unmapped_area(vma->vm_file, 0, new_len, pgoff, 0)] WHILE THE
+    OLD MAPPING IS STILL MAPPED (mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f), and [get_unmapped_area] is [__get_unmapped_area]
+    with no flags, so the transparent huge-page rule applies to a move
+    exactly as it does to a fresh [mmap].  The hint is 0, and
+    [__get_unmapped_area] forces pgoff to 0 for an anonymous request.
+
+    So the destination is [Mmap.linux_place] at hint 0, read on the
+    ledger BEFORE the source is cut — which is what [m_vmmaps m] is at
+    this point in [mremap_spec].  [mremap_fresh_b] stays beside it: it
+    carries the budget gate and the facts the post-state needs, and
+    [Checks.BudgetPremiseMremap] proves that at Linux's one destination
+    it cannot be false while the move's own budget mark is false. *)
+Definition mremap_dst_ok (m : Model) (old_nZ new_nZ : Z)
+    (old old_n dst new_n : word) : Prop :=
+  linux_place (m_vmmaps m) (kb_thp (m_kernel m)) (Z_to_bv 64 0) new_nZ
+    (bv_unsigned dst)
+  /\ mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true.
 
 (** Half of the argument above, mechanized: GIVEN the ledger invariant
     [State.noaccess_pages_owned], a destination this predicate accepts is
@@ -414,8 +529,9 @@ Proof.
 Qed.
 
 (** Staying at [old]: a shrink drops exactly the tail
-    [[addr+new_len, addr+old_len)] — the range [do_vmi_munmap] is given at
-    mm/mremap.c:1096, v6.12 — and a grow zero-fills exactly the delta. *)
+    [[addr+new_len, addr+old_len)] — the range [shrink_vma] hands
+    [do_vmi_munmap] (mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f) —
+    and a grow zero-fills exactly the delta. *)
 Definition mremap_inplace_effect (old old_n new_n : word)
     (old_nZ new_nZ : Z) : SyscallEffect :=
   if (new_nZ <? old_nZ)%Z
@@ -424,22 +540,26 @@ Definition mremap_inplace_effect (old old_n new_n : word)
            Z_to_bv 64 (old_nZ - new_nZ))] [] []
   else mkEffect old [] (mremap_tail old old_n old_nZ new_nZ).
 
-(** A move relocates the whole source: [move_ptes] (mm/mremap.c:193-315,
-    Linux v6.18.46) clears each source PTE with [get_and_clear_ptes]
-    (:287) and installs it at the destination with [set_ptes] (:300), so
+(** A move relocates the whole source: [move_ptes] (mm/mremap.c,
+    Linux v6.18.46, commit 1f99e9ab748f) clears each source PTE with
+    [get_and_clear_ptes] and installs it at the destination with
+    [set_ptes], so
     the same physical pages appear at [dst]; untouched [pte_none] entries
-    are skipped (:268-269) and refault as zeroes through
-    [do_anonymous_page] (mm/memory.c:5149-5262) for a PRIVATE|ANONYMOUS
+    are skipped by that loop's [continue] and refault as zeroes through
+    [do_anonymous_page] (mm/memory.c) for a PRIVATE|ANONYMOUS
     VMA.  Hence the copy length
     is the WHOLE source, [old_n] — not [min old_n new_n].  A move only
     happens on growth ([mremap_spec] reaches [mremap_move_effect] only
     under [old_nZ < new_nZ], because Linux serves [old_len >= new_len] in
-    place at mm/mremap.c:1088-1103), so the two agree and the [min] was
+    place in [mremap_at]'s MREMAP_NO_RESIZE and MREMAP_SHRINK arms,
+    mm/mremap.c), so the two agree and the [min] was
     dead generality.
 
-    The source is then unmapped by [do_vmi_munmap] at mm/mremap.c:792,
+    The source is then unmapped by [do_vmi_munmap] in [unmap_source_vma]
+    (mm/mremap.c),
     which is why the copy source is inside [eff_unmaps]: [Run.apply_copies]
-    reads the PRE-EFFECT snapshot (Run.v:180), matching the kernel's order.
+    reads the PRE-EFFECT snapshot ([Run.apply_effect] passes it the
+    machine's memory before the unmaps), matching the kernel's order.
     The grown tail carries no page tables — neither [copy_vma] nor
     [vma_merge_extend] installs any for the delta — so it reads as fresh
     zeroes, which is [mremap_tail]. *)
@@ -455,55 +575,69 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
     a fresh disjoint placement that symbolically copies the preserved prefix,
     unmaps the old range, and zero-fills only a grown tail.
 
-    ORDER, against [SYSCALL_DEFINE5(mremap)] (mm/mremap.c:1961-1994, Linux
-    v6.18.46, whose body is [do_mremap], :1911-1952; the line numbers in
-    this ORDER and RESULTS walk are v6.12's, when the whole walk sat in the
-    syscall body, except where a citation names v6.18.46).  Which
+    ORDER, against [SYSCALL_DEFINE5(mremap)] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f, whose body is [do_mremap]).  Which
     gate fires first is as much a part of the syscall as its result, so the
-    branches below are in the kernel's order:
+    branches below are in the kernel's order.  At this version the walk is
+    no longer one function body: [do_mremap] rounds the two lengths and
+    then calls [check_mremap_params], [vma_lookup], [check_prep_vma] and
+    [mremap_at] in that order, and the gates below sit in those helpers:
 
-    - mm/mremap.c:1012, 1015, 1022 validate [flags] before any other
-      argument is inspected.  One read does precede them — :1010,
-      [addr = untagged_addr(addr)] — but on riscv64 it cannot change an
-      answer: RISC-V pointer masking (Supm) postdates v6.12, so the arch
-      defines no override and [untagged_addr] is the generic identity
-      (include/linux/uaccess.h:25-26, v6.12).  A tagged [old] therefore
-      keeps its tag through [offset_in_page] (:1027) and into [vma_lookup]
-      (:1043), where arm64 would have stripped it at :1010, so Linux
+    - [check_mremap_params]'s first test validates [flags] before any
+      other argument is inspected.  One read does precede it —
+      [untagged_addr(addr)] in [SYSCALL_DEFINE5(mremap)]'s initializer
+      of [vrm.addr] — but on riscv64 it cannot change an
+      answer for a modeled run.  RISC-V does define [untagged_addr]
+      at this version (arch/riscv/include/asm/uaccess.h, under
+      CONFIG_RISCV_ISA_SUPM), but it strips nothing unless the process
+      turned pointer masking on: [mm->context.pmlen] is zeroed on every
+      exec (arch/riscv/include/asm/mmu_context.h [activate_mm])
+      and only [set_tagged_addr_ctrl] (arch/riscv/kernel/process.c,
+      reached by PR_SET_TAGGED_ADDR_CTRL) makes it nonzero, and that
+      prctl is outside the modeled surface.  A tagged [old] therefore
+      keeps its tag through [check_mremap_params]'s [offset_in_page]
+      and into [do_mremap]'s [vma_lookup],
+      where arm64 would have stripped it, so Linux
       answers EFAULT for such an address while the model fails closed at
       [mremap_source_b] — the safe direction, and the reason the flag test
       really is the first gate that can decide the answer.  The model's
       narrower shape (exactly MREMAP_MAYMOVE) therefore fails closed
       first, ahead of the deterministic EINVAL below.  Linux answers a deterministic
-      EINVAL for a flag word outside {FIXED, MAYMOVE, DONTUNMAP} (:1013) and
-      serves [flags = 0] on exactly the same path as MAYMOVE (which nothing
-      between :1080 and :1103 consults; its next read is :1165); modeling
+      EINVAL for a flag word outside {FIXED, MAYMOVE, DONTUNMAP} and
+      serves [flags = 0] on exactly the same path as MAYMOVE (which
+      neither [mremap_at]'s no-resize arm nor its shrink arm consults;
+      the next read is [expand_vma]'s); modeling
       neither is a deliberate narrowing, not a fidelity claim.
-    - mm/mremap.c:1027, [offset_in_page(addr)] -> EINVAL.
-    - mm/mremap.c:1030-1031 round BOTH lengths with the wrapping
-      [PAGE_ALIGN] (see [page_align_is0_b]) — before the
-      [old_len == new_len] test at :1091, which is why a 4095-byte new size
+    - [check_mremap_params], [offset_in_page(addr)] -> EINVAL.
+    - [do_mremap] rounds BOTH lengths with the wrapping
+      [PAGE_ALIGN] (see [page_align_is0_b]) before it calls any of them —
+      so before the [old_len == new_len] test that [vrm_set_delta] and
+      [vrm_remap_type] make in [check_prep_vma], which is why a
+      4095-byte new size
       against a one-page source is an equal-size no-op and not a shrink —
-      and then :1038 answers EINVAL when the rounded NEW length is zero.
+      and [check_mremap_params] then answers EINVAL when the rounded NEW
+      length is zero.
       So a [new_size] in the top partial page is EINVAL, exactly like
       [new_size = 0]; the model says so rather than failing closed on the
       wrap.
     - [check_mremap_params] then refuses a rounded NEW length above
-      TASK_SIZE with EINVAL (mm/mremap.c:1775-1776, Linux v6.18.46),
-      still before [vma_lookup] (:1931).  The model answers it here too,
+      TASK_SIZE with EINVAL (mm/mremap.c),
+      still before [do_mremap]'s [vma_lookup].  The model answers it here too,
       so the gate precedes the source test, as it does in the kernel.
     - a rounded OLD length of zero is the "duplicate a mapping" shape, which
       Linux refuses with EINVAL for a private mapping in [check_prep_vma]
-      (mm/mremap.c:1690-1693, Linux v6.18.46; v6.12's [vma_to_resize] at
-      :839-842) — but only after [vma_lookup] (:1043) and the
-      seal check (:1050), and only on the growth path (:1108).  The model
+      (mm/mremap.c) — but only after [do_mremap]'s [vma_lookup] and that
+      function's own seal check, and only once [vrm_will_map_new] holds,
+      i.e. on the growth path.  The model
       does not track enough to reproduce that EINVAL's preconditions, so it
       fails closed; it does so HERE, after the three EINVAL gates above,
       so that a misaligned address, a zero new size or a new size over
       TASK_SIZE still gets Linux's answer.
       (An unmodeled answer need not precede a modeled one: being unmodeled
-      says nothing about position, and Linux's position is :839, below all three.
-      [PAGE_ALIGN] at :1030 wraps a near-2^64 [old_size] to 0, so the wrap
+      says nothing about position, and Linux's position, inside
+      [check_prep_vma], is below all three.
+      [PAGE_ALIGN] in [do_mremap] wraps a near-2^64 [old_size] to 0, so
+      the wrap
       and the literal zero are the same case and share this gate.)
       The gate's two halves are NOT equally observable, and a trace pins
       neither, because both are
@@ -524,66 +658,82 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
       honest pin is the redundancy itself —
       [mremap_wrapping_old_size_cannot_pass_the_source_gate], a [forall]
       over both.
-    - mm/mremap.c:1043 requires a VMA at [addr], and nothing more on the
-      equal-size and shrink paths: they never call [vma_to_resize], so
-      [old_len] is never compared against [vma->vm_end - addr] (:849).  An
+    - [do_mremap]'s [vma_lookup] requires a VMA at [addr], and nothing
+      more on the
+      equal-size and shrink paths: [check_prep_vma] returns 0 at its
+      [vrm_will_map_new] test for both remap types, so
+      [old_len] is never compared against [vma->vm_end - addr] by the
+      test below it.  An
       equal-size call therefore succeeds and returns [addr] even when
       [[addr, addr+old_len)] spans a hole, several VMAs, or runs off the end
-      of the mapping — the only other requirement is that the VMA is
-      unsealed (:1050).  The model instead demands an exact tracked entry,
+      of the mapping — the only other requirements are that the VMA is
+      unsealed ([vma_is_sealed], same function) and, for a hugetlb VMA,
+      that [align_hugetlb] accepts.  The model instead demands an exact
+      tracked entry,
       which is a much larger narrowing than "not an exact entry" reads as;
       it is the safe direction (fail closed).
 
-    RESULTS.  For [old_len >= new_len] Linux never moves: nothing between
-    mm/mremap.c:1080 and :1103 reads MREMAP_MAYMOVE (its next read is
-    :1165, the one place the flag decides whether a mapping may move; the
-    earlier reads at :1015 and :1023 only reject FIXED and DONTUNMAP
-    combinations), and the :1088 block returns [addr] outright — at :1092
-    for the equal case, at :1101 once [do_vmi_munmap] has dropped the tail
-    at :1096.  The two use different exits: the equal case leaves through
-    [goto out] (:1093), which unlocks mmap_lock on the way out, while the
-    shrink leaves through [goto out_unlocked] (:1102), because
-    [do_vmi_munmap] was passed [unlock = true] (:1097) and has already
-    dropped the lock.  Growth is the only case that can move, and it
-    reaches :1165 only after the in-place expansion guarded by
-    [vma_expandable] at :1120 has failed to return [addr] at :1155.
+    RESULTS.  For [old_len >= new_len] Linux never moves: neither
+    [mremap_at]'s MREMAP_NO_RESIZE arm nor its MREMAP_SHRINK arm reads
+    MREMAP_MAYMOVE (the one place the flag decides whether a mapping may
+    move is [expand_vma], and the only earlier read, in
+    [check_mremap_params], just rejects FIXED without MAYMOVE), and both
+    arms return [vrm->addr] outright — at once for the equal case, and
+    after [shrink_vma] has dropped the tail with [do_vmi_munmap] for the
+    shrink.  The two leave the lock differently: both return through
+    [do_mremap]'s [out] label, which unlocks mmap_lock only when
+    [vrm->mmap_locked] is still set, and the shrink has cleared that flag
+    in [shrink_vma], which was passed [drop_lock = true] by [mremap_at]
+    and has already dropped the lock.  Growth is the only case that can
+    move, and it reaches [expand_vma]'s MAYMOVE test only after the
+    in-place expansion guarded by [vrm_can_expand_in_place] (and its
+    [vma_expandable]) has failed to return [addr].
 
-    The equal-size arm carries NO injectable failure.  Walking
-    mm/mremap.c:1041-1093 for [flags = MREMAP_MAYMOVE], a non-hugetlb VMA
-    that exists and is unsealed, and [old_len = new_len], the only exits are
-    EINTR (:1042), EFAULT (:1045), EPERM (:1051), the hugetlb EINVALs
-    (:1062-1072) and [ret = addr] (:1092) — all four errnos excluded by the
+    The equal-size arm carries NO injectable failure.  That arm is no
+    longer one function body: for [flags = MREMAP_MAYMOVE], a non-hugetlb
+    VMA that exists and is unsealed, and [old_len = new_len], the walk is
+    [do_mremap] -> [check_mremap_params] -> [do_mremap]'s [vma_lookup] ->
+    [check_prep_vma] -> [mremap_at], and over those five the only exits
+    are EINTR ([do_mremap]'s [mmap_write_lock_killable]), EFAULT and EPERM
+    and the hugetlb EINVAL (all [check_prep_vma]'s first three tests) and
+    [res = vrm->addr] ([mremap_at]'s MREMAP_NO_RESIZE arm) — all four
+    errnos excluded by the
     modeled shape (see [mremap_errnos]).  There is no allocation, no VMA
     split and no accounting on that branch, so ENOMEM is unreachable and the
     [alt] with [Syscall.errno_from] must not cover it.  The shrink arm is different:
-    [do_vmi_munmap] (:1096) splits the VMA and can fail to allocate
-    (mm/vma.c:384-405) or exceed [sysctl_max_map_count] (mm/vma.c:1197).
+    [do_vmi_munmap] ([shrink_vma]) splits the VMA and can fail to allocate
+    ([__split_vma], mm/vma.c) or exceed [sysctl_max_map_count]
+    ([vms_gather_munmap_vmas], mm/vma.c).
 
-    The choice between growing in place and moving is a genuine [alt],
-    because Linux's in-place test reads state the model's ledger does not
-    have: [vma_expandable] (mm/mremap.c:1415-1427, Linux v6.18.46) consults
-    the next VMA in the maple tree, plus [TASK_SIZE], [mmap_min_addr] and
-    the LSM hook through [get_unmapped_area] under MAP_FIXED
-    ([__get_unmapped_area], mm/mmap.c:824, 857, 862, and
-    [generic_get_unmapped_area], :697, or its topdown twin, :747);
-    and :1116 requires [old_len == vma->vm_end - addr], which a kernel-side
-    VMA merge can defeat.  Any of those can send Linux to the move path
-    where the model sees free space, so the model admits both.  That
-    argument does NOT apply to the equal-size and shrink arms — they never
-    reach [vma_expandable] — which is why those two are deterministic.
+    The choice between growing in place and moving is NOT an [alt]: it
+    is an [if] on [mremap_inplace_room_b], as Linux's is a test on its
+    VMA tree ([vrm_can_expand_in_place], whose [vma_expandable] tests
+    that no VMA meets the grown range and runs a MAP_FIXED
+    [get_unmapped_area], mm/mremap.c, Linux v6.18.46).  With room the
+    model grows in place, and a failing charge refuses with no move;
+    without room it moves to the one address [Mmap.linux_place] gives.
+    The [alt] around the shrink and grow arms adds only the errno
+    answers ([mremap_errnos]).
 
-    An injected ENOMEM leaves no memory effects: [move_vma] moves the page
-    tables back (mm/mremap.c:730-737), swaps its bookkeeping (:738-741) and
-    unmaps the NEW area at :792, i.e. it rolls back.  The argument is
-    specific to MAYMOVE: under MREMAP_FIXED the destination is destroyed at
-    :918 before the source is validated at :930, so THAT errno does have
+    An injected ENOMEM leaves no memory effects: on a failed move
+    [copy_vma_and_data] moves the page
+    tables back (a second [move_page_tables] over a reversed
+    [PAGETABLE_MOVE]) and swaps [vrm]'s bookkeeping so that [vrm->addr]
+    and [vrm->old_len] now name the NEW area, and [move_vma] then unmaps
+    that area through [unmap_source_vma], i.e. it rolls back.  The
+    argument is
+    specific to MAYMOVE: under MREMAP_FIXED [mremap_to] destroys the
+    destination with [do_munmap] before it calls [move_vma], so an errno
+    [move_vma] raises afterwards does have
     memory effects.  FIXED is unmodeled.
 
     BOUNDED APPROXIMATION, and it is on the SUCCESS path, not only the
-    failure one.  The unmap at mm/mremap.c:792 is the same call site for
-    both, and when it fails its error is SWALLOWED (:793-797, "OOM: unable
-    to split vma, just get accounts right"): [move_vma] carries on and
-    returns [new_addr] at :817.  So a successful Linux mremap can leave the
+    failure one.  [unmap_source_vma]'s [do_vmi_munmap] is the same call
+    site for
+    both, and when it fails its error is SWALLOWED ("OOM: unable
+    to split vma, just get accounts right"): the function only corrects
+    the accounting and returns, [move_vma] carries on and
+    returns [vrm->new_addr].  So a successful Linux mremap can leave the
     source range still mapped, at an address the program knows.  The model
     always emits [eff_unmaps [(old, old_n)]] and always drops [old] from the
     ledger, so it says that range is gone when a doubly-unlucky kernel would
@@ -591,10 +741,13 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
 
     What makes it reachable is the same thing named for the shrink path in
     [mremap_errnos]: Linux only requires [old_len <= vma->vm_end - addr]
-    (mm/mremap.c:849), so the model's exact ledger entry can be a strict
+    ([check_prep_vma], mm/mremap.c), so the model's exact ledger entry can
+    be a strict
     prefix of a merged kernel VMA; [do_vmi_munmap] then has to split, and a
-    split can fail on allocation (mm/vma.c:384, 394, 399, 403) or on
-    [sysctl_max_map_count] (mm/vma.c:1197).  The model has no shape for
+    split can fail on allocation ([__split_vma], mm/vma.c — [vm_area_dup],
+    [vma_iter_prealloc], [vma_dup_policy] or [anon_vma_clone]) or on
+    [sysctl_max_map_count] ([vms_gather_munmap_vmas], mm/vma.c).  The
+    model has no shape for
     "mapped at both addresses" and does not attempt one.  The cost is a
     fidelity gap in the modeled semantics, not a checker unsoundness: what
     the model's ledger claims is FREE stays a superset of what is really
@@ -604,13 +757,18 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
     retained source.
 
     The fifth syscall argument is ignored, and the reason is not that only
-    MREMAP_FIXED reads it.  Linux reads [new_addr] in three places:
-    mm/mremap.c:1064 unconditionally inside the hugetlb block, and
-    mm/mremap.c:1075 for FIXED *or* DONTUNMAP (both routed into
-    [mremap_to]).  Under this shape the hugetlb block is unreachable (the
+    MREMAP_FIXED reads it.  Linux reads the caller's [new_addr] in three
+    kinds of place (mm/mremap.c, Linux v6.18.46): unconditionally in
+    [align_hugetlb], which [check_prep_vma] calls for a hugetlb VMA; in
+    [check_mremap_params] and [vrm_overlaps], both behind
+    [vrm_implies_new_addr], i.e. for FIXED or DONTUNMAP; and in
+    [vrm_set_new_addr], which passes it to [get_unmapped_area] only when
+    [vrm_implies_new_addr] holds and passes 0 otherwise.
+    Under this shape the hugetlb path is unreachable (the
     source is one tracked PRIVATE|ANONYMOUS mapping) and both flags are
-    unmodeled, so the only remaining use is :1170, where
-    [get_unmapped_area] OVERWRITES [new_addr] before it is read.
+    unmodeled, so no read of the caller's value survives:
+    [check_prep_vma] OVERWRITES [vrm->new_addr] with [addr] before any
+    of the remaining reads.
 
     Size rounding is done in [Z] and checked before conversion back to
     [word].  Protected/mixed/non-exact sources, FIXED, DONTUNMAP, and every
@@ -620,29 +778,32 @@ Definition mremap_spec (old old_size new_size flags : word)
   (* This gate declines TWO different kernel answers, and only one of them
      is a refusal.  Linux rejects a flag word outside
      {FIXED, MAYMOVE, DONTUNMAP} with a deterministic EINVAL
-     (mm/mremap.c:1012-1024), but it ACCEPTS [flags = 0]: nothing between
-     :1088 and :1103 reads MREMAP_MAYMOVE, so equal-size, shrink and
+     ([check_mremap_params], mm/mremap.c, Linux v6.18.46, commit
+     1f99e9ab748f), but it ACCEPTS [flags = 0]: neither [mremap_at]'s
+     no-resize arm nor its shrink arm nor [expand_vma_in_place] reads
+     MREMAP_MAYMOVE, so equal-size, shrink and
      in-place grow all succeed exactly as they do under MAYMOVE, and the
-     flag first matters at :1165, where a call that must MOVE gets the
-     -ENOMEM parked at :1164.  Declining [flags = 0] is therefore a
+     flag first matters in [expand_vma], where a call that must MOVE gets
+     that function's -ENOMEM.  Declining [flags = 0] is therefore a
      deliberate narrowing of the modeled surface -- announced here and in
      the ORDER note above -- not a claim that Linux fails.  It is the safe
      direction: [unmodeled] never asserts a wrong result. *)
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE)
   then unmodeled
   else if negb (Z.eqb (bv_unsigned old mod page_size) 0)
-  then err_ret EINVAL                              (* mm/mremap.c:1027 *)
+  then err_ret EINVAL          (* check_mremap_params: offset_in_page *)
   else if page_align_is0_b new_size
-  then err_ret EINVAL                              (* mm/mremap.c:1031, 1038 *)
+  then err_ret EINVAL          (* do_mremap's PAGE_ALIGN, then
+                                  check_mremap_params' !new_len *)
   else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
   then err_ret EINVAL
-    (* [check_mremap_params] (mm/mremap.c:1775-1776, Linux v6.18.46):
+    (* [check_mremap_params] (mm/mremap.c, Linux v6.18.46):
        a page-aligned new length over TASK_SIZE is -EINVAL before any
        VMA is looked up.  Without this gate a grow past TASK_SIZE fell
        through to the arm's injected -ENOMEM, an answer Linux never
        gives for it. *)
   else if page_align_is0_b old_size
-  then unmodeled                                   (* clone: mm/mremap.c:839 *)
+  then unmodeled               (* clone: check_prep_vma's !old_len *)
   else
     m <- get_model ;;
     let h := m_vmmaps m in
@@ -652,9 +813,9 @@ Definition mremap_spec (old old_size new_size flags : word)
     let new_n := Z_to_bv 64 new_nZ in
     if negb (mremap_source_b h old old_n old_nZ
              && mremap_backing_uniform_b m old old_n)
-    then unmodeled                                 (* mm/mremap.c:1043 *)
+    then unmodeled             (* do_mremap's vma_lookup *)
     else if Z.eqb old_nZ new_nZ
-    then ret_only old                              (* mm/mremap.c:1091-1093 *)
+    then ret_only old          (* mremap_at's MREMAP_NO_RESIZE arm *)
     else
       alt
         (e <- errno_from mremap_errnos ;; err_ret e)
@@ -662,17 +823,24 @@ Definition mremap_spec (old old_size new_size flags : word)
            modify (fun _ => mremap_model_next m old old_n old new_n) ;;
            pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ)
          else
-           let move :=
-             dst <- choose (fun dst =>
-                mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true) ;;
-             modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
-             pure (mremap_move_effect old old_n dst old_nZ new_nZ) in
-           if mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
-           then alt
-             (modify (fun _ => mremap_model_next m old old_n old new_n) ;;
+           (* GROW.  Linux asks for room above the source first
+              ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46,
+              commit 1f99e9ab748f).  With room it expands there, and a
+              failing charge is a REFUSAL with no move.  Without room
+              it calls [get_unmapped_area] with no hint, while the old
+              mapping is still in the tree, and moves to the one
+              address that search gives ([Mmap.linux_place]). *)
+           if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
+           then
+             (_ <- choose (fun _ : unit =>
+                     mremap_final_budget_b m old old_n old new_n = true) ;;
+              modify (fun _ => mremap_model_next m old old_n old new_n) ;;
               pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ))
-             move
-           else move).
+           else
+             dst <- choose (fun dst => mremap_dst_ok m old_nZ new_nZ
+                                         old old_n dst new_n) ;;
+             modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
+             pure (mremap_move_effect old old_n dst old_nZ new_nZ)).
 
 (* =========================================================================
    THE BUDGET MARK for mremap (see [Mmap.brk_budget_refused_b] for what
@@ -690,7 +858,7 @@ Definition mremap_spec (old old_size new_size flags : word)
     page — the re-created mapping is charged in full when the source is
     eager and not at all when it is lazy (its materialized pages move
     with it and are charged by count), and nothing else in the
-    post-state mentions [dst]: [mremap_maps_next] drops [old] and conses
+    post-state mentions [dst]: [mremap_maps_next] cuts the source range and conses
     the destination, [State.vm_resize_backing] cuts the source's own
     reservation and pages out of the two backing ledgers and re-records
     the moved pages at destination-relative offsets, whose COUNT is what
@@ -703,9 +871,33 @@ Definition mremap_spec (old old_size new_size flags : word)
     the live-mapping half of "fresh" and [State.noaccess_pages_owned]
     (through [mremap_fresh_avoids_noaccess]) the protected half; the
     lazy and materialized halves are the ledger invariant the writers of
-    [vm_lazy] keep — every reservation lies under a live mapping — which
-    is not yet a proved invariant and is taken as a hypothesis where
-    the lemma is used. *)
+    [vm_lazy] keep — every reservation lies under a live mapping.
+
+    THAT INVARIANT IS NOW PROVED, so the sentence that stood here — "which
+    is not yet a proved invariant and is taken as a hypothesis where the
+    lemma is used" — is withdrawn.  [Common/WfInvariant.v] states it as
+    [LZ_OWNED] and [MAT_OWNED], on the PAGE FLOOR rather than on bytes,
+    establishes it at [Run.init_config] ([init_config_WF]) and preserves it
+    across every writer of the ledgers ([check_brk_WF], [check_mmap_WF],
+    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF],
+    [check_madvise_WF] -- all SIX writer arms).  The floor
+    is not a convenience: byte ownership is NOT inductive under a same-page
+    [brk] shrink, because [Mmap.brk_maps_next] cuts byte by byte while
+    [Mmap.brk_unmaps] forgets page-rounded; see that file's header and
+    [brk_floor_outside].
+
+    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS IS STILL OBLIGED TO, and
+    the earlier sentence here -- that such a caller "can discharge it from
+    [Common/WfInvariant.WF] of the state it is reasoning about, which every
+    run carries from its initial configuration" -- was WRONG and is
+    withdrawn.  No run carries [WF]: [Common/WfInvariant.v]'s own closing
+    note says there is no [check_syscall_preserves_WF], no
+    [syscall_spec_preserves_WF] and no [sstep]/[star]/[star_cfg] lemma, so
+    [WF] is NOT available at an arbitrary reachable state.  What is proved
+    is the initial state and the per-arm steps; composing them needs a
+    second per-arm frame family stated over [State.m_vm], which does not
+    exist.  Until it does, a caller on a reachable state must take [WF] as
+    a hypothesis, exactly as before.  Those call sites are unchanged. *)
 Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
   let h := m_vmmaps m in
   let old_lo := bv_unsigned old in
@@ -723,7 +915,7 @@ Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
     else [] in
   (live_bytes
      (maps_subtract_all
-        (maps_subtract_all (map_remove (vm_maps h) old) (vm_noaccess h))
+        (maps_subtract_all (maps_subtract (vm_maps h) old_lo old_hi) (vm_noaccess h))
         kept_lazy)
    + (if source_lazy then 0 else bv_unsigned new_n)
    + Z.of_nat (List.length moved_pages + List.length kept_pages) * page_size)%Z.
@@ -744,8 +936,8 @@ Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
     resolution is not admitted AND the move's budget gate refuses.  That
     is the request Linux refuses for want of memory: where the in-place
     resolution is unavailable and a move fits, Linux moves the mapping
-    ([expand_vma], mm/mremap.c:1520-1543, Linux v6.18.46, which picks
-    the new address in [vrm_set_new_addr], :957-960) and the call
+    ([expand_vma], mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f,
+    which picks the new address in [vrm_set_new_addr]) and the call
     succeeds.  Neither gate alone is the right test, because
     neither post-state is charged at least as much as the other on
     every state:
@@ -814,8 +1006,16 @@ Definition mremap_budget_refused_b (old old_size new_size flags : word)
              && mremap_backing_uniform_b m old old_n)
     then false
     else if (new_nZ <=? old_nZ)%Z then false
-    else negb (mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
-               || mremap_move_budget_b m old old_n new_n).
+    (* The grow has ONE resolution, chosen by the room test, so the
+       mark reads that resolution's gate and not a disjunction of
+       both.  With room, the only answer besides an errno is the
+       in-place one, gated by [mremap_final_budget_b]; without room,
+       the only one is the move, and its gate reads the same charge at
+       every destination Linux can give
+       ([mremap_move_charge_at_fresh]). *)
+    else if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
+    then negb (mremap_final_budget_b m old old_n old new_n)
+    else negb (mremap_move_budget_b m old old_n new_n).
 
 (* -------------------------------------------------------------------------
    Destination independence of the move's charge
@@ -1026,6 +1226,37 @@ Proof.
     exists a', sz'. split; [right; exact Hin' | exact Hiv].
 Qed.
 
+(** A cut of a ledger whose entries lie inside the address space leaves
+    remnants that do too, and that miss whatever the entries missed: the
+    two facts [mremap_move_charge_at_fresh] needs of the ledger with the
+    source range cut, drawn from the ledger itself. *)
+Lemma maps_subtract_fits : forall l lo hi,
+  (forall (a sz : word), In (a, sz) l ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  forall (b s : word), In (b, s) (maps_subtract l lo hi) ->
+    (bv_unsigned b + bv_unsigned s <= two_pow_64)%Z.
+Proof.
+  intros l lo hi Hfit b s Hin.
+  destruct (maps_subtract_In l lo hi b s Hin) as [a [sz [Hin0 Hiv]]].
+  pose proof (Hfit a sz Hin0).
+  pose proof (iv_subtract_within a sz lo hi b s (Hfit a sz Hin0) Hiv). lia.
+Qed.
+
+Lemma region_free_subtract_fits : forall l lo hi x n,
+  (forall (a sz : word), In (a, sz) l ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  region_free l x n = true ->
+  region_free (maps_subtract l lo hi) x n = true.
+Proof.
+  intros l lo hi x n Hfit H. apply region_free_intro. intros b s Hin.
+  destruct (maps_subtract_In l lo hi b s Hin) as [a [sz [Hin0 Hiv]]].
+  pose proof (iv_subtract_within a sz lo hi b s (Hfit a sz Hin0) Hiv) as Hw.
+  pose proof (region_free_In l x n a sz H Hin0) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
+Qed.
+
 Lemma maps_subtract_all_within : forall cuts l (b s : word),
   (forall (a sz : word), In (a, sz) l ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
@@ -1143,8 +1374,9 @@ Qed.
     ledger: [dst] is page aligned and the request page-sized and
     nonempty (so the lazy interior a lazy source re-records is exactly
     the destination); the request ends inside the address space (so a
-    remnant's re-wrapped base is its base); every live mapping other than
-    the source lies inside the address space and misses the destination;
+    remnant's re-wrapped base is its base); what is left of the live
+    mappings once the source range is cut lies inside the address space
+    and misses the destination;
     so does every protected range; cutting the destination out of the
     lazy ledger — after the source's own reservation is gone — changes
     nothing; and no materialized page outside the source lies under the
@@ -1156,9 +1388,12 @@ Lemma mremap_move_charge_at_fresh : forall m old old_n dst new_n,
   (bv_unsigned new_n mod page_size = 0)%Z ->
   (0 < bv_unsigned new_n)%Z ->
   (bv_unsigned dst + bv_unsigned new_n < two_pow_64)%Z ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word),
+     In (a, sz) (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                   (bv_unsigned old + bv_unsigned old_n)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
-  region_free (map_remove (vm_maps (m_vmmaps m)) old) dst new_n = true ->
+  region_free (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                 (bv_unsigned old + bv_unsigned old_n)) dst new_n = true ->
   region_free (vm_noaccess (m_vmmaps m)) dst new_n = true ->
   maps_subtract
     (maps_subtract (m_vm_lazy m) (bv_unsigned old)
@@ -1202,7 +1437,8 @@ Proof.
   set (KP := List.filter (page_outside_range (bv_unsigned old)
                             (bv_unsigned old + bv_unsigned old_n))
                (m_vm_materialized m)) in *.
-  set (R0 := map_remove (vm_maps (m_vmmaps m)) old) in *.
+  set (R0 := maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+               (bv_unsigned old + bv_unsigned old_n)) in *.
   set (NA := vm_noaccess (m_vmmaps m)) in *.
   (* KL misses the destination: by the identity, every entry of KL is a
      remnant of cutting the destination out of it *)

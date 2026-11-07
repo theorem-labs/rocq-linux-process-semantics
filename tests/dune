@@ -17,6 +17,225 @@
   (run python3 %{project_root}/tools/test_elf_snapshot.py
    --emit-large-rocq-check LargeChunkImage.v)))
 
+; THE REAL-KERNEL PLACEMENT REPLAY (tools/placement_conformance).  Each rule
+; below turns one log of the placement probe into a Rocq file that walks that
+; run through the checker and demands CheckOk at every step, so the file
+; compiles exactly when LPS places each mapping where the kernel placed it.
+; The last two are negative: they must compute to false.  The README in
+; tools/placement_conformance says how a log is made and how to make another.
+(rule
+ (targets PlacementReplayDefconfig.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-defconfig.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-defconfig.log
+   --out PlacementReplayDefconfig.v --kb-thp 0)))
+
+(rule
+ (targets PlacementReplayThp.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-thp.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-thp.log
+   --out PlacementReplayThp.v --kb-thp 1)))
+
+; Under "norandmaps" Linux's mmap base is STACK_TOP - MIN_GAP, 2^47 - 128 MiB
+; (mm/util.c, mmap_base, Linux v6.18.46).  --expect-base fails unless the
+; vDSO pair ends exactly there, which is the check that the pair was the
+; run's first search.
+(rule
+ (targets PlacementReplayNorandmaps.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-norandmaps.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-norandmaps.log
+   --out PlacementReplayNorandmaps.v --kb-thp 0
+   --expect-base 0x7ffff8000000)))
+
+; QEMU user mode places a mapping where its own allocator puts it, which is
+; not where Linux puts it: the model must refuse this run.
+(rule
+ (targets PlacementReplayQemuUser.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/qemu-user-10.0.11.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/qemu-user-10.0.11.log
+   --out PlacementReplayQemuUser.v --kb-thp 0 --expect reject)))
+
+; The same kernel log with the first grant moved DOWN one page, to an address
+; that is free and is not Linux's: the replay must refuse it.  Without this
+; one, a replay that accepted every free address would still be green.
+(rule
+ (targets PlacementReplayOffByOnePage.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-defconfig.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-defconfig.log
+   --out PlacementReplayOffByOnePage.v --kb-thp 0 --expect reject
+   --perturb 0 --perturb-pages -1)))
+; THE REAL-KERNEL START STATE (acceptance item A4 of the start-state
+; specification, tools/placement_conformance).
+; Each rule turns one start-state log of the probe into a Rocq file that
+; states the recorded launch as LPS terms and closes three lemmas by
+; computation: Run.entry_launch_ok_va of the recorded stack end, stack
+; pointer and mmap base; Run.entry_stack_image equal to the bytes the kernel
+; wrote, every byte of them; and StackLayout.auxv_entries equal to the
+; recorded auxiliary vector.  So each file compiles exactly when LPS's entry
+; block is the block that kernel laid.  dune makes the files in _build only;
+; the README in tools/placement_conformance says how a log is made.
+(rule
+ (targets StartStateNorandmapsSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-fixture.log
+   --out StartStateNorandmapsSeed1Fixture.v)))
+
+(rule
+ (targets StartStateNorandmapsSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-long.log
+   --out StartStateNorandmapsSeed1Long.v)))
+
+(rule
+ (targets StartStateDefconfigSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed1-fixture.log
+   --out StartStateDefconfigSeed1Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed1-long.log
+   --out StartStateDefconfigSeed1Long.v)))
+
+(rule
+ (targets StartStateDefconfigSeed2Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-fixture.log
+   --out StartStateDefconfigSeed2Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigSeed2Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-long.log
+   --out StartStateDefconfigSeed2Long.v)))
+
+; The "cache" boots run on a devicetree in which the boot CPU carries an
+; L1I, an L1D and an L2 (patch_dtb.py), so the eight AT_L*_CACHE* words are
+; not all zero and State.cache_size_word and State.cache_geometry_word are
+; checked against what the kernel published.
+(rule
+ (targets StartStateDefconfigCacheSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-cache-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-cache-seed1-fixture.log
+   --out StartStateDefconfigCacheSeed1Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigCacheSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-cache-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-cache-seed1-long.log
+   --out StartStateDefconfigCacheSeed1Long.v)))
+
+(rule
+ (targets StartStateThpSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-thp-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-thp-seed1-fixture.log
+   --out StartStateThpSeed1Fixture.v)))
+
+(rule
+ (targets StartStateThpSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-thp-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-thp-seed1-long.log
+   --out StartStateThpSeed1Long.v)))
+
+; THE NEGATIVES.  Each takes a record, moves one byte of the block the
+; kernel wrote, and demands that the model DISAGREE with it, so a block_ok
+; that had stopped computing anything would not stay green.  One on the
+; shortest record and one on the longest, moving a byte in a different part
+; of the block: argc's low byte at the bottom, and a byte of the string area
+; near the top.  Each names its admitted neighbour, which is the same record
+; with the byte the kernel wrote.
+(rule
+ (targets StartStateNorandmapsSeed1FixtureMoved.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-fixture.log
+   --out StartStateNorandmapsSeed1FixtureMoved.v
+   --perturb-byte 0 --sibling StartStateNorandmapsSeed1Fixture)))
+
+(rule
+ (targets StartStateDefconfigSeed2LongMoved.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-long.log
+   --out StartStateDefconfigSeed2LongMoved.v
+   --perturb-byte 7000 --sibling StartStateDefconfigSeed2Long)))
+
+; LinuxProcessSemantics.Common is a theory of its own (theories/Common/dune)
+; and must be named here: VdsoReservedWitness.v requires AxSymExec3, AsanPlan
+; and AsanPlanSound from it.  Its files are reachable by path without this
+; line, because the main theory is rooted at theories/ and Common/ is inside
+; it -- but then dune has no edge ordering the two, and schedules this
+; theory's files whenever it likes.  Measured: from a cold tree it never
+; bites; after `dune build tests/StartStateNorandmapsSeed1Fixture.vo`, which
+; reports/a4-start-state.md tells a reader to run, the next `dune build`
+; compiles VdsoReservedWitness.v while theories/Common is still building and
+; fails with "Unable to locate library AxSymExec3".
 (rocq.theory
  (name LinuxProcessSemantics.Tests)
- (theories Stdlib stdpp ReadFile LinuxProcessSemantics))
+ (theories Stdlib stdpp ReadFile LinuxProcessSemantics LinuxProcessSemantics.Common))

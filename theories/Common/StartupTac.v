@@ -48,9 +48,14 @@ Ltac zlit :=
              end
          end.
 
-(** Side conditions of the [cmem] region lemmas and of [rdn_wbytes_out]. *)
+(** Side conditions of the [cmem] region lemmas and of [rdn_wbytes_out].
+    [wok_lo] is the window's image-independent floor
+    ([MemSplit.wok_lo]: [stack_max_size - stack_window_reach] below
+    [sp0]). *)
 Ltac region_side :=
-  unfold win_lo; rewrite ?stack_max_size_val, ?length_N_to_le_bytes, ?length_zeros, ?repeat_length;
+  unfold win_lo, wok_lo; rewrite ?stack_max_size_val;
+  unfold stack_window_reach;
+  rewrite ?length_N_to_le_bytes, ?length_zeros, ?repeat_length;
   cbn [length Z.of_nat Pos.of_succ_nat Pos.succ Nat.add Nat.mul]; imm_norm; unorm; lia.
 
 (** Normalize the address of a load/store obligation. *)
