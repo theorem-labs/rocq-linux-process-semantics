@@ -486,8 +486,7 @@ Proof.
      [clone_class] differ from this file's imports). *)
   revert Hclass. cbv beta iota zeta.
   (* DIAGNOSTIC: Fail exact I shows the goal type in the error *)
-  Set Printing All.
-  Fail (exact I).
+  exact I.
 
 (** A record the argument checks refuse ([Fork.clone_arg_checks]),
     outside the released fast path, answers exactly -EINVAL with the
