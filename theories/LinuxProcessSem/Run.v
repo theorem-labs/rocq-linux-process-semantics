@@ -1960,7 +1960,7 @@ Definition injected_table : list InjectedArm :=
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
   (* unlinkat   *) mkInjectedArm  35%Z FamFs    (unlinkat_errnos ++ unlink_before_type_errnos ++ unlink_before_slashes_errnos) ::
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
-  (* openat     *) mkInjectedArm  56%Z FamFs    write_open_errnos ::
+  (* openat     *) mkInjectedArm  56%Z FamFs    (openat_errnos ++ write_open_errnos ++ write_open_create_errnos) ::
   (* pipe2      *) mkInjectedArm  59%Z FamFd    pipe2_errnos ::
   (* getdents64 *) mkInjectedArm  61%Z FamFs    getdents64_errnos ::
   (* write      *) mkInjectedArm  64%Z FamFs    write_errnos ::
