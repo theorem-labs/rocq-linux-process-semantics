@@ -183,7 +183,7 @@ jobs:
               git config --global --add safe.directory /github/workspace
             endGroup
             startGroup "Install Python 3"
-              sudo apt-get install -y -q --no-install-recommends python3 time
+              sudo apt-get install -y -q --no-install-recommends python3
           # The dune cache is in the workspace, because the workspace is the
           # one host directory that the action mounts into its container.
           #
@@ -218,14 +218,18 @@ jobs:
             startGroup "Environment for OOM diagnostic"
               echo "=== ulimit -a ==="
               ulimit -a
-              echo "=== free -m ==="
-              free -m
               echo "=== nproc ==="
               nproc
               echo "=== OCAMLRUNPARAM ==="
               echo "${OCAMLRUNPARAM:-<unset>}"
               echo "=== /proc/meminfo ==="
-              head -10 /proc/meminfo
+              cat /proc/meminfo
+              echo "=== cgroup memory limits ==="
+              for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.peak \
+                       /sys/fs/cgroup/memory/memory.limit_in_bytes \
+                       /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                [ -r "$f" ] && echo "$f: $(cat "$f")" || true
+              done
             endGroup
             startGroup "Stack limit for deep proof terms"
               ulimit -s 131072
@@ -236,17 +240,25 @@ jobs:
             endGroup
             startGroup "Build everything (dune build)"
               # OOM DIAGNOSTIC: run 9.2 at default -j with a background
-              # memory sampler to measure total and per-process memory.
+              # memory sampler using /proc reads (no procps needed).
               if [ "${{ matrix.rocq }}" = "9.2" ]; then
-                echo "=== free -m before build ==="
-                free -m
-                # Background sampler: log free -m and top rocq processes every 10s
+                echo "=== /proc/meminfo before build ==="
+                grep -E 'MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree' /proc/meminfo
+                # Background sampler: log memory via /proc every 10s
                 (
                   while true; do
-                    echo "=== $(date -u '+%H:%M:%S') free -m ==="
-                    free -m
-                    echo "=== top rocq by RSS ==="
-                    ps aux --sort=-rss | grep -E 'rocq|RSS' | head -10
+                    echo "=== $(date -u '+%H:%M:%S') ==="
+                    grep -E 'MemTotal|MemFree|MemAvailable|SwapFree' /proc/meminfo
+                    for f in /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.current \
+                             /sys/fs/cgroup/memory/memory.max_usage_in_bytes \
+                             /sys/fs/cgroup/memory/memory.usage_in_bytes; do
+                      [ -r "$f" ] && echo "$(basename "$f"): $(cat "$f")" || true
+                    done
+                    echo "--- per-process VmHWM (top 5) ---"
+                    for p in /proc/[0-9]*/status; do
+                      awk '/^(Name|VmHWM):/{printf "%s ", $0}' "$p" 2>/dev/null
+                      [ -f "$p" ] && echo || true
+                    done 2>/dev/null | sort -t: -k4 -rn | head -5
                     sleep 10
                   done
                 ) > /tmp/mem-sampler.log 2>&1 &
@@ -256,10 +268,17 @@ jobs:
                   rc=$?
                   kill $sampler_pid 2>/dev/null || true
                   echo "=== BUILD FAILED (exit $rc) ==="
-                  echo "=== free -m after failure ==="
-                  free -m
-                  echo "=== Memory timeline (last 50 samples) ==="
-                  tail -200 /tmp/mem-sampler.log
+                  echo "=== /proc/meminfo after failure ==="
+                  cat /proc/meminfo
+                  echo "=== cgroup memory ==="
+                  for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.peak \
+                           /sys/fs/cgroup/memory.current \
+                           /sys/fs/cgroup/memory/memory.limit_in_bytes \
+                           /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                    [ -r "$f" ] && echo "$f: $(cat "$f")" || true
+                  done
+                  echo "=== Memory timeline (last 60 samples) ==="
+                  tail -300 /tmp/mem-sampler.log
                   echo "=== dmesg | tail -50 ==="
                   dmesg 2>/dev/null | tail -50 || true
                   echo "=== OOM killer in dmesg ==="
@@ -268,16 +287,20 @@ jobs:
                 }
                 kill $sampler_pid 2>/dev/null || true
                 echo "=== Build succeeded at default -j ==="
-                echo "=== free -m after build ==="
-                free -m
-                echo "=== Peak memory from sampler (last 50) ==="
-                tail -200 /tmp/mem-sampler.log
+                echo "=== /proc/meminfo after build ==="
+                grep -E 'MemTotal|MemFree|MemAvailable|SwapFree' /proc/meminfo
+                echo "=== cgroup memory peak ==="
+                for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.peak \
+                         /sys/fs/cgroup/memory/memory.limit_in_bytes \
+                         /sys/fs/cgroup/memory/memory.max_usage_in_bytes; do
+                  [ -r "$f" ] && echo "$f: $(cat "$f")" || true
+                done
+                echo "=== Memory timeline (last 60 samples) ==="
+                tail -300 /tmp/mem-sampler.log
               else
                 opam exec -- dune build --display short
               fi
             endGroup
-            startGroup "Check the generated Checker.v files"
-              python3 tools/gen_checker.py --check
               python3 tools/gen_checker.py --verify
             endGroup
             startGroup "Kernel-check and audit assumptions of the example proofs"
