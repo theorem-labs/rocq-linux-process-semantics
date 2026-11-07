@@ -543,6 +543,12 @@ Local Ltac aa_done H :=
       unfold check_stream_read_empty, check_stream_read_reset in H
   | context [check_eventfd_read] => unfold check_eventfd_read in H
   | context [check_eventfd_write] => unfold check_eventfd_write in H
+  | context [check_create_wronly_absent] => unfold check_create_wronly_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_create_wronly] => unfold check_create_wronly, check_write_open_result, check_new_fd_result in H
+  | context [check_open_append_absent] => unfold check_open_append_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_open_append] => unfold check_open_append, check_write_open_result, check_new_fd_result in H
+  | context [check_open_rdwr_absent] => unfold check_open_rdwr_absent, check_write_open_create_result, check_new_fd_result in H
+  | context [check_open_rdwr] => unfold check_open_rdwr, check_write_open_result, check_new_fd_result in H
   | context [check_open_result] => unfold check_open_result, check_new_fd_result in H
   | context [check_write_open_result] => unfold check_write_open_result, check_new_fd_result in H
   | context [check_write_open_create_result] => unfold check_write_open_create_result, check_new_fd_result in H
