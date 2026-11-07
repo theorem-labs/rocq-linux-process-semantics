@@ -282,9 +282,15 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     gate passes.  Then the [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires:
     -EINVAL, not -EPERM (Linux v6.18.46, nsproxy.c:150, 162, 172-173:
     [task_cred_xxx(tsk, user_ns)] is the child's new namespace). *)
-Example clone_newuser_newipc_sysvsem_einval : forall m,
+(* DIAGNOSTIC: check errno and state separately *)
+Definition diag_newuser_ipc_sysvsem (m : Model) :=
   clone_ns_exact (cw (Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
-    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EINVAL inside.
+    (with_creds (creds 65534) m) no_admin_inside inside 140.
+Example diag_errno_is_einval : forall m,
+  match diag_newuser_ipc_sysvsem m with CnErr e _ => (e =? EINVAL)%Z | _ => false end = true.
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example diag_state_is_inside : forall m,
+  match diag_newuser_ipc_sysvsem m with CnErr _ s => true | _ => false end = true.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
