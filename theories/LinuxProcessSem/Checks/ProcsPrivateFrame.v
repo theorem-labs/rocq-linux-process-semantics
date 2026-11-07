@@ -99,6 +99,24 @@ Proof.
   repeat vm_step H; try apply Hmk; reflexivity.
 Qed.
 
+Lemma check_write_open_result_sh : forall eff m mk m' evs,
+  (forall fd, sh_of (mk fd) = sh_of m) ->
+  check_write_open_result eff m mk = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; reflexivity.
+Qed.
+
+Lemma check_write_open_create_result_sh : forall eff m mk m' evs,
+  (forall fd, sh_of (mk fd) = sh_of m) ->
+  check_write_open_create_result eff m mk = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros eff m mk m' evs Hmk H.
+  unfold check_write_open_create_result, check_new_fd_result in H.
+  repeat vm_step H; try apply Hmk; reflexivity.
+Qed.
+
 Ltac sh_done H :=
   first
   [ apply check_efault_or_sh in H; exact H
@@ -106,6 +124,10 @@ Ltac sh_done H :=
   | apply check_sigpipe_writev_sh in H; exact H
   | elim (check_readv_gap_sh _ _ H)
   | (eapply check_open_result_sh in H;
+     [exact H | intros; reflexivity])
+  | (eapply check_write_open_result_sh in H;
+     [exact H | intros; reflexivity])
+  | (eapply check_write_open_create_result_sh in H;
      [exact H | intros; reflexivity]) ].
 
 Ltac sh_frame2 H :=

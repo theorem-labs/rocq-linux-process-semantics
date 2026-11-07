@@ -493,6 +493,26 @@ Proof.
   all: first [ apply Hmk | nf_finish ].
 Qed.
 
+Lemma check_write_open_result_nf : forall eff m mk m' evs,
+  check_write_open_result eff m mk = CheckOk m' evs ->
+  (forall fd, ns_post m (mk fd)) -> ns_post m m'.
+Proof.
+  intros eff m mk m' evs H Hmk.
+  unfold check_write_open_result, check_new_fd_result in H.
+  repeat kf_step H.
+  all: first [ apply Hmk | nf_finish ].
+Qed.
+
+Lemma check_write_open_create_result_nf : forall eff m mk m' evs,
+  check_write_open_create_result eff m mk = CheckOk m' evs ->
+  (forall fd, ns_post m (mk fd)) -> ns_post m m'.
+Proof.
+  intros eff m mk m' evs H Hmk.
+  unfold check_write_open_create_result, check_new_fd_result in H.
+  repeat kf_step H.
+  all: first [ apply Hmk | nf_finish ].
+Qed.
+
 Lemma check_readv_imported_nf : forall i fd r iovs0 eff m m' evs,
   check_readv_imported i fd r iovs0 eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
@@ -514,6 +534,10 @@ Ltac nf_done H :=
   | nf_stream H
   | (eapply check_readv_imported_nf in H; exact H)
   | (refine (check_open_result_nf _ _ _ _ _ H _);
+     let fd := fresh "fd" in intros fd; cbv beta; nf_finish)
+  | (refine (check_write_open_result_nf _ _ _ _ _ H _);
+     let fd := fresh "fd" in intros fd; cbv beta; nf_finish)
+  | (refine (check_write_open_create_result_nf _ _ _ _ _ H _);
      let fd := fresh "fd" in intros fd; cbv beta; nf_finish) ].
 
 Ltac nf_use L H := (eapply L in H; exact H).
