@@ -1570,6 +1570,38 @@ Proof.
     rewrite (Hmk _ (alloc_fd_not_error_b _)). reflexivity.
 Qed.
 
+(** The absent-name write-open version: [write_open_create_errnos]
+    instead of [write_open_errnos].  [check_openat_table]'s table result
+    for a write-open-create uses [check_write_open_create_result], and
+    the cloexec wrapping preserves it. *)
+Lemma check_openat_write_open_create_result : forall i dirfd pathp flags eff m reads mk mk',
+  (forall fd, addr_is_error_b fd = false ->
+     mk' fd = open_cloexec_model flags fd (mk fd)) ->
+  check_openat_table i dirfd pathp flags eff m
+  = check_write_open_create_result_copyins reads eff m mk ->
+  check_openat i dirfd pathp flags eff m = check_write_open_create_result_copyins reads eff m mk'.
+Proof.
+  intros i dirfd pathp flags [ret ws zs us cs copyins] m reads mk mk' Hmk Ht.
+  unfold check_openat. rewrite Ht.
+  unfold check_write_open_create_result_copyins, check_copyins, check_write_open_create_result,
+    check_new_fd_result, clear_copyins, with_copyins.
+  cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+  destruct (access_ranges_eqb copyins reads); [|reflexivity].
+  destruct ws as [|? ?]; [|reflexivity].
+  destruct zs as [|? ?]; [|reflexivity].
+  destruct us as [|? ?]; [|reflexivity].
+  destruct cs as [|? ?]; [|reflexivity].
+  cbv beta iota.
+  destruct (errno_ret_in write_open_create_errnos ret) eqn:He.
+  - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    destruct (write_open_create_errno_range e HIn) as [He1 He2].
+    unfold open_cloexec_model. rewrite (errno_ret_error_b e He1 He2). reflexivity.
+  - destruct (fd_lookup (m_fds m) ret); [reflexivity|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Hb; [|reflexivity].
+    apply bv_eqb_eq in Hb. subst ret.
+    rewrite (Hmk _ (alloc_fd_not_error_b _)). reflexivity.
+Qed.
+
 (** The two modeled open shapes reduce the checker to
     [check_open_result] with the respective success-model builder: the
     new descriptor installed, and its close-on-exec bit recorded as the
@@ -1685,8 +1717,9 @@ Qed.
 (** The absent-name twin of [openat_wr_check]: when [fs_lookup] finds
     nothing, the checker uses [check_write_open_create_result_copyins]
     ([write_open_create_errnos], no -ETXTBSY: a newly created file
-    cannot be executing).  Together with [openat_wr_check] they cover
-    every image [Fs.valid_fs] admits for a plain name. *)
+    cannot be executing).  Together with [openat_wr_check] and
+    [openat_wr_isdir_check] they cover every image [Fs.valid_fs]
+    admits for a plain name. *)
 Lemma openat_wr_absent_check : forall segs ms x8 model p,
   bv_unsigned x8 = 56%Z ->
   ms_gpr ms 0 = AT_FDCWD ->
@@ -1709,7 +1742,7 @@ Proof.
   pose proof (openat_plain_name_noslash _ Hdot) as Hunw.
   apply openat_plain_name_nodirref in Hdot.
   rewrite (check_syscall_56 segs ms x8 eff model Hno).
-  apply (check_openat_write_open_result _ _ _ _ _ _ _
+  apply (check_openat_write_open_create_result _ _ _ _ _ _ _
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFileW p (Z_to_bv 64 0)))
                         (with_fs (fs_set (m_fs model) p []) model)));
