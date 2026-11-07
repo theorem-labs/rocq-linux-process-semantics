@@ -219,7 +219,7 @@ Proof. intros m. apply clone_ns_flat_fork_ok; reflexivity. Qed.
     the host, and the shell's call returns 2. *)
 Definition inside : NsState :=
   tables [mkMount 1 1 None 1 1 1 nf nf false false None None]
-         [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
+         [mkUserNs 2 (Some 1%positive) 1 65534 (Some full) (Some full) true false 2147483647 true;
           mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
          [mk_pidns 1 None 1 0 0; mk_pidns 2 (Some 1%positive) 2 1 1].
 
@@ -277,27 +277,17 @@ Example clone_newipc_sysvsem_unprivileged_eperm : forall m,
     (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EPERM inside.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** Unprivileged with [CLONE_NEWUSER]: [copy_creds] makes the new user
-    namespace, and the child has CAP_FULL_SET there, so the capability
-    gate passes.  Then the [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires:
-    -EINVAL, not -EPERM (Linux v6.18.46, nsproxy.c:150, 162, 172-173:
-    [task_cred_xxx(tsk, user_ns)] is the child's new namespace). *)
-(* DIAGNOSTIC: trace each gate in clone_creds for NEWUSER+NEWIPC+SYSVSEM *)
-Definition diag_flags : Z := Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD.
-(* 1: not chrooted *)
-Example diag_chrooted : current_chrooted inside no_admin_inside = Some false.
-Proof. vm_compute. reflexivity. Qed.
-(* 2: NS 2 has no uid/gid maps — this is why clone_creds returns EPERM *)
-Example diag_no_uid_map :
-  match find_userns (ns_userns inside) 2 with
-  | Some p => kid_has_mapping (uns_uid_map p) 65534
-  | None => true
-  end = false.
-Proof. vm_compute. reflexivity. Qed.
-(* 3: overall result with current fixture — EPERM from kid_has_mapping *)
-Example diag_overall_eperm : forall m,
-  clone_ns_exact (cw diag_flags) (with_creds (creds 65534) m) no_admin_inside inside 140
-  = CnErr EPERM inside.
+(** Unprivileged with [CLONE_NEWUSER]: [copy_creds] creates the new user
+    namespace ([clone_creds] checks [kid_has_mapping] first, matching
+    [kuid_has_mapping]/[kgid_has_mapping] in kernel/user_namespace.c:113-116,
+    Linux v6.18.46), and the child has CAP_FULL_SET there, so the capability
+    gate passes ([copy_namespaces] uses [task_cred_xxx(tsk, user_ns)] = the
+    child's new namespace, nsproxy.c:150, 162).  Then the
+    [CLONE_NEWIPC]+[CLONE_SYSVSEM] check fires: -EINVAL, not -EPERM
+    (nsproxy.c:171-173). *)
+Example clone_newuser_newipc_sysvsem_einval : forall m,
+  clone_ns_exact (cw (Z.lor (Z.lor (Z.lor (Z.lor CLONE_NEWUSER CLONE_NEWNS) CLONE_NEWIPC) CLONE_SYSVSEM) SIGCHLD))
+    (with_creds (creds 65534) m) no_admin_inside inside 140 = CnErr EINVAL inside.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example clone_newns_non_sigchld_declines : forall m,
