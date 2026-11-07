@@ -23,10 +23,13 @@ The model describes **one system**: stable Linux v6.18.46 (commit
 uses the RISC-V specification (RV64GC). Bugs in Linux do not count.
 
 QEMU user mode is not a supported system. Where a rule of Linux and a rule
-of QEMU user mode give different answers, the model gives Linux's.
-[SCOPE.md](SCOPE.md) lists each difference in "Where QEMU user mode
-differs". A run under `qemu-riscv64` shows a Linux run only when it depends
-on none of them.
+of QEMU user mode give different answers, the model gives Linux's, and a
+proof in this model does not cover a QEMU run where QEMU and the model
+differ. [SCOPE.md](SCOPE.md) lists each difference in "Where QEMU user mode
+differs"; one of them is the start state itself — QEMU user mode builds
+another initial stack, so the model admits no QEMU start state at all. A run
+under `qemu-riscv64` shows a Linux run only when it depends on none of the
+differences.
 
 The model has three design priorities, in order of importance. Comments in
 the code refer to them by number.
@@ -279,8 +282,8 @@ that the statement is not true only because an image cannot run.
 | `*_abort` variants | `Equivalence.v` | The task declares that `abort()` is a terminal outcome. |
 | `*_either` variants | `Equivalence.v` | The task does not choose: the statement must be true with and without the `abort()` declaration. |
 | `*_hwcap_*`, `*_sv39`, `*_sv57` variants | `Equivalence.v` | The task fixes the `AT_HWCAP` value or the address-space size. |
-| `*_sigpipe_ignored` variants | `Equivalence.v` | The launcher ran `signal(SIGPIPE, SIG_IGN)` before `execve`, so a write whose far end has no reader returns `-EPIPE` and the program runs on. The default statements pin the other launch: signal 13 at `SIG_DFL`, so that write ends the process. |
-| `*_sigpipe_either` variants | `Equivalence.v` | The task does not choose: the statement must be true for both `SIGPIPE` launches. |
+| `*_sigpipe_ignored` variants | `Equivalence.v` | The statement names the `SIG_IGN` start: the launcher ran `signal(SIGPIPE, SIG_IGN)` before `execve`, which `execve` preserves. It is a narrowing of the default statements, which say nothing about the disposition and so cover both starts (`Run.valid_input` does not pin `State.in_sigpipe_default`). Under both predicates the SIGPIPE death stays undeclared (`State.in_sigpipe_terminal` is `false`), so a write whose far end has no reader is `Unmodeled`: it neither returns `-EPIPE` nor ends the process. |
+| `*_sigpipe_either` variants | `Equivalence.v` | The task does not choose. Since the disposition came off `Run.valid_input`, this is that same predicate, conjunct for conjunct; it is kept under its own name because statements were published over it and because the name says out loud that the disposition is unconstrained. |
 | `omni_strong_universal_T` | `OmniEquivalence.v` | You prefer proofs over execution trees. It is proved equivalent to `strong_universal_T`. |
 | `must_exit_with` | `MustExit.v` | Every execution must stop with a given exit code. Equal trace prefixes do not show this. |
 | `halts_allowed_T` | `HaltsAllowed.v` | One binary must stop with an exit code from a given set. |

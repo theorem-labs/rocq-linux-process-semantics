@@ -500,7 +500,7 @@ not apply.
   returns before it registers the `AF_INET6` family
   (`net/ipv6/af_inet6.c`), and `socket(AF_INET6, ...)` is
   `-EAFNOSUPPORT` where the model answers a descriptor.
-- The launch left `SIGPIPE` at its default disposition, and the
+- `SIGPIPE`'s start-up disposition is left free, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
   `SIGPIPE` and the default action ends the program — as in
@@ -723,17 +723,22 @@ equivalence) can be true of the model and false of Linux.
   that time to the clock: `State.m_clock` does not move, so a later
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
-- **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
-  `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
-  VMA, which is above `sp` by the entry image. With an entry image of more
-  than about 1 MiB and a high base draw, Linux's `mm->mmap_base` can lie
-  above `State.alloc_top`, while the model searches below `alloc_top`. The
-  model's top-down addresses are then lower than Linux's by at most the
-  entry image size less 1 MiB. The refusals differ only when no free range
-  of the requested size is left. It stays open because the model counts
-  only its own entry image against the stack limit (see "Stack floor").
-  LPS pull request #25, which makes the stack window count the entry
-  image, makes `alloc_top` Linux's floor and closes it.
+- **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
+  stack window now counts its 8 MiB from the end of the entry block, as
+  Linux counts it from the end of the stack VMA
+  (`Run.stack_window_lo`, which takes `StackLayout.ed_top` less
+  `stack_max_size` against a guard-gap floor); LPS pull request #25,
+  which made that change, is merged. The gap stays open because the
+  ALLOCATION ceiling was not moved with it: `State.alloc_top` is still
+  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB`
+  (`State.alloc_top`). Linux's `mm->mmap_base` is measured from the end
+  of the stack VMA, which is above `sp` by the entry image, so with an
+  entry image of more than about 1 MiB and a high base draw it can lie
+  above `State.alloc_top`, while the model searches below `alloc_top`.
+  The model's top-down addresses are then lower than Linux's by at most
+  the entry image size less 1 MiB. The refusals differ only when no free
+  range of the requested size is left. Raising `State.alloc_top` to the
+  floor `Run.stack_window_lo` already uses closes it.
 - **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
   free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
   above the stack included, and its bottom-up fallback searches up to the
@@ -742,7 +747,13 @@ equivalence) can be true of the model and false of Linux.
   `mmap_end - len >= addr` with the two gap tests, and the fallback sets
   `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
   `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
-  hint, and searches, only below `State.alloc_top`. It stays open because
+  hint, and searches, only below `State.alloc_top`: `Sys.Mm.Mmap.linux_place`
+  tests the hint with `gap_fits maps page_size (alloc_top h) nZ g`, and
+  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So this is
+  not only a difference in which free address is chosen: where Linux
+  RETURNS a hint above `State.alloc_top`, the model DECLINES that hint and
+  places the mapping somewhere else entirely, at a top-down address of its
+  own. It stays open because
   the dynamic stack is a bound in this model and not an entry in the
   ledger, so the model cannot tell a free address above the stack from the
   stack itself. The stack VMA in the ledger closes it.
