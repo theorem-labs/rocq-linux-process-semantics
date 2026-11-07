@@ -369,6 +369,34 @@ Proof.
        split; [exact (proj1 (proj2 (Hmk _ Hoff Hk))) | intros ? ? []]) ].
 Qed.
 
+Lemma check_write_open_result_kf : forall eff m mk m' evs,
+  check_write_open_result eff m mk = CheckOk m' evs ->
+  (forall fd, kill_post m (mk fd) []) ->
+  kill_post m m' evs.
+Proof.
+  intros eff m mk m' evs H Hmk Hoff Hk.
+  unfold check_write_open_result, check_new_fd_result in H.
+  repeat kf_step H.
+  all: first
+    [ kf_close m Hoff Hk
+    | (split; [exact (proj1 (Hmk _ Hoff Hk)) |];
+       split; [exact (proj1 (proj2 (Hmk _ Hoff Hk))) | intros ? ? []]) ].
+Qed.
+
+Lemma check_write_open_create_result_kf : forall eff m mk m' evs,
+  check_write_open_create_result eff m mk = CheckOk m' evs ->
+  (forall fd, kill_post m (mk fd) []) ->
+  kill_post m m' evs.
+Proof.
+  intros eff m mk m' evs H Hmk Hoff Hk.
+  unfold check_write_open_create_result, check_new_fd_result in H.
+  repeat kf_step H.
+  all: first
+    [ kf_close m Hoff Hk
+    | (split; [exact (proj1 (Hmk _ Hoff Hk)) |];
+       split; [exact (proj1 (proj2 (Hmk _ Hoff Hk))) | intros ? ? []]) ].
+Qed.
+
 (** [readv]'s body after the iovecs are imported; [check_readv] leaves it
     folded, as [Checks.VmMapsDisjoint.check_readv_imported_frame] has it. *)
 Lemma check_readv_imported_kf : forall i fd r iovs0 eff m m' evs,
@@ -394,6 +422,14 @@ Ltac kf_done H Hoff Hk :=
   | (match type of Hoff with
      | kill_off ?m0 =>
          refine (check_open_result_kf _ _ _ _ _ H _ Hoff Hk);
+         let fd := fresh "fd" in let Ho := fresh "Ho" in let Hk2 := fresh "Hk2" in
+         intros fd Ho Hk2; kf_close m0 Ho Hk2
+     | kill_off ?m0 =>
+         refine (check_write_open_result_kf _ _ _ _ _ H _ Hoff Hk);
+         let fd := fresh "fd" in let Ho := fresh "Ho" in let Hk2 := fresh "Hk2" in
+         intros fd Ho Hk2; kf_close m0 Ho Hk2
+     | kill_off ?m0 =>
+         refine (check_write_open_create_result_kf _ _ _ _ _ H _ Hoff Hk);
          let fd := fresh "fd" in let Ho := fresh "Ho" in let Hk2 := fresh "Hk2" in
          intros fd Ho Hk2; kf_close m0 Ho Hk2
      end) ].
