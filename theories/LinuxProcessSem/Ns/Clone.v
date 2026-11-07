@@ -389,12 +389,12 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
       at 2588-2591, Linux v6.18.46), so before [copy_creds] and
       [copy_namespaces] (2188).  Then the wider mask [clone_ns_ext_flags]
       reads its flags and the SIGCHLD test its exit signal;
-      [CLONE_CHILD_SETTID] with [pidns_children ctx <> cx_pidns ctx]
-      declines (the core's store writes the caller's return value, not
-      [child_tid_value]); then [clone_ns_answer] answers the flags, where
-      [CLONE_NEWIPC] with [CLONE_SYSVSEM] answers -EINVAL after the
-      capability gate ([copy_namespaces], kernel/nsproxy.c:162, 172-173,
-      Linux v6.18.46). *)
+      [clone_ns_answer] answers the flags, where [CLONE_NEWIPC] with
+      [CLONE_SYSVSEM] answers -EINVAL after the capability gate
+      ([copy_namespaces], kernel/nsproxy.c:162, 172-173, Linux v6.18.46);
+      then a [CnOk] with [CLONE_CHILD_SETTID] and
+      [pidns_children ctx <> cx_pidns ctx] declines (the core's store
+      writes the caller's return value, not [child_tid_value]). *)
 Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     : CloneNs :=
   if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
@@ -535,8 +535,9 @@ Qed.
 (** THE CORE GATE.  No answered record bypasses the core: it is one the
     core classifies ([Fork.clone_class r <> CcNone]) or one the argument
     checks refuse ([Fork.clone_arg_checks r = true]; the core answers
-    -EINVAL for those through [Fork.clone_einval] for legacy [clone] and
-    [Fork.clone3_einval] for [clone3]).  The first disjunct alone is
+    -EINVAL or declines for those through [Fork.clone_einval] for
+    legacy [clone], and -EINVAL through [Fork.clone3_einval] for
+    [clone3]).  The first disjunct alone is
     [clone_ns_exact_core_gate], for a record the checks pass. *)
 Theorem clone_ns_exact_core_gate_word : forall r m ctx st hq,
   (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
