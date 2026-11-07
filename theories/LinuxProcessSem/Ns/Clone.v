@@ -25,11 +25,13 @@
     [CLONE_CHILD_CLEARTID], [CLONE_SETTLS]): the wider mask is
     [clone_ns_ext_flags].  [CLONE_NEWIPC] with [CLONE_SYSVSEM] is
     refused by [copy_namespaces] (kernel/nsproxy.c:161-162, 171-173,
-    Linux v6.18.46) and answers -EINVAL.  The core's
-    [CLONE_CHILD_SETTID] store writes the child's own pid
-    ([child_tid_value]).  Linux's
+    Linux v6.18.46) and answers -EINVAL.  [CLONE_CHILD_SETTID] is
+    declined when [pidns_children ctx <> cx_pidns ctx], because the
+    core's store writes the caller's return value while Linux writes
+    [task_pid_vnr] (kernel/sched/core.c:5272-5273); the two agree only
+    when the children's namespace is the active one.  Linux's
     [copy_process] stores the tid pointers (kernel/fork.c:2040,2044);
-    [schedule_tail] writes the child's pid (kernel/sched/core.c:5272-5273),
+    [schedule_tail] writes the child's pid,
     and [mm_release] clears it (kernel/fork.c:1436-1447), v6.18.46.
     The IPC namespace is not in the tables: no modelled call reads it.
 
@@ -226,12 +228,13 @@ Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
     pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
 Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
 
-(** The child's own pid: its pid in its own pid namespace, the value the
-    [CLONE_CHILD_SETTID] store writes at [schedule_tail]
-    (kernel/sched/core.c:5272-5273, Linux v6.18.46).  Without
-    [CLONE_NEWPID] (which [Fork.child_tid_ok] excludes with
-    [CLONE_CHILD_SETTID]) this equals [clone_ret], the caller's answer,
-    because the child shares the caller's pid namespace. *)
+(** The child's own pid: its pid in its own pid namespace, the value
+    Linux's [CLONE_CHILD_SETTID] store writes at [schedule_tail]
+    (kernel/sched/core.c:5272-5273, Linux v6.18.46).  The core's store
+    uses the caller's return value instead; the two agree only when the
+    children's pid namespace is the active one.  [clone_ns_exact]
+    declines [CLONE_CHILD_SETTID] whenever they disagree; the fuller
+    fix is to carry this value into the core's [child_tid_store]. *)
 Definition child_tid_value (child : NsCtx) : option Z :=
   pid_in (cx_pids child) (cx_pidns child).
 
@@ -385,11 +388,13 @@ Definition clone_ns_answer (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq 
       [copy_process] (kernel/fork.c:1951-1999, and [kernel_clone]'s K0
       at 2588-2591, Linux v6.18.46), so before [copy_creds] and
       [copy_namespaces] (2188).  Then the wider mask [clone_ns_ext_flags]
-      reads its flags and the SIGCHLD test its exit signal, then
-      [clone_ns_answer] its flags; there [CLONE_NEWIPC] with
-      [CLONE_SYSVSEM] answers -EINVAL after the capability gate
-      ([copy_namespaces], kernel/nsproxy.c:162, 172-173, Linux
-      v6.18.46). *)
+      reads its flags and the SIGCHLD test its exit signal;
+      [CLONE_CHILD_SETTID] with [pidns_children ctx <> cx_pidns ctx]
+      declines (the core's store writes the caller's return value, not
+      [child_tid_value]); then [clone_ns_answer] answers the flags, where
+      [CLONE_NEWIPC] with [CLONE_SYSVSEM] answers -EINVAL after the
+      capability gate ([copy_namespaces], kernel/nsproxy.c:162, 172-173,
+      Linux v6.18.46). *)
 Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z)
     : CloneNs :=
   if flat_view ctx st && negb (makes_ns f) then CnOk ctx None st
@@ -399,6 +404,14 @@ Definition clone_ns_exact (f : Fork.CloneIn) (m : Model) (ctx : NsCtx) (st : NsS
       if Fork.clone_arg_checks r then CnErr EINVAL st
       else if negb (Z.land (Fork.cla_flags r) (Z.lnot clone_ns_ext_flags) =? 0) then CnUnmodeled
       else if negb (Fork.cla_exit_signal r =? Fork.SIGCHLD) then CnUnmodeled
+      (* [CLONE_CHILD_SETTID]: the core writes the caller's return value
+         but Linux writes [task_pid_vnr] (kernel/sched/core.c:5272-5273).
+         These differ when the children's pid namespace is not the active
+         one ([pidns_children ctx <> cx_pidns ctx]).  Until the model
+         carries [child_tid_value] into the core's store, decline. *)
+      else if has_flag (Fork.cla_flags r) CLONE_CHILD_SETTID
+              && negb (Pos.eqb (pidns_children ctx) (cx_pidns ctx))
+           then CnUnmodeled
       else clone_ns_answer (Fork.cla_flags r) m ctx st hq
   end.
 
@@ -409,8 +422,11 @@ Proof.
   intros m ctx st hq. unfold clone_ns_exact. destruct (flat_view ctx st); reflexivity.
 Qed.
 
-(** The namespace mask and signal tests imply the core's gate.  This is
-    derived from the masks, not another test in [clone_ns_exact]. *)
+(** A word whose bits lie within the NARROW namespace mask
+    ([clone_ns_flags], without the tid and SYSVSEM bits) and whose
+    signal byte is SIGCHLD implies the core's gate.  [clone_ns_exact]
+    now tests the wider [clone_ns_ext_flags]; this lemma is kept for
+    the narrow subset. *)
 Lemma clone_ns_mask_core_gate : forall flags,
   Z.land (bv_unsigned flags) (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) = 0 ->
   Z.land (bv_unsigned flags) CSIGNAL = Fork.SIGCHLD ->
@@ -464,6 +480,9 @@ Proof.
     eqn:Hmask; [apply Hanswer; reflexivity|].
   destruct (negb (Fork.cla_exit_signal r =? Fork.SIGCHLD))
     eqn:Hsignal; [apply Hanswer; reflexivity|].
+  destruct (has_flag (Fork.cla_flags r) CLONE_CHILD_SETTID
+            && negb (Pos.eqb (pidns_children ctx) (cx_pidns ctx)))
+    eqn:Htid; [apply Hanswer; reflexivity|].
   apply negb_false_iff in Hmask, Hsignal. apply Z.eqb_eq in Hmask, Hsignal.
   (* Step 2: unfold clone_class and discharge its first two branches. *)
   unfold Fork.clone_class in Hclass.
@@ -507,12 +526,12 @@ Proof.
   unfold clone_ns_exact. rewrite Hfast. cbv beta iota. rewrite Hc. reflexivity.
 Qed.
 
-(** THE CORE GATE, FOR EVERY DECODED [clone] (220) WORD.  No answered
-    word bypasses the core: it is a record the core classifies
-    ([Fork.clone_class]) or the one the core itself answers -EINVAL
-    ([Fork.clone_legacy_einval_b], which [Fork.clone_einval] answers).
-    The first disjunct alone is [clone_ns_exact_core_gate], for a
-    record the checks pass. *)
+(** THE CORE GATE.  No answered record bypasses the core: it is one the
+    core classifies ([Fork.clone_class r <> CcNone]) or one the argument
+    checks refuse ([Fork.clone_arg_checks r = true], which the core
+    itself answers -EINVAL through [Fork.clone_einval]).  The first
+    disjunct alone is [clone_ns_exact_core_gate], for a record the
+    checks pass. *)
 Theorem clone_ns_exact_core_gate_word : forall r m ctx st hq,
   (flat_view ctx st && negb (makes_ns (Fork.CiArgs r))) = false ->
   clone_ns_exact (Fork.CiArgs r) m ctx st hq <> CnUnmodeled ->
