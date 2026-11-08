@@ -28,6 +28,19 @@
     [Forall] over the table, so an arm added to the dispatcher without a
     [_kf] lemma fails the build here, by name.
 
+    FOUR ARMS ARE DEAD, AND SAY SO.  [check_sigpipe_write],
+    [check_sigpipe_writev], [check_tkill] and [check_tgkill] each stand
+    behind a gate [Run.kill_off] closes, so each answers
+    [CheckUnmodeled] under the hypotheses and its [_kf] lemma holds
+    vacuously: the pair [CheckOk] / [kill_off] has no model.  The four
+    are kept, because [arm_kill_free] asks one [_kf] lemma of every arm
+    of the table; but beside each sits a [_premises_refuted] lemma that
+    STATES that the pair has no model and proves it, so the dead branch
+    is an asserted, checked fact and not something a reader has to
+    notice.  Nothing counts those four as coverage: the content of this
+    file is [kill_frame_holds] and [valid_input_no_kill], whose
+    premises no gate contradicts.
+
     WHAT THIS REPLACES.  The published model stated the abort half of
     this claim as a HYPOTHESIS, [Run.decl_off_frame], consumed by
     [Run.sstep_off_no_kill] and [Run.star_off_no_kill].  That hypothesis
@@ -251,20 +264,49 @@ Qed.
     discharged BY THE ARM'S ABSENCE, and not by a fact about
     [Sys.Fs.ReadWrite.raise_sigpipe]'s post-model -- which is what the
     lemma these two proofs used to cite claimed to supply, over premises
-    no model satisfies. *)
+    no model satisfies.
+
+    WHAT THE TWO [_kf] LEMMAS BELOW PROVE, AND WHY THEY ARE KEPT.
+    Their own premise pair -- [check_sigpipe_write _ m = CheckOk _ _]
+    together with [Run.kill_off m] -- is contradictory, so each holds
+    VACUOUSLY and states no fact of its own about any post-model.  They
+    are kept because they are OBLIGATION-SHAPED: [arm_kill_free] below
+    asks one [_kf] lemma of every arm of
+    [Checks.Sys.Dispatch.checked_table], and [checked_table_kill_free]
+    is the [Forall] that consumes them, so an arm added to the
+    dispatcher without one fails the build by name.  The non-vacuous
+    content lives in the aggregate -- [kill_frame_holds] and
+    [valid_input_no_kill].  That the arm is dead is no longer left to a
+    reader's inspection: the [_premises_refuted] lemma beside each
+    states it and proves it, and that is the whole of what is claimed
+    for this arm. *)
+Lemma check_sigpipe_write_kf_premises_refuted : forall eff m m' evs,
+  ~ (check_sigpipe_write eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros eff m m' evs (H & Hoff). destruct Hoff as (_ & _ & Ht & _).
+  rewrite (check_sigpipe_write_off_unmodeled eff m Ht) in H. discriminate H.
+Qed.
+
 Lemma check_sigpipe_write_kf : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  rewrite (check_sigpipe_write_off_unmodeled eff m Ht) in H. discriminate H.
+  intros eff m m' evs H Hoff Hk. exfalso.
+  exact (check_sigpipe_write_kf_premises_refuted eff m m' evs (conj H Hoff)).
+Qed.
+
+Lemma check_sigpipe_writev_kf_premises_refuted : forall reads eff m m' evs,
+  ~ (check_sigpipe_writev reads eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros reads eff m m' evs (H & Hoff). destruct Hoff as (_ & _ & Ht & _).
+  rewrite (check_sigpipe_writev_off_unmodeled reads eff m Ht) in H.
+  discriminate H.
 Qed.
 
 Lemma check_sigpipe_writev_kf : forall reads eff m m' evs,
   check_sigpipe_writev reads eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros reads eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  rewrite (check_sigpipe_writev_off_unmodeled reads eff m Ht) in H.
-  discriminate H.
+  intros reads eff m m' evs H Hoff Hk. exfalso.
+  exact (check_sigpipe_writev_kf_premises_refuted reads eff m m' evs (conj H Hoff)).
 Qed.
 
 (** A stream-pair end's read and send rewrite fd-table entries with
@@ -433,21 +475,45 @@ Ltac kf_frame H m Hoff Hk :=
    ------------------------------------------------------------------------- *)
 
 (** [tkill] and [tgkill] decline outright while the abort declaration is
-    clear. *)
+    clear.
+
+    The same shape as the two SIGPIPE arms above, and kept for the same
+    reason: the premise pair of each [_kf] lemma --
+    [check_tkill _ _ _ m = CheckOk _ _] together with [Run.kill_off m]
+    -- is contradictory, so the lemma holds vacuously and proves nothing
+    of its own; it is kept because [arm_kill_free] asks one [_kf] lemma
+    of every arm and [checked_table_kill_free] consumes them all, with
+    the non-vacuous content in [kill_frame_holds] /
+    [valid_input_no_kill].  The dead arm is stated and proved dead by
+    the [_premises_refuted] lemma beside each. *)
+Lemma check_tkill_kf_premises_refuted : forall pid sig eff m m' evs,
+  ~ (check_tkill pid sig eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros pid sig eff m m' evs (H & Hoff). destruct Hoff as (Ha & _).
+  unfold check_tkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
+  discriminate H.
+Qed.
+
 Lemma check_tkill_kf : forall pid sig eff m m' evs,
   check_tkill pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros pid sig eff m m' evs H (Ha & _) _.
-  unfold check_tkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
+  intros pid sig eff m m' evs H Hoff Hk. exfalso.
+  exact (check_tkill_kf_premises_refuted pid sig eff m m' evs (conj H Hoff)).
+Qed.
+
+Lemma check_tgkill_kf_premises_refuted : forall tgid pid sig eff m m' evs,
+  ~ (check_tgkill tgid pid sig eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros tgid pid sig eff m m' evs (H & Hoff). destruct Hoff as (Ha & _).
+  unfold check_tgkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
   discriminate H.
 Qed.
 
 Lemma check_tgkill_kf : forall tgid pid sig eff m m' evs,
   check_tgkill tgid pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros tgid pid sig eff m m' evs H (Ha & _) _.
-  unfold check_tgkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
-  discriminate H.
+  intros tgid pid sig eff m m' evs H Hoff Hk. exfalso.
+  exact (check_tgkill_kf_premises_refuted tgid pid sig eff m m' evs (conj H Hoff)).
 Qed.
 
 (** [rt_sigprocmask] delivers a pending signal; with neither pending it
