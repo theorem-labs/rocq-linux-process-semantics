@@ -700,8 +700,8 @@ Proof.
   destruct (mmap_gates_core34 flags Hcore) as (Gm & _ & _).
   rewrite (mmap_check segs ms x8 model eff Hno). unfold check_mmap.
   assert (E1 : w_is0 (ms_gpr ms 1) = false) by (unfold w_is0; apply bv_eqb_neq; exact H1).
-  rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm. cbn [negb]. cbv beta iota zeta. fold nZ.
-  rewrite Hdecl.
+  rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm. cbn [negb]. cbv beta iota zeta.
+  rewrite Hdecl. fold nZ.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
   destruct us; [|reflexivity]. destruct cs; [|reflexivity]. destruct ci; [|reflexivity].
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].
@@ -813,8 +813,8 @@ Proof.
   destruct (mmap_gates_core34 flags Hcore) as (_ & Gm & Gn).
   rewrite (mmap_check segs ms x8 model eff Hno). unfold check_mmap.
   assert (E1 : w_is0 (ms_gpr ms 1) = false) by (unfold w_is0; apply bv_eqb_neq; exact H1).
-  rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm, Gn. cbn [negb]. cbv beta iota zeta. fold nZ.
-  rewrite Hdecl.
+  rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm, Gn. cbn [negb]. cbv beta iota zeta.
+  rewrite Hdecl. fold nZ.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity]. destruct zs; [|reflexivity].
   destruct cs; [|destruct us; reflexivity]. destruct ci; [|destruct us; reflexivity].
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].

@@ -327,24 +327,36 @@ Example wit_step5_null_hint_overlapping_refused :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** A HINT INSIDE THE STACK BAND IS NOT HONOURED, which is the other
-    side of the hint rule and worth a case of its own: every arm that
+(** A HINT INSIDE THE STACK BAND IS DECLINED, which is the other side
+    of the hint rule and worth a case of its own.  Every arm that
     places bounds the range by [State.alloc_top], the hinted arm of
     [Mmap.linux_place] included ([gap_fits maps page_size (alloc_top h)
     nZ g]), and [alloc_top h] is [vm_init_sp h - stack_max_size], at or
     below [Run.stack_window_lo] — the lowest address this run's stack
     can occupy.  So a grant can never reach a byte the stack may grow
-    into, however the caller hints.  Asked here with the hint one page
-    below the top of the user address space, 2^47 - 4096.  Its PARTNER
-    is [wit_step5] above: the same request with a free hint BELOW the
-    top is honoured at that hint, so this is a refusal of the band and
-    not of hints. *)
-Example mmap_hint_in_the_stack_band_is_refused :
+    into, however the caller hints.
+
+    WHAT THE ANSWER IS, AND WHY IT IS NOT A REFUSAL.  Linux honours a
+    free page-aligned hint up to [mmap_end], which on riscv64 is
+    [STACK_TOP_MAX = State.TASK_SIZE] (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the [if (addr)] block;
+    arch/riscv/include/asm/processor.h, [arch_get_mmap_end]; Linux
+    v6.18.46, commit 1f99e9ab748f).  The ledger carries no stack entry,
+    so this model cannot tell a free page in that band from a page the
+    stack owns: refusing would have claimed Linux refuses, and Linux
+    may not.  [Mmap.place_declined_b] declines the call instead, and
+    the answer here is [CheckUnmodeled].  The hint asked for is one
+    page below the top of the user address space, 2^47 - 4096, so its
+    range ends exactly at [State.TASK_SIZE].  Its PARTNER is
+    [wit_step5] above: the same request with a free hint BELOW the top
+    is honoured at that hint, so this is a decline of the band and not
+    of hints. *)
+Example mmap_hint_in_the_stack_band_is_unmodeled :
   check_syscall
     (mkInput 222 [140737488351232; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 140737488351232 [] [(140737488351232, 4096)]) wit_s4
-  = CheckReject.
+  = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
 (** …and the arithmetic behind it, so the refusal is not read as an
