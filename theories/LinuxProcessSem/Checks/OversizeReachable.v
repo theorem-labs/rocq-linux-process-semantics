@@ -68,7 +68,8 @@ Proof.
     by (vm_compute; reflexivity).
   cbv beta iota zeta delta [negb] in H.
   apply (proj1 (bind_get_model _ mm_i mm_model o)) in H. cbv beta zeta in H.
-  replace (place_declined_b (m_vmmaps mm_model) (Z_to_bv 64 0)
+  replace (place_declined_b (m_kernel mm_model) (m_vmmaps mm_model)
+              (Z_to_bv 64 0)
               (page_round_up_Z (bv_unsigned (Z_to_bv 64 8192))))
     with false in H by (vm_compute; reflexivity).
   unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify in H.
@@ -97,7 +98,8 @@ Proof.
     by (vm_compute; reflexivity).
   cbv beta iota zeta delta [negb].
   apply (proj2 (bind_get_model _ mm_i mm_model _)). cbv beta zeta.
-  replace (place_declined_b (m_vmmaps mm_model) (Z_to_bv 64 0)
+  replace (place_declined_b (m_kernel mm_model) (m_vmmaps mm_model)
+              (Z_to_bv 64 0)
               (page_round_up_Z (bv_unsigned (Z_to_bv 64 8192))))
     with false by (vm_compute; reflexivity).
   left. unfold bind, errno_from, choose, err_ret, ret_only, pure.

@@ -430,9 +430,11 @@ Proof. split; check_eq. Qed.
     window. *)
 
 (** A source at [demo_top - 8192] whose grown extent ends exactly ON
-    the ceiling, which the conjunct's [<=?] admits — the same inclusive
-    boundary [mmap_modeled_at_ceiling_boundary_grants] reads off for
-    [mmap]. *)
+    the ceiling, which the conjunct's [<=?] admits.  [mmap]'s own
+    inclusive boundary sits one guard gap lower
+    ([mmap_modeled_at_guard_boundary_grants]), because a hinted [mmap]
+    is declined where Linux's hint test would hit the stack's guard
+    gap ([Mmap.place_declined_b]) and this conjunct tests no gap. *)
 
 (** The same call one page higher, so the grown extent ends one page PAST
     the ceiling.  The model differs from the one above in the source's base
@@ -1327,23 +1329,36 @@ Example mmap_fixed_rw_destructive_failure_leaves_a_hole :
         noaccess_base) [].
 Proof. check_eq. Qed.
 
-(** Reason 1.  THE FRESH MAP_FIXED SUB-CASE ADDS NO REACHABLE TRANSITION.
-    Under the guards that sub-case tests, the effect and post-state it
-    produces are ones the HINT-PLACED rw shape already produces from the
-    same pre-state — with [addr] ITSELF as the hint.  Before the
-    placement change the lemma said "for any hint at all", because the
-    model's [choose] was free to land anywhere; it is not any more, and
-    naming the hint is what the change costs.  It costs nothing in
-    strength: Linux returns a page-aligned hint whose range is free
-    unchanged (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint
-    test,
-    Linux v6.18.46, commit 1f99e9ab748f), and the sub-case's own
-    guards — alignment, positivity, the [alloc_top] bound and
-    [region_free] — are exactly what makes this hint free.  So the
-    widening is in which argument words reach the transition, never in
-    the set of transitions: no state becomes reachable that the
-    hint-placed shape does not reach, and every invariant that holds of
-    that shape's post-states holds of these unchanged.
+(** Reason 1.  THE FRESH MAP_FIXED SUB-CASE ADDS NO REACHABLE
+    TRANSITION BELOW THE GUARD BAND.  Under the guards that sub-case
+    tests, and with the range ending a guard gap clear of the run's
+    [State.alloc_top], the effect and post-state it produces are ones
+    the HINT-PLACED rw shape already produces from the same pre-state —
+    with [addr] ITSELF as the hint.  Before the placement change the
+    lemma said "for any hint at all", because the model's [choose] was
+    free to land anywhere; it is not any more, and naming the hint is
+    what the change costs.  Linux returns a page-aligned hint whose
+    range is free and ends clear of the stack's guard gap unchanged
+    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test at
+    mm/mmap.c:757-760, Linux v6.18.46, commit 1f99e9ab748f), and the
+    sub-case's own guards — alignment, positivity, the bound below and
+    [region_free] — are exactly what makes this hint free.  So on that
+    band the widening is in which argument words reach the transition,
+    never in the set of transitions: no state becomes reachable that
+    the hint-placed shape does not reach, and every invariant that
+    holds of that shape's post-states holds of these unchanged.
+
+    THE BOUND IS A GUARD GAP TIGHTER THAN THE SUB-CASE'S OWN, and that
+    is what this lemma now costs.  [Mmap.place_declined_b] declines a
+    HINTED call whose range ends within [stack_guard_gap] of
+    [alloc_top] — Linux's hint test subtracts that gap from the stack's
+    start (mm/mmap.c:758, [vm_start_gap]) and this ledger cannot say
+    where the stack starts — while MAP_FIXED takes no such test
+    ([if (flags & MAP_FIXED) return addr;], mm/mmap.c:750-751).  In
+    that band the two shapes really do differ, so the lemma states the
+    band it covers rather than claiming one it does not.  The
+    transitions in the band are Linux's own, by that MAP_FIXED line;
+    what they have lost is the hint-placed shape as their witness.
 
     This is the strongest soundness argument any of the four shapes has,
     and it is why the sub-case is here rather than left fail-closed: it
@@ -1354,7 +1369,8 @@ Lemma mmap_fixed_fresh_adds_no_transition :
     w_is0 len = false ->
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
-    (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
+    (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
+     <= alloc_top (m_vmmaps m) - stack_guard_gap_bytes (m_kernel m))%Z ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     mmap_noreserve_backed_ok 34 m (page_round_up_Z (bv_unsigned len)) = true ->
@@ -1372,14 +1388,16 @@ Lemma mmap_fixed_fresh_adds_no_transition :
                 (vm_init_sp (m_vmmaps m))) m)) []).
 Proof.
   intros addr len i m Hl Halign Hpos Hceil Hfree Hbud.
+  pose proof (stack_guard_gap_bytes_bounds (m_kernel m)) as Hgg.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b].
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  assert (Hdecl : place_declined_b (m_vmmaps m) addr
+  assert (Hdecl : place_declined_b (m_kernel m) (m_vmmaps m) addr
             (page_round_up_Z (bv_unsigned len)) = false).
   { unfold place_declined_b, hint_address, page_round_down_Z.
     unfold page_size in Halign |- *.
     replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
     assert (Hbound : (alloc_top (m_vmmaps m)
+                        - stack_guard_gap_bytes (m_kernel m)
                        <? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
                       = false) by (apply Z.ltb_ge; exact Hceil).
     rewrite Hbound, !andb_false_r. reflexivity. }
@@ -1392,27 +1410,32 @@ Proof.
     destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
     left. split; [|reflexivity].
     unfold gap_fits, page_size.
-    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    split; [exact Halign|]. split; [lia|]. split; [lia|].
     rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
 Qed.
 
 (** Reason 1.  The PROT_NONE MAP_FIXED branch carries the same free-range
-    sub-case, and it is the same argument again: under those guards the
-    effect and post-state are ones [mmap_noaccess_b] already produces from
-    the same pre-state, with [addr] as the hint — free, by those same
-    guards, so Linux returns it (mm/mmap.c, the hint test in
+    sub-case, and it is the same argument again, over the same band:
+    under those guards, with the range ending a guard gap clear of
+    [State.alloc_top], the effect and post-state are ones
+    [mmap_noaccess_b] already produces from the same pre-state, with
+    [addr] as the hint — free, by those same guards, so Linux returns
+    it (mm/mmap.c:757-760, the hint test in
     [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
-    1f99e9ab748f).  Leaving this out would be an asymmetry rather than
-    a decision — a sanitizer runtime fills the gap between its two
-    shadow regions with exactly this call. *)
+    1f99e9ab748f).  Inside the guard band the hinted shape is declined
+    and this one is not, for the reason the rw twin's comment gives.
+    Leaving this out would be an asymmetry rather than a decision — a
+    sanitizer runtime fills the gap between its two shadow regions with
+    exactly this call. *)
 Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
   forall addr len i m,
     w_is0 len = false ->
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
-    (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
+    (bv_unsigned addr + page_round_up_Z (bv_unsigned len)
+     <= alloc_top (m_vmmaps m) - stack_guard_gap_bytes (m_kernel m))%Z ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     mmap_spec addr len 0 34 mmap_fd_none 0 i m
@@ -1429,14 +1452,16 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
                 (vm_init_sp (m_vmmaps m))) m) []).
 Proof.
   intros addr len i m Hl Halign Hpos Hceil Hfree.
+  pose proof (stack_guard_gap_bytes_bounds (m_kernel m)) as Hgg.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b mmap_noaccess_b].
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-  assert (Hdecl : place_declined_b (m_vmmaps m) addr
+  assert (Hdecl : place_declined_b (m_kernel m) (m_vmmaps m) addr
             (page_round_up_Z (bv_unsigned len)) = false).
   { unfold place_declined_b, hint_address, page_round_down_Z.
     unfold page_size in Halign |- *.
     replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
     assert (Hbound : (alloc_top (m_vmmaps m)
+                        - stack_guard_gap_bytes (m_kernel m)
                        <? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
                       = false) by (apply Z.ltb_ge; exact Hceil).
     rewrite Hbound, !andb_false_r. reflexivity. }
@@ -1449,7 +1474,7 @@ Proof.
     destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
     left. split; [|reflexivity].
     unfold gap_fits, page_size.
-    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    split; [exact Halign|]. split; [lia|]. split; [lia|].
     rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
@@ -2732,10 +2757,11 @@ Proof. check_eq. Qed.
    and just outside it.  [vm_limit] is pinned for [mmap_modeled_b] by
    [mmap_within_budget_grants] / [mmap_beyond_budget_rejected] above.
    The bound is per run
-   ([State.alloc_top]); these examples pin it at [demo_top], the top a
-   run started at the bottom of the SP window has, and the
-   [grant_at_demo_top_*] pair below is what separates a bound read from
-   the ledger from a constant. *)
+   ([State.alloc_top], less the run's [stack_guard_gap] on the hint
+   path); these examples pin it at [demo_top] and at that run's guard
+   floor, the top a run started at the bottom of the SP window has,
+   and the [grant_at_demo_top_*] pair below is what separates a bound
+   read from the ledger from a constant. *)
 
 Definition mmap_noaccess_in (len : word) : SyscallInput :=
   mkInput 222 [0; len; 0; 34; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
@@ -2783,36 +2809,67 @@ Example mmap_noaccess_unaligned_placement_is_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** [demo_top] = 0x7fff7f800000 = 140735332483072.  The last
-    page-aligned start admitting a 4096-byte grant is
-    [demo_top - 4096] = 140735332478976: [r + n = demo_top]
-    exactly, satisfying the conjunct's [<=?].  [ceiling_room_model]
-    carries no reserved or live mapping and [demo_limit] of budget, so
-    both boundary grants below are admitted.  Each address is its own
-    HINT, and Linux honours the free page-aligned range
+(** [demo_top] = 0x7fff7f800000 = 140735332483072, and
+    [State.default_kernel]'s [stack_guard_gap] is 256 pages, so the
+    guard floor of these runs is [demo_top - 1048576] = 0x7fff7f700000
+    = 140735331434496.  The last page-aligned start admitting a
+    4096-byte grant is one page under it,
+    [demo_top - 1048576 - 4096] = 140735331430400: [r + n] is the
+    guard floor exactly, satisfying the test's [<=].
+    [ceiling_room_model] carries no reserved or live mapping and
+    [demo_limit] of budget, so both boundary grants below are
+    admitted.  Each address is its own HINT, and Linux honours a free
+    page-aligned range that clears the stack's guard gap
     ([generic_get_unmapped_area_topdown], mm/mmap.c:753-761, Linux
-    v6.18.46, commit 1f99e9ab748f).  Its hint window ends at
-    [State.TASK_SIZE], not at this run's [alloc_top]; the model can
-    honour the hint at the boundary, but declines the page above it. *)
+    v6.18.46, commit 1f99e9ab748f). *)
 
-Example mmap_modeled_at_ceiling_boundary_grants :
-  check_syscall (mmap_at_in 140735332478976 4096)
-    (mkEffect 140735332478976 [] [(140735332478976, 4096)])
+Example mmap_modeled_at_guard_boundary_grants :
+  check_syscall (mmap_at_in 140735331430400 4096)
+    (mkEffect 140735331430400 [] [(140735331430400, 4096)])
     ceiling_room_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [] [(140735332478976, 4096)] 0 0 demo_limit)
+      (with_vmmaps (mkVmMaps [] [(140735331430400, 4096)] 0 0 demo_limit)
         ceiling_room_model) [].
 Proof. check_eq. Qed.
 
-(** One page past the boundary — [r = demo_top] itself, so
-    [r + n = demo_top + 4096] — is UNMODELED, not a rejected grant.
-    The hinted range is free on this empty ledger and ends below
-    [State.TASK_SIZE], so Linux returns the hint unchanged
+(** One page past that boundary the range ends INSIDE the guard gap,
+    and the call is UNMODELED rather than a grant.  Linux's hint test
+    compares the range's end against [vm_start_gap(vma)], which
+    subtracts [stack_guard_gap] from a growsdown VMA's start
+    (mm/mmap.c:758; include/linux/mm.h, [vm_start_gap] through
+    [stack_guard_start_gap]), so on a run whose stack has grown to its
+    limit Linux REFUSES this hint and searches top-down instead.  This
+    ledger holds no stack VMA and cannot say how far the stack has
+    grown, so the model declines rather than answer the hint Linux may
+    not give.  This is SCOPE.md's R-c on the hint path. *)
+
+Example mmap_modeled_inside_the_guard_gap_is_unmodeled :
+  check_syscall (mmap_at_in 140735331434496 4096)
+    (mkEffect 140735331434496 [] [(140735331434496, 4096)])
+    ceiling_room_model
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** The old grant address — one page under [demo_top], which cleared
+    [alloc_top] but not the gap — is the same decline, and it is the
+    page this change moved. *)
+
+Example mmap_modeled_one_page_under_the_top_is_unmodeled :
+  check_syscall (mmap_at_in 140735332478976 4096)
+    (mkEffect 140735332478976 [] [(140735332478976, 4096)])
+    ceiling_room_model
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** Past the ceiling itself — [r = demo_top], so
+    [r + n = demo_top + 4096] — is UNMODELED too, and for the other
+    reason: the hinted range is free on this empty ledger and ends
+    below [State.TASK_SIZE], so Linux returns the hint unchanged
     (mm/mmap.c:753-761, [generic_get_unmapped_area_topdown], Linux
-    v6.18.46, commit 1f99e9ab748f).  [Mmap.linux_place] instead bounds
-    its hint by [alloc_top] and would search elsewhere.  The model
-    declines the call before considering any effect, rather than give
-    that different address as Linux's answer. *)
+    v6.18.46, commit 1f99e9ab748f) while [Mmap.linux_place] bounds its
+    hint by [alloc_top] and would search elsewhere.  The model declines
+    the call before considering any effect, rather than give that
+    different address as Linux's answer. *)
 
 Example mmap_modeled_past_ceiling_is_unmodeled :
   check_syscall (mmap_at_in 140735332483072 4096)
@@ -2824,24 +2881,33 @@ Proof. check_eq. Qed.
 (** The same boundary, in the PROT_NONE branch: the grant also lands in
     [vm_noaccess]. *)
 
-Example mmap_noaccess_at_ceiling_boundary_grants :
-  check_syscall (mmap_noaccess_at_in 140735332478976 4096)
-    (mkEffectU 140735332478976 [] [] [(140735332478976, 4096)] [] [])
+Example mmap_noaccess_at_guard_boundary_grants :
+  check_syscall (mmap_noaccess_at_in 140735331430400 4096)
+    (mkEffectU 140735331430400 [] [] [(140735331430400, 4096)] [] [])
     ceiling_room_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(140735332478976, 4096)] [(140735332478976, 4096)]
+        (mkVmMapsFull [] [(140735331430400, 4096)] [(140735331430400, 4096)]
           0 0 demo_limit 0 demo_sp)
         ceiling_room_model) [].
 Proof. check_eq. Qed.
 
-(** PROT_NONE places through the same hint rule, with no backed-memory
-    charge.  The page starting at [demo_top] is free and its end is
-    below [State.TASK_SIZE], so Linux honours it (mm/mmap.c:753-761,
+(** PROT_NONE places through the same hint rule, so it declines on the
+    same two grounds: a range ending inside the guard gap… *)
+Example mmap_noaccess_inside_the_guard_gap_is_unmodeled :
+  check_syscall (mmap_noaccess_at_in 140735331434496 4096)
+    (mkEffectU 140735331434496 [] [] [(140735331434496, 4096)] [] [])
+    ceiling_room_model
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** …and a range ending above the run's [alloc_top].  The page starting
+    at [demo_top] is free and its end is below [State.TASK_SIZE], so
+    Linux honours it (mm/mmap.c:753-761,
     [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
-    1f99e9ab748f).  It is the model's [alloc_top] bound, not the
-    protection or budget, that prevents that answer; this arm declines
-    the call too. *)
+    1f99e9ab748f).  It is the model's own bounds, not the protection or
+    the budget, that prevent that answer; this arm declines the call
+    too. *)
 Example mmap_noaccess_past_ceiling_is_unmodeled :
   check_syscall (mmap_noaccess_at_in 140735332483072 4096)
     (mkEffectU 140735332483072 [] [] [(140735332483072, 4096)] [] [])
@@ -3548,6 +3614,7 @@ Proof.
   unfold check_mmap in H. rewrite Hlen in H.
   cbn [mmap_modeled_b] in H. cbv zeta in H.
   destruct (place_declined_b
+              (m_kernel (init_model [] 0 mb sp demo_limit inp))
               (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
               0 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
     [discriminate|].
@@ -3621,12 +3688,14 @@ Definition top_hi_model : Model :=
     free, but its end passes that run's [alloc_top].  The model
     declines: its hint window is narrower than Linux's, and searching
     below that window would give a different answer.  Under [hi_sp]
-    the same range ends below [alloc_top], remains below the reserved
+    the same range ends 256 MiB below [alloc_top] — clear of that
+    run's guard gap as well as of its top — remains below the reserved
     pair, and is honoured.  The two fixtures keep [mmap_base_max]:
-    [Mmap.place_declined_b] reads the hint and the run's top, not its
-    mmap base.  A NULL hint would not decline in either run; a forged
-    grant at [demo_top] would instead be rejected, since the search
-    answers the highest page below the vdso/vvar pair. *)
+    [Mmap.place_declined_b] reads the hint, the run's top and the
+    run's guard gap, not its mmap base.  A NULL hint would not decline
+    in either run; a forged grant at [demo_top] would instead be
+    rejected, since the search answers the highest page below the
+    vdso/vvar pair. *)
 Definition top_hi_reserved : list (word * word) :=
   vm_reserved (m_vmmaps top_hi_model).
 

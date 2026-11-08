@@ -681,7 +681,7 @@ Lemma mmap_rw_check : forall ms x8 model eff flags,
   ms_gpr ms 1 <> Z_to_bv 64 0 -> ms_gpr ms 2 = Z_to_bv 64 3 ->
   ms_gpr ms 3 = flags -> mmap_flags_core flags = 34%Z ->
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   let nZ := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in
   check_syscall (sys_input segs ms x8) eff model
@@ -721,7 +721,7 @@ Lemma srz_mmap_rw2 : forall regs (pc : word) mem rom model w (len : Z) (flags : 
   getr regs 11 = Z_to_bv 64 len -> (0 < len < 2 ^ 64)%Z ->
   getr regs 12 = Z_to_bv 64 3 -> getr regs 13 = flags -> mmap_flags_core flags = 34%Z ->
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
-  place_declined_b (m_vmmaps model) (getr regs 10)
+  place_declined_b (m_kernel model) (m_vmmaps model) (getr regs 10)
     (page_round_up_Z (bv_unsigned (getr regs 11))) = false ->
   let nZ := page_round_up_Z len in
   let n := Z_to_bv 64 nZ in
@@ -795,7 +795,7 @@ Lemma mmap_none_check : forall ms x8 model eff flags,
   ms_gpr ms 1 <> Z_to_bv 64 0 -> ms_gpr ms 2 = Z_to_bv 64 0 ->
   ms_gpr ms 3 = flags -> mmap_flags_core flags = 34%Z ->
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   let nZ := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in
   check_syscall (sys_input segs ms x8) eff model
@@ -828,7 +828,7 @@ Lemma srz_mmap_none2 : forall regs (pc : word) mem rom model w (len : Z) (flags 
   getr regs 11 = Z_to_bv 64 len -> (0 < len < 2 ^ 64)%Z ->
   getr regs 12 = Z_to_bv 64 0 -> getr regs 13 = flags -> mmap_flags_core flags = 34%Z ->
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
-  place_declined_b (m_vmmaps model) (getr regs 10)
+  place_declined_b (m_kernel model) (m_vmmaps model) (getr regs 10)
     (page_round_up_Z (bv_unsigned (getr regs 11))) = false ->
   let nZ := page_round_up_Z len in
   let n := Z_to_bv 64 nZ in

@@ -70,10 +70,12 @@ Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     (if mmap_plain_anon_b flags then ret_outcome (errno_ret EINVAL) m
      else Unmodeled)
   else if mmap_modeled_b prot flags off
-  then if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+  then if place_declined_b (m_kernel m) (m_vmmaps m) addr
+            (page_round_up_Z (bv_unsigned len))
        then Unmodeled else ret_outcome (errno_ret witness_errno) m
   else if mmap_noaccess_b prot flags off
-  then if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+  then if place_declined_b (m_kernel m) (m_vmmaps m) addr
+            (page_round_up_Z (bv_unsigned len))
        then Unmodeled else ret_outcome (errno_ret witness_errno) m
   else if mmap_fixed_noaccess_b prot flags off then
     let nZ := page_round_up_Z (bv_unsigned len) in
@@ -198,13 +200,13 @@ Proof.
       [apply pure_ok|apply unmodeled_intro]. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw.
   { eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [apply unmodeled_intro|].
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
   { eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [apply unmodeled_intro|].
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }

@@ -637,7 +637,7 @@ Corollary rz_mmap_drain : forall ms0 ms model x8 bf cf,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (** the mmap failed: the binary's failure tail, a (retry-loop) write
       list and an exit *)
@@ -689,7 +689,7 @@ Corollary rz_mmap_drain_det : forall ms0 ms model x8 bf cf,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_wallexit segs (Z_to_bv 64 1) bf cf

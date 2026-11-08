@@ -94,12 +94,14 @@ putting one derivation inside another. `rz_alloc_writes` composes an
 allocation with a list of writes.
 
 The freely placed anonymous `mmap` rules also require
-`place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+`place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false`.
 Argument 0 is the address hint and argument 1 is the length. Well-formed
 arguments alone do not establish this condition: the model declines a
-usable hint whose requested range extends above its allocation ceiling
-before offering either the errno or the grant resolutions.
+usable hint whose requested range extends above its allocation ceiling,
+or ends within the run's `stack_guard_gap` below that ceiling, before
+offering either the errno or the grant resolutions. A null hint never
+declines, so a call that passes 0 in argument 0 discharges it outright.
 
 Limits:
 

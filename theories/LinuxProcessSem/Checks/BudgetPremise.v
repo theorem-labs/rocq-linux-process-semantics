@@ -324,7 +324,7 @@ Proof.
   destruct (mmap_modeled_b (in_arg i 2) (in_arg i 3) (in_arg i 5)).
   { intros Hmark Hspec.
     apply (proj1 (bind_get_model _ i m _)) in Hspec. cbv beta zeta in Hspec.
-    destruct (place_declined_b (m_vmmaps m) (in_arg i 0)
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) (in_arg i 0)
                 (page_round_up_Z (bv_unsigned (in_arg i 1)))) eqn:Hdecl.
     { unfold unmodeled in Hspec. discriminate Hspec. }
     unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify

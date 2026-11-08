@@ -946,7 +946,7 @@ assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
 assert (HnM : (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z)
   by apply pup_mod.
 destruct (mmap_modeled_b prot flags off) eqn:Emod.
-{ destruct (place_declined_b (m_vmmaps m) addr
+{ destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
               (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
   destruct ws, us, cs, ci; try discriminate.
   dei H.
@@ -965,7 +965,7 @@ destruct (mmap_modeled_b prot flags off) eqn:Emod.
     as (Halign & Hpos & Hceil & Hfree).
   apply ledger_mmap_add; [exact HW | reflexivity | rewrite u64 by lia; lia]. }
 destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
-{ destruct (place_declined_b (m_vmmaps m) addr
+{ destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
               (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
   destruct ws, zs, cs, ci; try discriminate.
   dei H.
