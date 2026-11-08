@@ -99,8 +99,8 @@ mode answers. QEMU citations are QEMU 10.0.11.
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
   and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
   of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; "Known gaps in precision" gives the difference as R-a,
-  R-b and R-c. QEMU
+  Linux's bounds; "Soundness gaps" gives the difference as R-a and R-b,
+  and "Known gaps in precision" as R-c. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -660,6 +660,61 @@ not apply.
   image's disassembly. The model does not re-check it for an image
   added later.
 
+## Soundness gaps
+
+Design priority 1 asks that every behavior Linux v6.18.46 can give, in a
+case the model covers, is a behavior of the model (README.md). The model
+does not meet it in these two cases: **it declines placements Linux can
+make above `State.alloc_top`; until that is fixed, a proof does not cover
+them.** They are priority-1 gaps, not gaps in precision. A statement that
+a proof can establish in the model — "a non-fixed `mmap` returns an
+address below `sp`" — is then false of Linux. The fix is to make such a
+placement `unmodeled` or to raise the ceiling; both are open.
+
+- **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
+  stack window now counts its 8 MiB from the end of the entry block
+  (`Run.stack_window_lo`: `StackLayout.ed_top` less `stack_max_size`,
+  against a guard-gap floor), as Linux counts RLIMIT_STACK from the stack
+  VMA's `vm_end` (`expand_downwards` through `acct_stack_growth`,
+  `mm/vma.c`). LPS pull request #25, which moved that count off `sp` and
+  onto the entry block, is merged; `ed_top` and the guard-gap floor came
+  after it. The gap stays open because the ALLOCATION ceiling was not
+  moved with the window: `State.alloc_top` is still
+  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB` (`State.alloc_top`),
+  while `sp` sits below the stack VMA's end by the entry image. The model
+  admits exactly Linux's bases (`Run.valid_launch_base`, which mirrors
+  `mmap_base`, `mm/util.c`: `STACK_TOP` less a gap of the stack rlimit,
+  the guard gap and the stack randomization maximum, less a base draw),
+  and with a large stack draw and an entry image of more than about 1 MiB
+  — the guard-gap pad in that gap — an admitted `mm->mmap_base` lies above
+  `State.alloc_top`, below which the model searches.
+  The model's top-down addresses are then lower than Linux's by at most
+  the entry image size less 1 MiB, so until this is fixed a proof does not
+  cover a run whose mapping Linux puts above `State.alloc_top`. The
+  refusals differ only when no free
+  range of the requested size is left. Raising `State.alloc_top` to the
+  floor `Run.stack_window_lo` already uses closes it.
+- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
+  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
+  above the stack included, and its bottom-up fallback searches up to the
+  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
+  `generic_get_unmapped_area_topdown`: the hint test is
+  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
+  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
+  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
+  hint, and searches, only below `State.alloc_top`: `Sys.Mm.Mmap.linux_place`
+  tests the hint with `gap_fits maps page_size (alloc_top h) nZ g`, and
+  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So this is
+  not only a difference in which free address is chosen: where Linux
+  RETURNS a hint above `State.alloc_top`, the model DECLINES that hint and
+  places the mapping somewhere else entirely, at a top-down address of its
+  own. It stays open because
+  the dynamic stack is a bound in this model and not an entry in the
+  ledger, so the model cannot tell a free address above the stack from the
+  stack itself. The stack VMA in the ledger closes it. Until then, a
+  proof does not cover a run in which Linux honours such a hint or falls
+  back above `State.alloc_top`.
+
 ## Known gaps in precision
 
 Design priority 2 asks that the model include no behavior that Linux
@@ -723,45 +778,6 @@ equivalence) can be true of the model and false of Linux.
   that time to the clock: `State.m_clock` does not move, so a later
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
-- **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
-  stack window now counts its 8 MiB from the end of the entry block
-  (`Run.stack_window_lo`: `StackLayout.ed_top` less `stack_max_size`,
-  against a guard-gap floor), as Linux counts RLIMIT_STACK from the stack
-  VMA's `vm_end` (`expand_downwards` through `acct_stack_growth`,
-  `mm/vma.c`). LPS pull request #25, which moved that count off `sp` and
-  onto the entry block, is merged; `ed_top` and the guard-gap floor came
-  after it. The gap stays open because the ALLOCATION ceiling was not
-  moved with the window: `State.alloc_top` is still
-  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB` (`State.alloc_top`),
-  while `sp` sits below the stack VMA's end by the entry image. The model
-  admits exactly Linux's bases (`Run.valid_launch_base`, which mirrors
-  `mmap_base`, `mm/util.c`: `STACK_TOP` less a gap of the stack rlimit,
-  the guard gap and the stack randomization maximum, less a base draw),
-  and with a large stack draw and an entry image of more than about 1 MiB
-  — the guard-gap pad in that gap — an admitted `mm->mmap_base` lies above
-  `State.alloc_top`, below which the model searches.
-  The model's top-down addresses are then lower than Linux's by at most
-  the entry image size less 1 MiB. The refusals differ only when no free
-  range of the requested size is left. Raising `State.alloc_top` to the
-  floor `Run.stack_window_lo` already uses closes it.
-- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
-  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
-  above the stack included, and its bottom-up fallback searches up to the
-  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
-  `generic_get_unmapped_area_topdown`: the hint test is
-  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
-  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
-  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
-  hint, and searches, only below `State.alloc_top`: `Sys.Mm.Mmap.linux_place`
-  tests the hint with `gap_fits maps page_size (alloc_top h) nZ g`, and
-  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So this is
-  not only a difference in which free address is chosen: where Linux
-  RETURNS a hint above `State.alloc_top`, the model DECLINES that hint and
-  places the mapping somewhere else entirely, at a top-down address of its
-  own. It stays open because
-  the dynamic stack is a bound in this model and not an entry in the
-  ledger, so the model cannot tell a free address above the stack from the
-  stack itself. The stack VMA in the ledger closes it.
 - **R-c, the stack guard gap.** When the stack has grown to its limit,
   Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
   that gap from the start of a `VM_GROWSDOWN` VMA
