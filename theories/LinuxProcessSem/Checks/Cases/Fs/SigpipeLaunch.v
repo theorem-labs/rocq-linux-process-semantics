@@ -179,7 +179,8 @@ Proof. vm_compute. split; reflexivity. Qed.
 (** The same decline, read off the launch predicate rather than off a
     fixture: on every input [Run.valid_input] admits, the model the run
     starts from has the death undeclared, so every write that would raise
-    SIGPIPE at SIG_DFL declines ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]). *)
+    SIGPIPE declines, at either disposition
+    ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]). *)
 Lemma valid_input_model_declines_sigpipe :
   forall reserved brk0 mbase sp lim inp,
   valid_input inp ->

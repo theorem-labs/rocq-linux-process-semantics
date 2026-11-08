@@ -4753,9 +4753,10 @@ Record ProcState := mkProcState {
                                     [in_sigpipe_terminal] and written by
                                     nothing, so it is constant along every run.
 
-                                    [false]: a write that would RAISE SIGPIPE at
-                                    SIG_DFL DECLINES, whatever the mask
-                                    ([Sys.Fs.ReadWrite.sigpipe_write]), exactly
+                                    [false]: a write that would RAISE SIGPIPE
+                                    DECLINES, at either disposition and
+                                    whatever the mask
+                                    ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]),
                                     as [Kernel.Signal.tkill_spec] declines every
                                     call with [procst_abort_terminal] clear.  So
                                     no SIGPIPE is ever sent, none is ever
@@ -7561,12 +7562,17 @@ Record ProcInput := mkProcInput_full {
        change it afterwards: [Kernel.Signal.rt_sigaction_spec] answers
        an install of SIG_DFL or SIG_IGN for signal 13, and this field is
        the value it changes FROM.
-       [Run.valid_input] PINS IT TO [true], and that is settled where
-       the reader above is not.  The two fields gate the same death,
+       [Run.valid_input] PINS NOTHING HERE, and that is the difference
+       from the reader above, which it does pin.  Both dispositions are
+       starts Linux produces, so the ordinary launch leaves this field
+       free and covers them both.  The two fields gate the same death,
        but this one is the TASK's stance and not the environment's, so
-       it is declared the way the abort stance is: [Run.valid_input] is
-       the ordinary launch, [Run.valid_input_sigpipe_ignored] is the
-       other world, and [Run.valid_input_sigpipe_either] asserts both.
+       it is declared rather than assumed: [Run.valid_input] is the
+       ordinary launch, [Run.valid_input_sigpipe_ignored] NARROWS it to
+       the SIG_IGN start -- every clause of [Run.valid_input] is a
+       clause of that one, so it is not a world beside the ordinary
+       launch -- and [Run.valid_input_sigpipe_either] is what the
+       leaving-free is called when a reader wants the name.
        Without the field every statement here would carry the SIG_DFL
        launch as an UNSTATED premise, and a launcher that ignores
        SIGPIPE would be handed a model that kills the process where
@@ -7578,8 +7584,9 @@ Record ProcInput := mkProcInput_full {
     (* THE TASK'S DECLARATION of whether the model follows a SIGPIPE at
        SIG_DFL into the death it causes, the twin of [in_abort_terminal]
        for the other signal this model raises.  [false]: a write that
-       would raise SIGPIPE at SIG_DFL DECLINES, whatever the blocked
-       mask, as [tkill] declines with [in_abort_terminal] clear -- so
+       would raise SIGPIPE DECLINES -- at EITHER disposition and
+       whatever the blocked mask, as [tkill] declines with
+       [in_abort_terminal] clear -- so
        no run ends in [KillEv 13] and none holds a pending SIGPIPE.
        [true]: the write raises the signal and, with it open, the
        process dies ([Sys.Fs.ReadWrite.raise_sigpipe]).

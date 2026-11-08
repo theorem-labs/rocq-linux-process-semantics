@@ -80,7 +80,7 @@ repository, in `linux/` or in `qemu/`.
    that the change adds, find the Linux code that gives it. An
    outcome Linux does not give breaks priority 2, and a statement that
    compares sets of behaviors can then be false (README.md): blocking, unless
-   `SCOPE.md` already records it, under "Known gaps in precision" or
+   `SCOPE.md` records it, under "Known gaps in precision" or
    "Soundness gaps".
 2. **Is each statement true?** A comment or a `SCOPE.md` sentence about Linux
    names a file and a function at v6.18.46, and one about QEMU names a file
@@ -110,6 +110,17 @@ repository, in `linux/` or in `qemu/`.
    each new `Admitted`, `admit`, `Axiom`,
    `Parameter`, and each `Hypothesis`, `Variable` or `Context` outside a
    section.
+   For each definition the change alters, find the lemmas that carry it in
+   a premise BESIDE another premise about the same field, and give one
+   model that satisfies both.  A premise pair that has become contradictory
+   leaves a lemma that proves nothing while still reading as coverage, and
+   a diff-scoped reading cannot see it: the diff shows the definition, not
+   the lemma it emptied. #38 made `ReadWrite.sigpipe_declines` equal to
+   `negb (m_sigpipe_terminal m)`, which turned the two premises of
+   `Checks/KillFree.v`'s `raise_sigpipe_off` —
+   `m_sigpipe_terminal m = false` and `sigpipe_declines m = false` — into
+   `false` and `true` for the same field; the lemma still compiled and was
+   still used twice, and its premises held of no model at all.
 4. **Does it show what it claims?** A fix comes with a test or an example
    that fails on `main` and passes with the change. A change that admits a
    new outcome comes with an example that reaches it. The executable checker

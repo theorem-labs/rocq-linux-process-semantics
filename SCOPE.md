@@ -988,3 +988,19 @@ serious half.
   Linux. An error in both gives a correct proof of the wrong thing.
 - Comments that state kernel behavior name the file and the function in
   Linux v6.18.46. No tool checks that these comments are correct.
+- No recorded trace reaches the `SIG_IGN` arm of the `SIGPIPE` write. The
+  replay corpus (`reports/corpus-replay.md`, 4,291 traces) records no
+  start-up disposition at all, and the replay starts every trace at
+  `SIG_DFL`; the two installs of `SIG_IGN` for signal 13 anywhere in it,
+  `rt_sigaction_spec/039` and `rt_sigaction_spec/040`, each have that
+  call as the trace's only record, and no `-EPIPE` record follows an
+  install of a signal-13 disposition.
+  So what the model answers at `SIG_IGN` on a launch that DOES declare the
+  death (`State.in_sigpipe_terminal`, the launches
+  `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`
+  name) — the write returns `-EPIPE` and the program runs on — is
+  exercised only by the fixtures in
+  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2997`, and by
+  no recorded run, until a re-recorded corpus holds such a trace.
+  Under `Run.valid_input` the death is undeclared and the write declines
+  at either disposition, so that arm is not reached there at all.

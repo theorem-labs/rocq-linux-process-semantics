@@ -1842,8 +1842,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [Run.sstep_killed]), so the argument no longer holds and the
          answer is the kernel's -- on a launch that declares the death
          ([State.m_sigpipe_terminal]); on any other, a write that would
-         raise the signal still declines, at EITHER disposition
-         ([sigpipe_write]).
+         raise the signal declines at EITHER disposition
+         ([sigpipe_write_off_unmodeled]).
          The sendto/sendmsg path keeps its own
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
@@ -2082,8 +2082,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            that declares the death ([State.m_sigpipe_terminal]) the pipe
            write is answered, and a program that closes a pipe's read
            end and writes is a program proofs can cover.  On a launch
-           that does not, the write still declines -- at either
-           disposition, as [sigpipe_write] does everywhere *)
+           that does not, the write still declines, at either
+           disposition, as it did ([sigpipe_write_off_unmodeled]) *)
         sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with

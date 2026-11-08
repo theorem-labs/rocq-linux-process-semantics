@@ -826,9 +826,10 @@ Qed.
     four places in the spec layer, each behind one of these fields:
 
     - [Sys.Fs.ReadWrite.raise_sigpipe] (signal 13), reached only through
-      [Sys.Fs.ReadWrite.sigpipe_write], which declines at SIG_DFL while
-      [State.m_sigpipe_terminal] is clear and, at SIG_IGN, leaves the
-      model alone;
+      [Sys.Fs.ReadWrite.sigpipe_write], which declines at EITHER
+      disposition while [State.m_sigpipe_terminal] is clear
+      ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]), so with this
+      gate closed the write never reaches [raise_sigpipe] at all;
     - [Kernel.Signal.sigmask_deliver_model]'s SIGPIPE branch, which needs
       [State.m_sigpipe_pending], set only by [raise_sigpipe]'s blocked
       branch;
