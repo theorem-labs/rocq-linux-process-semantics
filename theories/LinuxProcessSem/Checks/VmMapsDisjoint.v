@@ -359,10 +359,10 @@ Example mmap_hint_in_the_stack_band_is_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** …and the arithmetic behind it, so the refusal is not read as an
-    accident of this ledger: the hint's end is above the allocation top,
-    and the allocation top is a stack's width below the stack pointer
-    the run was started with. *)
+(** …and the arithmetic behind it, so the `unmodeled` answer is not read
+    as an accident of this ledger: the hint's end is above the
+    allocation top, and the allocation top is a stack's width below the
+    stack pointer the run was started with. *)
 Example stack_band_hint_is_above_alloc_top :
   (alloc_top (m_vmmaps wit_s4) < 140737488351232 + 4096)%Z
   /\ alloc_top (m_vmmaps wit_s4)
