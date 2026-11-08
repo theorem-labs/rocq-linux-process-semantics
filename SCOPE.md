@@ -702,10 +702,9 @@ placement `unmodeled` or to raise the ceiling; both are open.
   `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
   ledger reserves exactly that range" does not hold there.
   The refusals differ only when no free
-  range of the requested size is left. The band R-a leaves is small —
-  at most 2,109,440 bytes, at top `0x7fffc0000000` — and LPS pull
-  request #25 empties it; raising `State.alloc_top` to the floor
-  `Run.stack_window_lo` already uses closes the gap itself.
+  range of the requested size is left, and the band is narrow: the
+  entry image less the guard-gap pad. Raising `State.alloc_top` to the
+  floor `Run.stack_window_lo` already uses closes it.
 - **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
   free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
   above the stack included, and its bottom-up fallback searches up to the
