@@ -46,13 +46,17 @@ Qed.
 (** mmap witness: -EINVAL on a misaligned offset or on a zero length in
     the plain anonymous shape, -EBADF on a file-backed request whose fd
     the process does not hold, and -ENOMEM on a MAP_FIXED range whose
-    page-rounded end leaves the address space; for the modeled shapes
-    the environment-failure branch (errno 12), available regardless of
-    the mapping ledger; [Unmodeled]
-    on any unmodeled prot/flags/fd/off.  The MAP_FIXED branch admits
-    three resolutions (see [Mmap.mmap_spec]); the witness keeps
-    choosing the errno one that leaves the range in place, since it only
-    has to be AN admissible outcome. *)
+    page-rounded end leaves the address space.  The nonfixed modeled
+    shapes first decline a free hint whose end passes this run's
+    [alloc_top] but not [State.TASK_SIZE]: Linux honours that hint
+    ([generic_get_unmapped_area_topdown], mm/mmap.c:753-761, Linux
+    v6.18.46, commit 1f99e9ab748f), while [Mmap.linux_place] cannot.
+    Otherwise the witness chooses the environment-failure branch
+    (errno 12), available regardless of the mapping ledger; it also
+    returns [Unmodeled] on any unmodeled prot/flags/fd/off.  The
+    MAP_FIXED branch admits three resolutions (see [Mmap.mmap_spec]);
+    the witness keeps choosing the errno one that leaves the range in
+    place, since it only has to be AN admissible outcome. *)
 
 Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     : outcome SyscallEffect :=
@@ -66,9 +70,11 @@ Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     (if mmap_plain_anon_b flags then ret_outcome (errno_ret EINVAL) m
      else Unmodeled)
   else if mmap_modeled_b prot flags off
-  then ret_outcome (errno_ret witness_errno) m
+  then if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+       then Unmodeled else ret_outcome (errno_ret witness_errno) m
   else if mmap_noaccess_b prot flags off
-  then ret_outcome (errno_ret witness_errno) m
+  then if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+       then Unmodeled else ret_outcome (errno_ret witness_errno) m
   else if mmap_fixed_noaccess_b prot flags off then
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z
@@ -191,9 +197,17 @@ Proof.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [apply pure_ok|apply unmodeled_intro]. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw.
-  { apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
+  { eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+    destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
+      [apply unmodeled_intro|].
+    apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
-  { apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
+  { eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+    destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
+      [apply unmodeled_intro|].
+    apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.
   { cbv zeta.
     destruct ((two_pow_64
