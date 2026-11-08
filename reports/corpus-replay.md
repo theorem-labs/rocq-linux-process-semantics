@@ -10,6 +10,9 @@
 | `mremap_shapes/037.jsonl` | 1 of 3 | `mremap` | `ok` | `reject` |
 | `mremap_shapes/089.jsonl` | 1 of 3 | `mremap` | `ok` | `reject` |
 
+The last two columns hold the verdict the recording carries for that syscall and
+the verdict `revision/entry` gives for it.
+
 I read all five. **Three of them are the documented closure condition of a known
 bug, and two of them are the corpus being wrong about the machine it was
 recorded on.** Neither group is a regression I can show. No sixth trace changed
