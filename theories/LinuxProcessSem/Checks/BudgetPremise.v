@@ -290,10 +290,10 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** SOUNDNESS over the whole arm, abstract: where the mark fires, every
     admitted outcome is a refusal.  The proof walks [Mmap.mmap_spec]'s
-    branches in the mark's order — the two are the same [if] chain —
-    and in each charging branch the success resolution's budget
-    conjunct contradicts the mark while the errno resolutions answer
-    [Mmap.mmap_errnos]. *)
+    branches in the mark's order.  The spec first declines placements it
+    cannot model; that outcome cannot be [Ok].  In each charging branch
+    the success resolution's budget conjunct contradicts the mark while
+    the errno resolutions answer [Mmap.mmap_errnos]. *)
 Ltac errno_is_refusal :=
   match goal with
   | [ Hin : In ?e mmap_errnos |- _ ] =>
@@ -323,7 +323,11 @@ Proof.
   cbv zeta.
   destruct (mmap_modeled_b (in_arg i 2) (in_arg i 3) (in_arg i 5)).
   { intros Hmark Hspec.
-    unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, get_model, modify
+    apply (proj1 (bind_get_model _ i m _)) in Hspec. cbv beta zeta in Hspec.
+    destruct (place_declined_b (m_vmmaps m) (in_arg i 0)
+                (page_round_up_Z (bv_unsigned (in_arg i 1)))) eqn:Hdecl.
+    { unfold unmodeled in Hspec. discriminate Hspec. }
+    unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify
       in Hspec.
     cbv beta zeta in Hspec. sys_destruct.
     - errno_is_refusal.

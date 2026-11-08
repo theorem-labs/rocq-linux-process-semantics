@@ -99,8 +99,13 @@ mode answers. QEMU citations are QEMU 10.0.11.
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
   and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
   of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; the entries R-a, R-b and R-c below give the
-  difference. QEMU
+  Linux's bounds. Where a free page-aligned HINT reaches above it, the
+  model answers `unmodeled` rather than naming an address of its own
+  (`Sys/Mm/Mmap.v`, `place_declined_b`). The three cases that bound
+  still cuts Linux's answer off in are an mmap base above
+  `State.alloc_top`, the bottom-up fallback above it, and the stack
+  guard gap; "Soundness gaps" below gives all three as R-a, R-b and
+  R-c, and "Known gaps in precision" holds R-c's full entry. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -275,7 +280,8 @@ already says so. These are the known cases.
   Commit `2116988d5372` ("riscv: mm: Do not restrict mmap address based
   on hint", v6.11) made the macro unconditional, which is the form the
   model follows. The model's own band above `State.alloc_top` is a
-  separate limit and is residual R-b below, not a version difference.
+  separate limit, not a version difference: it is residual R-b below,
+  whose hint half the model now answers `unmodeled` for.
 - **`socket` with a type at or above `SOCK_MAX` and a family of 44 or
   45, and AF_INET protocols 256 to 262.** `NPROTO` and `IPPROTO_MAX`
   grew across the stable series (`include/linux/socket.h`,
@@ -664,16 +670,22 @@ not apply.
 
 Design priority 1 asks that every behavior Linux v6.18.46 can give, in a
 case the model covers, is a behavior of the model (README.md). The model
-does not meet it in the cases below. In the first two, R-a and R-b, **it
-declines placements Linux can make above `State.alloc_top`; until that is
-fixed, a proof does not cover
+does not meet it in the cases below. In the first two, R-a and R-b, **the
+model can NAME A DIFFERENT ADDRESS from the one Linux gives for a
+placement above `State.alloc_top`; wherever it still can, a proof does
+not cover
 them.** They are priority-1 gaps. They break priority 2 as well, since
 the model then gives an address Linux does not give in that state, so
 each is both kinds of gap and the entry is here because the priority-1
 half is the serious one. A statement that
 a proof can establish in the model — "a non-fixed `mmap` returns an
-address below `sp`" — is then false of Linux. The fix is to make such a
-placement `unmodeled` or to raise the ceiling; both are open.
+address below `sp`" — is then false of Linux. There are two fixes: to
+answer `unmodeled` for such a placement, which the model now does for a
+hint (`Sys/Mm/Mmap.v`, `place_declined_b`), or to raise the ceiling,
+which is open and is what R-a needs. One word throughout this document:
+a call the model DECLINES is one it answers `unmodeled` for. Naming a
+different address from Linux's is not a decline — it is the defect R-a
+and R-b record.
 
 - **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
   stack window now counts its 8 MiB from the end of the entry block
@@ -702,28 +714,72 @@ placement `unmodeled` or to raise the ceiling; both are open.
   `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
   ledger reserves exactly that range" does not hold there.
   The refusals differ only when no free
-  range of the requested size is left, and the band is narrow: the
-  entry image less the guard-gap pad. Raising `State.alloc_top` to the
+  range of the requested size is left, and the band is narrow: about the
+  entry image less the guard-gap pad, and at most 2,109,440 bytes
+  (`0x203000`) over the entries `Run.valid_entry` admits. That maximum
+  is at a stack top (`StackLayout.ed_top`) of `0x7fffc0000000`, the
+  lowest the stack draw admits, `sp` of `0x7fffbfdfedf0`, the entry
+  block at `valid_launch`'s 2 MiB cap, and a base of `0x7fffbf801000`,
+  with `kb_aslr` on, `kb_guard` zero and the mmap draw zero:
+  `State.mmap_top` is `min(mbase, page_round_down(alloc_top))`, so the
+  band is `mbase - page_round_down(sp - 8 MiB)` =
+  `0x7fffbf801000 - 0x7fffbf5fe000` = `0x203000`. A nonzero `kb_guard`
+  lowers `mbase` and narrows it, so the figure holds at
+  `stack_guard_gap` zero and bounds every other launch.
+  Answering `unmodeled` for each such `mmap` would NOT close R-a:
+  `State.init_reserved` puts the vdso/vvar pair at
+  `page_round_down(min(mbase, sp - 8 MiB))`, so for exactly those
+  entries the model's START STATE already places the pair below where
+  Linux's first `get_unmapped_area` places it, and declining every
+  later `mmap` would leave that difference standing. Raising
+  `State.alloc_top` to the
   floor `Run.stack_window_lo` already uses closes it.
-- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
+- **R-b, a hint or a fallback above `State.alloc_top`: the hint half is
+  answered `unmodeled` where R-a does not bite, the fallback half is
+  open.** Linux honours a
   free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
   above the stack included, and its bottom-up fallback searches up to the
-  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
+  same limit, which reaches the guard gap below the stack
+  (`mm/mmap.c:753-761`,
   `generic_get_unmapped_area_topdown`: the hint test is
   `mmap_end - len >= addr` with the two gap tests, and the fallback sets
   `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
   `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
   hint, and searches, only below `State.alloc_top`: `Sys.Mm.Mmap.linux_place`
   tests the hint with `gap_fits maps page_size (alloc_top h) nZ g`, and
-  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So this is
-  not only a difference in which free address is chosen: where Linux
-  RETURNS a hint above `State.alloc_top`, the model DECLINES that hint and
-  places the mapping somewhere else entirely, at a top-down address of its
-  own. It stays open because
+  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So the
+  defect is not only a difference in which free address is chosen: where
+  Linux RETURNS a hint above `State.alloc_top`, the model would put the
+  mapping somewhere else entirely, at a top-down address of its own, and
+  so NAME A DIFFERENT ADDRESS FROM LINUX.
+  **The hint half.** The model now DECLINES such a call — answers
+  `unmodeled` for it — when the hinted range is free on the ledger,
+  starts at or above `mmap_min_addr` and ends above `State.alloc_top`
+  and at or below `State.TASK_SIZE` (`Sys/Mm/Mmap.v`,
+  `place_declined_b`). That decline is complete only for the entries
+  whose mmap base is at or below the page-rounded `State.alloc_top`. On
+  the others R-a has already placed the model's vdso/vvar pair lower
+  than Linux placed it, so a hinted range can meet the model's pair
+  while Linux's lies elsewhere and Linux honours the hint: `region_free`
+  is false, the decline does not fire, and the mismatch stands. That is
+  R-a's defect and R-a's to close; it is named here so no reader takes
+  the hint half as closed for every admitted launch. In the other
+  direction the decline costs coverage and not soundness: "free on the
+  ledger" above `State.alloc_top` does not mean free on Linux, since the
+  band is where the stack grows, so some calls are declined at which the
+  model and Linux would have agreed.
+  **The fallback half** stays open. Reaching it needs a ledger with no
+  free range of the requested size anywhere below `State.alloc_top` —
+  about 2^47 bytes of address space — before Linux's extra band can hold
+  an answer the model does not have. Deciding it needs an executable
+  "no fit in either window" test inside the trusted layer, which
+  `Sys/Mm/Mmap.v` does not have and which `Checks/Placement.v` may not
+  supply, the dependency running the other way. It stays open for the
+  reason it always did:
   the dynamic stack is a bound in this model and not an entry in the
   ledger, so the model cannot tell a free address above the stack from the
   stack itself. The stack VMA in the ledger closes it. Until then, a
-  proof does not cover a run in which Linux honours such a hint or falls
+  proof does not cover a run in which Linux falls
   back above `State.alloc_top`.
 - **R-c, a hint inside the grown stack's guard gap**, whose full entry
   is under "Known gaps in precision" below. Linux's hint test respects
@@ -1000,7 +1056,7 @@ serious half.
   `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`
   name) — the write returns `-EPIPE` and the program runs on — is
   exercised only by the fixtures in
-  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2997`, and by
+  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2999`, and by
   no recorded run, until a re-recorded corpus holds such a trace.
   Under `Run.valid_input` the death is undeclared and the write declines
   at either disposition, so that arm is not reached there at all.

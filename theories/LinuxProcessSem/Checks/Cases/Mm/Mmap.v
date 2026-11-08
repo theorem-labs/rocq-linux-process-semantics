@@ -1373,8 +1373,17 @@ Lemma mmap_fixed_fresh_adds_no_transition :
 Proof.
   intros addr len i m Hl Halign Hpos Hceil Hfree Hbud.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b].
-  apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  assert (Hdecl : place_declined_b (m_vmmaps m) addr
+            (page_round_up_Z (bv_unsigned len)) = false).
+  { unfold place_declined_b, hint_address, page_round_down_Z.
+    unfold page_size in Halign |- *.
+    replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
+    assert (Hbound : (alloc_top (m_vmmaps m)
+                       <? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
+                      = false) by (apply Z.ltb_ge; exact Hceil).
+    rewrite Hbound, !andb_false_r. reflexivity. }
+  rewrite Hdecl. apply alt_r.
   eapply bind_ok0.
   { apply (choose_ok _ addr). cbv beta. split; [|assumption].
     unfold linux_place, hint_address, page_round_down_Z.
@@ -1421,8 +1430,17 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
 Proof.
   intros addr len i m Hl Halign Hpos Hceil Hfree.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b mmap_noaccess_b].
-  apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  assert (Hdecl : place_declined_b (m_vmmaps m) addr
+            (page_round_up_Z (bv_unsigned len)) = false).
+  { unfold place_declined_b, hint_address, page_round_down_Z.
+    unfold page_size in Halign |- *.
+    replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
+    assert (Hbound : (alloc_top (m_vmmaps m)
+                       <? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
+                      = false) by (apply Z.ltb_ge; exact Hceil).
+    rewrite Hbound, !andb_false_r. reflexivity. }
+  rewrite Hdecl. apply alt_r.
   eapply bind_ok0.
   { apply (choose_ok _ addr). cbv beta.
     unfold linux_place, hint_address, page_round_down_Z.
@@ -2702,8 +2720,8 @@ Proof. check_eq. Qed.
    to, which silences the proof without restoring the intended placement
    rule. These examples exist to make that move visibly wrong — a
    weakened [choose] would still admit the [CheckOk] cases below but
-   would also make the paired [CheckReject] pin false, so a drift that
-   the build lets through cannot also pass these.
+   would also admit paired [CheckReject] effects.  The [CheckUnmodeled]
+   cases separately pin the hint decline before [choose] is reached.
 
    Reason 3 (MODEL-INTERNAL STATE, [State.alloc_top]) and Reason 4
    (the environment cannot be made to produce these — placement is
@@ -2768,14 +2786,14 @@ Proof. check_eq. Qed.
 (** [demo_top] = 0x7fff7f800000 = 140735332483072.  The last
     page-aligned start admitting a 4096-byte grant is
     [demo_top - 4096] = 140735332478976: [r + n = demo_top]
-    exactly, satisfying the conjunct's [<=?]. Budget and placement are
-    otherwise unconstrained ([ceiling_room_model] carries no live map
-    and [demo_limit] of budget), so only [alloc_top] can be doing
-    the work here — and the pair names each address as its own HINT,
-    which is what keeps that true: Linux honours a free hint whose
-    range fits the window and ignores one whose range does not
-    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
-    Linux v6.18.46, commit 1f99e9ab748f). *)
+    exactly, satisfying the conjunct's [<=?].  [ceiling_room_model]
+    carries no reserved or live mapping and [demo_limit] of budget, so
+    both boundary grants below are admitted.  Each address is its own
+    HINT, and Linux honours the free page-aligned range
+    ([generic_get_unmapped_area_topdown], mm/mmap.c:753-761, Linux
+    v6.18.46, commit 1f99e9ab748f).  Its hint window ends at
+    [State.TASK_SIZE], not at this run's [alloc_top]; the model can
+    honour the hint at the boundary, but declines the page above it. *)
 
 Example mmap_modeled_at_ceiling_boundary_grants :
   check_syscall (mmap_at_in 140735332478976 4096)
@@ -2787,15 +2805,20 @@ Example mmap_modeled_at_ceiling_boundary_grants :
 Proof. check_eq. Qed.
 
 (** One page past the boundary — [r = demo_top] itself, so
-    [r + n = demo_top + 4096] — fails the SAME conjunct and only
-    that conjunct: region and budget are exactly as permissive as
-    above. *)
+    [r + n = demo_top + 4096] — is UNMODELED, not a rejected grant.
+    The hinted range is free on this empty ledger and ends below
+    [State.TASK_SIZE], so Linux returns the hint unchanged
+    (mm/mmap.c:753-761, [generic_get_unmapped_area_topdown], Linux
+    v6.18.46, commit 1f99e9ab748f).  [Mmap.linux_place] instead bounds
+    its hint by [alloc_top] and would search elsewhere.  The model
+    declines the call before considering any effect, rather than give
+    that different address as Linux's answer. *)
 
-Example mmap_modeled_past_ceiling_is_rejected :
+Example mmap_modeled_past_ceiling_is_unmodeled :
   check_syscall (mmap_at_in 140735332483072 4096)
     (mkEffect 140735332483072 [] [(140735332483072, 4096)])
     ceiling_room_model
-  = CheckReject.
+  = CheckUnmodeled.
 Proof. check_eq. Qed.
 
 (** The same boundary, in the PROT_NONE branch: the grant also lands in
@@ -2812,11 +2835,18 @@ Example mmap_noaccess_at_ceiling_boundary_grants :
         ceiling_room_model) [].
 Proof. check_eq. Qed.
 
-Example mmap_noaccess_past_ceiling_is_rejected :
+(** PROT_NONE places through the same hint rule, with no backed-memory
+    charge.  The page starting at [demo_top] is free and its end is
+    below [State.TASK_SIZE], so Linux honours it (mm/mmap.c:753-761,
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f).  It is the model's [alloc_top] bound, not the
+    protection or budget, that prevents that answer; this arm declines
+    the call too. *)
+Example mmap_noaccess_past_ceiling_is_unmodeled :
   check_syscall (mmap_noaccess_at_in 140735332483072 4096)
     (mkEffectU 140735332483072 [] [] [(140735332483072, 4096)] [] [])
     ceiling_room_model
-  = CheckReject.
+  = CheckUnmodeled.
 Proof. check_eq. Qed.
 
 (** Each of the four below names the address under test as a HINT, so
@@ -3517,6 +3547,10 @@ Proof.
     by apply page_round_up_Z_aligned.
   unfold check_mmap in H. rewrite Hlen in H.
   cbn [mmap_modeled_b] in H. cbv zeta in H.
+  destruct (place_declined_b
+              (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
+              0 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
+    [discriminate|].
   destruct (errno_ret_in mmap_errnos a) eqn:He; [discriminate|].
   destruct (linux_place_is
               (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
@@ -3565,10 +3599,10 @@ Qed.
    against two ledgers that differ only in the stack pointer they were
    started with, and asks for opposite verdicts.  [demo_sp] is the bottom
    of the SP window, so its top is [demo_top]; [hi_sp] is 256 MiB above
-   it.  A grant ending one page past [demo_top] is exactly the lie a run
-   started at [demo_sp] must refuse and a run started at [hi_sp] must
-   admit.  Reason 3: the stack pointer is model-internal state fixed
-   when the run starts, so no trace can vary it.
+   it.  A grant ending one page past [demo_top] cannot be admitted in
+   the low-sp run and is admitted in the high-sp run.  Reason 3: the
+   stack pointer is model-internal state fixed when the run starts, so
+   no trace can vary it.
    ------------------------------------------------------------------------- *)
 
 Definition hi_sp : word := Z_to_bv 64 (sp_window_lo + 0x10000000).
@@ -3578,27 +3612,29 @@ Definition top_lo_model : Model :=
 Definition top_hi_model : Model :=
   init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input [] IEof).
 
-(** BOTH CALLS NAME [demo_top] AS A HINT, and that is what leaves
-    [State.alloc_top] as the only thing separating them.  A free
-    page-aligned hint Linux returns unchanged, and a hint whose range
-    ends past the search window it is checked in it does not
-    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
-    Linux v6.18.46, commit 1f99e9ab748f).  Under [demo_sp] the hinted
-    range ends one page past that run's [alloc_top], so the hint is
-    not honoured and the top-down search answers somewhere else; under
-    [hi_sp] the same range is 256 MiB below the top and the hint
-    stands.  With a NULL hint instead, BOTH would be refused — the
-    search would answer the highest page under the vdso/vvar pair in
-    either run — and the pair would no longer say anything about the
-    ceiling. *)
+(** BOTH CALLS NAME [demo_top] AS A HINT, and [State.alloc_top] is
+    what separates the model's two answers.  Linux honours a free
+    page-aligned hint ending at or below [State.TASK_SIZE]
+    (mm/mmap.c:753-761, [generic_get_unmapped_area_topdown], Linux
+    v6.18.46, commit 1f99e9ab748f).  Under [demo_sp] the ledger's
+    vdso/vvar pair ends at [demo_top], so the hinted page above it is
+    free, but its end passes that run's [alloc_top].  The model
+    declines: its hint window is narrower than Linux's, and searching
+    below that window would give a different answer.  Under [hi_sp]
+    the same range ends below [alloc_top], remains below the reserved
+    pair, and is honoured.  The two fixtures keep [mmap_base_max]:
+    [Mmap.place_declined_b] reads the hint and the run's top, not its
+    mmap base.  A NULL hint would not decline in either run; a forged
+    grant at [demo_top] would instead be rejected, since the search
+    answers the highest page below the vdso/vvar pair. *)
 Definition top_hi_reserved : list (word * word) :=
   vm_reserved (m_vmmaps top_hi_model).
 
-Example grant_at_demo_top_rejected_under_low_sp :
+Example grant_at_demo_top_unmodeled_under_low_sp :
   check_syscall (mmap_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffect (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 demo_top, 4096)])
     top_lo_model
-  = CheckReject.
+  = CheckUnmodeled.
 Proof. check_eq. Qed.
 
 Example grant_at_demo_top_admitted_under_high_sp :
@@ -3612,12 +3648,18 @@ Example grant_at_demo_top_admitted_under_high_sp :
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
-(** The PROT_NONE arm reads the same field, through the same hint. *)
-Example noaccess_grant_at_demo_top_rejected_under_low_sp :
+(** The PROT_NONE arm declines the same low-sp call: the free hinted
+    page ends above this run's [alloc_top] but below [State.TASK_SIZE],
+    so Linux honours it (mm/mmap.c:753-761,
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f), while the model's hint window cannot.  Changing the
+    protection does not change placement, so the high-sp twin below
+    still admits the hint unchanged. *)
+Example noaccess_grant_at_demo_top_unmodeled_under_low_sp :
   check_syscall (mmap_noaccess_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffectU (Z_to_bv 64 demo_top) [] [] [(Z_to_bv 64 demo_top, 4096)] [] [])
     top_lo_model
-  = CheckReject.
+  = CheckUnmodeled.
 Proof. check_eq. Qed.
 
 Example noaccess_grant_at_demo_top_admitted_under_high_sp :

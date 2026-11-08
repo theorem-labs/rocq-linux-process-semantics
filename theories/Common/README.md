@@ -93,6 +93,14 @@ parameter (for example `rz_write1`, `rz_mmap`). Thus you compose blocks by
 putting one derivation inside another. `rz_alloc_writes` composes an
 allocation with a list of writes.
 
+The freely placed anonymous `mmap` rules also require
+`place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+(page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false`.
+Argument 0 is the address hint and argument 1 is the length. Well-formed
+arguments alone do not establish this condition: the model declines a
+usable hint whose requested range extends above its allocation ceiling
+before offering either the errno or the grant resolutions.
+
 Limits:
 
 - `realizes` is inductive. Thus it describes runs that stop. For a loop

@@ -254,7 +254,9 @@ Proof.
   assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
     by (apply page_round_up_pos; lia).
   destruct (mmap_modeled_b prot flags off) eqn:Emod.
-  { destruct ws, us, cs, ci; try discriminate.
+  { destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+    destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct zs; [|discriminate]. injection H as <- <-. exact Hfit. }
     difn H E; [|discriminate]. injection H as <- <-.
@@ -266,7 +268,9 @@ Proof.
       as (Halign & Hpos & Hceil & Hfree).
     apply maps_fit_cons; [exact Hfit | fit_bound]. }
   destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
-  { destruct ws, zs, cs, ci; try discriminate.
+  { destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+    destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct us; [|discriminate]. injection H as <- <-. exact Hfit. }
     difn H E; [|discriminate]. injection H as <- <-.

@@ -561,6 +561,8 @@ Lemma node_mmap : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
      + {a : word | grant_ok (ms_gpr ms 0) model a
@@ -576,7 +578,7 @@ Lemma node_mmap : forall ms model x8,
                  (mmap_model a (page_round_up (ms_gpr ms 1)) model)
        end).
 Proof.
-  intros ms model x8 Hh Hlazy Hsvc Hno Hargs.
+  intros ms model x8 Hh Hlazy Hsvc Hno Hargs Hdecl.
   set (n := page_round_up (ms_gpr ms 1)).
   split.
   - intros [[e He] | [a Ha]]; cbn.
@@ -597,7 +599,7 @@ Proof.
       * apply materialize_model_accesses_no_lazy.
         exact (eq_trans (mmap_model_lazy _ _ _) Hlazy).
   - intros e st Hss.
-    destruct (sstep_mmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hss)
+    destruct (sstep_mmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hdecl Hss)
       as [-> [(er & Her & ->) | (a & Ha & ->)]].
     + exists (inl (exist _ er Her)). split; reflexivity.
     + exists (inr (exist _ a Ha)). split; reflexivity.
@@ -611,6 +613,8 @@ Lemma srz_mmap : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -620,7 +624,7 @@ Lemma srz_mmap : forall ms model x8 A B,
   (exists a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes (mkCfg ms model) (t_alt2 A B).
 Proof.
-  intros ms model x8 A B Hh Hlazy Hsvc Hno Hargs HA HB Hex.
+  intros ms model x8 A B Hh Hlazy Hsvc Hno Hargs Hdecl HA HB Hex.
   destruct Hex as [a0 Ha0].
   eapply (srz_alt2 (mkCfg ms model)
             {e : Z | In e mmap_errnos}
@@ -645,6 +649,8 @@ Lemma srz_mmap_spin : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -654,7 +660,7 @@ Lemma srz_mmap_spin : forall ms model x8 B,
   (exists a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes (mkCfg ms model) B.
 Proof.
-  intros ms model x8 B Hh Hlazy Hsvc Hno Hargs Hspin HB Hex.
+  intros ms model x8 B Hh Hlazy Hsvc Hno Hargs Hdecl Hspin HB Hex.
   destruct Hex as [a0 Ha0].
   assert (HB0 : B []) by (eapply srealizes_nonempty; apply (HB a0 Ha0)).
   eapply srz_conseq.
@@ -774,6 +780,8 @@ Corollary srz_spin_alloc_writes : forall segs ms0 ms model x8 bs cs,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -785,7 +793,7 @@ Corollary srz_spin_alloc_writes : forall segs ms0 ms model x8 bs cs,
   bufs_modeled bs ->
   srealizes segs (mkCfg ms0 model) (t_writes bs (t_exit cs (m_fs model))).
 Proof.
-  intros segs ms0 ms model x8 bs cs Hh Hlazy Hfd Hms Hsvc Hno Hargs
+  intros segs ms0 ms model x8 bs cs Hh Hlazy Hfd Hms Hsvc Hno Hargs Hdecl
     Hrefuse Hgrant Hex Hbs.
   eapply srz_msteps; [exact Hh | exact Hlazy | exact Hms |].
   eapply srz_mmap_spin; try eassumption.
@@ -821,6 +829,9 @@ Hypothesis Hfd : fd1chan model.
 Hypothesis Hsvc : ms_svc_pending ms = Some x8.
 Hypothesis Hno : bv_unsigned x8 = 222%Z.
 Hypothesis Hargs : mmap_args_ok ms.
+Hypothesis Hdecl :
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false.
 (** The refusal arm: whatever errno the environment answers, the binary
     spins (established per-binary by [prove_to_spin] or the [ts_*]
     constructors, including [LazyFrame.ts_step_disjoint]). *)
