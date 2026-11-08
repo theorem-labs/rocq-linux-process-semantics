@@ -110,11 +110,11 @@ repository, in `linux/` or in `qemu/`.
    each new `Admitted`, `admit`, `Axiom`,
    `Parameter`, and each `Hypothesis`, `Variable` or `Context` outside a
    section.
-   For each definition the change alters, list every lemma whose premises
-   mention it, and show that those premises are still JOINTLY
-   SATISFIABLE. A premise pair that has become contradictory leaves a
-   lemma that proves nothing while still reading as coverage, and a
-   diff-scoped reading cannot see it: the diff shows the definition, not
+   For each definition the change alters, find the lemmas that carry it in
+   a premise BESIDE another premise about the same field, and give one
+   model that satisfies both.  A premise pair that has become contradictory
+   leaves a lemma that proves nothing while still reading as coverage, and
+   a diff-scoped reading cannot see it: the diff shows the definition, not
    the lemma it emptied. #38 made `ReadWrite.sigpipe_declines` equal to
    `negb (m_sigpipe_terminal m)`, which turned the two premises of
    `Checks/KillFree.v`'s `raise_sigpipe_off` —

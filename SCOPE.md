@@ -997,10 +997,10 @@ serious half.
   So what the model answers at `SIG_IGN` on a launch that DOES declare the
   death (`State.in_sigpipe_terminal`, the launches
   `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`
-  name) — the write returns `-EPIPE` and the program runs on — is checked
-  by the proofs and by the fixtures in
-  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2976` only,
-  and by no recorded run, until a re-recorded corpus holds such a trace.
+  name) — the write returns `-EPIPE` and the program runs on — is
+  exercised only by the fixtures in
+  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2997`, and by
+  no recorded run, until a re-recorded corpus holds such a trace.
   Under `Run.valid_input` the death is undeclared and the write declines
   at either disposition, so that arm is not reached there at all.
   Measured by the Lean comparison lane on the same corpus.
