@@ -123,7 +123,8 @@ request while it holds a write token or a credential.
 1. Does the model on `main` do what the issue says? Read the code that it
    cites.
 2. Does Linux v6.18.46 do what the issue says? Read `linux/`. Read `qemu/`
-   only where the issue is about a sentence that cites QEMU.
+   where the issue is about a sentence that cites QEMU, or about the list
+   of differences `SCOPE.md` keeps in "Where QEMU user mode differs".
 3. Which design priority does it concern: soundness (a proof can hold in the
    model and fail on Linux), precision, or coverage? Does `SCOPE.md`
    already state it?
