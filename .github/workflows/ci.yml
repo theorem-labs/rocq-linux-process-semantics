@@ -262,7 +262,7 @@ jobs:
                     avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
                     for p in /proc/[0-9]*/status; do
                       awk '/^Name:/{n=$2} /^VmRSS:/{r=$2$3} /^VmHWM:/{h=$2$3} END{if(n)printf "%s:rss=%s,hwm=%s ", n, r, h}' "$p" 2>/dev/null
-                    done 2>/dev/null | tr ' ' '\n' | grep -i rocq | sort -t, -k1 -rn | head -3 | tr '\n' ' ' > /tmp/_top
+                    done 2>/dev/null | tr ' ' '\n' | grep -i rocq | sort -t= -k2 -rn | head -3 | tr '\n' ' ' > /tmp/_top
                     echo "$ts $cgpeak $cgcur avail=${avail}kB $(cat /tmp/_top)"
                     sleep 15
                   done
@@ -282,12 +282,12 @@ jobs:
                   done
                   echo "--- sampler log ---"
                   cat /tmp/mem-sampler.log
-                  dmesg 2>/dev/null | grep -i -E 'oom|killed|out.of.memory' || {
-                    dmesg_rc=$?
-                    if [ $dmesg_rc -ne 1 ]; then
-                      echo "dmesg unavailable (exit $dmesg_rc)"
-                    fi
-                  }
+                  _dmesg_out=$(dmesg 2>&1) && _dmesg_rc=0 || _dmesg_rc=$?
+                  if [ $_dmesg_rc -eq 0 ]; then
+                    echo "$_dmesg_out" | grep -i -E 'oom|killed|out.of.memory' || echo "(no OOM messages in dmesg)"
+                  else
+                    echo "dmesg unavailable (exit $_dmesg_rc)"
+                  fi
                 fi
                 exit $_rc
               }
