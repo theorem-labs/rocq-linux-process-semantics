@@ -396,7 +396,12 @@ Proof.
               (in_arg (mmap_in 8192) 5)) eqn:E2;
     [| vm_compute in E2; discriminate E2].
   intros Hspec.
-  unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, get_model, modify in Hspec.
+  apply (proj1 (bind_get_model _ (mmap_in 8192) tight_model _)) in Hspec.
+  cbv beta zeta in Hspec.
+  destruct (place_declined_b (m_vmmaps tight_model) (in_arg (mmap_in 8192) 0)
+              (page_round_up_Z (bv_unsigned (in_arg (mmap_in 8192) 1)))) eqn:Hdecl.
+  { unfold unmodeled in Hspec. discriminate Hspec. }
+  unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify in Hspec.
   cbv beta zeta in Hspec.
   sys_destruct.
   - (* the errno arm: a refusal, which [Hnr] denies *)

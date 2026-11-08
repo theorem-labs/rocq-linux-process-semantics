@@ -169,6 +169,16 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
     try rewrite Hsrc. try rewrite Heq. apply pure_ok. }
+  destruct (negb (page_round_up_Z (bv_unsigned new_size)
+                   <? page_round_up_Z (bv_unsigned old_size))%Z
+            && negb (mremap_inplace_room_b m old
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+                 (page_round_up_Z (bv_unsigned old_size))
+                 (page_round_up_Z (bv_unsigned new_size)))
+            && place_declined_b (m_vmmaps m) (Z_to_bv 64 0)
+                 (page_round_up_Z (bv_unsigned new_size))) eqn:Hdecline;
+    [discriminate|].
   destruct eff as [r ws zs us cs copyins]. destruct ws as [|w ws]; [|discriminate].
   destruct (errno_ret_in mremap_errnos r) eqn:Herr.
   - destruct zs as [|z zs]; destruct us as [|u us]; destruct cs as [|c cs];
@@ -177,8 +187,22 @@ Proof.
     inversion H; clear H; subst.
     apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
     eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-    try rewrite Hsrc. try rewrite Heq. apply alt_l.
-    eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+    try rewrite Hsrc. try rewrite Heq.
+    destruct ((page_round_up_Z (bv_unsigned new_size)
+                 <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt.
+    + apply alt_l. eapply bind_ok0;
+        [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+    + destruct (mremap_inplace_room_b m old
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+          (page_round_up_Z (bv_unsigned old_size))
+          (page_round_up_Z (bv_unsigned new_size))) eqn:Hroom.
+      * apply alt_l. eapply bind_ok0;
+          [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+      * try rewrite Hlt in Hdecline. try rewrite Hroom in Hdecline.
+        cbn [negb andb] in Hdecline. rewrite Hdecline.
+        apply alt_l. eapply bind_ok0;
+          [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
   - destruct (bv_eqb r old) eqn:Hret.
     + apply bv_eqb_eq in Hret; subst r.
       destruct ((page_round_up_Z (bv_unsigned new_size)
@@ -198,7 +222,7 @@ Proof.
         apply listNN_eqb_eq in Hus; subst us.
         apply listCopy_eqb_eq in Hcs; subst cs.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-        try rewrite Hsrc. try rewrite Heq. apply alt_r. try rewrite Hlt.
+        try rewrite Hsrc. try rewrite Heq. try rewrite Hlt. apply alt_r.
         eapply bind_ok0; [apply modify_ok|].
         unfold mremap_inplace_effect. rewrite Hlt. apply pure_ok.
       * destruct (mremap_inplace_grow_b m old
@@ -224,8 +248,8 @@ Proof.
         apply listCopy_eqb_eq in Hcs; subst cs.
         apply andb_true_iff in Hgrow as [Hroom Hbud].
         eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-        try rewrite Hsrc. try rewrite Heq. apply alt_r.
-        try rewrite Hlt. rewrite Hroom.
+        try rewrite Hsrc. try rewrite Heq.
+        try rewrite Hlt. rewrite Hroom. apply alt_r.
         eapply bind_ok0; [apply (choose_ok _ tt); exact Hbud|].
         eapply bind_ok0; [apply modify_ok|].
         unfold mremap_inplace_effect. rewrite Hlt. apply pure_ok.
@@ -267,11 +291,13 @@ Proof.
       apply listNN_eqb_eq in Hus; subst us.
       apply listCopy_eqb_eq in Hcs; subst cs.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
-      try rewrite Hsrc. try rewrite Heq. apply alt_r.
+      try rewrite Hsrc. try rewrite Heq.
       destruct ((page_round_up_Z (bv_unsigned new_size)
                    <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt.
       * apply Z.ltb_lt in Hmove. apply Z.ltb_lt in Hlt. lia.
       * apply negb_true_iff in Hnoroom. rewrite Hnoroom.
+        try rewrite Hlt in Hdecline. try rewrite Hnoroom in Hdecline.
+        cbn [negb andb] in Hdecline. rewrite Hdecline. apply alt_r.
         eapply bind_ok0; [apply (choose_ok _ r)|].
         { split; [|exact Hfresh].
           apply (linux_place_is_iff _ _ _ _ _
@@ -309,6 +335,20 @@ Proof.
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                    (page_round_up_Z (bv_unsigned new_size))) eqn:Heq.
   { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (page_round_up_Z (bv_unsigned new_size)
+                   <? page_round_up_Z (bv_unsigned old_size))%Z
+            && negb (mremap_inplace_room_b m old
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+                 (page_round_up_Z (bv_unsigned old_size))
+                 (page_round_up_Z (bv_unsigned new_size)))
+            && place_declined_b (m_vmmaps m) (Z_to_bv 64 0)
+                 (page_round_up_Z (bv_unsigned new_size))) eqn:Hdecline.
+  { apply andb_true_iff in Hdecline as [Hmove Hdecl].
+    apply andb_true_iff in Hmove as [Hlt Hroom].
+    apply negb_true_iff in Hlt. apply negb_true_iff in Hroom.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+    rewrite Hsrc, Heq, Hlt, Hroom, Hdecl. apply unmodeled_intro. }
   exfalso.
   destruct eff as [r ws zs us cs copyins]. destruct ws as [|w ws]; [|discriminate].
   destruct (errno_ret_in mremap_errnos r).
@@ -384,13 +424,13 @@ Proof.
   { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { sys_unfold. inv_ok; discriminate. }
-  sys_unfold. cbv iota zeta in H. inv_ok.
+  apply get_model_bind_ok_inv in H. cbv beta zeta in H. cbv zeta.
   destruct (negb (mremap_source_b (m_vmmaps m) old
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
               (page_round_up_Z (bv_unsigned old_size))
             && mremap_backing_uniform_b m old
-              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
-    hall Hsrc; inv_ok.
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc.
+  { sys_unfold. inv_ok; discriminate. }
   apply negb_false_iff in Hsrc.
   apply andb_true_iff in Hsrc as [Hsource Huniform].
   assert (Hold_nonneg :
@@ -405,13 +445,13 @@ Proof.
       (page_round_up_Z (bv_unsigned old_size)) Hold_nonneg Hsource). }
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                    (page_round_up_Z (bv_unsigned new_size))) eqn:Heq.
-  - hall Heq; inv_ok. cbn. rewrite bv_eqb_refl. reflexivity.
-  - hall Heq; inv_ok.
-    all: try (cbv beta iota zeta in *; subst;
-              rewrite errno_ret_in_intro by assumption; reflexivity).
-    destruct ((page_round_up_Z (bv_unsigned new_size)
+  - sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity.
+  - destruct ((page_round_up_Z (bv_unsigned new_size)
                  <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt.
-    + hall Hlt; inv_ok. cbv beta iota zeta in *; subst.
+    + cbn [negb andb]. sys_unfold. cbv iota in H. inv_ok.
+      all: try (cbv beta iota zeta in *; subst;
+                rewrite errno_ret_in_intro by assumption; reflexivity).
+      cbv beta iota zeta in *; subst.
       unfold mremap_inplace_effect. rewrite Hlt.
       try rewrite Hold_errno. try rewrite bv_eqb_refl.
       try rewrite Heq. try rewrite Hlt.
@@ -419,7 +459,7 @@ Proof.
       | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
       | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
       end. reflexivity.
-    + hall Hlt.
+    + cbn [negb andb].
       assert (Hmove : (page_round_up_Z (bv_unsigned old_size)
                          <? page_round_up_Z (bv_unsigned new_size))%Z = true).
       { apply Z.ltb_lt. apply Z.ltb_ge in Hlt. apply Z.eqb_neq in Heq. lia. }
@@ -431,7 +471,10 @@ Proof.
       * (* ROOM ABOVE THE SOURCE: Linux expands there and does not
            move, so the only non-errno answer is the in-place one and
            its budget gate came through the [choose]. *)
-        hall Hroom; inv_ok. cbv beta iota zeta in *; subst.
+        cbn [negb andb]. sys_unfold. cbv iota in H. inv_ok.
+        all: try (cbv beta iota zeta in *; subst;
+                  rewrite errno_ret_in_intro by assumption; reflexivity).
+        cbv beta iota zeta in *; subst.
         unfold mremap_inplace_effect. rewrite Hlt.
         try rewrite Hold_errno. try rewrite bv_eqb_refl.
         try rewrite Heq. try rewrite Hlt.
@@ -444,7 +487,14 @@ Proof.
         | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
         end. reflexivity.
       * (* NO ROOM: the move, to the one address Linux's search gives. *)
-        hall Hroom; inv_ok. cbv beta iota zeta in *; subst.
+        cbn [negb andb].
+        destruct (place_declined_b (m_vmmaps m) (Z_to_bv 64 0)
+                    (page_round_up_Z (bv_unsigned new_size))) eqn:Hdecl.
+        { sys_unfold. inv_ok; discriminate. }
+        sys_unfold. cbv iota in H. inv_ok.
+        all: try (cbv beta iota zeta in *; subst;
+                  rewrite errno_ret_in_intro by assumption; reflexivity).
+        cbv beta iota zeta in *; subst.
         unfold mremap_move_effect.
         lazymatch goal with
         | Hd : mremap_dst_ok _ _ _ old _ _ _ |- _ =>
@@ -483,24 +533,28 @@ Proof.
   { sys_unfold. inv_ok; discriminate. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { reflexivity. }
-  sys_unfold. cbv iota zeta in H. inv_ok.
+  apply bind_model_inv in H. cbv beta zeta in H. cbv zeta.
   destruct (negb (mremap_source_b (m_vmmaps m) old
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
               (page_round_up_Z (bv_unsigned old_size))
             && mremap_backing_uniform_b m old
-              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
-    hall Hsrc; inv_ok; [reflexivity|].
-  exfalso.
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc.
+  { reflexivity. }
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
-                   (page_round_up_Z (bv_unsigned new_size))) eqn:Heq;
-    hall Heq; inv_ok; try discriminate.
+                   (page_round_up_Z (bv_unsigned new_size))) eqn:Heq.
+  { sys_unfold. inv_ok; discriminate. }
   destruct ((page_round_up_Z (bv_unsigned new_size)
-               <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt;
-    hall Hlt; inv_ok; try discriminate.
+               <? page_round_up_Z (bv_unsigned old_size))%Z) eqn:Hlt.
+  { sys_unfold. cbv iota in H. inv_ok; discriminate. }
   destruct (mremap_inplace_room_b m old
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
       (page_round_up_Z (bv_unsigned old_size))
-      (page_round_up_Z (bv_unsigned new_size))) eqn:Hroom;
-    hall Hroom; inv_ok; discriminate.
+      (page_round_up_Z (bv_unsigned new_size))) eqn:Hroom.
+  { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+  cbn [negb andb].
+  destruct (place_declined_b (m_vmmaps m) (Z_to_bv 64 0)
+              (page_round_up_Z (bv_unsigned new_size))) eqn:Hdecl;
+    [reflexivity|].
+  sys_unfold. cbv iota in H. inv_ok; discriminate.
 Qed.

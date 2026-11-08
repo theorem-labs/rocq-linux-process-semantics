@@ -1427,7 +1427,9 @@ Proof.
     by (apply page_round_up_pos; lia).
   (* the placed shapes: the grant is exactly what [region_free] accepted *)
   destruct (mmap_modeled_b prot flags off) eqn:Emod.
-  { destruct ws, us, cs, ci; try discriminate.
+  { destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+    destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct zs; [|discriminate]. injection H as <- <-. exact Hwf. }
     (* THREE conjuncts now, left associated: the placement test, the
@@ -1448,7 +1450,9 @@ Proof.
     - rewrite u64 by lia. lia.
     - exact (region_free_app_r _ _ _ _ Hfree). }
   destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
-  { destruct ws, zs, cs, ci; try discriminate.
+  { destruct (place_declined_b (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+    destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct us; [|discriminate]. injection H as <- <-. exact Hwf. }
     (* TWO here: the noaccess grant carries no
@@ -1622,6 +1626,7 @@ Proof.
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  difn H Edecl; [discriminate|].
   destruct ws; [|discriminate]. destruct ci; [|discriminate].
   (* the new length is a nonzero number of pages *)
   unfold page_align_is0_b in Enew. apply orb_false_iff in Enew as [Enew0 EnewB].

@@ -946,7 +946,9 @@ assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
 assert (HnM : (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z)
   by apply pup_mod.
 destruct (mmap_modeled_b prot flags off) eqn:Emod.
-{ destruct ws, us, cs, ci; try discriminate.
+{ destruct (place_declined_b (m_vmmaps m) addr
+              (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+  destruct ws, us, cs, ci; try discriminate.
   dei H.
   { destruct zs; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
   difn H E; [|discriminate]. injection H as <- <-.
@@ -963,7 +965,9 @@ destruct (mmap_modeled_b prot flags off) eqn:Emod.
     as (Halign & Hpos & Hceil & Hfree).
   apply ledger_mmap_add; [exact HW | reflexivity | rewrite u64 by lia; lia]. }
 destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
-{ destruct ws, zs, cs, ci; try discriminate.
+{ destruct (place_declined_b (m_vmmaps m) addr
+              (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
+  destruct ws, zs, cs, ci; try discriminate.
   dei H.
   { destruct us; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
   difn H E; [|discriminate]. injection H as <- <-.
@@ -1256,6 +1260,7 @@ difn H Etask; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
 difn H Eold; [discriminate|].
 difn H Esrc; [discriminate|].
 difn H Eeq; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+difn H Edecl; [discriminate|].
 destruct ws; [|discriminate]. destruct ci; [|discriminate].
 apply negb_false_iff, Z.eqb_eq in Ealign.
 apply Z.ltb_ge in Etask.
