@@ -994,8 +994,13 @@ serious half.
   `SIG_DFL`; the only install of `SIG_IGN` anywhere in it is
   `rt_sigaction_spec/039`, where that call is the trace's only record, and
   no `-EPIPE` record follows an install of a signal-13 disposition.
-  So what the model answers at `SIG_IGN` — the write returns `-EPIPE` and
-  the program runs on — is checked by the proofs and by the hand-written
-  fixtures (`theories/Examples/`) only, and by no recorded run, until a
-  re-recorded corpus holds such a trace. Measured by the Lean comparison
-  lane on the same corpus.
+  So what the model answers at `SIG_IGN` on a launch that DOES declare the
+  death (`State.in_sigpipe_terminal`, the launches
+  `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`
+  name) — the write returns `-EPIPE` and the program runs on — is checked
+  by the proofs and by the fixtures in
+  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2976` only,
+  and by no recorded run, until a re-recorded corpus holds such a trace.
+  Under `Run.valid_input` the death is undeclared and the write declines
+  at either disposition, so that arm is not reached there at all.
+  Measured by the Lean comparison lane on the same corpus.

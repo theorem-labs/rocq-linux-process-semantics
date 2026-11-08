@@ -4753,9 +4753,10 @@ Record ProcState := mkProcState {
                                     [in_sigpipe_terminal] and written by
                                     nothing, so it is constant along every run.
 
-                                    [false]: a write that would RAISE SIGPIPE at
-                                    SIG_DFL DECLINES, whatever the mask
-                                    ([Sys.Fs.ReadWrite.sigpipe_write]), exactly
+                                    [false]: a write that would RAISE SIGPIPE
+                                    DECLINES, at either disposition and
+                                    whatever the mask
+                                    ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]),
                                     as [Kernel.Signal.tkill_spec] declines every
                                     call with [procst_abort_terminal] clear.  So
                                     no SIGPIPE is ever sent, none is ever

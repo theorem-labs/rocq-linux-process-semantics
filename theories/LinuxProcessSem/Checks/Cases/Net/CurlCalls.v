@@ -257,8 +257,8 @@ Definition broken_pipe_write : list (SyscallInput * option SyscallEffect) :=
 (** The launch of this case declares the SIGPIPE death
     ([State.in_sigpipe_terminal] [true], the world
     [Run.valid_input_sigpipe_kills] names): on the plain launch the
-    write to the broken pipe at SIG_DFL declines, so no signal is ever
-    pending there.  [cc_m0_kills] is [cc_m0] with that one field set. *)
+    write to the broken pipe declines at either disposition, so no signal
+    is ever pending there.  [cc_m0_kills] is [cc_m0] with that one field set. *)
 Definition cc_m0_kills : Model := with_sigpipe_terminal true cc_m0.
 
 Example sigpipe_ign_install_discards_the_pending_signal :

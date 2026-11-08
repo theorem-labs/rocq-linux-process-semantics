@@ -2082,8 +2082,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            that declares the death ([State.m_sigpipe_terminal]) the pipe
            write is answered, and a program that closes a pipe's read
            end and writes is a program proofs can cover.  On a launch
-           that does not, the write still declines -- at either
-           disposition, as [sigpipe_write] does everywhere *)
+           that does not, the write still declines, at either
+           disposition, as it did ([sigpipe_write_off_unmodeled]) *)
         sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with
