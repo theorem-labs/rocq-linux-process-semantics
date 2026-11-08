@@ -80,7 +80,7 @@ repository, in `linux/` or in `qemu/`.
    that the change adds, find the Linux code that gives it. An
    outcome Linux does not give breaks priority 2, and a statement that
    compares sets of behaviors can then be false (README.md): blocking, unless
-   `SCOPE.md` already records it, under "Known gaps in precision" or
+   `SCOPE.md` records it, under "Known gaps in precision" or
    "Soundness gaps".
 2. **Is each statement true?** A comment or a `SCOPE.md` sentence about Linux
    names a file and a function at v6.18.46, and one about QEMU names a file
