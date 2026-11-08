@@ -1057,33 +1057,40 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
-   mapping or the stack sits.  SCOPE.md records R-a and R-b as SOUNDNESS
-   gaps as well as precision ones: the model declines placements Linux
-   can make above [alloc_top], and until that is fixed a proof does not
-   cover them.  R-c is a soundness gap too: Linux's hint test respects
-   [vm_start_gap], so it REFUSES a hint inside the grown stack's guard
-   gap and this model returns it.
+   mapping or the stack sits.  R-a and the hint half of R-b are
+   SOUNDNESS gaps and not precision gaps — the model gives an address
+   where Linux gives a DIFFERENT one.  [place_declined_b] below answers
+   [unmodeled] on the hint half; R-a is open, for the reason its entry
+   gives.
 
-   - R-a, a base above [alloc_top].  The zero-mapped stack window now
-     counts from the entry block's end ([Run.stack_window_lo]), as
-     Linux counts RLIMIT_STACK from the stack VMA's [vm_end], but the
-     ALLOCATION ceiling [State.alloc_top] still starts at
-     [sp - stack_max_size], and [sp] is below that end by the entry
-     image.  A large stack draw with a large entry block can put
-     Linux's base above [alloc_top], and then this model's top-down
-     placements are lower than the kernel's.
+   - R-a, a base above [alloc_top], OPEN.  The model's stack window
+     starts at [sp - stack_max_size]; Linux's starts at the stack VMA's
+     end.  A high base draw with a large entry block can put Linux's
+     base above [alloc_top], and then this model's top-down placements
+     are lower than the kernel's.  A decline does not close it: for
+     exactly those entries [State.init_reserved] already puts the
+     vdso/vvar pair below where Linux's first [get_unmapped_area] puts
+     it, so the START STATE differs before any mmap is made.  LPS pull
+     request #25, which makes the stack window count the entry image,
+     makes [alloc_top] Linux's floor and empties the band.
    - R-b, hints and the bottom-up fallback above [alloc_top].  Linux
      honours a free hint anywhere up to STACK_TOP_MAX, the band above
      the stack included, and its bottom-up fallback reaches the stack's
      guard gap (mm/mmap.c, [generic_get_unmapped_area_topdown];
      arch/riscv/include/asm/processor.h, [arch_get_mmap_end]).  This
      model honours a hint and searches only below [alloc_top], because
-     the dynamic stack is a bound here and not a ledger entry.
+     the dynamic stack is a bound here and not a ledger entry.  The HINT
+     half is DECLINED, by [place_declined_b].  The
+     FALLBACK half is open: deciding it needs an executable "no fit in
+     either window" test, which this file does not have and which
+     [Checks.Placement] may not supply (the dependency runs the other
+     way), and reaching it needs a ledger with no free range of the
+     requested size anywhere below [alloc_top h].
    - R-c, the stack's guard gap.  When the stack has grown to its
      limit Linux keeps a mapping [stack_guard_gap] below it; this model
      allows a mapping there when the base or a hint reaches
-     [alloc_top].  R-b and R-c close together, by tracking the stack
-     VMA in the ledger.
+     [alloc_top].  What is left of R-b and R-c closes together, by
+     tracking the stack VMA in the ledger.
    - R-d, the entry, is CLOSED.  [Run.valid_entry_va] once drew the
      stack pointer and the base independently; its conjunct
      [Run.entry_launch_ok_va] now admits exactly the (stack top, sp,
@@ -1197,78 +1204,83 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
     \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
 
-(** WHERE LINUX CAN PLACE A MAPPING THAT [linux_place] DOES NOT NAME,
-    and where this model therefore says [unmodeled].
+(** WHERE LINUX HONOURS A HINT THAT [linux_place] DOES NOT, and where
+    this model therefore says [unmodeled].
 
     DESIGN PRIORITY 1 (README.md): "Where the model cannot be sound, it
     says [unmodeled]."  [linux_place] bounds BOTH of its answers by
     [State.alloc_top] — the run's [sp - stack_max_size] — because the
     dynamic stack is a bound in this model and not an entry of the
-    ledger.  Linux has no such bound.  Where Linux's rule can answer
-    ABOVE [alloc_top], [linux_place] does not merely lose precision: it
-    names a DIFFERENT, lower address, so a statement proved about the
-    model would be false of Linux.  That is a soundness break, and the
+    ledger.  Linux has no such bound.  Where Linux's rule answers ABOVE
+    [alloc_top], [linux_place] does not merely lose precision: it names
+    a DIFFERENT, lower address, so a statement proved about the model
+    would be false of Linux.  That is a soundness break, and the
     fail-closed answer is to decline the call.
 
-    TWO CONDITIONS, each decided on the ledger and the request.  Both
-    are at Linux v6.18.46, commit 1f99e9ab748f.
+    THE CASE THIS DECIDES is the hint, at Linux v6.18.46, commit
+    1f99e9ab748f.  [generic_get_unmapped_area_topdown] (mm/mmap.c)
+    honours a page-aligned hint when
+    [mmap_end - len >= addr && addr >= mmap_min_addr] and the two gap
+    tests pass — its [if (addr)] block.  [mmap_end] is
+    [arch_get_mmap_end] (arch/riscv/include/asm/processor.h), which is
+    [STACK_TOP_MAX = State.TASK_SIZE]; the model's hint window stops at
+    [alloc_top h] instead.  So a hint whose range is free on this
+    ledger, starts at or above [mmap_min_addr] (4096, the value
+    SCOPE.md assumes) and ends above [alloc_top h] but at or below
+    [TASK_SIZE] is one Linux returns unchanged and [linux_place] sends
+    to its top-down search instead.  The model declines.  This is the
+    hint half of SCOPE.md's residual R-b.
 
-    (1) THE TOP-DOWN WINDOW.  [generic_get_unmapped_area_topdown]
-        (mm/mmap.c) passes [info.high_limit = arch_get_mmap_base(addr,
-        mm->mmap_base)], which is [mm->mmap_base] alone.
-        [State.mmap_top] takes the minimum of that and
-        [page_round_down_Z (alloc_top h)].  The two windows differ
-        exactly when the recorded base is above the page-rounded
-        allocation top, and [Run.valid_mmap_base] admits such a base: it
-        reaches [State.mmap_base_max = 0x7ffff8000000], while
-        [alloc_top h] is as low as [State.sp_window_lo - stack_max_size
-        = 0x7fff7f800000].  In that band Linux's highest fit can be
-        above the model's, so the model declines.  This is SCOPE.md's
-        residual R-a.
+    IT CANNOT FIRE ON A HINT THE MODEL HONOURS.  Honouring needs
+    [gap_fits maps page_size (alloc_top h) nZ g], whose third conjunct
+    is [g + nZ <= alloc_top h] — the negation of the test below.  Nor
+    on a NULL hint, which fails the first conjunct.  And [region_free]
+    over the WHOLE range is what keeps it from declining more than it
+    must: when the range meets a ledger entry, Linux refuses the hint
+    too, so [linux_place]'s fall-through to the search is Linux's own
+    answer.
 
-    (2) A FREE HINT ABOVE THE CEILING.  The same function honours a
-        page-aligned hint when
-        [mmap_end - len >= addr && addr >= mmap_min_addr] and the two
-        gap tests pass (mm/mmap.c, the [if (addr)] block).  [mmap_end]
-        is [arch_get_mmap_end] (arch/riscv/include/asm/processor.h),
-        which is [STACK_TOP_MAX = State.TASK_SIZE]; the model's hint
-        window stops at [alloc_top h] instead.  So a hint whose range is
-        free on this ledger, starts at or above [mmap_min_addr] (4096,
-        the value SCOPE.md assumes) and ends above [alloc_top h] but at
-        or below [TASK_SIZE] is one Linux returns unchanged and
-        [linux_place] sends to its top-down search instead.  The model
-        declines.  This is the first half of SCOPE.md's residual R-b.
+    WHAT THIS DOES NOT COVER, and why each is named rather than closed.
 
-        [region_free] over the WHOLE range is what keeps this from
-        declining more than it must: when the range meets a ledger
-        entry, Linux refuses the hint too, so the fall-through to the
-        search is Linux's own answer and condition (1) covers the rest.
+    - R-a, A BASE ABOVE [alloc_top].  [State.mmap_top] is the minimum
+      of [vm_mmap_base h] and [page_round_down_Z (alloc_top h)], while
+      Linux's top-down window reaches [mm->mmap_base] alone
+      ([info.high_limit = arch_get_mmap_base(addr, mm->mmap_base)]), and
+      [Run.valid_mmap_base] admits a base above the model's bound.  The
+      band is at most 2109440 bytes wide over the entries
+      [Run.valid_entry] admits.  This is the SAME soundness break as the
+      hint case and it is NOT closed here, for a reason worth writing
+      down: a decline does not fix it.  [State.init_reserved] places the
+      run's vdso/vvar pair at
+      [page_round_down_Z (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))],
+      so for exactly those entries the model's START STATE already puts
+      the pair below where Linux's first [get_unmapped_area] puts it,
+      and declining each [mmap] would leave that difference standing.
+      What closes it is making [alloc_top] Linux's floor — LPS pull
+      request #25, the stack window counting the entry image — after
+      which the band is empty.
+    - R-b's other half, THE BOTTOM-UP FALLBACK.  When the top-down
+      search finds nothing, Linux re-runs with
+      [info.high_limit = mmap_end] (mm/mmap.c, the
+      [offset_in_page(addr)] retry), and [topdown_search] uses
+      [alloc_top h] there.  Deciding it needs an executable "no fit
+      anywhere in either window" test inside the trusted layer, which
+      this file does not have and which [Checks.Placement] may not
+      supply (the dependency runs the other way).  Reaching it needs a
+      ledger with no free range of the requested size anywhere below
+      [alloc_top h] — about 2^47 bytes of address space.
+    - R-c, THE STACK GUARD GAP, a further residual of the same cause.
 
-    WHAT THIS DOES NOT COVER, and why it is named rather than closed.
-    The second half of R-b is the BOTTOM-UP FALLBACK: when the top-down
-    search finds nothing, Linux re-runs with
-    [info.high_limit = mmap_end] (mm/mmap.c, the [offset_in_page(addr)]
-    retry), and [topdown_search] uses [alloc_top h] there.  Deciding
-    that case needs an executable "no fit anywhere in the window" test
-    inside the trusted layer, which this file does not have and which
-    [Checks.Placement] may not supply (the dependency runs the other
-    way).  It needs a ledger whose entries leave no gap of the
-    requested size anywhere below [alloc_top h] — about 2^47 bytes of
-    address space — so no run this model admits reaches it, but it is
-    not closed.  SCOPE.md's R-c, the stack guard gap, is a further
-    residual of the same cause.
-
-    Closing all of them properly is the stack VMA in the ledger, which
+    All three close together with the stack VMA in the ledger, which
     SCOPE.md names on each entry. *)
 Definition place_declined_b (h : VmMaps) (hint : word) (nZ : Z) : bool :=
   let g := hint_address hint in
-  (page_round_down_Z (alloc_top h) <? bv_unsigned (vm_mmap_base h))%Z
-  || (negb (g =? 0)%Z
-      && (page_size <=? g)%Z
-      && (alloc_top h <? g + nZ)%Z
-      && (g + nZ <=? TASK_SIZE)%Z
-      && region_free (vm_reserved h ++ vm_maps h)
-           (Z_to_bv 64 g) (Z_to_bv 64 nZ)).
+  negb (g =? 0)%Z
+  && (page_size <=? g)%Z
+  && (alloc_top h <? g + nZ)%Z
+  && (g + nZ <=? TASK_SIZE)%Z
+  && region_free (vm_reserved h ++ vm_maps h)
+       (Z_to_bv 64 g) (Z_to_bv 64 nZ).
 
 (* =========================================================================
    AN ANONYMOUS MAP_SHARED MAPPING IS NOT A PRIVATE ONE, and an arm that

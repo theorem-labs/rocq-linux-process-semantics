@@ -99,8 +99,13 @@ mode answers. QEMU citations are QEMU 10.0.11.
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
   and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
   of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; the entries R-a, R-b and R-c below give the
-  difference. QEMU
+  Linux's bounds. Where a free page-aligned HINT reaches above it, the
+  model answers `unmodeled` rather than placing the mapping elsewhere
+  (`Sys/Mm/Mmap.v`, `place_declined_b`). The three cases that bound
+  still cuts Linux's answer off in are an mmap base above
+  `State.alloc_top`, the bottom-up fallback above it, and the stack
+  guard gap; "Known gaps in precision" gives them as R-a, R-b and R-c,
+  and marks the first two as soundness gaps. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -275,7 +280,8 @@ already says so. These are the known cases.
   Commit `2116988d5372` ("riscv: mm: Do not restrict mmap address based
   on hint", v6.11) made the macro unconditional, which is the form the
   model follows. The model's own band above `State.alloc_top` is a
-  separate limit and is residual R-b below, not a version difference.
+  separate limit, not a version difference: it is residual R-b below,
+  whose hint half the model now answers `unmodeled` for.
 - **`socket` with a type at or above `SOCK_MAX` and a family of 44 or
   45, and AF_INET protocols 256 to 262.** `NPROTO` and `IPPROTO_MAX`
   grew across the stable series (`include/linux/socket.h`,
@@ -822,6 +828,56 @@ serious half.
   that time to the clock: `State.m_clock` does not move, so a later
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
+- **R-a, an mmap base above `State.alloc_top`: a SOUNDNESS gap, open.** The
+  model's stack window is `[sp - 8 MiB, sp)`. Linux measures its 8 MiB
+  from the end of the stack VMA, which is above `sp` by the entry image.
+  With an entry image of more than about 1 MiB and a high base draw,
+  Linux's `mm->mmap_base` can lie above `State.alloc_top`, and
+  `State.mmap_top` is the minimum of the recorded base and the
+  page-rounded `alloc_top`, so the model's top-down window is then
+  strictly below Linux's and its answer is a DIFFERENT address. That is
+  a soundness break, not a precision cost. The band is at most
+  2109440 bytes wide over the entries `Run.valid_entry` admits (the
+  maximum is at a stack top of `0x7fffc0000000`, `sp` of
+  `0x7fffbfdfedf0` and a base of `0x7fffbf801000`, with `kb_aslr` on,
+  `kb_guard` zero, the mmap draw zero and an entry block at
+  `valid_launch`'s cap).
+  Answering `unmodeled` does not close it, which is why this entry is
+  still open. `State.init_reserved` places the run's vdso/vvar pair at
+  `page_round_down_Z (Z.min mbase (sp - 8 MiB))`, so for exactly those
+  entries the model's START STATE already puts the pair below where
+  Linux's first `get_unmapped_area` puts it; declining each `mmap`
+  would leave that difference standing. What closes it is LPS pull
+  request #25, which makes the stack window count the entry image and so
+  makes `alloc_top` Linux's floor, after which the band is empty.
+- **R-b, a hint or a fallback above `State.alloc_top`: the hint half is
+  CLOSED by a decline, the fallback half is open.** Linux honours a
+  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
+  above the stack included, and its bottom-up fallback searches up to the
+  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
+  `generic_get_unmapped_area_topdown`: the hint test is
+  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
+  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
+  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
+  hint, and searches, only below `State.alloc_top`.
+  The HINT half was the same soundness break as R-a: Linux returned the
+  hint and the model placed the mapping elsewhere. The model now answers
+  `unmodeled` for a hint whose range is free on the ledger, starts at or
+  above `mmap_min_addr` and ends above `State.alloc_top` and at or below
+  `State.TASK_SIZE` (`Sys/Mm/Mmap.v`, `place_declined_b`, second
+  disjunct).
+  The FALLBACK half stays open, and stays a precision gap in practice
+  rather than a soundness one that can be reached: it needs a ledger with
+  no free range of the requested size anywhere below `State.alloc_top` —
+  about 2^47 bytes of address space — before Linux's extra band can hold
+  an answer the model does not have. Deciding it needs an executable
+  "no fit in either window" test inside the trusted layer, which
+  `Sys/Mm/Mmap.v` does not have and which `Checks/Placement.v` may not
+  supply, the dependency running the other way. It stays open for the
+  reason it always did: the dynamic stack is a bound in this model and
+  not an entry in the ledger, so the model cannot tell a free address
+  above the stack from the stack itself. The stack VMA in the ledger
+  closes it.
 - **R-c, the stack guard gap.** When the stack has grown to its limit,
   Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
   that gap from the start of a `VM_GROWSDOWN` VMA

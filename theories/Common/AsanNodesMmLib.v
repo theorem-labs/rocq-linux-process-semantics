@@ -681,6 +681,8 @@ Lemma mmap_rw_check : forall ms x8 model eff flags,
   ms_gpr ms 1 <> Z_to_bv 64 0 -> ms_gpr ms 2 = Z_to_bv 64 3 ->
   ms_gpr ms 3 = flags -> mmap_flags_core flags = 34%Z ->
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   let nZ := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in
   check_syscall (sys_input segs ms x8) eff model
   = match eff with
@@ -694,11 +696,12 @@ Lemma mmap_rw_check : forall ms x8 model eff flags,
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff flags Hno H1 H2 H3 Hcore H4 H5 nZ.
+  intros ms x8 model eff flags Hno H1 H2 H3 Hcore H4 H5 Hdecl nZ.
   destruct (mmap_gates_core34 flags Hcore) as (Gm & _ & _).
   rewrite (mmap_check segs ms x8 model eff Hno). unfold check_mmap.
   assert (E1 : w_is0 (ms_gpr ms 1) = false) by (unfold w_is0; apply bv_eqb_neq; exact H1).
   rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm. cbn [negb]. cbv beta iota zeta. fold nZ.
+  rewrite Hdecl.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
   destruct us; [|reflexivity]. destruct cs; [|reflexivity]. destruct ci; [|reflexivity].
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].
@@ -718,6 +721,8 @@ Lemma srz_mmap_rw2 : forall regs (pc : word) mem rom model w (len : Z) (flags : 
   getr regs 11 = Z_to_bv 64 len -> (0 < len < 2 ^ 64)%Z ->
   getr regs 12 = Z_to_bv 64 3 -> getr regs 13 = flags -> mmap_flags_core flags = 34%Z ->
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
+  place_declined_b (m_vmmaps model) (getr regs 10)
+    (page_round_up_Z (bv_unsigned (getr regs 11))) = false ->
   let nZ := page_round_up_Z len in
   let n := Z_to_bv 64 nZ in
   (exists a, grant_ok_na (getr regs 10) model a nZ = true /\ mmap_noreserve_backed_ok flags model nZ = true) ->
@@ -727,7 +732,7 @@ Lemma srz_mmap_rw2 : forall regs (pc : word) mem rom model w (len : Z) (flags : 
                           (with_mmap_backing flags a n (mmap_model a n model))) KB) ->
   srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 KA KB).
 Proof.
-  intros regs pc mem rom model w len flags KA KB HF HE Hh Hisp H17 H11 Hlen H12 H13 Hcore H14 H15 nZ n (a0 & Ha0 & Hb0) HA HB.
+  intros regs pc mem rom model w len flags KA KB HF HE Hh Hisp H17 H11 Hlen H12 H13 Hcore H14 H15 Hdecl nZ n (a0 & Ha0 & Hb0) HA HB.
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 222%Z) by (rewrite H17; apply u64_lit; lia).
@@ -736,7 +741,8 @@ Proof.
                            ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12)
                            ltac:(unfold ms; rewrite ms_gpr_epend3; exact H13) Hcore
                            ltac:(unfold ms; rewrite ms_gpr_epend4; exact H14)
-                           ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)) as Hchk.
+                           ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)
+                           ltac:(unfold ms; rewrite ms_gpr_epend0, ms_gpr_epend1; exact Hdecl)) as Hchk.
   cbv zeta in Hchk. rewrite Hl1 in Hchk. fold nZ n in Hchk.
   assert (H0 : ms_gpr ms 0 = getr regs 10) by (unfold ms; rewrite ms_gpr_epend0; reflexivity).
   rewrite H0 in Hchk.
@@ -789,6 +795,8 @@ Lemma mmap_none_check : forall ms x8 model eff flags,
   ms_gpr ms 1 <> Z_to_bv 64 0 -> ms_gpr ms 2 = Z_to_bv 64 0 ->
   ms_gpr ms 3 = flags -> mmap_flags_core flags = 34%Z ->
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   let nZ := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in
   check_syscall (sys_input segs ms x8) eff model
   = match eff with
@@ -801,11 +809,12 @@ Lemma mmap_none_check : forall ms x8 model eff flags,
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff flags Hno H1 H2 H3 Hcore H4 H5 nZ.
+  intros ms x8 model eff flags Hno H1 H2 H3 Hcore H4 H5 Hdecl nZ.
   destruct (mmap_gates_core34 flags Hcore) as (_ & Gm & Gn).
   rewrite (mmap_check segs ms x8 model eff Hno). unfold check_mmap.
   assert (E1 : w_is0 (ms_gpr ms 1) = false) by (unfold w_is0; apply bv_eqb_neq; exact H1).
   rewrite E1, H2, H3, H5, mmap_off_aligned_b_0, (mmap_anon_b_of_core flags _ Hcore eq_refl), Gm, Gn. cbn [negb]. cbv beta iota zeta. fold nZ.
+  rewrite Hdecl.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity]. destruct zs; [|reflexivity].
   destruct cs; [|destruct us; reflexivity]. destruct ci; [|destruct us; reflexivity].
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].
@@ -819,6 +828,8 @@ Lemma srz_mmap_none2 : forall regs (pc : word) mem rom model w (len : Z) (flags 
   getr regs 11 = Z_to_bv 64 len -> (0 < len < 2 ^ 64)%Z ->
   getr regs 12 = Z_to_bv 64 0 -> getr regs 13 = flags -> mmap_flags_core flags = 34%Z ->
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
+  place_declined_b (m_vmmaps model) (getr regs 10)
+    (page_round_up_Z (bv_unsigned (getr regs 11))) = false ->
   let nZ := page_round_up_Z len in
   let n := Z_to_bv 64 nZ in
   (exists a, grant_ok_na (getr regs 10) model a nZ = true) ->
@@ -828,7 +839,7 @@ Lemma srz_mmap_none2 : forall regs (pc : word) mem rom model w (len : Z) (flags 
                           (with_mmap_backing flags a n (noaccess_model a n model))) KB) ->
   srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 KA KB).
 Proof.
-  intros regs pc mem rom model w len flags KA KB HF HE Hh Hisp H17 H11 Hlen H12 H13 Hcore H14 H15 nZ n (a0 & Ha0) HA HB.
+  intros regs pc mem rom model w len flags KA KB HF HE Hh Hisp H17 H11 Hlen H12 H13 Hcore H14 H15 Hdecl nZ n (a0 & Ha0) HA HB.
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 222%Z) by (rewrite H17; apply u64_lit; lia).
@@ -837,7 +848,8 @@ Proof.
                            ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12)
                            ltac:(unfold ms; rewrite ms_gpr_epend3; exact H13) Hcore
                            ltac:(unfold ms; rewrite ms_gpr_epend4; exact H14)
-                           ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)) as Hchk.
+                           ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)
+                           ltac:(unfold ms; rewrite ms_gpr_epend0, ms_gpr_epend1; exact Hdecl)) as Hchk.
   cbv zeta in Hchk. rewrite Hl1 in Hchk. fold nZ n in Hchk.
   assert (H0 : ms_gpr ms 0 = getr regs 10) by (unfold ms; rewrite ms_gpr_epend0; reflexivity).
   rewrite H0 in Hchk.

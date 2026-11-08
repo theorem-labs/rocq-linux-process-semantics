@@ -108,9 +108,8 @@ Qed.
     [vrm_can_expand_in_place], Linux v6.18.46, commit 1f99e9ab748f).
     With room above the source the only answer besides the injected
     errno is the in-place one, and the mark says its charge failed, so
-    its [choose] is empty.  Without room a placement the model cannot
-    cover is [Unmodeled], not [Ok]; otherwise the only non-errno answer
-    is the move, and no destination is fresh
+    its [choose] is empty.  Without room the only answer is the move,
+    and no destination is fresh
     ([mremap_budget_refused_no_fresh_sys_inv]). *)
 Lemma mremap_budget_refused_is_refusal_sys_inv : forall i m eff m' evs,
   sys_inv (m_vmmaps m) ->
@@ -149,39 +148,33 @@ Proof.
               (page_round_up_Z (bv_unsigned (in_arg i 1)))
               (page_round_up_Z (bv_unsigned (in_arg i 2)))) eqn:Hroom;
     cbv iota in Hcase;
-    cbv beta iota zeta in Hspec.
-  - unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify
-      in Hspec.
-    cbv beta iota zeta in Hspec. sys_destruct.
-    + (* room: the injected errno *)
-      match goal with
-      | [ Hin : In ?e mremap_errnos |- _ ] =>
-          destruct Hin as [<- | []]; vm_compute; reflexivity
-      end.
-    + (* room: the in-place answer, whose charge the mark says refused *)
-      exfalso.
-      match goal with
-      | [ Hb : mremap_final_budget_b _ _ _ _ _ = true |- _ ] =>
-          rewrite Hcase in Hb; discriminate Hb
-      end.
-  - destruct (place_declined_b (m_vmmaps m) (Z_to_bv 64 0)
-                (page_round_up_Z (bv_unsigned (in_arg i 2)))) eqn:Hdecl.
-    { unfold unmodeled in Hspec. discriminate Hspec. }
+    cbv beta iota zeta in Hspec;
     unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify
-      in Hspec.
-    cbv beta iota zeta in Hspec. sys_destruct.
-    + (* no room: the injected errno *)
-      match goal with
-      | [ Hin : In ?e mremap_errnos |- _ ] =>
-          destruct Hin as [<- | []]; vm_compute; reflexivity
-      end.
-    + (* no room: the move, and no destination is fresh *)
-      exfalso.
-      match goal with
-      | [ Hd : mremap_dst_ok _ _ _ _ _ ?d _ |- _ ] =>
-          destruct Hd as [_ Hf];
-          rewrite (mremap_budget_refused_no_fresh_sys_inv _ _ _ _ _ d
-                     Hinv Hlz Hmat Hroom Hmark) in Hf;
-          discriminate Hf
-      end.
+      in Hspec;
+    cbv beta iota zeta in Hspec; sys_destruct.
+  - (* room: the injected errno *)
+    match goal with
+    | [ Hin : In ?e mremap_errnos |- _ ] =>
+        destruct Hin as [<- | []]; vm_compute; reflexivity
+    end.
+  - (* room: the in-place answer, whose charge the mark says refused *)
+    exfalso.
+    match goal with
+    | [ Hb : mremap_final_budget_b _ _ _ _ _ = true |- _ ] =>
+        rewrite Hcase in Hb; discriminate Hb
+    end.
+  - (* no room: the injected errno *)
+    match goal with
+    | [ Hin : In ?e mremap_errnos |- _ ] =>
+        destruct Hin as [<- | []]; vm_compute; reflexivity
+    end.
+  - (* no room: the move, and no destination is fresh *)
+    exfalso.
+    match goal with
+    | [ Hd : mremap_dst_ok _ _ _ _ _ ?d _ |- _ ] =>
+        destruct Hd as [_ Hf];
+        rewrite (mremap_budget_refused_no_fresh_sys_inv _ _ _ _ _ d
+                   Hinv Hlz Hmat Hroom Hmark) in Hf;
+        discriminate Hf
+    end.
 Qed.

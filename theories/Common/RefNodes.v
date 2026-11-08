@@ -444,6 +444,8 @@ Definition mmap_noaccess_args_ok (ms : machine_state) : Prop :=
 
 Lemma mmap_noaccess_check : forall ms x8 model eff,
   bv_unsigned x8 = 222%Z -> mmap_noaccess_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   check_syscall (sys_input segs ms x8) eff model
   = let n := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in
     match eff with
@@ -456,7 +458,7 @@ Lemma mmap_noaccess_check : forall ms x8 model eff,
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff Hno (H1 & H2 & H3 & H4 & H5).
+  intros ms x8 model eff Hno (H1 & H2 & H3 & H4 & H5) Hdecl.
   rewrite (mmap_check ms x8 model eff Hno). unfold check_mmap.
   assert (E1 : w_is0 (ms_gpr ms 1) = false) by (unfold w_is0; apply bv_eqb_neq; exact H1).
   rewrite E1, H2, H3, H5.
@@ -467,6 +469,7 @@ Proof.
   replace (mmap_noaccess_b (Z_to_bv 64 0) (Z_to_bv 64 34) (Z_to_bv 64 0)) with true
     by (vm_compute; reflexivity).
   cbn [negb]. cbv beta iota zeta.
+  rewrite Hdecl.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity]. destruct zs; [|reflexivity].
   destruct cs; [|destruct us; reflexivity]. destruct ci; [|destruct us; reflexivity].
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].

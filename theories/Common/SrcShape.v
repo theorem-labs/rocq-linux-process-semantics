@@ -658,6 +658,8 @@ Lemma srz_mmap : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -667,7 +669,7 @@ Lemma srz_mmap : forall ms model x8 A B,
   (exists a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes (mkCfg ms model) (t_alt2 A B).
 Proof.
-  intros ms model x8 A B Hh Hlazy Hsvc Hno Hargs HA HB Hex.
+  intros ms model x8 A B Hh Hlazy Hsvc Hno Hargs Hdecl HA HB Hex.
   set (n := page_round_up (ms_gpr ms 1)).
   set (nZ := page_round_up_Z (bv_unsigned (ms_gpr ms 1))).
   destruct Hex as [a0 Ha0].
@@ -701,7 +703,7 @@ Proof.
         -- apply materialize_model_accesses_no_lazy.
            exact (eq_trans (mmap_model_lazy _ _ _) Hlazy).
     + intros e st Hss.
-      destruct (sstep_mmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hss)
+      destruct (sstep_mmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hdecl Hss)
         as [-> [(er & Her & ->) | (a & Ha & ->)]].
       * exists (inl (exist _ er Her)). split; reflexivity.
       * exists (inr (exist _ a Ha)). split; reflexivity.

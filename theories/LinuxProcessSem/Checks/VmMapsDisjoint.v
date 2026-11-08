@@ -1626,7 +1626,6 @@ Proof.
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hwf|].
-  difn H Edecl; [discriminate|].
   destruct ws; [|discriminate]. destruct ci; [|discriminate].
   (* the new length is a nonzero number of pages *)
   unfold page_align_is0_b in Enew. apply orb_false_iff in Enew as [Enew0 EnewB].

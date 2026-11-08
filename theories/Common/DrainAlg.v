@@ -637,6 +637,8 @@ Corollary rz_mmap_drain : forall ms0 ms model x8 bf cf,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (** the mmap failed: the binary's failure tail, a (retry-loop) write
       list and an exit *)
   (forall e, In e mmap_errnos ->
@@ -654,7 +656,7 @@ Corollary rz_mmap_drain : forall ms0 ms model x8 bf cf,
     (t_alt2 (t_writes bf (t_exit cf (m_fs model)))
             (t_drain cap (m_stdin model) [])).
 Proof.
-  intros ms0 ms model x8 bf cf Hh Hlazy Hfd Hms Hsvc Hno Hargs Hfail Hsucc Hex Hbf.
+  intros ms0 ms model x8 bf cf Hh Hlazy Hfd Hms Hsvc Hno Hargs Hdecl Hfail Hsucc Hex Hbf.
   eapply rz_msteps; [exact Hh | exact Hlazy | exact Hms |].
   eapply rz_mmap; try eassumption.
   - intros e He. apply wall_realizes;
@@ -687,6 +689,8 @@ Corollary rz_mmap_drain_det : forall ms0 ms model x8 bf cf,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_wallexit segs (Z_to_bv 64 1) bf cf
        (advance_past_svc (set_gpr0 ms (errno_ret e)))) ->
@@ -703,7 +707,7 @@ Corollary rz_mmap_drain_det : forall ms0 ms model x8 bf cf,
                          (stream_firstn (m_stdin model) cap))
                     (Tfin (stream_firstn (m_stdin model) cap)))).
 Proof.
-  intros ms0 ms model x8 bf cf Hh Hlazy Hfd Hms Hsvc Hno Hargs Hfail Hsucc Hex Hbf.
+  intros ms0 ms model x8 bf cf Hh Hlazy Hfd Hms Hsvc Hno Hargs Hdecl Hfail Hsucc Hex Hbf.
   eapply rz_conseq;
     [ eapply rz_mmap_drain; eassumption
     | apply t_alt2_cong; [apply t_eq_refl | apply t_drain_top_collapse] ].

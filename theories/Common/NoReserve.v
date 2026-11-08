@@ -319,14 +319,17 @@ Qed.
     retained: this arm exists for every modeled mmap shape). *)
 Lemma mmap_fail_ok_noreserve : forall segs ms x8 model e,
   bv_unsigned x8 = 222%Z -> mmap_args_ok_noreserve ms -> In e mmap_errnos ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   syscall_spec (sys_input segs ms x8) model
     (Ok (mkEffect (errno_ret e) [] []) model []).
 Proof.
-  intros segs ms x8 model e Hno Ha HIn.
+  intros segs ms x8 model e Hno Ha HIn Hdecl.
   destruct (mmap_args_ok_noreserve_gates ms Ha) as [Hoff [Hanon [Hl Hmb]]].
   apply (proj2 (syscall_spec_mmap _ _ _ _ _ Hno)). apply check_mmap_sound_ok.
   unfold check_mmap. cbv beta.
   rewrite Hoff, Hanon, Hl, Hmb. cbn [negb]. cbv beta iota zeta.
+  rewrite Hdecl.
   rewrite errno_ret_in_intro by assumption. reflexivity.
 Qed.
 
@@ -335,17 +338,20 @@ Qed.
 Lemma mmap_succ_ok_noreserve : forall segs ms x8 model a,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
   syscall_spec (sys_input segs ms x8) model
     (Ok (mkEffect a [] [(a, page_round_up (ms_gpr ms 1))])
         (mmap_model_noreserve a (page_round_up (ms_gpr ms 1)) model) []).
 Proof.
-  intros segs ms x8 model a Hno Ha Hg.
+  intros segs ms x8 model a Hno Ha Hdecl Hg.
   destruct (mmap_args_ok_noreserve_gates ms Ha) as [Hoff [Hanon [Hl Hmb]]].
   destruct Ha as (_ & _ & Hflags & _ & _).
   apply (proj2 (syscall_spec_mmap _ _ _ _ _ Hno)). apply check_mmap_sound_ok.
   unfold check_mmap. cbv beta.
   rewrite Hoff, Hanon, Hl, Hmb. cbn [negb]. cbv beta iota zeta.
+  rewrite Hdecl.
   rewrite (grant_nr_not_errno (ms_gpr ms 0) model a
              (page_round_up_Z (bv_unsigned (ms_gpr ms 1))));
     [ | apply page_round_up_Z_nonneg; pose proof (u64_range (ms_gpr ms 1)); lia
@@ -379,6 +385,9 @@ Proof.
   apply check_mmap_complete_ok in Hspec.
   unfold check_mmap in Hspec. cbv beta in Hspec.
   rewrite Hoff, Hanon, Hl, Hmb in Hspec. cbn [negb] in Hspec.
+  destruct (place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+              (page_round_up_Z (bv_unsigned (ms_gpr ms 1)))) eqn:Hdecl;
+    [discriminate|].
   rewrite Hflags in Hspec.
   unfold mmap_noreserve_backed_ok, with_mmap_backing in Hspec.
   rewrite mmap_noreserve_b_flags in Hspec.
@@ -418,14 +427,17 @@ Qed.
 Lemma mmap_no_unmodeled_noreserve : forall segs ms x8 model,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
 Proof.
-  intros segs ms x8 model Hno Ha Hspec.
+  intros segs ms x8 model Hno Ha Hdecl Hspec.
   destruct (mmap_args_ok_noreserve_gates ms Ha) as [Hoff [Hanon [Hl Hmb]]].
   apply (proj1 (syscall_spec_mmap _ _ _ _ _ Hno)) in Hspec.
   apply (check_mmap_complete_unmodeled _ _ _ _ _ _ _ _ (mkEffect (Z_to_bv 64 0) [] [])) in Hspec.
   unfold check_mmap in Hspec. cbv beta in Hspec.
   rewrite Hoff, Hanon, Hl, Hmb in Hspec. cbn [negb] in Hspec.
+  rewrite Hdecl in Hspec.
   cbv beta iota zeta in Hspec.
   assert (E : errno_ret_in mmap_errnos (Z_to_bv 64 0) = false) by reflexivity.
   rewrite E in Hspec. cbv beta iota in Hspec.
@@ -447,6 +459,8 @@ Lemma sstep_mmap_inv_noreserve : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   sstep segs (mkCfg ms model) evs st ->
   evs = [] /\
   ((exists e, In e mmap_errnos /\
@@ -455,7 +469,7 @@ Lemma sstep_mmap_inv_noreserve : forall ms model x8 evs st,
       st = SNext (mkCfg (advance_past_svc (apply_effect ms (mkEffect a [] [(a, page_round_up (ms_gpr ms 1))])))
                         (mmap_model_noreserve a (page_round_up (ms_gpr ms 1)) model)))).
 Proof.
-  intros ms model x8 evs st Hh Hsvc Hno Hargs Hss.
+  intros ms model x8 evs st Hh Hsvc Hno Hargs Hdecl Hss.
   inversion Hss; subst; try congruence.
   - (* sstep_syscall *)
     match goal with
@@ -527,7 +541,7 @@ Proof.
     | H2 : ms_svc_pending ms = Some ?x,
       H3 : syscall_spec (sys_input segs ms ?x) model Unmodeled |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      exact (mmap_no_unmodeled_noreserve segs ms x8 model Hno Hargs H3)
+      exact (mmap_no_unmodeled_noreserve segs ms x8 model Hno Hargs Hdecl H3)
     end.
 Qed.
 
@@ -539,6 +553,8 @@ Lemma node_mmap_noreserve : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
      + {a : word | grant_ok_nr (ms_gpr ms 0) model a
@@ -554,7 +570,7 @@ Lemma node_mmap_noreserve : forall ms model x8,
                  (mmap_model_noreserve a (page_round_up (ms_gpr ms 1)) model)
        end).
 Proof.
-  intros ms model x8 Hh Hsvc Hno Hargs.
+  intros ms model x8 Hh Hsvc Hno Hargs Hdecl.
   set (n := page_round_up (ms_gpr ms 1)).
   split.
   - intros [[e He] | [a Ha]]; cbn.
@@ -574,7 +590,7 @@ Proof.
       * rewrite mmap_model_noreserve_halted; exact Hh.
       * apply materialize_syscall_effect_nil.
   - intros e st Hss.
-    destruct (sstep_mmap_inv_noreserve ms model x8 e st Hh Hsvc Hno Hargs Hss)
+    destruct (sstep_mmap_inv_noreserve ms model x8 e st Hh Hsvc Hno Hargs Hdecl Hss)
       as [-> [(er & Her & ->) | (a & Ha & ->)]].
     + exists (inl (exist _ er Her)). split; reflexivity.
     + exists (inr (exist _ a Ha)). split; reflexivity.
@@ -586,6 +602,8 @@ Lemma srz_mmap_noreserve : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes segs (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
   (forall a, grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -595,7 +613,7 @@ Lemma srz_mmap_noreserve : forall ms model x8 A B,
   (exists a, grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes segs (mkCfg ms model) (t_alt2 A B).
 Proof.
-  intros ms model x8 A B Hh Hsvc Hno Hargs HA HB Hex.
+  intros ms model x8 A B Hh Hsvc Hno Hargs Hdecl HA HB Hex.
   destruct Hex as [a0 Ha0].
   eapply (srz_alt2 segs (mkCfg ms model)
             {e : Z | In e mmap_errnos}
@@ -620,6 +638,8 @@ Lemma srz_mmap_spin_noreserve : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
   (forall a, grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -629,7 +649,7 @@ Lemma srz_mmap_spin_noreserve : forall ms model x8 B,
   (exists a, grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes segs (mkCfg ms model) B.
 Proof.
-  intros ms model x8 B Hh Hsvc Hno Hargs Hspin HB Hex.
+  intros ms model x8 B Hh Hsvc Hno Hargs Hdecl Hspin HB Hex.
   destruct Hex as [a0 Ha0].
   assert (HB0 : B []) by (eapply srealizes_nonempty; apply (HB a0 Ha0)).
   eapply srz_conseq.
@@ -677,6 +697,8 @@ Lemma sstep_mmap_inv_lazy : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   sstep segs (mkCfg ms model) evs st ->
   evs = [] /\
   ((exists e, In e mmap_errnos /\
@@ -685,7 +707,7 @@ Lemma sstep_mmap_inv_lazy : forall ms model x8 evs st,
       st = SNext (mkCfg (advance_past_svc (apply_effect ms (mkEffect a [] [(a, page_round_up (ms_gpr ms 1))])))
                         (mmap_model a (page_round_up (ms_gpr ms 1)) model)))).
 Proof.
-  intros ms model x8 evs st Hh Hsvc Hno Hargs Hss.
+  intros ms model x8 evs st Hh Hsvc Hno Hargs Hdecl Hss.
   inversion Hss; subst; try congruence.
   - (* sstep_syscall *)
     match goal with
@@ -754,7 +776,7 @@ Proof.
     | H2 : ms_svc_pending ms = Some ?x,
       H3 : syscall_spec (sys_input segs ms ?x) model Unmodeled |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      exact (mmap_no_unmodeled segs ms x8 model Hno Hargs H3)
+      exact (mmap_no_unmodeled segs ms x8 model Hno Hargs Hdecl H3)
     end.
 Qed.
 
@@ -765,6 +787,8 @@ Lemma node_mmap_lazy : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
      + {a : word | grant_ok (ms_gpr ms 0) model a
@@ -780,7 +804,7 @@ Lemma node_mmap_lazy : forall ms model x8,
                  (mmap_model a (page_round_up (ms_gpr ms 1)) model)
        end).
 Proof.
-  intros ms model x8 Hh Hsvc Hno Hargs.
+  intros ms model x8 Hh Hsvc Hno Hargs Hdecl.
   set (n := page_round_up (ms_gpr ms 1)).
   split.
   - intros [[e He] | [a Ha]]; cbn.
@@ -800,7 +824,7 @@ Proof.
       * rewrite mmap_model_halted; exact Hh.
       * apply materialize_syscall_effect_nil.
   - intros e st Hss.
-    destruct (sstep_mmap_inv_lazy ms model x8 e st Hh Hsvc Hno Hargs Hss)
+    destruct (sstep_mmap_inv_lazy ms model x8 e st Hh Hsvc Hno Hargs Hdecl Hss)
       as [-> [(er & Her & ->) | (a & Ha & ->)]].
     + exists (inl (exist _ er Her)). split; reflexivity.
     + exists (inr (exist _ a Ha)). split; reflexivity.
@@ -812,6 +836,8 @@ Lemma srz_mmap_lazy : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes segs (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -821,7 +847,7 @@ Lemma srz_mmap_lazy : forall ms model x8 A B,
   (exists a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes segs (mkCfg ms model) (t_alt2 A B).
 Proof.
-  intros ms model x8 A B Hh Hsvc Hno Hargs HA HB Hex.
+  intros ms model x8 A B Hh Hsvc Hno Hargs Hdecl HA HB Hex.
   destruct Hex as [a0 Ha0].
   eapply (srz_alt2 segs (mkCfg ms model)
             {e : Z | In e mmap_errnos}
@@ -842,6 +868,8 @@ Lemma srz_mmap_spin_lazy : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
+  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
   (forall a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
@@ -851,7 +879,7 @@ Lemma srz_mmap_spin_lazy : forall ms model x8 B,
   (exists a, grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true) ->
   srealizes segs (mkCfg ms model) B.
 Proof.
-  intros ms model x8 B Hh Hsvc Hno Hargs Hspin HB Hex.
+  intros ms model x8 B Hh Hsvc Hno Hargs Hdecl Hspin HB Hex.
   destruct Hex as [a0 Ha0].
   assert (HB0 : B []) by (eapply srealizes_nonempty; apply (HB a0 Ha0)).
   eapply srz_conseq.
@@ -1810,6 +1838,9 @@ Hypothesis Hfd : fd1chan model.
 Hypothesis Hsvc1 : ms_svc_pending ms1 = Some x8a.
 Hypothesis Hno1 : bv_unsigned x8a = 222%Z.
 Hypothesis Hargs1 : mmap_args_ok_noreserve ms1.
+Hypothesis Hdecl1 :
+  place_declined_b (m_vmmaps model) (ms_gpr ms1 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr ms1 1))) = false.
 
 Let nZ1 : Z := page_round_up_Z (bv_unsigned (ms_gpr ms1 1)).
 Let n1 : word := page_round_up (ms_gpr ms1 1).
@@ -1841,6 +1872,9 @@ Hypothesis Hsvc2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
   ms_svc_pending (ms2 a1) = Some x8b.
 Hypothesis Hargs2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
   mmap_args_ok (ms2 a1).
+Hypothesis Hdecl2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
+  place_declined_b (m_vmmaps (model1 a1)) (ms_gpr (ms2 a1) 0)
+    (page_round_up_Z (bv_unsigned (ms_gpr (ms2 a1) 1))) = false.
 
 Let nZ2 (a1 : word) : Z := page_round_up_Z (bv_unsigned (ms_gpr (ms2 a1) 1)).
 Let n2 (a1 : word) : word := page_round_up (ms_gpr (ms2 a1) 1).
@@ -1938,14 +1972,14 @@ Theorem asan_init_srealizes :
     (t_write_ch (Z_to_bv 64 1) buf (t_exit cs (m_fs model))).
 Proof.
   eapply srz_mmap_spin_noreserve;
-    [ exact Hh | exact Hsvc1 | exact Hno1 | exact Hargs1 | exact Hrefuse1 |
+    [ exact Hh | exact Hsvc1 | exact Hno1 | exact Hargs1 | exact Hdecl1 | exact Hrefuse1 |
     | exact Hex1 ].
   intros a1 Hg1.
   eapply srz_msteps_disjoint;
     [ exact Hh | exact (Hwalk1 a1 Hg1) | exact (Hout1 a1 Hg1) | ].
   eapply srz_mmap_spin_lazy;
     [ exact Hh | exact (Hsvc2 a1 Hg1) | exact Hno2 | exact (Hargs2 a1 Hg1)
-    | exact (Hrefuse2 a1 Hg1) | | exact (Hex2 a1 Hg1) ].
+    | exact (Hdecl2 a1 Hg1) | exact (Hrefuse2 a1 Hg1) | | exact (Hex2 a1 Hg1) ].
   intros a2 Hg2.
   eapply srz_msteps_disjoint;
     [ exact Hh | exact (Hwalk2 a1 a2 Hg1 Hg2) | exact (Hout2 a1 a2 Hg1 Hg2) | ].

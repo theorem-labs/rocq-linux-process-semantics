@@ -844,7 +844,6 @@ Proof.
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hna|].
-  difn H Edecl; [discriminate|].
   destruct ws; [|discriminate]. destruct ci; [|discriminate].
   apply negb_false_iff, Z.eqb_eq in Ealign.
   apply negb_false_iff in Esrc.
