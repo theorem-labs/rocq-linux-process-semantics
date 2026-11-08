@@ -1058,21 +1058,28 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
    mapping or the stack sits.  R-a and the hint half of R-b are
-   SOUNDNESS gaps and not precision gaps — the model gives an address
-   where Linux gives a DIFFERENT one.  [place_declined_b] below answers
-   [unmodeled] on the hint half; R-a is open, for the reason its entry
-   gives.
+   SOUNDNESS gaps and not precision gaps — in each the model names a
+   DIFFERENT address from the one Linux gives.  R-c is a soundness gap
+   too: Linux's hint test respects [vm_start_gap], so it REFUSES a
+   hint inside the grown stack's guard gap and this model returns it.
+   [place_declined_b] below answers [unmodeled] on the hint half of
+   R-b; R-a is open, for the reason its entry gives.
 
-   - R-a, a base above [alloc_top], OPEN.  The model's stack window
-     starts at [sp - stack_max_size]; Linux's starts at the stack VMA's
-     end.  A high base draw with a large entry block can put Linux's
-     base above [alloc_top], and then this model's top-down placements
-     are lower than the kernel's.  A decline does not close it: for
-     exactly those entries [State.init_reserved] already puts the
-     vdso/vvar pair below where Linux's first [get_unmapped_area] puts
-     it, so the START STATE differs before any mmap is made.  LPS pull
-     request #25, which makes the stack window count the entry image,
-     makes [alloc_top] Linux's floor and empties the band.
+   - R-a, a base above [alloc_top], OPEN.  The zero-mapped stack
+     window now counts from the entry block's end
+     ([Run.stack_window_lo]), as Linux counts RLIMIT_STACK from the
+     stack VMA's [vm_end], but the ALLOCATION ceiling was not moved
+     with it: [State.alloc_top] is still [sp - stack_max_size], and
+     [sp] is below that end by the entry image.  A high base draw with
+     a large entry block can put Linux's base above [alloc_top], and
+     then this model's top-down placements are lower than the
+     kernel's.  Answering [unmodeled] does not close it: for exactly
+     those entries [State.init_reserved] already puts the vdso/vvar
+     pair below where Linux's first [get_unmapped_area] puts it, so
+     the START STATE differs before any mmap is made.  What closes it
+     is raising the allocation ceiling to the floor
+     [Run.stack_window_lo] already uses, after which the band is
+     empty.
    - R-b, hints and the bottom-up fallback above [alloc_top].  Linux
      honours a free hint anywhere up to STACK_TOP_MAX, the band above
      the stack included, and its bottom-up fallback reaches the stack's
@@ -1275,9 +1282,10 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
       so for exactly those entries the model's START STATE already puts
       the pair below where Linux's first [get_unmapped_area] puts it,
       and declining each [mmap] would leave that difference standing.
-      What closes it is making [alloc_top] Linux's floor — LPS pull
-      request #25, the stack window counting the entry image — after
-      which the band is empty.
+      What closes it is raising the allocation ceiling to the floor
+      [Run.stack_window_lo] already uses — the stack window counts the
+      entry block's end, the allocation ceiling still counts from [sp]
+      — after which the band is empty.
     - R-b's other half, THE BOTTOM-UP FALLBACK.  When the top-down
       search finds nothing, Linux re-runs with
       [info.high_limit = mmap_end] (mm/mmap.c, the
