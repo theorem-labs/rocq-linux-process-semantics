@@ -55,6 +55,14 @@ Definition check_mremap (old old_size new_size flags : word)
     then CheckUnmodeled
     else if Z.eqb old_nZ new_nZ
     then check_ret_only eff old m []
+    (* [Mremap.mremap_spec]'s decline on the MOVE path, in the same
+       place: the two tests above it are the ones that select that
+       path, and neither reads [eff].  See [Mmap.place_declined_b]. *)
+    else if negb (new_nZ <? old_nZ)%Z
+            && negb (mremap_inplace_room_b m old old_n new_n
+                       old_nZ new_nZ)
+            && place_declined_b (m_vmmaps m) (Z_to_bv 64 0) new_nZ
+    then CheckUnmodeled
     else
     match eff with
     | mkEffectU r [] zs us cs [] =>

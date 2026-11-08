@@ -816,31 +816,42 @@ Definition mremap_spec (old old_size new_size flags : word)
     then unmodeled             (* do_mremap's vma_lookup *)
     else if Z.eqb old_nZ new_nZ
     then ret_only old          (* mremap_at's MREMAP_NO_RESIZE arm *)
+    else if (new_nZ <? old_nZ)%Z then
+      alt
+        (e <- errno_from mremap_errnos ;; err_ret e)
+        (modify (fun _ => mremap_model_next m old old_n old new_n) ;;
+         pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ))
+    (* GROW.  Linux asks for room above the source first
+       ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46,
+       commit 1f99e9ab748f).  With room it expands there, and a
+       failing charge is a REFUSAL with no move.  Without room
+       it calls [get_unmapped_area] with no hint, while the old
+       mapping is still in the tree, and moves to the one
+       address that search gives ([Mmap.linux_place]). *)
+    else if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
+    then
+      alt
+        (e <- errno_from mremap_errnos ;; err_ret e)
+        (_ <- choose (fun _ : unit =>
+                mremap_final_budget_b m old old_n old new_n = true) ;;
+         modify (fun _ => mremap_model_next m old old_n old new_n) ;;
+         pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ))
+    (* PRIORITY 1.  The move reads [Mmap.linux_place] at hint 0, so it
+       inherits that rule's one soundness gap: where Linux's top-down
+       window reaches above [State.alloc_top], Linux's destination can
+       be above the model's and the model would name a DIFFERENT
+       address.  [Mmap.place_declined_b] decides it; at hint 0 only its
+       first disjunct can fire.  Declining here and not around the two
+       arms above is deliberate: neither of those searches. *)
+    else if Mmap.place_declined_b h (Z_to_bv 64 0) new_nZ
+    then unmodeled
     else
       alt
         (e <- errno_from mremap_errnos ;; err_ret e)
-        (if (new_nZ <? old_nZ)%Z then
-           modify (fun _ => mremap_model_next m old old_n old new_n) ;;
-           pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ)
-         else
-           (* GROW.  Linux asks for room above the source first
-              ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46,
-              commit 1f99e9ab748f).  With room it expands there, and a
-              failing charge is a REFUSAL with no move.  Without room
-              it calls [get_unmapped_area] with no hint, while the old
-              mapping is still in the tree, and moves to the one
-              address that search gives ([Mmap.linux_place]). *)
-           if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
-           then
-             (_ <- choose (fun _ : unit =>
-                     mremap_final_budget_b m old old_n old new_n = true) ;;
-              modify (fun _ => mremap_model_next m old old_n old new_n) ;;
-              pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ))
-           else
-             dst <- choose (fun dst => mremap_dst_ok m old_nZ new_nZ
-                                         old old_n dst new_n) ;;
-             modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
-             pure (mremap_move_effect old old_n dst old_nZ new_nZ)).
+        (dst <- choose (fun dst => mremap_dst_ok m old_nZ new_nZ
+                                     old old_n dst new_n) ;;
+         modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
+         pure (mremap_move_effect old old_n dst old_nZ new_nZ)).
 
 (* =========================================================================
    THE BUDGET MARK for mremap (see [Mmap.brk_budget_refused_b] for what

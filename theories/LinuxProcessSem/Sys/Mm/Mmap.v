@@ -1197,6 +1197,79 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
     \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
 
+(** WHERE LINUX CAN PLACE A MAPPING THAT [linux_place] DOES NOT NAME,
+    and where this model therefore says [unmodeled].
+
+    DESIGN PRIORITY 1 (README.md): "Where the model cannot be sound, it
+    says [unmodeled]."  [linux_place] bounds BOTH of its answers by
+    [State.alloc_top] — the run's [sp - stack_max_size] — because the
+    dynamic stack is a bound in this model and not an entry of the
+    ledger.  Linux has no such bound.  Where Linux's rule can answer
+    ABOVE [alloc_top], [linux_place] does not merely lose precision: it
+    names a DIFFERENT, lower address, so a statement proved about the
+    model would be false of Linux.  That is a soundness break, and the
+    fail-closed answer is to decline the call.
+
+    TWO CONDITIONS, each decided on the ledger and the request.  Both
+    are at Linux v6.18.46, commit 1f99e9ab748f.
+
+    (1) THE TOP-DOWN WINDOW.  [generic_get_unmapped_area_topdown]
+        (mm/mmap.c) passes [info.high_limit = arch_get_mmap_base(addr,
+        mm->mmap_base)], which is [mm->mmap_base] alone.
+        [State.mmap_top] takes the minimum of that and
+        [page_round_down_Z (alloc_top h)].  The two windows differ
+        exactly when the recorded base is above the page-rounded
+        allocation top, and [Run.valid_mmap_base] admits such a base: it
+        reaches [State.mmap_base_max = 0x7ffff8000000], while
+        [alloc_top h] is as low as [State.sp_window_lo - stack_max_size
+        = 0x7fff7f800000].  In that band Linux's highest fit can be
+        above the model's, so the model declines.  This is SCOPE.md's
+        residual R-a.
+
+    (2) A FREE HINT ABOVE THE CEILING.  The same function honours a
+        page-aligned hint when
+        [mmap_end - len >= addr && addr >= mmap_min_addr] and the two
+        gap tests pass (mm/mmap.c, the [if (addr)] block).  [mmap_end]
+        is [arch_get_mmap_end] (arch/riscv/include/asm/processor.h),
+        which is [STACK_TOP_MAX = State.TASK_SIZE]; the model's hint
+        window stops at [alloc_top h] instead.  So a hint whose range is
+        free on this ledger, starts at or above [mmap_min_addr] (4096,
+        the value SCOPE.md assumes) and ends above [alloc_top h] but at
+        or below [TASK_SIZE] is one Linux returns unchanged and
+        [linux_place] sends to its top-down search instead.  The model
+        declines.  This is the first half of SCOPE.md's residual R-b.
+
+        [region_free] over the WHOLE range is what keeps this from
+        declining more than it must: when the range meets a ledger
+        entry, Linux refuses the hint too, so the fall-through to the
+        search is Linux's own answer and condition (1) covers the rest.
+
+    WHAT THIS DOES NOT COVER, and why it is named rather than closed.
+    The second half of R-b is the BOTTOM-UP FALLBACK: when the top-down
+    search finds nothing, Linux re-runs with
+    [info.high_limit = mmap_end] (mm/mmap.c, the [offset_in_page(addr)]
+    retry), and [topdown_search] uses [alloc_top h] there.  Deciding
+    that case needs an executable "no fit anywhere in the window" test
+    inside the trusted layer, which this file does not have and which
+    [Checks.Placement] may not supply (the dependency runs the other
+    way).  It needs a ledger whose entries leave no gap of the
+    requested size anywhere below [alloc_top h] — about 2^47 bytes of
+    address space — so no run this model admits reaches it, but it is
+    not closed.  SCOPE.md's R-c, the stack guard gap, is a further
+    residual of the same cause.
+
+    Closing all of them properly is the stack VMA in the ledger, which
+    SCOPE.md names on each entry. *)
+Definition place_declined_b (h : VmMaps) (hint : word) (nZ : Z) : bool :=
+  let g := hint_address hint in
+  (page_round_down_Z (alloc_top h) <? bv_unsigned (vm_mmap_base h))%Z
+  || (negb (g =? 0)%Z
+      && (page_size <=? g)%Z
+      && (alloc_top h <? g + nZ)%Z
+      && (g + nZ <=? TASK_SIZE)%Z
+      && region_free (vm_reserved h ++ vm_maps h)
+           (Z_to_bv 64 g) (Z_to_bv 64 nZ)).
+
 (* =========================================================================
    AN ANONYMOUS MAP_SHARED MAPPING IS NOT A PRIVATE ONE, and an arm that
    answered it like one would be unsound rather than imprecise.
@@ -1957,12 +2030,19 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
   else if w_is0 len then
     (if mmap_plain_anon_b flags then err_ret EINVAL else unmodeled)
   else if mmap_modeled_b prot flags off then
+    (* PRIORITY 1 BEFORE ANYTHING ELSE: where Linux's rule can answer
+       above [State.alloc_top] the model declines, rather than naming
+       the lower address its own search returns.  See
+       [place_declined_b].  The test is outside the [alt] on purpose:
+       the spec must not admit an [Ok] and [Unmodeled] for one call. *)
+    m <- get_model ;;
+    let h := m_vmmaps m in
+    let nZ := page_round_up_Z (bv_unsigned len) in
+    if place_declined_b h addr nZ then unmodeled
+    else
     alt
       (e <- errno_from mmap_errnos ;; err_ret e)
-      (m <- get_model ;;
-       let h := m_vmmaps m in
-       let nZ := page_round_up_Z (bv_unsigned len) in
-       let n := Z_to_bv 64 nZ in
+      (let n := Z_to_bv 64 nZ in
        a <- choose (fun a =>
                       linux_place h (kb_thp (m_kernel m)) addr nZ
                         (bv_unsigned a)
@@ -1975,12 +2055,16 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
                 (vm_mmap_base h) (vm_init_sp h)) m)) ;;
        pure (mkEffect a [] [(a, n)]))
   else if mmap_noaccess_b prot flags off then
+    (* the same decline, for the same reason: this arm places through
+       [linux_place] too *)
+    m <- get_model ;;
+    let h := m_vmmaps m in
+    let nZ := page_round_up_Z (bv_unsigned len) in
+    if place_declined_b h addr nZ then unmodeled
+    else
     alt
       (e <- errno_from mmap_errnos ;; err_ret e)
-      (m <- get_model ;;
-       let h := m_vmmaps m in
-       let nZ := page_round_up_Z (bv_unsigned len) in
-       let n := Z_to_bv 64 nZ in
+      (let n := Z_to_bv 64 nZ in
        a <- choose (fun a =>
                       linux_place h (kb_thp (m_kernel m)) addr nZ
                         (bv_unsigned a)) ;;
