@@ -104,7 +104,8 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
   (* [Mmap.mmap_spec]'s decline, verbatim and in the same place: ahead
      of the [alt], so the checker never reports an [Ok] for a call the
      spec declines (see [Mmap.place_declined_b]). *)
-  if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+  if place_declined_b (m_kernel m) (m_vmmaps m) addr
+       (page_round_up_Z (bv_unsigned len))
   then CheckUnmodeled
   else
   match eff with
@@ -131,7 +132,8 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
   | _ => CheckReject
   end
   else if mmap_noaccess_b prot flags off then
-  if place_declined_b (m_vmmaps m) addr (page_round_up_Z (bv_unsigned len))
+  if place_declined_b (m_kernel m) (m_vmmaps m) addr
+       (page_round_up_Z (bv_unsigned len))
   then CheckUnmodeled
   else
   match eff with
@@ -674,7 +676,7 @@ Proof.
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [discriminate|].
     eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta. rewrite Hdecl.
@@ -707,7 +709,7 @@ Proof.
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [discriminate|].
     eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta. rewrite Hdecl.
@@ -1099,7 +1101,7 @@ Proof.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro]. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl.
     { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       rewrite Hdecl. apply unmodeled_intro. }
@@ -1119,7 +1121,7 @@ Proof.
     + discriminate.
     + discriminate. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl.
     { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       rewrite Hdecl. apply unmodeled_intro. }
@@ -1364,7 +1366,7 @@ Proof.
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw; cbn [negb].
   { apply get_model_bind_ok_inv in H. cbv beta zeta in H.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl.
     { sys_unfold. inv_ok; discriminate. }
     sys_unfold. cbv iota in H. inv_ok.
@@ -1382,7 +1384,7 @@ Proof.
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
   { apply get_model_bind_ok_inv in H. cbv beta zeta in H.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl.
     { sys_unfold. inv_ok; discriminate. }
     sys_unfold. cbv iota in H. inv_ok.
@@ -1745,14 +1747,14 @@ Proof.
       [sys_unfold; inv_ok; discriminate | reflexivity]. }
   destruct (mmap_modeled_b prot flags off) eqn:Hrw; cbn [negb].
   { apply bind_model_inv in H. cbv beta zeta in H.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [reflexivity|].
     destruct (mmap_noreserve_b flags); sys_unfold; cbv iota in H;
       inv_ok; discriminate. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
   { apply bind_model_inv in H. cbv beta zeta in H.
-    destruct (place_declined_b (m_vmmaps m) addr
+    destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Hdecl;
       [reflexivity|].
     destruct (mmap_noreserve_b flags); sys_unfold; cbv iota in H;

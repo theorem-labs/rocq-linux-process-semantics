@@ -561,7 +561,7 @@ Lemma node_mmap : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
@@ -613,7 +613,7 @@ Lemma srz_mmap : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
@@ -649,7 +649,7 @@ Lemma srz_mmap_spin : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
@@ -780,7 +780,7 @@ Corollary srz_spin_alloc_writes : forall segs ms0 ms model x8 bs cs,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
@@ -830,7 +830,7 @@ Hypothesis Hsvc : ms_svc_pending ms = Some x8.
 Hypothesis Hno : bv_unsigned x8 = 222%Z.
 Hypothesis Hargs : mmap_args_ok ms.
 Hypothesis Hdecl :
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false.
 (** The refusal arm: whatever errno the environment answers, the binary
     spins (established per-binary by [prove_to_spin] or the [ts_*]

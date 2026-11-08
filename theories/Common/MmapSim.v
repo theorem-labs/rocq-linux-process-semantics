@@ -603,7 +603,7 @@ Proof. intros e HIn. exact (errnos_ok_range mmap_errnos e eq_refl HIn). Qed.
 
 Lemma mmap_fail_ok : forall segs ms x8 model e,
   bv_unsigned x8 = 222%Z -> mmap_args_ok ms -> In e mmap_errnos ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   syscall_spec (sys_input segs ms x8) model
     (Ok (mkEffect (errno_ret e) [] []) model []).
@@ -632,7 +632,7 @@ Qed.
 Lemma mmap_succ_ok : forall segs ms x8 model a,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   grant_ok (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
   syscall_spec (sys_input segs ms x8) model
@@ -679,7 +679,7 @@ Proof.
   apply check_mmap_complete_ok in Hspec.
   unfold check_mmap in Hspec. cbv beta in Hspec.
   rewrite Hoff, Hanon, Hl, Hmb in Hspec. cbn [negb] in Hspec.
-  destruct (place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  destruct (place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
               (page_round_up_Z (bv_unsigned (ms_gpr ms 1)))) eqn:Hdecl;
     [discriminate|].
   rewrite Hflags in Hspec.
@@ -727,7 +727,7 @@ Qed.
 Lemma mmap_no_unmodeled : forall segs ms x8 model,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
 Proof.
@@ -1346,7 +1346,7 @@ Inductive tmw : machine_state -> Model -> list (list byte) -> word
     ms_svc_pending ms = Some x8 ->
     bv_unsigned x8 = 222%Z ->
     mmap_args_ok ms ->
-    place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+    place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
       (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
     (forall e, In e mmap_errnos ->
        twm (advance_past_svc (set_gpr0 ms (errno_ret e))) model bf cf) ->
@@ -1378,7 +1378,7 @@ Lemma tmw_mmap_rec : forall regs pc mem rom model bf cf bs cs,
   reg_get regs 13 = Z_to_bv 64 34 ->
   reg_get regs 14 = Z_to_bv 64 (-1) ->
   reg_get regs 15 = Z_to_bv 64 0 ->
-  place_declined_b (m_vmmaps model) (reg_get regs 10)
+  place_declined_b (m_kernel model) (m_vmmaps model) (reg_get regs 10)
     (page_round_up_Z (bv_unsigned (reg_get regs 11))) = false ->
   (forall e, In e mmap_errnos ->
      twm (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4) mem rom) model bf cf) ->
@@ -1423,7 +1423,7 @@ Lemma sstep_mmap_inv : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   sstep segs (mkCfg ms model) evs st ->
   evs = [] /\

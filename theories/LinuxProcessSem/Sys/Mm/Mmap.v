@@ -1057,13 +1057,13 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
-   mapping or the stack sits.  R-a and the hint half of R-b are
-   SOUNDNESS gaps and not precision gaps — in each the model names a
-   DIFFERENT address from the one Linux gives.  R-c is a soundness gap
-   too: Linux's hint test respects [vm_start_gap], so it REFUSES a
-   hint inside the grown stack's guard gap and this model returns it.
-   [place_declined_b] below answers [unmodeled] on the hint half of
-   R-b; R-a is open, for the reason its entry gives.
+   mapping or the stack sits.  R-a, the hint half of R-b and the hint
+   half of R-c are SOUNDNESS gaps and not precision gaps — in each the
+   model names a DIFFERENT address from the one Linux gives: for R-c,
+   Linux's hint test respects [vm_start_gap] and REFUSES a hint inside
+   the grown stack's guard gap, where this model returned it.
+   [place_declined_b] below answers [unmodeled] on both hint halves;
+   R-a is open, for the reason its entry gives.
 
    - R-a, a base above [alloc_top], OPEN.  The zero-mapped stack
      window now counts from the entry block's end
@@ -1093,11 +1093,20 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
      [Checks.Placement] may not supply (the dependency runs the other
      way), and reaching it needs a ledger with no free range of the
      requested size anywhere below [alloc_top h].
-   - R-c, the stack's guard gap.  When the stack has grown to its
-     limit Linux keeps a mapping [stack_guard_gap] below it; this model
-     allows a mapping there when the base or a hint reaches
-     [alloc_top].  What is left of R-b and R-c closes together, by
-     tracking the stack VMA in the ledger.
+   - R-c, the stack's guard gap.  Linux keeps [stack_guard_gap] bytes
+     free below the stack and refuses a hint whose range ends inside
+     them (include/linux/mm.h, [vm_start_gap] through
+     [stack_guard_start_gap]; mm/mmap.c:757-759, the hint test of
+     [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+     1f99e9ab748f).  The HINT half is
+     DECLINED, by [place_declined_b], which reads the gap off the
+     run's kernel build.  The BRK half is open, for the reason
+     SCOPE.md's entry gives: [brk_grow_ok] tests the installed pages
+     and the one page above them against a ledger with no stack VMA,
+     and [alloc_top] stands in for Linux's refusal only while the
+     stack has not grown to within the gap and a page of that bound.
+     What is left of R-b and R-c closes with the stack VMA in the
+     ledger.
    - R-d, the entry, is CLOSED.  [Run.valid_entry_va] once drew the
      stack pointer and the base independently; its conjunct
      [Run.entry_launch_ok_va] now admits exactly the (stack top, sp,
@@ -1211,41 +1220,87 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
     \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
 
-(** WHERE LINUX HONOURS A HINT THAT [linux_place] DOES NOT, and where
-    this model therefore says [unmodeled].
+(** WHERE LINUX ANSWERS A HINT DIFFERENTLY FROM [linux_place], and
+    where this model therefore says [unmodeled].
 
     DESIGN PRIORITY 1 (README.md): "Where the model cannot be sound, it
     says [unmodeled]."  [linux_place] bounds BOTH of its answers by
     [State.alloc_top] — the run's [sp - stack_max_size] — because the
     dynamic stack is a bound in this model and not an entry of the
-    ledger.  Linux has no such bound.  Where Linux's rule answers ABOVE
-    [alloc_top], [linux_place] does not merely lose precision: it names
-    a DIFFERENT, lower address, so a statement proved about the model
-    would be false of Linux.  That is a soundness break, and the
-    fail-closed answer is to decline the call.
+    ledger.  Linux has no such bound, and it keeps a guard gap below
+    the stack that this ledger cannot see.  Where the two rules name
+    DIFFERENT addresses, [linux_place] does not merely lose precision:
+    a statement proved about the model would be false of Linux.  That
+    is a soundness break, and the fail-closed answer is to decline the
+    call.
 
-    THE CASE THIS DECIDES is the hint, at Linux v6.18.46, commit
+    TWO CASES, both of that one cause, both at Linux v6.18.46, commit
     1f99e9ab748f.  [generic_get_unmapped_area_topdown] (mm/mmap.c)
     honours a page-aligned hint when
     [mmap_end - len >= addr && addr >= mmap_min_addr] and the two gap
-    tests pass — its [if (addr)] block.  [mmap_end] is
-    [arch_get_mmap_end] (arch/riscv/include/asm/processor.h), which is
-    [STACK_TOP_MAX = State.TASK_SIZE]; the model's hint window stops at
-    [alloc_top h] instead.  So a hint whose range is free on this
+    tests pass — its [if (addr)] block, mm/mmap.c:753-761.
+
+    CASE 1, A HINT ABOVE [alloc_top] (the hint half of SCOPE.md's
+    R-b).  [mmap_end] is [arch_get_mmap_end]
+    (arch/riscv/include/asm/processor.h), which is
+    [STACK_TOP_MAX = State.TASK_SIZE]; the model's hint window stops
+    at [alloc_top h] instead.  So a hint whose range is free on this
     ledger, starts at or above [mmap_min_addr] (4096, the value
     SCOPE.md assumes) and ends above [alloc_top h] but at or below
     [TASK_SIZE] is one Linux returns unchanged and [linux_place] sends
-    to its top-down search instead.  The model declines.  This is the
-    hint half of SCOPE.md's residual R-b.
+    to its top-down search instead.
 
-    IT CANNOT FIRE ON A HINT THE MODEL HONOURS.  Honouring needs
+    CASE 2, A HINT INSIDE THE STACK'S GUARD GAP (SCOPE.md's R-c).
+    Linux keeps [stack_guard_gap] bytes free below a VM_GROWSDOWN VMA:
+    the first gap test above is [addr + len <= vm_start_gap(vma)]
+    (mm/mmap.c:758), and [vm_start_gap] subtracts the gap from the
+    start of a growsdown VMA (include/linux/mm.h, through
+    [stack_guard_start_gap]).  The gap is [256UL << PAGE_SHIFT] by
+    default and any page count the [stack_guard_gap=] boot parameter
+    names (mm/mmap.c:941-954), which is [State.stack_guard_gap_bytes]
+    of the run's [State.KernelBuild].  So a hint whose range ENDS
+    inside the gap below the stack's start is one Linux REFUSES; it
+    searches top-down instead and answers a lower address.
+    [linux_place] honours it, because the ledger has no stack VMA and
+    so no gap to keep.
+
+    WHAT THE LEDGER CAN AND CANNOT SAY, which is what decides how wide
+    case 2 is.  [State.VmMaps] holds no stack entry and no stack
+    extent.  Its only stack term is
+    [alloc_top h = vm_init_sp h - stack_max_size], the DEEPEST the
+    stack may ever reach on this run; where the stack actually starts
+    is [Run.stack_window_lo], computed from the launch's [ed_top], its
+    [mbase] and its kernel build, and that is not a function of the
+    ledger at all.  "The stack has grown to its limit" — the condition
+    SCOPE.md states R-c under — is therefore NOT expressible here.
+    What the ledger does give is that the stack never starts BELOW
+    [alloc_top h].  So no hint ending at or below
+    [alloc_top h - stack_guard_gap_bytes kb] can be in the gap, and
+    every hint ending above it MAY be — on a run whose stack has grown
+    to its limit, it is.  Declining exactly that band is the smallest
+    fail-closed test this state supports, and it is WIDER than R-c as
+    SCOPE.md words it: on a run whose stack has not grown that far,
+    Linux honours such a hint and the model now declines the call.
+    The cost is a band of hint ENDS [stack_guard_gap_bytes kb] wide —
+    1 MiB on [State.default_kernel] — immediately below the run's
+    [alloc_top].  Tightening it needs the stack VMA, and the extent it
+    has reached, in the ledger.
+
+    IT CAN FIRE ON A HINT [linux_place] WOULD HONOUR, which case 1
+    could not, and that is case 2 itself: honouring needs
     [gap_fits maps page_size (alloc_top h) nZ g], whose third conjunct
-    is [g + nZ <= alloc_top h] — the negation of the test below.  Nor
-    on a NULL hint, which fails the first conjunct.  And [region_free]
-    over the WHOLE range is what keeps it from declining more than it
-    must: when the range meets a ledger entry, Linux refuses the hint
-    too, so [linux_place]'s fall-through to the search is Linux's own
-    answer.
+    is [g + nZ <= alloc_top h], and the test below fires from
+    [alloc_top h - stack_guard_gap_bytes kb] up, so the two overlap on
+    the guard band.  The call still has ONE answer, because the test
+    sits OUTSIDE the [alt] in each arm that reads it: a declined call
+    never reaches the [choose], so the spec never admits an [Ok] and
+    an [Unmodeled] for the same call.
+
+    IT CANNOT FIRE ON A NULL HINT, which fails the first conjunct.
+    And [region_free] over the WHOLE range is what keeps it from
+    declining more than it must: when the range meets a ledger entry,
+    Linux refuses the hint too, so [linux_place]'s fall-through to the
+    search is Linux's own answer.
 
     THAT LAST STEP ASSUMES THE LEDGER IS LINUX'S, and that assumption
     holds exactly where R-a below does not bite.  On a ledger whose
@@ -1255,16 +1310,22 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     Linux's lies elsewhere and Linux honours the hint.  [region_free]
     is then false, this test is false, and the call is not declined —
     a hint mismatch that escapes.  So what is closed here is the hint
-    half of R-b FOR THE ENTRIES WHOSE BASE IS AT OR BELOW THE
-    PAGE-ROUNDED ALLOCATION TOP.  On the others R-a is the defect, and
-    it is a start-state defect that no decline on this path repairs.
+    half of R-b, and the hint half of R-c, FOR THE ENTRIES WHOSE BASE
+    IS AT OR BELOW THE PAGE-ROUNDED ALLOCATION TOP.  On the others R-a
+    is the defect, and it is a start-state defect that no decline on
+    this path repairs.
 
-    THE OTHER DIRECTION IS A COVERAGE COST, not a soundness one.
-    "Free on this ledger" above [alloc_top h] does not mean free on
-    Linux: the band is where the stack grows, and the ledger does not
-    describe it.  So the test declines some calls at which the model
-    and Linux would have agreed.  Declining is the safe direction;
-    tightening it needs the stack VMA in the ledger.
+    THE SEARCH NEEDS NO GATE FOR THE GUARD GAP, which is why only the
+    hint is tested here.  [topdown_search] is bounded by
+    [State.mmap_top h], the minimum of [vm_mmap_base h] and
+    [page_round_down_Z (alloc_top h)].  Where the base is Linux's it
+    already lies at or below the stack's floor less the guard gap —
+    [mmap_base] subtracts [RLIMIT_STACK + stack_guard_gap] and the
+    randomization pad from the stack top (mm/util.c) — so no search
+    answer of either rule reaches the gap.  Where
+    [page_round_down_Z (alloc_top h)] is the smaller of the two, the
+    model searches a window Linux does not use at all; that is R-a,
+    which the list below names and does not close.
 
     WHAT THIS DOES NOT COVER, and why each is named rather than closed.
 
@@ -1296,15 +1357,25 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
       supply (the dependency runs the other way).  Reaching it needs a
       ledger with no free range of the requested size anywhere below
       [alloc_top h] — about 2^47 bytes of address space.
-    - R-c, THE STACK GUARD GAP, a further residual of the same cause.
+    - R-c's other half, THE GUARD GAP AT [brk].  Linux refuses a grow
+      to within a page and [stack_guard_gap] of the stack's start
+      ([SYSCALL_DEFINE1(brk)], mm/mmap.c:183-190: the [vma_find] runs
+      up to [newbrk + PAGE_SIZE + stack_guard_gap] and compares against
+      [vm_start_gap(next)]).  [brk_grow_ok] tests the installed pages
+      and the one page above them against a ledger with no stack VMA,
+      so [alloc_top] stands in for that refusal, and stands in for it
+      only while the stack has not grown that far.  It is not closed
+      here because this gate is the placement path's and [brk] does not
+      take it; SCOPE.md's R-c entry carries it.
 
-    All three close together with the stack VMA in the ledger, which
+    All of these close together with the stack VMA in the ledger, which
     SCOPE.md names on each entry. *)
-Definition place_declined_b (h : VmMaps) (hint : word) (nZ : Z) : bool :=
+Definition place_declined_b (kb : KernelBuild) (h : VmMaps) (hint : word)
+    (nZ : Z) : bool :=
   let g := hint_address hint in
   negb (g =? 0)%Z
   && (page_size <=? g)%Z
-  && (alloc_top h <? g + nZ)%Z
+  && (alloc_top h - stack_guard_gap_bytes kb <? g + nZ)%Z
   && (g + nZ <=? TASK_SIZE)%Z
   && region_free (vm_reserved h ++ vm_maps h)
        (Z_to_bv 64 g) (Z_to_bv 64 nZ).
@@ -2069,15 +2140,16 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
   else if w_is0 len then
     (if mmap_plain_anon_b flags then err_ret EINVAL else unmodeled)
   else if mmap_modeled_b prot flags off then
-    (* PRIORITY 1 BEFORE ANYTHING ELSE: where Linux's rule can answer
-       above [State.alloc_top] the model declines, rather than naming
-       the lower address its own search returns.  See
+    (* PRIORITY 1 BEFORE ANYTHING ELSE: where Linux's rule answers
+       above [State.alloc_top], or refuses a hint this ledger cannot
+       see the stack's guard gap under, the model declines rather than
+       naming the address its own search returns.  See
        [place_declined_b].  The test is outside the [alt] on purpose:
        the spec must not admit an [Ok] and [Unmodeled] for one call. *)
     m <- get_model ;;
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if place_declined_b h addr nZ then unmodeled
+    if place_declined_b (m_kernel m) h addr nZ then unmodeled
     else
     alt
       (e <- errno_from mmap_errnos ;; err_ret e)
@@ -2099,7 +2171,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
     m <- get_model ;;
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
-    if place_declined_b h addr nZ then unmodeled
+    if place_declined_b (m_kernel m) h addr nZ then unmodeled
     else
     alt
       (e <- errno_from mmap_errnos ;; err_ret e)
@@ -2285,9 +2357,11 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          inaccessible reservation that names its own address.  Its guards are
          [mmap_noaccess_b]'s [choose] guard conjunct for conjunct, and its
          post-state and effect are that branch's with [addr] where it writes
-         the chosen [a], so like its rw twin it adds NO reachable transition —
-         see [Checks/Cases/Mm/Mmap.v]'s
-         [mmap_fixed_noaccess_fresh_adds_no_transition].
+         the chosen [a], so like its rw twin it adds NO reachable
+         transition BELOW THE GUARD BAND — see [Checks/Cases/Mm/Mmap.v]'s
+         [mmap_fixed_noaccess_fresh_adds_no_transition], and the rw
+         twin's comment below for the band and why MAP_FIXED keeps its
+         answer there.
          Two resolutions, not three: with [vms.nr_pages] zero there is nothing
          to tear down and [vms_abort_munmap_vmas] returns at its first test,
          [if (!vms->nr_pages) return;] (mm/vma.c), so the destructive one cannot arise.
@@ -2512,19 +2586,34 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          destructive resolution above cannot arise — which is why this
          sub-case has TWO resolutions where the commit has three.
 
-         IT ADDS NO REACHABLE TRANSITION.  The guards below are the
-         [choose] guard of the hint-placed rw branch, conjunct for
-         conjunct — page alignment, nonzero base, [alloc_top],
-         [region_free] against [vm_reserved ++ vm_maps], and the budget
-         — and the post-state and effect are that branch's, spelled
-         the same way with [addr] where it writes the chosen [a].  So
-         every (pre-state, effect, post-state) triple this admits is one
-         the model already admitted for the SAME program at the same
-         length, hinting its own (nonzero) [addr] without MAP_FIXED: the
-         kernel honors a free hint, and the model's nondeterministic
-         placement covers it.  [Checks/Cases/Mm/Mmap.v]'s
+         IT ADDS NO REACHABLE TRANSITION BELOW THE GUARD BAND.  The
+         guards below are the [choose] guard of the hint-placed rw
+         branch, conjunct for conjunct — page alignment, nonzero base,
+         [alloc_top], [region_free] against [vm_reserved ++ vm_maps],
+         and the budget — and the post-state and effect are that
+         branch's, spelled the same way with [addr] where it writes the
+         chosen [a].  So every (pre-state, effect, post-state) triple
+         this admits with [addr + n <= alloc_top h -
+         stack_guard_gap_bytes (m_kernel m)] is one the model already
+         admitted for the SAME program at the same length, hinting its
+         own (nonzero) [addr] without MAP_FIXED: the kernel honors a
+         free hint there, and the model's nondeterministic placement
+         covers it.  [Checks/Cases/Mm/Mmap.v]'s
          [mmap_fixed_fresh_adds_no_transition] states exactly that and
          proves it.
+
+         IN THE GUARD BAND THE TWO SHAPES NOW DIFFER, and the
+         difference is Linux's.  [place_declined_b] declines a HINTED
+         call whose range ends within [stack_guard_gap] of the run's
+         [alloc_top], because Linux's hint test subtracts that gap from
+         the stack's start (mm/mmap.c:758, [vm_start_gap]) and this
+         ledger cannot say where the stack starts.  MAP_FIXED takes no
+         such test: [generic_get_unmapped_area_topdown] returns [addr]
+         at [if (flags & MAP_FIXED) return addr;] (mm/mmap.c:750-751),
+         ahead of the [if (addr)] block, so Linux maps a free
+         MAP_FIXED range inside the gap and so does this arm.
+         The sub-case therefore admits transitions the hinted shape no
+         longer admits, and each of them is the answer Linux gives.
 
          The four-way split is on the LEDGER, not on the flags: wholly
          inside one tracked mapping is a commit, meeting nothing at all

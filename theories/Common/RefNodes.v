@@ -444,7 +444,7 @@ Definition mmap_noaccess_args_ok (ms : machine_state) : Prop :=
 
 Lemma mmap_noaccess_check : forall ms x8 model eff,
   bv_unsigned x8 = 222%Z -> mmap_noaccess_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   check_syscall (sys_input segs ms x8) eff model
   = let n := page_round_up_Z (bv_unsigned (ms_gpr ms 1)) in

@@ -101,10 +101,11 @@ mode answers. QEMU citations are QEMU 10.0.11.
   of the three is bounded above by `State.alloc_top`, which is not one of
   Linux's bounds. Where a free page-aligned HINT reaches above it, the
   model answers `unmodeled` rather than naming an address of its own
-  (`Sys/Mm/Mmap.v`, `place_declined_b`). The three cases that bound
-  still cuts Linux's answer off in are an mmap base above
-  `State.alloc_top`, the bottom-up fallback above it, and the stack
-  guard gap; "Soundness gaps" below gives all three as R-a, R-b and
+  (`Sys/Mm/Mmap.v`, `place_declined_b`), and the same where such a
+  hint ends inside the stack's guard gap below it. The three cases
+  that bound still cuts Linux's answer off in are an mmap base above
+  `State.alloc_top`, the bottom-up fallback above it, and the guard
+  gap at `brk`; "Soundness gaps" below gives all three as R-a, R-b and
   R-c, and "Known gaps in precision" holds R-c's full entry. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
@@ -781,17 +782,20 @@ and R-b record.
   stack itself. The stack VMA in the ledger closes it. Until then, a
   proof does not cover a run in which Linux falls
   back above `State.alloc_top`.
-- **R-c, a hint inside the grown stack's guard gap**, whose full entry
+- **R-c, a hint inside the grown stack's guard gap: the hint half is
+  answered `unmodeled`, the `brk` half is open**, whose full entry
   is under "Known gaps in precision" below. Linux's hint test respects
-  `vm_start_gap` (`mm/mmap.c`, the hint arm of
+  `vm_start_gap` (`mm/mmap.c:758`, the hint arm of
   `generic_get_unmapped_area_topdown`; `include/linux/mm.h`,
   `vm_start_gap`), so with the stack grown to its limit Linux REFUSES a
   hint that ends inside `stack_guard_gap` below it and searches
   top-down instead. The model's ledger has no stack VMA and so no gap
-  to keep: `Sys.Mm.Mmap.linux_place` returns that hint, and its
+  to keep: `Sys.Mm.Mmap.linux_place` returned that hint, and its
   placement is unique (`Checks.Placement.linux_place_unique`), so the
-  address Linux returns is left out and a proof does not cover such a
-  run. The fix is its own change, like R-b's.
+  address Linux returns was left out. The model now DECLINES such a
+  call — answers `unmodeled` for it — so no proof claims that address
+  any more; the `brk` side of the same gap is untouched by that gate
+  and stays open, as its full entry says.
 - **The stack floor after a later mapping**, under "Known gaps in
   precision" below. A program that maps a page just below its stack and
   then grows the stack into the guard gap above that mapping faults on
@@ -878,25 +882,57 @@ serious half.
   that time to the clock: `State.m_clock` does not move, so a later
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
-- **R-c, the stack guard gap.** When the stack has grown to its limit,
-  Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
-  that gap from the start of a `VM_GROWSDOWN` VMA
-  (`include/linux/mm.h`, `vm_start_gap`, through `stack_guard_start_gap`;
-  `vm_end_gap` is the matching rule above a `VM_GROWSUP` VMA). The model
-  allows a mapping there when the mmap base or a hint reaches
-  `State.alloc_top`. It stays open for the reason R-b gives: the ledger has
-  no stack VMA, so it has no gap to keep. The stack VMA in the ledger
-  closes it.
-  The same gap reaches `brk`: Linux refuses a grow to within a page and
+- **R-c, the stack guard gap: the hint half is CLOSED by a decline, the
+  `brk` half is open.** When the stack has grown to its limit, Linux
+  keeps a mapping `stack_guard_gap` below it: the hint test and the
+  search subtract that gap from the start of a `VM_GROWSDOWN` VMA
+  (`mm/mmap.c:758`, `addr + len <= vm_start_gap(vma)` in
+  `generic_get_unmapped_area_topdown`; `include/linux/mm.h`,
+  `vm_start_gap`, through `stack_guard_start_gap`; `vm_end_gap` is the
+  matching rule above a `VM_GROWSUP` VMA). The gap is 256 pages by
+  default and any page count the `stack_guard_gap=` boot parameter
+  names (`mm/mmap.c:941-954`), which the model carries as
+  `State.stack_guard_gap_bytes` of the run's `State.KernelBuild`.
+  The HINT half was a soundness break of the same shape as R-b's:
+  Linux refuses a hint whose range ends inside the gap and answers a
+  lower address from its top-down search, while `Sys/Mm/Mmap.v`,
+  `linux_place` honoured the hint, the ledger having no stack VMA and
+  so no gap to keep. The model now answers `unmodeled` for a hint
+  whose range is free on the ledger, starts at or above
+  `mmap_min_addr` and ends above
+  `State.alloc_top - State.stack_guard_gap_bytes kb`
+  (`Sys/Mm/Mmap.v`, `place_declined_b`), with the same limit R-b's
+  decline has: it is complete only for the entries whose mmap base is
+  at or below the page-rounded `State.alloc_top`.
+  THE DECLINE IS WIDER THAN THE GAP, because the ledger cannot say
+  where the stack starts. `State.VmMaps` has no stack entry and no
+  stack extent; its only stack term is
+  `State.alloc_top = vm_init_sp h - 8 MiB`, the deepest the stack may
+  ever reach, while the start it has actually reached is
+  `Run.stack_window_lo`, a function of the launch and not of the
+  ledger. So "the stack has grown to its limit" is not expressible
+  here, and the model declines every hint ending in the gap-wide band
+  below `State.alloc_top` — 1 MiB on `State.default_kernel`. On a run
+  whose stack has not grown that far, Linux honours such a hint and
+  the model declines: coverage lost, not soundness. The stack VMA, and
+  the extent it has reached, in the ledger is what tightens it.
+  The SEARCH needs no decline for the gap: `State.mmap_top` bounds it
+  by the recorded mmap base, which Linux put at least
+  `RLIMIT_STACK + stack_guard_gap` below the stack top (`mm/util.c`,
+  `mmap_base`), so neither rule's search reaches the gap — except
+  where the page-rounded `State.alloc_top` is the smaller bound, which
+  is R-a.
+  The `brk` half stays OPEN: Linux refuses a grow to within a page and
   `stack_guard_gap` of the stack's start, because the `vma_find` at
-  `SYSCALL_DEFINE1(brk)` (`mm/mmap.c`) searches up to
+  `SYSCALL_DEFINE1(brk)` (`mm/mmap.c:183-190`) searches up to
   `newbrk + PAGE_SIZE + stack_guard_gap` and compares against
   `vm_start_gap(next)`. `Sys/Mm/Mmap.v`, `brk_grow_ok` tests only the
   installed pages and the one page above them, against a ledger with no
   stack VMA in it, so `State.alloc_top` stands in for that refusal — and
   stands in for it only while the stack has not grown to within
-  `stack_guard_gap` and a page of that bound. The stack VMA in the
-  ledger closes this too.
+  `stack_guard_gap` and a page of that bound. `brk` does not take the
+  placement path's gate, so the decline above does not reach it. The
+  stack VMA in the ledger closes this too.
 - **What a vDSO call leaves behind.** After a call to an exported vDSO
   entry, the caller-saved registers other than `a0`, and the bytes of
   `[sp - F, sp)`, take the values of the launch's draw

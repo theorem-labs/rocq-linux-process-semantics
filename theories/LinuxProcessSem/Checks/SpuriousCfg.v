@@ -398,8 +398,10 @@ Proof.
   intros Hspec.
   apply (proj1 (bind_get_model _ (mmap_in 8192) tight_model _)) in Hspec.
   cbv beta zeta in Hspec.
-  destruct (place_declined_b (m_vmmaps tight_model) (in_arg (mmap_in 8192) 0)
-              (page_round_up_Z (bv_unsigned (in_arg (mmap_in 8192) 1)))) eqn:Hdecl.
+  destruct (place_declined_b (m_kernel tight_model) (m_vmmaps tight_model)
+              (in_arg (mmap_in 8192) 0)
+              (page_round_up_Z (bv_unsigned (in_arg (mmap_in 8192) 1))))
+    eqn:Hdecl.
   { unfold unmodeled in Hspec. discriminate Hspec. }
   unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, modify in Hspec.
   cbv beta zeta in Hspec.

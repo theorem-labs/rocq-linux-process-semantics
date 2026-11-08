@@ -657,7 +657,7 @@ Proof.
     by (apply page_round_up_pos; lia).
   pose proof (pu_aligned (bv_unsigned len)) as Hnal.
   destruct (mmap_modeled_b prot flags off) eqn:Emod.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
     destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
@@ -667,7 +667,7 @@ Proof.
     cbn [vm_maps vm_noaccess vm_brk].
     apply na_inv_cons_maps. exact Hna. }
   destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
-  { destruct (place_declined_b (m_vmmaps m) addr
+  { destruct (place_declined_b (m_kernel m) (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len))) eqn:Edecl; [discriminate|].
     destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).

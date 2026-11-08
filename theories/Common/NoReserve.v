@@ -319,7 +319,7 @@ Qed.
     retained: this arm exists for every modeled mmap shape). *)
 Lemma mmap_fail_ok_noreserve : forall segs ms x8 model e,
   bv_unsigned x8 = 222%Z -> mmap_args_ok_noreserve ms -> In e mmap_errnos ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   syscall_spec (sys_input segs ms x8) model
     (Ok (mkEffect (errno_ret e) [] []) model []).
@@ -338,7 +338,7 @@ Qed.
 Lemma mmap_succ_ok_noreserve : forall segs ms x8 model a,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   grant_ok_nr (ms_gpr ms 0) model a (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = true ->
   syscall_spec (sys_input segs ms x8) model
@@ -385,7 +385,7 @@ Proof.
   apply check_mmap_complete_ok in Hspec.
   unfold check_mmap in Hspec. cbv beta in Hspec.
   rewrite Hoff, Hanon, Hl, Hmb in Hspec. cbn [negb] in Hspec.
-  destruct (place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  destruct (place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
               (page_round_up_Z (bv_unsigned (ms_gpr ms 1)))) eqn:Hdecl;
     [discriminate|].
   rewrite Hflags in Hspec.
@@ -427,7 +427,7 @@ Qed.
 Lemma mmap_no_unmodeled_noreserve : forall segs ms x8 model,
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
 Proof.
@@ -459,7 +459,7 @@ Lemma sstep_mmap_inv_noreserve : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   sstep segs (mkCfg ms model) evs st ->
   evs = [] /\
@@ -553,7 +553,7 @@ Lemma node_mmap_noreserve : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
@@ -602,7 +602,7 @@ Lemma srz_mmap_noreserve : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes segs (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
@@ -638,7 +638,7 @@ Lemma srz_mmap_spin_noreserve : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok_noreserve ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
@@ -697,7 +697,7 @@ Lemma sstep_mmap_inv_lazy : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   sstep segs (mkCfg ms model) evs st ->
   evs = [] /\
@@ -787,7 +787,7 @@ Lemma node_mmap_lazy : forall ms model x8,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   node_ok segs (mkCfg ms model)
     ({e : Z | In e mmap_errnos}
@@ -836,7 +836,7 @@ Lemma srz_mmap_lazy : forall ms model x8 A B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      srealizes segs (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) A) ->
@@ -868,7 +868,7 @@ Lemma srz_mmap_spin_lazy : forall ms model x8 B,
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 222%Z ->
   mmap_args_ok ms ->
-  place_declined_b (m_vmmaps model) (ms_gpr ms 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) = false ->
   (forall e, In e mmap_errnos ->
      to_spin segs (advance_past_svc (set_gpr0 ms (errno_ret e))) model) ->
@@ -1839,7 +1839,7 @@ Hypothesis Hsvc1 : ms_svc_pending ms1 = Some x8a.
 Hypothesis Hno1 : bv_unsigned x8a = 222%Z.
 Hypothesis Hargs1 : mmap_args_ok_noreserve ms1.
 Hypothesis Hdecl1 :
-  place_declined_b (m_vmmaps model) (ms_gpr ms1 0)
+  place_declined_b (m_kernel model) (m_vmmaps model) (ms_gpr ms1 0)
     (page_round_up_Z (bv_unsigned (ms_gpr ms1 1))) = false.
 
 Let nZ1 : Z := page_round_up_Z (bv_unsigned (ms_gpr ms1 1)).
@@ -1873,7 +1873,8 @@ Hypothesis Hsvc2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
 Hypothesis Hargs2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
   mmap_args_ok (ms2 a1).
 Hypothesis Hdecl2 : forall a1, grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
-  place_declined_b (m_vmmaps (model1 a1)) (ms_gpr (ms2 a1) 0)
+  place_declined_b (m_kernel (model1 a1)) (m_vmmaps (model1 a1))
+    (ms_gpr (ms2 a1) 0)
     (page_round_up_Z (bv_unsigned (ms_gpr (ms2 a1) 1))) = false.
 
 Let nZ2 (a1 : word) : Z := page_round_up_Z (bv_unsigned (ms_gpr (ms2 a1) 1)).
