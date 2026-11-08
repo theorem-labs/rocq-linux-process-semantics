@@ -28,6 +28,26 @@
     [Forall] over the table, so an arm added to the dispatcher without a
     [_kf] lemma fails the build here, by name.
 
+    FOUR [_kf] LEMMAS ARE VACUOUS, AND SAY SO.  [check_sigpipe_write],
+    [check_sigpipe_writev], [check_tkill] and [check_tgkill] each stand
+    behind a gate [Run.kill_off] closes, so under the hypotheses each
+    answers [CheckUnmodeled] and its [_kf] lemma holds vacuously: the
+    pair [CheckOk] / [kill_off] has no model.  DEAD UNDER [kill_off]
+    AND ONLY THERE -- [check_tkill] answers [CheckOk] once
+    [State.m_abort_terminal] is set, which a [Run.valid_input_abort]
+    launch does.  The four lemmas are kept for two different reasons:
+    [check_tkill] and [check_tgkill] ARE arms of the table, and
+    [arm_kill_free] asks one [_kf] lemma of every arm; the two SIGPIPE
+    checkers are not arms -- [Checks.Sys.Dispatch] never names them --
+    but the tactics [kf_stream_base] and [kf_done] cite their [_kf]
+    lemmas to close the SIGPIPE branch inside the write, writev and
+    stream arms, which are not vacuous.  Beside each of the four sits a
+    [_premises_refuted] lemma that STATES that the pair has no model
+    and proves it, so the dead branch is an asserted, checked fact and
+    not something a reader has to notice.  Nothing counts the four as
+    coverage: the content of this file is [kill_frame_holds] and
+    [valid_input_no_kill], whose premises no gate contradicts.
+
     WHAT THIS REPLACES.  The published model stated the abort half of
     this claim as a HYPOTHESIS, [Run.decl_off_frame], consumed by
     [Run.sstep_off_no_kill] and [Run.star_off_no_kill].  That hypothesis
@@ -251,20 +271,53 @@ Qed.
     discharged BY THE ARM'S ABSENCE, and not by a fact about
     [Sys.Fs.ReadWrite.raise_sigpipe]'s post-model -- which is what the
     lemma these two proofs used to cite claimed to supply, over premises
-    no model satisfies. *)
+    no model satisfies.
+
+    WHAT THE TWO [_kf] LEMMAS BELOW PROVE, AND WHY THEY ARE KEPT.
+    Their own premise pair -- [check_sigpipe_write _ m = CheckOk _ _]
+    together with [Run.kill_off m] -- is contradictory, so each holds
+    VACUOUSLY and states no fact of its own about any post-model.
+    These two checkers are NOT arms of
+    [Checks.Sys.Dispatch.checked_table] -- that file never names them,
+    and [checked_table_kill_free] cites neither.  They are kept
+    because the tactics [kf_stream_base] and [kf_done] cite them to
+    close the SIGPIPE branch inside the write, writev and stream arms,
+    whose own [_kf] lemmas are not vacuous: a branch that cannot be
+    reached under [kill_off] still has to be discharged, and this is
+    what discharges it.  The non-vacuous content lives in those arms
+    and in the aggregate -- [kill_frame_holds] and
+    [valid_input_no_kill].  That the branch is dead UNDER [kill_off]
+    (and only there: with [State.m_sigpipe_terminal] set the checker
+    answers [CheckOk]) is no longer left to a reader's inspection: the
+    [_premises_refuted] lemma beside each states it and proves it, and
+    that is the whole of what is claimed here. *)
+Lemma check_sigpipe_write_kf_premises_refuted : forall eff m m' evs,
+  ~ (check_sigpipe_write eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros eff m m' evs (H & Hoff). destruct Hoff as (_ & _ & Ht & _).
+  rewrite (check_sigpipe_write_off_unmodeled eff m Ht) in H. discriminate H.
+Qed.
+
 Lemma check_sigpipe_write_kf : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  rewrite (check_sigpipe_write_off_unmodeled eff m Ht) in H. discriminate H.
+  intros eff m m' evs H Hoff Hk. exfalso.
+  exact (check_sigpipe_write_kf_premises_refuted eff m m' evs (conj H Hoff)).
+Qed.
+
+Lemma check_sigpipe_writev_kf_premises_refuted : forall reads eff m m' evs,
+  ~ (check_sigpipe_writev reads eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros reads eff m m' evs (H & Hoff). destruct Hoff as (_ & _ & Ht & _).
+  rewrite (check_sigpipe_writev_off_unmodeled reads eff m Ht) in H.
+  discriminate H.
 Qed.
 
 Lemma check_sigpipe_writev_kf : forall reads eff m m' evs,
   check_sigpipe_writev reads eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros reads eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  rewrite (check_sigpipe_writev_off_unmodeled reads eff m Ht) in H.
-  discriminate H.
+  intros reads eff m m' evs H Hoff Hk. exfalso.
+  exact (check_sigpipe_writev_kf_premises_refuted reads eff m m' evs (conj H Hoff)).
 Qed.
 
 (** A stream-pair end's read and send rewrite fd-table entries with
@@ -433,21 +486,49 @@ Ltac kf_frame H m Hoff Hk :=
    ------------------------------------------------------------------------- *)
 
 (** [tkill] and [tgkill] decline outright while the abort declaration is
-    clear. *)
+    clear.
+
+    The same vacuity as the two SIGPIPE checkers above, kept for a
+    different reason: the premise pair of each [_kf] lemma --
+    [check_tkill _ _ _ m = CheckOk _ _] together with [Run.kill_off m]
+    -- is contradictory, so the lemma holds vacuously and proves
+    nothing of its own; but [tkill] and [tgkill] ARE arms of
+    [Checks.Sys.Dispatch.checked_table], [arm_kill_free] asks one
+    [_kf] lemma of every arm, and [checked_table_kill_free] cites
+    these two by name, so neither can be dropped.  The non-vacuous
+    content is in [kill_frame_holds] / [valid_input_no_kill].  That
+    the arm is dead UNDER [kill_off] -- and only there: with
+    [State.m_abort_terminal] set, as a [Run.valid_input_abort] launch
+    sets it, [check_tkill] answers [CheckOk] -- is stated and proved
+    by the [_premises_refuted] lemma beside each. *)
+Lemma check_tkill_kf_premises_refuted : forall pid sig eff m m' evs,
+  ~ (check_tkill pid sig eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros pid sig eff m m' evs (H & Hoff). destruct Hoff as (Ha & _).
+  unfold check_tkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
+  discriminate H.
+Qed.
+
 Lemma check_tkill_kf : forall pid sig eff m m' evs,
   check_tkill pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros pid sig eff m m' evs H (Ha & _) _.
-  unfold check_tkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
+  intros pid sig eff m m' evs H Hoff Hk. exfalso.
+  exact (check_tkill_kf_premises_refuted pid sig eff m m' evs (conj H Hoff)).
+Qed.
+
+Lemma check_tgkill_kf_premises_refuted : forall tgid pid sig eff m m' evs,
+  ~ (check_tgkill tgid pid sig eff m = CheckOk m' evs /\ kill_off m).
+Proof.
+  intros tgid pid sig eff m m' evs (H & Hoff). destruct Hoff as (Ha & _).
+  unfold check_tgkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
   discriminate H.
 Qed.
 
 Lemma check_tgkill_kf : forall tgid pid sig eff m m' evs,
   check_tgkill tgid pid sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros tgid pid sig eff m m' evs H (Ha & _) _.
-  unfold check_tgkill in H. rewrite Ha in H. cbv beta iota delta [negb] in H.
-  discriminate H.
+  intros tgid pid sig eff m m' evs H Hoff Hk. exfalso.
+  exact (check_tgkill_kf_premises_refuted tgid pid sig eff m m' evs (conj H Hoff)).
 Qed.
 
 (** [rt_sigprocmask] delivers a pending signal; with neither pending it
