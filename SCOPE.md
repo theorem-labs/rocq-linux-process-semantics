@@ -664,8 +664,9 @@ not apply.
 
 Design priority 1 asks that every behavior Linux v6.18.46 can give, in a
 case the model covers, is a behavior of the model (README.md). The model
-does not meet it in these two cases: **it declines placements Linux can
-make above `State.alloc_top`; until that is fixed, a proof does not cover
+does not meet it in the cases below. In the first two, R-a and R-b, **it
+declines placements Linux can make above `State.alloc_top`; until that is
+fixed, a proof does not cover
 them.** They are priority-1 gaps. They break priority 2 as well, since
 the model then gives an address Linux does not give in that state, so
 each is both kinds of gap and the entry is here because the priority-1
@@ -723,6 +724,21 @@ placement `unmodeled` or to raise the ceiling; both are open.
   stack itself. The stack VMA in the ledger closes it. Until then, a
   proof does not cover a run in which Linux honours such a hint or falls
   back above `State.alloc_top`.
+- **R-c's hint half**, under "Known gaps in precision" below. When the
+  stack has grown to its limit, Linux refuses a hint that ends inside
+  `stack_guard_gap` below the stack and searches top-down instead
+  (`vm_start_gap`, `include/linux/mm.h`). The model has no stack VMA in
+  its ledger, so it returns the hint
+  (`Sys.Mm.Mmap.linux_place`), and its placement is unique
+  (`Checks.Placement.linux_place_unique`): the address Linux returns is
+  left out, so a proof does not cover such a run. R-c's `brk` half is a
+  precision gap only — there Linux refuses and the model's `brk` can
+  fail too.
+- **The stack floor after a later mapping**, under "Known gaps in
+  precision" below. A program that maps a page just below its stack and
+  then grows the stack into the guard gap above that mapping faults on
+  Linux, and the model answers instead: that `SIGSEGV` is not a behavior
+  of the model, so a proof does not cover such a run.
 
 ## Known gaps in precision
 

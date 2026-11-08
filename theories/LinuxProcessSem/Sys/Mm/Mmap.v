@@ -1057,10 +1057,12 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
-   mapping or the stack sits.  R-a and R-b are SOUNDNESS gaps in
-   SCOPE.md, not gaps in precision: the model declines placements Linux
+   mapping or the stack sits.  SCOPE.md records R-a and R-b as SOUNDNESS
+   gaps as well as precision ones: the model declines placements Linux
    can make above [alloc_top], and until that is fixed a proof does not
-   cover them.  R-c is the precision gap.
+   cover them.  R-c is a precision gap for [brk] and a soundness gap for
+   a HINT inside the grown stack's guard gap, which Linux refuses and
+   this model returns.
 
    - R-a, a base above [alloc_top].  The zero-mapped stack window now
      counts from the entry block's end ([Run.stack_window_lo]), as
