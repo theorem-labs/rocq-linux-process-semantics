@@ -286,8 +286,10 @@ these:
   which declares the death: `Run.valid_input` rules it out, because it
   pins the reader present and the death declined. That predicate no
   longer gives the `SIG_DFL` disposition for free, though — it leaves
-  `State.in_sigpipe_default` unpinned, as every launch predicate now
-  does, so that conjunct of `sigpipe_fatal` comes from the launch the
+  `State.in_sigpipe_default` unpinned, as `Run.valid_input` and the other
+  ordinary launch predicates now do (only
+  `Run.valid_input_sigpipe_ignored` pins it, to the other value),
+  so that conjunct of `sigpipe_fatal` comes from the launch the
   proof names rather than from the validity premise.
 
 The lemma does not cover a program that writes when the reader is gone

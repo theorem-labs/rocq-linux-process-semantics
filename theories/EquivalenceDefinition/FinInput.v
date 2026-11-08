@@ -520,11 +520,12 @@ Record FinProcInput := mkFinProcInput {
   fin_channel_reader : bool
     (* whether the far end of descriptors 1 and 2 still has a reader,
        mirroring [State.in_channel_reader].  A FIELD RATHER THAN A PIN
-       for [fin_abort_terminal]'s reason, and it reads the same way as
-       [fin_sigpipe_default] below: [Run.valid_input] pins this field
-       to [true], and the other world has a predicate of its own,
+       for [fin_abort_terminal]'s reason: [Run.valid_input] pins this
+       field to [true], and the other world has a predicate of its own,
        [Run.valid_input_channel_closed], so a finite input must be able
-       to denote the writing end of `prog | head -1`.  Pinning it to
+       to denote the writing end of `prog | head -1`.
+       ([fin_sigpipe_default] below is a field for a STRONGER reason --
+       [Run.valid_input] does not pin it at all.)  Pinning it to
        [true] here would put that launch out of reach of every
        classifier and measure shape while leaving it in reach of the
        equivalence shapes -- the silent divergence between the two

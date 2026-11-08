@@ -44,7 +44,8 @@ effect after it merges.
     `security/`, `init/`, `block/`, `io_uring/`, `drivers/char/` and
     `drivers/tty/`;
   - `qemu/`: QEMU 10.0.11's `linux-user/`, `include/user/` and
-    `target/riscv/`. It is there only to check the sentences that cite it:
+    `target/riscv/`. It is read under question 2, for the sentences that
+    cite QEMU and for the list of differences `SCOPE.md` keeps:
     `SCOPE.md` measures QEMU at that version in "Where QEMU user mode
     differs"; the model pins no QEMU version, and a comment may cite
     another. QEMU is not a system the model must match (README.md).
@@ -67,9 +68,9 @@ repository, in `linux/` or in `qemu/`.
    model covers, is a behavior of the model. QEMU user mode is NOT a
    supported system (README.md), and the model deliberately does not meet
    it: it admits no QEMU start state at all (`SCOPE.md`). So a difference
-   from QEMU is never by itself a soundness finding; `qemu/` is read only
-   to check a comment or a `SCOPE.md` sentence that cites it, under
-   question 2. For each specification that the
+   from QEMU is never by itself a soundness finding; `qemu/` belongs to
+   question 2, where a sentence that cites it and the list of differences
+   are checked. For each specification that the
    change adds or changes, read the kernel code that it cites.
    Look for an outcome that the model now
    leaves out: an error return, a partial result, a short read or write, a
@@ -99,8 +100,10 @@ repository, in `linux/` or in `qemu/`.
    TREE for it — every `.v` file, `README.md`, `SCOPE.md`, `tools/` — and
    not only the diff: a sentence outside the diff is made false BY the diff
    and a diff-scoped reading cannot see it. #38 dropped
-   `in_sigpipe_default` from the launch predicates and left `README.md:282`
-   saying that the default statements still pinned it; the sentence was
+   `in_sigpipe_default` from `Run.valid_input` and the other ordinary
+   launch predicates (`Run.valid_input_sigpipe_ignored` still pins it),
+   and left the `*_sigpipe_ignored` row of `README.md`'s statement table
+   saying that the default statements still pinned it; that row was
    outside the diff. Report
    each new `Admitted`, `admit`, `Axiom`,
    `Parameter`, and each `Hypothesis`, `Variable` or `Context` outside a

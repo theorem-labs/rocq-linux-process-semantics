@@ -4942,9 +4942,10 @@ Definition m_sigpipe_action (m : Model) : SigpipeAction :=
 (** Whether SIGPIPE's handler is SIG_DFL -- the one bit of the action
     [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
     The same meaning this name had when the handler was a bare launch
-    declaration: no launch predicate pins it -- both dispositions are
-    starts Linux produces -- [Run.valid_input_sigpipe_ignored] names
-    the SIG_IGN one, and a run that
+    declaration: [Run.valid_input] does not pin it -- both dispositions
+    are starts Linux produces -- and [Run.valid_input_sigpipe_ignored]
+    is the one launch predicate that does, naming the SIG_IGN start
+    ([false]).  A run that
     installs nothing keeps the seeded value ([with_sigpipe_install] is
     the only writer after [init_model]). *)
 Definition m_sigpipe_default (m : Model) : bool :=
@@ -5529,7 +5530,8 @@ Definition with_sigpipe_install (a : SigpipeAction) (m : Model) : Model :=
     is again the delivery of a blocked one.  THE SEND IS BEHIND ITS OWN
     DECLARATION, [procst_sigpipe_terminal], and not behind the abort
     one: [Sys.Fs.ReadWrite.sigpipe_write] declines a write that would
-    raise the signal at SIG_DFL while that field is clear, so with it
+    raise the signal AT EITHER DISPOSITION while that field is clear
+    ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]), so with it
     clear the pending bit is never set and neither SIGPIPE caller is
     reached.  [Run.valid_input] pins it clear.
 
@@ -5538,10 +5540,13 @@ Definition with_sigpipe_install (a : SigpipeAction) (m : Model) : Model :=
     and [Run.valid_input] pins it present.  [procst_sigpipe_action]'s
     handler is the TASK's at launch -- whether SIGPIPE is still at
     SIG_DFL -- and [Run.valid_input] does NOT pin it, so both starts are
-    covered; under
-    [Run.valid_input_sigpipe_ignored], or after an install of SIG_IGN
-    inside the run ([with_sigpipe_install]), this setter is never
-    reached for signal 13 because [raise_sigpipe] discards the signal.
+    covered.  Under
+    [Run.valid_input_sigpipe_ignored] the death is declined as well, so
+    [sigpipe_write] declines and [raise_sigpipe] is never reached at
+    all; on a launch that DOES declare the death, an install of SIG_IGN
+    inside the run ([with_sigpipe_install]) lets [raise_sigpipe] run but
+    leaves the model alone, so the write is a plain -EPIPE and this
+    setter is not reached for signal 13 either.
     [procst_sigpipe_terminal] is the task's too, and decides whether the
     death is followed at all; [Run.valid_input_sigpipe_kills] and
     [Run.valid_input_channel_closed] are the launches that set it.
