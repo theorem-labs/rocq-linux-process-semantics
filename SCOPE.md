@@ -99,8 +99,8 @@ mode answers. QEMU citations are QEMU 10.0.11.
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
   and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
   of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; "Soundness gaps" gives the difference as R-a and R-b,
-  and "Known gaps in precision" as R-c. QEMU
+  Linux's bounds; the entries R-a, R-b and R-c below give the
+  difference. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -724,16 +724,6 @@ placement `unmodeled` or to raise the ceiling; both are open.
   stack itself. The stack VMA in the ledger closes it. Until then, a
   proof does not cover a run in which Linux honours such a hint or falls
   back above `State.alloc_top`.
-- **R-c's hint half**, under "Known gaps in precision" below. When the
-  stack has grown to its limit, Linux refuses a hint that ends inside
-  `stack_guard_gap` below the stack and searches top-down instead
-  (`vm_start_gap`, `include/linux/mm.h`). The model has no stack VMA in
-  its ledger, so it returns the hint
-  (`Sys.Mm.Mmap.linux_place`), and its placement is unique
-  (`Checks.Placement.linux_place_unique`): the address Linux returns is
-  left out, so a proof does not cover such a run. R-c's `brk` half is a
-  precision gap only — there Linux refuses and the model's `brk` can
-  fail too.
 - **The stack floor after a later mapping**, under "Known gaps in
   precision" below. A program that maps a page just below its stack and
   then grows the stack into the guard gap above that mapping faults on
