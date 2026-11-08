@@ -99,8 +99,8 @@ mode answers. QEMU citations are QEMU 10.0.11.
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
   and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
   of the three is bounded above by `State.alloc_top`, which is not one of
-  Linux's bounds; "Known gaps in precision" gives the difference as R-a,
-  R-b and R-c. QEMU
+  Linux's bounds; the entries R-a, R-b and R-c below give the
+  difference. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -500,7 +500,7 @@ not apply.
   returns before it registers the `AF_INET6` family
   (`net/ipv6/af_inet6.c`), and `socket(AF_INET6, ...)` is
   `-EAFNOSUPPORT` where the model answers a descriptor.
-- The launch left `SIGPIPE` at its default disposition, and the
+- `SIGPIPE`'s start-up disposition is left free, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
   `SIGPIPE` and the default action ends the program — as in
@@ -660,12 +660,111 @@ not apply.
   image's disassembly. The model does not re-check it for an image
   added later.
 
+## Soundness gaps
+
+Design priority 1 asks that every behavior Linux v6.18.46 can give, in a
+case the model covers, is a behavior of the model (README.md). The model
+does not meet it in the cases below. In the first two, R-a and R-b, **it
+declines placements Linux can make above `State.alloc_top`; until that is
+fixed, a proof does not cover
+them.** They are priority-1 gaps. They break priority 2 as well, since
+the model then gives an address Linux does not give in that state, so
+each is both kinds of gap and the entry is here because the priority-1
+half is the serious one. A statement that
+a proof can establish in the model — "a non-fixed `mmap` returns an
+address below `sp`" — is then false of Linux. The fix is to make such a
+placement `unmodeled` or to raise the ceiling; both are open.
+
+- **R-a, an mmap base above `State.alloc_top`.** The model's zero-mapped
+  stack window now counts its 8 MiB from the end of the entry block
+  (`Run.stack_window_lo`: `StackLayout.ed_top` less `stack_max_size`,
+  against a guard-gap floor), as Linux counts RLIMIT_STACK from the stack
+  VMA's `vm_end` (`expand_downwards` through `acct_stack_growth`,
+  `mm/vma.c`). LPS pull request #25, which moved that count off `sp` and
+  onto the entry block, is merged; `ed_top` and the guard-gap floor came
+  after it. The gap stays open because the ALLOCATION ceiling was not
+  moved with the window: `State.alloc_top` is still
+  `vm_init_sp - stack_max_size`, that is `sp - 8 MiB` (`State.alloc_top`),
+  while `sp` sits below the stack VMA's end by the entry image. The model
+  admits exactly Linux's bases (`Run.valid_launch_base`, which mirrors
+  `mmap_base`, `mm/util.c`: `STACK_TOP` less a gap of the stack rlimit,
+  the guard gap and the stack randomization maximum, less a base draw),
+  and with a large stack draw and an entry image of more than about 1 MiB
+  — the guard-gap pad in that gap, at the default `stack_guard_gap`, which
+  `State.kb_guard` leaves free — an admitted `mm->mmap_base` lies above
+  `State.alloc_top`, below which the model searches.
+  The model's top-down addresses are then lower than Linux's by at most
+  the entry image size less that pad, so until this is fixed a proof does
+  not cover a run whose mapping Linux puts above `State.alloc_top`. The
+  vDSO moves with it: the ledger reserves the pair below
+  `page_round_down(min(mbase, sp - 8 MiB))` (`State.vdso_top`) while the
+  auxv publishes `mbase` less the text (`Run.vdso_text_base`), so where
+  `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
+  ledger reserves exactly that range" does not hold there.
+  The refusals differ only when no free
+  range of the requested size is left, and the band is narrow: the
+  entry image less the guard-gap pad. Raising `State.alloc_top` to the
+  floor `Run.stack_window_lo` already uses closes it.
+- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
+  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
+  above the stack included, and its bottom-up fallback searches up to the
+  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
+  `generic_get_unmapped_area_topdown`: the hint test is
+  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
+  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
+  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
+  hint, and searches, only below `State.alloc_top`: `Sys.Mm.Mmap.linux_place`
+  tests the hint with `gap_fits maps page_size (alloc_top h) nZ g`, and
+  `Sys.Mm.Mmap.topdown_search` uses `alloc_top` for `mmap_end`. So this is
+  not only a difference in which free address is chosen: where Linux
+  RETURNS a hint above `State.alloc_top`, the model DECLINES that hint and
+  places the mapping somewhere else entirely, at a top-down address of its
+  own. It stays open because
+  the dynamic stack is a bound in this model and not an entry in the
+  ledger, so the model cannot tell a free address above the stack from the
+  stack itself. The stack VMA in the ledger closes it. Until then, a
+  proof does not cover a run in which Linux honours such a hint or falls
+  back above `State.alloc_top`.
+- **R-c, a hint inside the grown stack's guard gap**, whose full entry
+  is under "Known gaps in precision" below. Linux's hint test respects
+  `vm_start_gap` (`mm/mmap.c`, the hint arm of
+  `generic_get_unmapped_area_topdown`; `include/linux/mm.h`,
+  `vm_start_gap`), so with the stack grown to its limit Linux REFUSES a
+  hint that ends inside `stack_guard_gap` below it and searches
+  top-down instead. The model's ledger has no stack VMA and so no gap
+  to keep: `Sys.Mm.Mmap.linux_place` returns that hint, and its
+  placement is unique (`Checks.Placement.linux_place_unique`), so the
+  address Linux returns is left out and a proof does not cover such a
+  run. The fix is its own change, like R-b's.
+- **The stack floor after a later mapping**, under "Known gaps in
+  precision" below. A program that maps a page just below its stack and
+  then grows the stack into the guard gap above that mapping faults on
+  Linux, and the model answers instead: that `SIGSEGV` is not a behavior
+  of the model, so a proof does not cover such a run.
+- **A failing store-conditional on a write-only segment**, whose full
+  entry is under "Known gaps in precision" below. On a writable segment
+  that lacks the `r` flag the model's failing `sc` takes a
+  `MachineFault` — a death, and deliberately not `unmodeled` (`Run.v`
+  excludes `MachineFault` from the unmodeled cases as "a faithful model
+  of a process that really does die"). Where Linux instead lets that
+  `sc` report failure and the program run on, that run is a behavior
+  Linux gives and the model does not, so a proof does not cover it.
+  **Whether Linux does is UNSETTLED**: a private write-only mapping
+  takes a page table entry with no `_PAGE_READ`, so the hardware may
+  fault there as the model does. The entry below says what would settle
+  it.
+
 ## Known gaps in precision
 
 Design priority 2 asks that the model include no behavior that Linux
 v6.18.46 does not give. The model does not meet it in these cases. In each
 case, a statement that compares sets of behaviors (for example,
-equivalence) can be true of the model and false of Linux.
+equivalence) can be true of the model and false of Linux. Five entries
+belong to both lists: R-a and R-b, recorded above under "Soundness
+gaps", and R-c, "Stack floor" and the failing store-conditional, whose
+full entries are here and which "Soundness gaps" names. Each also leaves
+out something Linux does, which breaks priority 1, and that is the more
+serious half.
 
 - **No parameter for the Linux configuration.** The model does not choose
   between Linux configurations (for example, the two mmap layouts). Where
@@ -723,29 +822,6 @@ equivalence) can be true of the model and false of Linux.
   that time to the clock: `State.m_clock` does not move, so a later
   `clock_gettime` is not bounded by the time that the call took, as it
   is on Linux.
-- **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
-  `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
-  VMA, which is above `sp` by the entry image. With an entry image of more
-  than about 1 MiB and a high base draw, Linux's `mm->mmap_base` can lie
-  above `State.alloc_top`, while the model searches below `alloc_top`. The
-  model's top-down addresses are then lower than Linux's by at most the
-  entry image size less 1 MiB. The refusals differ only when no free range
-  of the requested size is left. It stays open because the model counts
-  only its own entry image against the stack limit (see "Stack floor").
-  LPS pull request #25, which makes the stack window count the entry
-  image, makes `alloc_top` Linux's floor and closes it.
-- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
-  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
-  above the stack included, and its bottom-up fallback searches up to the
-  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
-  `generic_get_unmapped_area_topdown`: the hint test is
-  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
-  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
-  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
-  hint, and searches, only below `State.alloc_top`. It stays open because
-  the dynamic stack is a bound in this model and not an entry in the
-  ledger, so the model cannot tell a free address above the stack from the
-  stack itself. The stack VMA in the ledger closes it.
 - **R-c, the stack guard gap.** When the stack has grown to its limit,
   Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
   that gap from the start of a `VM_GROWSDOWN` VMA
@@ -883,11 +959,27 @@ equivalence) can be true of the model and false of Linux.
   "Where QEMU user mode differs" above says where the guest stack goes.
 - **A failing store-conditional on a write-only segment.** The model
   writes the failing `sc`'s permission check as a load and a store of
-  the same bytes, so on a writable segment that lacks the `r` flag it
-  faults, as a load from that segment already does
-  (`RiscvSemantics.memory_read`). Linux on riscv maps every writable
-  page readable (`arch/riscv/mm/fault.c`, `access_error`: "Write
-  implies read"), so there both the load and the failing `sc` succeed.
+  the same bytes, so on a writable segment that lacks the `r` flag the
+  load half fails (`RiscvSemantics.memory_read` gives `None` when
+  `seg_readable` is false) and the run takes a `MachineFault`. That is a
+  death, not `unmodeled`, which is why "Soundness gaps" above names this
+  entry too: where Linux lets the `sc` report failure and the program
+  run on, the model leaves out a behavior Linux gives, and that is the
+  more serious half.
+  **What Linux does here is unsettled, and it decides whether this is a
+  gap at all.** `access_error`'s "Write implies read"
+  (`arch/riscv/mm/fault.c`) is a test on the VMA flags, but the page
+  table entry comes from `protection_map`, and a PRIVATE write-only
+  mapping takes `PAGE_SHADOWSTACK` (`arch/riscv/mm/init.c`,
+  `protection_map[VM_WRITE]`), which is `_PAGE_BASE | _PAGE_WRITE` with
+  no `_PAGE_READ` (`arch/riscv/include/asm/pgtable.h`). A SHARED
+  write-only mapping takes `PAGE_SHARED`, which is `PAGE_WRITE` and does
+  carry `_PAGE_READ`. So in the private case the hardware may fault on
+  the load exactly as the model does, and the model may be right.
+  **What would settle it:** run a failing `sc` against a private
+  write-only `mmap` on riscv hardware, or on an emulator that honours
+  the page table bits, and record whether it faults or the `sc` reports
+  failure.
 
 ## What the proofs do not check
 

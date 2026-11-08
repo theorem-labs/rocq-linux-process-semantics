@@ -3724,10 +3724,13 @@ Definition valid_launch_base (v : VaSize) (kb : KernelBuild) (mbase : word)
     the top.  There is no band.
 
     It is a FIFTH conjunct rather than a replacement for the four
-    older ones, which it implies, because the tree reads those four
-    facts off a destructured entry in thousands of places.  See
-    [entry_launch_ok_va_sp], [entry_launch_ok_va_base] and
-    [entry_launch_ok_va_fits] for the implications. *)
+    older ones, because the tree reads those four facts off a
+    destructured entry in thousands of places.  It implies THREE of
+    them: [entry_launch_ok_va_sp] and [entry_launch_ok_va_fits], each
+    of which also needs [valid_launch], and [entry_launch_ok_va_base],
+    which stands alone.  The fourth, [valid_brk], it does NOT imply --
+    it is a fact about the image's reservations, and
+    [launch_entry_va_valid] takes it as a premise. *)
 Definition entry_launch_ok_va (v : VaSize) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match en with
@@ -4219,8 +4222,9 @@ Proof.
 Qed.
 
 (** THE WITNESS, in one lemma.  The launch conjunct is proved directly
-    and the four older ones are read off it by the three implications
-    above, so there is one piece of arithmetic and not five.
+    and three of the four older ones are read off it by the
+    implications above, so there is one piece of arithmetic and not
+    five; [valid_brk] is not among them and is a premise here.
 
     [valid_argv] and [valid_envp] are premises because the statement is
     the one every consumer has: the proof needs only [valid_launch],

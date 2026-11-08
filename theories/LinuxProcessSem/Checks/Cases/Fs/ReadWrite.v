@@ -2965,9 +2965,11 @@ Proof. split; [check_eq | split; check_eq]. Qed.
 (** PAIR 2 — THE SAME WRITE UNDER THE OTHER LAUNCH DECLARATION.
 
     [State.in_sigpipe_default] is the task's declaration that signal 13
-    is still at SIG_DFL, and NO launch predicate pins it: both starts
-    are ones Linux produces, so [Run.valid_input_channel_closed]
-    admits this input and the one above alike and the DISPOSITION
+    is still at SIG_DFL, and the predicate in play here does not pin it:
+    both starts are ones Linux produces, so
+    [Run.valid_input_channel_closed] -- like [Run.valid_input], and
+    unlike [Run.valid_input_sigpipe_ignored], which pins the SIG_IGN
+    start -- admits this input and the one above alike and the DISPOSITION
     ALONE separates them.  At SIG_IGN the
     kernel never delivers the signal at all --
     kernel/signal.c [prepare_signal]/[sig_ignored] drops it unblocked,

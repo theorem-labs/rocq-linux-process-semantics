@@ -331,8 +331,10 @@ Definition replay_kernel : KernelBuild :=
     declarations are [in_channel_reader] and [in_sigpipe_default], both
     [true], and [in_sigpipe_terminal], [false]: an ordinary launch whose
     standard output is read, whose SIGPIPE is at SIG_DFL and whose
-    SIGPIPE death is declined, which is what [Run.valid_input] pins and
-    what a placement replay has no opinion about. *)
+    SIGPIPE death is declined.  [Run.valid_input] pins the reader and the
+    declined death; it says nothing about the disposition, which is a free
+    choice here, and a placement replay has no opinion about any of the
+    three. *)
 Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48

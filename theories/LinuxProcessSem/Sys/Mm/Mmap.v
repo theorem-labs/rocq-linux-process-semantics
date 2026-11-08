@@ -1057,13 +1057,21 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
-   mapping or the stack sits.
+   mapping or the stack sits.  SCOPE.md records R-a and R-b as SOUNDNESS
+   gaps as well as precision ones: the model declines placements Linux
+   can make above [alloc_top], and until that is fixed a proof does not
+   cover them.  R-c is a soundness gap too: Linux's hint test respects
+   [vm_start_gap], so it REFUSES a hint inside the grown stack's guard
+   gap and this model returns it.
 
-   - R-a, a base above [alloc_top].  The model's stack window starts at
-     [sp - stack_max_size]; Linux's starts at the stack VMA's end.  A
-     high base draw with a large entry block can put Linux's base above
-     [alloc_top], and then this model's top-down placements are lower
-     than the kernel's.
+   - R-a, a base above [alloc_top].  The zero-mapped stack window now
+     counts from the entry block's end ([Run.stack_window_lo]), as
+     Linux counts RLIMIT_STACK from the stack VMA's [vm_end], but the
+     ALLOCATION ceiling [State.alloc_top] still starts at
+     [sp - stack_max_size], and [sp] is below that end by the entry
+     image.  A large stack draw with a large entry block can put
+     Linux's base above [alloc_top], and then this model's top-down
+     placements are lower than the kernel's.
    - R-b, hints and the bottom-up fallback above [alloc_top].  Linux
      honours a free hint anywhere up to STACK_TOP_MAX, the band above
      the stack included, and its bottom-up fallback reaches the stack's
