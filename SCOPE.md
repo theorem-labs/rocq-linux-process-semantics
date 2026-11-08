@@ -988,3 +988,14 @@ serious half.
   Linux. An error in both gives a correct proof of the wrong thing.
 - Comments that state kernel behavior name the file and the function in
   Linux v6.18.46. No tool checks that these comments are correct.
+- No recorded trace reaches the `SIG_IGN` arm of the `SIGPIPE` write. The
+  replay corpus (`reports/corpus-replay.md`, 4,291 traces) records no
+  start-up disposition at all, and the replay starts every trace at
+  `SIG_DFL`; the only install of `SIG_IGN` anywhere in it is
+  `rt_sigaction_spec/039`, where that call is the trace's only record, and
+  no `-EPIPE` record follows an install of a signal-13 disposition.
+  So what the model answers at `SIG_IGN` — the write returns `-EPIPE` and
+  the program runs on — is checked by the proofs and by the hand-written
+  fixtures (`theories/Examples/`) only, and by no recorded run, until a
+  re-recorded corpus holds such a trace. Measured by the Lean comparison
+  lane on the same corpus.

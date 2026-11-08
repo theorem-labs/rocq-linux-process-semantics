@@ -110,6 +110,17 @@ repository, in `linux/` or in `qemu/`.
    each new `Admitted`, `admit`, `Axiom`,
    `Parameter`, and each `Hypothesis`, `Variable` or `Context` outside a
    section.
+   For each definition the change alters, list every lemma whose premises
+   mention it, and show that those premises are still JOINTLY
+   SATISFIABLE. A premise pair that has become contradictory leaves a
+   lemma that proves nothing while still reading as coverage, and a
+   diff-scoped reading cannot see it: the diff shows the definition, not
+   the lemma it emptied. #38 made `ReadWrite.sigpipe_declines` equal to
+   `negb (m_sigpipe_terminal m)`, which turned the two premises of
+   `Checks/KillFree.v`'s `raise_sigpipe_off` —
+   `m_sigpipe_terminal m = false` and `sigpipe_declines m = false` — into
+   `false` and `true` for the same field; the lemma still compiled, was
+   still used twice, and held over no model at all.
 4. **Does it show what it claims?** A fix comes with a test or an example
    that fails on `main` and passes with the change. A change that admits a
    new outcome comes with an example that reaches it. The executable checker

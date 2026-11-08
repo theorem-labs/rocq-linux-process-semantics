@@ -53,18 +53,43 @@ Definition kill_post (m m' : Model) (evs : list event) : Prop :=
   kill_off m' /\ m_killed m' = None /\ no_kill evs.
 
 (* -------------------------------------------------------------------------
-   The three gated sites, each closed by the gate it sits behind
+   The three gated sites, each closed by the gate that stands in front of it
    ------------------------------------------------------------------------- *)
 
-(** SIGPIPE: with the death undeclared, a write that would raise the
-    signal either declines or, at SIG_IGN, leaves the model alone. *)
-Lemma raise_sigpipe_off : forall m,
-  m_sigpipe_terminal m = false -> sigpipe_declines m = false ->
-  raise_sigpipe m = m.
+(** SIGPIPE: with the death undeclared the raising write DECLINES, at
+    EITHER disposition.  [Sys.Fs.ReadWrite.sigpipe_declines] is
+    [State.m_sigpipe_terminal] negated and reads nothing else, so the
+    executable form answers [CheckUnmodeled] and the arm never reaches
+    [Sys.Fs.ReadWrite.raise_sigpipe] at all.  The spec-layer twin is
+    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled].
+
+    WHAT THIS REPLACES, AND WHY IT IS NOT THE SAME LEMMA.  While the
+    launch predicates still pinned the start-up disposition,
+    [Sys.Fs.ReadWrite.sigpipe_declines] was
+    [m_sigpipe_default m && negb (m_sigpipe_terminal m)] and this site
+    was closed by [raise_sigpipe m = m] under the two premises
+    [m_sigpipe_terminal m = false] and [sigpipe_declines m = false] --
+    jointly satisfiable then, at [m_sigpipe_default m = false].  With
+    the disposition out of [sigpipe_declines] those two premises read
+    [m_sigpipe_terminal m = false] and [m_sigpipe_terminal m = true]:
+    NO MODEL SATISFIES BOTH, so that lemma proved nothing while still
+    looking like coverage, and the two sites below were discharging a
+    contradiction without saying so.  The gate is what closes the site
+    now, and it says so. *)
+Lemma check_sigpipe_write_off_unmodeled : forall eff m,
+  m_sigpipe_terminal m = false ->
+  check_sigpipe_write eff m = CheckUnmodeled.
 Proof.
-  intros m Ht Hd. unfold sigpipe_declines in Hd. rewrite Ht in Hd.
-  unfold raise_sigpipe.
-  destruct (m_sigpipe_default m) eqn:E; [cbn in Hd; discriminate Hd | reflexivity].
+  intros eff m Ht. unfold check_sigpipe_write, sigpipe_declines.
+  rewrite Ht. reflexivity.
+Qed.
+
+Lemma check_sigpipe_writev_off_unmodeled : forall reads eff m,
+  m_sigpipe_terminal m = false ->
+  check_sigpipe_writev reads eff m = CheckUnmodeled.
+Proof.
+  intros reads eff m Ht. unfold check_sigpipe_writev, sigpipe_declines.
+  rewrite Ht. reflexivity.
 Qed.
 
 (** The delivery inside [rt_sigprocmask]: with nothing pending it only
@@ -219,26 +244,27 @@ Proof.
   repeat kf_step H; kf_close m Hoff Hk.
 Qed.
 
+(** The SIGPIPE arm DECLINES OUTRIGHT while the death is undeclared, as
+    [check_tkill_kf] below has it for the abort one: with the gate
+    closed the checker answers [CheckUnmodeled], so a [CheckOk] here is
+    a contradiction and the arm owes nothing.  The obligation is
+    discharged BY THE ARM'S ABSENCE, and not by a fact about
+    [Sys.Fs.ReadWrite.raise_sigpipe]'s post-model -- which is what the
+    lemma these replaced claimed to supply, over premises no model
+    satisfies. *)
 Lemma check_sigpipe_write_kf : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  unfold check_sigpipe_write in H.
-  destruct (sigpipe_declines m) eqn:Hd; cbv iota in H; [discriminate H|].
-  apply check_ret_only_ok_iff in H. destruct H as (_ & -> & ->).
-  rewrite (raise_sigpipe_off m Ht Hd).
-  split; [exact Hoff | split; [exact Hk | intros ? ? []]].
+  rewrite (check_sigpipe_write_off_unmodeled eff m Ht) in H. discriminate H.
 Qed.
 
 Lemma check_sigpipe_writev_kf : forall reads eff m m' evs,
   check_sigpipe_writev reads eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros reads eff m m' evs H Hoff Hk. pose proof Hoff as (_ & _ & Ht & _).
-  unfold check_sigpipe_writev in H.
-  destruct (sigpipe_declines m) eqn:Hd; cbv iota in H; [discriminate H|].
-  apply check_ret_only_copyins_ok_iff in H. destruct H as (_ & -> & ->).
-  rewrite (raise_sigpipe_off m Ht Hd).
-  split; [exact Hoff | split; [exact Hk | intros ? ? []]].
+  rewrite (check_sigpipe_writev_off_unmodeled reads eff m Ht) in H.
+  discriminate H.
 Qed.
 
 (** A stream-pair end's read and send rewrite fd-table entries with
