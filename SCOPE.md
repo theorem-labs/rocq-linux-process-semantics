@@ -702,8 +702,10 @@ placement `unmodeled` or to raise the ceiling; both are open.
   `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
   ledger reserves exactly that range" does not hold there.
   The refusals differ only when no free
-  range of the requested size is left. Raising `State.alloc_top` to the
-  floor `Run.stack_window_lo` already uses closes it.
+  range of the requested size is left. The band R-a leaves is small —
+  at most 2,109,440 bytes, at top `0x7fffc0000000` — and LPS pull
+  request #25 empties it; raising `State.alloc_top` to the floor
+  `Run.stack_window_lo` already uses closes the gap itself.
 - **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
   free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
   above the stack included, and its bottom-up fallback searches up to the
@@ -724,6 +726,17 @@ placement `unmodeled` or to raise the ceiling; both are open.
   stack itself. The stack VMA in the ledger closes it. Until then, a
   proof does not cover a run in which Linux honours such a hint or falls
   back above `State.alloc_top`.
+- **R-c, a hint inside the grown stack's guard gap**, whose full entry
+  is under "Known gaps in precision" below. Linux's hint test respects
+  `vm_start_gap` (`mm/mmap.c`, the hint arm of
+  `generic_get_unmapped_area_topdown`; `include/linux/mm.h`,
+  `vm_start_gap`), so with the stack grown to its limit Linux REFUSES a
+  hint that ends inside `stack_guard_gap` below it and searches
+  top-down instead. The model's ledger has no stack VMA and so no gap
+  to keep: `Sys.Mm.Mmap.linux_place` returns that hint, and its
+  placement is unique (`Checks.Placement.linux_place_unique`), so the
+  address Linux returns is left out and a proof does not cover such a
+  run. The fix is its own change, like R-b's.
 - **The stack floor after a later mapping**, under "Known gaps in
   precision" below. A program that maps a page just below its stack and
   then grows the stack into the guard gap above that mapping faults on
@@ -735,11 +748,11 @@ placement `unmodeled` or to raise the ceiling; both are open.
 Design priority 2 asks that the model include no behavior that Linux
 v6.18.46 does not give. The model does not meet it in these cases. In each
 case, a statement that compares sets of behaviors (for example,
-equivalence) can be true of the model and false of Linux. R-a and R-b,
-above under "Soundness gaps", belong to this list too: each also gives an
-address Linux does not give in that state. They are recorded there
-because each ALSO leaves out an address Linux does give, which breaks
-priority 1.
+equivalence) can be true of the model and false of Linux. Four entries
+belong to both lists: R-a and R-b, recorded above under "Soundness
+gaps", and R-c and "Stack floor", whose full entries are here and which
+"Soundness gaps" names. Each also leaves out something Linux does, which
+breaks priority 1, and that is the more serious half.
 
 - **No parameter for the Linux configuration.** The model does not choose
   between Linux configurations (for example, the two mmap layouts). Where

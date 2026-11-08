@@ -1060,7 +1060,9 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    mapping or the stack sits.  SCOPE.md records R-a and R-b as SOUNDNESS
    gaps as well as precision ones: the model declines placements Linux
    can make above [alloc_top], and until that is fixed a proof does not
-   cover them.
+   cover them.  R-c is a soundness gap too: Linux's hint test respects
+   [vm_start_gap], so it REFUSES a hint inside the grown stack's guard
+   gap and this model returns it.
 
    - R-a, a base above [alloc_top].  The zero-mapped stack window now
      counts from the entry block's end ([Run.stack_window_lo]), as
