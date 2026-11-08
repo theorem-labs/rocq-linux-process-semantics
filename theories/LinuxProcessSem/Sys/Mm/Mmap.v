@@ -1240,6 +1240,25 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     too, so [linux_place]'s fall-through to the search is Linux's own
     answer.
 
+    THAT LAST STEP ASSUMES THE LEDGER IS LINUX'S, and that assumption
+    holds exactly where R-a below does not bite.  On a ledger whose
+    [vm_mmap_base] is above [page_round_down_Z (alloc_top h)],
+    [State.init_reserved] has already put the vdso/vvar pair lower than
+    Linux put it, so a hinted range can meet the MODEL's pair while
+    Linux's lies elsewhere and Linux honours the hint.  [region_free]
+    is then false, this test is false, and the call is not declined —
+    a hint mismatch that escapes.  So what is closed here is the hint
+    half of R-b FOR THE ENTRIES WHOSE BASE IS AT OR BELOW THE
+    PAGE-ROUNDED ALLOCATION TOP.  On the others R-a is the defect, and
+    it is a start-state defect that no decline on this path repairs.
+
+    THE OTHER DIRECTION IS A COVERAGE COST, not a soundness one.
+    "Free on this ledger" above [alloc_top h] does not mean free on
+    Linux: the band is where the stack grows, and the ledger does not
+    describe it.  So the test declines some calls at which the model
+    and Linux would have agreed.  Declining is the safe direction;
+    tightening it needs the stack VMA in the ledger.
+
     WHAT THIS DOES NOT COVER, and why each is named rather than closed.
 
     - R-a, A BASE ABOVE [alloc_top].  [State.mmap_top] is the minimum

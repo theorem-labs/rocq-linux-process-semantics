@@ -851,7 +851,8 @@ serious half.
   request #25, which makes the stack window count the entry image and so
   makes `alloc_top` Linux's floor, after which the band is empty.
 - **R-b, a hint or a fallback above `State.alloc_top`: the hint half is
-  CLOSED by a decline, the fallback half is open.** Linux honours a
+  CLOSED by a decline where R-a does not bite, the fallback half is
+  open.** Linux honours a
   free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
   above the stack included, and its bottom-up fallback searches up to the
   same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
@@ -864,8 +865,19 @@ serious half.
   hint and the model placed the mapping elsewhere. The model now answers
   `unmodeled` for a hint whose range is free on the ledger, starts at or
   above `mmap_min_addr` and ends above `State.alloc_top` and at or below
-  `State.TASK_SIZE` (`Sys/Mm/Mmap.v`, `place_declined_b`, second
-  disjunct).
+  `State.TASK_SIZE` (`Sys/Mm/Mmap.v`, `place_declined_b`).
+  That decline is complete only for the entries whose mmap base is at or
+  below the page-rounded `State.alloc_top`. On the others R-a has
+  already placed the model's vdso/vvar pair lower than Linux placed it,
+  so a hinted range can meet the model's pair while Linux's lies
+  elsewhere and Linux honours the hint: `region_free` is false, the
+  decline does not fire, and the mismatch stands. That is R-a's defect
+  and R-a's to close; it is named here so no reader takes the hint half
+  as closed for every admitted launch.
+  In the other direction the decline costs coverage and not soundness:
+  "free on the ledger" above `State.alloc_top` does not mean free on
+  Linux, since the band is where the stack grows, so some calls are
+  declined at which the model and Linux would have agreed.
   The FALLBACK half stays open, and stays a precision gap in practice
   rather than a soundness one that can be reached: it needs a ledger with
   no free range of the requested size anywhere below `State.alloc_top` —
