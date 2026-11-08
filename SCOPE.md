@@ -741,17 +741,30 @@ placement `unmodeled` or to raise the ceiling; both are open.
   then grows the stack into the guard gap above that mapping faults on
   Linux, and the model answers instead: that `SIGSEGV` is not a behavior
   of the model, so a proof does not cover such a run.
+- **A failing store-conditional on a write-only segment**, whose full
+  entry is under "Known gaps in precision" below. On a writable segment
+  that lacks the `r` flag the model's failing `sc` takes a
+  `MachineFault` — a death, and deliberately not `unmodeled` (`Run.v`
+  excludes `MachineFault` from the unmodeled cases as "a faithful model
+  of a process that really does die"). Where Linux instead lets that
+  `sc` report failure and the program run on, that run is a behavior
+  Linux gives and the model does not, so a proof does not cover it.
+  **Whether Linux does is UNSETTLED**: a private write-only mapping
+  takes a page table entry with no `_PAGE_READ`, so the hardware may
+  fault there as the model does. The entry below says what would settle
+  it.
 
 ## Known gaps in precision
 
 Design priority 2 asks that the model include no behavior that Linux
 v6.18.46 does not give. The model does not meet it in these cases. In each
 case, a statement that compares sets of behaviors (for example,
-equivalence) can be true of the model and false of Linux. Four entries
+equivalence) can be true of the model and false of Linux. Five entries
 belong to both lists: R-a and R-b, recorded above under "Soundness
-gaps", and R-c and "Stack floor", whose full entries are here and which
-"Soundness gaps" names. Each also leaves out something Linux does, which
-breaks priority 1, and that is the more serious half.
+gaps", and R-c, "Stack floor" and the failing store-conditional, whose
+full entries are here and which "Soundness gaps" names. Each also leaves
+out something Linux does, which breaks priority 1, and that is the more
+serious half.
 
 - **No parameter for the Linux configuration.** The model does not choose
   between Linux configurations (for example, the two mmap layouts). Where
@@ -946,11 +959,27 @@ breaks priority 1, and that is the more serious half.
   "Where QEMU user mode differs" above says where the guest stack goes.
 - **A failing store-conditional on a write-only segment.** The model
   writes the failing `sc`'s permission check as a load and a store of
-  the same bytes, so on a writable segment that lacks the `r` flag it
-  faults, as a load from that segment already does
-  (`RiscvSemantics.memory_read`). Linux on riscv maps every writable
-  page readable (`arch/riscv/mm/fault.c`, `access_error`: "Write
-  implies read"), so there both the load and the failing `sc` succeed.
+  the same bytes, so on a writable segment that lacks the `r` flag the
+  load half fails (`RiscvSemantics.memory_read` gives `None` when
+  `seg_readable` is false) and the run takes a `MachineFault`. That is a
+  death, not `unmodeled`, which is why "Soundness gaps" above names this
+  entry too: where Linux lets the `sc` report failure and the program
+  run on, the model leaves out a behavior Linux gives, and that is the
+  more serious half.
+  **What Linux does here is unsettled, and it decides whether this is a
+  gap at all.** `access_error`'s "Write implies read"
+  (`arch/riscv/mm/fault.c`) is a test on the VMA flags, but the page
+  table entry comes from `protection_map`, and a PRIVATE write-only
+  mapping takes `PAGE_SHADOWSTACK` (`arch/riscv/mm/init.c`,
+  `protection_map[VM_WRITE]`), which is `_PAGE_BASE | _PAGE_WRITE` with
+  no `_PAGE_READ` (`arch/riscv/include/asm/pgtable.h`). A SHARED
+  write-only mapping takes `PAGE_SHARED`, which is `PAGE_WRITE` and does
+  carry `_PAGE_READ`. So in the private case the hardware may fault on
+  the load exactly as the model does, and the model may be right.
+  **What would settle it:** run a failing `sc` against a private
+  write-only `mmap` on riscv hardware, or on an emulator that honours
+  the page table bits, and record whether it faults or the `sc` reports
+  failure.
 
 ## What the proofs do not check
 
