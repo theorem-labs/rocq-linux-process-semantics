@@ -80,14 +80,16 @@ repository, in `linux/` or in `qemu/`.
    that the change adds, find the Linux code that gives it. An
    outcome Linux does not give breaks priority 2, and a statement that
    compares sets of behaviors can then be false (README.md): blocking, unless
-   `SCOPE.md` records it as a known gap in precision.
+   `SCOPE.md` already records it, under "Known gaps in precision" or
+   "Soundness gaps".
 2. **Is each statement true?** A comment or a `SCOPE.md` sentence about Linux
    names a file and a function at v6.18.46, and one about QEMU names a file
    and a function, and each agrees with that code. If the code is not in
    `linux/` or `qemu/`, say so. A comment says what the Rocq code next to it
    does. When the change opens or closes a gap, `SCOPE.md` records it in the
    right section: where the model is narrower, an assumption that the model
-   does not check, or a known gap in precision. `README.md` says `SCOPE.md`
+   does not check, a soundness gap, or a known gap in precision. A case can
+   belong to two of them. `README.md` says `SCOPE.md`
    lists EACH difference from QEMU user mode, so where the change makes the
    model answer a call differently from QEMU's `linux-user/`, "Where QEMU
    user mode differs" gets an entry. A missing entry is a finding here, not

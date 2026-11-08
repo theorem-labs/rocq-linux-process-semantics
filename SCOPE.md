@@ -666,7 +666,10 @@ Design priority 1 asks that every behavior Linux v6.18.46 can give, in a
 case the model covers, is a behavior of the model (README.md). The model
 does not meet it in these two cases: **it declines placements Linux can
 make above `State.alloc_top`; until that is fixed, a proof does not cover
-them.** They are priority-1 gaps, not gaps in precision. A statement that
+them.** They are priority-1 gaps. They break priority 2 as well, since
+the model then gives an address Linux does not give in that state, so
+each is both kinds of gap and the entry is here because the priority-1
+half is the serious one. A statement that
 a proof can establish in the model — "a non-fixed `mmap` returns an
 address below `sp`" — is then false of Linux. The fix is to make such a
 placement `unmodeled` or to raise the ceiling; both are open.
@@ -686,12 +689,18 @@ placement `unmodeled` or to raise the ceiling; both are open.
   `mmap_base`, `mm/util.c`: `STACK_TOP` less a gap of the stack rlimit,
   the guard gap and the stack randomization maximum, less a base draw),
   and with a large stack draw and an entry image of more than about 1 MiB
-  — the guard-gap pad in that gap — an admitted `mm->mmap_base` lies above
+  — the guard-gap pad in that gap, at the default `stack_guard_gap`, which
+  `State.kb_guard` leaves free — an admitted `mm->mmap_base` lies above
   `State.alloc_top`, below which the model searches.
   The model's top-down addresses are then lower than Linux's by at most
-  the entry image size less 1 MiB, so until this is fixed a proof does not
-  cover a run whose mapping Linux puts above `State.alloc_top`. The
-  refusals differ only when no free
+  the entry image size less that pad, so until this is fixed a proof does
+  not cover a run whose mapping Linux puts above `State.alloc_top`. The
+  vDSO moves with it: the ledger reserves the pair below
+  `page_round_down(min(mbase, sp - 8 MiB))` (`State.vdso_top`) while the
+  auxv publishes `mbase` less the text (`Run.vdso_text_base`), so where
+  `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
+  ledger reserves exactly that range" does not hold there.
+  The refusals differ only when no free
   range of the requested size is left. Raising `State.alloc_top` to the
   floor `Run.stack_window_lo` already uses closes it.
 - **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
@@ -720,7 +729,11 @@ placement `unmodeled` or to raise the ceiling; both are open.
 Design priority 2 asks that the model include no behavior that Linux
 v6.18.46 does not give. The model does not meet it in these cases. In each
 case, a statement that compares sets of behaviors (for example,
-equivalence) can be true of the model and false of Linux.
+equivalence) can be true of the model and false of Linux. R-a and R-b,
+above under "Soundness gaps", belong to this list too: each also gives an
+address Linux does not give in that state. They are recorded there
+because each ALSO leaves out an address Linux does give, which breaks
+priority 1.
 
 - **No parameter for the Linux configuration.** The model does not choose
   between Linux configurations (for example, the two mmap layouts). Where

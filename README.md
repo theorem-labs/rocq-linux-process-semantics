@@ -37,7 +37,8 @@ the code refer to them by number.
 1. **Sound (required).** A statement that you prove with this model is true
    of Linux v6.18.46, under the assumptions in
    [SCOPE.md](SCOPE.md). Where the model cannot be sound, it says
-   `unmodeled`.
+   `unmodeled`. The cases where it does neither are open bugs, and
+   [SCOPE.md](SCOPE.md) lists them under "Soundness gaps".
 2. **Precise (goal).** The model includes no behavior that Linux v6.18.46
    does not give.
 3. **Covered (goal).** The model has no `unmodeled` cases.
@@ -282,7 +283,7 @@ that the statement is not true only because an image cannot run.
 | `*_abort` variants | `Equivalence.v` | The task declares that `abort()` is a terminal outcome. |
 | `*_either` variants | `Equivalence.v` | The task does not choose: the statement must be true with and without the `abort()` declaration. |
 | `*_hwcap_*`, `*_sv39`, `*_sv57` variants | `Equivalence.v` | The task fixes the `AT_HWCAP` value or the address-space size. |
-| `*_sigpipe_ignored` variants | `Equivalence.v` | The statement names the `SIG_IGN` start: the launcher ran `signal(SIGPIPE, SIG_IGN)` before `execve`, which `execve` preserves. It is a narrowing of the default statements, which say nothing about the disposition and so cover both starts (`Run.valid_input` does not pin `State.in_sigpipe_default`). Under both predicates the SIGPIPE death stays undeclared (`State.in_sigpipe_terminal` is `false`), so a write whose far end has no reader is `Unmodeled`: it neither returns `-EPIPE` nor ends the process. |
+| `*_sigpipe_ignored` variants | `Equivalence.v` | The statement names the `SIG_IGN` start: the launcher ran `signal(SIGPIPE, SIG_IGN)` before `execve`, which `execve` preserves. It is a narrowing of the default statements, which say nothing about the disposition and so cover both starts (`Run.valid_input` does not pin `State.in_sigpipe_default`). Under both predicates the SIGPIPE death stays undeclared (`State.in_sigpipe_terminal` is `false`), so a `write` or `writev` whose far end has no reader is `Unmodeled` at either disposition: it neither returns `-EPIPE` nor ends the process. A `sendto` or `sendmsg` with `MSG_NOSIGNAL` is the exception and still answers `-EPIPE`. |
 | `*_sigpipe_either` variants | `Equivalence.v` | The task does not choose. Since the disposition came off `Run.valid_input`, this is that same predicate, conjunct for conjunct; it is kept under its own name because statements were published over it and because the name says out loud that the disposition is unconstrained. |
 | `omni_strong_universal_T` | `OmniEquivalence.v` | You prefer proofs over execution trees. It is proved equivalent to `strong_universal_T`. |
 | `must_exit_with` | `MustExit.v` | Every execution must stop with a given exit code. Equal trace prefixes do not show this. |
