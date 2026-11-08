@@ -250,8 +250,8 @@ Qed.
     a contradiction and the arm owes nothing.  The obligation is
     discharged BY THE ARM'S ABSENCE, and not by a fact about
     [Sys.Fs.ReadWrite.raise_sigpipe]'s post-model -- which is what the
-    lemma these replaced claimed to supply, over premises no model
-    satisfies. *)
+    lemma these two proofs used to cite claimed to supply, over premises
+    no model satisfies. *)
 Lemma check_sigpipe_write_kf : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
