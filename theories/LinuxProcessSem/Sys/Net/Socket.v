@@ -1292,6 +1292,14 @@ Definition sock_fd (m : Model) (fd : word) : SockOf :=
   | Some (FdOpaque (ONsFile _)) => SoErr ENOTSOCK
                                        (* never consulted: each of the five calls
                                           declines this kind first ([fd_is_ns_file]) *)
+  | Some (FdOpaque (OProcFdDir _ _)) => SoErr ENOTSOCK
+                                       (* the /proc/self/fd directory: [proc_fd_operations]
+                                          (fs/proc/fd.c, v6.18.44; identical at v6.18.46) is
+                                          not [socket_file_ops] *)
+  | Some (FdOpaque (OSignalFd _ _)) => SoErr ENOTSOCK
+                                       (* a signalfd: [signalfd_fops] (fs/signalfd.c,
+                                          v6.18.44; identical at v6.18.46) is not
+                                          [socket_file_ops] *)
   | Some (FdSocket sk)  => SoInet sk
   | Some (FdStream id side st) => SoPair id side st
                                            (* a socket file: [sock_alloc_file] gives it
@@ -2778,10 +2786,11 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
   | Some FdUrandom => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdOpaque _) => None
-      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd and
-         /proc/sys objects [sock_from_file]'s -ENOTSOCK, and an [ONsFile]
-         may be a socket (net/socket.c, read at v6.18.44; identical at
-         v6.18.46); the split is not written *)
+      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd,
+         /proc/sys, /proc/self/fd and signalfd objects
+         [sock_from_file]'s -ENOTSOCK, and an [ONsFile] may be a socket
+         (net/socket.c, read at v6.18.44; identical at v6.18.46); the
+         split is not written *)
   | Some (FdEventfd _) => Some ENOTSOCK
       (* and an eventfd's is [eventfd_fops] (fs/eventfd.c) *)
   | Some (FdAnon _ _) => Some ENOTSOCK

@@ -595,6 +595,37 @@ Proof.
   intros fd ctx buf count i eff m m' evs H. unfold check_eventfd_write in H. nf_frame H.
 Qed.
 
+(** A read and a write of an eventfd a clone shared ([State.OEventFd]),
+    and the opaque dispatchers that reach them and the /proc/sys read. *)
+Lemma nf_read_eventfd : forall i fl buf count eff m m' evs,
+  check_read_eventfd i fl buf count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i fl buf count eff m m' evs H.
+  unfold check_read_eventfd, check_eventfd_deliver in H. nf_frame H.
+Qed.
+
+Lemma nf_write_eventfd : forall i fl buf count eff m m' evs,
+  check_write_eventfd i fl buf count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i fl buf count eff m m' evs H. unfold check_write_eventfd in H. nf_frame H.
+Qed.
+
+Lemma nf_read_opaque : forall i o buf count eff m m' evs,
+  check_read_opaque i o buf count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i o buf count eff m m' evs H. unfold check_read_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H | nf_use nf_read_proc H | nf_use nf_read_eventfd H ].
+Qed.
+
+Lemma nf_write_opaque : forall i o buf count eff m m' evs,
+  check_write_opaque i o buf count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i o buf count eff m m' evs H. unfold check_write_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H | nf_use nf_write_eventfd H ].
+Qed.
+
 Lemma nf_write_fault_extend : forall reads m p off eff m' evs,
   check_write_fault_extend reads m p off eff = CheckOk m' evs -> ns_post m m'.
 Proof.
@@ -623,7 +654,7 @@ Proof.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H
           || nf_use nf_read_urandom H || nf_use nf_socket_pending_error H
-          || nf_use nf_read_proc H || nf_use nf_eventfd_read H);
+          || nf_use nf_read_opaque H || nf_use nf_eventfd_read H);
   nf_finish.
 Qed.
 
@@ -634,7 +665,8 @@ Proof.
   unfold check_write, check_access_ok_zero in H.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H
-          || nf_use nf_write_fault_extend H || nf_use nf_eventfd_write H
+          || nf_use nf_write_fault_extend H || nf_use nf_write_opaque H
+          || nf_use nf_eventfd_write H
           || nf_use nf_anon_write_fault H);
   nf_finish.
 Qed.
@@ -890,9 +922,33 @@ Lemma check_fsync_nf : forall fd eff m m' evs,
   check_fsync fd eff m = CheckOk m' evs -> ns_post m m'.
 Proof. intros fd eff m m' evs H. unfold check_fsync in H. nf_frame H. Qed.
 
-Lemma check_getdents64_nf : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> ns_post m m'.
-Proof. intros fd count eff m m' evs H. unfold check_getdents64 in H. nf_frame H. Qed.
+(** The /proc/self/fd listing rewrites its own [OProcFdDir] entry and
+    nothing else; the opaque dispatcher reaches it. *)
+Lemma nf_procfd_getdents : forall i fd fl pos dirent count eff m m' evs,
+  check_procfd_getdents i fd fl pos dirent count eff m = CheckOk m' evs ->
+  ns_post m m'.
+Proof.
+  intros i fd fl pos dirent count eff m m' evs H.
+  unfold check_procfd_getdents in H. nf_frame H.
+Qed.
+
+Lemma nf_getdents64_opaque : forall i fd o dirent count eff m m' evs,
+  check_getdents64_opaque i fd o dirent count eff m = CheckOk m' evs ->
+  ns_post m m'.
+Proof.
+  intros i fd o dirent count eff m m' evs H. unfold check_getdents64_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H | nf_use nf_procfd_getdents H ].
+Qed.
+
+Lemma check_getdents64_nf : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i fd dirent count eff m m' evs H. unfold check_getdents64 in H.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || nf_done H || nf_use nf_getdents64_opaque H);
+  nf_finish.
+Qed.
 
 Lemma check_flock_nf : forall fd cmd eff m m' evs,
   check_flock fd cmd eff m = CheckOk m' evs -> ns_post m m'.
@@ -1145,6 +1201,22 @@ Proof.
   nf_finish.
 Qed.
 
+(** The /proc/self/fd directory's [fstat] hands back the model it was
+    given; the other opaque objects decline. *)
+Lemma nf_fstat_procfd_dir : forall i statbuf eff m m' evs,
+  check_fstat_procfd_dir i statbuf eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i statbuf eff m m' evs H. unfold check_fstat_procfd_dir in H. nf_frame H.
+Qed.
+
+Lemma nf_fstat_opaque : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i o statbuf eff m m' evs H. unfold check_fstat_opaque in H.
+  destruct o; cbv beta iota in H;
+    first [ discriminate H | nf_use nf_fstat_procfd_dir H ].
+Qed.
+
 Lemma check_fstat_nf : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> ns_post m m'.
 Proof.
@@ -1152,7 +1224,7 @@ Proof.
   cbv beta iota zeta in H;
   repeat (kf_step H || nf_done H || nf_use nf_fstat_file H
           || nf_use nf_fstat_devnull H || nf_use nf_fstat_urandom H
-          || nf_use nf_fstat_anon H);
+          || nf_use nf_fstat_anon H || nf_use nf_fstat_opaque H);
   nf_finish.
 Qed.
 
@@ -1361,6 +1433,15 @@ Proof.
   nf_frame H.
 Qed.
 
+(** signalfd4 mints [OSignalFd], never an [ONsFile]. *)
+Lemma check_signalfd4_nf : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs -> ns_post m m'.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H.
+  unfold check_signalfd4, check_new_fd_result in H.
+  nf_frame H.
+Qed.
+
 Lemma check_pipe2_nf : forall i fildes flags eff m m' evs,
   check_pipe2 i fildes flags eff m = CheckOk m' evs -> ns_post m m'.
 Proof. intros i fildes flags eff m m' evs H. unfold check_pipe2 in H. nf_frame H. Qed.
@@ -1486,6 +1567,7 @@ Proof.
     | eapply check_connect_nf; eassumption
     | eapply check_timerfd_create_nf; eassumption
     | eapply check_eventfd2_nf; eassumption
+    | eapply check_signalfd4_nf; eassumption
     | eapply check_pipe2_nf; eassumption
     | eapply check_getcwd_nf; eassumption
     | eapply check_epoll_create1_nf; eassumption

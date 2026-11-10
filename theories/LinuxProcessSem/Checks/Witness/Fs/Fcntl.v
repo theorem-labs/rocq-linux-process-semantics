@@ -132,8 +132,9 @@ Proof.
              (eapply bind_step; [apply get_model_ok|]); cbv beta iota; srw Hfd;
              [ .. | apply stream_setfl_witness_ok | apply eventfd_setfl_witness_ok
                   | idtac | idtac
-                  | destruct o as [q|q|w|h]; cbv beta iota;
-                    [ idtac | idtac | apply oeventfd_setfl_witness_ok | idtac ] ];
+                  | destruct o as [q|q|w|h|fl pos|mask fl]; cbv beta iota;
+                    [ idtac | idtac | apply oeventfd_setfl_witness_ok
+                    | idtac | idtac | idtac ] ];
              match goal with
              | |- context [setfl_noop_on ?e arg] =>
                  destruct (setfl_noop_on e arg); cbv beta iota;

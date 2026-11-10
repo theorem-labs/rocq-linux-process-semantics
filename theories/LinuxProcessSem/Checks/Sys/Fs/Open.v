@@ -494,14 +494,16 @@ Local Definition check_proc_open_result (o : OpaqueFd) (eff : SyscallEffect)
   end.
 
 (** Mirrors [Open.openat_proc_spec], including its two regular sysctl
-    leaves; that definition carries the kernel path, assumptions and
-    precision cost. *)
+    leaves and the /proc/self/fd directory; that definition carries the
+    kernel path, assumptions and precision cost. *)
 Local Definition check_openat_proc (c : path) (flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
   if open_path_word fl then check_proc_open_result (OProcPath c) eff m
   else if Z.eqb fl 0 && proc_sys_file_b c
   then check_proc_open_result (OProcFile c) eff m
+  else if procfd_dir_word fl && path_eqb c proc_self_fd_path
+  then check_proc_open_result (OProcFdDir flags (Some (Z_to_bv 64 0))) eff m
   else match proc_self_fd c with
        | Some n => check_openat_procfd n flags eff m
        | None => CheckUnmodeled
@@ -519,7 +521,7 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
         | Some c => check_openat_proc c flags eff m
         | None =>
         if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-        else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+        else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
         then CheckUnmodeled
         else check_openat_resolved p flags eff m
         end
@@ -939,6 +941,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [now apply check_proc_open_result_sound_ok|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
+    [now apply check_proc_open_result_sound_ok|].
   destruct (proc_self_fd c) as [n|];
     [now apply check_openat_procfd_sound_ok|discriminate].
 Qed.
@@ -957,7 +962,7 @@ Proof.
     + destruct (proc_open_target (m_fds m) dirfd p) as [c|].
       * now apply check_openat_proc_sound_ok.
       * destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
-        destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+        destruct (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
           [discriminate|].
         now apply check_openat_resolved_sound_ok.
   - now apply check_ret_only_sound_ok.
@@ -1227,6 +1232,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
   destruct (proc_self_fd c) as [n|];
     [exact (check_openat_procfd_sound_unmodeled i n flags eff m H)
     |apply unmodeled_intro].
@@ -1297,7 +1305,7 @@ Proof.
     + destruct (proc_open_target (m_fds m) dirfd p) as [c|].
       * exact (check_openat_proc_sound_unmodeled i c flags eff m H).
       * destruct (negb (bv_eqb dirfd AT_FDCWD32)); [apply unmodeled_intro|].
-        destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+        destruct (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
           [apply unmodeled_intro|].
         exact (check_openat_resolved_sound_unmodeled i p flags eff m H).
   - exfalso. now apply check_ret_only_no_unmodeled in H.
@@ -1825,6 +1833,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [apply check_proc_open_result_complete_ok|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
+    [apply check_proc_open_result_complete_ok|].
   destruct (proc_self_fd c) as [n|];
     [apply check_openat_procfd_complete_ok
     |unfold unmodeled; intro Hu; discriminate Hu].
@@ -1846,7 +1857,7 @@ Proof.
                 | Some c => openat_proc_spec c flags m
                 | None =>
                     if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                     then unmodeled
                     else openat_resolved_spec p flags m
                 end
@@ -1860,7 +1871,7 @@ Proof.
                 | Some c => check_openat_proc c flags eff m
                 | None =>
                     if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                     then CheckUnmodeled
                     else check_openat_resolved p flags eff m
                 end
@@ -1875,7 +1886,7 @@ Proof.
               | Some c => openat_proc_spec c flags m
               | None =>
                   if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                   then unmodeled
                   else openat_resolved_spec p flags m
               end)
@@ -1884,7 +1895,7 @@ Proof.
               | Some c => check_openat_proc c flags eff m
               | None =>
                   if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                   then CheckUnmodeled
                   else check_openat_resolved p flags eff m
               end)) _ _).
@@ -1895,7 +1906,7 @@ Proof.
            | Some c => openat_proc_spec c flags m
            | None =>
                if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then unmodeled
                else openat_resolved_spec p flags m
            end)
@@ -1903,7 +1914,7 @@ Proof.
            | Some c => check_openat_proc c flags eff m
            | None =>
                if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then CheckUnmodeled
                else check_openat_resolved p flags eff m
            end)) _ _).
@@ -1911,17 +1922,17 @@ Proof.
       * refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
           (fun b => completes_ok i m eff m' evs
             (if b then unmodeled
-             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
              then unmodeled
              else openat_resolved_spec p flags m)
             (if b then CheckUnmodeled
-             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
              then CheckUnmodeled
              else check_openat_resolved p flags eff m))
           _ _).
         -- unfold completes_ok, unmodeled. intros H. discriminate H.
         -- refine (refine_if
-             (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
+             (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
              (fun b => completes_ok i m eff m' evs
                (if b then unmodeled else openat_resolved_spec p flags m)
                (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
@@ -2301,6 +2312,9 @@ Proof.
   destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
             && proc_sys_file_b c);
     [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
+  destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+            && path_eqb c proc_self_fd_path);
+    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
   destruct (proc_self_fd c) as [n|];
     [apply check_openat_procfd_complete_unmodeled
     |unfold unmodeled; intros _; reflexivity].
@@ -2322,7 +2336,7 @@ Proof.
                 | Some c => openat_proc_spec c flags m
                 | None =>
                     if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                     then unmodeled
                     else openat_resolved_spec p flags m
                 end
@@ -2336,7 +2350,7 @@ Proof.
                 | Some c => check_openat_proc c flags eff m
                 | None =>
                     if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                     then CheckUnmodeled
                     else check_openat_resolved p flags eff m
                 end
@@ -2351,7 +2365,7 @@ Proof.
               | Some c => openat_proc_spec c flags m
               | None =>
                   if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                   then unmodeled
                   else openat_resolved_spec p flags m
               end)
@@ -2360,7 +2374,7 @@ Proof.
               | Some c => check_openat_proc c flags eff m
               | None =>
                   if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                   then CheckUnmodeled
                   else check_openat_resolved p flags eff m
               end)) _ _).
@@ -2372,7 +2386,7 @@ Proof.
            | Some c => openat_proc_spec c flags m
            | None =>
                if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then unmodeled
                else openat_resolved_spec p flags m
            end)
@@ -2380,7 +2394,7 @@ Proof.
            | Some c => check_openat_proc c flags eff m
            | None =>
                if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then CheckUnmodeled
                else check_openat_resolved p flags eff m
            end)) _ _).
@@ -2389,17 +2403,17 @@ Proof.
       * refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
           (fun b => completes_unmodeled i m
             (if b then unmodeled
-             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
              then unmodeled
              else openat_resolved_spec p flags m)
             (if b then CheckUnmodeled
-             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
              then CheckUnmodeled
              else check_openat_resolved p flags eff m))
           _ _).
         -- unfold completes_unmodeled, unmodeled. intros _. reflexivity.
         -- refine (refine_if
-             (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
+             (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
              (fun b => completes_unmodeled i m
                (if b then unmodeled else openat_resolved_spec p flags m)
                (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
