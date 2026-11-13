@@ -596,9 +596,12 @@ Definition vdso_set_pc (ms : machine_state) (pc : word) : machine_state :=
     specification's and not the draw's; then pc becomes ra.
 
     The frame write takes AT MOST THE FIRST F BYTES of the draw's
-    [vl_frame], from [sp - F] up, so every byte it writes is in
-    [[sp - F, sp)] and none is at or above sp.  A draw is any function,
-    and nothing else bounds the length of the list it gives back; without
+    [vl_frame], from [sp - F] up, so every byte it writes is one of the F
+    addresses [sp - F], ..., [sp - 1], with the 64-bit wrapping
+    arithmetic the machine's own addresses use.  Where sp >= F, which is
+    every sp the launch lays out, that is the interval [[sp - F, sp)] and
+    no written byte is at or above sp.  A draw is any function, and
+    nothing else bounds the length of the list it gives back; without
     the [firstn], a draw longer than F would write over what the caller
     keeps at and above sp, its saved registers and return address among
     them.  Linux's vDSO functions write no memory but their own frame

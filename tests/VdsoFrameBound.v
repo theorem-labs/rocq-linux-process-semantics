@@ -10,8 +10,9 @@
     their own frame below sp and the buffers their arguments point at
     (SCOPE.md, "A vDSO function keeps the callee-saved registers and
     [sp]").  So the model may write at most F bytes, from [sp - F] up to
-    [sp - 1], and never a byte at or above sp, where the caller keeps its
-    own saved registers and return address.
+    [sp - 1], and, for an sp of at least F such as this file's, never a
+    byte at or above sp, where the caller keeps its own saved registers
+    and return address.
 
     This file applies [vdso_post] once, with a draw whose frame is F + 64
     bytes long, to a state whose memory is writable zeros on

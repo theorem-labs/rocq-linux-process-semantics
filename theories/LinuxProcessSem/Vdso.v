@@ -222,8 +222,10 @@ Definition vdso_caller_saved : list Z :=
 (** [vl_frame] is meant as the bytes of [[sp - F, sp)], lowest first, but
     its type does not bound its length, and a draw may give back any
     list.  [Run.vdso_post] writes at most its first F bytes, from
-    [sp - F] up, so a longer list writes nothing at or above sp, and a
-    shorter one leaves the rest of the frame as it was. *)
+    [sp - F] up, so a longer list writes nothing at or above sp (where
+    sp >= F; see there), and with a shorter one the frame write leaves
+    the rest of the frame as it was.  The call's own effect is applied
+    after the frame write. *)
 Record VdsoLeftovers := mkVdsoLeftovers {
   vl_regs  : list word;   (** one per entry of [vdso_caller_saved] *)
   vl_frame : list byte    (** the bytes of [[sp - F, sp)], lowest first;
