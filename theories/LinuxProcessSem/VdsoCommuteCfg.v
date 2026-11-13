@@ -25,9 +25,9 @@
 
     - [sstep_cfg_instr_unmodeled] carries [vdso_entry_fn segs (ms_pc ms) =
       None] as a premise OF ITS OWN (Run.v:2236, the arm at 2232-2237),
-      which [Run.sstep]'s corresponding arm also has (Run.v:669).  That arm
-      is therefore PROVED, not excluded: it reuses its own premise and never
-      consults this file's.
+      which [Run.sstep]'s corresponding arm, [Run.sstep_instr_unmodeled],
+      also has.  That arm is therefore PROVED, not excluded: it reuses its
+      own premise and never consults this file's.
 
     HOW EACH OF THE ELEVEN ARMS IS DISCHARGED, so a consumer can see which
     ones the per-state premise excludes and which are carried:
