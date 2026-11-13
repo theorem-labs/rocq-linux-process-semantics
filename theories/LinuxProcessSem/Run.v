@@ -595,6 +595,25 @@ Definition vdso_set_pc (ms : machine_state) (pc : word) : machine_state :=
     into the caller's buffers — goes on top, so the RESULT is the
     specification's and not the draw's; then pc becomes ra.
 
+    The frame write takes AT MOST THE FIRST F BYTES of the draw's
+    [vl_frame], from [sp - F] up, so every byte it writes is one of the F
+    addresses [sp - F], ..., [sp - 1], with the 64-bit wrapping
+    arithmetic the machine's own addresses use.  Where sp >= F, which is
+    every sp the launch lays out, that is the interval [[sp - F, sp)] and
+    no written byte is at or above sp.  A draw is any function, and
+    nothing else bounds the length of the list it gives back; without
+    the [firstn], a draw longer than F would write over what the caller
+    keeps at and above sp, its saved registers and return address among
+    them.  The measured image's functions write no memory but their own
+    frame below sp and the buffers their arguments point at, and F is
+    the largest such frame of the image ([Vdso.vi_frame]):
+    [measure/MEASUREMENT.md], "F, the largest frame" and "The
+    callee-saved registers and the memory writes", and the assumption
+    SCOPE.md states as "A vDSO function keeps the callee-saved registers
+    and sp".  A draw shorter than F writes only its own bytes, from
+    [sp - F] up.
+    [tests/VdsoFrameBound.v] checks the bound on a draw of F + 64 bytes.
+
     sp, gp, tp and s0-s11 are untouched, because they are not in
     [Vdso.vdso_caller_saved] and neither [apply_effect] nor this
     function writes a register outside it and a0.  That is the psABI's
@@ -611,7 +630,8 @@ Definition vdso_post (ms : machine_state) (model : Model) (f : N)
                        (eff_ret eff) in
   let ms1 := vdso_write_regs ms vdso_caller_saved (vl_regs left) in
   let ms2 := vdso_with_mem ms1
-               (vdso_write_frame (ms_mem ms1) lo (vl_frame left)) in
+               (vdso_write_frame (ms_mem ms1) lo
+                  (firstn (N.to_nat f) (vl_frame left))) in
   vdso_set_pc (apply_effect ms2 eff) ra.
 
 (** WHERE THE MODEL DECLINES A CALL, with the reason each case is a
