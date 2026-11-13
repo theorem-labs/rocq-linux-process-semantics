@@ -6,10 +6,11 @@
     into [[sp - F, sp)], where F is the chosen image's measured frame
     ([Vdso.vi_frame], 240 bytes for the image in the list).  A draw is any
     function, so nothing bounds the length of the list it gives back.
-    Linux's vDSO functions are compiled functions that write no memory but
-    their own frame below sp and the buffers their arguments point at
-    (SCOPE.md, "A vDSO function keeps the callee-saved registers and
-    [sp]").  So the model may write at most F bytes, from [sp - F] up to
+    The measured image's functions write no memory but their own frame
+    below sp and the buffers their arguments point at
+    (measure/MEASUREMENT.md, "The callee-saved registers and the memory
+    writes"; SCOPE.md, "A vDSO function keeps the callee-saved registers
+    and [sp]").  So the model may write at most F bytes, from [sp - F] up to
     [sp - 1], and, for an sp of at least F such as this file's, never a
     byte at or above sp, where the caller keeps its own saved registers
     and return address.

@@ -604,10 +604,14 @@ Definition vdso_set_pc (ms : machine_state) (pc : word) : machine_state :=
     nothing else bounds the length of the list it gives back; without
     the [firstn], a draw longer than F would write over what the caller
     keeps at and above sp, its saved registers and return address among
-    them.  Linux's vDSO functions write no memory but their own frame
-    below sp and the buffers their arguments point at, and F is the
-    largest such frame of the image ([Vdso.vi_frame]).  A draw shorter
-    than F writes only its own bytes, from [sp - F] up.
+    them.  The measured image's functions write no memory but their own
+    frame below sp and the buffers their arguments point at, and F is
+    the largest such frame of the image ([Vdso.vi_frame]):
+    [measure/MEASUREMENT.md], "F, the largest frame" and "The
+    callee-saved registers and the memory writes", and the assumption
+    SCOPE.md states as "A vDSO function keeps the callee-saved registers
+    and sp".  A draw shorter than F writes only its own bytes, from
+    [sp - F] up.
     [tests/VdsoFrameBound.v] checks the bound on a draw of F + 64 bytes.
 
     sp, gp, tp and s0-s11 are untouched, because they are not in
