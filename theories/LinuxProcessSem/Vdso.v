@@ -148,8 +148,8 @@ Record VdsoSym := mkVdsoSym {
     - [vi_size]: the image's length in bytes.
     - [vi_pages]: how many pages the kernel maps for it,
       [ceil (vi_size / 4096)].  The text mapping is
-      [[base - 4096 * vi_pages, base)] where [base] is the value the
-      auxv publishes as [AT_SYSINFO_EHDR].
+      [[base, base + 4096 * vi_pages)] where [base] is the value the
+      auxv publishes as [AT_SYSINFO_EHDR], the text's start.
     - [vi_bytes]: the whole image as lowercase hex, in chunks, in the
       representation [MemImageType.Segment] uses for a binary's
       segments, so the text mapping is an ordinary readable,

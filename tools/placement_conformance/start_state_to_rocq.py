@@ -557,7 +557,7 @@ Proof. apply bv_list_eq. vm_compute. reflexivity. Qed.
     AT_RANDOM and AT_EXECFN — are the model's own [at_random_ptr] and
     [at_execfn_ptr], not the recorded values. *)
 Lemma auxv_ok :
-  auxv_entries (launch_auxv rec_input rec_mbase) rec_phdr rec_img_entry
+  auxv_entries (launch_auxv rec_input rec_sp rec_mbase) rec_phdr rec_img_entry
     (in_uid rec_input) (in_gid rec_input) (in_hwcap rec_input)
     (at_random_ptr rec_sp (kb_rseq rec_kernel) (in_argv rec_input)
        (in_envp rec_input))

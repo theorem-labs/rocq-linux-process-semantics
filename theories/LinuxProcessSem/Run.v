@@ -259,8 +259,10 @@ Definition segments_reserved (segs : list Segment) : list (word * word) :=
     four vvar data pages directly below the text
     ([__setup_additional_pages], arch/riscv/kernel/vdso.c, reached
     through [ARCH_SETUP_ADDITIONAL_PAGES] in [load_elf_binary],
-    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The ledger
-    reserves exactly that range ([State.vdso_reserved] at
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The model
+    maps them there when [sp - stack_max_size] is at or above the base,
+    and lower otherwise ([vdso_pair_top]; SCOPE.md, R-a).  The ledger
+    reserves exactly the range the model maps ([State.vdso_reserved] at
     [State.vdso_top]); these are the same two ranges as SEGMENTS, so
     that a load, a store and a fetch there are answered by the rules
     every other address is answered by.
@@ -287,20 +289,37 @@ Definition segments_reserved (segs : list Segment) : list (word * word) :=
     the address space, which [State.vdso_reserved] declines.  Such a
     launch is not one Linux makes, and the entry premises exclude it;
     the model simply has no pair there. *)
+
+(** THE PAIR'S TOP: the mmap base, or [sp - stack_max_size] where that
+    is lower, each rounded down to a page — the ceiling of the model's
+    top-down search ([State.mmap_top]), from which the ledger reserves
+    the pair ([State.vdso_top]).  Where [sp - stack_max_size] is below
+    the base, this is lower than the base Linux places the pair under;
+    SCOPE.md's R-a says when that happens. *)
+Definition vdso_pair_top (sp mbase : word) : Z :=
+  page_round_down_Z
+    (Z.min (bv_unsigned mbase)
+           (page_round_down_Z (bv_unsigned sp - stack_max_size))).
+
+(** THE TEXT'S START, T pages below the pair's top.  It is the ONE
+    definition of where the text is: [vdso_segments] maps the text there
+    and [launch_auxv] publishes it as AT_SYSINFO_EHDR, so a C library
+    that looks the vDSO up through the auxiliary vector finds the text
+    the run maps ([VdsoSegs.launch_auxv_sysinfo_ehdr_is_the_text]). *)
+Definition vdso_text_base (kb : KernelBuild) (sp mbase : word) : word :=
+  Z_to_bv 64 (vdso_pair_top sp mbase - vdso_text_pages kb * page_size).
+
 Definition vdso_segments (kb : KernelBuild) (sp mbase : word) : list Segment :=
-  let top := page_round_down_Z
-               (Z.min (bv_unsigned mbase)
-                      (page_round_down_Z (bv_unsigned sp - stack_max_size))) in
+  let top := vdso_pair_top sp mbase in
   let base := (top - vdso_len kb)%Z in
   if (base <? page_size)%Z then []
   else
     let im := vdso_image_of kb in
-    let tbase := (top - vdso_text_pages kb * page_size)%Z in
     [ {| seg_base  := Z.to_N base;
          seg_size  := Z.to_N (vdso_vvar_pages * page_size);
          seg_perms := "r--"%string;
          seg_bytes := []; seg_kind := SegVdsoVvar |}
-    ; {| seg_base  := Z.to_N tbase;
+    ; {| seg_base  := Z.to_N (bv_unsigned (vdso_text_base kb sp mbase));
          seg_size  := Z.to_N (vdso_text_pages kb * page_size);
          seg_perms := "r--"%string;
          seg_bytes := vi_bytes im; seg_kind := SegVdsoText |} ].
@@ -1324,15 +1343,25 @@ Qed.
        the auxv
 
     [StackLayout.LaunchAuxv] from the run's [State.KernelBuild], the
-    entry's mmap base and the declared address-space size.
+    entry's stack pointer and mmap base, and the declared address-space
+    size.
 
-    AT_SYSINFO_EHDR is [base - T]: [__setup_additional_pages]
-    (arch/riscv/kernel/vdso.c, Linux v6.18.46, commit 1f99e9ab748f)
-    maps the vvar pages and then the text with [get_unmapped_area],
-    which under the top-down layout returns the highest free range
-    below [mm->mmap_base].  At that moment only the image's segments
-    and the stack exist, so the pair lands directly below the base and
-    the text's start is [base - vdso_text_pages * 4096]. *)
+    AT_SYSINFO_EHDR is the start of the text the run maps,
+    [vdso_text_base], the same address [vdso_segments] places the text
+    at.  On Linux [__setup_additional_pages] (arch/riscv/kernel/vdso.c,
+    Linux v6.18.46, commit 1f99e9ab748f) maps the vvar pages and then
+    the text with [get_unmapped_area], which under the top-down layout
+    returns the highest free range below [mm->mmap_base].  At that
+    moment only the image's segments and the stack exist, so the pair
+    lands directly below the base and the text's start is
+    [base - vdso_text_pages * 4096], which is [vdso_text_base] whenever
+    [sp - stack_max_size] is at or above the base (a launch's base is
+    page-aligned).  Where it is below, the model maps the pair lower
+    than Linux does (SCOPE.md, R-a), and the auxv names the pair the
+    model maps, not Linux's: a C library's lookup through
+    AT_SYSINFO_EHDR then reads the model's text, where a value of
+    [base - T] would point above the text's start, into the text at the
+    wrong offset or at memory the model does not map. *)
 Definition launch_cache_words (kb : KernelBuild) : CacheWords :=
   let w := fun l => Z_to_bv 64 (cache_size_word l) in
   let g := fun l => Z_to_bv 64 (cache_geometry_word l) in
@@ -1342,12 +1371,9 @@ Definition launch_cache_words (kb : KernelBuild) : CacheWords :=
                (w (cv_l2 c))  (g (cv_l2 c))
                (w (cv_l3 c))  (g (cv_l3 c)).
 
-Definition vdso_text_base (kb : KernelBuild) (mbase : word) : word :=
-  Z_to_bv 64 (bv_unsigned mbase - vdso_text_pages kb * page_size).
-
-Definition launch_auxv (inp : ProcInput) (mbase : word) : LaunchAuxv :=
+Definition launch_auxv (inp : ProcInput) (sp mbase : word) : LaunchAuxv :=
   let kb := in_kernel inp in
-  mkLaunchAuxv (vdso_text_base kb mbase)
+  mkLaunchAuxv (vdso_text_base kb sp mbase)
                (launch_cache_words kb)
                (Z_to_bv 64 (min_sigframe_size kb (in_hwcap inp)))
                (kb_rseq kb).
@@ -1372,7 +1398,7 @@ Definition entry_page_top (draw : EntryDraw) : Z :=
 
 Definition entry_stack_image (inp : ProcInput) (mbase : word)
     (ph : PhdrInfo) (entry sp : word) (draw : EntryDraw) : list byte :=
-  build_stack_bytes (launch_auxv inp mbase) ph entry sp (ed_top draw)
+  build_stack_bytes (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
     (in_argv inp) (in_envp inp) (in_execfn inp)
     (in_uid inp) (in_gid inp) (in_hwcap inp) draw.
 
@@ -3742,7 +3768,10 @@ Definition valid_launch_base (v : VaSize) (kb : KernelBuild) (mbase : word)
     [State.KernelBuild] the set of (stack top, sp, mmap base) this
     admits is the set a Linux v6.18.46 launch can give, and
     [StackLayout.build_stack_bytes] lays Linux's bytes between sp and
-    the top.  There is no band.
+    the top, except one word where [sp - stack_max_size] is below the
+    mmap base (SCOPE.md, R-a): there AT_SYSINFO_EHDR is the text base of
+    the pair the model maps ([vdso_text_base]), which is below Linux's.
+    There is no other band.
 
     It is a FIFTH conjunct rather than a replacement for the four
     older ones, because the tree reads those four facts off a

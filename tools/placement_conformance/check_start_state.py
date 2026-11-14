@@ -102,6 +102,11 @@ def page_round_up(n):
     return (n + PAGE - 1) // PAGE * PAGE
 
 
+def page_round_down(n):
+    """State.page_round_down_Z."""
+    return n // PAGE * PAGE
+
+
 def align_down16(x):
     """Run.align_down16."""
     return x - x % 16
@@ -270,9 +275,15 @@ def min_sigframe_size(kb, hwcap):
     return (RT_SIGFRAME_SIZE + vsz + 15) // 16 * 16
 
 
-def vdso_text_base(kb, mbase):
-    """Run.vdso_text_base (the AT_SYSINFO_EHDR value)."""
-    return (mbase - kb.vdso_text_pages * PAGE) % TWO64
+def vdso_pair_top(sp, mbase):
+    """Run.vdso_pair_top: the top Run.vdso_segments places the pair under."""
+    return page_round_down(min(mbase, page_round_down(sp - STACK_MAX_SIZE)))
+
+
+def vdso_text_base(kb, sp, mbase):
+    """Run.vdso_text_base (the AT_SYSINFO_EHDR value, and the base of the
+    text segment Run.vdso_segments places)."""
+    return (vdso_pair_top(sp, mbase) - kb.vdso_text_pages * PAGE) % TWO64
 
 
 def launch_cache_words(kb):
@@ -284,11 +295,12 @@ def launch_cache_words(kb):
     return out
 
 
-def auxv_entries(kb, mbase, ph, entry, uid, gid, hwcap, at_random, at_execfn):
+def auxv_entries(kb, sp, mbase, ph, entry, uid, gid, hwcap, at_random,
+                 at_execfn):
     """StackLayout.auxv_entries, applied to Run.launch_auxv."""
     cw = launch_cache_words(kb)
     ents = [
-        (AT["SYSINFO_EHDR"], vdso_text_base(kb, mbase)),
+        (AT["SYSINFO_EHDR"], vdso_text_base(kb, sp, mbase)),
         (AT["L1I_CACHESIZE"], cw[0]), (AT["L1I_CACHEGEOMETRY"], cw[1]),
         (AT["L1D_CACHESIZE"], cw[2]), (AT["L1D_CACHEGEOMETRY"], cw[3]),
         (AT["L2_CACHESIZE"], cw[4]), (AT["L2_CACHEGEOMETRY"], cw[5]),
@@ -312,12 +324,12 @@ def auxv_entries(kb, mbase, ph, entry, uid, gid, hwcap, at_random, at_execfn):
 def build_stack_bytes(kb, mbase, ph, entry, sp, top, argv, envp, execfn,
                       uid, gid, hwcap, rnd16):
     """StackLayout.build_stack_bytes (Run.entry_stack_image applies it to the
-    input, the mmap base and the draw)."""
+    input, the stack pointer, the mmap base and the draw)."""
     items = block_items(argv, envp)
     sbase = string_base_addr(top, argv, envp, execfn)
     argv_ptrs, env_base = string_addrs(sbase, argv)
     envp_ptrs, _ = string_addrs(env_base, envp)
-    ents = auxv_entries(kb, mbase, ph, entry, uid, gid, hwcap,
+    ents = auxv_entries(kb, sp, mbase, ph, entry, uid, gid, hwcap,
                         at_random_ptr(sp, kb.rseq, argv, envp),
                         at_execfn_ptr(top, execfn))
     auxv = b"".join(le8(t) + le8(v) for t, v in ents)
@@ -639,7 +651,8 @@ def check_block(rec, kb, rep):
     rep.verdict("block bytes", bytes_ok,
                 "apart from the 16 AT_RANDOM bytes")
 
-    model_ents = auxv_entries(kb, rec.mmap_base, ph, entry, uid, gid, hwcap,
+    model_ents = auxv_entries(kb, rec.sp, rec.mmap_base, ph, entry,
+                              uid, gid, hwcap,
                               at_random_ptr(rec.sp, kb.rseq, rec.argv,
                                             rec.envp),
                               at_execfn_ptr(rec.stack_end, rec.execfn))
@@ -703,7 +716,7 @@ def check_vdso(rec, kb, rep, vdso_file):
     if not vvar_ok:
         rep.differ("vvar start", "0x%x (AT_SYSINFO_EHDR - 4 pages)"
                    % (ehdr - VDSO_VVAR_PAGES * PAGE), "0x%x" % rec.vvar_start)
-    base_ok = ehdr == vdso_text_base(kb, rec.mmap_base)
+    base_ok = ehdr == vdso_text_base(kb, rec.sp, rec.mmap_base)
     rep.say("  vdso text pages  %d (model's vdso_text_pages encoding: 1..16)",
             kb.vdso_text_pages)
     digest = hashlib.sha256(rec.vdso_image).hexdigest()

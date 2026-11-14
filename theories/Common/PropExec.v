@@ -2494,7 +2494,7 @@ Qed.
     between the two, and it is a conversion. *)
 Lemma entry_stack_image_block : forall inp mbase ph entry (sp : word) draw,
   entry_stack_image inp mbase ph entry sp draw
-  = build_stack_bytes (launch_auxv inp mbase) ph entry sp (ed_top draw)
+  = build_stack_bytes (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
       (in_argv inp) (in_envp inp) (in_execfn inp)
       (in_uid inp) (in_gid inp) (in_hwcap inp) draw.
 Proof. reflexivity. Qed.
@@ -2503,8 +2503,8 @@ Proof. reflexivity. Qed.
     and [Run.launch_auxv] copies it straight out of the kernel build.
     Named so the length arithmetic below can state its premises over
     [State.kb_rseq], which is what [Run.launch_sp_hi] reads. *)
-Lemma la_rseq_launch_auxv : forall inp mbase,
-  la_rseq (launch_auxv inp mbase) = kb_rseq (in_kernel inp).
+Lemma la_rseq_launch_auxv : forall inp sp mbase,
+  la_rseq (launch_auxv inp sp mbase) = kb_rseq (in_kernel inp).
 Proof. reflexivity. Qed.
 
 (** THE ENTRY STACK IMAGE IS EXACTLY [ed_top - sp] BYTES.
@@ -2623,7 +2623,7 @@ Lemma rdn_image_in_block :
   forall segs inp mbase ph entry (sp : word) draw (a : word) n,
   rdn segs (stack_to_mem sp (entry_stack_image inp mbase ph entry sp draw)) a n
   = rdn segs (stack_to_mem sp
-        (build_stack_bytes (launch_auxv inp mbase) ph entry sp (ed_top draw)
+        (build_stack_bytes (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
            (in_argv inp) (in_envp inp) (in_execfn inp)
            (in_uid inp) (in_gid inp) (in_hwcap inp) draw)) a n.
 Proof. reflexivity. Qed.
@@ -2656,7 +2656,7 @@ Lemma read_argc : forall inp mbase ph entry segs (sp : word) draw,
   = Some (word_le8 (len_word (in_argv inp))).
 Proof.
   intros inp mbase ph entry segs sp draw Hnw.
-  destruct (bsb_argc_prefix (launch_auxv inp mbase) ph entry sp (ed_top draw)
+  destruct (bsb_argc_prefix (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
               (in_argv inp) (in_envp inp) (in_execfn inp)
               (in_uid inp) (in_gid inp) (in_hwcap inp) draw) as [tl E].
   rewrite <- entry_stack_image_block in E.

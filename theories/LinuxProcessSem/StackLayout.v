@@ -137,13 +137,16 @@ Definition cache_words_zero : CacheWords :=
 
     Four facts of the machine and of the kernel build that reach the
     auxv and nothing else in this file.  [Run.launch_auxv] derives them
-    from [State.KernelBuild] and the entry's mmap base; they are
-    arguments here so that this file stays free of [State].
+    from [State.KernelBuild] and the entry's stack pointer and mmap base;
+    they are arguments here so that this file stays free of [State].
 
     - [la_sysinfo_ehdr]: AT_SYSINFO_EHDR, the address of the vDSO text.
       [__setup_additional_pages] (arch/riscv/kernel/vdso.c) maps the
       vvar pages and the text directly below the mmap base, and
-      [ARCH_DLINFO] publishes [mm->context.vdso], the text's start.
+      [ARCH_DLINFO] publishes [mm->context.vdso], the text's start.  In
+      the model it is [Run.vdso_text_base], the start of the text the run
+      maps, which is that address whenever the model's pair sits
+      directly below the mmap base.
     - [la_cache]: the eight words above.
     - [la_minsigstksz]: AT_MINSIGSTKSZ, [get_min_sigframe_size()]
       (arch/riscv/kernel/signal.c) — [round_up(F + V, 16)] with F the

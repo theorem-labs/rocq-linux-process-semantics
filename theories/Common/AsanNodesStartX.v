@@ -174,7 +174,7 @@ Section NodesD.
   Proof.
     unfold bsb. rewrite entry_stack_image_block, length_build_stack_bytes.
     unfold cat_string_off, rseq, argv, envp, execfn, top.
-    change (la_rseq (launch_auxv inp mbase)) with (kb_rseq (in_kernel inp)). lia.
+    change (la_rseq (launch_auxv inp sp mbase)) with (kb_rseq (in_kernel inp)). lia.
   Qed.
 
   (** argv[0] and its NUL lie inside the string area: [copy_strings] (fs/exec.c,

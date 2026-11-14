@@ -370,7 +370,7 @@ Qed.
 
     It does NOT apply to a run whose segment list is [Run.run_segments]:
     that appends [Run.vdso_segments], and the pair is empty only for a
-    launch [Run.vdso_segments] declines (Run.v:290-295), which Run.v:285-289
+    launch [Run.vdso_segments] declines, which its comment in Run.v
     says Linux does not make.  A consumer over [run_segments] wants
     [vdso_entry_fn_none_below_base] instead. *)
 Lemma vdso_entry_fn_none_of_no_text : forall segs pc,

@@ -633,7 +633,7 @@ Qed.
 (** image = <head and pad> ++ argv strings ++ <tail>. *)
 Lemma bsb_strings_split : forall inp mbase ph entry (sp : word) draw, exists tail,
   entry_stack_image inp mbase ph entry sp draw
-  = cat_block_head (launch_auxv inp mbase) ph entry sp (ed_top draw)
+  = cat_block_head (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
       (in_argv inp) (in_envp inp) (in_execfn inp)
       (in_uid inp) (in_gid inp) (in_hwcap inp) draw
     ++ flatten_strings (in_argv inp) ++ tail.
@@ -660,7 +660,7 @@ Proof.
   intros inp mbase ph entry sp draw k Hk.
   destruct (bsb_strings_split inp mbase ph entry sp draw) as [tail E].
   rewrite (flatten_strings_decomp (in_argv inp) k Hk) in E.
-  exists (cat_block_head (launch_auxv inp mbase) ph entry sp (ed_top draw)
+  exists (cat_block_head (launch_auxv inp sp mbase) ph entry sp (ed_top draw)
             (in_argv inp) (in_envp inp) (in_execfn inp)
             (in_uid inp) (in_gid inp) (in_hwcap inp) draw
           ++ flatten_strings (firstn k (in_argv inp))).
