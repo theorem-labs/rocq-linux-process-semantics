@@ -148,3 +148,14 @@ Proof. vm_compute. reflexivity. Qed.
 Example launch_b_auxv_names_the_placed_text :
   placed_text sp_b mbase_b = Some (snd (first_auxv_pair sp_b mbase_b top_b)).
 Proof. vm_compute. reflexivity. Qed.
+
+(* =========================================================================
+   For every launch
+   ========================================================================= *)
+
+(** The two Examples above are two launches.  [VdsoSegs] states the
+    equality for every input, [sp] and mbase
+    ([launch_auxv_sysinfo_ehdr_is_the_text]); this prints what that
+    proof rests on, so the build log shows it closed. *)
+From LinuxProcessSemantics.LinuxProcessSem Require Import VdsoSegs.
+Print Assumptions launch_auxv_sysinfo_ehdr_is_the_text.
