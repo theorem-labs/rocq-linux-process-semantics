@@ -268,12 +268,19 @@ Proof.
     rewrite (bvu 0x7fffbf701000 ltac:(lia)). vm_compute. reflexivity.
 Qed.
 
-Example launch_c_stack_is_close_above_the_base :
-  (0x7fffbfedfdb0 - stack_max_size <? 0x7fffbf701000) = true.
-Proof. vm_compute. reflexivity. Qed.
-
 Definition sp_c : word := Z_to_bv 64 0x7fffbfedfdb0.
 Definition mbase_c : word := Z_to_bv 64 0x7fffbf701000.
+
+(** The [sp] and base [launch_c_admitted] admits are the ones the
+    Examples below read. *)
+Example launch_c_entry_is_sp_c_mbase_c :
+  EL.a1_entry 0x7fffbfedfdb0 0x7fffbf701000 0x7fffc0000000
+  = mkEntry sp_c (Z_to_bv 64 0) mbase_c (EL.a1_draw 0x7fffc0000000).
+Proof. reflexivity. Qed.
+
+Example launch_c_stack_is_close_above_the_base :
+  (bv_unsigned sp_c - stack_max_size <? bv_unsigned mbase_c) = true.
+Proof. vm_compute. reflexivity. Qed.
 
 (** The text this launch maps, from its own kernel build. *)
 Example launch_c_places_the_text_below_the_stack_bound :
