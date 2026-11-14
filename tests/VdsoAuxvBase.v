@@ -111,13 +111,20 @@ Proof. vm_compute. reflexivity. Qed.
    Launch B: the stack close above the base
    ========================================================================= *)
 
-(** The shape of launch the launch rules admit with randomization on
-    ([State.default_kernel] has [kb_aslr] and a 256-page guard gap): the
-    stack's top at its lowest, [0x7fffc0000000]; the mmap base at mmap
-    draw 0, [Run.mmap_base_of Sv48 kb 0]; and [sp] 0x180400 bytes below
-    that top, which about 1.5 MiB of argv and envp strings give
-    ([Run.launch_sp_hi]).  Then [sp - stack_max_size] is 0x81400 bytes
-    below the base. *)
+(** A launch where [sp - stack_max_size] is below the mmap base, with
+    randomization on ([State.default_kernel] has [kb_aslr] and a 256-page
+    guard gap).  Two of its numbers are checked below: the stack's top at
+    its lowest, [0x7fffc0000000] ([launch_b_lowest_stack_top], from
+    [Run.valid_stack_top_va]'s bound), and the mmap base at mmap draw 0
+    ([launch_b_base_is_the_launch_base_at_draw_0]).  The third, [sp]
+    0x180400 bytes below that top, is NOT derived here: it is the offset
+    that about 1.5 MiB of argv and envp strings give through
+    [Run.launch_sp_hi], and this file lays no strings (see "Both values
+    depend ..." above).  The test needs only a launch on which
+    [sp - stack_max_size] is below the base
+    ([launch_b_stack_is_close_above_the_base]); that the launch rules
+    admit such launches is SCOPE.md's R-a.  Then [sp - stack_max_size] is
+    0x81400 bytes below the base. *)
 Definition sp_b : word := Z_to_bv 64 0x7fffbfe7fc00.
 Definition mbase_b : word := Z_to_bv 64 0x7fffbf701000.
 Definition top_b : word := Z_to_bv 64 0x7fffbfe80000.
