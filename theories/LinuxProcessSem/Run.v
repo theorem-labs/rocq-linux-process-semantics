@@ -248,8 +248,10 @@ Definition segment_reservation (s : Segment) : word * word :=
     [MemImageType.seg_kernel_map] and [vdso_segments] below), and they
     are reserved by [State.init_reserved], from the ledger's own
     [State.vdso_reserved].  Counting them here as well would put the
-    pair's top — which is just below [mm->mmap_base] — into
-    [valid_brk]'s [reserved_top], and no Linux break is up there. *)
+    pair's top ([vdso_pair_top]: the mmap base, or the lower
+    [page_round_down (sp - stack_max_size)] on the launches SCOPE.md's
+    R-a describes) into [valid_brk]'s [reserved_top], and no Linux break
+    is up there. *)
 Definition segments_reserved (segs : list Segment) : list (word * word) :=
   map segment_reservation (filter (fun s => negb (seg_kernel_map s)) segs).
 
