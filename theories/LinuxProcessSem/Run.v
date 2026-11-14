@@ -259,8 +259,10 @@ Definition segments_reserved (segs : list Segment) : list (word * word) :=
     four vvar data pages directly below the text
     ([__setup_additional_pages], arch/riscv/kernel/vdso.c, reached
     through [ARCH_SETUP_ADDITIONAL_PAGES] in [load_elf_binary],
-    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The ledger
-    reserves exactly that range ([State.vdso_reserved] at
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The model
+    maps them there when [sp - stack_max_size] is at or above the base,
+    and lower otherwise ([vdso_pair_top]; SCOPE.md, R-a).  The ledger
+    reserves exactly the range the model maps ([State.vdso_reserved] at
     [State.vdso_top]); these are the same two ranges as SEGMENTS, so
     that a load, a store and a fetch there are answered by the rules
     every other address is answered by.

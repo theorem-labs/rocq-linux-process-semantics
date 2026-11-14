@@ -714,8 +714,7 @@ and R-b record.
   `State.vdso_top`), and the auxv publishes that pair's own text base
   (`Run.vdso_text_base`), so a C library finds the vDSO where the model
   mapped it. Where `mbase` is above `State.alloc_top` that is lower than
-  Linux's pair, which sits directly below `mm->mmap_base`, and `Run.v`'s
-  "the ledger reserves exactly that range" does not hold there.
+  Linux's pair, which sits directly below `mm->mmap_base`.
   The refusals differ only when no free
   range of the requested size is left, and the band is narrow: about the
   entry image less the guard-gap pad, and at most 2,109,440 bytes
