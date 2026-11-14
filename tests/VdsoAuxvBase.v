@@ -156,6 +156,8 @@ Proof. vm_compute. reflexivity. Qed.
 (** The two Examples above are two launches.  [VdsoSegs] states the
     equality for every input, [sp] and mbase
     ([launch_auxv_sysinfo_ehdr_is_the_text]); this prints what that
-    proof rests on, so the build log shows it closed. *)
+    proof rests on.  The build log shows one axiom, [PrimString.string],
+    the type of the segments' byte chunks ([MemImageType.Segment]), which
+    the repository's assumption audit permits. *)
 From LinuxProcessSemantics.LinuxProcessSem Require Import VdsoSegs.
 Print Assumptions launch_auxv_sysinfo_ehdr_is_the_text.

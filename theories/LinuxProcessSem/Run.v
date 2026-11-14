@@ -3768,7 +3768,10 @@ Definition valid_launch_base (v : VaSize) (kb : KernelBuild) (mbase : word)
     [State.KernelBuild] the set of (stack top, sp, mmap base) this
     admits is the set a Linux v6.18.46 launch can give, and
     [StackLayout.build_stack_bytes] lays Linux's bytes between sp and
-    the top.  There is no band.
+    the top, except one word where [sp - stack_max_size] is below the
+    mmap base (SCOPE.md, R-a): there AT_SYSINFO_EHDR is the text base of
+    the pair the model maps ([vdso_text_base]), which is below Linux's.
+    There is no other band.
 
     It is a FIFTH conjunct rather than a replacement for the four
     older ones, because the tree reads those four facts off a
