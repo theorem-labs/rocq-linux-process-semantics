@@ -60,8 +60,9 @@ Qed.
     auxiliary vector (musl's [__vdsosym]) therefore reads the text the run
     maps, on every launch, including those where [sp - stack_max_size] is
     below the mmap base and the pair sits below the base rather than
-    directly under it.  [tests/VdsoAuxvBase.v] computes both on one launch
-    of each kind. *)
+    directly under it.  [tests/VdsoAuxvBase.v] computes both on one
+    launch where the pair is directly under the base and on two where it
+    is not, one of them a launch [Run.entry_launch_ok_va] admits. *)
 Lemma launch_auxv_sysinfo_ehdr_is_the_text : forall inp (sp mbase : word) s,
   In s (vdso_segments (in_kernel inp) sp mbase) ->
   seg_kind s = SegVdsoText ->

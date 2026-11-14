@@ -9,9 +9,10 @@
     carries must be the base of the text segment the run maps, or the
     lookup reads memory that is not the vDSO's.
 
-    This file reads AT_SYSINFO_EHDR out of the entry block
-    [Run.entry_stack_image] lays, and compares it with the base of the
-    [SegVdsoText] segment [Run.vdso_segments] places, on two launches:
+    This file compares AT_SYSINFO_EHDR with the base of the [SegVdsoText]
+    segment [Run.vdso_segments] places, on three launches.  On launches
+    A and B it reads AT_SYSINFO_EHDR out of the entry block
+    [Run.entry_stack_image] lays:
 
     - launch A, [sp - stack_max_size >= mbase]: the pair sits directly
       below the mmap base, as Linux puts it.  The [sp] and the base are
@@ -171,24 +172,31 @@ Proof. vm_compute. reflexivity. Qed.
     [launch_c_admitted] proves [Run.entry_launch_ok_va] for it, the
     fifth conjunct of [Run.valid_entry_va].  It is
     [Checks.Cases.EntryLaunch]'s randomized fixture at the far end of
-    every draw ([a1_aslr_admitted_base_hi]: the stack's top at its
-    lowest, [0x7fffc0000000]; the mmap base at draw 0, [0x7fffbf701000])
-    with nine argv strings of 131071 bytes each, the longest a string
-    may be with its NUL ([MAX_ARG_STRLEN], include/uapi/linux/binfmts.h).
-    Their 1179650 bytes put the highest [sp] the launch rules admit at
-    [0x7fffbfedfdb0] ([Run.launch_sp_hi]), and [sp - stack_max_size] then
-    lies 0x21250 bytes below the base.
+    the stack and mmap draws (as [a1_aslr_admitted_base_hi]: the stack's
+    top at its lowest, [0x7fffc0000000]; the mmap base at draw 0, the
+    highest, [0x7fffbf701000]), with nine argv strings of 131071 bytes
+    each, 131072 with the NUL: [MAX_ARG_STRLEN]
+    (include/uapi/linux/binfmts.h), which [valid_arg_len] (fs/exec.c,
+    Linux v6.18.46) compares with the length [strnlen_user] counts,
+    NUL included.  Their 1179650 bytes, with the [create_elf_tables] pad
+    at 0, put [sp] at [0x7fffbfedfdb0], the highest the launch rules
+    admit for this input and top ([Run.launch_sp_hi]); a larger pad only
+    puts [sp] lower.  [sp - stack_max_size] then lies 0x21250 bytes
+    below the base.
 
     The pair sits below [page_round_down (sp - stack_max_size)], its text
     at [0x7fffbf6dd000].  AT_SYSINFO_EHDR names that text; before it was
     read from the pair it named [mbase - 2 pages], [0x7fffbf6ff000],
-    above the pair's top.  This launch's block is 1.2 MB of strings, so
-    the Examples read AT_SYSINFO_EHDR from [Run.launch_auxv], not from
-    the block; [launch_auxv] is what [Run.entry_stack_image] lays. *)
+    above the pair's top.
+
+    The strings are 1.2 MB, so nothing below computes them: the byte
+    count is proved by rewriting, as [EntryLaunch.a1_e2big_argv_refused]
+    does, the lengths are written through [Z.to_nat] so that they stay
+    binary, and AT_SYSINFO_EHDR is read from [Run.launch_auxv], which
+    [Run.entry_stack_image] lays, rather than from the block. *)
 Module EL := LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.EntryLaunch.
 
-Definition long_arg : list byte := repeat (Z_to_bv 8 97) 131071.
-Definition argv_c : list (list byte) := repeat long_arg 9.
+Definition argv_c : list (list byte) := repeat EL.a1_big_arg (Z.to_nat 9).
 Definition inp_c : ProcInput :=
   EL.a1_input_argv argv_c EL.a1_execfn (EL.a1_kernel true).
 
@@ -199,25 +207,61 @@ Proof.
   unfold two_pow_64. change (2 ^ 64) with 18446744073709551616. exact H.
 Qed.
 
-Example launch_c_string_bytes :
-  launch_string_bytes (in_argv inp_c) (in_envp inp_c) (in_execfn inp_c)
-  = 1179650%nat.
-Proof. vm_compute. reflexivity. Qed.
+(** [EntryLaunch]'s own copy is [Local]. *)
+Local Lemma length_flatten_repeat : forall (s : list byte) n,
+  length (flatten_strings (repeat s n)) = (n * (length s + 1))%nat.
+Proof.
+  intros s n. induction n as [|n IH]; [reflexivity|].
+  cbn [repeat flatten_strings flat_map]. rewrite length_app.
+  change (flat_map (fun s0 : list byte => s0 ++ [Z_to_bv 8 0]) (repeat s n))
+    with (flatten_strings (repeat s n)).
+  rewrite IH, length_app. cbn [length]. lia.
+Qed.
+
+Lemma launch_c_string_bytes :
+  Z.of_nat (launch_string_bytes (in_argv inp_c) (in_envp inp_c) (in_execfn inp_c))
+  = 1179650.
+Proof.
+  unfold launch_string_bytes, inp_c.
+  cbn [EL.a1_input_argv in_argv in_envp in_execfn].
+  unfold argv_c, EL.a1_big_arg, EL.a1_execfn.
+  rewrite length_flatten_repeat, !repeat_length.
+  cbn [flatten_strings flat_map length].
+  lia.
+Qed.
+
+Lemma launch_c_head_size :
+  Z.of_nat (block_head_size (kb_rseq (in_kernel inp_c)) (in_argv inp_c) (in_envp inp_c))
+  = 576.
+Proof.
+  unfold inp_c. cbn [EL.a1_input_argv in_argv in_envp in_kernel].
+  unfold block_head_size, block_items, argv_c. cbv zeta.
+  rewrite repeat_length.
+  vm_compute. reflexivity.
+Qed.
 
 Example launch_c_sp_is_the_highest :
   launch_sp_hi (Z_to_bv 64 0x7fffc0000000) inp_c = 0x7fffbfedfdb0.
-Proof. vm_compute. reflexivity. Qed.
+Proof.
+  unfold launch_sp_hi. rewrite launch_c_string_bytes, launch_c_head_size.
+  rewrite (bvu 0x7fffc0000000 ltac:(lia)). vm_compute. reflexivity.
+Qed.
 
-(** THE LAUNCH IS ADMITTED. *)
+(** THE LAUNCH IS ADMITTED.  The proof is [a1_aslr_admitted_base_hi]'s at
+    this [sp], with the input's kernel build and string counts named
+    first, so that no step computes the strings. *)
 Example launch_c_admitted :
   entry_launch_ok_va Sv48
     (EL.a1_entry 0x7fffbfedfdb0 0x7fffbf701000 0x7fffc0000000) inp_c.
 Proof.
   cbn [entry_launch_ok_va EL.a1_entry EL.a1_draw en_draw ed_top].
+  change (in_kernel inp_c) with (EL.a1_kernel true).
   split; [|split].
   - unfold valid_stack_top_va. rewrite (bvu 0x7fffc0000000 ltac:(lia)).
     repeat split; vm_compute; congruence.
-  - unfold valid_launch_sp. rewrite (bvu 0x7fffbfedfdb0 ltac:(lia)).
+  - unfold valid_launch_sp, launch_sp_lo, launch_sp_hi.
+    rewrite launch_c_string_bytes, launch_c_head_size.
+    rewrite (bvu 0x7fffbfedfdb0 ltac:(lia)), (bvu 0x7fffc0000000 ltac:(lia)).
     repeat split; vm_compute; congruence.
   - exists 0. split; [lia|]. split; [intros _; vm_compute; congruence|].
     split; [intros Hc; discriminate Hc|].
@@ -236,13 +280,18 @@ Example launch_c_places_the_text_below_the_stack_bound :
   option_map (fun s => Z.of_N (seg_base s))
     (find seg_vdso_text (vdso_segments (in_kernel inp_c) sp_c mbase_c))
   = Some 0x7fffbf6dd000.
-Proof. vm_compute. reflexivity. Qed.
+Proof.
+  change (in_kernel inp_c) with (EL.a1_kernel true). vm_compute. reflexivity.
+Qed.
 
 (** AT_SYSINFO_EHDR names it. *)
 Example launch_c_auxv_names_the_placed_text :
   bv_unsigned (la_sysinfo_ehdr (launch_auxv inp_c sp_c mbase_c))
   = 0x7fffbf6dd000.
-Proof. vm_compute. reflexivity. Qed.
+Proof.
+  unfold launch_auxv. cbv zeta. cbn [la_sysinfo_ehdr].
+  change (in_kernel inp_c) with (EL.a1_kernel true). vm_compute. reflexivity.
+Qed.
 
 (* =========================================================================
    For every launch
