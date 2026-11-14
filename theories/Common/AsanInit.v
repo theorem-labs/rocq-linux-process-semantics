@@ -159,7 +159,7 @@ Section Init.
   Let RZ : Z := rseq_z rseq.
   Let execfn : list byte := default_execfn.
   Let entryw : word := Z_to_bv 64 (Z.of_N apc).
-  Let la : LaunchAuxv := launch_auxv inp mbase.
+  Let la : LaunchAuxv := launch_auxv inp sp mbase.
   Let top : word := ed_top rdraw.
 
   Lemma inp_argv : in_argv inp = argv.        Proof. reflexivity. Qed.

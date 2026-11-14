@@ -177,7 +177,7 @@ Section Layout.
                        (cat_env_base (ed_top rdraw) (in_argv inp) (in_envp inp)
                           (in_execfn inp)) (in_envp inp)))
           ++ word_le8 (Z_to_bv 64 0)
-          ++ auxv_bytes (launch_auxv inp mbase) ph entry
+          ++ auxv_bytes (launch_auxv inp sp mbase) ph entry
                (in_uid inp) (in_gid inp) (in_hwcap inp)
                (at_random_ptr sp (kb_rseq (in_kernel inp)) (in_argv inp) (in_envp inp))
                (at_execfn_ptr (ed_top rdraw) (in_execfn inp))
@@ -284,7 +284,7 @@ Section Layout.
   Lemma read_auxv_all :
     rdn segs stk (sp + nat_to_word (auxv_off (in_argv inp) (in_envp inp)))
         (auxv_size (kb_rseq (in_kernel inp)))
-    = Some (auxv_bytes (launch_auxv inp mbase) ph entry
+    = Some (auxv_bytes (launch_auxv inp sp mbase) ph entry
               (in_uid inp) (in_gid inp) (in_hwcap inp)
               (at_random_ptr sp (kb_rseq (in_kernel inp)) (in_argv inp) (in_envp inp))
               (at_execfn_ptr (ed_top rdraw) (in_execfn inp))).
@@ -313,7 +313,7 @@ Section Layout.
 
   (** [Run.launch_auxv] copies CONFIG_RSEQ straight off the kernel
       build, so the two spellings are the same boolean. *)
-  Lemma lay_rseq : la_rseq (launch_auxv inp mbase) = kb_rseq (in_kernel inp).
+  Lemma lay_rseq : la_rseq (launch_auxv inp sp mbase) = kb_rseq (in_kernel inp).
   Proof. reflexivity. Qed.
 
   (** One auxv word. *)
@@ -322,7 +322,7 @@ Section Layout.
     rdn segs stk
       (sp + nat_to_word (auxv_off (in_argv inp) (in_envp inp) + 8 * j)) 8%nat
     = Some (word_le8
-              (nth j (auxv_words (launch_auxv inp mbase) ph entry
+              (nth j (auxv_words (launch_auxv inp sp mbase) ph entry
                         (in_uid inp) (in_gid inp) (in_hwcap inp)
                         (at_random_ptr sp (kb_rseq (in_kernel inp))
                            (in_argv inp) (in_envp inp))
@@ -543,10 +543,10 @@ Section Layout.
       Linux v6.18.46, commit 1f99e9ab748f).  Spelling the 54 or 58 words
       out here would be a second copy of that order. *)
   Lemma auxv_words_eq : forall ar ae,
-    auxv_words (launch_auxv inp mbase) ph entry
+    auxv_words (launch_auxv inp sp mbase) ph entry
       (in_uid inp) (in_gid inp) (in_hwcap inp) ar ae
     = flat_map (fun e => [fst e; snd e])
-        (auxv_entries (launch_auxv inp mbase) ph entry
+        (auxv_entries (launch_auxv inp sp mbase) ph entry
            (in_uid inp) (in_gid inp) (in_hwcap inp) ar ae).
   Proof. reflexivity. Qed.
 

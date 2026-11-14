@@ -709,11 +709,13 @@ and R-b record.
   The model's top-down addresses are then lower than Linux's by at most
   the entry image size less that pad, so until this is fixed a proof does
   not cover a run whose mapping Linux puts above `State.alloc_top`. The
-  vDSO moves with it: the ledger reserves the pair below
-  `page_round_down(min(mbase, sp - 8 MiB))` (`State.vdso_top`) while the
-  auxv publishes `mbase` less the text (`Run.vdso_text_base`), so where
-  `mbase` is above `State.alloc_top` the two disagree and `Run.v`'s "the
-  ledger reserves exactly that range" does not hold there.
+  vDSO moves with it: the model maps the pair, and the ledger reserves
+  it, below `page_round_down(min(mbase, sp - 8 MiB))` (`Run.vdso_pair_top`,
+  `State.vdso_top`), and the auxv publishes that pair's own text base
+  (`Run.vdso_text_base`), so a C library finds the vDSO where the model
+  mapped it. Where `mbase` is above `State.alloc_top` that is lower than
+  Linux's pair, which sits directly below `mm->mmap_base`, and `Run.v`'s
+  "the ledger reserves exactly that range" does not hold there.
   The refusals differ only when no free
   range of the requested size is left, and the band is narrow: about the
   entry image less the guard-gap pad, and at most 2,109,440 bytes

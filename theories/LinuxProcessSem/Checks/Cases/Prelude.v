@@ -157,12 +157,12 @@ Definition demo_input_tmp (fs0 tmp0 : Fs.Fs) (stdin0 : InputStream)
                    true true false.
 
 (** The launch facts the entry-block checks below read: the run's
-    [mm->mmap_base], the [StackLayout.LaunchAuxv] the model derives
-    from the declared kernel build at that base ([Run.launch_auxv]),
-    and the one-argument input whose block they lay out.  One name
-    each, so a check states a layout and not a derivation. *)
+    [mm->mmap_base] and the one-argument input whose block they lay
+    out; [demo_la], the [StackLayout.LaunchAuxv] the model derives from
+    the declared kernel build at that base and the block's [sp]
+    ([Run.launch_auxv]), follows [demo_block_sp] below.  One name each,
+    so a check states a layout and not a derivation. *)
 Definition demo_mbase : word := Z_to_bv 64 mmap_base_max.
-Definition demo_la : LaunchAuxv := launch_auxv (demo_input [] IEof) demo_mbase.
 Definition demo_pc : N := 0x10000%N.
 Definition demo_argv : list (list byte) := [[Z_to_bv 8 120]].   (* "x" *)
 
@@ -524,6 +524,8 @@ Qed.
 
 Definition demo_block_top : word := Z_to_bv 64 sp_window_hi.
 Definition demo_block_sp : word := Z_to_bv 64 0x7ffffffffdf0.
+Definition demo_la : LaunchAuxv :=
+  launch_auxv (demo_input [] IEof) demo_block_sp demo_mbase.
 
 Definition block_draw : EntryDraw :=
   mkDraw demo_random demo_block_top vdso_keeps_all.
