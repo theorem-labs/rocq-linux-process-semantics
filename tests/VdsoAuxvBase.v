@@ -30,9 +30,10 @@
     pointer arrays.  [launch_a_first_auxv_pair_is_sysinfo_ehdr] and its
     twin check that the word read there is AT_SYSINFO_EHDR's (tag 33).
 
-    - launch C is a launch the launch rules admit ([launch_c_admitted]:
-      [Run.entry_launch_ok_va]) on which [sp - stack_max_size] is below
-      the mmap base, with argv strings long enough to get there; it reads
+    - launch C is a launch [Run.entry_launch_ok_va] admits (its stack
+      top, stack pointer and mmap base are ones a Linux launch gives;
+      [launch_c_admitted]) on which [sp - stack_max_size] is below the
+      mmap base, with argv strings long enough to get there; it reads
       AT_SYSINFO_EHDR from [Run.launch_auxv]. *)
 
 From Stdlib Require Import ZArith NArith List Bool Lia.
@@ -164,13 +165,17 @@ Example launch_b_auxv_names_the_placed_text :
 Proof. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
-   Launch C: an admitted launch on which the two used to differ
+   Launch C: a launch entry_launch_ok_va admits, on which the two used
+   to differ
    ========================================================================= *)
 
-(** Launch B's block is laid from [sp] to a top just above it, so it is
-    not a launch the launch rules admit.  Launch C is one:
-    [launch_c_admitted] proves [Run.entry_launch_ok_va] for it, the
-    fifth conjunct of [Run.valid_entry_va].  It is
+(** Launch B's block is laid from [sp] to a top just above it, so no
+    launch gives it.  Launch C's stack top, stack pointer and mmap base
+    are ones a Linux launch gives: [launch_c_admitted] proves
+    [Run.entry_launch_ok_va] for it, the fifth conjunct of
+    [Run.valid_entry_va].  The file proves no other conjunct, nor
+    [Run.valid_launch] (its strings are 1179722 bytes with their
+    pointers, under the 2 MiB limit, but no Example states it).  It is
     [Checks.Cases.EntryLaunch]'s randomized fixture at the far end of
     the stack and mmap draws (as [a1_aslr_admitted_base_hi]: the stack's
     top at its lowest, [0x7fffc0000000]; the mmap base at draw 0, the
