@@ -26,6 +26,7 @@ Exits non-zero on any failure.
 """
 
 import datetime
+import html
 import importlib.util
 import itertools
 import json
@@ -1092,6 +1093,56 @@ class InertTest(unittest.TestCase):
                 once = self.comment(text)
                 self.assertEqual(self.comment(once), once)
         self.assertEqual(self.comment("@" + WJ + "octocat"), "@" + WJ + "octocat")
+
+    def test_no_address_outside_github_comes_through_a_container_an_escaped_label_or_an_html_reference(self):
+        """trim.py's inert, as the comment step of review.yml names it: the posted text cannot "link or load anything
+        outside github.com". CommonMark reads a link reference definition in a block quote or a list item, and one
+        whose label holds an escaped bracket or a line break, as a definition of the whole comment. An HTML parser
+        decodes &Tab;, &NewLine; and &#x0A; in an attribute, and the URL parser then takes out each tab and line break,
+        so that /<tab>/host is //host. Each form below goes outside github.com before inert, and must not after it.
+        The check reads each address as a renderer and a browser read it, not by the forms' text, and it also holds
+        for each text of OUTSIDE. Read with marked 18 (GFM) and node's URL on 2026-11-17: before inert, each form
+        links to evil.example."""
+        def addresses(text):
+            """Each address of a link or an image of text: of an inline link or image, of a link reference definition
+            (also in a block quote or a list item, and with a label that holds an escape or a line break), and of an
+            href or a src."""
+            found = re.findall(r"\]\(\s*(<[^>\n]*>|[^\s)]+)", text)
+            bare = "\n".join(re.sub(r"^(?:[ \t]{0,3}(?:>[ \t]?|(?:[-+*]|[0-9]{1,9}[.)])[ \t]+))*", "", line)
+                             for line in text.split("\n"))
+            found += re.findall(r"(?m)^[ \t]{0,3}\[(?:\\[\s\S]|[^\\\[\]])+\]:\s*(<[^>\n]*>|\S+)", bare)
+            found += [a or b or c for a, b, c in
+                      re.findall(r"(?i)\b(?:href|src)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))", text)]
+            return [a[1:-1] if a.startswith("<") and a.endswith(">") else a for a in found]
+
+        def leaves(address):
+            """Whether address, as a browser resolves it on a page of github.com, goes to another host."""
+            address = re.sub(r"[\t\n\r]", "", html.unescape(address))
+            address = re.sub(r"^[\x00-\x20]+", "", address).replace("\\", "/")
+            if address.startswith("//"):
+                return True
+            return bool(re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", address)) and not re.match(
+                r"(?i)https?://(?:www\.)?github\.com(?:[/?#]|$)", address)
+
+        forms = {
+            "a definition in a block quote": "> [q]: //evil.example/q\n\n[click][q]",
+            "a definition in a list item": "- [q]: //evil.example/q\n\n[click][q]",
+            "a definition in an ordered list item": "1. [q]: //evil.example/q\n\n[click][q]",
+            "a label with an escaped bracket": "[a\\]b]: //evil.example/q\n\n[click][a\\]b]",
+            "a label over two lines": "[a\nb]: //evil.example/q\n\n[click][a b]",
+            "a tab between the slashes of an href": "<a href=\"/&Tab;/evil.example/x\">click</a>",
+            "a line break before a backslash of an href": "<a href=\"/&NewLine;\\evil.example/x\">click</a>",
+            "a line break between the slashes of a src": "<img src=\"/&#x0A;/evil.example/t.gif\">",
+        }
+        for name, text in forms.items():
+            with self.subTest(form=name):
+                self.assertTrue(any(leaves(a) for a in addresses(text)), text)   # the check sees the form
+                got = self.comment(text)
+                self.assertEqual([a for a in addresses(got) if leaves(a)], [], got)
+        for text in self.OUTSIDE:
+            with self.subTest(text=text):
+                got = self.comment(text)
+                self.assertEqual([a for a in addresses(got) if leaves(a)], [], got)
 
 
 class ReachTest(Runner):
