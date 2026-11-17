@@ -679,11 +679,12 @@ class TrustTest(Runner):
                 self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
 
     def test_a_reply_is_posted_only_for_a_writer_or_an_app_of_ours(self):
-        """The approved reply's run: a person with write access, or an App in APPS; never github-actions[bot]. A reply
-        that cannot post fails the run, with no route, so that whoever started it sees why: no text, a pull request,
-        or an issue that is not open."""
-        for actor, want in (("alice", "review"), ("legion-reviewer[bot]", "review"), ("dependabot[bot]", None),
-                            ("github-actions[bot]", None)):
+        """The approved reply's run: a person with write access, or an App in APPS, legion-implementer[bot] among them,
+        which starts it (dispatch://INFRA-3395, R4); never github-actions[bot] or another App. A reply that cannot post
+        fails the run, with no route, so that whoever started it sees why: no text, a pull request, or an issue that is
+        not open."""
+        for actor, want in (("alice", "review"), ("legion-implementer[bot]", "review"),
+                            ("legion-reviewer[bot]", "review"), ("dependabot[bot]", None), ("github-actions[bot]", None)):
             with self.subTest(actor=actor):
                 self.assertReview(want, "workflow_dispatch", "", actor, task="reply", reply="The approved reply.",
                                   want_task="reply" if want else None)
@@ -2123,56 +2124,35 @@ class HoldTest(Holding):
                                                                       review])
                 self.assertHeldNothing(rc, out, "Sign in to Anthropic")
 
-    def test_a_draft_or_a_reply_with_a_variable_of_the_store_empty_fails_before_the_model_and_holds_nothing(self):
-        """b1 (R3, D7): the draft's check step, the review job's first after its checkout, fails and names the
-        repository variable of the draft store that is empty, before any step of the model, for a draft and for a
-        reply. Its name starts with "Sign in", so the hold job holds nothing for it: no comment, no label and no try;
-        the comment job does not run, so nothing posts. With both variables set, the step passes, and the step after
-        it signs in with them, as the screen job signs in, for 300 seconds, with no credentials file, no environment
-        variable and no id, so that no step reads its token."""
-        check = "Sign in to Google Cloud for the draft (check)"
+    def test_a_draft_whose_sign_in_to_the_draft_store_failed_posts_nothing_and_holds_nothing(self):
+        """b1 (R3, R10): the draft store's first sign-in, the review job's first step after its checkout, comes before
+        every step of the model and before the sign-in to Anthropic. A draft run whose sign-in there fails (the
+        provider of dispatch://INFRA-3395 refuses the run) runs no model step and no comment job, so nothing posts.
+        The step's name starts with "Sign in", so the hold job writes no hold comment, sets no label and counts no try,
+        at the last try too. A reply's run whose review job failed runs no other job."""
+        check = DraftReplyTest.CHECK
         steps = JOBS["review"]["steps"]
         names = [s.get("name") or "Run " + s["uses"] for s in steps]
         models = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("anthropics/claude-code-action@")]
         self.assertEqual(names.index(check), 1)
         self.assertLess(names.index(check), min(models + [names.index("Sign in to Anthropic")]))
-        s = step("review", check)
-        self.assertEqual(s["env"], {"REVIEW_DRAFT_GCP_PROVIDER": "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}",
-                                    "REVIEW_DRAFT_GCP_SERVICE_ACCOUNT": "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}"})
-        for task, want in (("draft", True), ("reply", True), ("review", False), ("rescreen", False), ("answer", False)):
-            with self.subTest(task=task):
-                self.assertEqual(bool(evaluate(s["if"], {"needs.trust.outputs.task": task})), want)
-        provider = "projects/1/locations/global/workloadIdentityPools/drafts/providers/github"
-        account = "drafts@example.iam.gserviceaccount.com"
-        for empty in ("REVIEW_DRAFT_GCP_PROVIDER", "REVIEW_DRAFT_GCP_SERVICE_ACCOUNT"):
-            with self.subTest(empty=empty):
-                env = {"REVIEW_DRAFT_GCP_PROVIDER": provider, "REVIEW_DRAFT_GCP_SERVICE_ACCOUNT": account, empty: ""}
-                rc, out, got = self.run_script(s["run"], **env)
-                self.assertEqual((rc, got), (1, {}), out)
-                self.assertIn(f"::error::The repository variable {empty} is empty", out)
-                self.assertIn("No model ran", out)
-        rc, out, _ = self.run_script(s["run"], REVIEW_DRAFT_GCP_PROVIDER=provider,
-                                     REVIEW_DRAFT_GCP_SERVICE_ACCOUNT=account)
-        self.assertEqual(rc, 0, out)
-        signed = steps[names.index(check) + 1]
-        self.assertTrue(signed["name"].startswith("Sign in "), signed["name"])
-        self.assertEqual((signed["if"], signed["uses"]), (s["if"], step("screen", "Sign in to Google Cloud")["uses"]))
-        self.assertNotIn("id", signed)
-        self.assertEqual(signed["with"], {
-            "workload_identity_provider": "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}",
-            "service_account": "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", "token_format": "access_token",
-            "access_token_lifetime": "300s", "create_credentials_file": False, "export_environment_variables": False})
-        # A draft's review job that failed at the step: the hold job runs, and holds nothing.
+        # No step of the job has a status function in its if, so the failed step skips every step after it.
+        self.assertEqual([n for n, s in zip(names, steps) if STATUS_FUNCTIONS.search(str(s.get("if", "")))], [])
         ran = run_graph(self.OUTSIDER | {"task": "draft"}, results={"review": "failure"},
                         outputs={"screen": {"verdict": "clean"}, "gather": {"kind": "issue", "number": "7",
                                                                            "digest": "0" * 64}},
                         github={"github.event_name": "issues"})
         self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "review", "hold"})
-        review = attempt_job("review", check, name="review (screened)")
-        rc, out, _, _ = self.run_hold("screen", review="failure", task="draft", origin="50", tries="1", kind="issue",
-                                      labels=(), jobs=self.gathered() + [attempt_job("screen", name="screen mallory"),
-                                                                         review])
-        self.assertHeldNothing(rc, out, check)
+        for tries in ("0", str(self.TRIES - 1)):
+            with self.subTest(tries=tries):
+                self.tearDown()
+                self.setUp()
+                review = attempt_job("review", check, name="review (screened)")
+                rc, out, _, _ = self.run_hold("screen", review="failure", task="draft", origin="50", tries=tries,
+                                              kind="issue", labels=(),
+                                              jobs=self.gathered() + [attempt_job("screen", name="screen mallory"),
+                                                                      review])
+                self.assertHeldNothing(rc, out, check)
         # A reply's: no other job runs.
         ran = run_graph({"task": "reply", "route": "review", "outsider": "", "number": "7"}, results={"review": "failure"},
                         outputs={"gather": {}}, github={"github.event_name": "workflow_dispatch"})
@@ -4185,7 +4165,12 @@ class DraftReplyTest(ReaderRunner):
     STORE = "Store the draft, or the approved reply"
     POST = "Post the approved reply"
     LABEL = PostLabelTest.STEP
-    CHECKS = ["Sign in to Google Cloud for the draft (check)", "Sign in to Google Cloud for the draft (check the sign-in)"]
+    # The draft store's two sign-ins: the first, before the model, and the one whose token the store step reads.
+    CHECK = "Sign in to Google Cloud for the draft (check the sign-in)"
+    STORAGE = "Sign in to Google Cloud for the draft"
+    # The draft writer of dispatch://INFRA-3395's contract (its spec version 5, R1).
+    PROVIDER = "projects/844532188053/locations/global/workloadIdentityPools/github/providers/github-ossv-drafts"
+    ACCOUNT = "ossv-ci@theorem-agent-root.iam.gserviceaccount.com"
     BUCKET = "theorem-agent-infra-oss-verify-held-findings"
     PREFIX = "rocq-linux-process-semantics/issue-drafts"
     GOOGLE_TOKEN = "google-not-a-secret"
@@ -4201,19 +4186,18 @@ class DraftReplyTest(ReaderRunner):
     # marker, a mention, a reference, a bidirectional-text control), and its last line break.
     APPROVED = ("Thanks, @octocat: #12 is fixed in `theories/Fd.v:213`.\n\n<!-- review -->\n"
                 "  Two spaces, a tab\t, \u00fcn\u00efc\u00f6d\u00e9 and \u202ethis\u202c.\n")
-    # The contexts of the steps of run 1, attempt 1, of the issue #7 of mallory, whose screen passed, on GitHub.
-    CTX = {"github.server_url": "https://github.com", "github.repository": REPO, "github.run_id": "1",
-           "github.run_attempt": "1", "needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
-           "needs.trust.outputs.route": "screen", "needs.trust.outputs.started": PostLabelTest.STARTED,
-           "needs.gather.outputs.number": "7",
+    # The contexts of the steps of run 1, attempt 1, of the new issue #7 of mallory, whose screen passed, on GitHub.
+    CTX = {"github.event_name": "issues", "github.server_url": "https://github.com", "github.repository": REPO,
+           "github.run_id": "1", "github.run_attempt": "1", "needs.trust.outputs.number": "7",
+           "needs.trust.outputs.outsider": "mallory", "needs.trust.outputs.route": "screen",
+           "needs.trust.outputs.started": PostLabelTest.STARTED, "needs.gather.outputs.number": "7",
            "needs.gather.outputs.kind": "issue", "needs.gather.outputs.outside": "true", "needs.post.result": "skipped",
-           "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
-           "vars.REVIEW_DRAFT_GCP_PROVIDER": "projects/1/locations/global/workloadIdentityPools/drafts/providers/github",
-           "vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT": "drafts@example.iam.gserviceaccount.com",
-           "steps.storage.outputs.access_token": GOOGLE_TOKEN}
-    REPLY_CTX = {"needs.trust.outputs.task": "reply", "needs.trust.outputs.route": "review",
-                 "needs.trust.outputs.outsider": "", "needs.gather.outputs.kind": "", "needs.gather.outputs.number": "",
-                 "needs.gather.outputs.outside": "", "inputs.reply": APPROVED}
+           "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "steps.storage.outputs.access_token": GOOGLE_TOKEN}
+    # A run by hand of the task reply.
+    REPLY_CTX = {"github.event_name": "workflow_dispatch", "needs.trust.outputs.task": "reply",
+                 "needs.trust.outputs.route": "review", "needs.trust.outputs.outsider": "",
+                 "needs.gather.outputs.kind": "", "needs.gather.outputs.number": "", "needs.gather.outputs.outside": "",
+                 "inputs.reply": APPROVED}
 
     def setUp(self):
         super().setUp()
@@ -4224,6 +4208,21 @@ class DraftReplyTest(ReaderRunner):
         """The names of the steps of job whose if holds in CTX and ctx (a step with no if runs), in order."""
         return [s.get("name") or "Run " + s["uses"].split("@")[0] for s in JOBS[job]["steps"]
                 if "if" not in s or evaluate(s["if"], dict(self.CTX, **ctx))]
+
+    def assertSignsInAsTheDraftWriter(self):
+        """Each of the draft store's two sign-ins gives Google's action, as GitHub fills in its inputs from the review
+        job's env, the provider and the account of INFRA-3395's contract, for a token of 300 seconds with no
+        credentials file and no environment variable, as the screen job's action. The first has no id, so no step
+        reads its token; the second's id is the one the store step reads."""
+        env = {f"env.{name}": value for name, value in JOBS["review"]["env"].items()}
+        for name, id_ in ((self.CHECK, None), (self.STORAGE, "storage")):
+            with self.subTest(step=name):
+                s = step("review", name)
+                self.assertEqual((s["uses"], s.get("id")), (step("screen", "Sign in to Google Cloud")["uses"], id_))
+                self.assertEqual({k: interpolate(v, env) if isinstance(v, str) else v for k, v in s["with"].items()}, {
+                    "workload_identity_provider": self.PROVIDER, "service_account": self.ACCOUNT,
+                    "token_format": "access_token", "access_token_lifetime": "300s", "create_credentials_file": False,
+                    "export_environment_variables": False})
 
     def summary_text(self):
         with open(self.summary, encoding="utf-8") as f:
@@ -4281,13 +4280,14 @@ class DraftReplyTest(ReaderRunner):
 
     def test_a_new_outside_issue_stores_a_draft_and_posts_nothing_but_its_label_comment(self):
         """b1 and b6 (4) (R3, R9): a new issue of an outside author gets the task draft and the outsider's path. The
-        review job checks the draft store's identity before the model, runs the Draft step as its one model step, and
-        gives the draft to the fresh reader, whose one request holds its instruction for a draft, the rules of the
-        draft (.github/review-answer.md and the write-to-maintainer copy) and the draft alone, and no tools. The draft
-        that the reader trimmed is stored once, with no control or bidirectional-text character, under this
-        repository's prefix of the private bucket (ifGenerationMatch=0), and a second write of that name is refused.
-        The run's summary names the command that reads it, and holds neither the draft nor a list. After the store,
-        the comment job posts nothing but the label comment: waits-on-theorem, Sami's step, and the draft's marker."""
+        review job signs in before the model as the draft store's writer, the provider and the account of
+        dispatch://INFRA-3395's contract, runs the Draft step as its one model step, and gives the draft to the fresh
+        reader, whose one request holds its instruction for a draft, the rules of the draft (.github/review-answer.md
+        and the write-to-maintainer copy) and the draft alone, and no tools. The draft that the reader trimmed is
+        stored once, with no control or bidirectional-text character, under this repository's prefix of the private
+        bucket (ifGenerationMatch=0), and a second write of that name is refused. The run's summary names the command
+        that reads it, and holds neither the draft nor a list. After the store, the comment job posts nothing but the
+        label comment: waits-on-theorem, Sami's step, and the draft's marker."""
         self.permissions(mallory="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         rc, out, trust = self.run_trust("issues", author="mallory", actor="mallory")
@@ -4299,10 +4299,10 @@ class DraftReplyTest(ReaderRunner):
         self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "review", "comment"})
         steps = self.ran("review", {"needs.trust.outputs.task": "draft"})
         models = [s["name"] for s in JOBS["review"]["steps"] if s.get("uses", "").startswith("anthropics/claude-code-action@")]
-        self.assertEqual(steps[1:3], self.CHECKS)
+        self.assertEqual(steps[1], self.CHECK)
         self.assertEqual([n for n in steps if n in models], ["Draft"])
-        self.assertEqual(steps[steps.index("Draft"):], ["Draft", self.SIGN_IN, self.DRAFTED,
-                                                        "Sign in to Google Cloud for the draft", self.STORE])
+        self.assertEqual(steps[steps.index("Draft"):], ["Draft", self.SIGN_IN, self.DRAFTED, self.STORAGE, self.STORE])
+        self.assertSignsInAsTheDraftWriter()
         rc, out, got = self.drafted({"refused": False, "reason": "", "text": self.TRIMMED})
         self.assertEqual((rc, got), (0, {"draft": "1-1"}), out)
         self.assertNotIn(self.GOOGLE_TOKEN, out)
@@ -4421,7 +4421,7 @@ class DraftReplyTest(ReaderRunner):
 
     def test_an_approved_reply_posts_once_byte_for_byte_and_the_issue_waits_on_its_author(self):
         """b1 (R3, D9): a run by hand with the task reply and the text that Sami approved runs the review job and the
-        comment job alone. The review job runs no model and no cap: it checks and signs in to the draft store, and
+        comment job alone. The review job runs no model and no cap: it signs in to the draft store as its writer, and
         stores the text as approved-<run>-<attempt> beside the draft. The comment job posts the text byte for byte,
         with no trim, no neutralising and no added marker. The label comment keeps the draft's marker and gets the
         reply's, and the issue waits on its author. A second run posts nothing, and a comment of another account with
@@ -4433,8 +4433,8 @@ class DraftReplyTest(ReaderRunner):
         self.assertNotIn("Thanks, @octocat", out)
         ran = run_graph(trust, outputs={"gather": {}}, github={"github.event_name": "workflow_dispatch"})
         self.assertEqual(ran_jobs(ran), {"trust", "review", "comment"})
-        self.assertEqual(self.ran("review", self.REPLY_CTX),
-                         ["Run actions/checkout"] + self.CHECKS + ["Sign in to Google Cloud for the draft", self.STORE])
+        self.assertEqual(self.ran("review", self.REPLY_CTX), ["Run actions/checkout", self.CHECK, self.STORAGE, self.STORE])
+        self.assertSignsInAsTheDraftWriter()
         # The text goes to a script through its environment, and never into a script, an action's input or a
         # condition.
         for name, job in JOBS.items():
@@ -4501,6 +4501,23 @@ class DraftReplyTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", [replied, posted])
         rc, out, trust = self.run_trust("issue_comment", actor="mallory", comment="900")
         self.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "answer", "screen"), out)
+
+    def test_the_draft_store_signs_in_on_the_events_issues_and_workflow_dispatch_alone(self):
+        """dispatch://INFRA-3395's provider admits the review job for the events issues and workflow_dispatch alone.
+        The draft store's two sign-ins, which are the review job's only steps with Google's action, and the store step
+        that reads the token, run for a draft or a reply on those two events. They run on no other event of this
+        workflow (workflow_run, issue_comment, schedule), and for no other task."""
+        self.assertEqual([s["name"] for s in JOBS["review"]["steps"]
+                          if s.get("uses", "").startswith("google-github-actions/auth@")], [self.CHECK, self.STORAGE])
+        events = {"issues", "workflow_dispatch", "workflow_run", "issue_comment", "schedule"} | set(WF["on"])
+        for name in (self.CHECK, self.STORAGE, self.STORE):
+            cond = step("review", name)["if"]
+            for event in sorted(events):
+                for task in WF["on"]["workflow_dispatch"]["inputs"]["task"]["options"]:
+                    with self.subTest(step=name, event=event, task=task):
+                        want = task in ("draft", "reply") and event in ("issues", "workflow_dispatch")
+                        ctx = {"github.event_name": event, "needs.trust.outputs.task": task}
+                        self.assertIs(bool(evaluate(cond, ctx)), want)
 
 
 class FixRuleTest(unittest.TestCase):

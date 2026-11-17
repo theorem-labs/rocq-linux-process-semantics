@@ -79,7 +79,7 @@
 # - The reply to a new issue of an outside author is a draft, which this workflow stores and never posts
 #   (.github/review-answer.md, "An issue draft"). Sami approves the text of a reply, and a run by hand on main posts
 #   that text word for word, once, and stores it beside the draft. A person with write access starts it, or an App of
-#   the APPS (legion-reviewer[bot]), and never the rescreen job. A run with no text, or of a pull request or of an
+#   the APPS (legion-implementer[bot]), and never the rescreen job. A run with no text, or of a pull request or of an
 #   issue that is not open, posts nothing and fails:
 #
 #   gh workflow run review.yml -R theorem-labs/rocq-linux-process-semantics -f task=reply -f number=<n> -f reply=<text>
@@ -116,9 +116,9 @@
 #           stored. Anthropic's federation rule admits this file alone, on refs/heads/main, for this file's events,
 #           and refuses a job in review-screen, so the screen job cannot get the review's Claude token. The review job
 #           cannot get the screen's tokens either: they need the environment. Before the model, a step signs in to
-#           Anthropic and drops the token, so that a run the rule does not admit fails there. For a draft, the two
-#           sign-ins to Google Cloud of the draft store (below) come before it. A reply runs no model, so it does not
-#           sign in to Anthropic.
+#           Anthropic and drops the token, so that a run the rule does not admit fails there. For a draft, the sign-in
+#           to Google Cloud of the draft store (below) comes before it. A reply runs no model, so it does not sign in to
+#           Anthropic.
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
@@ -134,10 +134,13 @@
 #           review. For a draft, Claude writes the reply to a new issue of an outside author (.github/review-answer.md,
 #           "An issue draft"), and the fresh reader trims it or refuses it, with the rules of the draft in its request.
 #           This job stores the draft, or the refused draft with the reader's reason, in a private bucket, with a
-#           Google Cloud token of 5 minutes of the account that the repository variables REVIEW_DRAFT_GCP_PROVIDER and
-#           REVIEW_DRAFT_GCP_SERVICE_ACCOUNT name. With either variable empty, the job fails before the model. No
-#           output, summary, log line or artifact of the run holds the draft, the refused draft or the reason. For a
-#           reply, this job runs no model and no cap: it stores the approved text beside the draft.
+#           Google Cloud token of 5 minutes of the account that dispatch://INFRA-3395's contract names, through its
+#           provider, which admits this job on main, with no environment, for the events issues and workflow_dispatch
+#           (the job's env, DRAFT_GCP_PROVIDER and DRAFT_GCP_SERVICE_ACCOUNT). Those two events alone give a draft or a
+#           reply, and the draft store's sign-ins run on them alone. The first sign-in comes before the model, so a run
+#           that the provider refuses fails there. No output, summary, log line or artifact of the run holds the draft,
+#           the refused draft or the reason. For a reply, this job runs no model and no cap: it stores the approved text
+#           beside the draft.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -277,10 +280,11 @@ env:
   # This repository's decision: "true" posts each review as a comment on its pull request or issue; any other value
   # keeps it in the run's summary only.
   POST_REVIEW: "true"
-  # The Apps that count as having write access: this organisation's own, and legion-reviewer[bot], which starts the run
-  # that posts an approved reply. The Review step admits no other App, except an App whose pull request or issue the
-  # screen passed, and github-actions[bot] for a run of the rescreen job that the trust job accepted.
-  APPS: "sjawhar-agent[bot],oss-verify[bot],legion-reviewer[bot]"
+  # The Apps that count as having write access: this organisation's own, legion-reviewer[bot], and
+  # legion-implementer[bot], which starts the run that posts an approved reply (dispatch://INFRA-3395, R4). The Review
+  # step admits no other App, except an App whose pull request or issue the screen passed, and github-actions[bot] for
+  # a run of the rescreen job that the trust job accepted.
+  APPS: "sjawhar-agent[bot],oss-verify[bot],legion-reviewer[bot],legion-implementer[bot]"
   # The most reviews that may call the model in one hour. An agent of ours can open many pull requests at once, and
   # the screen passes others', so a burst must not start model runs without limit. A run at the cap stops before the
   # model, and the run is red; a maintainer can re-run it once the hour has passed. A run that the trust job stops, or
@@ -1408,36 +1412,28 @@ jobs:
       LINUX_COMMIT: 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5
       QEMU_URL: https://github.com/qemu/qemu
       QEMU_COMMIT: e3ad0582fdcec5c194835b0b4e8342cdc197b5cb
+      # The draft store's Google identity (ids, not secrets), as dispatch://INFRA-3395's contract names it (its spec
+      # version 5, R1): the provider github-ossv-drafts, which admits this job of this file on refs/heads/main, with no
+      # environment, for the events issues and workflow_dispatch, and the account ossv-ci, which creates the objects of
+      # the drafts' bucket (DRAFT_BUCKET, in the store step). The two sign-ins of the draft store read them.
+      DRAFT_GCP_PROVIDER: projects/844532188053/locations/global/workloadIdentityPools/github/providers/github-ossv-drafts
+      DRAFT_GCP_SERVICE_ACCOUNT: ossv-ci@theorem-agent-root.iam.gserviceaccount.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {persist-credentials: false}
 
-      # The draft store's Google identity, for a draft and for a reply, before any other step: the account that the
-      # repository variables REVIEW_DRAFT_GCP_PROVIDER and REVIEW_DRAFT_GCP_SERVICE_ACCOUNT name (ids, not secrets),
-      # which alone can write the drafts' bucket (DRAFT_BUCKET, in the store step). With either variable empty, this
-      # step fails and names it: no model runs, nothing is stored and nothing posts. Its name starts with "Sign in", so
-      # the hold job holds nothing for it, and the issue gets no label.
-      - name: Sign in to Google Cloud for the draft (check)
-        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
-        env:
-          REVIEW_DRAFT_GCP_PROVIDER: ${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}
-          REVIEW_DRAFT_GCP_SERVICE_ACCOUNT: ${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}
-        run: |
-          set -euo pipefail
-          for variable in REVIEW_DRAFT_GCP_PROVIDER REVIEW_DRAFT_GCP_SERVICE_ACCOUNT; do
-            [ -n "${!variable:-}" ] || {
-              echo "::error::The repository variable $variable is empty, so the draft store has no Google identity. No model ran, nothing is stored, and nothing posts."
-              exit 1
-            }
-          done
-          echo "The repository variables name the Google identity of the draft store."
-      # Then a sign-in with that identity, so that a run that the identity does not admit fails here, before the
-      # model, also at a step whose name starts with "Sign in". The token lasts 300 seconds, and no step reads it: this
-      # step has no id, the action writes no credentials file and sets no environment variable.
+      # The draft store's Google identity, for a draft and for a reply, before any other step: a sign-in with the
+      # provider and the account of the job's env, so that a run that the provider does not admit fails here, before
+      # the model. Its name starts with "Sign in", so the hold job holds nothing for it, and the issue gets no label.
+      # The token lasts 300 seconds, and no step reads it: this step has no id, the action writes no credentials file
+      # and sets no environment variable. The provider admits the events issues and workflow_dispatch alone. Those are
+      # the two events whose runs the trust job gives the task draft or reply, and the step runs on them alone.
       - name: Sign in to Google Cloud for the draft (check the sign-in)
-        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        if: >-
+          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
+          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
-        with: {workload_identity_provider: "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}", service_account: "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
+        with: {workload_identity_provider: "${{ env.DRAFT_GCP_PROVIDER }}", service_account: "${{ env.DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
 
       # Anthropic's exchange of a new identity token, with the federation rule, the organization, the service account
       # and the workspace of the job's env, which the Review step uses too, before any step that runs the model. The
@@ -1958,14 +1954,17 @@ jobs:
           echo "The fresh reader read the draft. The store step stores what it gave."
 
       # The draft store's Google identity again, for the store of a draft or of a reply: a new token of 300 seconds,
-      # which the next step alone reads. The action writes no credentials file and sets no environment variable. When
-      # the sign-in fails, the job fails here, at a step whose name starts with "Sign in": nothing is stored, nothing
-      # posts, and the hold job holds nothing for it.
+      # with the provider and the account of the job's env, which the next step alone reads. The action writes no
+      # credentials file and sets no environment variable. When the sign-in fails, the job fails here, at a step whose
+      # name starts with "Sign in": nothing is stored, nothing posts, and the hold job holds nothing for it. As the
+      # first sign-in of the draft store, it runs on the events issues and workflow_dispatch alone.
       - name: Sign in to Google Cloud for the draft
         id: storage
-        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        if: >-
+          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
+          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
-        with: {workload_identity_provider: "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}", service_account: "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
+        with: {workload_identity_provider: "${{ env.DRAFT_GCP_PROVIDER }}", service_account: "${{ env.DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
 
       # One new object of the private bucket DRAFT_BUCKET, under DRAFT_PREFIX/<issue>/: <run>-<attempt> holds the draft
       # as the fresh reader trimmed it; <run>-<attempt>-refused, a draft that the reader refused, as the model wrote
@@ -1977,15 +1976,18 @@ jobs:
       # label comment.
       - name: Store the draft, or the approved reply
         id: stored
-        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        if: >-
+          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
+          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
         env:
           TASK: ${{ needs.trust.outputs.task }}
           NUMBER: ${{ needs.trust.outputs.number }}
           APPROVED: ${{ inputs.reply }}
           GOOGLE_ACCESS_TOKEN: ${{ steps.storage.outputs.access_token }}
           STORAGE_URL: https://storage.googleapis.com
-          # The private bucket of the drafts of the OSS Verify repositories, and this repository's prefix in it. Only
-          # the account that the repository variables name can write there, from this job of this file on main.
+          # The private bucket of the drafts of the OSS Verify repositories, and this repository's prefix in it. The
+          # account DRAFT_GCP_SERVICE_ACCOUNT of the job's env writes there, from this job of this file on main, for the
+          # events issues and workflow_dispatch (dispatch://INFRA-3395).
           DRAFT_BUCKET: theorem-agent-infra-oss-verify-held-findings
           DRAFT_PREFIX: rocq-linux-process-semantics/issue-drafts
           RUN_ID: ${{ github.run_id }}
@@ -2879,7 +2881,7 @@ jobs:
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
-          # starts with "Sign in", and no other step has: the screen job's two, the review job's six, and the post
+          # starts with "Sign in", and no other step has: the screen job's two, the review job's five, and the post
           # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
           # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
           # comment, no label and no try, and the schedule takes the item again. A run at the limit ran no job but the
