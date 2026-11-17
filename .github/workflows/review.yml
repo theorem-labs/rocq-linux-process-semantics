@@ -13,8 +13,10 @@
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
-#             or a run by hand with a number: the review comment.
-#   answer    a new comment of an outside item's author in its conversation (issue_comment): the answer.
+#             or a run by hand with a number: the review comment, and for a blocking finding of an outside pull request
+#             the fix, as one review of suggested changes.
+#   answer    a new comment of an outside item's author in its conversation (issue_comment): the answer to each
+#             comment of the author that waits, and the fix when a comment asks for it.
 #   draft     a new issue of an outside author: a draft of the reply, which is stored and not posted.
 #   reply     a run by hand with a reply text that Sami approved, which is posted as it is.
 #   rescreen  a held item, screened again (below).
@@ -63,7 +65,8 @@
 # run that way. An App must be one of the APPS. A run that github-actions[bot] starts (the rescreen job's) is taken
 # only for that job's tasks, and only when its name is the one that job gives the task and what it names reads the
 # same from the API now. Every review reads the comments and reviews of the author and of accounts with write access,
-# and no others.
+# and no others. An answer reads them too, and the workflow's own review, answers, hold comment, label comment and
+# fix reviews on the item.
 #
 # - The screen can be measured: -f task=measure, with no number, runs every listed check three times
 #   (-f measure_repeats=<1-5>) on each text of a labelled set kept in the private bucket (-f measure_set=
@@ -75,8 +78,10 @@
 #   trust   decides the task and the route: review, screen, or held at the limit. It checks nothing out, and its token
 #           can only read metadata, pull requests and issues, and this workflow's runs.
 #   gather  reads the pull request or the issue as data into .review/, and keeps it as this run's artifact, which the
-#           screen job and the review job both take, by its SHA-256: the review reads what the screen passed. Its
-#           token can only read, and it holds no model.
+#           screen job and the review job both take, by its SHA-256: the review reads what the screen passed. For an
+#           answer, it also lists the comments of the author that wait for an answer: each comment, review and
+#           review comment of the author after the workflow's newest answer, review or hold. Its token can only read,
+#           and it holds no model.
 #   screen  runs in the environment review-screen. Its identity token is exchanged for short-lived tokens, which only
 #           a job in that environment can get, and for Google Cloud and Anthropic only a job of this file on main:
 #           Google Cloud (Model Armor, and adding the reason to its bucket), Azure (Prompt Shields) and Anthropic (a
@@ -99,7 +104,15 @@
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shorter text left out,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
 #           to the review of an outside pull request that adds, changes or deletes a .v file, and adds the section on
-#           soundness after the shorter text (.github/review/rules.py soundness).
+#           soundness after the shorter text (.github/review/rules.py soundness). For an answer, Claude answers the
+#           comments of the author that wait (.github/review-answer.md, "An answer"), and the fresh reader shortens
+#           the answer. For a blocking finding of an outside pull request, or an answer that asks for it, Claude then
+#           writes the fix as suggested changes on the lines of the diff (.github/review-answer.md, "The fix"). No fix
+#           runs when the author said they will make the change, or when 2 fix reviews since the author's last own
+#           push did not make the review pass. Code keeps only the suggestions on the diff (.github/review/rules.py
+#           suggestions). A step signs in again, and the fresh reader shortens the words of the fix, never the lines
+#           of a suggested change. The answer and the fix run in this job, so the hourly caps count them with the
+#           review.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -107,8 +120,10 @@
 #           GitHub token can only read.
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
-#           the comment that asks the author to resolve it, with the label waits-on-author. It uses this run's GitHub
-#           token, so none of its comments and labels starts a run of any workflow.
+#           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
+#           for each comment, and the fix as one review of suggested changes, once for each head. It never commits
+#           or pushes: its token can write no file of the repository. It uses this run's GitHub token, so none of its
+#           comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
 #           label comment. It holds no model, and has no screen's reason to read: the screen job's one output is its
 #           verdict. It reads this run's jobs and this workflow's runs: did a step that signs in fail (then it holds
@@ -750,7 +765,8 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main'
       && (needs.trust.outputs.route == 'review' || needs.trust.outputs.route == 'screen')
-      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+          || needs.trust.outputs.task == 'answer')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read}
@@ -788,6 +804,9 @@ jobs:
           # its own CI run, and so its own run of this file, which the trust job judged by that push's account: this
           # run gathers nothing, and so neither screens nor reviews.
           EVENT_HEAD: ${{ needs.trust.outputs.head }}
+          # For an answer: the task, and the comment that the trust job read, which must still wait for an answer.
+          TASK: ${{ needs.trust.outputs.task }}
+          COMMENT: ${{ needs.trust.outputs.comment }}
         run: |
           set -euo pipefail
           out=.review
@@ -807,22 +826,26 @@ jobs:
           # end of trusted
           # comments
           # The comments, reviews and review comments that the review reads: those of the pull request's or the
-          # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. The
-          # others are counted in omitted.txt, and never read.
+          # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. An
+          # answer also reads the workflow's own comments and reviews of the item (own), as data: its review, its
+          # answers, its hold comment and its label comment (each by the marker that starts it), and its fix reviews
+          # with their suggested changes. They tell the answer the next step and whom the item waits on. The others
+          # are counted in omitted.txt, and never read.
           author=$(gh api "repos/$REPO/issues/$NUMBER" --jq .user.login)
           # outside: true when trusted does not pass the author, also when GitHub could not say (status 2).
           outside=false
           trusted "$author" || outside=true
           echo "outside=$outside" >> "$GITHUB_OUTPUT"
           gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
-            --jq '.[] | {author: .user.login, created_at, body}' > "$RUNNER_TEMP/comments.jsonl"
+            --jq '.[] | {id, author: .user.login, created_at, updated_at, body}' > "$RUNNER_TEMP/comments.jsonl"
           : > "$RUNNER_TEMP/reviews.jsonl"
           : > "$RUNNER_TEMP/review-comments.jsonl"
           if [ "$KIND" = pr ]; then
             gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" \
-              --jq '.[] | {author: .user.login, state, submitted_at, body}' > "$RUNNER_TEMP/reviews.jsonl"
+              --jq '.[] | {id, author: .user.login, state, submitted_at, body}' > "$RUNNER_TEMP/reviews.jsonl"
             gh api --paginate "repos/$REPO/pulls/$NUMBER/comments" \
-              --jq '.[] | {author: .user.login, path, line: (.line // .original_line), body}' \
+              --jq '.[] | {id, review: .pull_request_review_id, author: .user.login, path,
+                           line: (.line // .original_line), created_at, body}' \
               > "$RUNNER_TEMP/review-comments.jsonl"
           fi
           readers=("$author")
@@ -830,13 +853,50 @@ jobs:
             if [ "$login" != "$author" ] && trusted "$login"; then readers+=("$login"); fi
           done < <(cat "$RUNNER_TEMP"/{comments,reviews,review-comments}.jsonl | jq -r '.author // empty' | sort -u)
           read_json=$(jq -cn '$ARGS.positional' --args "${readers[@]}")
+          own=false
+          [ "${TASK:-}" != answer ] || own=true
+          # The ids of the workflow's own fix reviews, whose review comments are its suggested changes.
+          fixes=$(jq -cs --argjson own "$own" 'if $own then map(select(.author == "github-actions[bot]"
+            and ((.body // "") | startswith("<!-- review-fix ")))) | map(.id) else [] end' "$RUNNER_TEMP/reviews.jsonl")
+          # shellcheck disable=SC2016 # $readers, $own, $fixes and $what are jq's
+          keep='(.author | IN($readers[])) or ($own and .author == "github-actions[bot]"
+            and (if $what == "comments" then (.body // "") | test("^<!-- review(-answer [0-9]+| -->|-held -->|-label -->)")
+                 elif $what == "reviews" then .id | IN($fixes[]) else .review | IN($fixes[]) end))'
           for what in comments reviews review-comments; do
-            jq -s --argjson readers "$read_json" 'map(select(.author | IN($readers[])))' "$RUNNER_TEMP/$what.jsonl" \
-              > "$RUNNER_TEMP/$what.json"
-            left=$(jq -s --argjson readers "$read_json" 'map(select(.author | IN($readers[]) | not)) | length' \
-              "$RUNNER_TEMP/$what.jsonl")
+            jq -s --argjson readers "$read_json" --argjson own "$own" --argjson fixes "$fixes" --arg what "$what" \
+              "map(select($keep))" "$RUNNER_TEMP/$what.jsonl" > "$RUNNER_TEMP/$what.json"
+            left=$(jq -s --argjson readers "$read_json" --argjson own "$own" --argjson fixes "$fixes" --arg what "$what" \
+              "map(select($keep | not)) | length" "$RUNNER_TEMP/$what.jsonl")
             (( left == 0 )) || echo "$left $what by accounts without write access: not read" >> "$out/omitted.txt"
           done
+          # For an answer, the comments of the author that wait for it, oldest first (answer-to.json): each comment,
+          # each review with a text and each review comment of the author after the workflow's newest review, answer,
+          # fix review or hold. A review and a hold comment count from the time GitHub last changed them, as the
+          # workflow edits each in place. A hold of an answer that the workflow tries again (its marker names the task
+          # answer) answers nothing: the run that tries it again answers the comments it held. The answer answers each
+          # comment that waits, and its marker names the newest. When the comment that the trust job read waits no
+          # more, the workflow posted an answer, a review or a hold after it: this run gathers nothing.
+          if [ "$own" = true ]; then
+            # shellcheck disable=SC2016 # $author, $c, $r and $rc are jq's
+            jq -n --arg author "$author" --slurpfile c "$RUNNER_TEMP/comments.json" \
+              --slurpfile r "$RUNNER_TEMP/reviews.json" --slurpfile rc "$RUNNER_TEMP/review-comments.json" '
+              ([($c[0][] | select(.author == "github-actions[bot]" and ((.body // "") as $b
+                   | ($b | test("^<!-- review(-answer [0-9]+| -->|-held -->)"))
+                     and ($b | test("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer [0-9]+ -->(\n|$)") | not)))
+                 | .updated_at),
+                ($r[0][] | select(.author == "github-actions[bot]") | .submitted_at)] | map(strings) | max // "") as $since
+              | [($c[0][] | select(.author == $author) | {id, kind: "comment", created_at, body}),
+                 ($r[0][] | select(.author == $author and ((.body // "") | test("\\S")))
+                  | {id, kind: "review", created_at: .submitted_at, body}),
+                 ($rc[0][] | select(.author == $author) | {id, kind: "review comment", created_at, path, line, body})]
+              | map(select((.created_at // "") > $since)) | sort_by(.created_at)' > "$out/answer-to.json"
+            if ! jq -e --arg id "${COMMENT:-}" 'any(.[]; (.id | tostring) == $id)' "$out/answer-to.json" > /dev/null; then
+              echo "::notice::#$NUMBER: the comment ${COMMENT:-} waits for no answer: the workflow posted an answer, a review or a hold after it. This run gathers nothing."
+              echo "answered=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "#$NUMBER: $(jq length "$out/answer-to.json") comments of $author wait for the answer."
+          fi
           # end of comments
           if [ "$KIND" = issue ]; then
             gh issue view "$NUMBER" -R "$REPO" --json number,title,author,createdAt,state,body \
@@ -898,9 +958,10 @@ jobs:
           fi
           echo "Gathered $(find "$out" -type f | wc -l) files."
 
+      # Nothing is kept when the pull request moved on, or when the comment of an answer waits no more.
       - name: Keep it for the screen and the review
         id: keep
-        if: steps.gather.outputs.moved != 'true'
+        if: steps.gather.outputs.moved != 'true' && steps.gather.outputs.answered != 'true'
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/review-data"
@@ -909,7 +970,7 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Kept .review/ as review.tar, SHA-256 $digest."
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
-        if: steps.gather.outputs.moved != 'true'
+        if: steps.gather.outputs.moved != 'true' && steps.gather.outputs.answered != 'true'
         with: {name: review-data, path: "${{ runner.temp }}/review-data/review.tar", if-no-files-found: error, retention-days: 1, overwrite: true}
 
   # The screen of a pull request or issue whose author, or the account that started the run, has no write access, or
@@ -1041,11 +1102,13 @@ jobs:
     name: ${{ needs.trust.outputs.route == 'screen' && 'review (screened)' || 'review' }}
     needs: [trust, gather, screen]
     # A writer's, or a request by hand; or one the screen passed. A run whose gather job failed, or whose screen held
-    # it, failed or was cancelled, has no review.
+    # it, failed or was cancelled, has no review. Its tasks: the review, the rescreen of a review, and the answer to the
+    # comments of an outside item's author, with the fix that a review or an answer starts.
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && needs.gather.result == 'success'
       && needs.gather.outputs.digest != ''
-      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+          || needs.trust.outputs.task == 'answer')
       && (needs.trust.outputs.route == 'review'
           || (needs.trust.outputs.route == 'screen' && needs.screen.result == 'success'
               && needs.screen.outputs.verdict == 'clean'))
@@ -1057,17 +1120,25 @@ jobs:
       group: review-${{ needs.trust.outputs.task }}-${{ needs.trust.outputs.number }}
       cancel-in-progress: ${{ needs.trust.outputs.task != 'draft' && needs.trust.outputs.task != 'reply' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # The review or the answer, then the fix, each with its own time.
+    timeout-minutes: 100
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
     outputs:
       number: ${{ needs.gather.outputs.number }}
       started: ${{ needs.trust.outputs.started }}
-      head: ${{ steps.result.outputs.head }}
-      # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD), and will_fix (true
-      # or false), for the state label.
+      head: ${{ steps.result.outputs.head || steps.answered.outputs.head }}
+      # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD), for the state label.
       verdict: ${{ steps.result.outputs.verdict }}
-      will_fix: ${{ steps.result.outputs.will_fix }}
+      # The facts of the two stops of the fix, for the state label: will_fix (true or false), when the author said they
+      # will make the change, and fix_stop, when 2 fix reviews since the author's last own push did not make the
+      # review pass.
+      will_fix: ${{ steps.fixable.outputs.will_fix }}
+      fix_stop: ${{ steps.fixable.outputs.fix_stop }}
       body: ${{ steps.result.outputs.body }}
+      # The answer, with its marker. It is empty when the answer gives none.
+      answer: ${{ steps.answered.outputs.body }}
+      # The fix: the request of one review of suggested changes (POST pulls/<n>/reviews). It is empty when no fix posts.
+      fix: ${{ steps.fixed.outputs.review }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1121,16 +1192,17 @@ jobs:
           echo "Anthropic's federation rule admits this run. The Review step gets a token of its own."
 
       # Counts the review jobs of this workflow's other runs that started in the last hour, or have not started, and
-      # have called the model or may still call it: one whose Review step ran or runs; one that passed the step "Hold
-      # at the hourly cap" and has not finished; and one that has not finished that step yet and belongs to an earlier
-      # run, which goes first. So in a burst the earliest runs go ahead and the later ones stop at that step. Runs
-      # created up to 3 hours ago are read, which covers a job's 75 minutes and its time in the queue: the runs of
-      # workflow_run, issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request).
-      # A review job that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review
-      # step, so neither counts. Only jobs of this run's kind count, by the job's name, whatever the task of their run:
-      # a writer's review against HOURLY_CAP, a screened one against SCREENED_HOURLY_CAP. A read that fails stops the
-      # run here, not at "Hold at the hourly cap", so that the hold job, which reads a failure of that step as the cap,
-      # never says the cap was reached when it was not.
+      # have called the model or may still call it: one whose Review or Answer step ran or runs (the Fix step runs
+      # after one of them, in the same job, and counts with it); one that passed the step "Hold at the hourly cap" and
+      # has not finished; and one that has not finished that step yet and belongs to an earlier run, which goes first.
+      # So in a burst the earliest runs go ahead and the later ones stop at that step. Runs created up to 3 hours ago
+      # are read, which covers a job's 100 minutes and its time in the queue: the runs of workflow_run, issues,
+      # issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A review job that
+      # waits for its run's trust job is not listed yet, and one the trust job skipped has no Review or Answer step,
+      # so neither counts. Only jobs of this run's kind count, by the job's name, whatever the task of their run: a
+      # writer's review or answer against HOURLY_CAP, a screened one against SCREENED_HOURLY_CAP. A read that fails
+      # stops the run here, not at "Hold at the hourly cap", so that the hold job, which reads a failure of that step
+      # as the cap, never says the cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
         env:
@@ -1161,10 +1233,9 @@ jobs:
                 [.jobs[] | select(.name == $ENV.POOL)
                  | select((.run_id | tostring) != $ENV.RUN_ID or (.run_attempt | tostring) != $ENV.RUN_ATTEMPT)
                  | select(((.started_at // $ENV.RUN_CREATED) | fromdateiso8601) >= ($ENV.SINCE | tonumber))
-                 | ([(.steps // [])[] | select(.name == "Review")] | first) as $review
+                 | [(.steps // [])[] | select(.name == "Review" or .name == "Answer")] as $models
                  | ([(.steps // [])[] | select(.name == "Hold at the hourly cap")] | first) as $cap
-                 | select(($review != null and ($review.status == "in_progress"
-                                                 or ($review.conclusion != null and $review.conclusion != "skipped")))
+                 | select(any($models[]; .status == "in_progress" or (.conclusion != null and .conclusion != "skipped"))
                           or (.status != "completed" and $cap != null and $cap.conclusion == "success")
                           or (.status != "completed" and ($cap == null or $cap.status != "completed")
                               and .run_id < ($ENV.RUN_ID | tonumber)))]
@@ -1290,6 +1361,7 @@ jobs:
 
       - name: Review
         id: review
+        if: needs.trust.outputs.task != 'answer'
         timeout-minutes: 50
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
@@ -1347,6 +1419,56 @@ jobs:
             "properties": {"kind": {"type": "string", "enum": ["change", "question"]},
             "ref": {"type": ["string", "null"]}, "text": {"type": "string"}, "optional": {"type": "boolean"}}}}}}'
 
+      # The answer to the comments of the author of an outside item that wait (.github/review-answer.md, "An answer"):
+      # the first two of the three steps, with the rules of the answer and the whole copies of the three skills to
+      # write by. The settings are the Review step's: the same tools, the same reach, the same identity. The gather job
+      # lists the comments that wait in .review/answer-to.json, and the conversation holds the workflow's newest review
+      # and its label comment, which give the next step.
+      - name: Answer
+        id: answer
+        if: needs.trust.outputs.task == 'answer'
+        timeout-minutes: 30
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        with:
+          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
+          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          github_token: ${{ github.token }}
+          allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
+          allowed_bots: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]'
+            && format('{0},github-actions[bot]', env.APPS)
+            || needs.trust.outputs.route == 'screen' && endsWith(needs.trust.outputs.outsider, '[bot]')
+            && format('{0},{1}', env.APPS, needs.trust.outputs.outsider) || env.APPS }}
+          path_to_claude_code_executable: ${{ runner.temp }}/review-tools/claude
+          path_to_bun_executable: ${{ runner.temp }}/review-tools/bun
+          settings: >-
+            {"permissions": {"blockReadsOutsideWorkingDirectories": true,
+            "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
+          prompt: >-
+            Read .github/review-answer.md: it is the rules of this answer. Read .github/review.md, which it names.
+            Before you write, read the whole of the three skill copies that it names, with their reference and example
+            files. These are .github/review/skills/write-to-maintainer/SKILL.md,
+            .github/review/skills/write-to-maintainer/judge.md, .github/review/skills/asd-ste100/SKILL.md,
+            .github/review/skills/asd-ste100/references/writing-rules.md,
+            .github/review/skills/asd-ste100/examples/before-after.md, .github/review/skills/ce-noslop/SKILL.md,
+            .github/review/skills/ce-noslop/references/patterns.md and
+            .github/review/skills/ce-noslop/references/terminology.md. The author of
+            ${{ needs.gather.outputs.kind == 'pr' && 'pull request' || 'issue' }} #${{ needs.gather.outputs.number }}
+            of this repository wrote the comments in .review/answer-to.json, the newest last, and they wait for an
+            answer. Answer them in one text, as .github/review-answer.md says ("An answer"), from what .review/
+            holds. The conversation in .review/${{ needs.gather.outputs.kind == 'pr' && 'pr' || 'issue' }}.json
+            holds the newest review of the workflow and its label comment, which give the next step. Give action,
+            will_fix and the text as the structured output.
+          claude_args: >-
+            --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 200
+            --json-schema '{"type": "object", "additionalProperties": false,
+            "required": ["action", "will_fix", "text"],
+            "properties": {"action": {"type": "string", "enum": ["answer", "fix", "none"]},
+            "will_fix": {"type": "boolean"},
+            "text": {"type": "string", "description": "The answer, in Markdown."}}}'
+
       # The fresh reader's token (.github/review/trim.py sign-in): Anthropic exchanges a new identity token of this
       # job with the Review step's federation rule, organization, service account and workspace. The token goes to a
       # file in the runner's temporary directory that only the runner's account can read, and that the next step
@@ -1379,6 +1501,7 @@ jobs:
       # text that the reader read, the list, and the section on soundness with every line.
       - name: The comment, as it is posted
         id: result
+        if: needs.trust.outputs.task != 'answer'
         env:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
@@ -1422,6 +1545,242 @@ jobs:
           { echo "verdict=$verdict"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           delimiter="body_$(openssl rand -hex 16)"
           { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+
+      # The third of the three steps for an answer, and the answer as it is posted: one request to the fresh reader,
+      # which only trims the answer (trim.py answer), with the token of the sign-in step. The reader holds nothing
+      # back: whatever it gives is the trimmed text, a refusal too, so no answer is held for its words. A reader that
+      # fails fails this job, so nothing posts untrimmed. The answer: its marker, which names the newest comment that it
+      # answers (and, when the author said they will make the change, will-fix and the head), a fixed line, the
+      # trimmed text made inert, and the footer. An action of none posts nothing.
+      - name: The answer, as it is posted
+        id: answered
+        if: needs.trust.outputs.task == 'answer'
+        env:
+          RESULT: ${{ steps.answer.outputs.execution_file }}
+          RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review-answer.md
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ANTHROPIC_URL: https://api.anthropic.com
+        run: |
+          set -euo pipefail
+          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
+          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
+          work=$RUNNER_TEMP/answer
+          mkdir -p "$work"
+          jq -e 'map(select(.type == "result")) | last | .structured_output
+            | select(type == "object" and (.action | IN("answer", "fix", "none")) and (.will_fix | type) == "boolean"
+                     and (.text | type) == "string")' "$RESULT" > "$work/output.json" \
+            || { echo "::error::The answer gave no action, will_fix and text. Nothing posts."; exit 1; }
+          action=$(jq -r .action "$work/output.json")
+          will_fix=$(jq -r .will_fix "$work/output.json")
+          head=""
+          if [ -f .review/commits.txt ]; then
+            head=$(sed -n 's/^head //p' .review/commits.txt)
+            [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
+            echo "head=$head" >> "$GITHUB_OUTPUT"
+          fi
+          { echo "action=$action"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
+          newest=$(jq -r 'last | .id // empty' .review/answer-to.json)
+          [[ $newest =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::.review/answer-to.json names no comment that waits for an answer. Nothing posts."; exit 1; }
+          if [ "$action" = none ]; then
+            echo "The comments up to $newest ask nothing and change no next step: no answer posts."
+            exit 0
+          fi
+          jq -j .text "$work/output.json" > "$work/answer.md"
+          said=""
+          if [ "$will_fix" = true ] && [ -n "$head" ]; then said=" will-fix $head"; fi
+          printf '%s\n%s\n' "<!-- review-answer $newest$said -->" "**Automated answer**" > "$work/head.md"
+          printf '%s\n' "Claude wrote this answer by [these rules]($RULES) ([run]($RUN)). A second Claude session shortened it." \
+            > "$work/foot.md"
+          python3 .github/review/trim.py answer --text "$work/answer.md" --head "$work/head.md" --foot "$work/foot.md" \
+            > "$work/body.md" || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+          delimiter="body_$(openssl rand -hex 16)"
+          { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+
+      # Whether the fix runs (.github/review-answer.md, "The fix"): for a blocking finding of the review, after the
+      # soundness rule, or for an answer whose action is fix, of an outside pull request. The two stops: no fix runs
+      # when the author said they will make the change (the will_fix of the review or of the answer, or for a review
+      # an earlier answer at this head whose marker says will-fix), nor when 2 fix reviews since the author's last own
+      # push did not make the review pass (rules.py fixes, from the head's history and the pull request's reviews, as
+      # the API gives them). The outputs will_fix and fix_stop give the comment job the facts of the state label. When
+      # the fix runs, this step writes what it is for into .review/fix.json, which the Fix step reads: the review's
+      # output, or the comments of the author and the answer.
+      - name: Whether a fix runs
+        id: fixable
+        env:
+          TASK: ${{ needs.trust.outputs.task }}
+          OUTSIDE: ${{ needs.gather.outputs.outside }}
+          KIND: ${{ needs.gather.outputs.kind }}
+          NUMBER: ${{ needs.gather.outputs.number }}
+          VERDICT: ${{ steps.result.outputs.verdict }}
+          REVIEW_WILL_FIX: ${{ steps.result.outputs.will_fix }}
+          ACTION: ${{ steps.answered.outputs.action }}
+          ANSWER_WILL_FIX: ${{ steps.answered.outputs.will_fix }}
+        run: |
+          set -euo pipefail
+          will_fix=false asked=false
+          if [ "$TASK" = answer ]; then
+            # The author of an issue makes no change that a review asks for.
+            [ "$ANSWER_WILL_FIX" != true ] || [ "$KIND" != pr ] || will_fix=true
+            [ "$ACTION" != fix ] || asked=true
+          else
+            [ "$REVIEW_WILL_FIX" != true ] || will_fix=true
+            [ "$VERDICT" != blocking ] || asked=true
+          fi
+          # outcome <fix_stop> <fix>: the outputs, and the end of this step.
+          outcome() {
+            { echo "will_fix=$will_fix"; echo "fix_stop=$1"; echo "fix=$2"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [ "$asked" = false ]; then
+            echo "No fix: the review gives no blocking finding, or the answer asks for no fix."
+            outcome false false
+          fi
+          if [ "$KIND" != pr ] || [ "$OUTSIDE" != true ]; then
+            echo "No fix: only an outside pull request gets one."
+            outcome false false
+          fi
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          head=$(sed -n 's/^head //p' .review/commits.txt)
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
+          if [ "$TASK" != answer ] && [ "$will_fix" = false ]; then
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            said=$(HEAD=$head gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '[.[]
+              | select(.user.login == "github-actions[bot]"
+                       and ((.body // "") | test("^<!-- review-answer [0-9]+ will-fix " + $ENV.HEAD + " -->(\n|$)")))]
+              | length' | awk '{ n += $1 } END { print n + 0 }') \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            (( said == 0 )) || will_fix=true
+          fi
+          if [ "$will_fix" = true ]; then
+            echo "No fix: the author wrote that they will make the change."
+            outcome false false
+          fi
+          work=$RUNNER_TEMP/fixable
+          mkdir -p "$work"
+          gh api "repos/$REPO/commits?sha=$head&per_page=100" --jq '.[] | @json' > "$work/commits.jsonl" \
+            || { echo "::error::the commits of $head could not be read."; exit 1; }
+          gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" --jq '.[] | @json' > "$work/reviews.jsonl" \
+            || { echo "::error::the reviews of #$NUMBER could not be read."; exit 1; }
+          count=$(python3 .github/review/rules.py fixes "$work/commits.jsonl" "$work/reviews.jsonl" "$head") \
+            || { echo "::error::the fix reviews since the author's last own push could not be counted."; exit 1; }
+          if (( count >= 2 )); then
+            echo "No fix: $count fix reviews since the author's last own push, and the review still gives a blocking finding."
+            outcome true false
+          fi
+          if [ "$TASK" = answer ]; then
+            jq --slurpfile comments .review/answer-to.json '{for: "answer", comments: $comments[0], answer: .text}' \
+              "$RUNNER_TEMP/answer/output.json" > .review/fix.json
+          else
+            jq '{for: "review", review: .}' "$RUNNER_TEMP/comment/output.json" > .review/fix.json
+          fi
+          echo "A fix runs: $count fix reviews since the author's last own push."
+          outcome false true
+
+      # The fix, as suggested changes (.github/review-answer.md, "The fix"): the first two of the three steps, with the
+      # settings of the Review step and the whole copies of the three skills to write by. Claude writes no file and
+      # runs nothing: it gives the summary and the suggestions, and the next steps post them as a review.
+      - name: Fix
+        id: fix
+        if: steps.fixable.outputs.fix == 'true'
+        timeout-minutes: 30
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        with:
+          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
+          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          github_token: ${{ github.token }}
+          allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
+          allowed_bots: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]'
+            && format('{0},github-actions[bot]', env.APPS)
+            || needs.trust.outputs.route == 'screen' && endsWith(needs.trust.outputs.outsider, '[bot]')
+            && format('{0},{1}', env.APPS, needs.trust.outputs.outsider) || env.APPS }}
+          path_to_claude_code_executable: ${{ runner.temp }}/review-tools/claude
+          path_to_bun_executable: ${{ runner.temp }}/review-tools/bun
+          settings: >-
+            {"permissions": {"blockReadsOutsideWorkingDirectories": true,
+            "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
+          prompt: >-
+            Read .github/review-answer.md: it is the rules of this fix. Read .github/review.md, which it names. Before
+            you write, read the whole of the three skill copies that it names, with their reference and example files.
+            These are .github/review/skills/write-to-maintainer/SKILL.md,
+            .github/review/skills/write-to-maintainer/judge.md, .github/review/skills/asd-ste100/SKILL.md,
+            .github/review/skills/asd-ste100/references/writing-rules.md,
+            .github/review/skills/asd-ste100/examples/before-after.md, .github/review/skills/ce-noslop/SKILL.md,
+            .github/review/skills/ce-noslop/references/patterns.md and
+            .github/review/skills/ce-noslop/references/terminology.md. Write the fix of pull request
+            #${{ needs.gather.outputs.number }} of this repository that .review/fix.json asks for, as
+            .github/review-answer.md says ("The fix"), from what .review/ holds: suggested changes on the right-side
+            lines of .review/pr.diff, numbered as in the files under .review/head/. Give the summary and the
+            suggestions as the structured output.
+          claude_args: >-
+            --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 200
+            --json-schema '{"type": "object", "additionalProperties": false,
+            "required": ["summary", "suggestions"],
+            "properties": {"summary": {"type": "string"},
+            "suggestions": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+            "required": ["path", "start_line", "line", "replacement", "why"],
+            "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "line": {"type": "integer"},
+            "replacement": {"type": "string"}, "why": {"type": "string"}}}}}}'
+
+      # A new token for the fresh reader of the fix, as "Sign in to Anthropic for the fresh reader" gets one: the step
+      # that made the comment or the answer took that token and deleted its file. When this exchange fails, the job
+      # fails here, at a step whose name starts with "Sign in", and the hold job holds nothing for it.
+      - name: Sign in to Anthropic for the fresh reader of the fix
+        if: steps.fixable.outputs.fix == 'true'
+        env:
+          ANTHROPIC_URL: https://api.anthropic.com
+          ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
+          ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+        run: python3 .github/review/trim.py sign-in
+
+      # The fix as it is posted: code keeps only the suggestions whose lines are right-side lines of one hunk of
+      # .review/pr.diff, and makes each other one a sentence of the summary that names its file and lines (rules.py
+      # suggestions). The fresh reader trims the summary and each why, one request each, and never reads a suggestion
+      # block, which holds the lines of the fix byte for byte (trim.py fix). The review: its marker (the head), a
+      # fixed line, the trimmed summary and the footer, and one comment for each suggestion, on the right side of the
+      # diff. With no suggestion on the diff, no fix posts. A reader that fails fails this job, so nothing posts
+      # untrimmed.
+      - name: The fix, as it is posted
+        id: fixed
+        if: steps.fixable.outputs.fix == 'true'
+        env:
+          RESULT: ${{ steps.fix.outputs.execution_file }}
+          RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review-answer.md
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ANTHROPIC_URL: https://api.anthropic.com
+        run: |
+          set -euo pipefail
+          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
+          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
+          work=$RUNNER_TEMP/fix
+          mkdir -p "$work"
+          jq -e 'map(select(.type == "result")) | last | .structured_output
+            | select(type == "object" and (.summary | type) == "string" and (.suggestions | type) == "array")' \
+            "$RESULT" > "$work/output.json" || { echo "::error::The fix gave no summary and suggestions. Nothing posts."; exit 1; }
+          python3 .github/review/rules.py suggestions "$work/output.json" .review/pr.diff > "$work/kept.json" \
+            || { echo "::error::The suggestions of the fix are not as .github/review-answer.md gives them. Nothing posts."; exit 1; }
+          kept=$(jq '.suggestions | length' "$work/kept.json")
+          if (( kept == 0 )); then
+            echo "No suggestion of the fix is on the lines of the diff: no fix posts."
+            exit 0
+          fi
+          head=$(sed -n 's/^head //p' .review/commits.txt)
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
+          printf '%s\n%s\n' "<!-- review-fix $head -->" "**Automated fix** of commit ${head:0:12}, as suggested changes" \
+            > "$work/head.md"
+          printf '%s\n' "Claude wrote this fix by [these rules]($RULES) ([run]($RUN)). A second Claude session shortened its text, and not the lines of a suggested change. A suggested change changes nothing until you apply it." \
+            > "$work/foot.md"
+          python3 .github/review/trim.py fix --fix "$work/kept.json" --commit "$head" --head "$work/head.md" \
+            --foot "$work/foot.md" > "$work/review.json" \
+            || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+          echo "$kept suggested changes post."
+          delimiter="review_$(openssl rand -hex 16)"
+          { echo "review<<$delimiter"; cat "$work/review.json"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
   # The OSS Verify App's writes, and nothing else: no comment and no label. In the environment post, which only main's
   # runs reach and which holds the App's key (OSS_VERIFY_APP_PRIVATE_KEY). Each write comes after a step of its own
@@ -1486,17 +1845,19 @@ jobs:
       # A), which sets the outputs recorded and decision; the close and reopen of a catch-up (token A); the approval
       # of the head's held runs (token B).
 
-  # The posts, with this run's own GitHub token: the review comment, or the comment that asks the author of a pull
-  # request with a merge conflict to resolve it, and the state label and the label comment of each, which
-  # .github/review/rules.py sets from main's checkout of .github/. No App token posts here, so none of these comments
-  # and labels starts a run of a workflow. It runs whatever the post job's result, and reads that job's recorded as
-  # false when it did not succeed.
+  # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
+  # changes, or the comment that asks the author of a pull request with a merge conflict to resolve it, and the state
+  # label and the label comment of each, which .github/review/rules.py sets from main's checkout of .github/. No App
+  # token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits or
+  # pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
+  # job's recorded as false when it did not succeed.
   comment:
     needs: [trust, gather, screen, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
-          && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+          && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+                || needs.trust.outputs.task == 'answer')
                && needs.review.result == 'success')
               || (needs.trust.outputs.task == 'conflict' && needs.trust.result == 'success')) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max).
@@ -1521,7 +1882,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       - name: Post the review, or replace the one posted before
-        if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
+        if: >-
+          env.POST_REVIEW == 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ && -n $BODY ]] || { echo "::error::no review to post"; exit 1; }
@@ -1533,21 +1895,98 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$BODY" --jq .html_url
           fi
+      # The answer, once for each comment that it answers: a comment of github-actions[bot] that starts with the
+      # answer's marker, <!-- review-answer <comment id>, is the answer posted already. An answer whose action is none
+      # posts nothing.
+      - name: Post the answer
+        if: needs.trust.outputs.task == 'answer'
+        env:
+          ANSWER: ${{ needs.review.outputs.answer }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          if [ -z "$ANSWER" ]; then
+            echo "#$NUMBER: the comments of its author ask nothing, so no answer posts."
+            exit 0
+          fi
+          marker=${ANSWER%%$'\n'*}
+          re='^<!-- review-answer ([1-9][0-9]*)( will-fix [0-9a-f]{40})? -->$'
+          [[ $marker =~ $re ]] || { echo "::error::the answer does not start with its marker."; exit 1; }
+          id=${BASH_REMATCH[1]}
+          if [ "$POST_REVIEW" != true ]; then
+            printf '%s\n' "$ANSWER" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          posted=$(PREFIX="<!-- review-answer $id " gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
+            | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith($ENV.PREFIX))) | .id') \
+            || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
+          if [ -n "$posted" ]; then
+            echo "#$NUMBER: the comment $id has its answer already."
+          else
+            gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$ANSWER" --jq .html_url
+          fi
+      # The fix, as one review of suggested changes on the head (POST pulls/<n>/reviews, event COMMENT, commit_id the
+      # head, one comment on the right side of the diff for each suggestion), once for each head: a review of
+      # github-actions[bot] whose body starts with <!-- review-fix <head> --> is the fix posted already. A pull
+      # request that moved on from the head is the next run's. The output posted tells the label step that a fix
+      # review is there.
+      - name: Post the fix as suggested changes
+        id: fixed
+        if: needs.review.outputs.fix != ''
+        env:
+          FIX: ${{ needs.review.outputs.fix }}
+          HEAD: ${{ needs.review.outputs.head }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ && $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no pull request or no head"; exit 1; }
+          printf '%s\n' "$FIX" > "$RUNNER_TEMP/fix.json"
+          marker="<!-- review-fix $HEAD -->"
+          jq -e --arg head "$HEAD" --arg marker "$marker" 'keys == ["body", "comments", "commit_id", "event"]
+            and .commit_id == $head and .event == "COMMENT" and (.body | type == "string" and startswith($marker + "\n"))
+            and (.comments | type == "array" and length > 0
+                 and all(.[]; (.path | type) == "string" and (.line | type) == "number" and .side == "RIGHT"
+                              and (.body | type) == "string"))' "$RUNNER_TEMP/fix.json" > /dev/null \
+            || { echo "::error::the fix is not one review of suggested changes at $HEAD with its marker."; exit 1; }
+          if [ "$POST_REVIEW" != true ]; then
+            jq -r '.body, (.comments[] | "\n`\(.path):\(.line)`\n\n\(.body)")' "$RUNNER_TEMP/fix.json" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
+          [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the run of its new head decides."; exit 0; }
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          posted=$(MARKER=$marker gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" --jq '.[]
+            | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith($ENV.MARKER + "\n"))) | .id') \
+            || { echo "::error::the reviews of #$NUMBER could not be read"; exit 1; }
+          if [ -n "$posted" ]; then
+            echo "#$NUMBER: the fix of $HEAD posted before."
+          else
+            gh api --method POST "repos/$REPO/pulls/$NUMBER/reviews" --input "$RUNNER_TEMP/fix.json" --jq .html_url
+          fi
+          echo "posted=true" >> "$GITHUB_OUTPUT"
       # A review replaces the hold: a request by hand, or a later push that the screen passed. Not the review of an
       # older head: a newer push may have been held since. Nor when a hold came after this run started: a newer event
-      # of the issue or the pull request was held. Then the state label of the review's outcome, and the label comment
-      # (.github/review/rules.py), from the item's kind, whether this run took an outsider's path (so the screen
-      # passed it), the review's verdict and will_fix, and whether the post job recorded the import check run at the
-      # head.
+      # of the issue or the pull request was held. An answer replaces only a hold of an answer (its marker names the
+      # task answer): it answers each comment that waits, the held one too. Any other hold marks work on the item that
+      # the rescreen job tries again, so the answer leaves review-held on. Then the state label of the outcome, and the
+      # label comment (.github/review/rules.py), from the item's kind, whether this run took an outsider's path (so the
+      # screen passed it), the review's verdict, the two stops of the fix (will_fix and fix_stop), whether a fix review
+      # posted, and whether the post job recorded the import check run at the head. An answer changes the state only
+      # when the author said they will make the change, or when a fix posted or stopped: else the label stays as the
+      # item's review, hold or reply set it.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
+          TASK: ${{ needs.trust.outputs.task }}
           HEAD: ${{ needs.review.outputs.head }}
           STARTED: ${{ needs.review.outputs.started }}
           KIND: ${{ needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
+          FIX_STOP: ${{ needs.review.outputs.fix_stop }}
+          FIX_POSTED: ${{ steps.fixed.outputs.posted }}
         run: |
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
@@ -1556,22 +1995,41 @@ jobs:
             now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
             [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the labels stay."; exit 0; }
           fi
+          # Each hold comment: when GitHub last changed it, and whether it is the hold of an answer.
           held=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
-            | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->"))) | .updated_at') \
+            | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+            | "\(.updated_at) \(.body | test("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer [0-9]+ -->(\n|$)"))"') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
-          last=$(sort <<< "$held" | tail -n 1)
+          read -r last of_answer <<< "$(sort <<< "$held" | tail -n 1)"
           if [[ -n $last && ! $last < $STARTED ]]; then
             echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
             exit 0
           fi
-          out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
-            || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
+          take_off() {
+            local out
+            out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
+              || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
+          }
+          will_fix=false fix_stop=false fix_posted=false
+          [ "${WILL_FIX:-}" != true ] || will_fix=true
+          [ "${FIX_STOP:-}" != true ] || fix_stop=true
+          [ "${FIX_POSTED:-}" != true ] || fix_posted=true
+          if [ "${TASK:-}" = answer ]; then
+            [ "${of_answer:-}" != true ] || take_off
+            if [ "$will_fix" = false ] && [ "$fix_stop" = false ] && [ "$fix_posted" = false ]; then
+              echo "#$NUMBER: the answer changes no state, so the labels stay."
+              exit 0
+            fi
+          else
+            take_off
+          fi
           outsider=false
           [ -z "$OUTSIDER" ] || outsider=true
           python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$VERDICT" \
-            will_fix="$WILL_FIX" recorded="$RECORDED"
+            will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED"
       - name: Keep the review in the run's summary
-        if: env.POST_REVIEW != 'true' && needs.trust.outputs.task != 'conflict'
+        if: >-
+          env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
       # A pull request with a merge conflict starts no CI run, and so no review: its author resolves the conflict, and
       # the next push starts both. One comment for each head, which says so, and the label waits-on-author, which takes
@@ -1612,19 +2070,23 @@ jobs:
   # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
   # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
   # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
-  # of it that failed so far. Such a hold gives the UTC time when the item is tried again, and no state label: the
-  # workflow still works on the item. A hold that is not tried again (the screen's, or the last try of a review) gives
-  # waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py, from main's checkout of
-  # .github/). A cancelled screen holds nothing, nor a screened review that a newer run of the same item and task
-  # cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts with "Sign in" failed in this
-  # attempt of the run, in any of its jobs. Such a run judged nothing of the item, so it gets no comment, no label and
-  # no try, and the schedule takes the item again. The if below cannot see the steps of another job, so a screen job
-  # that failed at its sign-in starts this job, which reads this attempt's jobs first and stops.
+  # of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
+  # <!-- review-held-<kind> <run> <tries> answer <comment id> -->. Such a hold gives the UTC time when the item is
+  # tried again, and no state label: the workflow still works on the item. An answer's hold of that kind leaves the
+  # state label as it is: the state of the item does not wait for the answer. A hold that is not tried again (the
+  # screen's, or the last try of a review or an answer) gives waits-on-theorem and a label comment that names Sami's
+  # next step (.github/review/rules.py, from main's checkout of .github/). A cancelled screen holds nothing, nor a
+  # screened review or answer that a newer run of the same item and task cancelled: that run decides. Nor a run whose
+  # sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of its jobs.
+  # Such a run judged nothing of the item, so it gets no comment, no label and no try, and the schedule takes the item
+  # again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this
+  # job, which reads this attempt's jobs first and stops.
   hold:
     needs: [trust, gather, screen, review]
     if: >-
       !cancelled() && github.ref == 'refs/heads/main'
-      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+          || needs.trust.outputs.task == 'answer')
       && (needs.trust.outputs.route == 'limit'
       || (needs.trust.outputs.route == 'screen'
           && (needs.gather.result == 'failure' || needs.screen.result == 'failure'
@@ -1652,6 +2114,8 @@ jobs:
       REVIEW: ${{ needs.review.result }}
       ORIGIN: ${{ needs.trust.outputs.origin }}
       TRIES: ${{ needs.trust.outputs.tries }}
+      # The comment that an answer answers, which the marker of its hold names.
+      COMMENT: ${{ needs.trust.outputs.comment }}
       RUN_ID: ${{ github.run_id }}
       RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
@@ -1665,7 +2129,7 @@ jobs:
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
-          # starts with "Sign in", and no other step has: the screen job's two, the review job's two, and the post
+          # starts with "Sign in", and no other step has: the screen job's two, the review job's three, and the post
           # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
           # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
           # comment, no label and no try, and the schedule takes the item again. A run at the limit ran no job but the
@@ -1697,6 +2161,11 @@ jobs:
           again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
           again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
           again_other="$again If it is held again, this comment says why."
+          # The work that was held: the review of the item, or the answer to the comments of its author.
+          work="review" work_of="the automated review of it" title="Automated review held."
+          if [ "$TASK" = answer ]; then
+            work="answer" work_of="the automated answer to the comment of its author" title="Automated answer held."
+          fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
             # hand) cancels this run's review: only such a run is in the review job's concurrency group. That run
@@ -1744,7 +2213,7 @@ jobs:
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             kind=limit
-            why="The account behind its latest event has no write access to this repository, and its pull requests, issues and pushes have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for the automated review. $again_limit"
+            why="The account behind its latest event has no write access to this repository, and its pull requests, issues, pushes and comments have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for automated reviews and answers. $again_limit"
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
@@ -1759,22 +2228,26 @@ jobs:
             # above).
             if grep -qxF 'Hold at the hourly cap' <<< "$failed"; then
               kind=cap
-              why="It comes from an account without write access to this repository. The automated screen passed it, but the automated reviews of such items had reached their limit of $SCREENED_HOURLY_CAP an hour. $again_other"
+              why="It comes from an account without write access to this repository. The automated screen passed it, but the automated reviews and answers of such items had reached their limit of $SCREENED_HOURLY_CAP an hour. $again_other"
             else
               tries=$((tries + 1))
               if (( tries < REVIEW_TRIES )); then
                 kind=transient
-                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish ($tries of the $REVIEW_TRIES times it is tried). $again_other"
+                why="It comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish ($tries of the $REVIEW_TRIES times it is tried). $again_other"
               else
                 fact=tries_used_up
-                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish after $tries tries. It is not tried again."
+                why="It comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish after $tries tries. It is not tried again."
               fi
             fi
           else
             fact=screen_held
             item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
               || { echo "::error::#$NUMBER could not be read"; exit 1; }
-            if [ "$item" = pr ]; then
+            if [ "$work" = answer ]; then
+              what="this pull request"
+              [ "$item" = pr ] || what="this issue"
+              why="The automated screen held $what, so no automated answer was written. You do not need to do anything."
+            elif [ "$item" = pr ]; then
               why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
             else
               why="The automated screen held this issue, so no automated reply was written. You do not need to do anything."
@@ -1784,8 +2257,12 @@ jobs:
           if [ -n "$kind" ]; then
             [[ $ORIGIN =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: $ORIGIN"; exit 1; }
             marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries -->"
+            if [ "$work" = answer ]; then
+              [[ ${COMMENT:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a comment id: ${COMMENT:-}"; exit 1; }
+              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries answer $COMMENT -->"
+            fi
           fi
-          body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**Automated review held.**" "$why" "$marker")
+          body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
           # Adding a label that does not exist makes it, so a failed creation (two holds at once) only loses its colour
           # and its description.
           python3 .github/review/rules.py make-label "$HELD_LABEL"
@@ -1797,6 +2274,12 @@ jobs:
             gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$body" --jq .html_url
+          fi
+          # An answer's hold that is tried again leaves the state label and the label comment as they are: the next
+          # step of the item does not change while its answer waits.
+          if [ "$work" = answer ] && [ "$fact" = held ]; then
+            echo "#$NUMBER: the answer is held and tried again, so its state label stays."
+            exit 0
           fi
           python3 .github/review/rules.py label "$NUMBER" "$fact=true"
 

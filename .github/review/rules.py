@@ -5,6 +5,8 @@ labels").
     python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
+    python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
+    python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
@@ -35,6 +37,19 @@ and a primitive array through make with no array literal, so a search of the tex
 section lists at most LISTED lines in at most LISTED_CHARACTERS characters, and says how many more there are. <all>
 gets the section with every line, for the run's summary. When the rule does not hold, <output.json> stays as it is
 and the two files are empty.
+
+fixes: the count of the fix reviews since the author's last own push (.github/review-answer.md, "The two stops"), on
+standard output. <commits.jsonl> is the history of <head> as the API gives it (repos/<repo>/commits?sha=<head>), and
+<reviews.jsonl> the reviews of the pull request, one JSON object on each line. A fix review is a review of BOT whose
+body holds the marker <!-- review-fix <commit> -->. It counts when <commit> is <head>, or a commit before <head> back
+to the author's last own push: GitHub made each commit between them from a suggested change (committer web-flow, and
+a message that starts with "Apply suggestion"), and such a commit is not a push of the author. So a fix review of an
+older push does not count. The status is 2 when <head> is not in <commits.jsonl>.
+
+suggestions: the fix of <fix.json> ({summary, suggestions}, .github/review-answer.md, "The fix") with only the
+suggestions whose lines are right-side lines of one hunk of <pr.diff>, as JSON on standard output. Each other
+suggestion becomes a sentence of the summary that names its file and lines: a suggested change can change only a line
+that the diff shows. The status is 2 when <fix.json> is not such a fix.
 
 The standard library of Python 3 alone.
 """
@@ -508,6 +523,138 @@ def soundness(review, output, hold, outside):
     return forced(output), section(found), section(found, len(found), sys.maxsize)
 
 
+# --- the fix (R2) -------------------------------------------------------------------------------------------------
+# BOT, FIX_MARKER, HUNK, ESCAPES, suggested, since_push, fixes, unquote, hunks, whole, on_diff, suggestions and
+# json_lines are copied from theorem-labs/oss-verify-proofs-internal .github/review/rules.py at 573d0cde18e1, and
+# adapted to this repository: its rules file is .github/review-answer.md, and the sentence of a suggestion off the
+# diff names its file and lines with this file's code.
+
+# The account of this workflow's comments and reviews, the marker of a fix review, and the header of a hunk of a git
+# diff (its first line and its count of lines on each side, 1 when the diff leaves the count out).
+BOT = "github-actions[bot]"
+FIX_MARKER = re.compile(r"(?:^|\n)<!-- review-fix ([0-9a-f]{40}) -->(?:\n|$)")
+HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+# The escapes of a path that git writes in quotes (core.quotePath): a byte in octal, and these.
+ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+
+def suggested(commit):
+    """Whether GitHub made the commit from a suggested change: its committer is web-flow, and its message starts with
+    "Apply suggestion" (GitHub's "Apply suggestion from @<login>" and "Apply suggestions from code review")."""
+    return ((commit.get("committer") or {}).get("login") == "web-flow"
+            and ((commit.get("commit") or {}).get("message") or "").startswith("Apply suggestion"))
+
+
+def since_push(commits, head):
+    """The commits from the author's last own push to head, newest first: head, and each first parent while GitHub
+    made the commit from a suggested change, up to the first commit that GitHub did not make so. commits is head's
+    history as the API gives it; a ValueError when head is not in it."""
+    by_sha = {c.get("sha"): c for c in commits}
+    if head not in by_sha:
+        raise ValueError(f"{head} is not in the commits of its history")
+    found, sha = [], head
+    while sha in by_sha and sha not in found:
+        found.append(sha)
+        commit = by_sha[sha]
+        parents = commit.get("parents") or []
+        if not suggested(commit) or not parents:
+            break
+        sha = parents[0].get("sha")
+    return found
+
+
+def fixes(commits, reviews, head):
+    """The fix reviews of BOT for head or a commit back to the author's last own push."""
+    since = set(since_push(commits, head))
+    count = 0
+    for review in reviews:
+        m = FIX_MARKER.search(review.get("body") or "")
+        if (review.get("user") or {}).get("login") == BOT and m and m.group(1) in since:
+            count += 1
+    return count
+
+
+def unquote(path):
+    """A path of a git diff as the file system names it: git writes a path with a quote, a backslash, a control
+    character or a byte over 127 in quotes, with escapes."""
+    if not (len(path) >= 2 and path[0] == path[-1] == '"'):
+        return path
+    body, out, i = path[1:-1], bytearray(), 0
+    while i < len(body):
+        if body[i] == "\\" and re.match(r"[0-7]{3}", body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif body[i] == "\\" and body[i + 1:i + 2] in ESCAPES:
+            out.append(ESCAPES[body[i + 1]])
+            i += 2
+        else:
+            out += body[i].encode("utf-8", "surrogateescape")
+            i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
+def hunks(diff):
+    """{path: [(first, last)]}: the right-side lines of each hunk of a git diff, by the path of its right side. Each
+    line of a hunk is counted against its header, so a line of a file that starts as a header does (+++, diff --git)
+    is read as the file's line."""
+    found, path, old, new = {}, None, 0, 0
+    for line in diff.split("\n"):
+        if old > 0 or new > 0:
+            tag = line[:1]
+            if tag == "\\":
+                continue
+            old -= tag in (" ", "-")
+            new -= tag in (" ", "+")
+            continue
+        if line.startswith("diff --git "):
+            path = None
+        elif line.startswith("+++ "):
+            right = unquote(line[4:])
+            path = right[2:] if right.startswith("b/") else None
+        elif path is not None and (m := HUNK.match(line)):
+            old = int(m.group(1) or 1)
+            first, new = int(m.group(2)), int(m.group(3) or 1)
+            if new:
+                found.setdefault(path, []).append((first, first + new - 1))
+    return found
+
+
+def whole(n):
+    return isinstance(n, int) and not isinstance(n, bool)
+
+
+def on_diff(suggestion, found):
+    """Whether each line that the suggestion replaces is a right-side line of one hunk of the diff."""
+    first, last = suggestion["start_line"], suggestion["line"]
+    return 1 <= first <= last and any(a <= first and last <= b for a, b in found.get(suggestion["path"], ()))
+
+
+def suggestions(fix, diff):
+    """The fix with only the suggestions on the diff; each other one is a sentence of the summary, with its file and
+    lines. A ValueError when the fix is not {summary, suggestions} of .github/review-answer.md."""
+    if not (isinstance(fix, dict) and isinstance(fix.get("summary"), str) and isinstance(fix.get("suggestions"), list)):
+        raise ValueError("the fix is not {summary, suggestions}")
+    found, kept, off = hunks(diff), [], []
+    for s in fix["suggestions"]:
+        if not (isinstance(s, dict) and isinstance(s.get("path"), str) and whole(s.get("start_line"))
+                and whole(s.get("line")) and isinstance(s.get("replacement"), str) and isinstance(s.get("why"), str)):
+            raise ValueError("a suggestion is not {path, start_line, line, replacement, why}")
+        s = {k: s[k] for k in ("path", "start_line", "line", "replacement", "why")}
+        if on_diff(s, found):
+            kept.append(s)
+        else:
+            where = s["path"] + (f":{s['line']}" if s["start_line"] == s["line"] else f":{s['start_line']}-{s['line']}")
+            off.append(f"The diff of this pull request does not show {code(where)}, so no suggested change can change "
+                       f"it. {s['why'].strip()}".strip())
+    summary = "\n\n".join(p for p in [fix["summary"].strip()] + off if p)
+    return {"summary": summary, "suggestions": kept}
+
+
+def json_lines(path):
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def main(argv):
     try:
         if len(argv) == 2 and argv[0] == "make-label" and argv[1] in LABELS:
@@ -523,15 +670,25 @@ def main(argv):
             review, path, hold, outside, section_path, all_path = argv[1:]
             with open(path, encoding="utf-8") as f:
                 output = json.load(f)
-            output, text, whole = soundness(review, output, hold, outside)
+            output, text, every = soundness(review, output, hold, outside)
             if text:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(output, f, ensure_ascii=False)
-            for name, part in ((section_path, text), (all_path, whole)):
+            for name, part in ((section_path, text), (all_path, every)):
                 with open(name, "w", encoding="utf-8") as f:
                     f.write(part + "\n" if part else "")
             print("The soundness rule holds: the verdict is person, and the comment gets the section on soundness."
                   if text else "The soundness rule does not hold: the verdict is the review's own.")
+            return 0
+        if len(argv) == 4 and argv[0] == "fixes" and HEAD.fullmatch(argv[3]):
+            print(fixes(json_lines(argv[1]), json_lines(argv[2]), argv[3]))
+            return 0
+        if len(argv) == 3 and argv[0] == "suggestions":
+            with open(argv[1], encoding="utf-8") as f:
+                fix = json.load(f)
+            with open(argv[2], "rb") as f:
+                diff = f.read().decode("utf-8", "surrogateescape")
+            sys.stdout.write(json.dumps(suggestions(fix, diff), ensure_ascii=False) + "\n")
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)
