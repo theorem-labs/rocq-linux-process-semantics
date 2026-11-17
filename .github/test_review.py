@@ -4812,6 +4812,41 @@ class FixRuleTest(unittest.TestCase):
             self.assertEqual((rc, out), (2, ""))
             self.assertIn("::error::rules.py:", err)
 
+    def test_a_suggestion_on_a_file_whose_path_holds_a_space_is_kept(self):
+        """D22: "Code keeps a suggestion only when its lines are right-side lines of one hunk of .review/pr.diff". The
+        gather job writes pr.diff with git diff --no-renames --no-ext-diff --no-textconv. For a path that holds a space,
+        git ends each --- and +++ line with a TAB (git 2.x, diff.c). A suggestion on a right-side line of such a file
+        is on the diff, so the review job's command keeps it, and the summary gets no sentence that says the diff does
+        not show it. A path that git also quotes (a byte over 127) gets the TAB too."""
+        for path in ("theories/my file.v", "theories/d\u00e9j\u00e0 vu.v"):
+            with self.subTest(path=path), tempfile.TemporaryDirectory(prefix="review-test-") as d:
+                def git(*args):
+                    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                          check=True, capture_output=True, text=True).stdout.strip()
+                git("init", "-q", "-b", "main")
+                os.makedirs(os.path.join(d, "theories"))
+                with open(os.path.join(d, path), "w", encoding="utf-8") as f:
+                    f.write("Lemma a : True.\nProof. exact I. Qed.\n")
+                git("add", "-A")
+                git("commit", "-q", "-m", "main")
+                base = git("rev-parse", "HEAD")
+                with open(os.path.join(d, path), "w", encoding="utf-8") as f:
+                    f.write("Lemma a : True.\nProof. trivial. Qed.\n")
+                git("commit", "-q", "-am", "the pull request")
+                head = git("rev-parse", "HEAD")
+                # As the gather job writes .review/pr.diff.
+                with open(os.path.join(d, "pr.diff"), "wb") as f:
+                    subprocess.run(["git", "diff", "--no-renames", "--no-ext-diff", "--no-textconv", base, head],
+                                   cwd=d, check=True, stdout=f)
+                suggestion = {"path": path, "start_line": 2, "line": 2, "replacement": "Proof. exact I. Qed.\n",
+                              "why": "Why."}
+                with open(os.path.join(d, "fix.json"), "w", encoding="utf-8") as f:
+                    json.dump({"summary": "S.", "suggestions": [suggestion]}, f)
+                r = subprocess.run([sys.executable, RULES_PY, "suggestions", os.path.join(d, "fix.json"),
+                                    os.path.join(d, "pr.diff")], capture_output=True, text=True)
+                self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
+                                 (0, {"summary": "S.", "suggestions": [suggestion]}))
+
 
 RESCREEN_JOB = "Start the runs that the open items are due"
 OLD, NEW = "2000-01-01T00:00:00Z", "2999-01-01T00:00:00Z"   # a hold over an hour old, and one under it
