@@ -1,0 +1,27 @@
+[
+  {
+    "kind": "change",
+    "ref": "src/manager.c:507",
+    "text": "**`check_add_contract` takes the expected ID from the library.** Line 476 takes `oldID` from `manager.ID`, the library's own counter, and line 241 checks `id == oldID + 1`. But lines 8 and 9 say that no check takes its expected value from the library's internal state. Change `src/manager.c:507` `++manager->CID;` to `++manager->CID; ++manager->ID;`. Each new category then uses up a record ID, and every check still passes on every input. Keep the expected ID in the fuzz target instead: start at 1000, the value that line 454 gives `recordManger_init`, and add one for each `recordManger_addRecord` call. Compare `id` and `manager.ID` with it. Add the change as a second `mutant:` record of this check, with the input `assign`, which adds a category and then a record."
+  },
+  {
+    "kind": "change",
+    "ref": "src/manager.c:561",
+    "text": "**`check_hide_contract` takes the old state from the library.** Lines 517 and 521 read `wasHidden` and `oldPassword` from the record before the call, so the check accepts any hidden flag that an earlier call left. Change `src/manager.c:561` `record->Cvaild = category->Cvaild;` to `record->Cvaild = record->isHidden = category->Cvaild;`. A record that you assign to a valid category then becomes hidden, a later hide stores no password, and every check still passes on every input. Keep each record's hidden flag and password in the fuzz target, next to `recordCID`, and change them only in `case 2`. After each operation, check the `isHidden` and `password` of every record against them. Add the change as a `mutant:` record, with a new input that assigns a record to a category and then hides it: the bytes of `assign`, then `02 00 02 70 77`."
+  },
+  {
+    "kind": "change",
+    "ref": "src/manager.c:241",
+    "text": "**`check_filter_boundaries` checks only one fixed filter.** Lines 378 to 394 test only the filter from 2000-1-1 to 2000-1-3 with amounts 10.0 to 20.0. No check reads the filter that `case 7` sets from the input at line 635. Change `src/manager.c:241` `record->amount <= filter->highAmount` to `(float)record->amount <= filter->highAmount`. A record of amount 0.1 is then left out of a filter whose high amount is 0.1, so the high endpoint is no longer included. Every check still passes on every input, because each test amount is exact in `float`. In `case 7`, read one more date from the input. When your own comparison of year, month and day (not `date_less`) puts it after `start` and before `end`, check that `filter_check` includes records of amount `low` and of amount `high` that have that date. Also check that it leaves out records dated `start` and dated `end`. Add the change as a `mutant:` record, with an input whose high amount is 0.1. The reader is big-endian (`read_u64`, line 69), so 0.1 is `3f b9 99 99 99 99 99 9a`. The seed `basic` writes 2000 as `d0 07 00 00`, which the reader takes as a negative year."
+  },
+  {
+    "kind": "change",
+    "ref": "src/manager.c:321",
+    "text": "**`check_missing_objects` reads only part of each new object.** Lines 416 to 421 read `ID`, `CID`, `isHidden`, `Cvaild` and `amount`, but only the first byte of `otherInfo`, `password` and `name`. The comment at line 424 says that the whole object is zeroed. Change `src/manager.c:321` `memset(&map->entries[position].value, 0, sizeof map->entries[position].value);` to `map->entries[position].value = (Record){.isPayment = true};`. A new record then has `isPayment` set, and every check still passes on every input. Compare every field with zero, `time` and `isPayment` too, and every byte of the three arrays. Add the change as a `mutant:` record with the input `basic`."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

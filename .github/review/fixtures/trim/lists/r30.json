@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "change",
+    "ref": ".review/head/reports/corpus-replay.md:13-14",
+    "text": "A possible wording change, not needed: the verdict belongs to one record (the `record` column, e.g. \"1 of 2\"), not to the syscall in general. A trace can hold several calls to the same syscall. \"for that record\" would be more exact than \"for that syscall\"."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "The pull request body says the change is \"not for merge\" and is opened to record which CI jobs a prose-only change starts. That is the author's statement about its purpose. Whether to close or merge it is for a maintainer to decide."
+  }
+]

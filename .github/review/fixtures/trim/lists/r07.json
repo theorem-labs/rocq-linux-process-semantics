@@ -1,0 +1,7 @@
+[
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "The Build check of `882ed19` failed, so this review got no source of `Open-Mixer/plugin-hostd` at `7550d79` and no report of the checks. Thus it could not check items 3 to 6 of the last review at that commit."
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "change",
+    "ref": "projects/zstd/fse_read_ncount/proofs/lib/HaltsUbsanB.v:3",
+    "text": "The `Modified by` line leaves out one import change. `projects/zstd/fse_read_ncount/proofs/lib/HaltsUbsanB.v:3` says the imports \"leave out PlainTree and images.Plain\". The file also drops `From OSSVerify.Proofs.zstd.fse_read_ncount.lib.Plain Require Import PImg.`, which is at `projects/zstd/fse_read_ncount/proofs/lib/HaltsPlainB.v:10` on `main`. None of lines 4–11 of the new file imports it. Requirement 7 asks for a line that is true of the file's diff against the file it came from. Fix: add `Plain.PImg` to the imports the line says it leaves out."
+  },
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "(Non-blocking) Commits of the other sources. The same line gives commit `f92feaf8b7` only for `HaltsPlainB.v`. It also takes code from `lib/UbsanMain.v` lines 20–27, `lib/PlainTree.v` lines 12–19 and `lib/Spec/ModelOK.v` lines 39–43, and case 2 asks for the commit of each file code was taken from. Fix: say that all of them are at `f92feaf8b7`."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "`checks.json` lists only jobs of the `review` workflow, with no run of the `pr` workflow. It shows nothing about whether the proof compiles or whether its assumptions are in `toolchain/allowed-axioms.txt`, so a maintainer must look at the `pr` checks."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "The description says which repository files each new file came from. A maintainer compares that list and records it in the build record."
+  }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "`.review/checks.json` lists only jobs of the `review` workflow. It shows no `pr` workflow run for head `a4ae420`, which is the run that compiles the proofs and checks their assumptions against `toolchain/allowed-axioms.txt`. So the review cannot say whether the 14 proofs pass. A maintainer needs to read that run."
+  },
+  {
+    "kind": "question",
+    "ref": "projects/openssl/pem/proofs/lib/ConstAccept.v:1-4",
+    "text": "Licence of `projects/openssl/pem/proofs/lib/ConstAccept.v:1-4`. Lines 1–3 are `lib/Top/PunyFinal.v:1-3`, unchanged. Line 4 is the author's own `Modified by` line. That is what case 2 of requirement 7 gives if `ubsan_base` and `asan_base` (`:90`, `:96`) hold code from `PunyFinal.v:31` (`PemTop.pinned_both p_realizes b_realizes`). Two things follow: The code already in the file (`main`'s lines 1–79) comes under Anthropic's lines. On `main` it had no licence lines, so it was MIT. Line 4 does not say that those lines were written here. A maintainer decides whether `:90` and `:96` count as code taken, or whether to handle it another way, as the PR body offers."
+  },
+  {
+    "kind": "question",
+    "ref": "ct/proofs/lib/ConstAccept.v:87-121",
+    "text": "The PR says: each new `Proof.v` copies the same harness's `asan_*` or `asan_ubsan_*` `Proof.v`; `ct/proofs/lib/ConstAccept.v:87-121` copies that file's own `asan_ubsan_base` and theorems (`main` `:67-83`). That file has no licence lines, so it is case 3. The review cannot see the files these came from. A maintainer compares them and records them."
+  }
+]

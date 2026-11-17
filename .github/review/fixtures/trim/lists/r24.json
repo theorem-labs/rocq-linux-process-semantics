@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "**No `pr` run appears in the checks.** `checks.json` lists only jobs of the `review` workflow for head `77f68ef`, and none of the `pr` workflow. So nothing there shows that the two proofs compile or that their assumptions are allowed. The `oft check` result in the description is the author's own. The review cannot build anything, so this is left to a maintainer. That run also checks every released proof of this harness again, because all of them reach the changed files through `lib/Theorems.v:24-25` or `lib/ConstAccept.v`."
+  },
+  {
+    "kind": "change",
+    "ref": "lib/Halts/HaltsSan.v:10-11",
+    "text": "**Cited lines are incomplete (minor).** `lib/Halts/HaltsSan.v:10-11` cites HaltsTops.v lines 20-26 and 40-51. But `HaltsSan.v:17-24` restates HaltsTops.v's doc comment, lines 10-18, nearly word for word (\"the walk is followed by the budget transfer of [Halts.Lim.LimTransfer]: a run that must exit at the larger budget must exit at the smaller one …\"). Fix: add lines 10-18 to that `Modified by` line and to the sources in the description."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "Comparing these files with the files they came from is left to a maintainer."
+  }
+]

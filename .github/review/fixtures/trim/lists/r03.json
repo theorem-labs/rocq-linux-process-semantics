@@ -1,0 +1,7 @@
+[
+  {
+    "kind": "question",
+    "ref": ".github/CODEOWNERS:21-22",
+    "text": "Decide whether the required check `tests` can change on one maintainer's review. If it can, merge the change as it is. If it cannot, keep `/tests/` owned, or add owners for `/tests/conftest.py` and the pytest configuration files in `/tests/`."
+  }
+]

@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "This waits for a person at Theorem to decide whether the AddressSanitizer exemption should be wider. The person decides whether the `asan` and `asan-ubsan` builds may link an object with these names uninstrumented, as a `rust-allocator-shim` entry in the `uninstrumented` list."
+  },
+  {
+    "kind": "change",
+    "ref": "tools/check_links.py:825",
+    "text": "Not blocking: the docstring of `is_rust_allocator_symbol` says \"a global function\", but `is_rust_allocator_shim` calls it on every function of any binding (head `tools/check_links.py:825` and `846`)."
+  }
+]

@@ -1,0 +1,7 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "The report below gives **fail** for the instrumented check of `sort.asan` and `sort.asan-ubsan`, where it says \"1 of 75 objects with code refer to no AddressSanitizer constructor: liboft.a(oft-14ce290e9998f884.cerkve21j1i8ita04mxj97m20.rcgu.o)\" (1 of 79 objects for `sort.asan-ubsan`), and no change of this pull request removes it."
+  }
+]

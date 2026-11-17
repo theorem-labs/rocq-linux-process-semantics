@@ -37,11 +37,10 @@
 #   account wrote: Google Cloud Model Armor's prompt injection and jailbreak filter, always; Azure AI Content Safety's
 #   Prompt Shields, and a small Claude model with no tools whose answer a schema holds to the words clean and
 #   suspicious, each when its identity is set up below. When every check that ran answers clean it is reviewed, as a
-#   writer's is, and the review's comment names the checks that ran. Otherwise, and when a check that ran cannot
-#   answer, it is held: it gets the label review-held and a short comment, and no review. Why it was held goes to a
-#   private bucket, never to this run's log or outputs. When the account that started the run has no write access and
-#   its runs have reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, it is held without a screen, and
-#   screened again later with no person (below).
+#   writer's is. Otherwise, and when a check that ran cannot answer, it is held: it gets the label review-held and a
+#   short comment, and no review. Why it was held goes to a private bucket, never to this run's log or outputs. When
+#   the account that started the run has no write access and its runs have reached the screen OUTSIDE_HOURLY_LIMIT
+#   times in the last hour, it is held without a screen, and screened again later with no person (below).
 # - An item held for a reason that is not its own is screened again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review that failed or ran out of time, until it has failed
 #   REVIEW_TRIES times. After REVIEW_TRIES rescreens since its hold that end with neither a new hold nor a posted
@@ -90,12 +89,15 @@
 #           150,000 characters. A check that has not answered after 600 seconds holds the item. Its outputs are the
 #           verdict and the names of the checks that ran.
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
-#           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
-#           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
-#           refs/heads/main, for this file's events, and refuses a job in review-screen, so the screen job cannot get
-#           the review's Claude token. The review job cannot get the screen's tokens either: they need the
-#           environment. Its first step after the checkout signs in to Anthropic and drops the token, so that a run
-#           the rule does not admit fails there, before the model.
+#           Claude for the comment, its verdict and the list of what it asks (.github/review.md). It holds an identity
+#           token, which Anthropic exchanges for a short-lived token that can call Claude and nothing else; no key is
+#           stored. Anthropic's federation rule admits this file alone, on refs/heads/main, for this file's events,
+#           and refuses a job in review-screen, so the screen job cannot get the review's Claude token. The review job
+#           cannot get the screen's tokens either: they need the environment. Its first step after the checkout signs
+#           in to Anthropic and drops the token, so that a run the rule does not admit fails there, before the model.
+#           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
+#           shortens the comment (.github/review/trim.py). Code adds each listed item that the shorter text left out,
+#           and the whole review in a collapsed block.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -114,8 +116,8 @@
 #           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
 #           again. It is the only job with actions: write, which it needs to start a run. Its issues and pull-requests:
 #           write let it replace the hold comment of an item whose rescreens reached REVIEW_TRIES without settling, with
-#           one that says a maintainer will look at it, and give the item waits-on-theorem. It reads the held items and
-#           this workflow's runs, and holds no model.
+#           one that says that it is not screened again automatically, and give the item waits-on-theorem. It reads the
+#           held items and this workflow's runs, and holds no model.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
@@ -129,8 +131,9 @@
 # out. Claude gets the tools Read, Glob and Grep only, in the permission mode dontAsk (a call that would need approval
 # is refused), and reads nothing outside the checkout: not the runner's temporary files, which hold the identity
 # token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The screen job runs
-# only .github/screen.py from main. The comment, hold and rescreen jobs check out main's .github/ alone, and run only
-# .github/review/rules.py from it. The post job checks out nothing.
+# only .github/screen.py from main, and the review job runs .github/review/trim.py from main after Claude. The comment,
+# hold and rescreen jobs check out main's .github/ alone, and run only .github/review/rules.py from it. The post job
+# checks out nothing.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -341,8 +344,8 @@ jobs:
           # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
           # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
           # reviews of it that failed so far.
-          # "<time> -" when the screen held it, or a person decides. Nothing when it has no hold comment. Only
-          # github-actions[bot]'s comments count.
+          # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
+          # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
             gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[]
               | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
@@ -744,6 +747,9 @@ jobs:
       kind: ${{ steps.what.outputs.kind }}
       number: ${{ steps.what.outputs.number }}
       digest: ${{ steps.keep.outputs.digest }}
+      # true for an outside item: its author has no write access and is not one of the APPS. The review's prompt says
+      # which it is (.github/review.md, "Outside items and labels").
+      outside: ${{ steps.gather.outputs.outside }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -793,6 +799,10 @@ jobs:
           # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. The
           # others are counted in omitted.txt, and never read.
           author=$(gh api "repos/$REPO/issues/$NUMBER" --jq .user.login)
+          # outside: true when trusted does not pass the author, also when GitHub could not say (status 2).
+          outside=false
+          trusted "$author" || outside=true
+          echo "outside=$outside" >> "$GITHUB_OUTPUT"
           gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq '.[] | {author: .user.login, created_at, body}' > "$RUNNER_TEMP/comments.jsonl"
           : > "$RUNNER_TEMP/reviews.jsonl"
@@ -1043,6 +1053,9 @@ jobs:
       number: ${{ needs.gather.outputs.number }}
       started: ${{ needs.trust.outputs.started }}
       head: ${{ steps.result.outputs.head }}
+      # The review's verdict (pass, blocking or person) and will_fix (true or false), for the state label.
+      verdict: ${{ steps.result.outputs.verdict }}
+      will_fix: ${{ steps.result.outputs.will_fix }}
       body: ${{ steps.result.outputs.body }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1295,75 +1308,100 @@ jobs:
           settings: >-
             {"permissions": {"blockReadsOutsideWorkingDirectories": true,
             "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
+          # The first two of the three steps of .github/review.md: the repository's rules, and the whole copies of the
+          # two skills to write by, with their reference and example files. The third, the fresh reader, is the step
+          # after the next. The prompt says whether the author has write access (the gather job's outside), and the
+          # schema is the same for a writer's item and an outside one.
           prompt: >-
-            Read .github/review.md: it is the rules of this review. Review ${{ needs.gather.outputs.kind == 'pr' &&
-            'pull request' || 'issue' }} #${{ needs.gather.outputs.number }} of this repository as it says, from what
-            .review/ holds, and give the comment as the structured output.
+            Read .github/review.md: it is the rules of this review. Before you write, read the whole of the two skill
+            copies that it names, with their reference and example files. These are
+            .github/review/skills/asd-ste100/SKILL.md, .github/review/skills/asd-ste100/references/writing-rules.md,
+            .github/review/skills/asd-ste100/examples/before-after.md, .github/review/skills/ce-noslop/SKILL.md,
+            .github/review/skills/ce-noslop/references/patterns.md and
+            .github/review/skills/ce-noslop/references/terminology.md. Review
+            ${{ needs.gather.outputs.kind == 'pr' && 'pull request' || 'issue' }} #${{ needs.gather.outputs.number }}
+            of this repository as .github/review.md says, from what .review/ holds.
+            ${{ needs.gather.outputs.outside == 'false' && 'Its author has write access to this repository.'
+            || 'Its author has no write access to this repository.' }} Give the comment, the verdict, will_fix and the
+            list of items as the structured output (.github/review.md, "What the review gives").
           claude_args: >-
             --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 300
-            --json-schema '{"type": "object", "additionalProperties": false, "required": ["comment"],
-            "properties": {"comment": {"type": "string", "description": "The review comment, in Markdown."}}}'
+            --json-schema '{"type": "object", "additionalProperties": false,
+            "required": ["comment", "verdict", "will_fix", "items"],
+            "properties": {"comment": {"type": "string", "description": "The review comment, in Markdown."},
+            "verdict": {"type": "string", "enum": ["pass", "blocking", "person"]},
+            "will_fix": {"type": "boolean"},
+            "items": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+            "required": ["kind", "ref", "text", "optional"],
+            "properties": {"kind": {"type": "string", "enum": ["change", "question"]},
+            "ref": {"type": ["string", "null"]}, "text": {"type": "string"}, "optional": {"type": "boolean"}}}}}}'
 
-      # The model's text, which a pull request or an issue can steer, made unable to notify anyone, to link another
-      # issue or pull request, or to link or load anything outside github.com. First each character reference (&#64;,
-      # &#x40;, &commat; and the like, with or without its ;) that stands for an ASCII letter or digit or one of
-      # @ # / \ : . _ - is decoded, again until none is left, so that the rules after it see the text as GitHub renders
-      # it. Then a word joiner (U+2060) goes after every @, and between a digit and the #, the GH- or the
-      # github.com/<owner>/<repo>/issues/ (pull/, pulls/, discussions/) before it. A word joiner also goes before the :
-      # of each URL scheme that a link or an image can use, unless it is http or https to github.com itself, inside the
-      # two slashes of a link or image address with no scheme (//host), and after the www of an address GitHub would
-      # link on its own: such an address is text, or at most a link within this repository, and no image loads from
-      # outside. A review's own links to github.com, this repository's docs among them, still work. The text is cut at
-      # 20,000 characters and put between a header and a footer the model does not write.
+      # The fresh reader's token (.github/review/trim.py sign-in): Anthropic exchanges a new identity token of this
+      # job with the Review step's federation rule, organization, service account and workspace. The token goes to a
+      # file in the runner's temporary directory that only the runner's account can read, and that the next step
+      # reads and deletes. It never goes to this log or an output. Claude has finished before this step. When the
+      # exchange fails, the job fails here, at a step whose name starts with "Sign in", and the hold job holds nothing
+      # for it: the schedule takes the item again.
+      - name: Sign in to Anthropic for the fresh reader
+        env:
+          ANTHROPIC_URL: https://api.anthropic.com
+          ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
+          ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+        run: python3 .github/review/trim.py sign-in
+
+      # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
+      # comment, its verdict, will_fix and its list. .github/review/trim.py makes the comment unable to notify anyone,
+      # to link another issue or pull request, or to link or load anything outside github.com (trim.py's inert), and
+      # cuts it at 20,000 characters. Then it runs the fresh reader: one request to Claude, with no tools, that holds
+      # the reader's instruction, the list and that text alone, with the token of the step before. A reader that fails
+      # fails this job, so nothing posts untrimmed: a screened item is held as a review that did not finish, and is
+      # tried again. The comment: the header and its markers, the trimmed text, each listed item that the trimmed text
+      # lacks, the footer, and the text that the reader read in a collapsed block. The model writes none of the fixed
+      # parts, and the reader never sees them. The trimmed text and the added items are made inert too. The run's
+      # summary gets the text that the reader read and the list.
       - name: The comment, as it is posted
         id: result
         env:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
-          # The checks the screen ran, when it screened this pull request or issue first.
-          SCREENED: ${{ needs.trust.outputs.route == 'screen' && needs.screen.outputs.checks || '' }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
-          comment=$(jq -re 'map(select(.type == "result")) | last | .structured_output.comment | strings' "$RESULT" \
-            | python3 -X utf8 -c '
-          import html, re, sys
-          text = sys.stdin.read()
-          ref = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
-          def decode(m):
-              c = html.unescape(m.group(0))
-              return c if len(c) == 1 and c.isascii() and (c.isalnum() or c in "@#/\\:._-") else m.group(0)
-          while (decoded := ref.sub(decode, text)) != text:
-              text = decoded
-          text = text.replace("@", "@\u2060")
-          text = re.sub(r"(#|(?i:GH-)|(?i:github\.com/[^/\s]+/[^/\s]+/(?:issues|pulls?|discussions)/))(?=[0-9])",
-                        "\\1\u2060", text)
-          text = re.sub(r"(?i)\b(https?|ftps?|mailto|xmpp|ircs?|news|nntp|wss?|data|tel|sms|javascript|vbscript|file)"
-                        r"(?=:)(?!:[/\\]{2}(?:www\.)?github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
-          text = re.sub(r"(?m)((?:[(=<\x22\x27]|^\s*\[[^\]\n]+\]:)\s*[/\\])(?=[/\\])", "\\1\u2060", text)
-          text = re.sub(r"(?i)(?<![\w.\-/\\@])(www)(?=\.)(?!\.github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
-          sys.stdout.write(text)
-          ')
-          if (( ${#comment} > 20000 )); then
-            comment="${comment:0:20000}"$'\n\n'"(The review was cut here, at 20,000 characters.)"
-          fi
-          what="this issue"
+          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
+          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
+          work=$RUNNER_TEMP/comment
+          mkdir -p "$work"
+          jq -e 'map(select(.type == "result")) | last | .structured_output
+            | select(type == "object" and (.comment | type) == "string" and (.verdict | IN("pass", "blocking", "person"))
+                     and (.will_fix | type) == "boolean" and (.items | type) == "array")' "$RESULT" > "$work/output.json" \
+            || { echo "::error::The review gave no comment, verdict, will_fix and list. Nothing posts."; exit 1; }
+          jq -j .comment "$work/output.json" > "$work/review.md"
+          jq .items "$work/output.json" > "$work/items.json"
+          verdict=$(jq -r .verdict "$work/output.json")
+          will_fix=$(jq -r .will_fix "$work/output.json")
+          what="this issue" markers=""
           if [ -f .review/commits.txt ]; then
             head=$(sed -n 's/^head //p' .review/commits.txt)
+            [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
             what="commit ${head:0:12}"
+            fix=""
+            [ "$will_fix" = false ] || fix=" will-fix"
+            markers=$'\n'"<!-- review-head $head -->"$'\n'"<!-- review-verdict $head $verdict$fix -->"
             echo "head=$head" >> "$GITHUB_OUTPUT"
           fi
-          foot="Claude wrote this review by [these rules]($RULES) ([run]($RUN)). It is advice; a maintainer decides."
-          if [ -n "$SCREENED" ]; then
-            [[ $SCREENED =~ ^[a-z_]+(,[a-z_]+)*$ ]] || { echo "::error::not a list of checks: $SCREENED"; exit 1; }
-            names=$(tr ',' '\n' <<< "$SCREENED" | sed -e 's/^model_armor$/Google Cloud Model Armor/' \
-              -e 's/^prompt_shields$/Azure AI Content Safety Prompt Shields/' -e 's/^claude$/a Claude model with no tools/' \
-              | paste -sd ',' | sed 's/,/, /g')
-            foot="An automated screen passed it first. The checks that ran: $names. $foot"
-          fi
-          body=$(printf '%s\n%s\n\n%s\n\n---\n%s\n' '<!-- review -->' "**Automated review** of $what" "$comment" "$foot")
+          printf '%s%s\n%s\n' '<!-- review -->' "$markers" "**Automated review** of $what" > "$work/head.md"
+          foot="Claude wrote this review by [these rules]($RULES) ([run]($RUN))."
+          foot+=" A second Claude session shortened the review. The block below holds the whole review."
+          printf '%s\n' "$foot" > "$work/foot.md"
+          python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
+            --head "$work/head.md" --foot "$work/foot.md" --summary "$GITHUB_STEP_SUMMARY" > "$work/body.md" \
+            || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+          { echo "verdict=$verdict"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           delimiter="body_$(openssl rand -hex 16)"
-          { echo "body<<$delimiter"; printf '%s\n' "$body"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+          { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
   # The OSS Verify App's writes, and nothing else: no comment and no label. In the environment post, which only main's
   # runs reach and which holds the App's key (OSS_VERIFY_APP_PRIVATE_KEY). Each write comes after a step of its own
@@ -1479,9 +1517,8 @@ jobs:
       # older head: a newer push may have been held since. Nor when a hold came after this run started: a newer event
       # of the issue or the pull request was held. Then the state label of the review's outcome, and the label comment
       # (.github/review/rules.py), from the item's kind, whether this run took an outsider's path (so the screen
-      # passed it), and whether the post job recorded the import check run at the head. A review that gives no
-      # verdict to the rule gives no state label: the state label comes off, and a label comment says that the
-      # workflow works on the item.
+      # passed it), the review's verdict and will_fix, and whether the post job recorded the import check run at the
+      # head.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
@@ -1489,6 +1526,8 @@ jobs:
           STARTED: ${{ needs.review.outputs.started }}
           KIND: ${{ needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          WILL_FIX: ${{ needs.review.outputs.will_fix }}
         run: |
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
@@ -1509,7 +1548,8 @@ jobs:
             || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
           outsider=false
           [ -z "$OUTSIDER" ] || outsider=true
-          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" recorded="$RECORDED"
+          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$VERDICT" \
+            will_fix="$WILL_FIX" recorded="$RECORDED"
       - name: Keep the review in the run's summary
         if: env.POST_REVIEW != 'true' && needs.trust.outputs.task != 'conflict'
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
@@ -1605,12 +1645,12 @@ jobs:
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
-          # starts with "Sign in", and no other step has: the screen job's two, the review job's, and the post job's
-          # two. A new such step must be named so too, or this job would hold its failure as one of the item. When such
-          # a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no comment,
-          # no label and no try, and the schedule takes the item again. A run at the limit ran no job but the trust
-          # job. The failed steps tell a review stopped at SCREENED_HOURLY_CAP too (below). When the jobs cannot be
-          # read, nothing is held, so that a run whose sign-in failed is never held: this job fails instead.
+          # starts with "Sign in", and no other step has: the screen job's two, the review job's two, and the post
+          # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
+          # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
+          # comment, no label and no try, and the schedule takes the item again. A run at the limit ran no job but the
+          # trust job. The failed steps tell a review stopped at SCREENED_HOURLY_CAP too (below). When the jobs cannot
+          # be read, nothing is held, so that a run whose sign-in failed is never held: this job fails instead.
           failed=""
           if [ "$ROUTE" != limit ]; then
             failed=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
@@ -1743,16 +1783,16 @@ jobs:
   # The schedule's job, in the public repository alone: each open pull request or issue whose newest hold is one that
   # is tried again, over an hour old, is screened again by a run of this file that this job starts (-f task=rescreen,
   # the top of this file). Those holds: at OUTSIDE_HOURLY_LIMIT; of a screened review stopped at SCREENED_HOURLY_CAP;
-  # and of a screened review that failed or ran out of time, under REVIEW_TRIES. Never one that the screen held: a
-  # person decides on that. Oldest hold first, each account gets at most OUTSIDE_HOURLY_LIMIT rescreens an hour, less
+  # and of a screened review that failed or ran out of time, under REVIEW_TRIES. Never one that the screen held: that
+  # item waits on Sami. Oldest hold first, each account gets at most OUTSIDE_HOURLY_LIMIT rescreens an hour, less
   # those it had in the last hour; the trust job of each run counts again, with the account's own events, and holds
   # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
   # item for the next run and fails this job. An item whose rescreens since its hold reach REVIEW_TRIES with no new
   # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job gives it
   # waits-on-theorem, with the label comment's step "Sami reads the runs and starts the work again"
-  # (.github/review/rules.py, from main's checkout of .github/), replaces its hold comment with one that says a
-  # maintainer will look at it, with no marker, and fails for that run. Before that, each try waits until the newest
-  # rescreen since the hold is over an hour old, as the first waits on the hold.
+  # (.github/review/rules.py, from main's checkout of .github/), replaces its hold comment with one that says that it
+  # is not screened again automatically, with no marker, and fails for that run. Before that, each try waits until the
+  # newest rescreen since the hold is over an hour old, as the first waits on the hold.
   # It is the only job of this file with actions: write, which starting a run needs; issues and pull-requests: write
   # let it set that label and replace that hold comment, and contents: read checks out main's .github/. It holds no
   # model, and writes nothing but those runs, those labels and those comments. Its cost: one job of a few seconds
@@ -1793,8 +1833,8 @@ jobs:
           # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
           # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
           # reviews of it that failed so far.
-          # "<time> -" when the screen held it, or a person decides. Nothing when it has no hold comment. Only
-          # github-actions[bot]'s comments count.
+          # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
+          # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
             gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[]
               | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
@@ -1886,7 +1926,7 @@ jobs:
               || { echo "::error::the comments of #$number could not be read."; failed=1; continue; }
             read -r at origin _ <<< "$hold"
             if [[ -z ${origin:-} || $origin == - ]]; then
-              echo "#$number: no hold that is tried again (the screen held it, or a person decides)."
+              echo "#$number: no hold that is tried again (the screen held it, or its tries are used up)."
               continue
             fi
             if [[ ! $at < $from ]]; then
@@ -1895,10 +1935,10 @@ jobs:
             fi
             # An item rescreened after its hold whose rescreens left neither a new hold nor a posted review is started
             # again up to REVIEW_TRIES times in all: one such run may have failed on a GitHub read, or its hold job may
-            # have failed to write. After that a person decides, so that no item is screened and reviewed without end,
-            # and this job fails, so that someone sees it. The runs since the hold are read, however long ago it was:
-            # each run of the item that this job starts for any task a hold can name (its name, titled, ends with an
-            # account; #<n> in it ends at the space before " at", " for" or " of").
+            # have failed to write. After that the item waits on Sami, so that no item is screened and reviewed
+            # without end, and this job fails, so that someone sees it. The runs since the hold are read, however long
+            # ago it was: each run of the item that this job starts for any task a hold can name (its name, titled, ends
+            # with an account; #<n> in it ends at the space before " at", " for" or " of").
             [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
               || { echo "::error::#$number: its hold has no time."; failed=1; continue; }
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
