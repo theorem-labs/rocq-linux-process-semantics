@@ -43,6 +43,8 @@ CASES = [
     ("screen.py", {".github/screen.py": "x"}, "false", "true"),
     ("review.md", {".github/review.md": "x"}, "false", "true"),
     ("review.yml", {".github/workflows/review.yml": "x"}, "false", "true"),
+    ("a file under review/", {".github/review/trim.py": "x"}, "false", "true"),
+    ("review-answer.md", {".github/review-answer.md": "x"}, "false", "true"),
     ("review file and prose", {".github/screen.py": "x", "README.md": "y"}, "false", "true"),
     ("review file and a Rocq file", {".github/screen.py": "x", "theories/A.v": "y"}, "true", "true"),
     ("this workflow", {".github/workflows/ci.yml": "x"}, "true", "true"),

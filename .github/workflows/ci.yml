@@ -28,8 +28,9 @@ jobs:
   #   review   (the review workflow's tests) is true when one of the review
   #            workflow's own files changed: .github/workflows/review.yml,
   #            .github/test_review.py, .github/test_screen.py,
-  #            .github/screen.py, .github/review.md. The tests read the
-  #            workflow and import the screen.
+  #            .github/screen.py, .github/review.md,
+  #            .github/review-answer.md, or any file under .github/review/.
+  #            The tests read the workflow and import the screen.
   #
   # It fails safe: no usable base, an empty diff or a change to this file
   # runs every job. .github/test_ci.py runs this script and the `ci` job's on
@@ -95,7 +96,7 @@ jobs:
           [ -s "$RUNNER_TEMP/changed" ] || everything "The diff against $base is empty"
           grep -qx '\.github/workflows/ci\.yml' "$RUNNER_TEMP/changed" \
             && everything "This workflow changed"
-          review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md)$'
+          review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md|review-answer\.md|review/.+)$'
           # grep answers 0 when it selects a line, 1 when it selects none, 2 or more on an error.
           answer() {
             rc=0; grep "$@" "$RUNNER_TEMP/changed" || rc=$?
