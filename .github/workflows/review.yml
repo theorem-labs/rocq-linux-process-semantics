@@ -23,10 +23,11 @@
 #   approve   a first-time contributor's pull request whose CI runs GitHub holds: the screen, and, when it passes, the
 #             approval of the held runs. A run by hand with the task review on such a pull request gets this task.
 #   catchup   an outside pull request whose head no run met: the OSS Verify App closes and reopens it, which starts CI.
+#             A pull request that a catch-up closed and could not reopen is only reopened.
 #   conflict  a pull request with a merge conflict, for which GitHub starts no CI run: a comment that asks its author
 #             to resolve the conflict.
-#   relabel   the import check run of R12 and the label and the label comment of a head, set again from its review
-#             with no model.
+#   relabel   the import check run of R12 and the label and the label comment of a head, set again with no model from
+#             what the workflow wrote of the head: its review, an answer of its author, its fixes and a hold comment.
 #   measure   the screen, measured on its private labelled set.
 # An answer run, or a run by hand, that reads a merge conflict in its pull request gets the task conflict. The name of a
 # run gives its task, its item and the account whose limit it counts on (run-name, below). The scripts that count runs
@@ -59,8 +60,10 @@
 #   held, and its hold comment says from when it is tried again. An account with write access has no such limit: its
 #   rescreens are bounded by the rescreen job's count alone (below). An item that the screen held is never taken again
 #   this way. The same job also starts the answer to a comment of an outside author that waits for one, the draft of
-#   the reply to an outside issue that has none stored, the approval of a first-time contributor's held runs, and the
-#   App's writes again when the post job could not make them (the rescreen job, below).
+#   the reply to an outside issue that has none stored, the approval of a first-time contributor's held runs, the
+#   catch-up and the review of a head that no run reviewed, the comment on a merge conflict, a relabel when a conflict
+#   went away or the import's paths changed, and the App's writes again when the post job could not make them (the
+#   rescreen job, below).
 # - An account with write access can start a run by hand for any pull request or issue, with a task (-f task=<task>,
 #   review when none is given) and, for a review, with the screen first (-f screen=true):
 #
@@ -142,16 +145,18 @@
 #           while SOUNDNESS_HOLD is true, and, while the repository variable REPO_PAIRS_IMPORT_PATHS gives the import's
 #           paths, the import takes each changed path. For an approval, it reads the pull request again with its own
 #           token, and when the head is still the one the screen read, it approves each run that GitHub holds of that
-#           head from the pull request's head repository and branch. It posts no comment and no label, holds no
-#           identity token and no model, and its own GitHub token can only read.
+#           head from the pull request's head repository and branch. For a catch-up, it closes and reopens the pull
+#           request with the first token, so that GitHub starts a CI run of its head, or only reopens one that a
+#           catch-up closed and could not reopen. It posts no comment and no label, holds no identity token and no
+#           model, and its own GitHub token can only read.
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
 #           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
 #           for each comment, and the fix as one review of suggested changes, once for each head. For a stored draft, it
 #           posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel, it
-#           sets the state label and the label comment of the head again, from the head's review and what the post job
-#           decided. It never commits or pushes: its token can write no file of the repository. It uses this run's
-#           GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
+#           sets the state label and the label comment of the head again, from what the workflow wrote of the head and
+#           what the post job decided. It never commits or pushes: its token can write no file of the repository. It
+#           uses this run's GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
 #           label comment. It holds no model, and has no screen's reason to read: the screen job's one output is its
 #           verdict. It reads this run's jobs and this workflow's runs: did a step that signs in fail (then it holds
@@ -160,11 +165,12 @@
 #   rescreen
 #           runs on the schedule alone, in the public repository alone, and starts on main the runs that the open items
 #           are due: the work that a hold names, an answer that waits, a draft that is not stored, the approval of
-#           held runs, and the App's writes that failed. It is the only job whose own token has actions: write, which
-#           it needs to start a run, and it uses it for nothing else. Its issues and pull-requests: write let it
-#           replace the hold comment of an item whose work reached REVIEW_TRIES without settling, with one that says
-#           that it is not tried again, and give the item waits-on-theorem. It reads the open items and this
-#           workflow's runs, and holds no model.
+#           held runs, the catch-up or the review of a head that no run reviewed, the comment on a merge conflict, a
+#           relabel, the App's writes that failed, and the reopen of a pull request that a catch-up left closed. It is
+#           the only job whose own token has actions: write, which it needs to start a run, and it uses it for nothing
+#           else. Its issues and pull-requests: write let it give an item whose work reached REVIEW_TRIES without
+#           settling a hold comment that says that it is not tried again, and waits-on-theorem. It reads the open and
+#           the closed items, this workflow's runs, and the CI runs and check runs of a head, and holds no model.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
@@ -299,8 +305,10 @@ env:
   # number, and the hold of the last failure is not. A review stopped at SCREENED_HOURLY_CAP is not such a failure,
   # and is tried again whatever this number: the cap is not the item's.
   # It is also the most runs of the work that a hold names, since the hold, that may end with neither a new hold nor a
-  # post (a run that failed on a GitHub read, say), and the most post jobs of a head that may fail at a step that is
-  # not a sign-in, before the rescreen job leaves the work to Sami.
+  # post (a run that failed on a GitHub read, say), the most post jobs of a head that may fail at a step that is not a
+  # sign-in, the most reviews that the rescreen job starts of a head that a run left with no review, the most relabels
+  # of a head whose merge conflict went away, and the most reopens of a pull request that a catch-up left closed,
+  # before the rescreen job leaves the work to Sami.
   REVIEW_TRIES: "3"
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
@@ -478,6 +486,41 @@ jobs:
                 fi ;;
             esac
           }
+          # head_marks <number> <head>: what the comments of github-actions[bot] on <number> say of <head>, as
+          # "<review> <held> <conflict>". review is new when a comment holds the marker <!-- review-head <head> --> of
+          # this workflow's review, old when one starts with <!-- review --> and holds "of commit " and the first 12
+          # characters of <head> (the review of before the move off pull_request_target), and none else. held is true
+          # when a hold comment names <head> (<!-- review-held-head <head> -->). conflict is true when the label
+          # comment holds <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict.
+          head_marks() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            comments "$1" | SHA=$2 jq -rs 'map(select(.user.login == "github-actions[bot]") | .body // "") as $b
+              | [(if any($b[]; test("(^|\n)<!-- review-head " + $ENV.SHA + " -->(\n|$)")) then "new"
+                  elif any($b[]; startswith("<!-- review -->") and contains("of commit " + $ENV.SHA[0:12])) then "old"
+                  else "none" end),
+                 any($b[]; startswith("<!-- review-held -->")
+                   and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")),
+                 any($b[]; startswith("<!-- review-label -->")
+                   and test("\n<!-- review-conflict-state " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
+          }
+          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the automated
+          # catch-up closed it and could not reopen it. The catch-up then tries nothing more on it.
+          gave_up() {
+            comments "$1" | jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
+              | startswith("<!-- review-held -->")
+                and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
+          }
+          # ci_of <head>: the CI runs of <head> of the event pull_request: pending while one of them is queued, in
+          # progress, waiting or held for a person's approval (action_required); else the time when the newest one
+          # ended; nothing when there is none.
+          ci_of() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
+              --jq '.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
+                  and .path == ".github/workflows/ci.yml")
+                | if .status == "completed" then .updated_at // "-" else "pending" end' \
+              | sort | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
+          }
           # end of held
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
           # job did not skip and either <login> started by an event (workflow_run, issues or issue_comment), or whose
@@ -562,8 +605,9 @@ jobs:
             route screen "$outsider"
           }
           # item: what the API says of #NUMBER now: state, AUTHOR, kind (pr or issue), is_draft, and labelled (with
-          # HELD_LABEL); for a pull request also merged, base, pr_head (its head commit) and mergeable (its
-          # mergeable_state: dirty for a merge conflict).
+          # HELD_LABEL); for a pull request also merged, base, pr_head (its head commit), mergeable (its
+          # mergeable_state: dirty for a merge conflict, unknown while GitHub has not computed it) and head_repo (the
+          # id of its head repository, 0 when that repository is gone).
           item() {
             local data
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -571,11 +615,12 @@ jobs:
               (if .pull_request then "pr" else "issue" end), ((.draft // false) | tostring),
               (any(.labels[]?; .name == $ENV.HELD_LABEL) | tostring)] | join(" ")') || fail "#$NUMBER could not be read."
             read -r state AUTHOR kind is_draft labelled <<< "$data"
-            merged=false base="" pr_head="" mergeable=""
+            merged=false base="" pr_head="" mergeable="" head_repo=0
             if [ "$kind" = pr ]; then
               data=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '[((.merged // false) | tostring), .base.ref, .head.sha,
-                (.mergeable_state // "unknown")] | join(" ")') || fail "pull request #$NUMBER could not be read."
-              read -r merged base pr_head mergeable <<< "$data"
+                (.mergeable_state // "unknown"), ((.head.repo.id // 0) | tostring)] | join(" ")') \
+                || fail "pull request #$NUMBER could not be read."
+              read -r merged base pr_head mergeable head_repo <<< "$data"
             fi
           }
           # held_runs: how many runs of the head pr_head GitHub holds for a person's approval (status action_required).
@@ -639,15 +684,18 @@ jobs:
           # merged, and its newest closed event is oss-verify[bot]'s and falls between the start and the end of another
           # run of the task catchup of it whose post job failed or was cancelled (the closing run). A catchup run since
           # then that reopened it would have left it open, or closed by a newer event. The runs are read one day at a
-          # time, from the day before the close to today, however long ago the close was.
+          # time, from the day before the close to today, however long ago the close was. Never once its hold comment
+          # says that the catch-up could not reopen it (gave_up): then it waits on Sami, and no run is read.
           left_closed() {
-            local closed at by day today runs id started ended post
+            local closed at by day today runs id started ended post given
             [ "$kind" = pr ] && [ "$merged" = false ] || return 1
             closed=$(gh api --paginate "repos/$REPO/issues/$NUMBER/events" --jq '.[] | select(.event == "closed")
               | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) || fail "the events of #$NUMBER could not be read."
             read -r at by <<< "$closed"
             [ "${by:-}" = 'oss-verify[bot]' ] || return 1
             [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+            given=$(gave_up "$NUMBER") || fail "the comments of #$NUMBER could not be read."
+            [ "$given" = false ] || return 1
             day=$(date -u -d "${at:0:10} -1 day" +%Y-%m-%d)
             today=$(date -u +%Y-%m-%d)
             while [[ ! $day > $today ]]; do
@@ -809,10 +857,22 @@ jobs:
                   # reviewed without the screen.
                   screened "$AUTHOR" "$account" ;;
                 # A review, or the screen first when the inputs ask for it. A review by hand of a pull request whose
-                # head has runs that GitHub holds gets the task approve, which screens it and approves them.
+                # head has runs that GitHub holds gets the task approve, which screens it and approves them. The
+                # rescreen job's review of a head (the rescreen job, (b) and (c)) needs the head to have no review of
+                # this workflow's form of now, no hold comment that names it, no merge conflict that its label comment
+                # records, and no CI run that has not finished: the review of that CI run comes after it.
                 review)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
+                    [[ $pr_head =~ ^[0-9a-f]{40}$ ]] || stop "it names no head commit."
+                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    read -r reviewed named conflicted <<< "$marks"
+                    [ "$reviewed" != new ] || stop "a review of the workflow names $pr_head."
+                    [ "$named" = false ] || stop "a hold comment names $pr_head."
+                    [ "$conflicted" = false ] \
+                      || stop "its label comment records a merge conflict of $pr_head, which a relabel takes out first."
+                    ci=$(ci_of "$pr_head") || fail "the CI runs of $pr_head could not be read."
+                    [ "$ci" != pending ] || stop "a CI run of $pr_head has not finished, and its review comes after it."
                     [ -z "$of" ] || screened "$AUTHOR" "$limited"
                     route review ""
                   fi
@@ -871,20 +931,50 @@ jobs:
                     again approve
                   fi
                   screened "$AUTHOR" "$limited" ;;
-                # The comment that asks the author to resolve a merge conflict, while the conflict is there.
+                # The comment that asks the author to resolve a merge conflict, while the conflict is there. The
+                # rescreen job's run needs a label comment that does not record the conflict of the head yet.
                 conflict)
                   [ "$mergeable" = dirty ] || stop "it has no merge conflict (its mergeable_state is ${mergeable:-unknown})."
+                  if [ "$ACTOR" = 'github-actions[bot]' ]; then
+                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    read -r _ _ conflicted <<< "$marks"
+                    [ "$conflicted" = false ] || stop "its label comment records the merge conflict of $pr_head already."
+                  fi
                   route review "" ;;
-                # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed: no screen
-                # and no model.
+                # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed (above):
+                # no screen and no model. The rescreen job's catch-up of an open pull request (the rescreen job, (a))
+                # needs an outside author, a head repository that is still there (GitHub cannot reopen a pull request
+                # whose head repository is gone), no review of the head, and CI runs of the head that all ended, the
+                # newest over an hour ago.
                 catchup)
-                  if [ "$state" = open ] && [ "$mergeable" = dirty ]; then task=conflict; fi
+                  if [ "$state" = open ] && [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
+                  if [ "$ACTOR" = 'github-actions[bot]' ] && [ "$state" = open ]; then
+                    [ -n "$of" ] || stop "its author $AUTHOR has write access."
+                    [[ $head_repo =~ ^[1-9][0-9]*$ ]] || stop "its head repository is gone, so it is not closed."
+                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    read -r reviewed _ _ <<< "$marks"
+                    [ "$reviewed" = none ] || stop "a review names $pr_head."
+                    ci=$(ci_of "$pr_head") || fail "the CI runs of $pr_head could not be read."
+                    [[ -n $ci && $ci != pending ]] || stop "no CI run of $pr_head ended, or one has not finished."
+                    [[ $ci < $(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ) ]] \
+                      || stop "the CI run of $pr_head ended at $ci, less than an hour ago."
+                  fi
                   route review "" ;;
-                # The import check run of R12 and the label of the head, set again from its review: no screen and no
-                # model. The outsider is the author when the author has no write access, as the import check run is
-                # for an outside pull request alone, whose review came after a screen that passed.
+                # The import check run of R12 and the label of the head, set again from what the workflow wrote of the
+                # head: no screen and no model. The outsider is the author when the author has no write access, as the
+                # import check run is for an outside pull request alone, whose review came after a screen that passed.
+                # The rescreen job's run needs GitHub to know whether the head has a merge conflict, and a review, a
+                # hold comment or a recorded merge conflict of the workflow that names the head. The rescreen job
+                # starts a relabel that is refused here again at its next run.
                 relabel)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
+                  if [ "$ACTOR" = 'github-actions[bot]' ]; then
+                    [ "$mergeable" != unknown ] || stop "GitHub does not say yet whether $pr_head has a merge conflict."
+                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    read -r reviewed named conflicted <<< "$marks"
+                    [[ $reviewed == new || $named == true || $conflicted == true ]] \
+                      || stop "no review, hold comment or merge conflict of the workflow names $pr_head."
+                  fi
                   a=0
                   known "$AUTHOR" || a=$?
                   (( a != 0 )) || route review ""
@@ -2270,7 +2360,63 @@ jobs:
             || { echo "::error::the import check of $head could not be recorded."; exit 1; }
           echo "Recorded the check run $id, repo-pairs/import-approved, on $head."
           echo "recorded=true" >> "$GITHUB_OUTPUT"
-      # The close and reopen of a catch-up with token A follow here.
+      # The catch-up, with token A: a pull request that is closed and reopened gets a new CI run of its head (the event
+      # pull_request), and the review of that CI run follows. An open pull request is closed, then reopened; one that a
+      # catch-up run closed and could not reopen (the trust job took it as such) is only reopened. The pull request's
+      # state now tells which. An open one whose head moved since the trust job read it, or whose head repository is
+      # gone (GitHub cannot reopen such a pull request), is not closed. A closed one is reopened only while its newest
+      # close is the App's own, so that a pull request that someone closed in between stays closed. The reopen is tried
+      # 3 times, 10 seconds apart; then the step fails, and the schedule tries the reopen again an hour later.
+      - name: Close and reopen the pull request
+        if: needs.trust.outputs.task == 'catchup'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ needs.trust.outputs.number }}
+          HEAD: ${{ needs.trust.outputs.head }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the trust job gave no head commit: $HEAD"; exit 1; }
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER" \
+            --jq '"\(.state) \((.merged // false) | tostring) \(.head.sha) \(.head.repo.id // 0)"') \
+            || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
+          read -r state merged sha repository <<< "$pr"
+          if [ "$state" = open ]; then
+            if [ "$sha" != "$HEAD" ]; then
+              echo "::notice::#$NUMBER moved from $HEAD to $sha after the trust job read it. It is not closed."
+              exit 0
+            fi
+            if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
+              echo "::notice::the head repository of #$NUMBER is gone, so GitHub could not reopen it. It is not closed."
+              exit 0
+            fi
+            gh api --method PATCH "repos/$REPO/pulls/$NUMBER" -f state=closed --jq .state > /dev/null \
+              || { echo "::error::#$NUMBER could not be closed."; exit 1; }
+            echo "Closed #$NUMBER."
+          else
+            if [ "$merged" != false ]; then
+              echo "::notice::#$NUMBER is merged. It is not reopened."
+              exit 0
+            fi
+            closed=$(gh api --paginate "repos/$REPO/issues/$NUMBER/events" --jq '.[] | select(.event == "closed")
+              | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) \
+              || { echo "::error::the events of #$NUMBER could not be read."; exit 1; }
+            if [ "${closed##* }" != 'oss-verify[bot]' ]; then
+              echo "::notice::#$NUMBER was closed last by ${closed##* }, not by the catch-up. It is not reopened."
+              exit 0
+            fi
+          fi
+          for try in 1 2 3; do
+            if gh api --method PATCH "repos/$REPO/pulls/$NUMBER" -f state=open --jq .state > /dev/null; then
+              echo "Reopened #$NUMBER: GitHub starts a CI run of $sha."
+              exit 0
+            fi
+            echo "::warning::try $try of 3 to reopen #$NUMBER failed."
+            if (( try < 3 )); then sleep 10; fi
+          done
+          echo "::error::#$NUMBER is closed, and 3 tries to reopen it failed. The schedule tries again in an hour."
+          exit 1
 
       # An approval whose screen passed. With this job's own token: the pull request now, and the runs that GitHub
       # holds of the head that the screen read (status action_required). When the head moved since the trust job read
@@ -2526,11 +2672,13 @@ jobs:
       # waits-on-theorem) and the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author). An answer
       # changes the state only when the author said they will make the change, or when a fix posted or stopped: else the
       # label stays as the item's review, hold or reply set it. A relabel posts no review and leaves review-held on: it
-      # takes the verdict, and will-fix, from the marker of the review comment that names its head
-      # (.github/review/rules.py verdict), and leaves the labels as they are when no review names the head. The label
-      # comment of an outside pull request holds the marker line <!-- repo-pairs-import-paths <head>: <value> --> of
-      # R12, with the value of REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the import
-      # by that value.
+      # sets the state of its head again from what the workflow wrote of that head (.github/review/rules.py relabel):
+      # the verdict and will-fix of the review comment that names it, an answer's will-fix at it, its fix reviews, and a
+      # hold comment that names it, the newer of a review and a hold first. With only a merge conflict of the head in
+      # the label comment, which is gone now, it gives no state label and takes that conflict's line out, so that the
+      # schedule reviews the head; with nothing of the head, the labels stay. The label comment of an outside pull
+      # request holds the marker line <!-- repo-pairs-import-paths <head>: <value> --> of R12, with the value of
+      # REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the import by that value.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
@@ -2593,13 +2741,7 @@ jobs:
               echo "#$NUMBER: the answer changes no state, so the labels stay."
               exit 0
             fi
-          elif [ "${TASK:-}" = relabel ]; then
-            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
-              || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
-            [ -n "$reviewed" ] || { echo "#$NUMBER: no review names $HEAD, so the labels stay."; exit 0; }
-            verdict=${reviewed%% *}
-            [[ $reviewed != *' will-fix' ]] || will_fix=true
-          else
+          elif [ "${TASK:-}" != relabel ]; then
             take_off
           fi
           outsider=false
@@ -2615,6 +2757,11 @@ jobs:
             marker=$(python3 .github/review/rules.py import-marker "$HEAD" "${imports[@]}") \
               || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
             markers+=("marker=$marker")
+          fi
+          if [ "${TASK:-}" = relabel ]; then
+            python3 .github/review/rules.py relabel "$NUMBER" "$HEAD" kind="$KIND" outsider="$outsider" \
+              recorded="$RECORDED" decision="$DECISION" "${facts[@]}" "${markers[@]}"
+            exit
           fi
           python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$verdict" \
             will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
@@ -2919,20 +3066,56 @@ jobs:
   #             the App's key) or at a write of the App, gets an approval again for an approval, a relabel for a review
   #             or a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an
   #             hour.
+  #   conflict  an outside pull request whose head has a merge conflict (mergeable_state dirty), for which GitHub starts
+  #             no CI run, and whose label comment does not record that conflict yet (its line
+  #             <!-- review-conflict-state <head> -->): the comment that asks the author to resolve it. When the line
+  #             is there and GitHub says that the conflict is gone, with no push: a relabel, which sets the label and
+  #             the label comment of the head again from what the workflow wrote of it (a review, an answer of its
+  #             author, a hold comment, its fixes) and takes the line out. A relabel that ran waits an hour before the
+  #             next one, and after REVIEW_TRIES relabels that left the line, the head is not tried again. While its
+  #             conflict lasts, or its line is there, the head gets no other run of this list. A head whose merge
+  #             state GitHub has not computed after a second read waits for the next run.
+  #   catchup   an outside pull request whose head no review and no run of this workflow names, whose head repository
+  #             is still there, and whose newest CI run of that head ended over an hour ago, with none still to finish:
+  #             the post job closes and reopens it with the OSS Verify App's token, so that GitHub starts CI on it and
+  #             the review follows. Once for each head. A pull request whose head repository is gone is never closed:
+  #             GitHub cannot reopen it.
+  #   review    an outside pull request whose head has a review in the form of before this workflow's move off
+  #             pull_request_target, and not one of now, under the CI conditions of catchup: a review of that head from
+  #             the API, with no close and no reopen. Once for each head, and again once an hour while its runs end at a
+  #             failed sign-in. Also each open pull request into main, a writer's too, whose head a run of this
+  #             workflow names, no review and no hold comment names, and no CI run of which has not finished (an
+  #             approval's CI run comes before its review): at the next run when each run that named the head stopped
+  #             at its trust job, gave a conflict or was a relabel (a draft, another base, a conflict that went away),
+  #             and else once the newest of them ended over an hour ago. After REVIEW_TRIES such reviews that ended
+  #             with no failed sign-in and gave no conflict, the head is not tried again.
+  #   relabel   an outside pull request whose value of REPO_PAIRS_IMPORT_PATHS recorded for its head (the newer of the
+  #             label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and the output text of the
+  #             head's check run repo-pairs/import-approved) is not the value now, or whose head has a review and no
+  #             such line: a relabel, so that a variable that appears, changes or goes sets each label again by R12.
+  #             Once an hour.
+  #   reopen    a pull request that a catch-up run closed and could not reopen (a catch-up left closed: the trust job
+  #             says how it is told), the one closed item that this job takes: a catch-up, which only reopens it, once
+  #             an hour, whatever became of the catch-up runs after the one that closed it. After REVIEW_TRIES such
+  #             runs that did not reopen it (a run that the trust job refused, or whose post job failed or was
+  #             cancelled, counts; one that failed at a sign-in does not), it gets a hold comment that says so and
+  #             waits-on-theorem with the label comment's step "Sami reopens the pull request", and this job fails
+  #             once. Its runs by hand are read one day at a time back to the day before its close, however long ago.
   # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
   # try of the head. After REVIEW_TRIES of them, the item gets a hold comment that names the head and says that its
   # automated work did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami
   # reads the runs and starts the work again" (.github/review/rules.py, from main's checkout of .github/), and this
   # job fails for that run.
-  # Never for a draft pull request, a closed item, or a pull request into another branch than main, and nothing for an
-  # item while a run of it has not finished: its screen and review can outlast the 15 minutes between runs, and a
-  # second run would use the hour's screens twice. It reads this workflow's runs of the last 8 days by their names: the
-  # runs by hand one day at a time, as a list with created gives at most 1,000 runs and the App's retry can start 24 a
-  # day for each item, and the runs of workflow_run, issue_comment and issues once each; never the scheduled runs. It
-  # reads the jobs only of the runs that decide an item. Oldest reason first, each account gets at most
-  # OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose name
-  # ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job of
-  # each run counts again, with the account's own events, and holds the item again at the limit. A catch-up, a
+  # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
+  # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the 15
+  # minutes between runs, and a second run would use the hour's screens twice. It reads this workflow's runs of the
+  # last 8 days by their names: the runs by hand one day at a time, as a list with created gives at most 1,000 runs and
+  # the App's retry can start 24 a day for each item, and the runs of workflow_run, issue_comment and issues once each;
+  # never the scheduled runs. It reads the jobs only of the runs that decide an item, the head's CI runs only for a
+  # catch-up or a review, and the head's check runs only for the variable. Oldest reason first, each account gets at
+  # most OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose
+  # name ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job
+  # of each run counts again, with the account's own events, and holds the item again at the limit. A catch-up, a
   # conflict and a relabel screen nothing, run no model and count toward no limit. The trust job of each run reads
   # again from the API why this job started it, and stops when the reason no longer holds.
   # The work that a hold names is tried up to REVIEW_TRIES times since the hold: each run of its task since the hold
@@ -2948,10 +3131,10 @@ jobs:
   # right only to start runs: it approves no held run (the post job does, with the OSS Verify App's token, and only that
   # job holds the App's key). A run that this token starts starts no run of another workflow when it ends, and none
   # needs to: an approval and a reopen start CI with the App's token, in the post job. Its issues and pull-requests:
-  # write let it set labels and write hold comments, checks: read lets it read the check runs of a head, and contents:
-  # read checks out main's .github/. It holds no model, and writes nothing but those runs, labels and comments. Its
-  # cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose minutes GitHub does not
-  # bill in a public repository.
+  # write let it set labels and write hold comments, checks: read lets it read the check runs of a head (the value of
+  # REPO_PAIRS_IMPORT_PATHS that the import check recorded), and contents: read checks out main's .github/. It holds no
+  # model, and writes nothing but those runs, labels and comments. Its cost: one job of a few seconds every 15 minutes,
+  # 96 runs a day on a standard runner, whose minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -2969,6 +3152,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # The import's paths, one glob on each line, while the import is live (R12), as the post and comment jobs
+          # read them: the relabel of each head whose recorded value is not this one. An empty value is no variable:
+          # GitHub gives an empty value for a variable that is not set.
+          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
         run: |
           set -euo pipefail
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
@@ -3076,35 +3263,73 @@ jobs:
                 fi ;;
             esac
           }
+          # head_marks <number> <head>: what the comments of github-actions[bot] on <number> say of <head>, as
+          # "<review> <held> <conflict>". review is new when a comment holds the marker <!-- review-head <head> --> of
+          # this workflow's review, old when one starts with <!-- review --> and holds "of commit " and the first 12
+          # characters of <head> (the review of before the move off pull_request_target), and none else. held is true
+          # when a hold comment names <head> (<!-- review-held-head <head> -->). conflict is true when the label
+          # comment holds <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict.
+          head_marks() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            comments "$1" | SHA=$2 jq -rs 'map(select(.user.login == "github-actions[bot]") | .body // "") as $b
+              | [(if any($b[]; test("(^|\n)<!-- review-head " + $ENV.SHA + " -->(\n|$)")) then "new"
+                  elif any($b[]; startswith("<!-- review -->") and contains("of commit " + $ENV.SHA[0:12])) then "old"
+                  else "none" end),
+                 any($b[]; startswith("<!-- review-held -->")
+                   and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")),
+                 any($b[]; startswith("<!-- review-label -->")
+                   and test("\n<!-- review-conflict-state " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
+          }
+          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the automated
+          # catch-up closed it and could not reopen it. The catch-up then tries nothing more on it.
+          gave_up() {
+            comments "$1" | jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
+              | startswith("<!-- review-held -->")
+                and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
+          }
+          # ci_of <head>: the CI runs of <head> of the event pull_request: pending while one of them is queued, in
+          # progress, waiting or held for a person's approval (action_required); else the time when the newest one
+          # ended; nothing when there is none.
+          ci_of() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
+              --jq '.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
+                  and .path == ".github/workflows/ci.yml")
+                | if .status == "completed" then .updated_at // "-" else "pending" end' \
+              | sort | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
+          }
           # end of held
           hour=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
           quarter=$(date -u -d '-15 minutes' +%Y-%m-%dT%H:%M:%SZ)
           first=$(date -u -d '-7 days' +%Y-%m-%d)
           failed=0
-          # The open pull requests: the head, the base, and whether each is a draft. A workflow_run's name gives its
-          # head, which they map to its pull request.
+          # The open pull requests: the head, the base, whether each is a draft, and the id of its head repository (0
+          # when that repository is gone). A workflow_run's name gives its head, which they map to its pull request.
           pulls=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-            --jq '.[] | "\(.number) \(.head.sha) \(.base.ref) \((.draft // false) | tostring)"') \
+            --jq '.[] | "\(.number) \(.head.sha) \(.base.ref) \((.draft // false) | tostring) \(.head.repo.id // 0)"') \
             || { echo "::error::the open pull requests could not be read."; exit 1; }
-          declare -A pr_of=() pr_head=() pr_base=() pr_draft=()
-          while read -r n sha base draft; do
+          declare -A pr_of=() pr_head=() pr_base=() pr_draft=() pr_repo=()
+          while read -r n sha base draft repository; do
             [[ ${n:-} =~ ^[1-9][0-9]*$ && ${sha:-} =~ ^[0-9a-f]{40}$ ]] || continue
-            pr_of[$sha]=$n pr_head[$n]=$sha pr_base[$n]=$base pr_draft[$n]=$draft
+            pr_of[$sha]=$n pr_head[$n]=$sha pr_base[$n]=$base pr_draft[$n]=$draft pr_repo[$n]=${repository:-0}
           done <<< "$pulls"
           # This workflow's runs of the last 8 days, by their names: the runs by hand one day at a time, the runs of
           # each event once, and never the scheduled runs. row gives each run on one line: "<id> <created> <ended>
-          # <status> <conclusion> <event> <name>", - for none (ended, for a run that is not completed).
+          # <status> <conclusion> <event> <started> <name>", - for none (ended, for a run that is not completed).
           row='def row: "\(.id) \(.created_at // "-") \(if .status == "completed"
             then (.updated_at // .created_at // "-") else "-" end) \(.status // "-") \(.conclusion // "-") \(.event) \(
-            .display_title // "" | gsub("[\r\n]"; " "))";'
+            .run_started_at // .created_at // "-") \(.display_title // "" | gsub("[\r\n]"; " "))";'
+          # by_hand <day>: the runs by hand of <day>, as rows.
+          by_hand() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            DAY=$1 gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+              -f event=workflow_dispatch -f created="$1" -F per_page=100 --jq "$row"' .workflow_runs[]
+                | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row'
+          }
           : > "$seen/listed"
           for back in 7 6 5 4 3 2 1 0; do
             day=$(date -u -d "-$back days" +%Y-%m-%d)
-            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            DAY=$day gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-              -f event=workflow_dispatch -f created="$day" -F per_page=100 --jq "$row"' .workflow_runs[]
-                | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row' \
-              >> "$seen/listed" || { echo "::error::the runs of $day could not be read."; exit 1; }
+            by_hand "$day" >> "$seen/listed" || { echo "::error::the runs of $day could not be read."; exit 1; }
           done
           for event in workflow_run issue_comment issues; do
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -3115,47 +3340,68 @@ jobs:
               >> "$seen/listed" || { echo "::error::the runs of the event $event could not be read."; exit 1; }
           done
           # Each run that names an item, in $seen/runs: "<id> <created> <ended> <status> <conclusion> <event> <number>
-          # <task> <head> <comment> <account>", - for none. A name gives its task and its item (run-name): #<n> ends at
-          # a space or at the end of the name, so that #12 is never #123, and a workflow_run's name gives its head,
-          # which the open pull requests map to its pull request. An item with a run that has not finished, of any
-          # task, gets no run (running).
+          # <task> <head> <comment> <account> <started>", - for none. A name gives its task and its item (run-name):
+          # #<n> ends at a space or at the end of the name, so that #12 is never #123, and a workflow_run's name gives
+          # its head, which the open pull requests map to its pull request. An item with a run that has not finished,
+          # of any task, gets no run (running).
           named='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel) #([1-9][0-9]*)( at ([0-9a-f]{40}))?( for ([1-9][0-9]*))?( of ([A-Za-z0-9-]+(\[bot\])?))?$'
           pushed='^review ([0-9a-f]{40}) by '
           opened='^review #([1-9][0-9]*)$'
           answered='^answer #([1-9][0-9]*) by '
-          declare -A running=()
+          declare -A running=() reached=()
+          # take <file>: each run of the rows of <file> that names an item, into $seen/runs.
+          take() {
+            local id created ended status conclusion event started title number task head comment account
+            while read -r id created ended status conclusion event started title; do
+              [[ ${id:-} =~ ^[1-9][0-9]*$ ]] || continue
+              number="" task="" head=- comment=- account=-
+              case $event in
+                workflow_dispatch)
+                  [[ ${title:-} =~ $named ]] || continue
+                  task=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]} head=${BASH_REMATCH[4]:--}
+                  comment=${BASH_REMATCH[6]:--} account=${BASH_REMATCH[8]:--} ;;
+                workflow_run)
+                  [[ ${title:-} =~ $pushed ]] || continue
+                  task=review head=${BASH_REMATCH[1]}
+                  number=${pr_of[$head]:-} ;;
+                issues)
+                  [[ ${title:-} =~ $opened ]] || continue
+                  task=review number=${BASH_REMATCH[1]} ;;
+                issue_comment)
+                  [[ ${title:-} =~ $answered ]] || continue
+                  task=answer number=${BASH_REMATCH[1]} ;;
+                *) continue ;;
+              esac
+              [ -n "$number" ] || continue
+              [ "$status" = completed ] || running[$number]=1
+              echo "$id $created $ended $status $conclusion $event $number $task $head $comment $account $started" \
+                >> "$seen/runs"
+            done < "$1"
+          }
           : > "$seen/runs"
-          while read -r id created ended status conclusion event title; do
-            [[ ${id:-} =~ ^[1-9][0-9]*$ ]] || continue
-            number="" task="" head=- comment=- account=-
-            case $event in
-              workflow_dispatch)
-                [[ ${title:-} =~ $named ]] || continue
-                task=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]} head=${BASH_REMATCH[4]:--}
-                comment=${BASH_REMATCH[6]:--} account=${BASH_REMATCH[8]:--} ;;
-              workflow_run)
-                [[ ${title:-} =~ $pushed ]] || continue
-                task=review head=${BASH_REMATCH[1]}
-                number=${pr_of[$head]:-} ;;
-              issues)
-                [[ ${title:-} =~ $opened ]] || continue
-                task=review number=${BASH_REMATCH[1]} ;;
-              issue_comment)
-                [[ ${title:-} =~ $answered ]] || continue
-                task=answer number=${BASH_REMATCH[1]} ;;
-              *) continue ;;
-            esac
-            [ -n "$number" ] || continue
-            [ "$status" = completed ] || running[$number]=1
-            echo "$id $created $ended $status $conclusion $event $number $task $head $comment $account" >> "$seen/runs"
-          done < "$seen/listed"
-          # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <counts>", - for
-          # none. signin: a step whose name starts with "Sign in" failed in a job of the run, which so judged nothing.
-          # screen: the conclusion of its screen job. post: the conclusion of its post job, signin for one that failed
-          # at such a step and failure for one that failed at another (a write of the App, say). settled: its post job
-          # approved held runs or recorded the import check run. counts: count when the run counts toward the limit of
-          # the account that its name ends with, as the trust job's earlier counts it (not a run that its trust job
-          # refused, nor one whose screen or review could not sign in), else skip.
+          take "$seen/listed"
+          # reach <day>: the runs by hand of each day from <day> to the day before the first of the 8 days, each day
+          # listed once, into $seen/runs: a catch-up left closed reads back to the day before its close.
+          reach() {
+            local day=$1
+            while [[ $day < $first ]]; do
+              if [ -z "${reached[$day]:-}" ]; then
+                by_hand "$day" > "$seen/back-$day" || { echo "::error::the runs of $day could not be read."; return 1; }
+                take "$seen/back-$day"
+                reached[$day]=1
+              fi
+              day=$(date -u -d "$day +1 day" +%Y-%m-%d)
+            done
+          }
+          # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <early>
+          # <counts>", - for none. signin: a step whose name starts with "Sign in" failed in a job of the run, which so
+          # judged nothing. screen: the conclusion of its screen job. post: the conclusion of its post job, signin for
+          # one that failed at such a step and failure for one that failed at another (a write of the App, say).
+          # settled: its post job approved held runs or recorded the import check run. early: stopped when its trust
+          # job stopped it (the job was skipped, or every job after it was), conflict when the comment job alone ran
+          # after it (the task conflict). counts: count when the run counts toward the limit of the account that its
+          # name ends with, as the trust job's earlier counts it (not a run that its trust job refused, nor one whose
+          # screen or review could not sign in), else skip.
           facts() {
             local file=$seen/jobs-$1
             if [ ! -f "$file" ]; then
@@ -3174,6 +3420,11 @@ jobs:
                  (if $p != null and any($p.steps[]?; .conclusion == "success" and (.name
                     | IN("Approve the held runs of the screened head", "Record the import check of the head")))
                   then "settled" else "-" end),
+                 (if $t == null then "-" elif $t.conclusion == "skipped" then "stopped"
+                  elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
+                  then "stopped"
+                  elif [$rest[] | select(.conclusion != "skipped") | .name] == ["comment"] then "conflict"
+                  else "-" end),
                  (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                   elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
                   then "skip"
@@ -3287,9 +3538,11 @@ jobs:
           # head_stopped <work> <tries>: the automated <work> of the head of #number did not finish after <tries> tries,
           # and is not tried again: waits-on-theorem, with the label comment's step "Sami reads the runs and starts the
           # work again", then a hold comment that says so and names the head, in the place of the newest hold comment.
-          # That hold stops each later try of the head. This run fails for it.
+          # That hold stops each later try of the head, and no other reason takes the head in this run (taken). This
+          # run fails for it.
           head_stopped() {
             local line id title
+            taken=1
             echo "::error::#$number: the automated $1 of $head did not finish after $2 tries: it is not tried again," \
               "and the label comment names the next step for Sami."
             failed=1
@@ -3305,6 +3558,23 @@ jobs:
             esac
             say_held "${id:--}" "$title" \
               "The automated $1 of this head did not finish after $2 tries. It is not tried again." \
+              || echo "::error::the hold comment of #$number could not be written; the next run tries again."
+          }
+          # left_stopped <tries>: the catch-up that closed #number could not reopen it after <tries> runs that only
+          # reopen it, and is not tried again: waits-on-theorem, with the label comment's step "Sami reopens the pull
+          # request", then a hold comment that says so, in the place of the newest hold comment. That comment ends
+          # each later read of the item's runs (gave_up). This run fails for it.
+          left_stopped() {
+            local line id
+            echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
+              "tried again, and the label comment names the next step for Sami."
+            failed=1
+            python3 .github/review/rules.py label "$number" left_closed=true \
+              || { echo "::error::the label of #$number could not be set; the next run tries again."; return 0; }
+            line=$(newest_hold) || { echo "::error::the comments of #$number could not be read."; return 0; }
+            read -r _ id _ <<< "$line"
+            say_held "${id:--}" "Automated catch-up held." \
+              "The automated catch-up closed this pull request and could not reopen it after $1 tries." \
               || echo "::error::the hold comment of #$number could not be written; the next run tries again."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
@@ -3528,11 +3798,234 @@ jobs:
             fi
             owe "$ended" "$2" "" "$head" - "the post job of run $run failed"
           }
-          # consider: the runs that #number is due, by each reason above (due_*), in order. A read that fails for it
-          # leaves it for the next run, and this run fails at its end.
+          # merge_of: merge, the mergeable_state of #number, read again once while GitHub has not computed it (its
+          # mergeable is null); null when it still has not, and then the head waits for the next run.
+          merge_of() {
+            local data
+            [ -z "$merge" ] || return 0
+            for _ in 1 2; do
+              data=$(gh api "repos/$REPO/pulls/$number" --jq '"\(.mergeable) \(.mergeable_state // "unknown")"') \
+                || { echo "::error::pull request #$number could not be read."; return 1; }
+              if [[ $data != null\ * ]]; then
+                merge=${data#* }
+                return 0
+              fi
+            done
+            merge=null
+          }
+          # head_of: review, held and conflicted, what the comments of #number say of its head (head_marks), read once.
+          head_of() {
+            local line
+            [ -z "$head_read" ] || return 0
+            line=$(head_marks "$number" "$head") \
+              || { echo "::error::the comments of #$number could not be read."; return 1; }
+            read -r review held conflicted <<< "$line"
+            head_read=1
+          }
+          # ci_head: ci, what the CI runs of the head of #number say (ci_of), read once.
+          ci_head() {
+            [ -z "$ci_read" ] || return 0
+            ci=$(ci_of "$head") || { echo "::error::the CI runs of $head could not be read."; return 1; }
+            ci_read=1
+          }
+          # ci_over: whether the newest CI run of the head ended over an hour ago, with none still to finish (read by
+          # ci_head first).
+          ci_over() {
+            case $ci in
+              "") echo "#$number: no CI run of $head ended."; return 1 ;;
+              pending) echo "#$number: a CI run of $head has not finished, and its review comes after it."; return 1 ;;
+            esac
+            [[ ! $ci < $hour ]] || return 0
+            echo "#$number: the CI run of $head ended at $ci, less than an hour ago."
+            return 1
+          }
+          # due_conflict: the merge conflict of the head of an outside pull request, decided from the label comment's
+          # line <!-- review-conflict-state <head> --> and the mergeable_state that GitHub gives now. A head with a
+          # conflict that the line does not name yet: a conflict run, which asks the author to resolve it and gives
+          # waits-on-author and the line. A head with the line whose conflict is gone, with no push: a relabel, which
+          # sets its label again from what the workflow wrote of it and takes the line out. Each relabel of the head
+          # since the line counts: one that its trust job refused is started again at the next run, one that ran an
+          # hour after it ended, and after REVIEW_TRIES of them the head is not tried again (head_stopped). While the
+          # head has a conflict or the line, or GitHub has not computed its merge state, no other reason takes it
+          # (taken).
+          due_conflict() {
+            local at since tries ended run f early
+            merge_of || return 1
+            if [ "$merge" = null ]; then
+              echo "#$number: GitHub has not computed whether $head has a merge conflict: left for the next run."
+              taken=1
+              return 0
+            fi
+            if [ "$conflicted" = false ]; then
+              [ "$merge" = dirty ] || return 0
+              taken=1
+              owe "$opened" conflict "" "$head" - "$head has a merge conflict"
+              return 0
+            fi
+            taken=1
+            if [ "$merge" = dirty ]; then
+              echo "#$number: $head still has the merge conflict that its label comment names: its author's step."
+              return 0
+            fi
+            at=$(comments "$number" | jq -rs '[.[] | select(.user.login == "github-actions[bot]"
+                and ((.body // "") | startswith("<!-- review-label -->"))) | .updated_at // ""] | max // ""') \
+              || { echo "::error::the comments of #$number could not be read."; return 1; }
+            since=$(runs_of relabel "$head" workflow_dispatch | awk -v at="$at" '$1 >= at')
+            tries=$(grep -c . <<< "$since" || true)
+            if (( tries >= REVIEW_TRIES )); then
+              head_stopped "import check" "$tries"
+              return 0
+            fi
+            if (( tries > 0 )); then
+              read -r _ ended run <<< "$(tail -n 1 <<< "$since")"
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              read -r _ _ _ _ early _ <<< "$f"
+              if [ "$early" != stopped ] && [[ ! $ended < $hour ]]; then
+                echo "#$number: relabel run $run of $head ended at $ended, less than an hour ago: tried again later."
+                return 0
+              fi
+            fi
+            owe "$opened" relabel "" "$head" - "the merge conflict of $head is gone"
+          }
+          # due_catchup: the catch-up of an outside pull request whose head no review and no run of this workflow
+          # names (no run met it), whose head repository is still there, and whose newest CI run of the head ended over
+          # an hour ago, with none still to finish: a catchup run, whose post job closes and reopens it with the OSS
+          # Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows. Once for each
+          # head: that run names it. A pull request whose head repository is gone is never closed: GitHub cannot
+          # reopen it.
+          due_catchup() {
+            [ "$review" = none ] || return 0
+            [ -z "$(runs_of '[a-z]+' "$head")" ] || return 0
+            if [ "${pr_repo[$number]:-0}" = 0 ]; then
+              echo "#$number: the head repository of $head is gone, so it is not closed."
+              return 0
+            fi
+            ci_head || return 1
+            ci_over || return 0
+            owe "$ci" catchup "" "$head" - "no run met $head, and its CI run ended at $ci"
+          }
+          # due_old: the review of the head of an outside pull request whose review is in the form of before the move
+          # off pull_request_target, and none of now, under the CI conditions of the catch-up: a review run of that
+          # head, which reviews it from the API and closes and reopens nothing. Once for each head, and again an hour
+          # after each run of it that ended at a failed sign-in. A hold that is tried again leaves it to that hold.
+          due_old() {
+            local created ended run f last=""
+            [ "$review" = old ] && [ -z "$retaken" ] || return 0
+            ci_head || return 1
+            ci_over || return 0
+            while read -r created ended run; do
+              [ -n "${run:-}" ] || continue
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              if [ "${f%% *}" != signin ]; then
+                echo "#$number: run $run took the review of $head."
+                return 0
+              fi
+              last=$ended
+            done < <(runs_of review "$head" workflow_dispatch)
+            if [ -n "$last" ] && [[ ! $last < $hour ]]; then
+              echo "#$number: the review run of $head could not sign in, less than an hour ago: tried again later."
+              return 0
+            fi
+            owe "$ci" review "$limited" "$head" - "the review of $head is in the form of before"
+          }
+          # due_unreviewed: the review of the head of an open pull request into main, a writer's too, that a run of
+          # this workflow names and that no review and no hold comment names, with no merge conflict and no CI run of
+          # the head still to finish (the review of an approval's CI run comes first). At the next run when each run
+          # that named the head stopped at its trust job, gave the task conflict, or was a relabel (a draft marked
+          # ready, a base changed to main, a conflict that went away); else once the newest of them ended over an hour
+          # ago, as for a run that could not sign in. Not when the post job of that newest run failed: the App's retry
+          # takes it. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
+          # conflict, the head is not tried again (head_stopped).
+          due_unreviewed() {
+            local list created ended run task event f signin post early all=true newest="" last="" tries=0
+            [ -z "$retaken" ] || return 0
+            list=$(awk -v n="$number" -v h="$head" '$7 == n && $9 == h { print $2, $3, $1, $8, $6 }' "$seen/runs" \
+              | sort)
+            [ -n "$list" ] || return 0
+            head_of || return 1
+            [ "$review" = none ] && [ "$held" = false ] || return 0
+            if [ "$outsider" = false ]; then
+              [ "$conflicted" = false ] || return 0
+              merge_of || return 1
+              if [ "$merge" = dirty ] || [ "$merge" = null ]; then
+                echo "#$number: $head has a merge conflict, or GitHub has not computed whether it has one."
+                return 0
+              fi
+            fi
+            ci_head || return 1
+            if [ "$ci" = pending ]; then
+              echo "#$number: a CI run of $head has not finished, and its review comes after it."
+              return 0
+            fi
+            while read -r created ended run task event; do
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              read -r signin _ post _ early _ <<< "$f"
+              newest=$ended last=$post
+              [[ $early == stopped || $early == conflict || $task == relabel ]] || all=false
+              if [[ $task == review && $event == workflow_dispatch && $signin != signin && $early != conflict ]]; then
+                tries=$((tries + 1))
+              fi
+            done <<< "$list"
+            if (( tries >= REVIEW_TRIES )); then
+              head_stopped review "$tries"
+              return 0
+            fi
+            if [ "$last" = signin ] || [ "$last" = failure ]; then
+              echo "#$number: the post job of the newest run of $head failed: the App's retry takes it."
+              return 0
+            fi
+            if [ "$all" = false ] && [[ ! $newest < $hour ]]; then
+              echo "#$number: the newest run of $head ended at $newest with no review, less than an hour ago."
+              return 0
+            fi
+            owe "$newest" review "$limited" "$head" - "the runs of $head ended with no review"
+          }
+          # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
+          # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
+          # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App.
+          # When it is not the value now (IMPORT_PATHS, none when empty), or the head has a review of now and neither
+          # line: a relabel, which decides R12 again by the value now and sets the label again. Once an hour.
+          due_variable() {
+            local found checks at value same ended run
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            found=$(comments "$number" | SHA=$head jq -r 'select(.user.login == "github-actions[bot]"
+                and ((.body // "") | startswith("<!-- review-label -->")))
+              | .updated_at as $at | .body | split("\n")[]
+              | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
+              | select(.h == $ENV.SHA) | "\($at) \(.v)"') \
+              || { echo "::error::the comments of #$number could not be read."; return 1; }
+            [ -n "$found" ] || [ "$review" = new ] || return 0
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            checks=$(SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
+              -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
+                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700)
+                | (.completed_at // .started_at // "-") as $at | .output.text // "" | split("\n")[]
+                | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
+                | select(.h == $ENV.SHA) | "\($at) \(.v)"') \
+              || { echo "::error::the check runs of $head could not be read."; return 1; }
+            read -r at value <<< "$(printf '%s\n%s\n' "$found" "$checks" | awk NF | sort | tail -n 1)"
+            if [ -n "${at:-}" ]; then
+              same=$(jq -n --arg recorded "$value" --arg now "${IMPORT_PATHS:-}" \
+                '($recorded | try fromjson catch {}) == (if $now == "" then null else $now end)') \
+                || { echo "::error::the value recorded for $head could not be read."; return 1; }
+              [ "$same" != true ] || return 0
+            fi
+            read -r _ ended run <<< "$(runs_of relabel "$head" workflow_dispatch | tail -n 1)"
+            if [ -n "${run:-}" ] && [[ ! $ended < $hour ]]; then
+              echo "#$number: relabel run $run of $head ended at $ended, less than an hour ago: tried again later."
+              return 0
+            fi
+            owe "${at:-$opened}" relabel "" "$head" - \
+              "the value of REPO_PAIRS_IMPORT_PATHS recorded for $head is not the value now"
+          }
+          # consider: the runs that #number is due, by each reason above (due_*), in order. A writer's pull request
+          # gets only the work that its hold names and the review of a head that a run left with no review. A read
+          # that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the head
+          # (taken), no later one takes it in this run.
           consider() {
             local head="" rc=0 outsider=false limited="" hold h_at="" h_origin="" h_tries="" h_task="" h_comment=""
-            local h_head=- line retaken="" waits="" waits_read="" marks="" marks_read=""
+            local h_head=- line retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
+            local review=none held=false conflicted=false head_read="" merge="" ci="" ci_read=""
             if [ "$draft" != false ]; then
               echo "#$number: a draft, of which the trust job takes no run."
               return 0
@@ -3562,11 +4055,17 @@ jobs:
               access[$author]=$rc
             fi
             if (( ${access[$author]} != 0 )); then outsider=true limited=$author; fi
-            [ "$labelled" = true ] || [ "$outsider" = true ] || return 0
-            hold=$(limit_hold "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
-            read -r h_at h_origin h_tries _ h_task h_comment <<< "$hold"
+            [ "$labelled" = true ] || [ "$outsider" = true ] || [ "$kind" = pr ] || return 0
+            if [ "$labelled" = true ] || [ "$outsider" = true ]; then
+              hold=$(limit_hold "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
+              read -r h_at h_origin h_tries _ h_task h_comment <<< "$hold"
+            fi
             if [ "$labelled" = true ]; then due_held || return 1; fi
-            [ "$outsider" = true ] || return 0
+            if [ "$outsider" = false ]; then
+              [ "$kind" = pr ] || return 0
+              due_unreviewed
+              return
+            fi
             due_answer || return 1
             if [ "$kind" = issue ]; then
               due_draft || return 1
@@ -3576,12 +4075,83 @@ jobs:
             read -r _ _ h_head <<< "$line"
             h_head=${h_head:--}
             due_approve || return 1
+            [ -z "$taken" ] || return 0
+            head_of || return 1
+            due_conflict || return 1
+            [ -z "$taken" ] || return 0
             if [ "${h_origin:-}" = - ] && [ "$h_head" = "$head" ]; then
               echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
               return 0
             fi
+            for reason in catchup old unreviewed variable; do
+              "due_$reason" || return 1
+              [ -z "$taken" ] || return 0
+            done
             due_retry 'review|rescreen|relabel' relabel "import check" || return 1
+            [ -z "$taken" ] || return 0
             due_retry catchup catchup catch-up || return 1
+          }
+          # consider_closed: a catch-up left closed, the one closed item that this job takes: #number, a pull request
+          # of an outside author that is not merged, whose newest close is oss-verify[bot]'s and falls between the
+          # start and the end of a catchup run of it whose post job failed or was cancelled (the closing run), as the
+          # trust job tells it (left_closed). Its runs by hand are read back to the day before the close. It is due a
+          # catchup run, which only reopens it, once an hour after the newest catchup run of it ended. Each catchup
+          # run since the closing run counts, whatever its outcome, but one that failed at a sign-in: after
+          # REVIEW_TRIES of them it is not tried again (left_stopped), and nothing more of it is read (gave_up).
+          consider_closed() {
+            local rc=0 head="" line at by given closing="" made="" created ended run started f post count=0 newest=""
+            if [ -n "${running[$number]:-}" ]; then
+              echo "#$number: a run of it has not finished."
+              return 0
+            fi
+            if [ -z "${access[$author]:-}" ]; then
+              trusted "$author" || rc=$?
+              (( rc != 2 )) || { echo "::error::GitHub did not say whether $author has write access."; return 1; }
+              access[$author]=$rc
+            fi
+            (( ${access[$author]} != 0 )) || return 0
+            line=$(gh api --paginate "repos/$REPO/issues/$number/events" --jq '.[] | select(.event == "closed")
+              | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) \
+              || { echo "::error::the events of #$number could not be read."; return 1; }
+            read -r at by <<< "$line"
+            [ "${by:-}" = 'oss-verify[bot]' ] || return 0
+            [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
+            given=$(gave_up "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
+            if [ "$given" = true ]; then
+              echo "#$number: the catch-up closed it and could not reopen it: Sami reopens it."
+              return 0
+            fi
+            reach "$(date -u -d "${at:0:10} -1 day" +%Y-%m-%d)" || return 1
+            while read -r created ended run started; do
+              [[ ! $at < $started ]] || continue
+              [ "$ended" = - ] || [[ ! $ended < $at ]] || continue
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              read -r _ _ post _ <<< "$f"
+              case $post in
+                failure|signin|cancelled) closing=$run made=$created; break ;;
+              esac
+            done < <(awk -v n="$number" '$6 == "workflow_dispatch" && $7 == n && $8 == "catchup" {
+              print $2, $3, $1, $12 }' "$seen/runs" | sort)
+            [ -n "$closing" ] || return 0
+            while read -r created ended run; do
+              [[ ! $created < $made ]] || continue
+              newest=$ended
+              [ "$run" != "$closing" ] || continue
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              [ "${f%% *}" = signin ] || count=$((count + 1))
+            done < <(runs_of catchup "" workflow_dispatch)
+            head=$(gh api "repos/$REPO/pulls/$number" --jq .head.sha) \
+              || { echo "::error::pull request #$number could not be read."; return 1; }
+            [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pull request #$number names no head commit."; return 1; }
+            if (( count >= REVIEW_TRIES )); then
+              left_stopped "$count"
+              return 0
+            fi
+            if [[ ! $newest < $hour ]]; then
+              echo "#$number: catch-up run of it ended at $newest, less than an hour ago: tried again later."
+              return 0
+            fi
+            owe "$at" catchup "" "$head" - "a catch-up closed it at $at and did not reopen it"
           }
           # The open pull requests and issues, each with its kind, whether it is a draft or labelled review-held, when
           # it was opened, and its author.
@@ -3600,6 +4170,16 @@ jobs:
             fi
             consider || failed=1
           done <<< "$items"
+          # The closed pull requests that are not merged, each with its author: a catch-up left closed among them is due
+          # its reopen (consider_closed). A list that cannot be read leaves them for the next run.
+          closed=$(gh api --paginate "repos/$REPO/issues?state=closed&per_page=100" --jq '.[]
+            | select(.state == "closed" and .pull_request != null and .pull_request.merged_at == null)
+            | "\(.number) \(.user.login // "")"') \
+            || { echo "::error::the closed pull requests could not be read."; closed="" failed=1; }
+          while read -r number author; do
+            [[ ${number:-} =~ ^[1-9][0-9]*$ && -n ${author:-} ]] || continue
+            consider_closed || failed=1
+          done <<< "$closed"
           # The runs due, oldest reason first. A run that screens counts toward the limit of the account that its name
           # ends with: at OUTSIDE_HOURLY_LIMIT runs of the last hour, the next one of that account waits for a later run
           # of this job.

@@ -11,6 +11,7 @@ labels").
         <request.json> [<import paths>]
     python3 .github/review/rules.py import-marker <head> [<import paths>]
     python3 .github/review/rules.py verdict <number> <head>
+    python3 .github/review/rules.py relabel <number> <head> [<fact>=<value> ...] [marker=<line> ...]
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
@@ -81,6 +82,13 @@ verdict: the review's verdict at <head> of the pull request <number>, from the m
 <!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment of github-actions[bot] that names <head>
 (review_verdict): <verdict>, or <verdict> will-fix, on standard output, and an empty line when no review comment names
 <head>.
+
+relabel: label (above) for the head <head> of the pull request <number>, with the facts that the workflow wrote of
+that head (relabel_facts) beside the facts and the marker lines of the job: the verdict and will-fix of the review
+comment that names <head>, an answer at <head> whose author said they will make the change, the fix reviews of
+<head> and the count of fix reviews since the author's last own push, or the hold comment that names <head> when it
+is newer than all of those. When the workflow wrote nothing of <head> but the conflict-state line of its label
+comment, the item gets no state label and the line goes. When it wrote nothing of <head>, nothing changes.
 
 The standard library of Python 3 alone.
 """
@@ -1090,6 +1098,87 @@ def suggestions(fix, diff):
     return {"summary": summary, "suggestions": kept}
 
 
+# --- the relabel (D16) ----------------------------------------------------------------------------------------------
+# A relabel run sets the state of a head again, with no model, from what the workflow wrote of that head: after a
+# merge conflict that went away with no push, after a change of REPO_PAIRS_IMPORT_PATHS, and when the post job could
+# not record the import check run.
+
+# The markers of a hold comment (D8): the hold of work that the schedule tries again, with its task and, for an
+# answer, its comment; and the head that the hold names.
+TRIED = re.compile(r"\n<!-- review-held-(?:limit|cap|transient) [0-9]+(?: [0-9]+(?: ([a-z]+)(?: [1-9][0-9]*)?)?)? -->"
+                   r"(?:\n|$)")
+HELD_HEAD = re.compile(r"\n<!-- review-held-head ([0-9a-f]{40}) -->(?:\n|$)")
+# The first line of an answer whose author said they will make the change, at the head that it names.
+ANSWER_WILL_FIX = re.compile(r"<!-- review-answer [0-9]+ will-fix ([0-9a-f]{40}) -->(?:\n|$)")
+# The words of the holds that are not tried again: the screen's, and the catch-up's that could not reopen a pull
+# request. Each other such hold is a last try.
+SCREEN_HELD = "The automated screen held "
+LEFT_CLOSED = "The automated catch-up closed this pull request and could not reopen it"
+
+
+def hold_fact(body):
+    """The fact of label_state that the hold comment body gives: held for a hold that the schedule tries again, but
+    None for such a hold of an answer, which leaves the state as it was; screen_held for a hold of the screen;
+    left_closed for a catch-up that could not reopen the pull request; tries_used_up for each other hold."""
+    m = TRIED.search(body)
+    if m:
+        return None if m.group(1) == "answer" else "held"
+    if SCREEN_HELD in body:
+        return "screen_held"
+    if LEFT_CLOSED in body:
+        return "left_closed"
+    return "tries_used_up"
+
+
+def relabel_facts(comments, reviews, head, history):
+    """The facts of label_state for head from what the workflow wrote of it, or None when it wrote nothing of it.
+    comments are the item's comments as the API lists them (issues/<n>/comments, with updated_at), reviews() gives the
+    pull request's reviews (pulls/<n>/reviews), and history() the history of head (commits?sha=<head>), each read
+    only when the facts need it. The newer of the review side (the review comment of BOT that names head, and an
+    answer at head whose author said they will make the change) and of a hold comment of BOT that names head gives
+    the facts; an answer's hold that is tried again gives none. The review side gives the verdict, will_fix (of the
+    review or of an answer), fix_posted (a fix review of head) and fix_stop (a blocking verdict after 2 fix reviews
+    since the author's last own push, the fix review of head not counted, as the review job decided it before it
+    posted that fix). With neither, a label comment that holds the conflict-state line of head gives no fact: the
+    head goes back to the workflow, and the line goes."""
+    verdict, will_fix, reviewed, answered = "", False, "", ""
+    fact, held, conflicted = None, "", False
+    for c in comments:
+        if (c.get("user") or {}).get("login") != BOT:
+            continue
+        body, at = c.get("body") or "", c.get("updated_at") or ""
+        m = REVIEWED.match(body)
+        if m and m.group(1) == head:
+            verdict, will_fix, reviewed = m.group(2), bool(m.group(3)), at
+            continue
+        m = ANSWER_WILL_FIX.match(body)
+        if m and m.group(1) == head:
+            answered = max(answered, at)
+        elif body.startswith("<!-- review-held -->"):
+            m = HELD_HEAD.search(body)
+            if m and m.group(1) == head and hold_fact(body) and at >= held:
+                fact, held = hold_fact(body), at
+        elif body.startswith(FIRST) and f"<!-- review-conflict-state {head} -->" in body.split("\n"):
+            conflicted = True
+    side = max(reviewed, answered)
+    if fact and held > side:
+        return {fact: True}
+    if side:
+        will_fix = will_fix or bool(answered)
+        found = reviews()
+        own = sum(1 for r in found if (r.get("user") or {}).get("login") == BOT
+                  and (m := FIX_MARKER.search(r.get("body") or "")) and m.group(1) == head)
+        every = sum(1 for r in found if (r.get("user") or {}).get("login") == BOT
+                    and FIX_MARKER.search(r.get("body") or ""))
+        fix_stop = (verdict == "blocking" and not will_fix and every - own >= 2
+                    and fixes(history(), found, head) - own >= 2)
+        return {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
+    if conflicted:
+        return {}
+    return None
+
+
+
 def json_lines(path):
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
@@ -1154,6 +1243,35 @@ def main(argv):
             comments = [json.loads(line) for line in found.split("\n") if line.strip()]
             verdict, will_fix = review_verdict(comments, argv[2])
             print(verdict + (" will-fix" if will_fix else ""))
+            return 0
+        if len(argv) >= 3 and argv[0] == "relabel" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
+            number, head = argv[1], argv[2]
+            facts, markers, given = parse(argv[3:])
+            if given:
+                raise ValueError("relabel names its head before the facts, not as head=")
+            repo = os.environ["REPO"]
+
+            def objects(*args):
+                return [json.loads(line) for line in gh(*args).split("\n") if line.strip()]
+            comments = objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
+                               '.[] | select(.user.login == "github-actions[bot]")'
+                               ' | {user: {login: .user.login}, body, updated_at} | @json')
+            found = relabel_facts(
+                comments, lambda: objects("--paginate", f"repos/{repo}/pulls/{number}/reviews", "--jq", ".[] | @json"),
+                head, lambda: objects(f"repos/{repo}/commits?sha={head}&per_page=100", "--jq", ".[] | @json"))
+            if found is None:
+                print(f"#{number}: the workflow wrote nothing of {head}, so the labels stay.")
+                return 0
+            both = sorted(set(found) & set(facts))
+            if both:
+                raise ValueError(f"relabel reads these facts itself: {', '.join(both)}")
+            facts.update(found)
+            state = label_state(**facts)
+            imports = None
+            if facts.get("kind") == "pr" and facts.get("outsider"):
+                imports = (facts.get("import_paths"), facts.get("decision", ""))
+            label_comment(state, "", markers, head, imports)
+            apply(number, state, markers, head, imports)
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)

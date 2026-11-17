@@ -68,7 +68,8 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments, reviews
 # gh api <endpoint> [--paginate] [--jq <filter>] [--method M] [-f|-F k=v] [--input <file>], answered from
 # $FAKE_GH/<endpoint>.json (the endpoint's slashes as underscores, its query dropped) through jq, as gh applies --jq; an
 # endpoint with no file answers as GitHub's 404 does, and one with a <endpoint>.fail file fails with that file's text,
-# as gh names an HTTP error (a 422, say). <endpoint>.2.json and on are the pages that only --paginate reads.
+# as gh names an HTTP error (a 422, say). A call that holds an argument listed in <endpoint>.refuse, one on each line
+# (state=open, say), fails as GitHub's 422 does. <endpoint>.2.json and on are the pages that only --paginate reads.
 # <endpoint>.then.json, when there is one, takes the place of <endpoint>.json after the first read: an answer that
 # changes in between. The file of --input, the request's body, goes to $FAKE_GH/inputs (gh_inputs), and the GH_TOKEN
 # of each call to $FAKE_GH/tokens (gh_tokens).
@@ -106,6 +107,13 @@ printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
 [ -z "$input" ] || { cat "$input" >> "$FAKE_GH/inputs"; printf '\1' >> "$FAKE_GH/inputs"; }
 file="$FAKE_GH/${endpoint//\//_}.json"
 [ ! -f "${file%.json}.fail" ] || { cat "${file%.json}.fail" >&2; exit 1; }
+if [ -f "${file%.json}.refuse" ]; then
+  while IFS= read -r field; do
+    for a in "${all[@]}"; do
+      [ "$a" != "$field" ] || { echo "gh: Validation Failed (HTTP 422)" >&2; exit 1; }
+    done
+  done < "${file%.json}.refuse"
+fi
 [ -f "$file" ] || { echo "gh: Not Found (HTTP 404): $endpoint" >&2; exit 1; }
 jq -r "$filter" "$file"
 n=2
@@ -378,22 +386,43 @@ class Runner(unittest.TestCase):
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
             f.write(f"gh: {text} (HTTP {status})\n")
 
+    def refuse_field(self, endpoint, field):
+        """Each call of endpoint that holds the argument field (state=open, say) fails with HTTP 422, as gh names it."""
+        with open(os.path.join(self.api, endpoint.replace("/", "_") + ".refuse"), "a") as f:
+            f.write(field + "\n")
+
+    def stub_sleep(self):
+        """A stand-in sleep at the front of PATH, which returns at once and writes its argument to $FAKE_GH/sleeps:
+        the seconds that each call would have waited, in order."""
+        path = os.path.join(self.dir, "bin", "sleep")
+        with open(path, "w") as f:
+            f.write('#!/usr/bin/env bash\necho "$*" >> "$FAKE_GH/sleeps"\n')
+        os.chmod(path, 0o755)
+
+    def sleeps(self):
+        path = os.path.join(self.api, "sleeps")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return f.read().split()
+
     def permissions(self, **logins):
         """Serve GitHub's collaborator permission answer for each login; a login not given is a 404."""
         for login, permission in logins.items():
             self.serve(f"repos/{REPO}/collaborators/{login}/permission", {"permission": permission})
 
     def serve_item(self, number=7, author="mallory", kind="issue", state="open", head=HEAD, mergeable="clean",
-                   draft=False, base="main", merged=False, labels=(), branch=BRANCH):
+                   draft=False, base="main", merged=False, labels=(), branch=BRANCH, repository=FORK_ID):
         """What the API says of an issue or a pull request: its issue, and for a pull request its pull, whose head is
-        head on branch of the head repository FORK_ID."""
+        head on branch of the head repository repository (None: gone)."""
         data = {"number": number, "state": state, "user": {"login": author}, "draft": draft,
                 "labels": [{"name": n} for n in labels]}
         if kind == "pr":
             data["pull_request"] = {"url": f"https://api.github.com/repos/{REPO}/pulls/{number}"}
             self.serve(f"repos/{REPO}/pulls/{number}", {
                 "number": number, "state": state, "draft": draft, "merged": merged, "user": {"login": author},
-                "base": {"ref": base}, "head": {"sha": head, "ref": branch, "repo": {"id": FORK_ID}},
+                "base": {"ref": base},
+                "head": {"sha": head, "ref": branch, "repo": None if repository is None else {"id": repository}},
                 "mergeable_state": mergeable})
         self.serve(f"repos/{REPO}/issues/{number}", data)
 
@@ -2283,13 +2312,18 @@ class HoldTest(Holding):
 
 
 def run_post(test, ctx, tokens, mint=True):
-    """The post job's steps in the contexts ctx, as GitHub runs them: each step whose if holds, in order, and none after
-    a step that failed (GitHub's implicit success()). The checkout gives main's .github/ (test.checkout); a sign-in step
-    gives its token of tokens, or fails when mint is False; each other step runs against the stand-in gh, with its env
-    as GitHub fills it in from ctx. Each step's outputs and outcome join ctx, and its log test.logs. The outcome of each
-    step, by its name."""
+    """The post job's steps in the contexts ctx (run_job)."""
+    return run_job(test, "post", ctx, tokens, mint)
+
+
+def run_job(test, job, ctx, tokens, mint=True):
+    """The steps of job in the contexts ctx, as GitHub runs them: each step whose if holds, in order, and none after a
+    step that failed (GitHub's implicit success()). The checkout gives main's .github/ (test.checkout); a sign-in step
+    of the App gives its token of tokens, or fails when mint is False; each other step runs against the stand-in gh,
+    with its env as GitHub fills it in from ctx. Each step's outputs and outcome join ctx, and its log test.logs. The
+    outcome of each step, by its name."""
     outcomes, failed = {}, False
-    for s in JOBS["post"]["steps"]:
+    for s in JOBS[job]["steps"]:
         name = s.get("name") or "Run " + s["uses"].split("@")[0]
         test.assertIsNone(STATUS_FUNCTIONS.search(s.get("if", "")), name)
         if failed or ("if" in s and not evaluate(s["if"], ctx)):
@@ -2305,11 +2339,12 @@ def run_post(test, ctx, tokens, mint=True):
             if mint:
                 ctx[f"steps.{s['id']}.outputs.token"] = tokens[name]
         else:
-            env = filled({**WF["env"], **JOBS["post"].get("env", {}), **s.get("env", {})}, ctx)
+            env = filled({**WF["env"], **JOBS[job].get("env", {}), **s.get("env", {})}, ctx)
             rc, out, got = test.run_script(s["run"], **dict({"GH_TOKEN": ""}, **env))
             test.logs.append(out)
             outcome = "success" if rc == 0 else "failure"
-            ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
+            if "id" in s:
+                ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
         if "id" in s:
             ctx[f"steps.{s['id']}.outcome"] = outcome
         failed = failed or outcome == "failure"
@@ -4849,6 +4884,52 @@ class RescreenTrustTest(Held):
         self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
         self.assertEqual(self.route(task="approve", head=HEAD).get("route"), None)
 
+    def test_a_review_a_conflict_a_relabel_or_a_catchup_whose_reason_no_longer_holds_is_refused(self):
+        """D6, D16: the trust job reads again from the API why the rescreen job started these runs of a pull request,
+        and stops the run when the reason no longer holds. A review of a head that a review of now, a hold comment or
+        the label comment's conflict-state line names, or whose CI run has not finished (a review of the form of before
+        does not stop it). A conflict whose conflict-state line is there already. A relabel while GitHub does not say
+        whether the head has a merge conflict, or of a head that no review, hold comment or conflict-state line names.
+        A catch-up of a writer's pull request, of a head that a review names, whose head repository is gone, or whose
+        CI run has not finished or ended under an hour ago. While the reason holds, each is taken."""
+        def said(body, id_=30):
+            return {"id": id_, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD, "body": body}
+        new = said(f"<!-- review -->\n<!-- review-head {HEAD} -->\n<!-- review-verdict {HEAD} pass -->\n"
+                   f"**Automated review** of commit {HEAD[:12]}")
+        old = said(f"<!-- review -->\n**Automated review** of commit {HEAD[:12]}\n\nNo blocking finding.")
+        named = limit_hold(50, head=HEAD)
+        line = said(rules.label_comment("conflict", head=HEAD), 40)
+        for task, comments, ci, merge, more, taken in (
+                ("review", [], ("completed", 90), "clean", {}, True),
+                ("review", [old], ("completed", 90), "clean", {}, True),
+                ("review", [new], ("completed", 90), "clean", {}, False),
+                ("review", [named], ("completed", 90), "clean", {}, False),
+                ("review", [line], ("completed", 90), "clean", {}, False),
+                ("review", [], ("in_progress", 5), "clean", {}, False),
+                ("review", [], ("action_required", 5), "clean", {}, False),
+                ("conflict", [], ("completed", 90), "dirty", {}, True),
+                ("conflict", [line], ("completed", 90), "dirty", {}, False),
+                ("relabel", [new], ("completed", 90), "clean", {}, True),
+                ("relabel", [named], ("completed", 90), "clean", {}, True),
+                ("relabel", [line], ("completed", 90), "clean", {}, True),
+                ("relabel", [], ("completed", 90), "clean", {}, False),
+                ("relabel", [new], ("completed", 90), "unknown", {}, False),
+                ("catchup", [], ("completed", 90), "clean", {}, True),
+                ("catchup", [old], ("completed", 90), "clean", {}, False),
+                ("catchup", [], ("completed", 90), "clean", {"repository": None}, False),
+                ("catchup", [], ("in_progress", 5), "clean", {}, False),
+                ("catchup", [], ("completed", 50), "clean", {}, False),
+                ("catchup", [], ("completed", 90), "clean", {"author": "alice"}, False)):
+            with self.subTest(task=task, comments=[c["id"] for c in comments], ci=ci, merge=merge, more=more):
+                self.item(kind="pr", head=HEAD, mergeable=merge, labels=(), **more)
+                self.held(7, *comments)
+                self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
+                    {"id": 70, "status": ci[0], "event": "pull_request", "path": ".github/workflows/ci.yml",
+                     "head_sha": HEAD, "updated_at": ago(ci[1])}]})
+                account = "mallory" if task == "review" and more.get("author", "mallory") == "mallory" else ""
+                got = self.route(task=task, account=account, head=HEAD)
+                self.assertEqual(bool(got.get("route")), taken, got)
+
     def test_an_event_never_takes_the_rescreen_path(self):
         """An event has no task input; were one given, the event's own path decides, from its own author and account,
         and reads no hold."""
@@ -4880,10 +4961,13 @@ class RescreenTrustTest(Held):
         self.assertEqual(held(step("rescreen", RESCREEN_JOB)["run"]), held(step("trust", TRUST)["run"]))
 
 
-def schedule(test, post_review=None):
-    """The rescreen job's step, run against test's stand-in gh: its exit status, its log, and each run that it started,
-    in order, as the inputs of its call: (number, task, account, head, comment)."""
-    rc, out, _ = test.run_script(step("rescreen", RESCREEN_JOB)["run"],
+def schedule(test, post_review=None, variable=None):
+    """The rescreen job's step, run against test's stand-in gh, with the variable REPO_PAIRS_IMPORT_PATHS variable
+    (None: not set, so GitHub gives an empty value) in the name that its env maps: its exit status, its log, and each
+    run that it started, in order, as the inputs of its call: (number, task, account, head, comment)."""
+    s = step("rescreen", RESCREEN_JOB)
+    (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
+    rc, out, _ = test.run_script(s["run"], **{name: "" if variable is None else variable},
                                  OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
                                  HELD_LABEL=WF["env"]["HELD_LABEL"], REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
                                  POST_REVIEW=WF["env"]["POST_REVIEW"] if post_review is None else post_review)
@@ -5412,12 +5496,10 @@ def post_job(conclusions):
             "steps": [{"name": n, "status": "completed", "conclusion": conclusions.get(n, "skipped")} for n in names]}
 
 
-class ScheduleTest(Held):
-    """b1 and b8 (D16): the runs that the rescreen job starts beside today's rescreens, from what its own step reads of
-    the stand-in gh: the work that a hold names, as the task of its marker; the answer to a comment of an outside author
-    that waits; the draft of the reply to an outside issue; the approval of a first-time contributor's held runs; and
-    the App's writes again (the App's retry). Where a case says so, the run that it starts goes on through the trust job
-    and the jobs after it."""
+class Scheduled(Held):
+    """The rescreen job's step against the stand-in gh, with the open items, the open pull requests, this workflow's
+    runs and their jobs, and the runs of each head (GitHub's held runs and CI runs) that it reads, and the steps of a
+    run that it starts: the trust job and the jobs after it."""
 
     TRIES = int(WF["env"]["REVIEW_TRIES"])
     HELD = "The held runs of the screened head"
@@ -5433,6 +5515,10 @@ class ScheduleTest(Held):
     # The workflow's review of HEAD.
     REVIEWED = {"id": 1, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
                 "body": f"<!-- review -->\n<!-- review-head {HEAD} -->\n**Automated review** of commit {HEAD[:12]}"}
+    # The label comment that the label step of HEAD's review wrote, with the value of REPO_PAIRS_IMPORT_PATHS that it
+    # read: none, as the schedule reads it here.
+    LABELLED = {"id": 4, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                "body": rules.label_comment("decide", markers=[rules.import_marker(HEAD, None)])}
 
     def setUp(self):
         super().setUp()
@@ -5440,15 +5526,16 @@ class ScheduleTest(Held):
         self.logs = []
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/dispatches", {})
         self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
-        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
-        self.listed, self.open_prs, self.listed_runs = [], [], []
+        self.listed, self.open_prs, self.listed_runs, self.of_heads, self.pulls = [], [], [], [], {}
         self.publish()
 
     def publish(self):
-        """Serves the open items, the open pull requests and this workflow's runs, as they are now."""
+        """Serves the open items, the open pull requests, this workflow's runs, and the runs of each head (GitHub's
+        held runs and CI runs), as they are now."""
         self.serve(f"repos/{REPO}/issues", self.listed)
         self.serve_prs(*self.open_prs)
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": self.listed_runs})
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": self.of_heads})
 
     def comments(self, number, *comments):
         """The comments of #number, and GitHub's answer for each one alone."""
@@ -5459,17 +5546,52 @@ class ScheduleTest(Held):
                 "html_url": f"https://github.com/{REPO}/issues/{number}#issuecomment-{c['id']}"})
 
     def item(self, number=7, kind="issue", author="mallory", labels=(), comments=(), review_comments=(), head=HEAD,
-             opened=24 * 60):
+             opened=24 * 60, merge="clean", repository=FORK_ID, draft=False, base="main"):
         """An open item of author, opened that many minutes ago, with its labels and its comments, as GitHub lists it;
-        for a pull request into main at head, with no review and with its review comments."""
+        for a pull request at head from the head repository repository (None: gone), into base, with no review, with
+        its review comments, no check run of head, and the mergeable_state merge (unknown: GitHub gives mergeable
+        null)."""
         self.listed.append({"number": number, "state": "open", "user": {"login": author}, "created_at": ago(opened),
                             "labels": [{"name": n} for n in labels], **({"pull_request": {}} if kind == "pr" else {})})
         if kind == "pr":
-            self.open_prs.append((number, author, head))
+            self.open_prs.append((number, author, head, repository, draft, base))
             self.serve(f"repos/{REPO}/pulls/{number}/reviews", [])
             self.serve(f"repos/{REPO}/pulls/{number}/comments", list(review_comments))
+            self.pulls[number] = {"number": number, "state": "open", "user": {"login": author}, "merged": False,
+                                  "draft": draft, "base": {"ref": base},
+                                  "head": {"sha": head, "ref": BRANCH,
+                                           "repo": None if repository is None else {"id": repository}}}
+            self.merge(number, merge)
+            self.serve(f"repos/{REPO}/commits/{head}/check-runs", {"check_runs": []})
+        self.serve(f"repos/{REPO}/issues/{number}", {
+            "number": number, "state": "open", "user": {"login": author}, "draft": draft,
+            "labels": [{"name": n} for n in labels],
+            **({"pull_request": {"url": f"https://api.github.com/repos/{REPO}/pulls/{number}"}} if kind == "pr" else {})})
         self.comments(number, *comments)
         self.serve(f"repos/{REPO}/issues/{number}/labels", [{"name": n} for n in labels])
+        self.publish()
+
+    def merge(self, number, merge, then=None, **facts):
+        """What GitHub says of pull request #number: its mergeable_state merge (unknown: mergeable null), and then,
+        when given, from its second read on; and facts in the place of those that item gave it (state, say)."""
+        self.pulls[number].update(facts)
+
+        def pull(state):
+            return dict(self.pulls[number], mergeable=None if state == "unknown" else state != "dirty",
+                        mergeable_state=state)
+        self.serve(f"repos/{REPO}/pulls/{number}", pull(merge))
+        then_path = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_{number}.then.json")
+        if then:
+            self.serve(f"repos/{REPO}/pulls/{number}.then", pull(then))
+        elif os.path.exists(then_path):
+            os.remove(then_path)
+
+    def ci(self, ended=None, head=HEAD, status="completed", run=70):
+        """A CI run of head of the event pull_request, ended that many minutes ago, or with status."""
+        self.of_heads.append({"id": run, "status": status, "event": "pull_request", "head_sha": head,
+                              "path": ".github/workflows/ci.yml", "head_branch": BRANCH,
+                              "head_repository": {"id": FORK_ID}, "created_at": ago((ended or 0) + 40),
+                              "updated_at": ago(ended or 0)})
         self.publish()
 
     def ran(self, run, title, made, ended=None, event="workflow_dispatch", status="completed", jobs=()):
@@ -5484,37 +5606,101 @@ class ScheduleTest(Held):
         self.publish()
 
     def held_runs(self, made=300, head=HEAD):
-        """GitHub holds runs 61 and 62 of head (status action_required), of the event pull_request from the pull
+        """GitHub holds runs 61 and 62 of CI of head (status action_required), of the event pull_request from the pull
         request's head repository and branch, made that many minutes ago, and approves each when it is asked to."""
-        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
-            {"id": i, "status": "action_required", "event": "pull_request", "head_sha": head, "head_branch": BRANCH,
-             "head_repository": {"id": FORK_ID}, "created_at": ago(made)} for i in (61, 62)]})
+        self.of_heads += [{"id": i, "status": "action_required", "event": "pull_request", "head_sha": head,
+                           "path": ".github/workflows/ci.yml", "head_branch": BRANCH,
+                           "head_repository": {"id": FORK_ID}, "created_at": ago(made)} for i in (61, 62)]
+        self.publish()
         for i in (61, 62):
             self.serve(f"repos/{REPO}/actions/runs/{i}/approve", {})
 
-    def started(self):
-        """The rescreen job's step on what is served now (schedule), after the stand-in gh forgot its calls."""
+    def started(self, variable=None):
+        """The rescreen job's step on what is served now (schedule), with the variable REPO_PAIRS_IMPORT_PATHS
+        variable, after the stand-in gh forgot its calls."""
         for name in ("calls", "args", "inputs", "tokens"):
             if os.path.exists(os.path.join(self.api, name)):
                 os.remove(os.path.join(self.api, name))
-        return schedule(self)
+        return schedule(self, variable=variable)
 
     @staticmethod
     def screened(failed=None):
         """The screen job of a run of mallory's item: it passed, or it failed at the step failed."""
         return attempt_job("screen", failed, name="screen mallory")
 
-    def assertStopped(self, title, text):
-        """The run failed, started nothing, gave #7 waits-on-theorem with the label comment's step for Sami, and posted
-        one hold comment with title and text, which names HEAD."""
-        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+    def assertStopped(self, title, text, edited=False, step_line="Sami reads the runs and starts the work again.",
+                      number=7):
+        """The run gave #number waits-on-theorem with the label comment's step step_line for Sami, in a new label
+        comment (or in the one it had, when edited), and posted one hold comment with title and text, which names
+        HEAD."""
+        self.assertEqual(state_labels(self.api, number), [("+", THEOREM_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
-        self.assertEqual(method, "POST")
-        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami reads the runs and starts the "
-                                         "work again.\n"), label)
+        self.assertEqual(method, "PATCH" if edited else "POST")
+        self.assertTrue(label.startswith(f"<!-- review-label -->\n**Next step:** {step_line}\n"), label)
+        self.assertTrue(label.endswith("\n<!-- waits-on-theorem: Sami -->"), label)
         posts = [a[len("body="):] for c in writes(self.api) for a in c if a.startswith("body=<!-- review-held -->")]
         self.assertEqual(posts, [f"<!-- review-held -->\n**{title}**\n\n{text}\n\n<!-- review-held-head {HEAD} -->"])
         return posts[0]
+
+    def stopped_jobs(self):
+        """The jobs of a run that its trust job stopped: each job after it skipped."""
+        return [{"name": n, "status": "completed", "conclusion": "skipped"}
+                for n in ("gather", "screen", "review", "post", "comment", "hold")]
+
+    def conflict_jobs(self):
+        """The jobs of a run whose trust job gave the task conflict: the comment job alone ran after it."""
+        return [dict(j, conclusion="success") if j["name"] == "comment" else j for j in self.stopped_jobs()]
+
+    def patches(self, number=7):
+        """Each PATCH of pull request #number that the stand-in gh was asked for, as (token, state=<state>)."""
+        return [(t, next(a for a in c if a.startswith("state="))) for t, c in zip(gh_tokens(self.api), gh_calls(self.api))
+                if c[:3] == ["--method", "PATCH", f"repos/{REPO}/pulls/{number}"]]
+
+    def forget(self):
+        """The stand-in gh forgets its calls so far."""
+        for name in ("calls", "args", "inputs", "tokens", "sleeps"):
+            if os.path.exists(os.path.join(self.api, name)):
+                os.remove(os.path.join(self.api, name))
+
+    def dispatched(self, task, head=HEAD, account="", comment="", number="7", want=True):
+        """The trust job of the run that the rescreen job started, of github-actions[bot] with its inputs, as the API
+        says of #number now: its outputs, which give a route when want."""
+        rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, number=number, task=task, head=head,
+                                      account=account, comment=comment)
+        self.assertEqual((rc, bool(got.get("route"))), (0, want), out)
+        return got
+
+    def ctx(self, trust, **extra):
+        """The contexts of the jobs after the trust job of a run on main, whose trust job gave trust."""
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "github.event_name": "workflow_dispatch",
+                    "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": ApproveTest.RUN_TOKEN,
+                    "vars.REPO_PAIRS_IMPORT_PATHS": "", "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+        ctx.update({f"needs.{job}.result": "skipped" for job in ("gather", "screen", "review")})
+        ctx.update(extra)
+        return ctx
+
+    def post(self, trust, mint=True):
+        """The post job's steps of the run whose trust job gave trust, after the stand-in gh forgot its calls: the
+        outcome of each step."""
+        self.forget()
+        return run_job(self, "post", self.ctx(trust), ApproveTest.TOKENS, mint)
+
+    def commented(self, trust):
+        """The comment job's steps of the run whose trust job gave trust, whose post job did not run, after the
+        stand-in gh forgot its calls: the outcome of each step."""
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.post.result": "skipped"})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        return run_job(self, "comment", ctx, {})
+
+
+class ScheduleTest(Scheduled):
+    """b1 and b8 (D16): the runs that the rescreen job starts beside today's rescreens, from what its own step reads of
+    the stand-in gh: the work that a hold names, as the task of its marker; the answer to a comment of an outside author
+    that waits; the draft of the reply to an outside issue; the approval of a first-time contributor's held runs; and
+    the App's writes again (the App's retry). Where a case says so, the run that it starts goes on through the trust job
+    and the jobs after it."""
 
     def test_a_held_answer_is_taken_again_as_the_answer_of_its_comment(self):
         """b1 (D8): an answer held at the limit an hour ago gets one run of the task answer, for the comment that the
@@ -5593,7 +5779,8 @@ class ScheduleTest(Held):
         while its runs end at a failed sign-in. On an issue whose first reply has not posted, a comment gets none."""
         review_comment = {"id": 901, "pull_request_review_id": 30, "user": {"login": "mallory"}, "path": "f.v",
                           "line": 3, "created_at": ago(20), "body": "On this line?"}
-        self.item(kind="pr", comments=[self.REVIEWED, said(900, 22), said(902, 5)], review_comments=[review_comment])
+        self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED, said(900, 22), said(902, 5)],
+                  review_comments=[review_comment])
         self.item(8, comments=[self.STORED, said(910, 30)])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "901")]), out)
@@ -5751,7 +5938,7 @@ class ScheduleTest(Held):
             with self.subTest(ended=ended):
                 self.tearDown()
                 self.setUp()
-                self.item(kind="pr", comments=[self.REVIEWED])
+                self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
                 self.ran(10, f"review {HEAD} by mallory", made=ended + 40, ended=ended, event="workflow_run", jobs=[
                     attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
                     post_job({self.DECIDE: "success", MINT_A: "failure"})])
@@ -5763,7 +5950,7 @@ class ScheduleTest(Held):
         head. At REVIEW_TRIES the head gets the hold comment of D16 (c) for the import check, which names the head,
         and waits-on-theorem, and the run fails."""
         refused = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "failure"})
-        self.item(kind="pr", comments=[self.REVIEWED])
+        self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
         self.ran(10, f"review {HEAD} by mallory", made=400, event="workflow_run", jobs=[
             attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), refused])
         for i in range(1, self.TRIES):
@@ -5771,7 +5958,7 @@ class ScheduleTest(Held):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
         self.assertStopped("Automated import check held.", "The automated import check of this head did not finish "
-                           f"after {self.TRIES} tries. It is not tried again.")
+                           f"after {self.TRIES} tries. It is not tried again.", edited=True)
 
     def test_runs_that_screen_stay_under_the_limit_of_one_account(self):
         """D16: mallory's items are due two drafts and an approval, and she had one run of the last hour that counts
@@ -5815,6 +6002,635 @@ class ScheduleTest(Held):
         self.assertEqual(sorted((f.get("event"), f.get("created")) for f in lists
                                 if f.get("event") != "workflow_dispatch"),
                          [(event, f">={days[0]}T00:00:00Z") for event in ("issue_comment", "issues", "workflow_run")])
+
+
+# The post job's step that closes and reopens a pull request for a catch-up.
+CATCH_UP = "Close and reopen the pull request"
+
+
+class CatchUpScheduleTest(Scheduled):
+    """b1 (R6, D16): an outside pull request whose head no run of this workflow met is closed and reopened by the OSS
+    Verify App, so that GitHub starts a CI run of the head and its review follows; a head whose review is in the form
+    of before the move off pull_request_target gets a review from the API, with no close and no reopen. Each run that
+    the schedule starts goes on through the trust job and the post job where a case says so."""
+
+    # A review of HEAD in the form of before (L971 and L982 at the base): no marker of its head.
+    OLD_REVIEW = {"id": 2, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                  "body": f"<!-- review -->\n**Automated review** of commit {HEAD[:12]}\n\nA blocking finding."}
+
+    def test_a_head_that_no_run_met_is_closed_and_reopened_with_token_a(self):
+        """An outside pull request whose head has no review and that no run of this workflow names, whose head
+        repository is there, and whose CI run of the head ended over an hour ago: one catchup run of the head, whose
+        name names no account. Its trust job takes it, the post job alone runs after it, and that job closes and then
+        reopens the pull request with token A. GitHub then starts a CI run of the head (the event pull_request), whose
+        run of this workflow reviews the head. The next run starts no second catch-up of the head."""
+        self.item(kind="pr")
+        self.ci(ended=90)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+        trust = self.dispatched("catchup")
+        self.assertEqual((trust["task"], trust["route"], trust["head"]), ("catchup", "review", HEAD))
+        ran = run_graph(trust, github={"github.event_name": "workflow_dispatch"})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"}, {"trust", "post"})
+        steps = self.post(trust)
+        self.assertEqual([steps[n] for n in (MINT_A, CATCH_UP)], ["success", "success"], self.logs)
+        self.assertEqual(self.patches(), [("token-A", "state=closed"), ("token-A", "state=open")])
+        self.assertEqual([c[:3] for c in writes(self.api)], [["--method", "PATCH", f"repos/{REPO}/pulls/7"]] * 2)
+        rc, out, review = self.run_trust("workflow_run", actor="mallory", number="", head=HEAD,
+                                         head_repository=str(FORK_ID))
+        self.assertEqual((rc, review.get("task"), review.get("route"), review.get("number")),
+                         (0, "review", "screen", "7"), out)
+        self.ran(80, f"catchup #7 at {HEAD}", made=8, ended=3,
+                 jobs=[post_job({MINT_A: "success", CATCH_UP: "success"})])
+        self.ci(status="in_progress", run=71)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+
+    def test_a_head_whose_ci_run_has_not_ended_an_hour_ago_gets_no_catch_up(self):
+        """A CI run of the head that is in progress or held (that head gets the approval of its held runs), one that
+        ended under an hour ago, or no CI run at all: no catch-up."""
+        for case, ci, want in (("in progress", {"status": "in_progress"}, []),
+                               ("held", {"status": "action_required"}, [("7", "approve", "mallory", HEAD, "")]),
+                               ("ended under an hour ago", {"ended": 50}, []), ("none", None, [])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                if ci:
+                    self.ci(**ci)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+
+    def test_a_pull_request_whose_head_repository_is_gone_is_never_closed(self):
+        """GitHub cannot reopen such a pull request: the schedule starts no catch-up of it, the trust job refuses one,
+        and the post job of a catch-up by hand closes nothing."""
+        self.item(kind="pr", repository=None)
+        self.ci(ended=90)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn(f"#7: the head repository of {HEAD} is gone, so it is not closed.", out)
+        self.dispatched("catchup", want=False)
+        rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task="catchup", head=HEAD)
+        self.assertEqual((rc, trust.get("task")), (0, "catchup"), out)
+        steps = self.post(trust)
+        self.assertEqual(steps[CATCH_UP], "success", self.logs)
+        self.assertEqual(self.patches(), [])
+
+    def test_a_catchup_whose_token_a_could_not_be_minted_is_started_again_an_hour_later_and_not_before(self):
+        """The App's retry: the head gets one catchup run an hour after that run ended, which the trust job takes and
+        whose post job closes and reopens the pull request."""
+        for ended, want in ((30, []), (61, [("7", "catchup", "", HEAD, "")])):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.ci(ended=300)
+                self.ran(10, f"catchup #7 at {HEAD}", made=ended + 10, ended=ended, jobs=[post_job({MINT_A: "failure"})])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+        steps = self.post(self.dispatched("catchup"))
+        self.assertEqual(steps[CATCH_UP], "success", self.logs)
+        self.assertEqual(self.patches(), [("token-A", "state=closed"), ("token-A", "state=open")])
+
+    def test_a_head_with_a_review_of_before_gets_one_review_from_the_api_and_no_close_or_reopen(self):
+        """(b): an outside pull request whose head has a review in the form of before the move off pull_request_target
+        and none of now, and whose CI run ended over an hour ago: one review run of that head, for its author. The
+        trust job takes it as an outsider's review: the gather job reads the pull request from the API, the screen and
+        the review run, the post job runs no close and no reopen, and the review's blocking finding gets its fix. Once
+        for the head, and again an hour after a run of it that could not sign in."""
+        self.item(kind="pr", comments=[self.OLD_REVIEW])
+        self.ci(ended=90)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
+        trust = self.dispatched("review", account="mallory")
+        self.assertEqual((trust["task"], trust["route"], trust["outsider"]), ("review", "screen", "mallory"))
+        ran = run_graph(trust, github={"github.event_name": "workflow_dispatch"}, outputs={"screen": {"verdict": "clean"}})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"},
+                         {"trust", "gather", "screen", "review", "post", "comment"})
+        self.assertFalse(evaluate(step("post", CATCH_UP)["if"], {"needs.trust.outputs.task": "review"}))
+        # The review job's step "Whether a fix runs" after the review gave a blocking finding.
+        os.makedirs(os.path.join(self.work, ".review"))
+        with open(os.path.join(self.work, ".review", "commits.txt"), "w") as f:
+            f.write(f"base {OTHER_HEAD}\nhead {HEAD}\n")
+        os.makedirs(os.path.join(self.temp, "comment"))
+        with open(os.path.join(self.temp, "comment", "output.json"), "w") as f:
+            json.dump({"comment": "Blocking.", "verdict": "blocking", "will_fix": False, "items": []}, f)
+        self.serve(f"repos/{REPO}/commits", [history(HEAD, OTHER_HEAD)])
+        s = step("review", AnswerFixTest.FIXABLE)
+        rc, out, fixable = self.run_script(s["run"], **filled(s["env"], dict(self.ctx(trust), **{
+            "needs.gather.outputs.kind": "pr", "needs.gather.outputs.outside": "true",
+            "needs.gather.outputs.number": "7", "steps.result.outputs.verdict": "blocking",
+            "steps.result.outputs.will_fix": "false"})))
+        self.assertEqual((rc, fixable.get("fix")), (0, "true"), out)
+        for case, jobs, ended, want in (
+                ("it reviewed the head", [attempt_job("gather"), self.screened()], 30, []),
+                ("it could not sign in, under an hour ago", [attempt_job("gather"), self.screened("Sign in to Google Cloud")],
+                 30, []),
+                ("it could not sign in, over an hour ago",
+                 [attempt_job("gather"), self.screened("Sign in to Google Cloud")], 61,
+                 [("7", "review", "mallory", HEAD, "")])):
+            with self.subTest(case=case):
+                self.listed_runs.clear()
+                self.ran(10, f"review #7 at {HEAD} of mallory", made=ended + 10, ended=ended, jobs=jobs)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+
+
+class LeftClosedTest(Scheduled):
+    """b1 (D6, D16): a catch-up left closed, a pull request that a catchup run closed and could not reopen, is the one
+    closed item that the schedule takes: a catchup run an hour after the newest catchup run of it ended, which its
+    trust job takes as a reopen alone and whose post job only reopens it, until REVIEW_TRIES such runs did not reopen
+    it. Each case runs through the trust job and the post job."""
+
+    TITLE = f"catchup #7 at {HEAD}"
+    FAILED = post_job({MINT_A: "success", CATCH_UP: "failure"})
+    UNSIGNED = post_job({MINT_A: "failure"})
+    CANCELLED = dict(post_job({MINT_A: "success", CATCH_UP: "cancelled"}), conclusion="cancelled")
+
+    def closing(self, at, by="oss-verify[bot]"):
+        """#7, mallory's pull request at HEAD, closed at the time at by by and not merged: in the list of closed items,
+        and as the API says of it now, with that close as its newest closed event."""
+        self.item(kind="pr")
+        self.listed[-1].update(state="closed", pull_request={"merged_at": None})
+        self.open_prs.pop()
+        self.merge(7, "clean", state="closed")
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "state": "closed", "user": {"login": "mallory"},
+                                              "labels": [], "pull_request": {"url": "x"}})
+        self.serve(f"repos/{REPO}/issues/7/events", [
+            {"event": "closed", "created_at": ago(24 * 60 * 30), "actor": {"login": "mallory"}},
+            {"event": "reopened", "created_at": ago(24 * 60 * 29), "actor": {"login": "mallory"}},
+            {"event": "closed", "created_at": at, "actor": {"login": by}}])
+        self.publish()
+
+    def reopened(self, trust):
+        """The post job of the run whose trust job gave trust: it reopens #7 with token A, and closes nothing."""
+        steps = self.post(trust)
+        self.assertEqual([steps[n] for n in (MINT_A, CATCH_UP)], ["success", "success"], self.logs)
+        self.assertEqual([(t, c[:5]) for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if c in writes(self.api)],
+                         [("token-A", ["--method", "PATCH", f"repos/{REPO}/pulls/7", "-f", "state=open"])])
+
+    def test_a_catch_up_that_could_not_reopen_is_reopened_by_the_next_catchup_an_hour_later(self):
+        """R1 closes the pull request, and its 3 tries to reopen it fail, 10 seconds apart: its post job fails. An hour
+        after R1 ended, and not before, the schedule starts R2, a catchup of the head that names no account. R2's trust
+        job reads the catchup runs of the item other than R2 and takes R2 as a reopen; its post job reopens the pull
+        request with token A and closes nothing."""
+        self.item(kind="pr")
+        self.ci(ended=90)
+        r1 = self.dispatched("catchup")
+        self.stub_sleep()
+        self.refuse_field(f"repos/{REPO}/pulls/7", "state=open")
+        steps = self.post(r1)
+        self.assertEqual(steps[CATCH_UP], "failure", self.logs)
+        self.assertEqual(self.patches(), [("token-A", "state=closed")] + [("token-A", "state=open")] * 3)
+        self.assertEqual(self.sleeps(), ["10", "10"])
+        for ended, want in ((30, []), (64, [("7", "catchup", "", HEAD, "")])):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.closing(ago(ended + 1))
+                self.ran(60, self.TITLE, made=ended + 6, ended=ended, jobs=[self.FAILED])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+        r2 = self.dispatched("catchup")
+        self.assertEqual((r2["task"], r2["route"], r2["head"]), ("catchup", "review", HEAD))
+        self.assertEqual({n for n, r in run_graph(r2, github={"github.event_name": "workflow_dispatch"}).items()
+                          if r != "skipped"}, {"trust", "post"})
+        self.reopened(r2)
+
+    def test_a_failed_reopen_a_reopen_that_could_not_sign_in_and_a_closing_run_cancelled_get_a_reopen_an_hour_later(self):
+        """When R2's reopen failed, when R2's token A could not be minted, and when R1's post job was cancelled after
+        the close: the next run, an hour after the newest catchup run ended, starts a catchup that its trust job takes
+        as a reopen alone, and whose post job reopens the pull request."""
+        for case, first, second in (("R2's reopen failed", self.FAILED, self.FAILED),
+                                    ("R2's token A could not be minted", self.FAILED, self.UNSIGNED),
+                                    ("R1's post job was cancelled after the close", self.CANCELLED, None)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.closing(ago(200))
+                self.ran(60, self.TITLE, made=205, ended=195, jobs=[first])
+                if second:
+                    self.ran(61, self.TITLE, made=70, ended=64, jobs=[second])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+                self.reopened(self.dispatched("catchup"))
+
+    def test_after_review_tries_reopens_that_did_not_reopen_it_it_waits_on_theorem_and_gets_no_more(self):
+        """Each catchup run since the closing run counts, whatever its outcome (a trust job that refused it, a post job
+        that failed or was cancelled), but one that failed at a sign-in. Under REVIEW_TRIES of them, a reopen is
+        started; at REVIEW_TRIES, the item gets the hold comment that the catch-up could not reopen it and
+        waits-on-theorem with the step "Sami reopens the pull request", and the run fails. Then the schedule reads no
+        run of it and writes nothing, and the trust job refuses a catchup of it."""
+        self.closing(ago(600))
+        self.ran(60, self.TITLE, made=605, ended=595, jobs=[self.FAILED])
+        self.ran(61, self.TITLE, made=400, ended=398, jobs=self.stopped_jobs())
+        self.ran(62, self.TITLE, made=300, ended=295, jobs=[self.UNSIGNED])
+        self.ran(63, self.TITLE, made=200, ended=195, jobs=[self.FAILED])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+        self.ran(64, self.TITLE, made=100, ended=95, jobs=[self.CANCELLED])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        body = self.assertStopped("Automated catch-up held.", "The automated catch-up closed this pull request and "
+                                  f"could not reopen it after {self.TRIES} tries.",
+                                  step_line="Sami reopens the pull request.")
+        self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
+        self.assertNotIn(f"repos/{REPO}/pulls/7", self.calls())
+        self.dispatched("catchup", want=False)
+
+    def test_a_pull_request_closed_outside_every_catchup_run_or_by_someone_else_is_never_reopened(self):
+        """oss-verify[bot] closed it before the catchup run started, or after it ended; its author closed it; or the
+        catchup run's post job passed: no catchup, and the trust job refuses one."""
+        for case, at, by, jobs in (("before the run started", ago(300), "oss-verify[bot]", self.FAILED),
+                                   ("after the run ended", ago(100), "oss-verify[bot]", self.FAILED),
+                                   ("by its author", ago(200), "mallory", self.FAILED),
+                                   ("in a run whose post job passed", ago(200), "oss-verify[bot]",
+                                    post_job({MINT_A: "success", CATCH_UP: "success"}))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.closing(at, by)
+                self.ran(60, self.TITLE, made=205, ended=195, jobs=[jobs])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, []), out)
+                self.dispatched("catchup", want=False)
+
+    def test_a_catch_up_left_closed_9_days_ago_with_only_sign_in_failures_since_is_reopened(self):
+        """The closing run is older than the 8 days of the runs by hand that the schedule reads: it reads back one day
+        at a time, each day once, to the day before the close. The catchup runs since then could not sign in, which
+        counts no try: the next catchup is started an hour after the newest ended, its trust job takes it, and its
+        post job reopens the pull request."""
+        day = 24 * 60
+        self.closing(ago(9 * day))
+        self.ran(60, self.TITLE, made=9 * day + 5, ended=9 * day - 5, jobs=[self.FAILED])
+        for i, made in enumerate((3 * day, day, 70)):
+            self.ran(61 + i, self.TITLE, made=made, ended=made - 5, jobs=[self.UNSIGNED])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+        days = [a.split("=", 1)[1] for c in gh_calls(self.api) if f"repos/{REPO}/actions/workflows/review.yml/runs" in c
+                for a in c if a.startswith("created=") and not a.startswith("created=>")]
+        closed = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=9)).date()
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        self.assertEqual(sorted(days), [str(closed + datetime.timedelta(days=i)) for i in range(-1, (today - closed).days + 1)])
+        self.reopened(self.dispatched("catchup"))
+
+    def test_a_closing_run_that_started_the_day_before_the_close_is_found(self):
+        """A closing run that started at 23:58 UTC and closed the pull request at 00:02, on the first of the 8 days
+        that the schedule reads: that run is listed only with the day before, which the schedule reads too."""
+        first = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=7)
+        midnight = datetime.datetime.combine(first, datetime.time(), datetime.timezone.utc)
+
+        def at(minutes):
+            return (midnight + datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.closing(at(2))
+        self.listed_runs.append({"id": 60, "event": "workflow_dispatch", "display_title": self.TITLE,
+                                 "status": "completed", "conclusion": "failure", "created_at": at(-2),
+                                 "updated_at": at(6), "actor": {"login": BOT}})
+        self.serve(f"repos/{REPO}/actions/runs/60/jobs", {"jobs": [attempt_job("trust"), self.FAILED]})
+        self.publish()
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+        self.assertIn(f"created={first - datetime.timedelta(days=1)}", [a for c in gh_calls(self.api) for a in c])
+        self.reopened(self.dispatched("catchup"))
+
+
+def review_of(head, verdict="pass", will_fix=False, at=OLD, id_=30):
+    """The review comment of head, with its markers (D8), as the comment job posts it, last changed at at."""
+    return {"id": id_, "user": {"login": BOT}, "created_at": at, "updated_at": at,
+            "body": f"<!-- review -->\n<!-- review-head {head} -->\n<!-- review-verdict {head} {verdict}"
+                    f"{' will-fix' if will_fix else ''} -->\n**Automated review** of commit {head[:12]}"}
+
+
+class HeadScheduleTest(Scheduled):
+    """b1 (R4, R10, D16): a head of an open pull request into main that a run of this workflow met and left with no
+    review, which the schedule reviews; and a head with a merge conflict, which gets the comment that asks its author
+    to resolve it, and, when the conflict went away with no push, a relabel from what the workflow wrote of the head.
+    Where a case says so, the run that the schedule starts goes on through the trust job and the jobs after it."""
+
+    SIGNED_OUT = [attempt_job("gather"), attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
+    REVIEWED_NONE = [attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+                     attempt_job("review", name="review (screened)")]
+    CONFLICT = "Ask the author to resolve the merge conflict"
+    LABEL = PostLabelTest.STEP
+
+    def line_label(self, at=None, state="conflict"):
+        """#7's label comment, last changed at at (minutes ago, 100 by default): it records the merge conflict of HEAD
+        (the state conflict) and the value of REPO_PAIRS_IMPORT_PATHS that the label step read."""
+        when = ago(100 if at is None else at)
+        return {"id": 40, "user": {"login": BOT}, "created_at": when, "updated_at": when,
+                "body": rules.label_comment(state, markers=[rules.import_marker(HEAD, None)], head=HEAD)}
+
+    def label_of(self):
+        """The one label comment that the run posted or edited."""
+        (_method, _endpoint, body), = label_comments(self.api)
+        return body
+
+    def test_a_head_whose_review_could_not_sign_in_gets_a_review_an_hour_later_and_not_before(self):
+        """(c): the run of the head's CI run could not sign in, so no review names the head. An hour after that run
+        ended, and not before, the head gets one review run: for its author on an outsider's pull request, for no
+        account on a writer's. Its trust job takes it."""
+        for author, account, route in (("mallory", "mallory", "screen"), ("alice", "", "review")):
+            for ended, want in ((30, []), (61, [("7", "review", account, HEAD, "")])):
+                with self.subTest(author=author, ended=ended):
+                    self.tearDown()
+                    self.setUp()
+                    self.item(kind="pr", author=author)
+                    self.ci(ended=ended + 45)
+                    self.ran(10, f"review {HEAD} by {author}", made=ended + 40, ended=ended, event="workflow_run",
+                             jobs=self.SIGNED_OUT)
+                    rc, out, runs = self.started()
+                    self.assertEqual((rc, runs), (0, want), out)
+            got = self.dispatched("review", account=account)
+            self.assertEqual((got["task"], got["route"], got["head"]), ("review", route, HEAD))
+
+    def test_a_draft_marked_ready_and_a_base_changed_to_main_get_a_review_at_the_next_run(self):
+        """The trust job stopped the run of the head's CI run (a draft, or another base): no review while it is so,
+        and one review run at the next run once it is ready, or into main, with no hour to wait."""
+        for case, now in (("a draft", {"draft": True}), ("into another base", {"base": "feature"})):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", **now)
+                self.ci(ended=4)
+                self.ran(10, f"review {HEAD} by mallory", made=5, ended=3, event="workflow_run",
+                         jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, []), out)
+                self.open_prs[-1] = (7, "mallory", HEAD, FORK_ID, False, "main")
+                self.merge(7, "clean", draft=False, base={"ref": "main"})
+                self.publish()
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
+
+    def test_while_the_ci_run_of_an_approved_head_runs_no_review_is_started(self):
+        """The approval of the held runs comes first, then their CI run and its own review: while that CI run has not
+        finished, the head gets no review run."""
+        approved = post_job({ScheduleTest.HELD: "success", MINT_B: "success", ScheduleTest.APPROVE: "success"})
+        self.item(kind="pr")
+        self.ran(10, f"approve #7 at {HEAD} of mallory", made=90, ended=80,
+                 jobs=[attempt_job("gather"), attempt_job("screen", name="screen mallory"), approved])
+        self.ci(status="in_progress")
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn(f"#7: a CI run of {HEAD} has not finished", out)
+
+    def test_review_tries_reviews_of_a_head_that_end_with_no_review_stop_it(self):
+        """Each review run of the head that ended with no review counts a try, but one that could not sign in and one
+        that gave the task conflict. Under REVIEW_TRIES of them, the head gets a review run an hour after the newest
+        run of it; at REVIEW_TRIES, the hold comment that the review did not finish, which names the head, and
+        waits-on-theorem, and the run fails. Then nothing is started and nothing written."""
+        title = f"review #7 at {HEAD} of mallory"
+        self.item(kind="pr")
+        self.ci(ended=600)
+        self.ran(9, f"review {HEAD} by mallory", made=590, event="workflow_run", jobs=self.SIGNED_OUT)
+        for i in range(self.TRIES - 1):
+            self.ran(10 + i, title, made=500 - 100 * i, jobs=self.REVIEWED_NONE)
+        self.ran(20, title, made=200, jobs=self.conflict_jobs())
+        self.ran(21, title, made=150, jobs=self.SIGNED_OUT)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
+        self.ran(22, title, made=80, jobs=self.REVIEWED_NONE)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        body = self.assertStopped("Automated review held.", f"The automated review of this head did not finish after "
+                                  f"{self.TRIES} tries. It is not tried again.")
+        self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
+
+    def test_a_merge_conflict_read_by_the_schedule_gets_one_conflict_run_waits_on_author_and_the_line(self):
+        """(g): a head with a merge conflict, whose CI run's review could not sign in two hours ago: one conflict run,
+        and no review run. Its trust job takes it, the comment job alone runs after it, and gives waits-on-author, the
+        comment that asks the author to resolve the conflict, and the label comment's conflict-state line of the head.
+        While the conflict lasts, the next run starts nothing."""
+        self.item(kind="pr", merge="dirty")
+        self.ci(ended=130)
+        self.ran(10, f"review {HEAD} by mallory", made=130, ended=125, event="workflow_run", jobs=self.SIGNED_OUT)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+        trust = self.dispatched("conflict")
+        self.assertEqual((trust["task"], trust["route"]), ("conflict", "review"))
+        ran = run_graph(trust, github={"github.event_name": "workflow_dispatch"})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"}, {"trust", "comment"})
+        steps = self.commented(trust)
+        self.assertEqual((steps[self.CONFLICT], steps[self.LABEL]), ("success", "skipped"), self.logs)
+        self.assertEqual(state_labels(self.api), [("+", AUTHOR_LABEL)])
+        label = self.label_of()
+        self.assertTrue(label.endswith(f"\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->"), label)
+        self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": label})
+        self.ran(11, f"conflict #7 at {HEAD}", made=3, ended=1, jobs=self.conflict_jobs())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+
+    def test_a_head_whose_merge_state_github_has_not_computed_after_a_second_read_waits_for_the_next_run(self):
+        """mergeable is null at both reads: no review run and no conflict run, nor a relabel of a head whose label
+        comment records a conflict. A second read that gives the state decides in the same run."""
+        self.item(kind="pr", merge="unknown")
+        self.ci(ended=130)
+        self.ran(10, f"review {HEAD} by mallory", made=130, ended=125, event="workflow_run", jobs=self.SIGNED_OUT)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertEqual(self.calls().count(f"repos/{REPO}/pulls/7"), 2)
+        self.assertIn("GitHub has not computed whether", out)
+        self.comments(7, self.line_label())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.comments(7)
+        self.merge(7, "unknown", then="dirty")
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+
+    def relabelled(self, comments, labels=(AUTHOR_LABEL,)):
+        """#7, whose conflict went away with no push, with comments and labels: the run that the schedule starts,
+        which is a relabel of HEAD, then its trust job and the comment job's label step. The trust job's outputs."""
+        self.item(kind="pr", labels=labels, comments=comments)
+        self.ci(ended=300)
+        self.ran(10, f"conflict #7 at {HEAD}", made=120, jobs=self.conflict_jobs())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+        trust = self.dispatched("relabel")
+        self.assertEqual((trust["task"], trust["route"], trust["outsider"]), ("relabel", "review", "mallory"))
+        self.assertEqual({n for n, r in run_graph(trust, github={"github.event_name": "workflow_dispatch"}).items()
+                          if r != "skipped"}, {"trust", "post", "comment"})
+        steps = self.commented(trust)
+        self.assertEqual(steps[self.LABEL], "success", self.logs)
+        return trust
+
+    def test_a_conflict_that_went_away_with_no_push_is_relabelled_from_what_the_workflow_wrote_of_the_head(self):
+        """(g): the label comment records the conflict of the head, and GitHub says now that it has none: one relabel
+        run, which its trust job takes. The comment job sets the label and the label comment again from what the
+        workflow wrote of the head: the verdict of its review (a blocking finding waits on the author; with will-fix,
+        on Sami), or a hold comment newer than the review that names the head (the screen's hold waits on Sami); and
+        the label comment no longer holds the conflict-state line."""
+        hold = {"id": 31, "user": {"login": BOT}, "created_at": ago(200), "updated_at": ago(200),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull request, "
+                        "so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        for case, comments, labels, step_line in (
+                ("a blocking finding", [review_of(HEAD, "blocking", at=ago(300))], [],
+                 "You make the change that the automated review names, and push it."),
+                ("a blocking finding that the author will fix", [review_of(HEAD, "blocking", True, at=ago(300))],
+                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], "Sami reads the automated review and your comment."),
+                ("a screen hold after the review", [review_of(HEAD, at=ago(300)), hold],
+                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)],
+                 "Sami reads the item and starts its review or its checks by hand.")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.relabelled([*comments, self.line_label()])
+                self.assertEqual(state_labels(self.api), labels)
+                body = self.label_of()
+                self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {step_line}\n"), body)
+                self.assertNotIn("review-conflict-state", body)
+
+    def test_a_head_with_nothing_else_loses_the_line_and_its_review_starts_at_the_next_run(self):
+        """(g) then (c): no review and no hold names the head. The relabel gives no state label and takes the line out;
+        the relabel left no label, so at the next run the head gets a review run, with no hour to wait, which its
+        trust job takes."""
+        self.relabelled([self.line_label()])
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
+        body = self.label_of()
+        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The automated workflow works on this "
+                                        "item.\n"), body)
+        self.assertNotIn("review-conflict-state", body)
+        self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
+        self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
+                 jobs=[post_job({ScheduleTest.DECIDE: "success"}), attempt_job("comment")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
+        got = self.dispatched("review", account="mallory")
+        self.assertEqual((got["task"], got["route"]), ("review", "screen"))
+
+    def test_an_answer_that_will_fix_then_a_conflict_that_went_away_with_no_push_waits_on_theorem(self):
+        """The review of the head gave a blocking finding, the author's answer said they will make the change, then
+        the head got a merge conflict, which went away with no push: the relabel reads the answer's will-fix, and the
+        item waits on Sami."""
+        answer = {"id": 32, "user": {"login": BOT}, "created_at": ago(250), "updated_at": ago(250),
+                  "body": f"<!-- review-answer 900 will-fix {HEAD} -->\n**Automated answer**\n\nYou will fix it."}
+        self.relabelled([review_of(HEAD, "blocking", at=ago(300)), answer, self.line_label()])
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
+        self.assertTrue(self.label_of().startswith("<!-- review-label -->\n**Next step:** Sami reads the automated "
+                                                   "review and your comment.\n"))
+
+    def test_a_head_that_conflicts_again_with_no_push_gets_a_second_conflict_run(self):
+        """The relabel took the line out, and the head has a merge conflict again: a second conflict run, which its
+        trust job takes."""
+        relabelled = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
+                      "body": rules.label_comment("change", markers=[rules.import_marker(HEAD, None)])}
+        self.item(kind="pr", merge="dirty", comments=[review_of(HEAD, "blocking", at=ago(400)), relabelled])
+        self.ran(10, f"conflict #7 at {HEAD}", made=300, jobs=self.conflict_jobs())
+        self.ran(11, f"relabel #7 at {HEAD}", made=55, jobs=[post_job({ScheduleTest.DECIDE: "success"}),
+                                                            attempt_job("comment")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+        self.assertEqual(self.dispatched("conflict")["task"], "conflict")
+
+    def test_a_relabel_that_its_trust_job_refused_is_started_again_at_the_next_run(self):
+        """The line stays after a relabel: one that its trust job refused is started again at the next run, one that
+        ran an hour after it ended; after REVIEW_TRIES relabels since the line, the head is not tried again (the hold
+        comment of the import check, and waits-on-theorem). The trust job refuses a relabel while GitHub does not say
+        whether the head has a merge conflict."""
+        left = [post_job({ScheduleTest.DECIDE: "success"}),
+                {"name": "comment", "status": "completed", "conclusion": "failure", "steps": []}]
+        for case, jobs, ended, want in (("its trust job refused it", self.stopped_jobs(), 2, True),
+                                        ("it ran, under an hour ago", left, 30, False),
+                                        ("it ran, over an hour ago", left, 61, True)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=[review_of(HEAD, at=ago(400)), self.line_label(300)])
+                self.ran(10, f"conflict #7 at {HEAD}", made=320, jobs=self.conflict_jobs())
+                self.ran(11, f"relabel #7 at {HEAD}", made=ended + 3, ended=ended, jobs=jobs)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")] if want else []), out)
+        self.tearDown()
+        self.setUp()
+        self.item(kind="pr", comments=[review_of(HEAD, at=ago(400)), self.line_label(300)])
+        for i in range(self.TRIES):
+            self.ran(11 + i, f"relabel #7 at {HEAD}", made=200 - 10 * i, jobs=self.stopped_jobs())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertStopped("Automated import check held.", "The automated import check of this head did not finish "
+                           f"after {self.TRIES} tries. It is not tried again.", edited=True)
+        self.merge(7, "unknown")
+        self.dispatched("relabel", want=False)
+
+
+class VariableScheduleTest(Scheduled):
+    """b10 (R12, D16): the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of each open outside
+    pull request (the newer of the label comment's marker line and the output text of the head's check run
+    repo-pairs/import-approved by the OSS Verify App), against the value now: a head whose value is not the value now
+    gets a relabel run, which screens nothing and counts toward no limit."""
+
+    # The pair's import_paths (GlobTest, below).
+    LPS = property(lambda self: GlobTest.LPS)
+    HEADS = [f"{i:02x}" * 20 for i in range(1, 6)]
+
+    @staticmethod
+    def label(head, value, at=OLD):
+        """The label comment of a pull request at head that recorded value."""
+        return {"id": 40, "user": {"login": BOT}, "created_at": at, "updated_at": at,
+                "body": rules.label_comment("decide", markers=[rules.import_marker(head, value)])}
+
+    @staticmethod
+    def check(head, value, at, app=5447700):
+        """The check run repo-pairs/import-approved of head, of the App app, that recorded value at at."""
+        return {"name": "repo-pairs/import-approved", "head_sha": head, "app": {"id": app}, "status": "completed",
+                "conclusion": "success", "completed_at": at, "output": {"text": rules.import_marker(head, value)}}
+
+    def test_the_first_run_after_the_variable_appears_changes_or_goes_relabels_each_open_outside_pull_request(self):
+        """Mallory has 5 open pull requests, more than OUTSIDE_HOURLY_LIMIT, and her runs of the last hour reached that
+        limit. Each head has a review and a label comment that recorded the value before: the first run after the
+        variable appears, changes or goes starts one relabel of each head, whatever the limit, and the next run with
+        the same value starts none. The trust job takes such a relabel."""
+        limit = int(WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        for case, before, now in (("appears", None, self.LPS), ("changes", self.LPS, "docs/**"),
+                                  ("goes", self.LPS, None)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                for i, head in enumerate(self.HEADS):
+                    self.item(7 + i, kind="pr", head=head, comments=[review_of(head), self.label(head, before)])
+                for i in range(limit):
+                    self.ran(20 + i, f"draft #{30 + i} of mallory", made=20 + i,
+                             jobs=[attempt_job("gather"), attempt_job("screen", name="screen mallory")])
+                rc, out, runs = self.started(variable=now)
+                self.assertEqual((rc, sorted(runs)),
+                                 (0, sorted((str(7 + i), "relabel", "", head, "") for i, head in enumerate(self.HEADS))),
+                                 out)
+                rc, out, runs = self.started(variable=before)
+                self.assertEqual((rc, runs), (0, []), out)
+        got = self.dispatched("relabel", head=self.HEADS[0])
+        self.assertEqual((got["task"], got["route"], got["outsider"]), ("relabel", "review", "mallory"))
+
+    def test_the_value_recorded_is_the_newer_marker_and_a_head_with_a_review_and_neither_is_relabelled(self):
+        """A head with a review and neither marker line: a relabel. A check run of the OSS Verify App newer than the
+        label comment records the value, and one of another App counts for nothing; a label comment newer than the
+        check run records it. A relabel of the head that ended under an hour ago puts the next one off."""
+        self.item(kind="pr", comments=[review_of(HEAD)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+        self.comments(7, review_of(HEAD), self.label(HEAD, None, at=ago(300)))
+        self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": [
+            self.check(HEAD, self.LPS, ago(200)), self.check(HEAD, None, ago(100), app=1)]})
+        for value, want in ((self.LPS, []), (None, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(newer="check run", variable=value):
+                rc, out, runs = self.started(variable=value)
+                self.assertEqual((rc, runs), (0, want), out)
+        self.comments(7, review_of(HEAD), self.label(HEAD, None, at=ago(50)))
+        for value, want in ((None, []), (self.LPS, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(newer="label comment", variable=value):
+                rc, out, runs = self.started(variable=value)
+                self.assertEqual((rc, runs), (0, want), out)
+        relabelled = [post_job({ScheduleTest.DECIDE: "success"}), attempt_job("comment")]
+        for ended, want in ((30, []), (61, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(relabel_ended=ended):
+                self.listed_runs.clear()
+                self.ran(10, f"relabel #7 at {HEAD}", made=ended + 5, ended=ended, jobs=relabelled)
+                rc, out, runs = self.started(variable=self.LPS)
+                self.assertEqual((rc, runs), (0, want), out)
 
 
 # --- the move off pull_request_target -------------------------------------------------------------------------------
@@ -6009,6 +6825,7 @@ class ConflictTest(Runner):
         self.serve(f"repos/{REPO}/labels", {"name": AUTHOR_LABEL})
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
         self.serve_item(7, "mallory", kind="pr", head=HEAD, mergeable="dirty")
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
 
     def clear(self):
         for name in ("calls", "args"):
@@ -6100,6 +6917,7 @@ class CatchupTest(Held):
         def t(minutes):
             return (at + datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.serve_item(7, "mallory", kind="pr", head=HEAD, state="closed", merged=merged)
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
         self.serve(f"repos/{REPO}/issues/7/events", [
             {"event": "closed", "created_at": t(-600), "actor": {"login": "mallory"}},
             {"event": "reopened", "created_at": t(-500), "actor": {"login": "mallory"}},
@@ -6141,6 +6959,18 @@ class CatchupTest(Held):
             with self.subTest(task=task):
                 rc, out, got = self.catchup(task=task)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
+
+    def test_a_catch_up_whose_hold_says_it_could_not_reopen_is_refused_and_reads_no_run(self):
+        """Once the schedule wrote the hold comment that the catch-up could not reopen the pull request, which waits on
+        Sami, the trust job takes no catchup of it, and reads none of its runs."""
+        self.closed()
+        self.serve(f"repos/{REPO}/issues/7/comments", [
+            {"id": 5, "user": {"login": BOT}, "updated_at": OLD,
+             "body": "<!-- review-held -->\n**Automated catch-up held.**\n\nThe automated catch-up closed this pull "
+                     f"request and could not reopen it after 3 tries.\n\n<!-- review-held-head {HEAD} -->"}])
+        rc, out, got = self.catchup()
+        self.assertEqual((rc, got.get("route")), (0, None), out)
+        self.assertNotIn(f"repos/{REPO}/actions/workflows/review.yml/runs", self.calls())
 
     def test_the_runs_are_read_one_day_at_a_time_back_to_the_day_before_the_close(self):
         """However long ago the close was (here 9 days), so that a closing run that started before midnight is
@@ -6618,6 +7448,7 @@ class ImportCheckTest(ReaderRunner):
         if then:
             self.serve(f"repos/{REPO}/pulls/7.then", dict(pull, head={"sha": then}))
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/pulls/7/reviews", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
@@ -6802,8 +7633,8 @@ class ImportCheckTest(ReaderRunner):
     def test_each_step_that_reads_the_variable_maps_it_from_the_repository_variable(self):
         """The workflow loaded with yq: each step of the post, comment and rescreen jobs whose script reads the name
         that a step maps to ${{ vars.REPO_PAIRS_IMPORT_PATHS }} maps that name to it in its own env, and reads each name
-        that it maps. The post job's decision step and the comment job's label step do, and no script holds the
-        expression itself."""
+        that it maps. The post job's decision step, the comment job's label step and the rescreen job's step (which
+        relabels a head whose recorded value is not the value now) do, and no script holds the expression itself."""
         steps = [(job, s) for job in ("post", "comment", "rescreen") for s in JOBS[job]["steps"]]
         names = {k for _job, s in steps for k, v in s.get("env", {}).items() if v == self.VARIABLE}
         self.assertTrue(names)
@@ -6818,8 +7649,8 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual(reads, maps)
                 if maps:
                     mapped.add((job, s["name"]))
-        self.assertLessEqual({("post", self.DECIDE), ("comment", self.LABEL)}, mapped)
-        for job in ("post", "comment"):
+        self.assertLessEqual({("post", self.DECIDE), ("comment", self.LABEL), ("rescreen", RESCREEN_JOB)}, mapped)
+        for job in ("post", "comment", "rescreen"):
             self.assertNotIn(self.VARIABLE, json.dumps({k: v for k, v in JOBS[job].items() if k != "steps"}))
 
     def test_while_the_hold_lasts_a_change_that_is_not_markdown_alone_gets_no_check_run(self):
@@ -6928,6 +7759,54 @@ class ImportCheckTest(ReaderRunner):
                                                    dict(ctx, **{"github.event_name": event}))), want)
         self.assertEqual([s.get("name") for s in job["steps"] if "secrets" in json.dumps(s)], [MINT_A, MINT_B])
         self.assertNotRegex(json.dumps(job).lower(), "anthropic|claude|id-token")
+
+    def test_a_head_judged_with_no_variable_gets_the_copy_by_hand_comment_once_the_variable_appears(self):
+        """b10 (R12, D16): an outside pull request whose review passed and that changes only reports/corpus-replay.md,
+        judged while no variable REPO_PAIRS_IMPORT_PATHS was set: the check run is recorded with null in its marker
+        line, and the item waits on Sami with the steps of no variable. A scheduled run with no variable starts nothing
+        for it. The first scheduled run after the variable appears with the pair's import_paths starts a relabel of the
+        head, which the trust job takes; the relabel records no check run, and the item waits on Sami with the comment
+        that names a copy by hand, as the import does not take that path."""
+        paths = ["reports/corpus-replay.md"]
+        review = self.review_comment(HEAD, "pass")
+        got = self.judge(paths, value=None, comments=[review])
+        self.assertRecorded(got, None)
+        first = self.assertWaits(got, self.SOME, self.MERGE, value=None)
+        (_token, check), = got["checks"]
+        comments = [review, {"id": 40, "user": {"login": BOT}, "updated_at": "2026-11-02T10:06:00Z", "body": first}]
+        self.permissions(mallory="read")
+        self.serve_prs((7, "mallory", HEAD))
+        for endpoint, data in (
+                ("issues", [{"number": 7, "state": "open", "user": {"login": "mallory"}, "created_at": OLD,
+                             "labels": [{"name": THEOREM_LABEL}], "pull_request": {}}]),
+                ("actions/workflows/review.yml/runs", {"workflow_runs": []}), ("actions/runs", {"workflow_runs": []}),
+                ("actions/workflows/review.yml/dispatches", {}), ("issues/7/comments", comments),
+                ("pulls/7/comments", []),
+                ("pulls/7", {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD, "repo": {"id": FORK_ID}},
+                             "base": {"ref": "main"}, "mergeable": True, "mergeable_state": "clean"}),
+                (f"commits/{HEAD}/check-runs",
+                 {"check_runs": [dict(check, app={"id": 5447700}, completed_at="2026-11-02T10:05:00Z")]})):
+            self.serve(f"repos/{REPO}/{endpoint}", data)
+        self.checkout()
+        for value, want in ((None, []), (self.LPS, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(variable=value is not None):
+                self.clear()
+                rc, out, runs = schedule(self, variable=value)
+                self.assertEqual((rc, runs), (0, want), out)
+        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="relabel", head=HEAD)
+        self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider")),
+                         (0, "relabel", "review", "mallory"), out)
+        relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+        got = self.judge(paths, value=self.LPS, trust=relabel, event="workflow_dispatch", comments=comments,
+                         labels=("review-held", THEOREM_LABEL))
+        self.assertNotRecorded(got, "outside")
+        self.assertEqual(got["labels"], [])
+        (body,) = got["comments"]
+        self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {self.COPY}\n"), body)
+        self.assertIn(self.NOT_TAKEN, body)
+        self.assertMarker(body, self.LPS)
+        self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
 
     def test_a_relabel_applies_the_decision_again_to_its_head_with_no_model(self):
         """A relabel by hand of mallory's pull request: the trust job gives the outsider, no job runs a model, and the
