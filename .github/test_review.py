@@ -6022,6 +6022,43 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
 
+    def test_runs_of_a_held_task_that_could_not_sign_in_count_no_try(self):
+        """R10: a screen that cannot sign in or cannot get a model token "writes no verdict and no hold comment, and the
+        rescreen schedule takes the item again on its next run. So does a run whose approval step cannot sign in"; D19:
+        such a run counts no try. A hold at the limit over an hour old, then REVIEW_TRIES runs of its task, each ended
+        at a failed step "Sign in ...", the newest over an hour ago: the next run starts its task again, fails for
+        nothing, and gives no waits-on-theorem and no hold comment that says it is not tried again. For a rescreen
+        (the screen's sign-in to Google Cloud), a draft (the review job's sign-in to Anthropic) and an approval (token
+        B of the OSS Verify App)."""
+        screened = [attempt_job("gather"), self.screened()]
+        for task, kind, origin, title, jobs, want in (
+                ("", "pr", ("workflow_run", f"review {HEAD} by mallory"), f"rescreen #7 at {HEAD} of mallory",
+                 [attempt_job("gather"), self.screened("Sign in to Google Cloud")],
+                 ("7", "rescreen", "mallory", HEAD, "")),
+                ("draft", "issue", ("issues", "review #7"), "draft #7 of mallory",
+                 screened + [attempt_job("review", "Sign in to Anthropic", name="review (screened)")],
+                 ("7", "draft", "mallory", "", "")),
+                ("approve", "pr", ("workflow_dispatch", f"approve #7 at {HEAD} of mallory"),
+                 f"approve #7 at {HEAD} of mallory", screened + [post_job({self.HELD: "success", MINT_B: "failure"})],
+                 ("7", "approve", "mallory", HEAD, ""))):
+            with self.subTest(task=task or "rescreen"):
+                self.tearDown()
+                self.setUp()
+                self.origin(50, BOT if origin[0] == "workflow_dispatch" else "mallory", event=origin[0],
+                            title=origin[1])
+                hold = dict(limit_hold(50, at=ago(400), tries=0, task=task, head=HEAD if kind == "pr" else ""), id=5)
+                self.item(kind=kind, labels=("review-held",), comments=[hold])
+                if kind == "pr":
+                    self.ci(ended=500)
+                if task == "approve":
+                    self.held_runs(made=500)
+                for i in range(self.TRIES):
+                    self.ran(10 + i, title, made=70 + 90 * i, jobs=jobs)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [want]), out)
+                self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+                self.assertEqual([c for c in writes(self.api) if any(a.startswith("body=") for a in c)], [])
+
     def test_the_runs_of_item_123_are_not_item_12s(self):
         """#<n> in a name ends at a space or at the end of the name: neither an unfinished run of #123 nor the answer
         runs of #123 since #12's hold hold #12 back or use up its tries."""
