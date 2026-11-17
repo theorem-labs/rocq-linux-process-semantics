@@ -68,6 +68,14 @@
 # and no others. An answer reads them too, and the workflow's own review, answers, hold comment, label comment and
 # fix reviews on the item.
 #
+# - The reply to a new issue of an outside author is a draft, which this workflow stores and never posts
+#   (.github/review-answer.md, "An issue draft"). Sami approves the text of a reply, and a run by hand on main posts
+#   that text word for word, once, and stores it beside the draft. A person with write access starts it, or an App of
+#   the APPS (legion-reviewer[bot]), and never the rescreen job. A run with no text, or of a pull request or of an
+#   issue that is not open, posts nothing and fails:
+#
+#   gh workflow run review.yml -R theorem-labs/rocq-linux-process-semantics -f task=reply -f number=<n> -f reply=<text>
+#
 # - The screen can be measured: -f task=measure, with no number, runs every listed check three times
 #   (-f measure_repeats=<1-5>) on each text of a labelled set kept in the private bucket (-f measure_set=
 #   measure/set-v<n>.json, by default measure/set-v1.json), and puts the false holds and missed injections of each
@@ -112,7 +120,13 @@
 #           push did not make the review pass. Code keeps only the suggestions on the diff (.github/review/rules.py
 #           suggestions). A step signs in again, and the fresh reader shortens the words of the fix, never the lines
 #           of a suggested change. The answer and the fix run in this job, so the hourly caps count them with the
-#           review.
+#           review. For a draft, Claude writes the reply to a new issue of an outside author (.github/review-answer.md,
+#           "An issue draft"), and the fresh reader trims it or refuses it, with the rules of the draft in its request.
+#           This job stores the draft, or the refused draft with the reader's reason, in a private bucket, with a
+#           Google Cloud token of 5 minutes of the account that the repository variables REVIEW_DRAFT_GCP_PROVIDER and
+#           REVIEW_DRAFT_GCP_SERVICE_ACCOUNT name. With either variable empty, the job fails before the model. No
+#           output, summary, log line or artifact of the run holds the draft, the refused draft or the reason. For a
+#           reply, this job runs no model and no cap: it stores the approved text beside the draft.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -121,7 +135,8 @@
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
 #           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
-#           for each comment, and the fix as one review of suggested changes, once for each head. It never commits
+#           for each comment, and the fix as one review of suggested changes, once for each head. For a stored draft, it
+#           posts the label comment alone, and for a reply the approved text, byte for byte and once. It never commits
 #           or pushes: its token can write no file of the repository. It uses this run's GitHub token, so none of its
 #           comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
@@ -339,6 +354,8 @@ jobs:
           COMMENT: ${{ github.event.comment.id || inputs.comment }}
           HEAD: ${{ github.event.workflow_run.head_sha || inputs.head }}
           HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.id }}
+          # With the task reply, the approved text: this job only checks that it holds a word.
+          REPLY: ${{ inputs.reply }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -647,6 +664,13 @@ jobs:
               comment=$COMMENT
               item
               head=$pr_head
+              # A reply that cannot post fails the run, so that the person or the App that started it sees why: a run
+              # of a pull request, of an issue that is not open, or with no text of a reply.
+              if [ "$task" = reply ]; then
+                [ "$kind" = issue ] || { echo "::error::#$NUMBER is a pull request, and a reply is for an issue. Nothing posts."; exit 1; }
+                [ "$state" = open ] || { echo "::error::issue #$NUMBER is $state. Nothing posts."; exit 1; }
+                [[ ${REPLY:-} =~ [^[:space:]] ]] || { echo "::error::the run gives no text of a reply. Nothing posts."; exit 1; }
+              fi
               [[ -z $HEAD || $HEAD == "$pr_head" ]] || stop "its head is ${pr_head:-none}, not $HEAD."
               # A closed item gets no task, but the catch-up of a pull request that a catch-up run closed and could not
               # reopen: that run reopens it, and closes nothing.
@@ -766,7 +790,7 @@ jobs:
       github.ref == 'refs/heads/main'
       && (needs.trust.outputs.route == 'review' || needs.trust.outputs.route == 'screen')
       && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'answer')
+          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read}
@@ -1103,15 +1127,19 @@ jobs:
     needs: [trust, gather, screen]
     # A writer's, or a request by hand; or one the screen passed. A run whose gather job failed, or whose screen held
     # it, failed or was cancelled, has no review. Its tasks: the review, the rescreen of a review, and the answer to the
-    # comments of an outside item's author, with the fix that a review or an answer starts.
+    # comments of an outside item's author, with the fix that a review or an answer starts; the draft of the reply to a
+    # new issue of an outside author; and the approved reply, which gathers nothing and is screened by no one: this job
+    # stores its text beside the draft.
     if: >-
-      !cancelled() && github.ref == 'refs/heads/main' && needs.gather.result == 'success'
-      && needs.gather.outputs.digest != ''
-      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'answer')
-      && (needs.trust.outputs.route == 'review'
-          || (needs.trust.outputs.route == 'screen' && needs.screen.result == 'success'
-              && needs.screen.outputs.verdict == 'clean'))
+      !cancelled() && github.ref == 'refs/heads/main'
+      && ((needs.gather.result == 'success' && needs.gather.outputs.digest != ''
+           && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+               || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
+           && (needs.trust.outputs.route == 'review'
+               || (needs.trust.outputs.route == 'screen' && needs.screen.result == 'success'
+                   && needs.screen.outputs.verdict == 'clean')))
+          || (needs.trust.result == 'success' && needs.trust.outputs.task == 'reply'
+              && needs.trust.outputs.route == 'review'))
     # One run of this job at a time for each pull request or issue and task: a new push replaces the review of the old
     # head, and a later comment's answer run answers every comment that waits. An answer never cancels a review, nor a
     # review an answer: their groups differ. A draft or a reply is never cancelled. A run that the trust job stops, or
@@ -1120,7 +1148,7 @@ jobs:
       group: review-${{ needs.trust.outputs.task }}-${{ needs.trust.outputs.number }}
       cancel-in-progress: ${{ needs.trust.outputs.task != 'draft' && needs.trust.outputs.task != 'reply' }}
     runs-on: ubuntu-24.04
-    # The review or the answer, then the fix, each with its own time.
+    # The review, the answer or the draft, then the fix, each with its own time.
     timeout-minutes: 100
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
     outputs:
@@ -1139,6 +1167,9 @@ jobs:
       answer: ${{ steps.answered.outputs.body }}
       # The fix: the request of one review of suggested changes (POST pulls/<n>/reviews). It is empty when no fix posts.
       fix: ${{ steps.fixed.outputs.review }}
+      # The run and the attempt of a stored draft, <run>-<attempt>, which name its object in the private bucket: never
+      # its text. It is empty when no draft was stored.
+      draft: ${{ steps.stored.outputs.draft }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1152,14 +1183,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {persist-credentials: false}
 
+      # The draft store's Google identity, for a draft and for a reply, before any other step: the account that the
+      # repository variables REVIEW_DRAFT_GCP_PROVIDER and REVIEW_DRAFT_GCP_SERVICE_ACCOUNT name (ids, not secrets),
+      # which alone can write the drafts' bucket (DRAFT_BUCKET, in the store step). With either variable empty, this
+      # step fails and names it: no model runs, nothing is stored and nothing posts. Its name starts with "Sign in", so
+      # the hold job holds nothing for it, and the issue gets no label.
+      - name: Sign in to Google Cloud for the draft (check)
+        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        env:
+          REVIEW_DRAFT_GCP_PROVIDER: ${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}
+          REVIEW_DRAFT_GCP_SERVICE_ACCOUNT: ${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          for variable in REVIEW_DRAFT_GCP_PROVIDER REVIEW_DRAFT_GCP_SERVICE_ACCOUNT; do
+            [ -n "${!variable:-}" ] || {
+              echo "::error::The repository variable $variable is empty, so the draft store has no Google identity. No model ran, nothing is stored, and nothing posts."
+              exit 1
+            }
+          done
+          echo "The repository variables name the Google identity of the draft store."
+      # Then a sign-in with that identity, so that a run that the identity does not admit fails here, before the
+      # model, also at a step whose name starts with "Sign in". The token lasts 300 seconds, and no step reads it: this
+      # step has no id, the action writes no credentials file and sets no environment variable.
+      - name: Sign in to Google Cloud for the draft (check the sign-in)
+        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
+        with: {workload_identity_provider: "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}", service_account: "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
+
       # Anthropic's exchange of a new identity token, with the federation rule, the organization, the service account
       # and the workspace of the Review step below, before any step that runs the model. The step only shows that the
       # rule admits this run: the Claude token it gets is checked and then dropped, never printed, written or kept,
       # and the Review step gets a token of its own. When the rule does not admit the run (a run of an event that the
       # rule does not admit yet, say), the job fails here, at a step whose name starts with "Sign in", before the
       # model, and the hold job holds nothing for it: the schedule takes the item again. curl reads the request
-      # header and the exchange's body from its standard input, so that no token is in a command line.
+      # header and the exchange's body from its standard input, so that no token is in a command line. A reply runs no
+      # model: it skips this step, the cap and every step for the model.
       - name: Sign in to Anthropic
+        if: needs.trust.outputs.task != 'reply'
         env:
           ANTHROPIC_URL: https://api.anthropic.com
           FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
@@ -1192,19 +1252,21 @@ jobs:
           echo "Anthropic's federation rule admits this run. The Review step gets a token of its own."
 
       # Counts the review jobs of this workflow's other runs that started in the last hour, or have not started, and
-      # have called the model or may still call it: one whose Review or Answer step ran or runs (the Fix step runs
-      # after one of them, in the same job, and counts with it); one that passed the step "Hold at the hourly cap" and
-      # has not finished; and one that has not finished that step yet and belongs to an earlier run, which goes first.
-      # So in a burst the earliest runs go ahead and the later ones stop at that step. Runs created up to 3 hours ago
-      # are read, which covers a job's 100 minutes and its time in the queue: the runs of workflow_run, issues,
-      # issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A review job that
-      # waits for its run's trust job is not listed yet, and one the trust job skipped has no Review or Answer step,
-      # so neither counts. Only jobs of this run's kind count, by the job's name, whatever the task of their run: a
-      # writer's review or answer against HOURLY_CAP, a screened one against SCREENED_HOURLY_CAP. A read that fails
-      # stops the run here, not at "Hold at the hourly cap", so that the hold job, which reads a failure of that step
-      # as the cap, never says the cap was reached when it was not.
+      # have called the model or may still call it: one whose Review, Answer or Draft step ran or runs (the Fix step
+      # runs after one of them, in the same job, and counts with it); one that passed the step "Hold at the hourly cap"
+      # and has not finished; and one that has not finished that step yet and belongs to an earlier run, which goes
+      # first. So in a burst the earliest runs go ahead and the later ones stop at that step. Runs created up to 3
+      # hours ago are read, which covers a job's 100 minutes and its time in the queue: the runs of workflow_run,
+      # issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A review job
+      # that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review, Answer or
+      # Draft step, so neither counts. Only jobs of this run's kind count, by the job's name, whatever the task of
+      # their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among them) against
+      # SCREENED_HOURLY_CAP. A reply calls no model, so it has no cap: this step and the next two do not run for it. A
+      # read that fails stops the run here, not at "Hold at the hourly cap", so that the hold job, which reads a
+      # failure of that step as the cap, never says the cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
+        if: needs.trust.outputs.task != 'reply'
         env:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1233,7 +1295,7 @@ jobs:
                 [.jobs[] | select(.name == $ENV.POOL)
                  | select((.run_id | tostring) != $ENV.RUN_ID or (.run_attempt | tostring) != $ENV.RUN_ATTEMPT)
                  | select(((.started_at // $ENV.RUN_CREATED) | fromdateiso8601) >= ($ENV.SINCE | tonumber))
-                 | [(.steps // [])[] | select(.name == "Review" or .name == "Answer")] as $models
+                 | [(.steps // [])[] | select(.name == "Review" or .name == "Answer" or .name == "Draft")] as $models
                  | ([(.steps // [])[] | select(.name == "Hold at the hourly cap")] | first) as $cap
                  | select(any($models[]; .status == "in_progress" or (.conclusion != null and .conclusion != "skipped"))
                           or (.status != "completed" and $cap != null and $cap.conclusion == "success")
@@ -1250,6 +1312,7 @@ jobs:
       # A count that is not a number, or a cap that is not one, lets no model run. It fails here, in a step of its own,
       # so that the hold job reads it as a review that did not finish (a try counts), not as the cap reached.
       - name: Check the count and the cap
+        if: needs.trust.outputs.task != 'reply'
         env:
           COUNT: ${{ steps.count.outputs.count }}
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
@@ -1262,6 +1325,7 @@ jobs:
       # Runs after the two steps above have passed, so it fails only when the count is at the cap: the hold job reads
       # this step's failure as the cap reached.
       - name: Hold at the hourly cap
+        if: needs.trust.outputs.task != 'reply'
         env:
           COUNT: ${{ steps.count.outputs.count }}
           POOL: ${{ needs.trust.outputs.route == 'screen' && 'review (screened)' || 'review' }}
@@ -1275,11 +1339,12 @@ jobs:
           fi
           echo "$COUNT reviews ($POOL) in the last hour, under the cap of $CAP."
 
+      # What the gather job kept: a reply gathers nothing.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
-        if: needs.trust.outputs.route != 'measure'
+        if: needs.trust.outputs.task != 'reply'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       - name: Take the gathered pull request or issue
-        if: needs.trust.outputs.route != 'measure'
+        if: needs.trust.outputs.task != 'reply'
         env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
         run: |
           set -euo pipefail
@@ -1298,6 +1363,7 @@ jobs:
 
       # The source the model describes, for the kernel and QEMU code that comments and issues cite.
       - name: Gather the Linux and QEMU source
+        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           out=.review
@@ -1319,6 +1385,7 @@ jobs:
       # URL), and Claude can read every file of the working directory. So git's own directory moves under the runner's
       # temporary directory, which Claude cannot read, and .git becomes a file that names it. git works as before.
       - name: Keep git's configuration out of Claude's reach
+        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           git init -q --separate-git-dir="$RUNNER_TEMP/review-git"
@@ -1331,6 +1398,7 @@ jobs:
       # (bun-version), and their digests from https://downloads.claude.ai/claude-code-releases/<version>/manifest.json
       # (platforms.linux-x64.checksum) and from the bun-linux-x64.zip asset of the oven-sh/bun release.
       - name: Download Claude Code and Bun at pinned digests
+        if: needs.trust.outputs.task != 'reply'
         env:
           CLAUDE_CODE_VERSION: 2.1.312
           CLAUDE_CODE_SHA256: 4f4178ce41d83e23341ebfbaecdbcf8ea6bf7baea0690025abe49eeec3a5d01d
@@ -1353,6 +1421,7 @@ jobs:
       # allowed_non_write_users, which a screened item sets, makes the action put /usr/bin and /bin before the pinned
       # Bun on the PATH. So no other Bun may be there.
       - name: No Bun but the pinned one
+        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           for bun in /usr/bin/bun /bin/bun; do
@@ -1361,7 +1430,7 @@ jobs:
 
       - name: Review
         id: review
-        if: needs.trust.outputs.task != 'answer'
+        if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
         timeout-minutes: 50
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
@@ -1469,13 +1538,61 @@ jobs:
             "will_fix": {"type": "boolean"},
             "text": {"type": "string", "description": "The answer, in Markdown."}}}'
 
+      # The draft of the reply to a new issue of an outside author (.github/review-answer.md, "An issue draft"): the
+      # first two of the three steps, with the rules of the draft and the whole copies of the three skills to write
+      # by. The settings are the Answer step's: the same tools, the same reach, the same identity. The draft never
+      # leaves this job: the action writes no report to the run's summary and no output of Claude to this log
+      # (display_report and show_full_output, each set to "false" here).
+      - name: Draft
+        id: draft
+        if: needs.trust.outputs.task == 'draft'
+        timeout-minutes: 30
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        with:
+          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
+          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          github_token: ${{ github.token }}
+          allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
+          allowed_bots: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.actor == 'github-actions[bot]'
+            && format('{0},github-actions[bot]', env.APPS)
+            || needs.trust.outputs.route == 'screen' && endsWith(needs.trust.outputs.outsider, '[bot]')
+            && format('{0},{1}', env.APPS, needs.trust.outputs.outsider) || env.APPS }}
+          path_to_claude_code_executable: ${{ runner.temp }}/review-tools/claude
+          path_to_bun_executable: ${{ runner.temp }}/review-tools/bun
+          display_report: "false"
+          show_full_output: "false"
+          settings: >-
+            {"permissions": {"blockReadsOutsideWorkingDirectories": true,
+            "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
+          prompt: >-
+            Read .github/review-answer.md: it is the rules of this draft. Read .github/review.md, which it names.
+            Before you write, read the whole of the three skill copies that it names, with their reference and example
+            files. These are .github/review/skills/write-to-maintainer/SKILL.md,
+            .github/review/skills/write-to-maintainer/judge.md, .github/review/skills/asd-ste100/SKILL.md,
+            .github/review/skills/asd-ste100/references/writing-rules.md,
+            .github/review/skills/asd-ste100/examples/before-after.md, .github/review/skills/ce-noslop/SKILL.md,
+            .github/review/skills/ce-noslop/references/patterns.md and
+            .github/review/skills/ce-noslop/references/terminology.md. Write the reply to issue
+            #${{ needs.gather.outputs.number }} of this repository, as .github/review-answer.md says ("An issue
+            draft"), from what .review/ holds: the issue and its comments are in .review/issue.json. Give the text of
+            the reply as the structured output.
+          claude_args: >-
+            --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 200
+            --json-schema '{"type": "object", "additionalProperties": false, "required": ["text"],
+            "properties": {"text": {"type": "string", "description": "The reply, in Markdown."}}}'
+
       # The fresh reader's token (.github/review/trim.py sign-in): Anthropic exchanges a new identity token of this
       # job with the Review step's federation rule, organization, service account and workspace. The token goes to a
-      # file in the runner's temporary directory that only the runner's account can read, and that the next step
-      # reads and deletes. It never goes to this log or an output. Claude has finished before this step. When the
-      # exchange fails, the job fails here, at a step whose name starts with "Sign in", and the hold job holds nothing
-      # for it: the schedule takes the item again.
+      # file in the runner's temporary directory that only the runner's account can read, and that the step that runs
+      # the reader (the comment, the answer or the draft) reads and deletes. It never goes to this log or an output.
+      # Claude has finished before this step. When the exchange fails, the job fails here, at a step whose name starts
+      # with "Sign in", and the hold job holds nothing for it: the schedule takes the item again. A reply has no text
+      # of the model to read.
       - name: Sign in to Anthropic for the fresh reader
+        if: needs.trust.outputs.task != 'reply'
         env:
           ANTHROPIC_URL: https://api.anthropic.com
           ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
@@ -1501,7 +1618,7 @@ jobs:
       # text that the reader read, the list, and the section on soundness with every line.
       - name: The comment, as it is posted
         id: result
-        if: needs.trust.outputs.task != 'answer'
+        if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
         env:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
@@ -1597,6 +1714,116 @@ jobs:
           delimiter="body_$(openssl rand -hex 16)"
           { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
+      # The third of the three steps for the draft: one request to the fresh reader (trim.py draft), with the token of
+      # the sign-in step, that holds the rules of the draft (.github/review-answer.md and the write-to-maintainer copy)
+      # beside the draft. The reader trims the draft, or refuses it and gives its reason. What it gives stays in the
+      # runner's temporary directory, for the store step: no output, summary or log line of this job holds the draft,
+      # the refused draft or the reason. A reader that fails fails this job, so nothing is stored: a screened issue is
+      # held as a review that did not finish, and tried again.
+      - name: The draft, as the fresh reader leaves it
+        if: needs.trust.outputs.task == 'draft'
+        env:
+          RESULT: ${{ steps.draft.outputs.execution_file }}
+          ANTHROPIC_URL: https://api.anthropic.com
+        run: |
+          set -euo pipefail
+          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
+          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
+          work=$RUNNER_TEMP/draft
+          mkdir -p "$work"
+          jq -j -e 'map(select(.type == "result")) | last | .structured_output
+            | select(type == "object" and (.text | type) == "string") | .text' "$RESULT" > "$work/draft.md" \
+            || { echo "::error::The draft gave no text. Nothing is stored."; exit 1; }
+          grep -q '[^[:space:]]' "$work/draft.md" || { echo "::error::The draft has no word in it. Nothing is stored."; exit 1; }
+          python3 .github/review/trim.py draft --text "$work/draft.md" --rules .github/review-answer.md \
+            --rules .github/review/skills/write-to-maintainer/SKILL.md > "$work/read.json" \
+            || { echo "::error::The fresh reader gave no answer for the draft. Nothing is stored."; exit 1; }
+          echo "The fresh reader read the draft. The store step stores what it gave."
+
+      # The draft store's Google identity again, for the store of a draft or of a reply: a new token of 300 seconds,
+      # which the next step alone reads. The action writes no credentials file and sets no environment variable. When
+      # the sign-in fails, the job fails here, at a step whose name starts with "Sign in": nothing is stored, nothing
+      # posts, and the hold job holds nothing for it.
+      - name: Sign in to Google Cloud for the draft
+        id: storage
+        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
+        with: {workload_identity_provider: "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}", service_account: "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
+
+      # One new object of the private bucket DRAFT_BUCKET, under DRAFT_PREFIX/<issue>/: <run>-<attempt> holds the draft
+      # as the fresh reader trimmed it; <run>-<attempt>-refused, a draft that the reader refused, as the model wrote
+      # it, with the reader's reason; approved-<run>-<attempt>, the text that a reply run posts. It is written only when
+      # no object of that name is there (ifGenerationMatch=0). Sami reads it in a terminal, and the author of an issue
+      # can steer the model's text, so every control character but tab and newline, and every bidirectional-text
+      # control, is taken out first. The run's summary gets the command that reads the object, and no text of it. A
+      # write that fails fails this step: nothing posts. The output draft, <run>-<attempt>, names a stored draft for the
+      # label comment.
+      - name: Store the draft, or the approved reply
+        id: stored
+        if: needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply'
+        env:
+          TASK: ${{ needs.trust.outputs.task }}
+          NUMBER: ${{ needs.trust.outputs.number }}
+          APPROVED: ${{ inputs.reply }}
+          GOOGLE_ACCESS_TOKEN: ${{ steps.storage.outputs.access_token }}
+          STORAGE_URL: https://storage.googleapis.com
+          # The private bucket of the drafts of the OSS Verify repositories, and this repository's prefix in it. Only
+          # the account that the repository variables name can write there, from this job of this file on main.
+          DRAFT_BUCKET: theorem-agent-infra-oss-verify-held-findings
+          DRAFT_PREFIX: rocq-linux-process-semantics/issue-drafts
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -n "${GOOGLE_ACCESS_TOKEN:-}" ] || { echo "::error::The sign-in gave no token. Nothing is stored, and nothing posts."; exit 1; }
+          [[ $NUMBER =~ ^[1-9][0-9]*$ && $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::no issue number, run id or attempt. Nothing is stored, and nothing posts."; exit 1; }
+          work=$RUNNER_TEMP/draft
+          mkdir -p "$work"
+          refused=false
+          case $TASK in
+            draft)
+              refused=$(jq -r .refused "$work/read.json")
+              [[ $refused == true || $refused == false ]] \
+                || { echo "::error::The fresh reader neither kept nor refused the draft. Nothing is stored."; exit 1; }
+              name=$RUN_ID-$RUN_ATTEMPT kind="issue draft"
+              if [ "$refused" = true ]; then
+                name+=-refused kind="refused issue draft"
+                cp "$work/draft.md" "$work/text"
+                told="The fresh reader refused the draft of the reply to issue #$NUMBER. The private store holds the draft and the reason of the reader. No job posts them. To read them:"
+              else
+                jq -j .text "$work/read.json" > "$work/text"
+                told="The private store holds the draft of the reply to issue #$NUMBER. No job posts it: Sami approves the text of a reply first. To read it:"
+              fi ;;
+            reply)
+              [[ ${APPROVED:-} =~ [^[:space:]] ]] || { echo "::error::the run gives no text of a reply. Nothing is stored, and nothing posts."; exit 1; }
+              name=approved-$RUN_ID-$RUN_ATTEMPT kind="approved issue reply"
+              printf '%s' "$APPROVED" > "$work/text"
+              told="The private store holds the approved reply to issue #$NUMBER, beside its draft. The comment job of this run posts it. To read it:" ;;
+            *) echo "::error::the task $TASK stores nothing."; exit 1 ;;
+          esac
+          object=$DRAFT_PREFIX/$NUMBER/$name
+          # The object: a header, the reason of a refused draft on one line, and the text. Taken out of it: the C0
+          # controls but tab and newline, DEL, the C1 controls, and the bidirectional-text controls U+061C, U+200E,
+          # U+200F, U+202A to U+202E and U+2066 to U+2069.
+          { printf 'rocq-linux-process-semantics %s v1\nissue: %s\nrun: %s\n' "$kind" "$NUMBER" "$RUN"
+            if [ "$refused" = true ]; then jq -j '"reason: \(.reason | gsub("\\s+"; " "))\n"' "$work/read.json"; fi
+            printf -- '---\n'
+            cat "$work/text"; } \
+            | python3 -c 'import re, sys; sys.stdout.buffer.write(re.sub("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", sys.stdin.buffer.read().decode()).encode())' \
+            > "$work/object"
+          # The token reaches curl in its configuration, on standard input, never in a command line.
+          answer=$(printf 'header = "Authorization: Bearer %s"\n' "$GOOGLE_ACCESS_TOKEN" \
+            | curl -sS --fail --max-time 60 -K - -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$work/object" \
+                "$STORAGE_URL/upload/storage/v1/b/$DRAFT_BUCKET/o?uploadType=media&ifGenerationMatch=0&name=${object//\//%2F}") \
+            || { echo "::error::gs://$DRAFT_BUCKET/$object could not be written. Nothing posts."; exit 1; }
+          generation=$(jq -r '.generation // ""' <<< "$answer")
+          [[ $generation =~ ^[0-9]{1,20}$ ]] || { echo "::error::Google Cloud gave no generation of gs://$DRAFT_BUCKET/$object. Nothing posts."; exit 1; }
+          echo "Stored gs://$DRAFT_BUCKET/$object, generation $generation."
+          printf '%s\n\n    gcloud storage cat gs://%s/%s\n\n' "$told" "$DRAFT_BUCKET" "$object" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TASK" = draft ]; then echo "draft=$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"; fi
+
       # Whether the fix runs (.github/review-answer.md, "The fix"): for a blocking finding of the review, after the
       # soundness rule, or for an answer whose action is fix, of an outside pull request. The two stops: no fix runs
       # when the author said they will make the change (the will_fix of the review or of the answer, or for a review
@@ -1604,9 +1831,10 @@ jobs:
       # push did not make the review pass (rules.py fixes, from the head's history and the pull request's reviews, as
       # the API gives them). The outputs will_fix and fix_stop give the comment job the facts of the state label. When
       # the fix runs, this step writes what it is for into .review/fix.json, which the Fix step reads: the review's
-      # output, or the comments of the author and the answer.
+      # output, or the comments of the author and the answer. A draft and a reply have no fix.
       - name: Whether a fix runs
         id: fixable
+        if: needs.trust.outputs.task != 'draft' && needs.trust.outputs.task != 'reply'
         env:
           TASK: ${{ needs.trust.outputs.task }}
           OUTSIDE: ${{ needs.gather.outputs.outside }}
@@ -1846,18 +2074,20 @@ jobs:
       # of the head's held runs (token B).
 
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
-  # changes, or the comment that asks the author of a pull request with a merge conflict to resolve it, and the state
-  # label and the label comment of each, which .github/review/rules.py sets from main's checkout of .github/. No App
-  # token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits or
-  # pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
-  # job's recorded as false when it did not succeed.
+  # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
+  # it, and the state label and the label comment of each, which .github/review/rules.py sets from main's checkout of
+  # .github/. A draft posts nothing but its label comment, after the review job stored it. No App token posts here, so
+  # none of these comments, reviews and labels starts a run of a workflow. It never commits or pushes: its token can
+  # write no file of the repository. It runs whatever the post job's result, and reads that job's recorded as false
+  # when it did not succeed.
   comment:
     needs: [trust, gather, screen, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-                || needs.trust.outputs.task == 'answer')
+                || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft'
+                || needs.trust.outputs.task == 'reply')
                && needs.review.result == 'success')
               || (needs.trust.outputs.task == 'conflict' && needs.trust.result == 'success')) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max).
@@ -1965,16 +2195,52 @@ jobs:
             gh api --method POST "repos/$REPO/pulls/$NUMBER/reviews" --input "$RUNNER_TEMP/fix.json" --jq .html_url
           fi
           echo "posted=true" >> "$GITHUB_OUTPUT"
-      # A review replaces the hold: a request by hand, or a later push that the screen passed. Not the review of an
-      # older head: a newer push may have been held since. Nor when a hold came after this run started: a newer event
-      # of the issue or the pull request was held. An answer replaces only a hold of an answer (its marker names the
-      # task answer): it answers each comment that waits, the held one too. Any other hold marks work on the item that
-      # the rescreen job tries again, so the answer leaves review-held on. Then the state label of the outcome, and the
-      # label comment (.github/review/rules.py), from the item's kind, whether this run took an outsider's path (so the
-      # screen passed it), the review's verdict, the two stops of the fix (will_fix and fix_stop), whether a fix review
-      # posted, and whether the post job recorded the import check run at the head. An answer changes the state only
-      # when the author said they will make the change, or when a fix posted or stopped: else the label stays as the
-      # item's review, hold or reply set it.
+      # The approved reply to an issue of an outside author (.github/review-answer.md, "An issue draft"): the text of the
+      # run by hand, byte for byte, with no trim, no change and no added line, once: a comment of github-actions[bot]
+      # with the same body is the reply posted already. The text comes from the run's input through this step's
+      # environment alone, never into the script. The review job stored it first: a run whose store failed posts
+      # nothing. The output id, the id of the reply's comment, goes to the label comment as the marker
+      # <!-- issue-reply-posted <id> -->, after which the trust job answers the comments of the issue's author.
+      - name: Post the approved reply
+        id: replied
+        if: needs.trust.outputs.task == 'reply'
+        env:
+          REPLY: ${{ inputs.reply }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          [[ ${REPLY:-} =~ [^[:space:]] ]] || { echo "::error::the run gives no text of a reply. Nothing posts."; exit 1; }
+          if [ "$POST_REVIEW" != true ]; then
+            printf '%s\n' "$REPLY" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          posted=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
+            | select(.user.login == "github-actions[bot]" and .body == $ENV.REPLY) | .id') \
+            || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
+          id=${posted%%$'\n'*}
+          if [ -n "$id" ]; then
+            echo "#$NUMBER: the approved reply posted before, as comment $id."
+          else
+            id=$(gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$REPLY" --jq .id) \
+              || { echo "::error::the approved reply could not be posted"; exit 1; }
+            echo "#$NUMBER: the approved reply posted, as comment $id."
+          fi
+          [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::the approved reply has no comment id: $id"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      # A review replaces the hold: a request by hand, or a later push that the screen passed. So does a stored draft,
+      # and an approved reply that posted. Not the review of an older head: a newer push may have been held since. Nor
+      # when a hold came after this run started: a newer event of the issue or the pull request was held. An approved
+      # reply that posted is recorded whatever came after it, since the trust job reads its marker. An answer replaces
+      # only a hold of an answer (its marker names the task answer): it answers each comment that waits, the held one
+      # too. Any other hold marks work on the item that the rescreen job tries again, so the answer leaves review-held
+      # on. Then the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind,
+      # whether this run took an outsider's path (so the screen passed it), the review's verdict, the two stops of the
+      # fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import check run at
+      # the head, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->, waits-on-theorem) and the posted
+      # reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author). An answer changes the state only when the
+      # author said they will make the change, or when a fix posted or stopped: else the label stays as the item's
+      # review, hold or reply set it.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
@@ -1987,10 +2253,22 @@ jobs:
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
           FIX_STOP: ${{ needs.review.outputs.fix_stop }}
           FIX_POSTED: ${{ steps.fixed.outputs.posted }}
+          DRAFT: ${{ needs.review.outputs.draft }}
+          REPLIED: ${{ steps.replied.outputs.id }}
         run: |
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
             || { echo "::error::no start time of this run"; exit 1; }
+          # The stored draft and the posted reply, each with the marker line that the label comment keeps.
+          draft_stored=false reply_posted=false markers=()
+          case ${TASK:-} in
+            draft)
+              [[ ${DRAFT:-} =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || { echo "::error::the review job names no stored draft"; exit 1; }
+              draft_stored=true markers=("marker=<!-- issue-draft $DRAFT -->") ;;
+            reply)
+              [[ ${REPLIED:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::the approved reply has no comment id"; exit 1; }
+              reply_posted=true markers=("marker=<!-- issue-reply-posted $REPLIED -->") ;;
+          esac
           if [ -n "$HEAD" ]; then
             now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
             [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the labels stay."; exit 0; }
@@ -2001,7 +2279,7 @@ jobs:
             | "\(.updated_at) \(.body | test("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer [0-9]+ -->(\n|$)"))"') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           read -r last of_answer <<< "$(sort <<< "$held" | tail -n 1)"
-          if [[ -n $last && ! $last < $STARTED ]]; then
+          if [[ ${TASK:-} != reply && -n $last && ! $last < $STARTED ]]; then
             echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
             exit 0
           fi
@@ -2026,7 +2304,8 @@ jobs:
           outsider=false
           [ -z "$OUTSIDER" ] || outsider=true
           python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$VERDICT" \
-            will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED"
+            will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
+            draft_stored="$draft_stored" reply_posted="$reply_posted" "${markers[@]}"
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
@@ -2071,13 +2350,15 @@ jobs:
   # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
   # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
   # of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
-  # <!-- review-held-<kind> <run> <tries> answer <comment id> -->. Such a hold gives the UTC time when the item is
-  # tried again, and no state label: the workflow still works on the item. An answer's hold of that kind leaves the
-  # state label as it is: the state of the item does not wait for the answer. A hold that is not tried again (the
-  # screen's, or the last try of a review or an answer) gives waits-on-theorem and a label comment that names Sami's
-  # next step (.github/review/rules.py, from main's checkout of .github/). A cancelled screen holds nothing, nor a
-  # screened review or answer that a newer run of the same item and task cancelled: that run decides. Nor a run whose
-  # sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of its jobs.
+  # <!-- review-held-<kind> <run> <tries> answer <comment id> -->, and the marker of a draft's hold with the task:
+  # <!-- review-held-<kind> <run> <tries> draft -->, so that the draft is tried again as a draft, which posts nothing,
+  # and never as a review. Such a hold gives the UTC time when the item is tried again, and no state label: the
+  # workflow still works on the item. An answer's hold of that kind leaves the state label as it is: the state of the
+  # item does not wait for the answer. A hold that is not tried again (the screen's, or the last try of a review, an
+  # answer or a draft) gives waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py,
+  # from main's checkout of .github/). A cancelled screen holds nothing, nor a screened review or answer that a newer
+  # run of the same item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts
+  # with "Sign in" failed in this attempt of the run, in any of its jobs.
   # Such a run judged nothing of the item, so it gets no comment, no label and no try, and the schedule takes the item
   # again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this
   # job, which reads this attempt's jobs first and stops.
@@ -2086,7 +2367,7 @@ jobs:
     if: >-
       !cancelled() && github.ref == 'refs/heads/main'
       && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'answer')
+          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
       && (needs.trust.outputs.route == 'limit'
       || (needs.trust.outputs.route == 'screen'
           && (needs.gather.result == 'failure' || needs.screen.result == 'failure'
@@ -2129,7 +2410,7 @@ jobs:
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
-          # starts with "Sign in", and no other step has: the screen job's two, the review job's three, and the post
+          # starts with "Sign in", and no other step has: the screen job's two, the review job's six, and the post
           # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
           # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
           # comment, no label and no try, and the schedule takes the item again. A run at the limit ran no job but the
@@ -2161,10 +2442,13 @@ jobs:
           again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
           again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
           again_other="$again If it is held again, this comment says why."
-          # The work that was held: the review of the item, or the answer to the comments of its author.
+          # The work that was held: the review of the item, the answer to the comments of its author, or the draft of
+          # the reply to an issue.
           work="review" work_of="the automated review of it" title="Automated review held."
           if [ "$TASK" = answer ]; then
             work="answer" work_of="the automated answer to the comment of its author" title="Automated answer held."
+          elif [ "$TASK" = draft ]; then
+            work="draft" work_of="the automated draft of a reply to it" title="Automated reply held."
           fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
@@ -2260,6 +2544,8 @@ jobs:
             if [ "$work" = answer ]; then
               [[ ${COMMENT:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a comment id: ${COMMENT:-}"; exit 1; }
               marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries answer $COMMENT -->"
+            elif [ "$work" = draft ]; then
+              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries draft -->"
             fi
           fi
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
