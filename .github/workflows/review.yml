@@ -5,10 +5,12 @@
 # commit, a token that can only read, no secret and no identity token. This file runs when such a CI run completes
 # (workflow_run), and on issues, issue_comment, schedule and workflow_dispatch. GitHub runs each of these events with
 # main's copy of this file, so a pull request, from a fork or not, cannot change what runs here. From the CI run, the
-# jobs that hold a right take only its head commit and head repository, by which the trust job finds the pull request
-# among the open ones into main. They read the number, the head, the author, the text and the diff from the GitHub
-# API, and never download an artifact of the CI run. The CI run's results reach the review as data: the head's check
-# runs and statuses (.review/checks.json). A run by hand on a ref other than main runs no job: the if of each job
+# jobs that hold a right take only its head commit, its head repository and the pull requests that GitHub names in it.
+# The trust job takes the one of those into main. For a fork's pull request GitHub names none, and the trust job finds
+# it among the open ones into main by the head commit and the head repository. A CI run of a pull request into another
+# branch starts no review. The jobs read the head, the author, the text and the diff from the GitHub API, and never
+# download an artifact of the CI run. The CI run's results reach the review as data: the head's check runs and
+# statuses (.review/checks.json). A run by hand on a ref other than main runs no job: the if of each job
 # checks the ref, so such a run holds no identity and posts nothing. GitHub's == compares strings with no case, so
 # refs/heads/MAIN passes such an if: the step of the trust job, which every other job needs, and the step of the
 # rescreen job, which runs without it, also compare the ref byte for byte in the shell, and stop on any other ref.
@@ -171,11 +173,13 @@
 #           runs on the schedule alone, in the public repository alone, and starts on main the runs that the open items
 #           are due: the work that a hold names, an answer that waits, a draft that is not stored, the approval of
 #           held runs, the catch-up or the review of a head that no run reviewed, the comment on a merge conflict, a
-#           relabel, the App's writes that failed, and the reopen of a pull request that a catch-up left closed. It is
-#           the only job whose own token has actions: write, which it needs to start a run, and it uses it for nothing
-#           else. Its issues and pull-requests: write let it give an item whose work reached REVIEW_TRIES without
-#           settling a hold comment that says that it is not tried again, and waits-on-theorem. It reads the open and
-#           the closed items, this workflow's runs, and the CI runs and check runs of a head, and holds no model.
+#           relabel, the App's writes that failed, and the reopen of a pull request that a catch-up left closed. When
+#           the screen of a review passed and its review job could not sign in, it runs the failed jobs of that run
+#           again, so that the screen is paid once. It is the only job whose own token has actions: write, which it
+#           needs to start a run and to run failed jobs again, and it uses it for nothing else. Its issues and
+#           pull-requests: write let it give an item whose work reached REVIEW_TRIES without settling a hold comment
+#           that says that it is not tried again, and waits-on-theorem. It reads the open and the closed items, this
+#           workflow's runs, and the CI runs and check runs of a head, and holds no model.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
@@ -384,6 +388,9 @@ jobs:
           COMMENT: ${{ github.event.comment.id || inputs.comment }}
           HEAD: ${{ github.event.workflow_run.head_sha || inputs.head }}
           HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.id }}
+          # The pull requests that GitHub names in the CI run, as JSON, each with its number and its base. GitHub names
+          # none for a run of a fork's pull request (CI run 40554405841 of #23).
+          PULLS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
           # With the task reply, the approved text: this job only checks that it holds a word.
           REPLY: ${{ inputs.reply }}
           RUN_ID: ${{ github.run_id }}
@@ -525,16 +532,54 @@ jobs:
               | startswith("<!-- review-held -->")
                 and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
           }
+          # pages: the start of the --jq filter of a list of runs, which gives, before the rows of each page, the line
+          # "= <total_count> <runs on the page>" that whole reads.
+          pages='"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length)", '
+          # whole: the rows of a list of runs read with pages, from standard input. It fails, with no row, when GitHub
+          # cut the list: GitHub gives at most 1,000 runs for a list with created, event, head_sha or status, the newest
+          # first, and its total_count then says that more runs match.
+          whole() {
+            awk '$1 == "=" { if ($2 > total) total = $2; listed += $3; next } { rows[++n] = $0 }
+              END { if (listed < total) exit 3; for (i = 1; i <= n; i++) print rows[i] }'
+          }
+          # runs_in <event> <created> <filter>: the rows that <filter> (a --jq filter that starts with pages) gives of
+          # this workflow's runs of <event> created in <created>: from the start of a day on (>=<day>T00:00:00Z), on a
+          # day (<day>), or in an hour of a day. A list that GitHub cut is read again one day at a time, and the list of
+          # a day one hour at a time. It fails when GitHub could not say, or when it cut the list of an hour.
+          runs_in() {
+            local out rows day today hour
+            out=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" -f event="$1" \
+              -f created="$2" -F per_page=100 --jq "$3") || return 1
+            if rows=$(whole <<< "$out"); then
+              [ -z "$rows" ] || printf '%s\n' "$rows"
+              return 0
+            fi
+            case $2 in
+              '>='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T00:00:00Z)
+                day=${2:2:10} today=$(date -u +%Y-%m-%d)
+                while [[ ! $day > $today ]]; do
+                  runs_in "$1" "$day" "$3" || return 1
+                  day=$(date -u -d "$day +1 day" +%Y-%m-%d)
+                done ;;
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+                for hour in $(seq -w 0 23); do
+                  runs_in "$1" "${2}T$hour:00:00Z..${2}T$hour:59:59Z" "$3" || return 1
+                done ;;
+              *) echo "::error::GitHub lists at most 1,000 runs of $1 created $2, and more of them match." >&2; return 1 ;;
+            esac
+          }
           # ci_of <head>: the CI runs of <head> of the event pull_request: pending while one of them is queued, in
-          # progress, waiting or held for a person's approval (action_required); else the time when the newest one
-          # ended; nothing when there is none.
+          # progress, waiting or held for a person's approval (action_required), or while GitHub does not list them all
+          # (whole); else the time when the newest one ended; nothing when there is none.
           ci_of() {
+            local out rows
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
-              --jq '.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
+            out=$(SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
+              --jq "$pages"'(.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
                   and .path == ".github/workflows/ci.yml")
-                | if .status == "completed" then .updated_at // "-" else "pending" end' \
-              | sort | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
+                | if .status == "completed" then .updated_at // "-" else "pending" end)') || return 1
+            if ! rows=$(whole <<< "$out"); then echo pending; return 0; fi
+            sort <<< "$rows" | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
           }
           # end of held
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
@@ -547,27 +592,37 @@ jobs:
           # one of those jobs: a run whose trust job has just accepted it and whose next jobs are not listed yet counts.
           # A run whose screen or review job stopped at a failed step whose name starts with "Sign in" could not sign
           # in, and does not count: the schedule takes its item again, and that run must not find the account at its
-          # limit because of it. The jobs read for each run that would count show it, so nothing more is read, and once
-          # count is at OUTSIDE_HOURLY_LIMIT no more jobs are read: the account is at its limit.
+          # limit because of it. The jobs of each run that would count show it. They are read once for each run, which
+          # counts once, also when two pages list it (verdict_of), and once count is at OUTSIDE_HOURLY_LIMIT no more
+          # jobs are read: the account is at its limit. When GitHub does not list every run of the hour (whole), the
+          # runs that it leaves out can be the account's: the account is at its limit.
           # The run stops when GitHub could not say.
           earlier() {
-            local from runs id kind verdict
+            local from out runs id kind verdict
+            local -A verdict_of=()
             count=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            runs=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-              -f created=">=$from" -F per_page=100 --jq '.workflow_runs[] | (.display_title // "") as $title
+            out=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+              -f created=">=$from" -F per_page=100 --jq "$pages"'(.workflow_runs[] | (.display_title // "") as $title
                 | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
                          and ((.actor.login == $ENV.LOGIN
                                and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
                               or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
                                   and ($title | endswith(" of " + $ENV.LOGIN)))))
-                | "\(.id) \(if .event == "workflow_dispatch" then "dispatch" else "event" end)"') \
+                | "\(.id) \(if .event == "workflow_dispatch" then "dispatch" else "event" end)")') \
               || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
+            if ! runs=$(whole <<< "$out"); then
+              echo "::notice::GitHub lists at most 1,000 runs of this workflow since $from, and more of them match." \
+                "The runs that it does not list can be runs of $1, so $1 is held at the limit."
+              count=$OUTSIDE_HOURLY_LIMIT
+              return 0
+            fi
             while read -r id kind; do
               (( count < OUTSIDE_HOURLY_LIMIT )) || break
               [ -n "$id" ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
+              [ -z "${verdict_of[$id]:-}" ] || continue
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               verdict=$(KIND=$kind gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
                 --jq '([.jobs[] | select(.name == "trust")] | first) as $t
@@ -579,6 +634,7 @@ jobs:
                              (.name | startswith("Sign in")) and .conclusion == "failure") then "signin"
                     else "count" end') \
                 || { echo "::error::the jobs of run $id could not be read. Re-run this run."; exit 1; }
+              verdict_of[$id]=${verdict:--}
               if [[ $verdict == *count* ]]; then count=$((count + 1)); fi
             done <<< "$runs"
           }
@@ -702,8 +758,9 @@ jobs:
           # merged, and its newest closed event is oss-verify[bot]'s and falls between the start and the end of another
           # run of the task catchup of it whose post job failed or was cancelled (the closing run). A catchup run since
           # then that reopened it would have left it open, or closed by a newer event. The runs are read one day at a
-          # time, from the day before the close to today, however long ago the close was. Never once its hold comment
-          # says that the catch-up could not reopen it (gave_up): then it waits on Sami, and no run is read.
+          # time (runs_in, which reads a day that GitHub cut at 1,000 runs one hour at a time), from the day before the
+          # close to today, however long ago the close was. Never once its hold comment says that the catch-up could not
+          # reopen it (gave_up): then it waits on Sami, and no run is read.
           left_closed() {
             local closed at by day today runs id started ended post given
             [ "$kind" = pr ] && [ "$merged" = false ] || return 1
@@ -718,12 +775,10 @@ jobs:
             today=$(date -u +%Y-%m-%d)
             while [[ ! $day > $today ]]; do
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-              runs=$(PATTERN="^catchup #$NUMBER( |\$)" gh api --method GET --paginate \
-                "repos/$REPO/actions/workflows/review.yml/runs" -f event=workflow_dispatch -f created="$day" \
-                -F per_page=100 --jq '.workflow_runs[]
+              runs=$(PATTERN="^catchup #$NUMBER( |\$)" runs_in workflow_dispatch "$day" "$pages"'(.workflow_runs[]
                   | select(.event == "workflow_dispatch" and (.id | tostring) != $ENV.RUN_ID
                            and ((.display_title // "") | test($ENV.PATTERN)))
-                  | "\(.id) \(.run_started_at // .created_at) \(if .status == "completed" then .updated_at else "-" end)"') \
+                  | "\(.id) \(.run_started_at // .created_at) \(if .status == "completed" then .updated_at else "-" end)")') \
                 || fail "the runs of $day could not be read."
               while read -r id started ended; do
                 [ -n "$id" ] || continue
@@ -741,23 +796,47 @@ jobs:
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
           [[ $RUN_ID =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: $RUN_ID"; exit 1; }
           case $EVENT in
-            # A pull request's new head: the one open pull request into main whose head is the CI run's head commit,
-            # from the CI run's head repository. Its number, author and head come from the API. The account is the CI
-            # run's actor (the pusher, also on a later attempt of that run), never the account that re-ran it.
+            # A pull request's new head: the open pull request into main of the CI run. A run of a pull request of this
+            # repository names its pull requests (PULLS): it is taken only when one of them is into main of this
+            # repository, and that one is it, so a CI run of a pull request into another branch starts no review and
+            # counts toward no cap. A run of a fork's pull request names none (GitHub leaves the list empty): it is the
+            # one open pull request into main whose head is the CI run's head commit, from the CI run's head repository,
+            # whatever the base of the pull request whose CI run it is. The number comes from the CI run or from that
+            # lookup; the author, the head and the rest come from the API. The account is the CI run's actor (the
+            # pusher, also on a later attempt of that run), never the account that re-ran it.
             workflow_run)
               task=review
               [[ $HEAD =~ ^[0-9a-f]{40}$ && $HEAD_REPOSITORY =~ ^[1-9][0-9]*$ ]] \
                 || stop "the CI run names no head commit and head repository."
+              # "<how many pull requests the CI run names> <each number of one into main of this repository>".
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-              found=$(gh api --paginate "repos/$REPO/pulls?state=open&base=main&per_page=100" --jq '.[]
-                | select(.head.sha == $ENV.HEAD and ((.head.repo.id // 0) | tostring) == $ENV.HEAD_REPOSITORY
-                         and .base.ref == "main")
-                | "\(.number) \((.draft // false) | tostring) \(.user.login)"') \
-                || fail "the open pull requests could not be read."
-              n=$(grep -c . <<< "$found" || true)
-              (( n == 1 )) || stop "$n open pull requests into main have this head from its repository."
-              read -r NUMBER is_draft AUTHOR <<< "$found"
-              [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || fail "not a number: $NUMBER."
+              found=$(jq -r 'if type == "array" then . elif . == null then [] else error("not a list") end
+                | [length] + [.[] | select(.base.ref == "main"
+                    and ((.base.repo.id // 0) | tostring) == $ENV.GITHUB_REPOSITORY_ID) | .number]
+                | map(tostring) | join(" ")' <<< "${PULLS:-null}") || fail "the CI run's pull requests could not be read."
+              read -r named into <<< "$found"
+              if (( named > 0 )); then
+                [ -n "${into:-}" ] || stop "the CI run is of pull requests into other branches than main."
+                [[ $into =~ ^[1-9][0-9]*$ ]] || stop "the CI run names more than one pull request into main ($into)."
+                NUMBER=$into
+                item
+                [ "$kind" = pr ] || stop "it is not a pull request."
+                [ "$state" = open ] || stop "it is $state."
+                [ "$base" = main ] || stop "it is into $base, not main."
+                [[ $pr_head == "$HEAD" && $head_repo == "$HEAD_REPOSITORY" ]] \
+                  || stop "its head is $pr_head of repository $head_repo, not the CI run's."
+              else
+                # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+                found=$(gh api --paginate "repos/$REPO/pulls?state=open&base=main&per_page=100" --jq '.[]
+                  | select(.head.sha == $ENV.HEAD and ((.head.repo.id // 0) | tostring) == $ENV.HEAD_REPOSITORY
+                           and .base.ref == "main")
+                  | "\(.number) \((.draft // false) | tostring) \(.user.login)"') \
+                  || fail "the open pull requests could not be read."
+                n=$(grep -c . <<< "$found" || true)
+                (( n == 1 )) || stop "$n open pull requests into main have this head from its repository."
+                read -r NUMBER is_draft AUTHOR <<< "$found"
+                [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || fail "not a number: $NUMBER."
+              fi
               [ "$is_draft" = false ] || stop "it is a draft."
               head=$HEAD
               screened "$AUTHOR" "$ACTOR" ;;
@@ -1465,24 +1544,27 @@ jobs:
           answer=""
           echo "Anthropic's federation rule admits this run. The Review step gets a token of its own."
 
-      # Counts the review jobs of this workflow's other runs that started in the last hour, or have not started, and
-      # have called the model or may still call it: one whose Review, Answer or Draft step ran or runs (the Fix step
-      # runs after one of them, in the same job, and counts with it); one that passed the step "Hold at the hourly cap"
-      # and has not finished; and one that has not finished that step yet and belongs to an earlier run, which goes
-      # first. So in a burst the earliest runs go ahead and the later ones stop at that step. Runs created up to 3
-      # hours ago are read, which covers a job's 100 minutes and its time in the queue: the runs of workflow_run,
-      # issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A review job
-      # that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review, Answer or
-      # Draft step, so neither counts. A run that GitHub skipped, or that ended before the hour began, has no review job
-      # of the hour, so its jobs are not read. Only jobs of this run's kind count, by the job's name, whatever the task
-      # of their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among them) against
-      # SCREENED_HOURLY_CAP. A read that fails stops the run here, not at "Hold at the hourly cap", so that the hold
-      # job, which reads a failure of that step as the cap, never says the cap was reached when it was not.
+      # Counts this workflow's other runs whose review job started in the last hour, or has not started, and has called
+      # the model or may still call it: one whose Review, Answer or Draft step ran or runs (the Fix step runs after one
+      # of them, in the same job, and counts with it); one that passed the step "Hold at the hourly cap" and has not
+      # finished; and one that has not finished that step yet and belongs to an earlier run, which goes first. So in a
+      # burst the earliest runs go ahead and the later ones stop at that step. A run counts once, whatever attempts of
+      # its review job the jobs list (filter=all): the schedule runs again the failed jobs of a run whose screen passed
+      # and whose review could not sign in, and that run counts once. This run's own attempts never count. Runs created
+      # up to 3 hours ago are read, which covers a job's 100 minutes and its time in the queue: the runs of
+      # workflow_run, issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A
+      # review job that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review,
+      # Answer or Draft step, so neither counts. A run that GitHub skipped, or that ended before the hour began, has no
+      # review job of the hour, so its jobs are not read. Only jobs of this run's kind count, by the job's name,
+      # whatever the task of their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among
+      # them) against SCREENED_HOURLY_CAP. GitHub gives at most 1,000 runs for a list with created, the newest first,
+      # and its total_count then says that more match: the runs that it does not list can hold reviews of the hour, so
+      # the count is then the cap. A read that fails stops the run here, not at "Hold at the hourly cap", so that the
+      # hold job, which reads a failure of that step as the cap, never says the cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
         env:
           RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
           POOL: ${{ needs.trust.outputs.route == 'screen' && 'review (screened)' || 'review' }}
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
         run: |
@@ -1492,34 +1574,49 @@ jobs:
           SINCE=$(date -u -d '-1 hour' +%s) || stop "the time could not be read."
           from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || stop "the time could not be read."
           export SINCE
+          # Before the runs of each page, "= <total_count> <runs on the page>".
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-          runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-            -f created=">=$from" -F per_page=100 --jq '.workflow_runs[]
-              | select((.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
-                        or .event == "workflow_dispatch") and .conclusion != "skipped"
+          out=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+            -f created=">=$from" -F per_page=100 \
+            --jq '"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length)", (.workflow_runs[]
+              | select((.id | tostring) != $ENV.RUN_ID
+                       and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
+                            or .event == "workflow_dispatch") and .conclusion != "skipped"
                        and (.status != "completed" or .updated_at == null
                             or (.updated_at | fromdateiso8601) >= ($ENV.SINCE | tonumber)))
-              | "\(.id) \(.created_at)"') \
+              | "\(.id) \(.created_at)")') \
             || stop "the runs could not be read."
+          runs=$(awk '$1 == "=" { if ($2 > total) total = $2; listed += $3; next } { rows[++n] = $0 }
+            END { if (listed < total) exit 3; for (i = 1; i <= n; i++) print rows[i] }' <<< "$out")
+          whole=$?
           count=0
+          if (( whole == 3 )); then
+            echo "GitHub lists at most 1,000 runs of this workflow since $from, and more of them match. The runs that it" \
+              "does not list can hold reviews of the last hour, so the count is the cap."
+            count=$CAP
+          elif (( whole != 0 )); then
+            stop "the runs could not be read."
+          fi
+          declare -A counted=()
           while read -r id created; do
             [ -n "$id" ] || continue
             [[ $id =~ ^[0-9]+$ ]] || stop "a run id is not a number."
+            [ -z "${counted[$id]:-}" ] || continue
+            counted[$id]=1
+            # true on a page of the run's jobs that holds a review job of this pool that counts.
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            n=$(RUN_CREATED=$created gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
+            found=$(RUN_CREATED=$created gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
               -f filter=all -F per_page=100 --jq '
-                [.jobs[] | select(.name == $ENV.POOL)
-                 | select((.run_id | tostring) != $ENV.RUN_ID or (.run_attempt | tostring) != $ENV.RUN_ATTEMPT)
-                 | select(((.started_at // $ENV.RUN_CREATED) | fromdateiso8601) >= ($ENV.SINCE | tonumber))
-                 | [(.steps // [])[] | select(.name == "Review" or .name == "Answer" or .name == "Draft")] as $models
-                 | ([(.steps // [])[] | select(.name == "Hold at the hourly cap")] | first) as $cap
-                 | select(any($models[]; .status == "in_progress" or (.conclusion != null and .conclusion != "skipped"))
-                          or (.status != "completed" and $cap != null and $cap.conclusion == "success")
-                          or (.status != "completed" and ($cap == null or $cap.status != "completed")
-                              and .run_id < ($ENV.RUN_ID | tonumber)))]
-                | length') || stop "the jobs of run $id could not be read."
-            [[ $n =~ ^[0-9]+$ ]] || stop "the jobs of run $id could not be read."
-            count=$((count + n))
+                any(.jobs[]; .name == $ENV.POOL
+                  and ((.started_at // $ENV.RUN_CREATED) | fromdateiso8601) >= ($ENV.SINCE | tonumber)
+                  and ([(.steps // [])[] | select(.name == "Review" or .name == "Answer" or .name == "Draft")] as $models
+                    | ([(.steps // [])[] | select(.name == "Hold at the hourly cap")] | first) as $cap
+                    | any($models[]; .status == "in_progress" or (.conclusion != null and .conclusion != "skipped"))
+                      or (.status != "completed" and $cap != null and $cap.conclusion == "success")
+                      or (.status != "completed" and ($cap == null or $cap.status != "completed")
+                          and .run_id < ($ENV.RUN_ID | tonumber))))') || stop "the jobs of run $id could not be read."
+            [[ -n $found ]] && ! grep -qvxE 'true|false' <<< "$found" || stop "the jobs of run $id could not be read."
+            if grep -qx true <<< "$found"; then count=$((count + 1)); fi
           done <<< "$runs"
           # A failed write would leave the count empty: it stops the run here (the next step refuses an empty count too).
           echo "count=$count" >> "$GITHUB_OUTPUT" || stop "the count could not be written."
@@ -2895,20 +2992,30 @@ jobs:
             # cancelled, say), failed or was cancelled: it decides nothing, so this run holds the item. A trust job not
             # listed yet, still running, or passed may still decide. A run's name gives its task and item: #<n> ends at
             # a space or at the end of the name, and a workflow_run's head maps to its pull request through the open
-            # pull requests.
+            # pull requests. GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count
+            # then says that more match: when it cut the list before it reached this run, a newer run can be one that it
+            # does not list, and nothing is held.
             [[ $TASK =~ ^[a-z]+$ ]] || { echo "::error::not a task: $TASK"; exit 1; }
             same="^$TASK #$NUMBER( |\$)"
             pushed='^review ([0-9a-f]{40}) by '
             heads=""
+            # Before the runs of each page, "= <total_count> <runs on the page> <the oldest run on the page>".
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             newer=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-              -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 --jq '.workflow_runs[]
+              -f created=">=$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" -F per_page=100 \
+              --jq '"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length) \([.workflow_runs[].id] | min // 0)",
+                (.workflow_runs[]
                 | select(.id > ($ENV.RUN_ID | tonumber) and (.event == "workflow_run" or .event == "issues"
                          or .event == "issue_comment" or .event == "workflow_dispatch"))
-                | "\(.id) \(.event) \(.display_title // "" | gsub("[\r\n]"; " "))"') \
+                | "\(.id) \(.event) \(.display_title // "" | gsub("[\r\n]"; " "))")') \
               || { echo "::error::the runs of this workflow could not be read"; exit 1; }
+            awk -v run="$RUN_ID" '$1 == "=" { if ($2 > total) total = $2; listed += $3
+                if ($3 > 0 && (oldest == "" || $4 < oldest)) oldest = $4 }
+              END { exit (listed < total && (oldest == "" || oldest > run)) }' <<< "$newer" \
+              || { echo "::error::GitHub lists at most 1,000 runs of this workflow since a day ago, and the runs that it" \
+                     "does not list can be newer than this run. Nothing is held."; exit 1; }
             while read -r id event title; do
-              [ -n "$id" ] || continue
+              [ -n "$id" ] && [ "$id" != = ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
               if [[ $title =~ $same ]]; then
                 :
@@ -3065,7 +3172,12 @@ jobs:
   #             approval's CI run comes before its review): at the next run when each run that named the head stopped
   #             at its trust job, gave a conflict or was a relabel (a draft, another base, a conflict that went away),
   #             and else once the newest of them ended over an hour ago. After REVIEW_TRIES such reviews that ended
-  #             with no failed sign-in and gave no conflict, the head is not tried again.
+  #             with no failed sign-in and gave no conflict, the head is not tried again. When the newest run of the
+  #             head is a review whose screen passed and whose review job failed at a sign-in, its failed jobs run again
+  #             (POST actions/runs/<id>/rerun-failed-jobs) in the place of a new run, at most once an hour: the screen's
+  #             verdict stands and is paid once, and the hourly caps count that run once. After 50 re-runs of it (its
+  #             run_attempt past 50), or when GitHub refuses the re-run, a new run instead. GitHub re-runs no run made
+  #             over 30 days ago, and this job reads the runs of the last 8 days alone.
   #   relabel   an outside pull request whose value of REPO_PAIRS_IMPORT_PATHS recorded for its head (the newer of the
   #             label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and the output text of the
   #             head's check run repo-pairs/import-approved) is not the value now, or whose head has a review and no
@@ -3086,11 +3198,14 @@ jobs:
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the 15
   # minutes between runs, and a second run would use the hour's screens twice. It reads this workflow's runs of the
-  # last 8 days by their names: the runs by hand one day at a time, as a list with created gives at most 1,000 runs and
-  # the App's retry can start 24 a day for each item, and the runs of workflow_run, issue_comment and issues once each;
-  # never the scheduled runs. It reads the closed pull requests that are not merged in one GraphQL query, with the
+  # last 8 days by their names: the runs by hand one day at a time, as the App's retry can start 24 a day for each item,
+  # and the runs of workflow_run, issue_comment and issues once each. GitHub gives at most 1,000 runs for a list with
+  # created, and its total_count then says that more match: such a list is read again a day at a time, a day an hour
+  # at a time, and a list of one hour that GitHub cut fails this run. It never reads the scheduled runs. It reads the
+  # closed pull requests that are not merged in one GraphQL query, with the
   # newest close of each. It reads the jobs only of the runs that decide an item, the runs that GitHub holds for a
-  # person's approval once for all heads, the head's CI runs only for a catch-up or a review, and the head's check runs
+  # person's approval once for all heads (each head's own when GitHub cut that list at 1,000 runs), the head's CI runs
+  # only for a catch-up or a review (as if one has not finished, when GitHub cut that list), and the head's check runs
   # only for the variable. Oldest reason first, each account gets at
   # most OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose
   # name ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job
@@ -3107,8 +3222,9 @@ jobs:
   # Each reason is a function due_<reason> of the step below, which consider calls for each open item. A failed read
   # or start for one item leaves that item for the next run: the job goes on with the others, and fails at the end.
   # It is the only job of this file whose own token has actions: write, which starting a run needs, and it uses that
-  # right only to start runs: it approves no held run (the post job does, with the OSS Verify App's token, and only that
-  # job holds the App's key). A run that this token starts starts no run of another workflow when it ends, and none
+  # right only to start runs and to run the failed jobs of a review run again (above): it approves no held run (the
+  # post job does, with the OSS Verify App's token, and only that job holds the App's key). A run that this token
+  # starts starts no run of another workflow when it ends, and none
   # needs to: an approval and a reopen start CI with the App's token, in the post job. Its issues and pull-requests:
   # write let it set labels and write hold comments, checks: read lets it read the check runs of a head (the value of
   # REPO_PAIRS_IMPORT_PATHS that the import check recorded), and contents: read checks out main's .github/. It holds no
@@ -3273,16 +3389,54 @@ jobs:
               | startswith("<!-- review-held -->")
                 and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
           }
+          # pages: the start of the --jq filter of a list of runs, which gives, before the rows of each page, the line
+          # "= <total_count> <runs on the page>" that whole reads.
+          pages='"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length)", '
+          # whole: the rows of a list of runs read with pages, from standard input. It fails, with no row, when GitHub
+          # cut the list: GitHub gives at most 1,000 runs for a list with created, event, head_sha or status, the newest
+          # first, and its total_count then says that more runs match.
+          whole() {
+            awk '$1 == "=" { if ($2 > total) total = $2; listed += $3; next } { rows[++n] = $0 }
+              END { if (listed < total) exit 3; for (i = 1; i <= n; i++) print rows[i] }'
+          }
+          # runs_in <event> <created> <filter>: the rows that <filter> (a --jq filter that starts with pages) gives of
+          # this workflow's runs of <event> created in <created>: from the start of a day on (>=<day>T00:00:00Z), on a
+          # day (<day>), or in an hour of a day. A list that GitHub cut is read again one day at a time, and the list of
+          # a day one hour at a time. It fails when GitHub could not say, or when it cut the list of an hour.
+          runs_in() {
+            local out rows day today hour
+            out=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" -f event="$1" \
+              -f created="$2" -F per_page=100 --jq "$3") || return 1
+            if rows=$(whole <<< "$out"); then
+              [ -z "$rows" ] || printf '%s\n' "$rows"
+              return 0
+            fi
+            case $2 in
+              '>='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T00:00:00Z)
+                day=${2:2:10} today=$(date -u +%Y-%m-%d)
+                while [[ ! $day > $today ]]; do
+                  runs_in "$1" "$day" "$3" || return 1
+                  day=$(date -u -d "$day +1 day" +%Y-%m-%d)
+                done ;;
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+                for hour in $(seq -w 0 23); do
+                  runs_in "$1" "${2}T$hour:00:00Z..${2}T$hour:59:59Z" "$3" || return 1
+                done ;;
+              *) echo "::error::GitHub lists at most 1,000 runs of $1 created $2, and more of them match." >&2; return 1 ;;
+            esac
+          }
           # ci_of <head>: the CI runs of <head> of the event pull_request: pending while one of them is queued, in
-          # progress, waiting or held for a person's approval (action_required); else the time when the newest one
-          # ended; nothing when there is none.
+          # progress, waiting or held for a person's approval (action_required), or while GitHub does not list them all
+          # (whole); else the time when the newest one ended; nothing when there is none.
           ci_of() {
+            local out rows
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
-              --jq '.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
+            out=$(SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
+              --jq "$pages"'(.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
                   and .path == ".github/workflows/ci.yml")
-                | if .status == "completed" then .updated_at // "-" else "pending" end' \
-              | sort | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
+                | if .status == "completed" then .updated_at // "-" else "pending" end)') || return 1
+            if ! rows=$(whole <<< "$out"); then echo pending; return 0; fi
+            sort <<< "$rows" | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
           }
           # end of held
           hour=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
@@ -3300,17 +3454,19 @@ jobs:
             pr_of[$sha]=$n pr_head[$n]=$sha pr_base[$n]=$base pr_draft[$n]=$draft pr_repo[$n]=${repository:-0}
           done <<< "$pulls"
           # This workflow's runs of the last 8 days, by their names: the runs by hand one day at a time, the runs of
-          # each event once, and never the scheduled runs. row gives each run on one line: "<id> <created> <ended>
-          # <status> <conclusion> <event> <started> <name>", - for none (ended, for a run that is not completed).
+          # each event in one list from the first of those days, and never the scheduled runs. GitHub gives at most
+          # 1,000 runs for one list with created: a list that it cut is read again one day, then one hour, at a time,
+          # and a list of one hour that it cut stops this run (runs_in). row gives each run on one line: "<id>
+          # <created> <ended> <status> <conclusion> <event> <started> <attempt> <name>", - for none (ended, for a run
+          # that is not completed); attempt is its run_attempt, 1 for its first.
           row='def row: "\(.id) \(.created_at // "-") \(if .status == "completed"
             then (.updated_at // .created_at // "-") else "-" end) \(.status // "-") \(.conclusion // "-") \(.event) \(
-            .run_started_at // .created_at // "-") \(.display_title // "" | gsub("[\r\n]"; " "))";'
+            .run_started_at // .created_at // "-") \(.run_attempt // 1) \(.display_title // "" | gsub("[\r\n]"; " "))";'
           # by_hand <day>: the runs by hand of <day>, as rows.
           by_hand() {
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            DAY=$1 gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-              -f event=workflow_dispatch -f created="$1" -F per_page=100 --jq "$row"' .workflow_runs[]
-                | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row'
+            DAY=$1 runs_in workflow_dispatch "$1" "$row$pages"'(.workflow_runs[]
+              | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row)'
           }
           : > "$seen/listed"
           for back in 7 6 5 4 3 2 1 0; do
@@ -3319,17 +3475,15 @@ jobs:
           done
           for event in workflow_run issue_comment issues; do
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            EVENT=$event FROM="${first}T00:00:00Z" gh api --method GET --paginate \
-              "repos/$REPO/actions/workflows/review.yml/runs" -f event="$event" -f created=">=${first}T00:00:00Z" \
-              -F per_page=100 --jq "$row"' .workflow_runs[]
-                | select(.event == $ENV.EVENT and (.created_at // "") >= $ENV.FROM) | row' \
+            EVENT=$event FROM="${first}T00:00:00Z" runs_in "$event" ">=${first}T00:00:00Z" "$row$pages"'(.workflow_runs[]
+              | select(.event == $ENV.EVENT and (.created_at // "") >= $ENV.FROM) | row)' \
               >> "$seen/listed" || { echo "::error::the runs of the event $event could not be read."; exit 1; }
           done
           # Each run that names an item, in $seen/runs: "<id> <created> <ended> <status> <conclusion> <event> <number>
-          # <task> <head> <comment> <account> <started>", - for none. A name gives its task and its item (run-name):
-          # #<n> ends at a space or at the end of the name, so that #12 is never #123, and a workflow_run's name gives
-          # its head, which the open pull requests map to its pull request. An item with a run that has not finished,
-          # of any task, gets no run (running).
+          # <task> <head> <comment> <account> <started> <attempt>", - for none. A name gives its task and its item
+          # (run-name): #<n> ends at a space or at the end of the name, so that #12 is never #123, and a workflow_run's
+          # name gives its head, which the open pull requests map to its pull request. An item with a run that has not
+          # finished, of any task, gets no run (running).
           named='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel) #([1-9][0-9]*)( at ([0-9a-f]{40}))?( for ([1-9][0-9]*))?( of ([A-Za-z0-9-]+(\[bot\])?))?$'
           pushed='^review ([0-9a-f]{40}) by '
           opened='^review #([1-9][0-9]*)$'
@@ -3337,8 +3491,8 @@ jobs:
           declare -A running=() reached=()
           # take <file>: each run of the rows of <file> that names an item, into $seen/runs.
           take() {
-            local id created ended status conclusion event started title number task head comment account
-            while read -r id created ended status conclusion event started title; do
+            local id created ended status conclusion event started attempt title number task head comment account
+            while read -r id created ended status conclusion event started attempt title; do
               [[ ${id:-} =~ ^[1-9][0-9]*$ ]] || continue
               number="" task="" head=- comment=- account=-
               case $event in
@@ -3361,7 +3515,7 @@ jobs:
               [ -n "$number" ] || continue
               [ "$status" = completed ] || running[$number]=1
               echo "$id $created $ended $status $conclusion $event $number $task $head $comment $account $started" \
-                >> "$seen/runs"
+                "${attempt:--}" >> "$seen/runs"
             done < "$1"
           }
           : > "$seen/runs"
@@ -3379,15 +3533,15 @@ jobs:
               day=$(date -u -d "$day +1 day" +%Y-%m-%d)
             done
           }
-          # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <early>
+          # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <early> <reviewed>
           # <counts>", - for none. signin: a step whose name starts with "Sign in" failed in a job of the run, which so
           # judged nothing. screen: the conclusion of its screen job. post: the conclusion of its post job, signin for
           # one that failed at such a step and failure for one that failed at another (a write of the App, say).
           # settled: its post job approved held runs or recorded the import check run. early: stopped when its trust
           # job stopped it (the job was skipped, or every job after it was), conflict when the comment job alone ran
-          # after it (the task conflict). counts: count when the run counts toward the limit of the account that its
-          # name ends with, as the trust job's earlier counts it (not a run that its trust job refused, nor one whose
-          # screen or review could not sign in), else skip.
+          # after it (the task conflict). reviewed: signin when its review job failed at such a step. counts: count when
+          # the run counts toward the limit of the account that its name ends with, as the trust job's earlier counts it
+          # (not a run that its trust job refused, nor one whose screen or review could not sign in), else skip.
           facts() {
             local file=$seen/jobs-$1
             if [ ! -f "$file" ]; then
@@ -3411,6 +3565,7 @@ jobs:
                   then "stopped"
                   elif [$rest[] | select(.conclusion != "skipped") | .name] == ["comment"] then "conflict"
                   else "-" end),
+                 (if any($rest[] | select(.name | test("^review( |$)")); signed_out) then "signin" else "-" end),
                  (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                   elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
                   then "skip"
@@ -3428,14 +3583,31 @@ jobs:
             access[$1]=$rc
           }
           # held_of: held_list, "<head> <created>" of each run of the event pull_request that GitHub holds for a
-          # person's approval (status action_required), read once in this run.
-          held_list="" held_read=""
+          # person's approval (status action_required), read once in this run. GitHub lists at most 1,000 of them, the
+          # newest first: when it cut the list, held_list is empty and held_cut is set, and held_at reads the runs of
+          # each head.
+          held_list="" held_read="" held_cut=""
           held_of() {
+            local out
             [ -z "$held_read" ] || return 0
-            held_list=$(gh api --method GET --paginate "repos/$REPO/actions/runs" -f status=action_required \
-              -f event=pull_request -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required"
-                and .event == "pull_request") | "\(.head_sha) \(.created_at // "-")"') || return 1
+            out=$(gh api --method GET --paginate "repos/$REPO/actions/runs" -f status=action_required \
+              -f event=pull_request -F per_page=100 --jq "$pages"'(.workflow_runs[] | select(.status == "action_required"
+                and .event == "pull_request") | "\(.head_sha) \(.created_at // "-")")') || return 1
+            held_list=$(whole <<< "$out") || held_cut=1
             held_read=1
+          }
+          # held_at <head>: after held_of, when each run of <head> that GitHub holds was made, one on each line. When
+          # GitHub cut the list of the runs of every head, the runs of <head> alone are read: the newest come first, so
+          # that list gives whether <head> has one and when the newest was made, cut or not.
+          held_at() {
+            if [ -z "$held_cut" ]; then
+              awk -v h="$1" '$1 == h { print $2 }' <<< "$held_list"
+              return 0
+            fi
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -f status=action_required \
+              -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required" and .head_sha == $ENV.SHA
+                and .event == "pull_request") | .created_at // "-"'
           }
           # pace <login>: used[<login>], the runs of the last hour whose names end with " of <login>" and that count
           # toward its limit (facts), with the runs that this job started for it in this run.
@@ -3752,7 +3924,7 @@ jobs:
           due_approve() {
             local list n last created ended run f screen post tries
             held_of || { echo "::error::the runs of $head could not be read."; return 1; }
-            list=$(awk -v h="$head" '$1 == h { print $2 }' <<< "$held_list")
+            list=$(held_at "$head") || { echo "::error::the runs of $head could not be read."; return 1; }
             n=$(grep -c . <<< "$list" || true)
             (( n > 0 )) || return 0
             last=$(sort <<< "$list" | tail -n 1)
@@ -3915,12 +4087,37 @@ jobs:
             ci_over || return 0
             owe "$ci" catchup "" "$head" - "no run met $head, and its CI run ended at $ci"
           }
+          # rerun <run> <facts>: when the screen of <run> passed and its review job then failed at a step whose name
+          # starts with "Sign in" (its facts), the failed jobs of <run> run again (rerun-failed-jobs, which this job's
+          # actions: write allows): the screen's verdict stands and is paid once, and the review job's Count step counts
+          # the run once. Its caller asks only once the run ended over an hour ago, so a run runs again at most once an
+          # hour. It fails, and the caller starts a new run, for any other run, for a run at its attempt 51 (50 re-runs,
+          # which GitHub allows no more of), and when GitHub refuses the re-run, which stops nothing else of this run.
+          # GitHub re-runs no run made over 30 days ago, and this job reads only the runs of the last 8 days. Else taken
+          # holds the head for this run.
+          rerun() {
+            local screen reviewed attempt
+            read -r _ screen _ _ _ reviewed _ <<< "$2"
+            [ "$screen" = success ] && [ "$reviewed" = signin ] || return 1
+            attempt=$(awk -v r="$1" '$1 == r { print $13; exit }' "$seen/runs")
+            if [[ ! $attempt =~ ^[1-9][0-9]*$ ]] || (( attempt > 50 )); then
+              echo "#$number: run $1 is at attempt ${attempt:-none}, past 50 re-runs: a new run instead."
+              return 1
+            fi
+            if ! gh api --method POST "repos/$REPO/actions/runs/$1/rerun-failed-jobs" > /dev/null; then
+              echo "::warning::#$number: GitHub refused to run the failed jobs of run $1 again: a new run instead."
+              return 1
+            fi
+            echo "#$number: the screen of run $1 passed and its review could not sign in: its failed jobs run again."
+            taken=1
+          }
           # due_old: the review of the head of an outside pull request whose review is in the form of before the move
           # off pull_request_target, and none of now, under the CI conditions of the catch-up: a review run of that
           # head, which reviews it from the API and closes and reopens nothing. Once for each head, and again an hour
-          # after each run of it that ended at a failed sign-in. A hold that is tried again leaves it to that hold.
+          # after each run of it that ended at a failed sign-in: the failed jobs of that run when its screen passed and
+          # its review could not sign in (rerun), else a new run. A hold that is tried again leaves it to that hold.
           due_old() {
-            local created ended run f last=""
+            local created ended run f last="" latest="" known=""
             [ "$review" = old ] && [ -z "$retaken" ] || return 0
             ci_head || return 1
             ci_over || return 0
@@ -3931,12 +4128,13 @@ jobs:
                 echo "#$number: run $run took the review of $head."
                 return 0
               fi
-              last=$ended
+              last=$ended latest=$run known=$f
             done < <(runs_of review "$head" workflow_dispatch)
             if [ -n "$last" ] && [[ ! $last < $hour ]]; then
               echo "#$number: the review run of $head could not sign in, less than an hour ago: tried again later."
               return 0
             fi
+            if [ -n "$latest" ] && rerun "$latest" "$known"; then return 0; fi
             owe "$ci" review "$limited" "$head" - "the review of $head is in the form of before"
           }
           # due_unreviewed: the review of the head of an open pull request into main, a writer's too, that a run of
@@ -3944,11 +4142,13 @@ jobs:
           # the head still to finish (the review of an approval's CI run comes first). At the next run when each run
           # that named the head stopped at its trust job, gave the task conflict, or was a relabel (a draft marked
           # ready, a base changed to main, a conflict that went away); else once the newest of them ended over an hour
-          # ago, as for a run that could not sign in. Not when the post job of that newest run failed: the App's retry
+          # ago, as for a run that could not sign in: the failed jobs of that run when its screen passed and its review
+          # could not sign in (rerun), else a new run. Not when the post job of that newest run failed: the App's retry
           # takes it. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
           # conflict, the head is not tried again (head_stopped).
           due_unreviewed() {
             local list created ended run task event f signin post early all=true newest="" last="" tries=0
+            local latest="" known=""
             [ -z "$retaken" ] || return 0
             list=$(awk -v n="$number" -v h="$head" '$7 == n && $9 == h { print $2, $3, $1, $8, $6 }' "$seen/runs" \
               | sort)
@@ -3971,7 +4171,7 @@ jobs:
             while read -r created ended run task event; do
               f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
               read -r signin _ post _ early _ <<< "$f"
-              newest=$ended last=$post
+              newest=$ended last=$post latest=$run known=$f
               [[ $early == stopped || $early == conflict || $task == relabel ]] || all=false
               if [[ $task == review && $event == workflow_dispatch && $signin != signin && $early != conflict ]]; then
                 tries=$((tries + 1))
@@ -3989,6 +4189,7 @@ jobs:
               echo "#$number: the newest run of $head ended at $newest with no review, less than an hour ago."
               return 0
             fi
+            rerun "$latest" "$known" && return 0
             owe "$newest" review "$limited" "$head" - "the runs of $head ended with no review"
           }
           # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside

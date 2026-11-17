@@ -2,14 +2,16 @@
 """Tests of .github/workflows/review.yml.
 
 Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail), against a stand-in gh that answers
-from files: which task and route a run gets (a CI run's workflow_run, an issue, an author's comment, a run by hand,
-the rescreen job's run), the hourly limit of an account without write access, which comments and reviews the review
-reads, what the posted comment can notify or link, what a held pull request or issue is told, that a run whose
-sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, how one held for a
-reason not its own is taken again as the task of its hold, and which other runs the schedule starts (an answer that
-waits, a draft, an approval of held runs, the App's writes again: the rescreen job, and the trust job's check of its
-run), and the state label and the label comment that each of those gives (.github/review/rules.py, whose rule is also
-tested on its own). The review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which
+from files: which task and route a run gets (a CI run's workflow_run, by the pull requests into main that it names or
+by its head, an issue, an author's comment, a run by hand, the rescreen job's run), the hourly limit of an account
+without write access and the hourly caps, also when GitHub cuts a list of runs at 1,000, which comments and reviews
+the review reads, what the posted comment can notify or link, what a held pull request or issue is told, that a run
+whose sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, how one held
+for a reason not its own is taken again as the task of its hold, and which other runs the schedule starts (an answer
+that waits, a draft, an approval of held runs, the App's writes again, the failed jobs of a screened review that could
+not sign in: the rescreen job, and the trust job's check of its run), and the state label and the label comment that
+each of those gives (.github/review/rules.py, whose rule is also tested on its own). The review job's two sign-ins to
+Anthropic and its fresh reader (.github/review/trim.py), which
 trims the review and adds back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so
 does the soundness rule of an outside pull request's proof (.github/review/rules.py soundness), on a pull request that
 the gather job's step reads from git. The draft of the reply to an outside issue becomes a file of the runner's
@@ -62,6 +64,7 @@ RUN = "https://github.com/acme/model/actions/runs/1"
 HEAD = "ab" * 20            # a pull request's head commit
 OTHER_HEAD = "cd" * 20      # another commit
 FORK_ID = 555               # the id of the head repository of that pull request
+REPO_ID = 444               # the id of REPO
 BRANCH = "patch-1"          # its head branch in that repository
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
 MINT_A = "Sign in as the OSS Verify App"
@@ -381,10 +384,11 @@ class Runner(unittest.TestCase):
         os.chmod(os.path.join(bin_dir, "gh"), 0o755)
         self.output = os.path.join(self.dir, "output")
         self.env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
-        # A run of this workflow on main, as GitHub sets GITHUB_REF for each of its events there.
+        # A run of this workflow on main of REPO, as GitHub sets GITHUB_REF and GITHUB_REPOSITORY_ID for each of its
+        # events there.
         self.env.update(PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH=self.api, REPO=REPO, APPS=APPS,
                         GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output,
-                        GITHUB_REF="refs/heads/main")
+                        GITHUB_REF="refs/heads/main", GITHUB_REPOSITORY_ID=str(REPO_ID))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -453,9 +457,10 @@ class Runner(unittest.TestCase):
              "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}} for p in prs])
 
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
-                  head_repository="", title=None, reply=""):
+                  head_repository="", title=None, reply="", pulls=None):
         """The trust step, with the event and the inputs as GitHub gives them. A run by hand has run 100's name:
-        the one run-name gives its inputs, or title."""
+        the one run-name gives its inputs, or title. pulls: the pull requests that a CI run names
+        (workflow_run.pull_requests; named_pr), None for an event that names none."""
         if event == "workflow_dispatch":
             if title is None:
                 title = run_name(**{"github.event_name": event, "inputs.task": task or "review",
@@ -466,6 +471,7 @@ class Runner(unittest.TestCase):
         return self.run_script(step("trust", TRUST)["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
                                TASK=task, SCREEN=screen, ACCOUNT=account, COMMENT=comment, HEAD=head,
                                HEAD_REPOSITORY=head_repository, REPLY=reply, RUN_ID="100",
+                               PULLS="" if pulls is None else json.dumps(pulls),
                                OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
                                HELD_LABEL=WF["env"]["HELD_LABEL"])
 
@@ -510,6 +516,14 @@ class Runner(unittest.TestCase):
         self.git("add", "-A", cwd=src)
         self.git("commit", "-q", "-m", message, cwd=src)
         return self.git("rev-parse", "HEAD", cwd=src)
+
+
+def named_pr(number, base="main", repository=REPO_ID):
+    """A pull request of HEAD on BRANCH of REPO into base of the repository repository, as GitHub names it in a CI
+    run's workflow_run.pull_requests."""
+    return {"id": 9000 + number, "number": number, "url": f"https://api.github.com/repos/{REPO}/pulls/{number}",
+            "head": {"ref": BRANCH, "sha": HEAD, "repo": {"id": REPO_ID, "name": "model"}},
+            "base": {"ref": base, "sha": OTHER_HEAD, "repo": {"id": repository, "name": "model"}}}
 
 
 class TrustTest(Runner):
@@ -613,6 +627,49 @@ class TrustTest(Runner):
             with self.subTest(case=case):
                 rc, out, got = run(*prs)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
+
+    def test_a_ci_run_of_a_pull_request_of_this_repository_is_the_one_into_main_that_it_names(self):
+        """Decision 1: GitHub names the pull requests of a CI run of a pull request of this repository
+        (workflow_run.pull_requests). The run is the one of them into main of this repository, not another open pull
+        request into main with the same head, nor one into main of another repository that GitHub names too. Its
+        author, its draft state and its head come from the API, and the open pull requests are not read."""
+        self.permissions(alice="write", mallory="read")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        self.serve_prs((8, "alice", HEAD, REPO_ID))
+        for author, actor, route, outsider in (("mallory", "mallory", "screen", "mallory"),
+                                               ("alice", "alice", "review", "")):
+            with self.subTest(author=author):
+                self.serve_item(7, author, kind="pr", head=HEAD, repository=REPO_ID)
+                self.forget()
+                rc, out, got = self.run_trust("workflow_run", actor=actor, number="", head=HEAD,
+                                              head_repository=str(REPO_ID), pulls=[named_pr(3, repository=999),
+                                                                                   named_pr(7)])
+                self.assertEqual((rc, got.get("number"), got.get("task"), got.get("route"), got.get("outsider"),
+                                  got.get("head")), (0, "7", "review", route, outsider, HEAD), out)
+                self.assertNotIn(f"repos/{REPO}/pulls", self.calls())
+
+    def test_a_ci_run_of_a_pull_request_into_another_branch_starts_no_review(self):
+        """Decision 1: a CI run whose pull requests are all into another branch, or into main of another repository,
+        starts no review, so no job after the trust job runs and it counts toward no cap: not even a review of alice's
+        open pull request into main with the same head, which would count toward HOURLY_CAP. A CI run that names a
+        pull request into main that is closed now, a draft, into another base now, or whose head moved on, starts none
+        either."""
+        self.permissions(alice="write", mallory="read")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        self.serve_prs((7, "alice", HEAD, REPO_ID))
+        for case, pulls, now in (("into another branch", [named_pr(9, base="dev")], {}),
+                                 ("into main of another repository", [named_pr(9, repository=999)], {}),
+                                 ("closed now", [named_pr(7)], {"state": "closed"}),
+                                 ("a draft", [named_pr(7)], {"draft": True}),
+                                 ("into another base now", [named_pr(7)], {"base": "dev"}),
+                                 ("its head moved on", [named_pr(7)], {"head": OTHER_HEAD})):
+            for actor in ("alice", "mallory"):
+                with self.subTest(case=case, actor=actor):
+                    self.serve_item(7, "alice", kind="pr", repository=REPO_ID, **dict({"head": HEAD}, **now))
+                    rc, out, got = self.run_trust("workflow_run", actor=actor, number="", head=HEAD,
+                                                  head_repository=str(REPO_ID), pulls=pulls)
+                    self.assertEqual((rc, got.get("route")), (0, None), out)
+                    self.assertEqual(ran_jobs(run_graph(got)) - {"trust"}, set())
 
     def test_an_authors_comment_gets_an_answer(self):
         """issue_comment: the task answer, when the item is open, its author has no write access and, on an issue, its
@@ -1648,6 +1705,61 @@ class LimitTest(Runner):
                                        HELD_LABEL=WF["env"]["HELD_LABEL"])
         self.assertNotEqual((rc, got.get("route")), (0, "screen"), out)
 
+    def test_a_list_of_1000_runs_that_github_gives_whole_is_counted_as_it_is(self):
+        """The boundary of the case above: 1,000 runs that total_count says are all the runs that match are the whole
+        list, and none of them counts, so the account is under its limit."""
+        listed = [{"id": 5000 - i, "actor": {"login": "mallory"}, "event": "issue_comment", "conclusion": "skipped",
+                   "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
+        endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
+        for n in range(10):
+            with open(endpoint + (".json" if n == 0 else f".{n + 1}.json"), "w") as f:
+                json.dump({"total_count": 1000, "workflow_runs": listed[n * 100:(n + 1) * 100]}, f)
+        rc, out, got = self.run_script(step("trust", TRUST)["run"], EVENT="issues", AUTHOR="mallory", ACTOR="mallory",
+                                       NUMBER="7", TASK="", SCREEN="", ACCOUNT="", COMMENT="", HEAD="",
+                                       HEAD_REPOSITORY="", REPLY="", RUN_ID="6000",
+                                       OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                       HELD_LABEL=WF["env"]["HELD_LABEL"])
+        self.assertEqual((rc, got.get("route")), (0, "screen"), out)
+
+    def test_each_run_is_read_once_and_counts_once_and_no_run_is_read_past_the_limit(self):
+        """Decision 3: the trust job reads the jobs of each run once, and stops reading when the account is at its
+        limit, so the reads of one run grow with the account's runs of the hour and no more. Two pages can list one run
+        (a run made between the reads of two pages moves the rest down a page): it is read and counted once. 3 *
+        OUTSIDE_HOURLY_LIMIT runs of mallory that could not sign in, each listed twice, cost one read each and leave
+        her under her limit; OUTSIDE_HOURLY_LIMIT - 1 runs that count, each listed twice, leave her under it; and of 3 *
+        OUTSIDE_HOURLY_LIMIT runs that count, only the newest OUTSIDE_HOURLY_LIMIT are read."""
+        signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
+
+        def read(runs):
+            return [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs]
+        many = [(90 - i, "mallory", "issue_comment", "success") for i in range(3 * self.LIMIT)]
+        for case, listed, jobs, want, reads in (
+                ("could not sign in, twice", many + many, {r[0]: signed_out for r in many}, "screen", read(many)),
+                ("count, twice", many[:self.LIMIT - 1] * 2, None, "screen", read(many[:self.LIMIT - 1])),
+                ("count", many, None, "limit", read(many[:self.LIMIT]))):
+            with self.subTest(case=case):
+                self.runs(*listed, jobs=jobs)
+                self.forget()
+                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], reads)
+
+    def test_a_forks_pull_request_into_another_branch_starts_only_its_authors_review_into_main_on_her_limit(self):
+        """Decision 1: GitHub names no pull request in a CI run of a fork's pull request (CI run 40554405841 of #23),
+        so the trust job takes the one open pull request into main whose head is the CI run's head, from its head
+        repository. A CI run of mallory's pull request #8 into dev, whose head her pull request #7 into main also has,
+        starts the review of #7 alone: screened, and counted toward mallory's limit with her other runs."""
+        self.serve_prs((8, "mallory", HEAD, FORK_ID, False, "dev"), (7, "mallory", HEAD), (9, "eve", OTHER_HEAD))
+
+        def route():
+            rc, out, got = self.run_trust("workflow_run", actor="mallory", number="", head=HEAD,
+                                          head_repository=str(FORK_ID), pulls=[])
+            self.assertEqual(rc, 0, out)
+            return got.get("number"), got.get("route"), got.get("outsider")
+        self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT - 1)])
+        self.assertEqual(route(), ("7", "screen", "mallory"))
+        self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
+        self.assertEqual(route(), ("7", "limit", "mallory"))
+
     def test_a_maintainers_re_run_still_counts(self):
         """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
@@ -1899,7 +2011,7 @@ class Holding(Runner):
 
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
                  uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
-                 labels=("review-held",), comment="", head=""):
+                 labels=("review-held",), comment="", head="", total=None):
         """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
         capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
         before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
@@ -1925,7 +2037,8 @@ class Holding(Runner):
         if jobs is not False:
             self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": jobs})
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
-            {"id": r[0], "display_title": r[1], "event": r[3] if len(r) > 3 else "issues"} for r in runs]})
+            {"id": r[0], "display_title": r[1], "event": r[3] if len(r) > 3 else "issues"} for r in runs],
+            **({} if total is None else {"total_count": total})})
         for r in runs:
             trust = r[2] if len(r) > 2 else "success"
             self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
@@ -2173,6 +2286,22 @@ class HoldTest(Holding):
                                         runs=[(101, "review #123"),
                                               (102, f"review #123 at {HEAD} of mallory", "success", "workflow_dispatch"),
                                               (103, "review #1234")])
+        self.assertIn("<!-- review-held-transient 50 1 -->", body)
+
+    def test_a_list_of_runs_that_github_cut_before_this_run_holds_nothing(self):
+        """GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count then says that
+        more match. A review that a newer run cancelled is held only when no newer run of its item and task decides:
+        when the list is cut before it reaches this run, a run that it leaves out can be that newer run, so the hold
+        job holds nothing and fails. When the cut list reaches this run, every newer run is in it, and the review is
+        held as one that did not finish."""
+        rc, out, posts, _ = self.run_hold("screen", review="cancelled", origin="50", total=2000,
+                                          runs=[(101 + i, "review #70") for i in range(5)])
+        self.assertEqual((rc, posts, writes(self.api)), (1, [], []), out)
+        self.assertIn("the runs that it does not list can be newer than this run", out)
+        self.tearDown()
+        self.setUp()
+        _calls, _post, body = self.hold("screen", review="cancelled", origin="50", total=2000,
+                                        runs=[(101, "review #70"), (90, "review #7")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
     def test_a_screen_that_could_not_sign_in_gives_no_verdict_and_holds_nothing(self):
@@ -2934,6 +3063,36 @@ class CapTest(Runner):
             rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"],
                                          **self.step_env(name, "screen"))
         self.assertNotEqual(rc, 0, out)
+
+    def test_a_run_counts_once_whatever_its_attempts_and_this_runs_own_attempts_never_count(self):
+        """Decision 2: the schedule runs again the failed jobs of a run whose screen passed and whose review could not
+        sign in, and the cap counts that run once. The jobs of a run list its review job of each attempt (filter=all):
+        here attempt 1 called the model and failed at the fresh reader's sign-in, and attempt 2 called it again. Each
+        such run counts once, so SCREENED_HOURLY_CAP - 1 of them leave room for this run, and SCREENED_HOURLY_CAP hold
+        it. A run that two pages list counts once, and this run's own earlier attempt counts for nothing."""
+        cap = int(WF["env"]["SCREENED_HOURLY_CAP"])
+
+        def attempt(run, number, failed=None):
+            return dict(attempt_job("review", failed, name="review (screened)"), run_id=run, run_attempt=number,
+                        started_at="2099-01-01T00:00:00Z")
+        for n, want in ((cap - 1, 0), (cap, 1)):
+            with self.subTest(runs=n):
+                runs = [100] + [10 + i for i in range(n)] + [10]
+                self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+                    {"id": r, "created_at": "2099-01-01T00:00:00Z", "event": "issue_comment"} for r in runs]})
+                self.serve(f"repos/{REPO}/actions/runs/100/jobs", {"jobs": [attempt(100, 1)]})
+                for i in range(n):
+                    self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": [
+                        attempt(10 + i, 1, "Sign in to Anthropic for the fresh reader"), attempt(10 + i, 2)]})
+                rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100",
+                                               **self.step_env(self.COUNT, "screen"))
+                self.assertEqual((rc, got.get("count")), (0, str(n)), out)
+                for name in (self.CHECK, self.CAP):
+                    rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"],
+                                                 **self.step_env(name, "screen"))
+                    if rc != 0:
+                        break
+                self.assertEqual(rc, want, out)
 
 
 class BunTest(Runner):
@@ -5863,14 +6022,15 @@ class Scheduled(Held):
                               "updated_at": ago(ended or 0)})
         self.publish()
 
-    def ran(self, run, title, made, ended=None, event="workflow_dispatch", status="completed", jobs=()):
+    def ran(self, run, title, made, ended=None, event="workflow_dispatch", status="completed", jobs=(), attempt=None):
         """A run of this workflow made that many minutes ago, and ended 5 minutes later unless ended says when, with
-        its trust job and jobs."""
+        its trust job and jobs, at its attempt attempt (run_attempt) when given."""
         self.listed_runs.append({
             "id": run, "event": event, "display_title": title, "status": status,
             "conclusion": "success" if status == "completed" else None, "created_at": ago(made),
             "updated_at": ago(made - 5 if ended is None else ended),
-            "actor": {"login": BOT if event == "workflow_dispatch" else "mallory"}})
+            "actor": {"login": BOT if event == "workflow_dispatch" else "mallory"},
+            **({} if attempt is None else {"run_attempt": attempt})})
         self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"jobs": [attempt_job("trust"), *jobs]})
         self.publish()
 
@@ -6498,6 +6658,50 @@ class ScheduleTest(Scheduled):
                                 if f.get("event") != "workflow_dispatch"),
                          [(event, f">={days[0]}T00:00:00Z") for event in ("issue_comment", "issues", "workflow_run")])
 
+    def test_a_list_of_runs_that_github_cuts_at_1000_is_read_again_an_hour_at_a_time_or_starts_nothing(self):
+        """GitHub gives at most 1,000 runs for one list with created, and total_count then says that more match. A list
+        of the runs by hand of a day that GitHub cuts is read again for each hour of that day, and the schedule goes on
+        with what those lists give: here the catch-up of a head that no run met. When GitHub cuts the list of an hour
+        too, the schedule cannot tell which runs met an item: it starts nothing, writes nothing, and fails."""
+        day = str(datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=7))
+        hours = [f"{day}T{h:02d}:00:00Z..{day}T{h:02d}:59:59Z" for h in range(24)]
+        runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
+        for case, then, want in (("an hour at a time", {"workflow_runs": []}, (0, [("7", "catchup", "", HEAD, "")])),
+                                 ("cut at an hour", None, (1, []))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.ci(ended=90)
+                self.serve(runs, {"total_count": 1001, "workflow_runs": []})
+                if then is not None:
+                    self.serve(f"{runs}.then", then)
+                rc, out, started = self.started()
+                self.assertEqual((rc, started), want, out)
+                created = [dict(c[i + 1].split("=", 1) for i, a in enumerate(c) if a == "-f")["created"]
+                           for c in gh_calls(self.api) if runs in c]
+                if then is not None:
+                    self.assertEqual(created[:25], [day] + hours)
+                else:
+                    self.assertEqual(created, [day, hours[0]])
+                    self.assertEqual(writes(self.api), [])
+                    self.assertIn(f"GitHub lists at most 1,000 runs of workflow_dispatch created {hours[0]}", out)
+
+    def test_a_held_head_that_githubs_cut_list_of_held_runs_leaves_out_still_gets_its_approval(self):
+        """GitHub gives at most 1,000 runs for a list with status, the newest first. When it cuts the list of the runs
+        that it holds for every head, the schedule reads the held runs of the head itself, so a head whose held runs
+        that list leaves out still gets its approve run."""
+        self.item(kind="pr")
+        # GitHub's held runs of the head (held_runs), which the list of every head's held runs leaves out: 1,000 runs
+        # of other heads, of 1,500 that match. The runs of the head itself, read after that list, are its own.
+        self.held_runs(made=300)
+        others = [{"id": 1000 + i, "status": "action_required", "event": "pull_request", "head_sha": OTHER_HEAD,
+                   "path": ".github/workflows/ci.yml", "created_at": ago(10)} for i in range(100)]
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1500, "workflow_runs": others})
+        self.serve(f"repos/{REPO}/actions/runs.then", {"total_count": 2, "workflow_runs": self.of_heads})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+
 
 # The post job's step that closes and reopens a pull request for a catch-up.
 CATCH_UP = "Close and reopen the pull request"
@@ -6641,6 +6845,31 @@ class CatchUpScheduleTest(Scheduled):
                 self.ran(10, f"review #7 at {HEAD} of mallory", made=ended + 10, ended=ended, jobs=jobs)
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
+
+    def test_a_review_of_a_head_with_a_review_of_before_whose_review_could_not_sign_in_runs_again(self):
+        """Decision 2 ((b)): the review run of a head with a review of before screened it, and its review job failed at
+        "Sign in to Anthropic". An hour after that run ended, the schedule runs its failed jobs again, in the place of a
+        new review run, so the screen's verdict stands."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        self.item(kind="pr", comments=[self.OLD_REVIEW])
+        self.ci(ended=300)
+        self.serve(rerun, {})
+        self.ran(10, f"review #7 at {HEAD} of mallory", made=71, ended=61,
+                 jobs=[attempt_job("gather"), self.screened(),
+                       attempt_job("review", "Sign in to Anthropic", name="review (screened)")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], [["--method", "POST", rerun]]), out)
+
+    def test_a_head_whose_ci_runs_github_does_not_list_whole_gets_no_catch_up(self):
+        """GitHub gives at most 1,000 runs for a list with head_sha, and total_count then says that more match. When it
+        cuts the list of the head's runs, a CI run that it leaves out can be one that has not finished: no catch-up, as
+        for a CI run in progress."""
+        self.item(kind="pr")
+        self.ci(ended=90)
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1001, "workflow_runs": self.of_heads})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn(f"#7: a CI run of {HEAD} has not finished", out)
 
 
 class LeftClosedTest(Scheduled):
@@ -6854,6 +7083,62 @@ class HeadScheduleTest(Scheduled):
                     self.assertEqual((rc, runs), (0, want), out)
             got = self.dispatched("review", account=account)
             self.assertEqual((got["task"], got["route"], got["head"]), ("review", route, HEAD))
+
+    def test_a_review_whose_screen_passed_and_whose_review_could_not_sign_in_runs_its_failed_jobs_again(self):
+        """Decision 2 ((c)): the run of the head's CI run screened it, and its review job failed at a sign-in, before
+        the model ("Sign in to Anthropic") or after it (the fresh reader's). An hour after that run ended, and not
+        before, the schedule runs the failed jobs of that run again (rerun-failed-jobs) in the place of a new review
+        run, so the screen's verdict stands and is paid once: also when it ran again before and ended at a failed
+        sign-in again. While it runs again, nothing more is started."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        for failed in ("Sign in to Anthropic", "Sign in to Anthropic for the fresh reader"):
+            jobs = [attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+                    attempt_job("review", failed, name="review (screened)")]
+            for ended, attempt, want in ((30, 1, []), (61, 1, [["--method", "POST", rerun]]),
+                                         (61, 2, [["--method", "POST", rerun]])):
+                with self.subTest(failed=failed, ended=ended, attempt=attempt):
+                    self.tearDown()
+                    self.setUp()
+                    self.item(kind="pr")
+                    self.ci(ended=ended + 45)
+                    self.serve(rerun, {})
+                    self.ran(10, f"review {HEAD} by mallory", made=ended + 40, ended=ended, event="workflow_run",
+                             jobs=jobs, attempt=attempt)
+                    rc, out, runs = self.started()
+                    self.assertEqual((rc, runs, writes(self.api)), (0, [], want), out)
+        self.listed_runs.clear()
+        self.ran(10, f"review {HEAD} by mallory", made=101, event="workflow_run", status="in_progress", attempt=3)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
+        self.assertIn("#7: a run of it has not finished", out)
+
+    def test_a_review_past_50_re_runs_or_whose_re_run_github_refuses_gets_a_new_review_run(self):
+        """Decision 2: GitHub runs a run again at most 50 times. A run at its attempt 51 gets a new review run of its
+        head instead, and so does one whose re-run GitHub refuses (an API error): the schedule goes on with the other
+        items, starts their runs, and does not fail for it. A run at its attempt 50 still runs again. The trust job
+        takes the new review run."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        review, draft = ("7", "review", "mallory", HEAD, ""), ("8", "draft", "mallory", "", "")
+        for case, attempt, served, want, posts in (("attempt 50", 50, True, [draft], 1),
+                                                   ("attempt 51", 51, True, [review, draft], 0),
+                                                   ("refused", 1, False, [review, draft], 1)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.item(8)
+                self.ci(ended=300)
+                if served:
+                    self.serve(rerun, {})
+                self.ran(10, f"review {HEAD} by mallory", made=100, ended=61, event="workflow_run", attempt=attempt,
+                         jobs=[attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+                               attempt_job("review", "Sign in to Anthropic", name="review (screened)")])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, sorted(runs)), (0, want), out)
+                self.assertEqual(writes(self.api).count(["--method", "POST", rerun]), posts)
+                if not served:
+                    self.assertIn("::warning::#7: GitHub refused to run the failed jobs of run 10 again", out)
+        self.assertEqual(self.dispatched("review", account="mallory")["route"], "screen")
 
     def test_a_draft_marked_ready_and_a_base_changed_to_main_get_a_review_at_the_next_run(self):
         """The trust job stopped the run of the head's CI run (a draft, or another base): no review while it is so,
