@@ -7,6 +7,10 @@ labels").
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
+    python3 .github/review/rules.py import-check <files.jsonl> <changed files> <head> <screen> <verdict> <hold>
+        <request.json> [<import paths>]
+    python3 .github/review/rules.py import-marker <head> [<import paths>]
+    python3 .github/review/rules.py verdict <number> <head>
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
@@ -18,7 +22,10 @@ marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps eac
 and a marker=<line> of the same kind takes the place of that line. It holds <!-- review-conflict-state <head> -->
 while it gives the head waits-on-author for a merge conflict, and loses that line with any other state. With no state
 label, an item that has a label comment gets the text that the workflow works on the item, and an item that has none
-gets none. GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+gets none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or person, the text
+also names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths,
+the text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
+(import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
 make-label: makes the label <name> of LABELS with its colour and description. When it is there (HTTP 422), it sets the
 description. A failure only warns: adding a label that does not exist makes it, with no description.
@@ -50,6 +57,30 @@ suggestions: the fix of <fix.json> ({summary, suggestions}, .github/review-answe
 suggestions whose lines are right-side lines of one hunk of <pr.diff>, as JSON on standard output. Each other
 suggestion becomes a sentence of the summary that names its file and lines: a suggested change can change only a line
 that the diff shows. The status is 2 when <fix.json> is not such a fix.
+
+import-check: the decision of R12 on the head <head> of an outside pull request (import_decision), on standard output:
+record, or the first rule that does not hold. <files.jsonl> holds the files of the pull request at <head> as the API
+lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line, and <changed files> is
+the pull request's changed_files. <screen> is true when the screen passed the head, <verdict> is the review's verdict
+after the soundness rule, and <hold> is SOUNDNESS_HOLD. <import paths> is the text of the variable
+REPO_PAIRS_IMPORT_PATHS, one glob of the import on each line, given only when the variable is set: with none, the
+import is not live. The check run repo-pairs/import-approved is recorded only when the screen passed, the verdict is
+pass, no changed path (of a file, or the path it had before a rename) is a steering file (under .github/), with the
+variable each changed path matches one of its globs by the import's glob rules (glob_match), the list holds each
+changed file (GitHub lists at most 3,000), and, while the hold lasts, each changed path ends with .md. Then
+<request.json> gets the body of the request that records it (check_run, for POST repos/<repo>/check-runs), whose
+output text is the marker line of import-marker. The status is 2 when an argument is not one of these, or when the
+import's glob rules refuse a glob of the variable.
+
+import-marker: the marker line <!-- repo-pairs-import-paths <head>: <value> --> of R12, which the output text of the
+check run and each label comment of an outside pull request hold (import_marker): <value> is <import paths> as one
+JSON string, or null when it is not given. The JSON writes each character outside ASCII, <, > and & as a \\u escape,
+so that the line holds no line break and no --> before its end.
+
+verdict: the review's verdict at <head> of the pull request <number>, from the marker
+<!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment of github-actions[bot] that names <head>
+(review_verdict): <verdict>, or <verdict> will-fix, on standard output, and an empty line when no review comment names
+<head>.
 
 The standard library of Python 3 alone.
 """
@@ -107,8 +138,41 @@ FACTS = {
     "left_closed": False,
     # The post job recorded the import check run at the head (R12).
     "recorded": False,
+    # The text of the variable REPO_PAIRS_IMPORT_PATHS, the import's globs, one on each line (R12). None when the
+    # variable is not set: then the import is not live.
+    "import_paths": None,
+    # The post job's decision on the import check run at the head, one of DECISIONS.
+    "decision": "",
 }
 VERDICTS = ("", "pass", "blocking", "person")
+# The post job's decisions on the import check run at a head (import_decision): record, or the first rule of R12 that
+# does not hold, or moved when the pull request moved on from the head. Empty when the job gave none.
+DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved")
+
+# The texts of R12 for an outside pull request that the screen and the review passed (import_steps). With no variable
+# REPO_PAIRS_IMPORT_PATHS, the workflow cannot tell whether the import does not run yet, a move is under way or the
+# import is paused, so the comment names each step that can come next. With the variable, it names the step for the
+# paths that the pull request changes.
+PASSED = "The automated screen and the automated review passed this pull request."
+MERGE_STEPS = (
+    "- Sami merges the pull request on this repository, while the rules of this repository allow a merge.\n"
+    "- Else, once the import into the internal repository runs, Sami approves the head commit for the import.\n"
+    "- Else, once the import runs, Sami copies the change into the internal repository by hand, if the pull "
+    "request changes a path that the import does not take.")
+IMPORT_STEPS = (
+    "- Sami approves the head commit for the import into the internal repository, if the import takes each path "
+    "that the pull request changes.\n"
+    "- Else, Sami or another member of Theorem copies the change into the internal repository by hand.")
+APPROVE = "Sami approves the head commit for the import into the internal repository."
+COPY = "Sami or another member of Theorem copies the change into the internal repository by hand."
+UNREAD = ("GitHub did not give the full list of the files that this pull request changes. So the workflow did not "
+          "record the check `repo-pairs/import-approved`.")
+# Why the import does not take the pull request, for each decision whose step is COPY.
+NOT_TAKEN = {
+    "steering": ("This pull request changes a file under `.github/`. The workflow never records the check "
+                 "`repo-pairs/import-approved` for such a change."),
+    "outside": "This pull request changes a path that the import does not take.",
+}
 
 # Each state: its label (None for no state label), the next step, which names who takes it, and the text after it.
 # {head} is the first 12 characters of the head commit.
@@ -153,14 +217,16 @@ STATES = {
     "reopen": (
         THEOREM, "Sami reopens the pull request.",
         "The automated catch-up closed this pull request and could not reopen it. You do not need to do anything."),
+    # An outside pull request that the screen and the review passed (R12), with no variable REPO_PAIRS_IMPORT_PATHS;
+    # import_steps gives the text for the variable and the post job's decision.
     "decide": (
         THEOREM, "Sami takes one of the steps below.",
-        "The automated screen and the automated review passed this pull request. You do not need to do anything. "
-        "The step is one of these:\n\n"
-        "- Sami merges the pull request on this repository, while the rules of this repository allow a merge.\n"
-        "- Else, once the import into the internal repository runs, Sami approves the head commit for the import.\n"
-        "- Else, once the import runs, Sami copies the change into the internal repository by hand, if the pull "
-        "request changes a path that the import does not take."),
+        f"{PASSED} You do not need to do anything. The step is one of these:\n\n{MERGE_STEPS}"),
+    # An outside pull request whose head has the import check run, while the variable gives the import's paths.
+    "import": (
+        None, "The automated import copies the head commit into the internal repository.",
+        f"{PASSED} The workflow recorded the check `repo-pairs/import-approved` on its head commit. You do not need "
+        "to do anything."),
     "working": (
         None, "The automated workflow works on this item.",
         "You do not need to do anything now. When a hold comment gives a time, the workflow tries the item again "
@@ -178,13 +244,16 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
                 conflict=False, draft_stored=False, reply_posted=False, screen_held=False, held=False,
-                sign_in_failed=False, tries_used_up=False, left_closed=False, recorded=False):
+                sign_in_failed=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
+                decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
     if kind not in ("", "pr", "issue"):
         raise ValueError(f"not a kind of item: {kind!r}")
     if verdict not in VERDICTS:
         raise ValueError(f"not a verdict: {verdict!r}")
+    if decision not in DECISIONS:
+        raise ValueError(f"not a decision of the post job: {decision!r}")
     # The run judged nothing, and the schedule takes the item again.
     if sign_in_failed:
         return "working"
@@ -216,10 +285,10 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
                 return "change"
         if verdict == "person":
             return "person"
-        # R12: a pull request that the screen and the review passed waits on Sami, unless the post job recorded the
-        # import check run at its head.
-        if kind == "pr" and verdict == "pass" and not recorded:
-            return "decide"
+        # R12: a pull request that the screen and the review passed waits on Sami, unless the import is live and the
+        # post job recorded the import check run at its head, which it does only when the import takes each path.
+        if kind == "pr" and verdict == "pass":
+            return "import" if recorded and import_paths is not None else "decide"
     return "working"
 
 
@@ -236,12 +305,48 @@ def marker_kind(line):
     return next(g for g in m.groups() if g)
 
 
-def label_comment(state, old="", markers=(), head=""):
+def import_steps(state, value, decision):
+    """(step, text) of the label comment of an outside pull request in the state decide or person (R12), for value, the
+    text of the variable REPO_PAIRS_IMPORT_PATHS (None when it is not set), and the post job's decision. With the
+    variable, the step is Sami's approval of the head commit when the import takes each changed path, and a copy by
+    hand when it does not take one or a file is under .github/. A decision that does not say which, as when the list of
+    changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
+    MERGE_STEPS."""
+    if state not in ("decide", "person"):
+        raise ValueError(f"no step of the import for the state {state!r}")
+    if decision not in DECISIONS:
+        raise ValueError(f"not a decision of the post job: {decision!r}")
+    live = value is not None
+    steps = IMPORT_STEPS if live else MERGE_STEPS
+    unread = f"{UNREAD} " if decision == "unread" else ""
+    if state == "decide":
+        if live and decision in ("person", "markdown"):
+            return APPROVE, (f"{PASSED} The import takes each path that this pull request changes. You do not need "
+                             "to do anything now.")
+        if live and decision in NOT_TAKEN:
+            return COPY, f"{PASSED} {NOT_TAKEN[decision]} You do not need to do anything now."
+        return (STATES[state][1],
+                f"{PASSED} {unread}You do not need to do anything. The step is one of these:\n\n{steps}")
+    _label, step, text = STATES[state]
+    if live and decision in ("person", "markdown"):
+        after = f"After that, {APPROVE}"
+    elif live and decision in NOT_TAKEN:
+        after = f"After that, {COPY} {NOT_TAKEN[decision]}"
+    else:
+        after = f"{unread}After that, the step is one of these:\n\n{steps}"
+    return step, f"{text}\n\n{after}"
+
+
+def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text, then each marker line of KEPT that old holds or markers gives (a
     marker of markers takes the place of old's line of its kind), the conflict-state line of head for a conflict, and
-    the marker of the state label."""
+    the marker of the state label. imports is (value, decision) of import_steps for an outside pull request, and None
+    for any other item. The state decide is an outside pull request's alone, so there None reads as no variable and
+    no decision."""
     label, step, text = STATES[state]
+    if state == "decide" or (state == "person" and imports is not None):
+        step, text = import_steps(state, *(imports or (None, "")))
     if state == "conflict" and not HEAD.fullmatch(head):
         raise ValueError(f"a conflict needs its head commit, not {head!r}")
     kept = {}
@@ -301,8 +406,9 @@ def make_label(name):
     print(f"::warning::the label {name} could not be made or described; adding it makes it, with no description.")
 
 
-def apply(number, state, markers=(), head=""):
-    """Gives the item number the state label of state, takes the other one off, and writes its label comment."""
+def apply(number, state, markers=(), head="", imports=None):
+    """Gives the item number the state label of state, takes the other one off, and writes its label comment
+    (label_comment, with imports)."""
     repo = os.environ["REPO"]
     want = label_of(state)
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
@@ -325,7 +431,7 @@ def apply(number, state, markers=(), head=""):
     if old is None and want is None:
         print(f"{shown}, and no label comment to change.")
         return
-    body = label_comment(state, old["body"] if old else "", markers, head)
+    body = label_comment(state, old["body"] if old else "", markers, head, imports)
     if old is not None and body == old["body"]:
         print(f"{shown}, as its label comment says already.")
         return
@@ -340,7 +446,8 @@ def apply(number, state, markers=(), head=""):
 
 def parse(args):
     """The facts, the marker lines and the head of label's arguments: <fact>=<value> for each fact of FACTS (true or
-    false, or empty for false, for each fact that is one or the other), head=<commit>, and marker=<line>."""
+    false, or empty for false, for each fact that is one or the other), head=<commit>, and marker=<line>. The job gives
+    import_paths=<text> only when the variable is set."""
     facts, markers, head = {}, [], ""
     for arg in args:
         name, eq, value = arg.partition("=")
@@ -362,6 +469,339 @@ def parse(args):
         else:
             facts[name] = value
     return facts, markers, head
+
+
+# --- the import check (R12) ---------------------------------------------------------------------------------------
+# compile_glob, compile_globs, glob_match, translate, bracket, utf16, char_range and without_slash are a port of
+# theorem-labs/agent-infra repo-pairs/paths/paths.go at a2295ab4f1d7dc019ad005707b7c6bf1003594c1 (its Compile and
+# Match), the path matcher of the import (dispatch://OSSV-318), so that this workflow matches the changed paths as the
+# import does. GlobTest in .github/test_review.py holds each case of its paths_test.go at that commit. The rules are
+# Copybara's glob(): a pattern is a Java glob over the whole path from the root of the repository.
+#
+# - `*` matches any run of characters inside one part of the path, and `?` one character.
+# - `**` matches any run of characters across parts, so `dir/**` covers each file under `dir/`, and `**/x` matches `x`
+#   only below the top folder.
+# - `[...]` matches one character of a set, `[!...]` one character outside it, and neither ever matches `/`.
+# - `{a,b}` matches either choice, and `\` makes the next character literal.
+#
+# Java's `.` does not match a line end, so `**` stops at a newline, a carriage return, U+0085, U+2028 and U+2029, while
+# `*`, `?` and a bracket expression match them. A pattern that Copybara refuses is refused here: an empty string, a `.`
+# or `..` part, a leading `/`, and a glob that Java cannot translate. Java reads a bracket expression in UTF-16 code
+# units (bracket says how). Like paths.go, the port is stricter than Copybara on some inputs, and never looser: it
+# refuses an empty bracket expression, a range that ends on `\`, on `[` or on `&` before `&`, and a pattern or a path
+# that is not valid UTF-8 (in Python, a str that holds a surrogate, as surrogateescape gives for such bytes).
+# glob_match raises ValueError for such a path, so that a refusal is never read as a path that does not match.
+
+# The check run of R12.
+CHECK = "repo-pairs/import-approved"
+# Java's `.*`: any run of characters but the line ends that Java's `.` does not match.
+ANY_RUN = r"[^\n\r\x85\u2028\u2029]*"
+# Copybara's FileUtil.RELATIVISM, (.*/)?[.][.]?(/.*)?, with Java's `.`.
+RELATIVISM = re.compile(rf"(?:{ANY_RUN}/)?\.\.?(?:/{ANY_RUN})?")
+SURROGATE = re.compile(r"[\ud800-\udfff]")
+# The markers at the start of a review comment (D8): the head that it reviewed, and the review's verdict at that head,
+# after the soundness rule, with will-fix when the author said they will make the change.
+REVIEWED = re.compile(r"<!-- review -->\n<!-- review-head ([0-9a-f]{40}) -->\n"
+                      r"<!-- review-verdict \1 (pass|blocking|person)( will-fix)? -->(?:\n|$)")
+
+
+def compile_glob(pattern):
+    """The regular expression of one pattern of the import, for re.fullmatch: paths.go's compile."""
+    if not isinstance(pattern, str) or pattern == "":
+        raise ValueError("an empty pattern")
+    if SURROGATE.search(pattern):
+        raise ValueError("not valid UTF-8")
+    if RELATIVISM.fullmatch(pattern):
+        raise ValueError("a `.` or `..` part")
+    if pattern.startswith("/"):
+        raise ValueError("a leading /")
+    try:
+        return re.compile(translate(pattern))
+    except re.error as e:
+        raise ValueError(f"not a pattern that Java can translate: {e}") from None
+
+
+def compile_globs(patterns):
+    """The compiled patterns of a list, for glob_match: paths.go's Compile. An empty list matches nothing."""
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(compile_glob(pattern))
+        except ValueError as e:
+            raise ValueError(f"path pattern {pattern!r}: {e}") from None
+    return compiled
+
+
+def glob_match(compiled, path):
+    """Whether path, relative to the root of the repository and with / between its parts, as git gives it, matches
+    one pattern of compiled: paths.go's Match. A ValueError when path is not valid UTF-8."""
+    if SURROGATE.search(path):
+        raise ValueError(f"path {path!r}: not valid UTF-8")
+    return any(r.fullmatch(path) for r in compiled)
+
+
+def translate(glob):
+    """The regular expression of glob: Java's sun.nio.fs.Globs.toUnixRegexPattern, as paths.go writes it for Go and
+    this function for Python. Java writes a bracket expression as the class intersection [[^/]&&[...]], which Python
+    lacks, so bracket builds the set with / taken out of it."""
+    out, i, group = [], 0, False
+    while i < len(glob):
+        c = glob[i]
+        i += 1
+        if c == "\\":
+            if i == len(glob):
+                raise ValueError("no character to escape at the end")
+            out.append(re.escape(glob[i]))
+            i += 1
+        elif c == "[":
+            found, i = bracket(glob, i)
+            out.append(found)
+        elif c == "{":
+            if group:
+                raise ValueError("a group inside a group")
+            out.append("(?:(?:")
+            group = True
+        elif c == "}":
+            out.append("))" if group else r"\}")
+            group = False
+        elif c == "," and group:
+            out.append(")|(?:")
+        elif c == "*":
+            if glob[i:i + 1] == "*":
+                out.append(ANY_RUN)
+                i += 1
+            else:
+                out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(c))
+    if group:
+        raise ValueError("a group with no closing }")
+    return "".join(out)
+
+
+def utf16(text):
+    """The UTF-16 code units of text, in which Java reads a bracket expression."""
+    units = []
+    for c in text:
+        n = ord(c)
+        if n > 0xFFFF:
+            units += [0xD800 + ((n - 0x10000) >> 10), 0xDC00 + ((n - 0x10000) & 0x3FF)]
+        else:
+            units.append(n)
+    return units
+
+
+def bracket(glob, i):
+    """The character class of the bracket expression whose [ is just before glob[i], as Java reads it, and the index
+    after its ].
+
+    Java's translation reads the expression in UTF-16 code units. A leading ^ is a literal ^; otherwise a leading !
+    negates, and a - after it, or first, is a literal -. After that, a unit other than -, / and ] that does not end a
+    range is a range start, and a - right after a range start makes a range from it to the next unit, refused when the
+    end's unit is below the start's; a - with no range start before it refuses the pattern, as / does. ] closes the
+    expression, also in place of a range end, which leaves that - a literal -; the end of the pattern, or a NUL in place
+    of a range end, leaves it unclosed. The translation copies the units to its regular expression, and leaves a range
+    end that is \\, [, or & before & unescaped, which Java's regular expression would read as syntax: such a range is
+    refused here.
+
+    Java's regular expression reads the units back in characters, joining each surrogate pair: a character, a - and one
+    more character make a range, refused when its end is below its start, and every other character, a - just before ]
+    too, stands for itself."""
+    units = utf16(glob[i:])
+
+    def unit(k):
+        # Java's next(): the unit at k, or 0, Java's end of the pattern, past the last unit.
+        return units[k] if k < len(units) else 0
+
+    k, negate, found = 0, False, []
+    if unit(k) == ord("^"):
+        found.append((ord("^"), ord("^")))
+        k += 1
+    else:
+        if unit(k) == ord("!"):
+            negate = True
+            k += 1
+        if unit(k) == ord("-"):
+            found.append((ord("-"), ord("-")))
+            k += 1
+    start, has_start, last, closed = k, False, 0, False
+    while k < len(units):
+        c = units[k]
+        k += 1
+        if c == ord("]"):
+            closed = True
+            break
+        if c == ord("/"):
+            raise ValueError("a / inside a bracket expression")
+        if c != ord("-"):
+            has_start, last = True, c
+            continue
+        if not has_start:
+            raise ValueError("a range with no start in a bracket expression")
+        end = unit(k)
+        k += 1
+        if end == 0:
+            break
+        if end == ord("]"):
+            closed = True
+            break
+        if end < last:
+            raise ValueError("a range whose end is before its start in UTF-16 code units, as Java compares them, in a "
+                             "bracket expression")
+        if end in (ord("\\"), ord("[")) or (end == ord("&") and unit(k) == ord("&")):
+            raise ValueError("a range that ends on \\, on [ or on && in a bracket expression, which the import's rules "
+                             "refuse though Copybara may accept it")
+        has_start = False
+    if not closed:
+        raise ValueError("a bracket expression with no closing ]")
+    # Java closed the expression at the first ] after the prefix. The prefix is ASCII, and no surrogate pair holds a ],
+    # so the characters between are the characters up to the first ].
+    body = glob[i + start:]
+    body = body[:body.index("]")]
+    rest = i + start + len(body) + 1
+    j = 0
+    while j < len(body):
+        lo = hi = ord(body[j])
+        j += 1
+        if j + 1 < len(body) and body[j] == "-":
+            hi = ord(body[j + 1])
+            j += 2
+            if hi < lo:
+                raise ValueError("a range whose end is before its start in a bracket expression")
+        found.append((lo, hi))
+    if not found:
+        raise ValueError("an empty bracket expression")
+    if negate:
+        # Java's [[^/]&&[^set]]: neither the set nor /.
+        return "[^/" + "".join(map(char_range, found)) + "]", rest
+    # Java's [[^/]&&[set]]: the set without /, which only a range can hold.
+    parts = [part for r in found for part in without_slash(r)]
+    if not parts:
+        return r"[^\x00-\U0010ffff]", rest
+    return "[" + "".join(map(char_range, parts)) + "]", rest
+
+
+def without_slash(r):
+    lo, hi = r
+    slash = ord("/")
+    if lo > slash or hi < slash:
+        return [r]
+    return ([(lo, slash - 1)] if lo < slash else []) + ([(slash + 1, hi)] if hi > slash else [])
+
+
+def char_range(r):
+    lo, hi = r
+    return f"\\U{lo:08x}" + (f"-\\U{hi:08x}" if hi != lo else "")
+
+
+def steering(path):
+    """Whether path is a steering file: each file under .github/, as this repository has no CODEOWNERS."""
+    return path.startswith(".github/")
+
+
+def import_globs(value):
+    """The compiled globs of the text value of REPO_PAIRS_IMPORT_PATHS: one glob on each line, and none on an empty
+    line."""
+    try:
+        return compile_globs([line for line in value.split("\n") if line])
+    except ValueError as e:
+        raise ValueError(f"REPO_PAIRS_IMPORT_PATHS: {e}") from None
+
+
+def imported(globs, path):
+    """Whether the import takes path: one of its globs matches it. The import does not take a path that its rules
+    refuse."""
+    try:
+        return glob_match(globs, path)
+    except ValueError:
+        return False
+
+
+def changed_paths(files):
+    """Each path that files change, as the API lists them (pulls/<n>/files): the path of each file, and the path that
+    it had before a rename."""
+    paths = []
+    for f in files:
+        if not (isinstance(f, dict) and isinstance(f.get("filename"), str) and f["filename"]
+                and isinstance(f.get("previous_filename") or "", str)):
+            raise ValueError(f"not a file as pulls/<n>/files lists it: {f!r}")
+        paths.append(f["filename"])
+        if f.get("previous_filename"):
+            paths.append(f["previous_filename"])
+    return paths
+
+
+def import_decision(files, changed_files, screen, verdict, hold, value):
+    """R12's decision on the import check run at a head of an outside pull request: record, or the first of its rules
+    that does not hold (DECISIONS). files are the head's files as the API lists them on every page of pulls/<n>/files,
+    and changed_files is the pull request's count of them, which the list reaches only up to 3,000 files. screen is
+    whether the screen passed the head, verdict the review's verdict after the soundness rule (SOUNDNESS_HOLD), hold
+    whether the soundness hold lasts, and value the text of REPO_PAIRS_IMPORT_PATHS (None when it is not set). The
+    rules on each changed path are judged first on the paths that the list gives, so that a steering file, or a path
+    that the import does not take, gives its own decision also when the list is not whole."""
+    if verdict not in VERDICTS:
+        raise ValueError(f"not a verdict: {verdict!r}")
+    paths = changed_paths(files)
+    if not screen:
+        return "screen"
+    if verdict not in ("pass", "person"):
+        return "verdict"
+    if any(steering(p) for p in paths):
+        return "steering"
+    if value is not None:
+        globs = import_globs(value)
+        if not all(imported(globs, p) for p in paths):
+            return "outside"
+    if len(files) != changed_files:
+        return "unread"
+    if verdict == "person":
+        return "person"
+    if hold and not all(p.endswith(".md") for p in paths):
+        return "markdown"
+    return "record"
+
+
+def import_marker(head, value):
+    """The marker line of R12 that records the value of REPO_PAIRS_IMPORT_PATHS on which a decision on head rested: the
+    text value as one JSON string, or null when the variable is not set (value None). Each character outside ASCII,
+    <, > and & is a \\u escape, so the line holds no line break and no --> before its end."""
+    if not HEAD.fullmatch(head):
+        raise ValueError(f"not a head commit: {head!r}")
+    data = "null" if value is None else json.dumps(value)
+    for c in "<>&":
+        data = data.replace(c, f"\\u{ord(c):04x}")
+    return f"<!-- repo-pairs-import-paths {head}: {data} -->"
+
+
+def check_run(head, value, hold):
+    """The body of the request that records the import check run on head (POST repos/<repo>/check-runs), when
+    import_decision gives record. Its output text is the marker line of import_marker, alone."""
+    summary = ["The automated screen and the automated review passed this head commit.",
+               "No changed file is under `.github/`."]
+    if hold:
+        summary.append("While the soundness hold lasts, the workflow records this check only when each changed file "
+                       "is a Markdown file, and each one is.")
+    summary.append("The import takes each changed path." if value is not None else
+                   "The variable `REPO_PAIRS_IMPORT_PATHS` is not set, so the workflow did not compare the changed "
+                   "paths with the paths of the import.")
+    return {"name": CHECK, "head_sha": head, "status": "completed", "conclusion": "success",
+            "output": {"title": "Approved for the import", "summary": " ".join(summary),
+                       "text": import_marker(head, value)}}
+
+
+def review_verdict(comments, head):
+    """(verdict, will_fix) of the review comment of BOT that names head, from comments, the item's comments as the API
+    lists them (issues/<n>/comments), the last one when more name it. ("", False) when none names head. Only the
+    markers at the start of the comment count: no marker of the model's or the reader's text reaches a comment
+    (trim.py inert)."""
+    found = ("", False)
+    for c in comments:
+        m = REVIEWED.match(c.get("body") or "")
+        if m and (c.get("user") or {}).get("login") == BOT and m.group(1) == head:
+            found = (m.group(2), bool(m.group(3)))
+    return found
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
@@ -663,8 +1103,11 @@ def main(argv):
         if len(argv) >= 2 and argv[0] == "label" and NUMBER.fullmatch(argv[1]):
             facts, markers, head = parse(argv[2:])
             state = label_state(**facts)
-            label_comment(state, "", markers, head)
-            apply(argv[1], state, markers, head)
+            imports = None
+            if facts.get("kind") == "pr" and facts.get("outsider"):
+                imports = (facts.get("import_paths"), facts.get("decision", ""))
+            label_comment(state, "", markers, head, imports)
+            apply(argv[1], state, markers, head, imports)
             return 0
         if len(argv) == 7 and argv[0] == "soundness":
             review, path, hold, outside, section_path, all_path = argv[1:]
@@ -689,6 +1132,28 @@ def main(argv):
             with open(argv[2], "rb") as f:
                 diff = f.read().decode("utf-8", "surrogateescape")
             sys.stdout.write(json.dumps(suggestions(fix, diff), ensure_ascii=False) + "\n")
+            return 0
+        if len(argv) in (8, 9) and argv[0] == "import-check":
+            path, count, head, screen, verdict, hold, request = argv[1:8]
+            value = argv[8] if len(argv) == 9 else None
+            if not (re.fullmatch(r"0|[1-9][0-9]*", count) and HEAD.fullmatch(head) and screen in ("true", "false")):
+                raise ValueError("not a count of changed files, a head commit and true or false for the screen")
+            decision = import_decision(json_lines(path), int(count), screen == "true", verdict, hold == "true", value)
+            if decision == "record":
+                with open(request, "w", encoding="utf-8") as f:
+                    json.dump(check_run(head, value, hold == "true"), f)
+            print(decision)
+            return 0
+        if len(argv) in (2, 3) and argv[0] == "import-marker":
+            print(import_marker(argv[1], argv[2] if len(argv) == 3 else None))
+            return 0
+        if len(argv) == 3 and argv[0] == "verdict" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
+            found = gh("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
+                       '.[] | select(.user.login == "github-actions[bot]") | {user: {login: .user.login}, body}'
+                       ' | @json')
+            comments = [json.loads(line) for line in found.split("\n") if line.strip()]
+            verdict, will_fix = review_verdict(comments, argv[2])
+            print(verdict + (" will-fix" if will_fix else ""))
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)

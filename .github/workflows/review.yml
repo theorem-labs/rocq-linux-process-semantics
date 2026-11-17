@@ -25,7 +25,8 @@
 #   catchup   an outside pull request whose head no run met: the OSS Verify App closes and reopens it, which starts CI.
 #   conflict  a pull request with a merge conflict, for which GitHub starts no CI run: a comment that asks its author
 #             to resolve the conflict.
-#   relabel   the label and the label comment of a head, set again.
+#   relabel   the import check run of R12 and the label and the label comment of a head, set again from its review
+#             with no model.
 #   measure   the screen, measured on its private labelled set.
 # An answer run, or a run by hand, that reads a merge conflict in its pull request gets the task conflict. The name of a
 # run gives its task, its item and the account whose limit it counts on (run-name, below). The scripts that count runs
@@ -130,17 +131,23 @@
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
-#           whose screen passed. For an approval, it reads the pull request again with its own token, and when the
-#           head is still the one the screen read, it approves each run that GitHub holds of that head from the pull
-#           request's head repository and branch. It posts no comment and no label, holds no identity token and no
-#           model, and its own GitHub token can only read.
+#           whose screen passed. For the review of an outside pull request whose screen passed, and for a relabel, it
+#           reads the changed paths at the head with its own token and records the check run
+#           repo-pairs/import-approved on the head when R12's rule holds (.github/review/rules.py import-check): the
+#           screen passed, the verdict is pass, no changed file is under .github/, each changed file is a Markdown file
+#           while SOUNDNESS_HOLD is true, and, while the repository variable REPO_PAIRS_IMPORT_PATHS gives the import's
+#           paths, the import takes each changed path. For an approval, it reads the pull request again with its own
+#           token, and when the head is still the one the screen read, it approves each run that GitHub holds of that
+#           head from the pull request's head repository and branch. It posts no comment and no label, holds no
+#           identity token and no model, and its own GitHub token can only read.
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
 #           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
 #           for each comment, and the fix as one review of suggested changes, once for each head. For a stored draft, it
-#           posts the label comment alone, and for a reply the approved text, byte for byte and once. It never commits
-#           or pushes: its token can write no file of the repository. It uses this run's GitHub token, so none of its
-#           comments, reviews and labels starts a run of any workflow.
+#           posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel, it
+#           sets the state label and the label comment of the head again, from the head's review and what the post job
+#           decided. It never commits or pushes: its token can write no file of the repository. It uses this run's
+#           GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
 #           label comment. It holds no model, and has no screen's reason to read: the screen job's one output is its
 #           verdict. It reads this run's jobs and this workflow's runs: did a step that signs in fail (then it holds
@@ -166,9 +173,8 @@
 # out. Claude gets the tools Read, Glob and Grep only, in the permission mode dontAsk (a call that would need approval
 # is refused), and reads nothing outside the checkout: not the runner's temporary files, which hold the identity
 # token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The screen job runs
-# only .github/screen.py from main, and the review job runs .github/review/trim.py from main after Claude. The comment,
-# hold and rescreen jobs check out main's .github/ alone, and run only .github/review/rules.py from it. The post job
-# checks out nothing.
+# only .github/screen.py from main, and the review job runs .github/review/trim.py from main after Claude. The post,
+# comment, hold and rescreen jobs check out main's .github/ alone, and run only .github/review/rules.py from it.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -773,11 +779,21 @@ jobs:
                 conflict)
                   [ "$mergeable" = dirty ] || stop "it has no merge conflict (its mergeable_state is ${mergeable:-unknown})."
                   route review "" ;;
-                # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed, and the
-                # label set again: no screen and no model.
-                catchup|relabel)
+                # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed: no screen
+                # and no model.
+                catchup)
                   if [ "$state" = open ] && [ "$mergeable" = dirty ]; then task=conflict; fi
                   route review "" ;;
+                # The import check run of R12 and the label of the head, set again from its review: no screen and no
+                # model. The outsider is the author when the author has no write access, as the import check run is
+                # for an outside pull request alone, whose review came after a screen that passed.
+                relabel)
+                  if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
+                  a=0
+                  known "$AUTHOR" || a=$?
+                  (( a != 0 )) || route review ""
+                  [[ $AUTHOR =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || stop "$AUTHOR is not a GitHub login."
+                  route review "$AUTHOR" ;;
               esac ;;
             *) echo "::error::not an event of this workflow: $EVENT"; exit 1 ;;
           esac
@@ -2021,18 +2037,21 @@ jobs:
   # check run of a review or a relabel and for the close and reopen of a catch-up; token B, with actions: write alone,
   # for the approval of a head's held runs, minted only for the task approve when the screen passed and GitHub holds
   # runs of the head that the screen read. A missing key fails these steps alone. Its own token can only read
-  # (actions: read lists a head's held runs). It holds no identity token and no model. Its outputs: recorded, true when
-  # it recorded the import check run at the head, and decision, what it decided for that check run. It records no
-  # check run yet, so recorded is false.
+  # (actions: read lists a head's held runs). It holds no identity token and no model. For the review of an outside
+  # pull request and for a relabel, it decides the import check run of R12 on the head (.github/review/rules.py
+  # import-check) and records repo-pairs/import-approved, with conclusion success, when the rule holds. It checks out
+  # main's .github/ for that, and runs nothing else from it. Its outputs: recorded, true when it recorded that check run
+  # at the head, and decision, what it decided for that check run: record, or the first rule of R12 that does not hold.
   post:
     needs: [trust, gather, screen, review]
-    # The review of an outside pull request whose screen passed and whose review succeeded, a relabel, a catch-up, and
-    # an approval whose screen passed. GitHub's implicit success() would skip it when a job it needs was skipped: the
-    # gather, screen and review jobs of a relabel or a catch-up, and the review job of an approval.
+    # The review or the rescreen of an outside pull request whose screen passed and whose review succeeded, a relabel, a
+    # catch-up, and an approval whose screen passed. GitHub's implicit success() would skip it when a job it needs was
+    # skipped: the gather, screen and review jobs of a relabel or a catch-up, and the review job of an approval.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
-          && ((needs.trust.outputs.task == 'review' && needs.trust.outputs.route == 'screen'
-               && needs.gather.outputs.kind == 'pr' && needs.review.result == 'success')
+          && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+               && needs.trust.outputs.route == 'screen' && needs.gather.outputs.kind == 'pr'
+               && needs.review.result == 'success')
               || ((needs.trust.outputs.task == 'relabel' || needs.trust.outputs.task == 'catchup')
                   && needs.trust.result == 'success')
               || (needs.trust.outputs.task == 'approve' && needs.screen.result == 'success'
@@ -2047,15 +2066,86 @@ jobs:
     timeout-minutes: 5
     permissions: {contents: read, pull-requests: read, actions: read}
     outputs:
-      recorded: "false"
-      decision: ""
+      recorded: ${{ steps.record.outputs.recorded == 'true' && 'true' || 'false' }}
+      decision: ${{ steps.decide.outputs.decision }}
     steps:
-      # Token A: for the import check run of a review or a relabel, and the close and reopen of a catch-up.
+      # main's .github/, for .github/review/rules.py; never the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        if: >-
+          needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+          || needs.trust.outputs.task == 'relabel'
+        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+      # The decision of R12 on the import check run at the head, with this job's own token, only on a run of
+      # workflow_run or workflow_dispatch: for the review of a head whose screen passed, with the review's verdict after
+      # the soundness rule, and for a relabel, which runs no model. It is for an outside pull request alone: a run whose
+      # trust job gave no outsider (a writer's pull request, also one that a run by hand screened) gets no check run. A
+      # relabel takes the verdict from the marker of the review comment that names the head, and the screen passed that
+      # head when such a review is there: the review of an outside pull request posts only after its screen passed.
+      # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
+      # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
+      # the path that it had before a rename, read after the check of the head and before a second check of it. The
+      # list stops at 3,000 files: when it does not hold each changed file, no check run is recorded.
+      - name: Decide the import check of the head
+        id: decide
+        if: >-
+          (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
+          && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+               && needs.screen.outputs.verdict == 'clean')
+              || needs.trust.outputs.task == 'relabel')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TASK: ${{ needs.trust.outputs.task }}
+          NUMBER: ${{ needs.trust.outputs.number }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          # The head that the review read, or the head of a relabel, which the trust job read.
+          HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          # The import's paths, one glob on each line, while the import is live (R12). An empty value is no variable:
+          # GitHub gives an empty value for a variable that is not set.
+          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit to decide on: $HEAD"; exit 1; }
+          # decided <decision> <what>: the output decision, and the end of this step.
+          decided() {
+            echo "#$NUMBER at $HEAD: the decision on the import check is $1 ($2)."
+            echo "decision=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
+            || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
+          read -r sha count <<< "$pr"
+          [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha"
+          [[ $count =~ ^[0-9]+$ ]] || { echo "::error::#$NUMBER gives no count of changed files."; exit 1; }
+          gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
+            --jq '.[] | {filename, previous_filename} | @json' > "$RUNNER_TEMP/files.jsonl" \
+            || { echo "::error::the files of #$NUMBER could not be read."; exit 1; }
+          sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
+            || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
+          [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
+          screen=true verdict=$VERDICT
+          if [ "$TASK" = relabel ]; then
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            verdict=${reviewed%% *}
+            [ -n "$verdict" ] || screen=false
+          fi
+          # The import check run is for an outside pull request alone, which the screen passed before its review.
+          [ -n "$OUTSIDER" ] || screen=false
+          # The variable's text, given only when it is set: an empty value is no variable.
+          imports=()
+          [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
+          decision=$(python3 .github/review/rules.py import-check "$RUNNER_TEMP/files.jsonl" "$count" "$HEAD" \
+            "$screen" "$verdict" "${SOUNDNESS_HOLD:-}" "$RUNNER_TEMP/import-check.json" "${imports[@]}") \
+            || { echo "::error::the import check of $HEAD could not be decided."; exit 1; }
+          decided "$decision" "$(grep -c . "$RUNNER_TEMP/files.jsonl" || true) of $count changed files read"
+      # Token A: for the import check run when the step before decided to record it, and for the close and reopen of a
+      # catch-up.
       - name: Sign in as the OSS Verify App
         id: app
-        if: >-
-          needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'relabel'
-          || needs.trust.outputs.task == 'catchup'
+        if: needs.trust.outputs.task == 'catchup' || steps.decide.outputs.decision == 'record'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
           app-id: 5447700
@@ -2064,8 +2154,27 @@ jobs:
           repositories: rocq-linux-process-semantics
           permission-checks: write
           permission-pull-requests: write
-      # The App's writes with token A follow here: the import check run at the head, which sets the outputs recorded
-      # and decision, and the close and reopen of a catch-up.
+      # The import check run repo-pairs/import-approved, with conclusion success, on the head that the decision judged,
+      # recorded with token A. Its output text holds the marker line of the value of REPO_PAIRS_IMPORT_PATHS that the
+      # decision read. A call that fails fails the job: recorded stays false, and the schedule takes the head again. A
+      # token A that could not be minted skips this step for the same end.
+      - name: Record the import check of the head
+        id: record
+        if: steps.decide.outputs.decision == 'record'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          request=$RUNNER_TEMP/import-check.json
+          head=$(jq -r 'select(.name == "repo-pairs/import-approved" and .conclusion == "success") | .head_sha' \
+            "$request" 2> /dev/null || true)
+          [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the decision wrote no import check to record."; exit 1; }
+          id=$(gh api --method POST "repos/$REPO/check-runs" --input "$request" --jq .id) \
+            || { echo "::error::the import check of $head could not be recorded."; exit 1; }
+          echo "Recorded the check run $id, repo-pairs/import-approved, on $head."
+          echo "recorded=true" >> "$GITHUB_OUTPUT"
+      # The close and reopen of a catch-up with token A follow here.
 
       # An approval whose screen passed. With this job's own token: the pull request now, and the runs that GitHub
       # holds of the head that the screen read (status action_required). When the head moved since the trust job read
@@ -2155,10 +2264,10 @@ jobs:
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
   # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
   # it, and the state label and the label comment of each, which .github/review/rules.py sets from main's checkout of
-  # .github/. A draft posts nothing but its label comment, after the review job stored it. No App token posts here, so
-  # none of these comments, reviews and labels starts a run of a workflow. It never commits or pushes: its token can
-  # write no file of the repository. It runs whatever the post job's result, and reads that job's recorded as false
-  # when it did not succeed.
+  # .github/. A draft posts nothing but its label comment, after the review job stored it, and a relabel nothing but
+  # the state label and the label comment of its head. No App token posts here, so none of these comments, reviews and
+  # labels starts a run of a workflow. It never commits or pushes: its token can write no file of the repository. It
+  # runs whatever the post job's result, and reads that job's recorded as false when it did not succeed.
   comment:
     needs: [trust, gather, screen, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
@@ -2168,7 +2277,8 @@ jobs:
                 || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft'
                 || needs.trust.outputs.task == 'reply')
                && needs.review.result == 'success')
-              || (needs.trust.outputs.task == 'conflict' && needs.trust.result == 'success')) }}
+              || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel')
+                  && needs.trust.result == 'success')) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max).
     concurrency:
       group: comment-${{ needs.trust.outputs.number }}
@@ -2316,17 +2426,24 @@ jobs:
       # on. Then the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind,
       # whether this run took an outsider's path (so the screen passed it), the review's verdict, the two stops of the
       # fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import check run at
-      # the head, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->, waits-on-theorem) and the posted
-      # reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author). An answer changes the state only when the
-      # author said they will make the change, or when a fix posted or stopped: else the label stays as the item's
-      # review, hold or reply set it.
+      # the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
+      # waits-on-theorem) and the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author). An answer
+      # changes the state only when the author said they will make the change, or when a fix posted or stopped: else the
+      # label stays as the item's review, hold or reply set it. A relabel posts no review and leaves review-held on: it
+      # takes the verdict, and will-fix, from the marker of the review comment that names its head
+      # (.github/review/rules.py verdict), and leaves the labels as they are when no review names the head. The label
+      # comment of an outside pull request holds the marker line <!-- repo-pairs-import-paths <head>: <value> --> of
+      # R12, with the value of REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the import
+      # by that value.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
           TASK: ${{ needs.trust.outputs.task }}
-          HEAD: ${{ needs.review.outputs.head }}
-          STARTED: ${{ needs.review.outputs.started }}
-          KIND: ${{ needs.gather.outputs.kind }}
+          # The head that the review read, or the head of a relabel, which the trust job read.
+          HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
+          STARTED: >-
+            ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.started || needs.review.outputs.started }}
+          KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
@@ -2334,6 +2451,9 @@ jobs:
           FIX_POSTED: ${{ steps.fixed.outputs.posted }}
           DRAFT: ${{ needs.review.outputs.draft }}
           REPLIED: ${{ steps.replied.outputs.id }}
+          # The import's paths, one glob on each line, while the import is live (R12), as the post job reads them. An
+          # empty value is no variable: GitHub gives an empty value for a variable that is not set.
+          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
         run: |
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
@@ -2367,7 +2487,7 @@ jobs:
             out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
               || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
           }
-          will_fix=false fix_stop=false fix_posted=false
+          will_fix=false fix_stop=false fix_posted=false verdict=$VERDICT
           [ "${WILL_FIX:-}" != true ] || will_fix=true
           [ "${FIX_STOP:-}" != true ] || fix_stop=true
           [ "${FIX_POSTED:-}" != true ] || fix_posted=true
@@ -2377,14 +2497,33 @@ jobs:
               echo "#$NUMBER: the answer changes no state, so the labels stay."
               exit 0
             fi
+          elif [ "${TASK:-}" = relabel ]; then
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
+              || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
+            [ -n "$reviewed" ] || { echo "#$NUMBER: no review names $HEAD, so the labels stay."; exit 0; }
+            verdict=${reviewed%% *}
+            [[ $reviewed != *' will-fix' ]] || will_fix=true
           else
             take_off
           fi
           outsider=false
           [ -z "$OUTSIDER" ] || outsider=true
-          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$VERDICT" \
+          # The variable's text, given only when it is set: an empty value is no variable.
+          imports=()
+          facts=()
+          if [ -n "$IMPORT_PATHS" ]; then
+            imports=("$IMPORT_PATHS")
+            facts=("import_paths=$IMPORT_PATHS")
+          fi
+          if [ "$KIND" = pr ] && [ "$outsider" = true ] && [[ $HEAD =~ ^[0-9a-f]{40}$ ]]; then
+            marker=$(python3 .github/review/rules.py import-marker "$HEAD" "${imports[@]}") \
+              || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
+            markers+=("marker=$marker")
+          fi
+          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$verdict" \
             will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
-            draft_stored="$draft_stored" reply_posted="$reply_posted" "${markers[@]}"
+            decision="$DECISION" draft_stored="$draft_stored" reply_posted="$reply_posted" "${facts[@]}" \
+            "${markers[@]}"
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
