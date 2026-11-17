@@ -2,6 +2,7 @@
 """The screen of .github/workflows/review.yml: whether the text of a pull request or an issue from an account without
 write access may go to the full review without a person.
 
+    python3 .github/screen.py --sign-in
     python3 .github/screen.py <the .review directory>
 
 Up to three independent checks read the text that the full review would read, and each answers one word, clean or
@@ -11,7 +12,8 @@ suspicious. SCREEN_CHECKS names the ones that run, and must name Model Armor:
                 MODEL_ARMOR_TEMPLATE names (confidence medium and above).
   prompt_shields
                 Azure AI Content Safety's Prompt Shields, its check of documents for attacks.
-  claude        a small Claude model with no tools, whose answer a JSON schema holds to the two words.
+  claude        a small Claude model with no tools, whose answer a JSON schema holds to the two words. It reads the
+                text in pieces of at most CLAUDE_PIECE characters, and answers suspicious when it does for any piece.
 
 The verdict names the checks that ran. It is clean when every one answers clean, and held otherwise: when any answers
 suspicious, when any cannot answer (a service that cannot be reached, refuses, or answers in a form this file does not
@@ -25,7 +27,11 @@ hold the reason. No check can act on the text: the text is sent to each service 
 what comes back is read for its one word and nothing else.
 
 Every setting is an environment variable that review.yml sets; the tokens come from GitHub's identity token, which
-the job's environment review-screen alone can exchange for them.
+the job's environment review-screen alone can exchange for them. Google Cloud's comes from the job's step "Sign in to
+Google Cloud". The tokens of Prompt Shields (Microsoft Entra's) and of the model (Anthropic's) come from --sign-in, the
+step "Sign in to Anthropic and Azure", which writes them to a file under RUNNER_TEMP that only the runner's account
+can read; the screen reads the file and deletes it. A sign-in that fails fails its step, and writes no verdict, no
+reason and no output.
 """
 
 import json
@@ -41,11 +47,13 @@ import urllib.request
 
 WORDS = ("clean", "suspicious")
 # The most text one item may hold. Above it the item is held, not screened in part.
-MAX_CHARS = 200_000
+MAX_CHARS = 400_000
 # Model Armor's prompt injection filter reads up to 65,536 tokens of one request and skips a longer one, so each piece
-# is well under that. Prompt Shields reads up to five documents with 10,000 characters in all in one request.
+# is well under that. Prompt Shields reads up to five documents with 10,000 characters in all in one request. The
+# model reads the text in pieces of at most CLAUDE_PIECE characters, one request each, with no overlap.
 ARMOR_PIECE, ARMOR_OVERLAP = 40_000, 1_000
 SHIELD_PIECE, SHIELD_OVERLAP, SHIELD_TOTAL, SHIELD_DOCUMENTS = 9_000, 500, 10_000, 5
+CLAUDE_PIECE = 150_000
 SHIELD_API_VERSION = "2024-09-01"
 # The user prompt Prompt Shields requires beside the documents: ours, and never an attack.
 SHIELD_PROMPT = "Review the pull request or issue in the documents."
@@ -244,7 +252,7 @@ def parts(review):
         c = hiding(text, whole_file=source in whole_files, diff=source == "pr.diff")
         if c:
             unscreenable.append(f"{source} holds {c}, a character that hides text")
-    total = sum(len(s) + len(t) + 4 for s, t in found)
+    total = len(joined(found))   # the text every check is sent, each source under its name
     if total > MAX_CHARS:
         unscreenable.append(f"{total} characters, over the {MAX_CHARS} this screen reads")
     return found, unscreenable
@@ -324,6 +332,102 @@ def identity_token(audience):
     return token
 
 
+# --- the sign-in --------------------------------------------------------------------------------------------------
+
+# The file under RUNNER_TEMP that the step "Sign in to Anthropic and Azure" (screen.py --sign-in) writes the tokens
+# to, and that the Screen or Measure step reads and deletes.
+TOKENS_FILE = "screen-tokens.json"
+
+
+def entra_token():
+    """Microsoft Entra's token for Prompt Shields, for the managed identity that admits the job's identity token."""
+    token = http("POST", f"{env('AZURE_LOGIN_URL')}/{env('AZURE_TENANT_ID')}/oauth2/v2.0/token", {
+        "client_id": env("AZURE_CLIENT_ID"),
+        "scope": "https://cognitiveservices.azure.com/.default",
+        "grant_type": "client_credentials",
+        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        "client_assertion": identity_token("api://AzureADTokenExchange"),
+    }, form=True).get("access_token")
+    if not isinstance(token, str) or not token:
+        raise CheckError("Microsoft Entra gave no access token")
+    return token
+
+
+def anthropic_token():
+    """Anthropic's token for the screen's model, for the service account that the federation rule maps the job's
+    identity token to."""
+    token = http("POST", f"{env('ANTHROPIC_URL')}/v1/oauth/token", {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": identity_token("https://api.anthropic.com"),
+        "federation_rule_id": env("ANTHROPIC_FEDERATION_RULE_ID"),
+        "organization_id": env("ANTHROPIC_ORGANIZATION_ID"),
+        "service_account_id": env("ANTHROPIC_SERVICE_ACCOUNT_ID"),
+        "workspace_id": env("ANTHROPIC_WORKSPACE_ID"),
+    }).get("access_token")
+    if not isinstance(token, str) or not token:
+        raise CheckError("Anthropic gave no access token")
+    return token
+
+
+# Each check that needs a token of its own: the settings of its identity, and the exchange that gets the token. A
+# check whose identity is not set up, with one of these settings empty, gets no exchange.
+EXCHANGES = {
+    "prompt_shields": (("AZURE_LOGIN_URL", "AZURE_TENANT_ID", "AZURE_CLIENT_ID"), entra_token),
+    "claude": (("ANTHROPIC_URL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+                "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"), anthropic_token),
+}
+# The tokens of the sign-in, by check, as main() took them from TOKENS_FILE.
+TOKENS = {}
+
+
+def sign_in():
+    """The step "Sign in to Anthropic and Azure": the token of each check that SCREEN_CHECKS lists, that needs one and
+    whose identity is set up, written to TOKENS_FILE under RUNNER_TEMP, which only this account can read. When an
+    exchange fails, the step fails and writes nothing: no file, no verdict, no reason and nothing to GITHUB_OUTPUT.
+    No token is printed."""
+    names = os.environ.get("SCREEN_CHECKS", "").split(",")
+    tokens = {}
+    try:
+        path = os.path.join(env("RUNNER_TEMP"), TOKENS_FILE)
+        for check, (settings, exchange) in EXCHANGES.items():
+            if check in names and all(os.environ.get(s) for s in settings):
+                tokens[check] = exchange()
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
+            json.dump(tokens, f)
+    except Exception as e:   # the message names a setting, a service or the file, and holds no token
+        print(f"The sign-in failed: {type(e).__name__}: {str(e)[:500]}", file=sys.stderr)
+        return 1
+    print(f"Signed in for {', '.join(tokens) or 'no check'}.")
+    return 0
+
+
+def take_tokens():
+    """The tokens the sign-in wrote, by check. The file is deleted as it is read, so no later step finds it. A file
+    that is not there gives no token."""
+    folder = os.environ.get("RUNNER_TEMP", "")
+    if not folder:
+        return {}
+    path = os.path.join(folder, TOKENS_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            os.remove(path)
+            tokens = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return tokens if isinstance(tokens, dict) else {}
+
+
+def signed_in(check):
+    """The token of the sign-in for check. Without it the check cannot answer: a setting of its identity is missing,
+    and the error names it, or the sign-in gave no token."""
+    for name in EXCHANGES[check][0]:
+        env(name)
+    token = TOKENS.get(check)
+    if not isinstance(token, str) or not token:
+        raise CheckError(f"no token for {check} from screen.py --sign-in")
+    return token
+
+
 # --- the three checks ---------------------------------------------------------------------------------------------
 
 def model_armor(found):
@@ -362,15 +466,7 @@ def prompt_shields(found):
     """Prompt Shields, with the text as its documents: up to five pieces and 10,000 characters a request. An attack
     found in any document is a match. The service answers for each document it was sent, and for the fixed user
     prompt, which must never be an attack."""
-    token = http("POST", f"{env('AZURE_LOGIN_URL')}/{env('AZURE_TENANT_ID')}/oauth2/v2.0/token", {
-        "client_id": env("AZURE_CLIENT_ID"),
-        "scope": "https://cognitiveservices.azure.com/.default",
-        "grant_type": "client_credentials",
-        "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        "client_assertion": identity_token("api://AzureADTokenExchange"),
-    }, form=True).get("access_token")
-    if not isinstance(token, str) or not token:
-        raise CheckError("Microsoft Entra gave no access token")
+    token = signed_in("prompt_shields")
     url = f"{env('CONTENT_SAFETY_URL')}/contentsafety/text:shieldPrompt?api-version={SHIELD_API_VERSION}"
     labelled = list(enumerate(pieces(joined(found), SHIELD_PIECE, SHIELD_OVERLAP), 1))
     batches, batch = [], []
@@ -400,10 +496,9 @@ def prompt_shields(found):
     return ("suspicious" if matches else "clean"), {"matches": matches, "requests": len(batches)}
 
 
-def claude_request(found, marker):
-    """The one request to the model: a system prompt, the text between two marker lines the text cannot know, and an
-    output schema with the two words. No tools, no tool choice, no server, so the model can only answer."""
-    text = joined(found)
+def claude_request(text, marker):
+    """One request to the model: a system prompt, a piece of the text between two marker lines the text cannot know,
+    and an output schema with the two words. No tools, no tool choice, no server, so the model can only answer."""
     return {
         "model": env("SCREEN_MODEL"),
         "max_tokens": 64,
@@ -435,21 +530,22 @@ def claude_word(answer):
 
 
 def claude(found):
+    """The model, one request for each piece of the joined text, in order, each piece between markers of its own. It
+    answers suspicious when the model does for any piece; a piece the model gives no word for is no answer."""
+    token = signed_in("claude")
     base = env("ANTHROPIC_URL")
-    token = http("POST", f"{base}/v1/oauth/token", {
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": identity_token("https://api.anthropic.com"),
-        "federation_rule_id": env("ANTHROPIC_FEDERATION_RULE_ID"),
-        "organization_id": env("ANTHROPIC_ORGANIZATION_ID"),
-        "service_account_id": env("ANTHROPIC_SERVICE_ACCOUNT_ID"),
-        "workspace_id": env("ANTHROPIC_WORKSPACE_ID"),
-    }).get("access_token")
-    if not isinstance(token, str) or not token:
-        raise CheckError("Anthropic gave no access token")
-    marker = "=" * 8 + " " + secrets.token_hex(16) + " " + "=" * 8
-    answer = http("POST", f"{base}/v1/messages", claude_request(found, marker),
-                  {"Authorization": "Bearer " + token, "anthropic-version": ANTHROPIC_VERSION})
-    return claude_word(answer), {}
+    texts = pieces(joined(found), CLAUDE_PIECE, 0)
+    matches = []
+    for i, text in enumerate(texts, 1):
+        marker = "=" * 8 + " " + secrets.token_hex(16) + " " + "=" * 8
+        try:
+            word = claude_word(http("POST", f"{base}/v1/messages", claude_request(text, marker),
+                                    {"Authorization": "Bearer " + token, "anthropic-version": ANTHROPIC_VERSION}))
+        except CheckError as e:
+            raise CheckError(f"{e} (piece {i} of {len(texts)})") from None
+        if word == "suspicious":
+            matches.append({"piece": i})
+    return ("suspicious" if matches else "clean"), {"matches": matches, "requests": len(texts)}
 
 
 CHECKS = {"model_armor": model_armor, "prompt_shields": prompt_shields, "claude": claude}
@@ -615,8 +711,8 @@ def measure():
 
 def outcome(word, error):
     """What a check's run was, for the public log: that it answered (never which word), or the kind of failure, which
-    says nothing of the text: an HTTP status, an unreachable service, no time left, a missing setting, or an answer
-    in a form the screen does not know."""
+    says nothing of the text: an HTTP status, an unreachable service, no time left, a missing setting, no token from
+    the sign-in, or an answer in a form the screen does not know."""
     if word in WORDS:
         return "answered"
     m = re.match(r"HTTP (\d{3}) ", error)
@@ -628,7 +724,8 @@ def outcome(word, error):
     if m:
         return f"no answer, no prompt injection result (invocationResult {m.group(1)}, filters {m.group(2)})"
     for needle, kind in (("ran out of its", "no answer, out of time"), (" reaching ", "no answer, unreachable"),
-                         (" is not set", "no answer, a setting is missing")):
+                         (" is not set", "no answer, a setting is missing"),
+                         ("from screen.py --sign-in", "no answer, no token from the sign-in")):
         if needle in error:
             return kind
     return "no answer, an answer in a form the screen does not know"
@@ -646,17 +743,21 @@ def store(reason):
 
 
 def main():
+    global DEADLINE, TOKENS
+    if sys.argv[1:] == ["--sign-in"]:
+        return sign_in()
     if sys.argv[1:] == ["--measure"]:
-        global DEADLINE
         DEADLINE = time.monotonic() + int(os.environ.get("MEASURE_SECONDS", "2400"))
+        TOKENS = take_tokens()
         try:
             return measure()
         except Exception as e:   # the message names a setting or a service, never a text of the set
             print(f"The measurement failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
             return 1
     if len(sys.argv) != 2:
-        print("usage: screen.py <the .review directory> | screen.py --measure", file=sys.stderr)
+        print("usage: screen.py --sign-in | screen.py <the .review directory> | screen.py --measure", file=sys.stderr)
         return 2
+    TOKENS = take_tokens()
     try:
         verdict, ran, reason = screen(sys.argv[1])
     except Exception as e:   # a fault of this file before the checks: held, and the fault goes to the reason only

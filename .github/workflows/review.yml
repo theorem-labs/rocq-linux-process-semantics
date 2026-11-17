@@ -81,9 +81,14 @@
 #   screen  runs in the environment review-screen. Its identity token is exchanged for short-lived tokens, which only
 #           a job in that environment can get, and for Google Cloud and Anthropic only a job of this file on main:
 #           Google Cloud (Model Armor, and adding the reason to its bucket), Azure (Prompt Shields) and Anthropic (a
-#           service account of its own, not the review's). SCREEN_CHECKS names the checks that run. Its GitHub token
-#           can only read, and no key is stored. The checks get the text as data, and each answers a word; none
-#           can act on it. Its outputs are the verdict and the names of the checks that ran.
+#           service account of its own, not the review's). Two steps sign in before the screen: one to Google Cloud,
+#           and one to Anthropic and Azure, which writes their tokens to a file in the runner's temporary directory
+#           that the Screen step reads and deletes. A sign-in that fails fails the job before the screen, with no
+#           verdict. SCREEN_CHECKS names the checks that run. Its GitHub token can only read, and no key is stored.
+#           The checks get the text as data, and each answers a word; none can act on it. The screen reads up to
+#           400,000 characters of an item and holds a longer one unread. Claude reads the text in pieces of at most
+#           150,000 characters. A check that has not answered after 600 seconds holds the item. Its outputs are the
+#           verdict and the names of the checks that ran.
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
 #           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
@@ -959,6 +964,14 @@ jobs:
         id: google
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
         with: {workload_identity_provider: "${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", service_account: "${{ env.GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: "${{ needs.trust.outputs.route == 'measure' && '3600s' || '600s' }}", create_credentials_file: false, export_environment_variables: false}
+      # This step exchanges the identity token for Microsoft Entra's token for Prompt Shields and for Anthropic's token
+      # for the screen's model, each when SCREEN_CHECKS lists its check and the job's env above sets up its identity.
+      # Both tokens go to a file under the runner's temporary directory that only the runner's account can read, and
+      # that the Screen or Measure step deletes as it reads it; never to this log or an output. An exchange that fails
+      # fails this job before the screen, with no verdict.
+      - name: Sign in to Anthropic and Azure
+        run: python3 .github/screen.py --sign-in
+      # The screen reads the tokens of the step before and deletes their file.
       - name: Screen
         id: screen
         if: needs.trust.outputs.route != 'measure'
@@ -970,8 +983,8 @@ jobs:
           REASON_OBJECT: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
         run: python3 .github/screen.py .review
       # Every listed check, three times, on each text of the labelled set kept in the private bucket, and the verdict
-      # of each rule of SCREEN_RULE's choices. The texts and their words stay in the bucket; this log and the run's
-      # summary get the counts per rule alone.
+      # of each rule of SCREEN_RULE's choices, with the tokens of the sign-in. The texts and their words stay in the
+      # bucket; this log and the run's summary get the counts per rule alone.
       - name: Measure
         if: needs.trust.outputs.route == 'measure'
         env:
