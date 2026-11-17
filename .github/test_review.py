@@ -5,12 +5,13 @@ Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail),
 from files: which task and route a run gets (a CI run's workflow_run, an issue, an author's comment, a run by hand,
 the rescreen job's run), the hourly limit of an account without write access, which comments and reviews the review
 reads, what the posted comment can notify or link, what a held pull request or issue is told, that a run whose
-sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, and how one held
-for a reason not its own is screened again (the rescreen job, and the trust job's check of its run). The review job's
-sign-in to Anthropic runs against a stand-in on 127.0.0.1. Each job's condition is evaluated for every task and
-route, to show which jobs run, and that a run by hand off main runs none. The rest checks what each job holds, that
-no job of either workflow holds a right on pull_request, and the settings that keep Claude to the checkout and to the
-pinned binaries. .github/test_screen.py tests the screen itself.
+sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, how one held for a
+reason not its own is screened again (the rescreen job, and the trust job's check of its run), and the state label
+and the label comment that each of those gives (.github/review/rules.py, whose rule is also tested on its own). The
+review job's sign-in to Anthropic runs against a stand-in on 127.0.0.1. Each job's condition is evaluated for every
+task and route, to show which jobs run, and that a run by hand off main runs none. The rest checks what each job
+holds, that no job of either workflow holds a right on pull_request, and the settings that keep Claude to the
+checkout and to the pinned binaries. .github/test_screen.py tests the screen itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -18,10 +19,12 @@ Exits non-zero on any failure.
 """
 
 import datetime
+import importlib.util
 import itertools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -32,6 +35,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "review.yml")
 CI_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "ci.yml")
+# main's .github/, as the checkout of the comment, hold and rescreen jobs gives it, and the rule they run from it.
+GITHUB_DIR = os.path.dirname(os.path.abspath(__file__))
+RULES_PY = os.path.join(GITHUB_DIR, "review", "rules.py")
 REPO = "acme/model"
 TRUST = "Whether the author and the account that started the run have write access"
 WJ = "\u2060"   # the word joiner the comment step puts in each mention and reference
@@ -43,11 +49,14 @@ FORK_ID = 555               # the id of the head repository of that pull request
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
 MINT_A = "Sign in as the OSS Verify App"
 MINT_B = "Sign in as the OSS Verify App to approve"
+CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
 
 # gh api <endpoint> [--paginate] [--jq <filter>] [--method M] [-f|-F k=v], answered from $FAKE_GH/<endpoint>.json
 # (the endpoint's slashes as underscores, its query dropped) through jq, as gh applies --jq; an endpoint with no file
-# answers as GitHub's 404 does. <endpoint>.2.json and on are the pages that only --paginate reads. <endpoint>.then.json,
-# when there is one, takes the place of <endpoint>.json after the first read: an answer that changes in between.
+# answers as GitHub's 404 does, and one with a <endpoint>.fail file fails with that file's text, as gh names an HTTP
+# error (a 422, say). <endpoint>.2.json and on are the pages that only --paginate reads. <endpoint>.then.json, when
+# there is one, takes the place of <endpoint>.json after the first read: an answer that changes in between.
 # gh pr view <n> and gh issue view <n> answer the --json fields from $FAKE_GH/pr_view_<n>.json or issue_view_<n>.json.
 FAKE_GH = r"""#!/usr/bin/env bash
 if [ "$1" = pr ] || [ "$1" = issue ]; then
@@ -77,6 +86,7 @@ endpoint=${endpoint%%\?*}
 echo "$endpoint" >> "$FAKE_GH/calls"
 printf '%s\0' "${all[@]}" >> "$FAKE_GH/args"; printf '\1' >> "$FAKE_GH/args"
 file="$FAKE_GH/${endpoint//\//_}.json"
+[ ! -f "${file%.json}.fail" ] || { cat "${file%.json}.fail" >&2; exit 1; }
 [ -f "$file" ] || { echo "gh: Not Found (HTTP 404): $endpoint" >&2; exit 1; }
 jq -r "$filter" "$file"
 n=2
@@ -96,6 +106,18 @@ WF = load()
 JOBS = WF["jobs"]
 APPS = WF["env"]["APPS"]
 CI = load(CI_WORKFLOW)
+
+
+def load_rules():
+    """.github/review/rules.py as a module, with no bytecode written beside it."""
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("rules", RULES_PY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+rules = load_rules()
 
 
 def evaluate(expression, ctx):
@@ -222,6 +244,23 @@ def writes(api):
     return [c for c in gh_calls(api) if method(c) != "GET"]
 
 
+def state_labels(api, number=7):
+    """Each state label that the stand-in gh was asked to add to #number ("+", name) or to take off it ("-", name),
+    in order."""
+    found = []
+    for c in writes(api):
+        if c[:3] == ["--method", "POST", f"repos/{REPO}/issues/{number}/labels"]:
+            found += [("+", a.split("=", 1)[1]) for a in c if a.startswith("labels[]=waits-on-")]
+        elif c[:2] == ["--method", "DELETE"] and c[2].startswith(f"repos/{REPO}/issues/{number}/labels/waits-on-"):
+            found.append(("-", c[2].rsplit("/", 1)[1]))
+    return found
+
+
+def label_comments(api):
+    """Each label comment that the stand-in gh was asked to post or to edit: (method, endpoint, body)."""
+    return [(c[1], c[2], a[len("body="):]) for c in writes(api) for a in c if a.startswith("body=<!-- review-label -->")]
+
+
 def attempt_job(job, failed=None, name=None, steps=None):
     """A job of a run attempt as GitHub's API lists it, with its steps: the workflow's own steps of job, or steps. Each
     step before failed passed, failed failed and stopped the job, and each one after it was skipped; with no failed
@@ -288,6 +327,18 @@ class Runner(unittest.TestCase):
     def serve(self, endpoint, data):
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".json"), "w") as f:
             json.dump(data, f)
+
+    def checkout(self):
+        """main's .github/ in the work directory, as the checkout step of the comment, hold and rescreen jobs gives
+        it."""
+        path = os.path.join(self.work, ".github")
+        if not os.path.lexists(path):
+            os.symlink(GITHUB_DIR, path)
+
+    def refuse(self, endpoint, status, text="Validation Failed"):
+        """Every call of endpoint fails with an HTTP status, as gh names it."""
+        with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
+            f.write(f"gh: {text} (HTTP {status})\n")
 
     def permissions(self, **logins):
         """Serve GitHub's collaborator permission answer for each login; a login not given is a 404."""
@@ -1262,21 +1313,36 @@ class HoldingsTest(unittest.TestCase):
 
     def test_the_jobs_that_post_hold_no_model(self):
         for name, permissions in (
-                ("comment", {"issues": "write", "pull-requests": "write"}),
+                # contents: read checks out main's .github/, for .github/review/rules.py.
+                ("comment", {"contents": "read", "issues": "write", "pull-requests": "write"}),
                 # The hold job reads this workflow's runs and jobs too: was its review stopped at the cap, or cancelled
                 # by a newer run of the item?
-                ("hold", {"issues": "write", "pull-requests": "write", "actions": "read"}),
+                ("hold", {"contents": "read", "issues": "write", "pull-requests": "write", "actions": "read"}),
                 # The App's job writes nothing with its own token: actions: read lists a head's held runs.
                 ("post", {"contents": "read", "pull-requests": "read", "actions": "read"})):
             with self.subTest(job=name):
                 job = JOBS[name]
                 self.assertEqual(job["permissions"], permissions)
-                self.assertEqual([s["uses"] for s in job["steps"] if "uses" in s], [APP_TOKEN] * 2 if name == "post" else [])
+                self.assertEqual([s["uses"] for s in job["steps"] if "uses" in s],
+                                 [APP_TOKEN] * 2 if name == "post" else [CHECKOUT])
                 # its conditions read the screen's verdict; nothing it runs reads anything of the screen's
                 text = json.dumps({k: v for k, v in job.items() if k not in ("if", "steps")}).lower()
                 text += json.dumps([{k: v for k, v in s.items() if k != "if"} for s in job["steps"]]).lower()
                 for needle in ("anthropic", "claude", "needs.screen", "id-token", "reason"):
                     self.assertNotIn(needle, text)
+
+    def test_the_jobs_that_label_check_out_mains_github_alone(self):
+        """The comment, hold and rescreen jobs run .github/review/rules.py from main's .github/, never from the pull
+        request, and keep no token in the checkout."""
+        for name in ("comment", "hold", "rescreen"):
+            with self.subTest(job=name):
+                found = [s for s in JOBS[name]["steps"] if "uses" in s]
+                self.assertEqual([s["uses"] for s in found], [CHECKOUT])
+                self.assertEqual(found[0]["with"], {"ref": "main", "persist-credentials": False,
+                                                    "sparse-checkout": ".github", "sparse-checkout-cone-mode": False})
+                self.assertEqual(JOBS[name]["permissions"]["contents"], "read")
+                self.assertEqual(JOBS[name]["steps"][0], found[0])
+                self.assertIn("python3 .github/review/rules.py ", "".join(s.get("run", "") for s in JOBS[name]["steps"]))
 
     def test_the_app_signs_in_for_this_repository_alone_and_approves_only_after_a_passed_screen(self):
         """Token A: checks: write and pull-requests: write; token B: actions: write alone, minted only for the task
@@ -1403,23 +1469,27 @@ class TakeTest(Runner):
 
 
 class HoldTest(Runner):
-    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again; and nothing
-    at all for a run whose sign-in failed."""
+    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again; the state
+    label and the label comment that the hold gives; and nothing at all for a run whose sign-in failed."""
 
     STEP = "Label it and say that it was held"
     TRIES = int(WF["env"]["REVIEW_TRIES"])
 
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
-                 uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None):
-        """Run the hold step for a run of the task of #number; capped: this run's review stopped at the cap;
-        uncounted: its count of the hour's reviews failed, so it stopped before the cap's step; runs: this workflow's
-        runs, (id, name[, its trust job's conclusion, success when absent, None for not listed yet[, its event, issues
-        when absent]]); prs: the open pull requests (serve_prs); jobs: this attempt's jobs as GitHub lists them
-        (attempt_job), in place of the ones capped and uncounted give, or False when GitHub cannot list them."""
+                 uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
+                 labels=("review-held",)):
+        """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
+        capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
+        before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
+        None for not listed yet[, its event, issues when absent]]); prs: the open pull requests (serve_prs); jobs: this
+        attempt's jobs as GitHub lists them (attempt_job), in place of the ones capped and uncounted give, or False
+        when GitHub cannot list them. posts are the calls that post or edit the hold comment, and body the first."""
         n = number
+        self.checkout()
+        self.serve(f"repos/{REPO}/issues/{n}", {"number": n, **({"pull_request": {}} if kind == "pr" else {})})
         self.serve(f"repos/{REPO}/issues/{n}/comments", list(comments))
-        self.serve(f"repos/{REPO}/issues/{n}/labels", [{"name": "review-held"}])
-        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/issues/{n}/labels", [{"name": name} for name in labels])
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
         self.serve(f"repos/{REPO}/issues/comments/5", {"html_url": f"https://github.com/acme/model/issues/{n}#c5"})
         if jobs is None:
             jobs = [
@@ -1447,7 +1517,7 @@ class HoldTest(Runner):
                                      SCREENED_HOURLY_CAP=WF["env"]["SCREENED_HOURLY_CAP"],
                                      OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
                                      GITHUB_STEP_SUMMARY=summary)
-        posts = [c for c in gh_calls(self.api) if "body=" in " ".join(c)]
+        posts = [c for c in gh_calls(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
         body = next((a for c in posts for a in c if a.startswith("body=")), "body=")[len("body="):]
         return rc, out, posts, body
 
@@ -1464,33 +1534,50 @@ class HoldTest(Runner):
         self.assertEqual(len(posts), 1, gh_calls(self.api))
         return gh_calls(self.api), posts[0], body
 
+    def assertWaitsOnSami(self, step):
+        """The item got waits-on-theorem, with one label comment that names Sami's next step, step."""
+        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+        (method, _endpoint, body), = label_comments(self.api)
+        self.assertEqual(method, "POST")
+        self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {step}\n"), body)
+        self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+
     def test_a_held_item_is_labelled_and_told_in_fixed_words(self):
-        calls, post, body = self.hold("screen")
-        self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
-                       "--jq", ".[].name"], calls)
-        self.assertIn(f"repos/{REPO}/issues/7/comments", post)
-        self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nIt comes from an account without "
-                               "write access to this repository, so an automated screen reads it before the automated "
-                               "review does, and the screen did not pass it. A maintainer will look at it. A "
-                               "maintainer can start the review with `gh workflow run review.yml -R acme/model -f "
-                               "number=7`.")
+        """b1 and b8: the screen's hold of a pull request or an issue names no maintainer and asks nobody to start a
+        run; the item gets review-held, and waits-on-theorem with the label comment's step for Sami."""
+        for kind, words in (("pr", "The automated screen held this pull request, so the automated review did not "
+                                   "run. You do not need to do anything."),
+                            ("issue", "The automated screen held this issue, so no automated reply was written. You "
+                                      "do not need to do anything.")):
+            with self.subTest(kind=kind):
+                self.tearDown()
+                self.setUp()
+                calls, post, body = self.hold("screen", kind=kind)
+                self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
+                               "--jq", ".[].name"], calls)
+                self.assertIn(f"repos/{REPO}/issues/7/comments", post)
+                self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
+                self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
 
     AGAIN = (r"It is screened again automatically, with no maintainer, from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} "
              r"UTC, by a check that runs every 15 minutes\. ")
     # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
-    # be held for another reason, says only that a new hold says why.
+    # be held for another reason, says only that a new hold says why. The marker follows, and nothing asks anyone to
+    # start a run.
     AGAIN_LIMIT = AGAIN + (r"If that account is still at the limit then, the check tries again later, and if the item "
-                           r"is held again, this comment gives the new time\. ")
-    AGAIN_OTHER = AGAIN + r"If it is held again, this comment says why\. "
+                           r"is held again, this comment gives the new time\.\n\n<!-- ")
+    AGAIN_OTHER = AGAIN + r"If it is held again, this comment says why\.\n\n<!-- "
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
-        of the screen carries no such marker, so it is never screened again on its own."""
+        of the screen carries no such marker, so it is never screened again on its own. The workflow still works on
+        the item: no state label."""
         _calls, _post, body = self.hold("limit", tries="1")
         self.assertIn(f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour", body)
         self.assertRegex(body, self.AGAIN_LIMIT)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
     def test_a_hold_tried_again_needs_its_run(self):
         for kwargs in ({"route": "limit"}, {"route": "screen", "review": "failure"},
@@ -1507,6 +1594,21 @@ class HoldTest(Runner):
         self.assertNotIn("account is still at the limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
 
+    def test_a_cap_hold_shows_the_time_and_no_state_label(self):
+        """b1: the workflow still works on an item at the cap. The hold gives the UTC time when it is tried again,
+        the state label that the item had comes off, and its label comment says that the workflow works on it."""
+        label = {"id": 40, "user": {"login": BOT}, "body": "<!-- review-label -->\n**Next step:** Sami ...\n\n"
+                                                          "<!-- waits-on-theorem: Sami -->"}
+        self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/issues/7#c40"})
+        _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="0", capped=True,
+                                        labels=("review-held", THEOREM_LABEL), comments=[label])
+        self.assertRegex(body, r"from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC")
+        self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL)])
+        (method, endpoint, text), = label_comments(self.api)
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
+        self.assertEqual(text, rules.label_comment("working"))
+        self.assertNotIn("<!-- waits-on-", text)
+
     def test_a_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
         """The count of the hour's reviews could not be read: the cap was not reached, so the hold says so and counts a
         try, and REVIEW_TRIES still ends the tries."""
@@ -1515,6 +1617,8 @@ class HoldTest(Runner):
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
     def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
+        """Each try but the last gives no state label; the last try gives waits-on-theorem, with the label comment's
+        step for Sami, and a hold that names no maintainer."""
         self.assertGreater(self.TRIES, 1)
         for review in ("failure", "cancelled"):
             for before in range(self.TRIES - 1):
@@ -1526,12 +1630,15 @@ class HoldTest(Runner):
                     self.assertRegex(body, self.AGAIN_OTHER)
                     self.assertNotIn("account is still at the limit", body)
                     self.assertTrue(body.endswith(f"\n\n<!-- review-held-transient 50 {before + 1} -->"), body)
+                    self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
             with self.subTest(review=review, before=self.TRIES - 1):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(self.TRIES - 1))
-                self.assertIn(f"did not finish, {self.TRIES} times. A maintainer will look at it.", body)
+                self.assertIn(f"did not finish after {self.TRIES} tries. It is not tried again.", body)
+                self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+                self.assertWaitsOnSami("Sami reads the runs and starts the work again.")
 
     def test_a_review_that_a_newer_run_of_the_item_and_task_cancelled_holds_nothing(self):
         """Only a newer run of the same item and task is in the review job's group, so only it can have cancelled this
@@ -1584,17 +1691,22 @@ class HoldTest(Runner):
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
 
-    def test_a_maintainers_screen_says_so(self):
-        """A maintainer's -f screen=true has no outsider: the comment does not say the account lacks write access, and
-        nothing tries it again."""
-        for review in ("skipped", "failure", "cancelled"):
+    def test_a_screen_asked_for_by_hand_says_so(self):
+        """A run by hand with -f screen=true has no outsider: the comment does not say the account lacks write access,
+        names no maintainer, and nothing tries it again. The item waits on Sami: to start the review or the checks
+        when the screen held it, or to start the work again when the review after the screen did not finish."""
+        for review, step in (("skipped", "Sami reads the item and starts its review or its checks by hand."),
+                             ("failure", "Sami reads the runs and starts the work again."),
+                             ("cancelled", "Sami reads the runs and starts the work again.")):
             with self.subTest(review=review):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", outsider="", review=review)
-                self.assertIn("A maintainer asked for the automated screen first", body)
+                self.assertIn("A run started by hand asked for the automated screen first.", body)
                 self.assertNotIn("without write access", body)
+                self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+                self.assertWaitsOnSami(step)
 
     def test_a_maintainers_screened_review_that_a_newer_run_cancelled_holds_nothing(self):
         """The newer run of the same task decides, whoever asked for this one: the old run neither labels nor
@@ -1729,22 +1841,32 @@ class HoldTest(Runner):
 
 
 class PostLabelTest(Runner):
-    """The comment job takes the label review-held off when it posts a review."""
+    """The comment job takes the label review-held off when it posts a review, and sets the state label and the label
+    comment of the review's outcome."""
 
+    STEP = "Take the label review-held off and set the state label"
     DELETE = ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"]
     STARTED = "2026-11-02T10:00:00Z"
 
-    def take_off(self, head="", now=None, held=()):
-        """held: the updated_at of each hold comment on the issue or pull request."""
-        s = step("comment", "Take the label review-held off")
+    def setUp(self):
+        super().setUp()
+        self.checkout()
+
+    def take_off(self, head="", now=None, held=(), labels=(), comments=(), **env):
+        """held: the updated_at of each hold comment on the issue or pull request; labels: the item's labels;
+        comments: its other comments. The DELETE calls."""
+        s = step("comment", self.STEP)
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
         self.serve(f"repos/{REPO}/issues/7/comments",
                    [{"user": {"login": "github-actions[bot]"}, "body": "<!-- review-held -->\nheld", "updated_at": t}
                     for t in held] + [{"user": {"login": "mallory"}, "body": "<!-- review-held --> forged",
-                                       "updated_at": "2099-01-01T00:00:00Z"}])
+                                       "updated_at": "2099-01-01T00:00:00Z"}] + list(comments))
         if now:
             self.serve(f"repos/{REPO}/pulls/7", {"head": {"sha": now}})
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD=head, STARTED=self.STARTED)
+        rc, out, _ = self.run_script(s["run"], **{"NUMBER": "7", "HELD_LABEL": "review-held", "HEAD": head,
+                                                  "STARTED": self.STARTED, "KIND": "pr", "OUTSIDER": "mallory",
+                                                  "RECORDED": "false", **env})
         self.assertEqual(rc, 0, out)
         return [c for c in gh_calls(self.api) if c[:2] == ["--method", "DELETE"]]
 
@@ -1758,8 +1880,9 @@ class PostLabelTest(Runner):
         self.assertEqual(self.take_off(held=["2026-11-02T09:59:59Z"]), [self.DELETE])
 
     def test_the_review_of_an_older_head_leaves_the_label(self):
-        """A newer push may have been held since."""
-        self.assertEqual(self.take_off("a" * 40, "b" * 40), [])
+        """A newer push may have been held since, and its own run sets the state label."""
+        self.assertEqual(self.take_off("a" * 40, "b" * 40, labels=(AUTHOR_LABEL,)), [])
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
     def test_a_hold_after_this_run_started_leaves_the_label(self):
         """An issue has no head: a newer event of it, held while this run's review ran, keeps its label."""
@@ -1767,20 +1890,38 @@ class PostLabelTest(Runner):
             with self.subTest(when=when):
                 self.tearDown()
                 self.setUp()
-                self.assertEqual(self.take_off(held=["2026-11-01T00:00:00Z", when]), [])
-        self.assertEqual(step("comment", "Take the label review-held off")["env"]["STARTED"],
-                         "${{ needs.review.outputs.started }}")
+                self.assertEqual(self.take_off(held=["2026-11-01T00:00:00Z", when], labels=(THEOREM_LABEL,)), [])
+                self.assertEqual(state_labels(self.api), [])
+        self.assertEqual(step("comment", self.STEP)["env"]["STARTED"], "${{ needs.review.outputs.started }}")
         self.assertEqual(JOBS["review"]["outputs"]["started"], "${{ needs.trust.outputs.started }}")
 
+    def test_a_posted_review_ends_the_conflict_state(self):
+        """The author resolved the conflict and pushed, and the review of the new head posted: waits-on-author comes
+        off, and the label comment loses the conflict-state line and keeps its other markers. A review that gives
+        the rule no verdict gives no state label."""
+        old = rules.label_comment("conflict", "<!-- issue-draft 5-1 -->", head=OTHER_HEAD)
+        self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
+        deleted = self.take_off(HEAD, HEAD, labels=("review-held", AUTHOR_LABEL),
+                                comments=[{"id": 40, "user": {"login": BOT}, "body": old}])
+        self.assertEqual(deleted, [self.DELETE, ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/{AUTHOR_LABEL}"]])
+        (method, endpoint, body), = label_comments(self.api)
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
+        self.assertNotIn("review-conflict-state", body)
+        self.assertNotIn("<!-- waits-on-", body)
+        self.assertTrue(body.endswith("\n\n<!-- issue-draft 5-1 -->"), body)
+
     def test_no_label_is_no_error(self):
-        s = step("comment", "Take the label review-held off")
+        s = step("comment", self.STEP)
         self.serve(f"repos/{REPO}/issues/7/comments", [])
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED=self.STARTED)
+        self.serve(f"repos/{REPO}/issues/7/labels", [])
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED=self.STARTED,
+                                     KIND="issue", OUTSIDER="", RECORDED="false")
         self.assertEqual(rc, 0, out)
 
     def test_no_start_time_stops_it(self):
-        s = step("comment", "Take the label review-held off")
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED="")
+        s = step("comment", self.STEP)
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED="",
+                                     KIND="issue", OUTSIDER="", RECORDED="false")
         self.assertEqual(rc, 1, out)
         self.assertEqual([c for c in gh_calls(self.api) if c[:2] == ["--method", "DELETE"]], [])
 
@@ -2281,6 +2422,7 @@ class RescreenJobTest(Held):
 
     def setUp(self):
         super().setUp()
+        self.checkout()
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/dispatches", {})
         self.runs()
 
@@ -2288,6 +2430,11 @@ class RescreenJobTest(Held):
         """The open items labelled review-held, as GitHub lists them: (number, state[, draft])."""
         self.serve(f"repos/{REPO}/issues", [{"number": i[0], "state": i[1], **({"draft": i[2]} if len(i) > 2 else {})}
                                             for i in items])
+
+    def labelled(self, number, *labels):
+        """The labels of #number, and the answer GitHub gives when a label is made."""
+        self.serve(f"repos/{REPO}/issues/{number}/labels", [{"name": n} for n in ("review-held", *labels)])
+        self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
 
     def started(self, post_review=None):
         rc, out, _ = self.run_script(step("rescreen", RESCREEN_JOB)["run"],
@@ -2486,12 +2633,14 @@ class RescreenJobTest(Held):
 
     def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
         """The hold comment stops promising an automatic screen: it is replaced with fixed words and the command a
-        maintainer runs, with no marker. That run fails; the next one finds no hold that is tried again, starts
-        nothing and passes."""
+        maintainer runs, with no marker, and the item gets waits-on-theorem with the label comment's step for Sami
+        (b1, the third end of tries). That run fails; the next one finds no hold that is tried again, starts nothing,
+        labels nothing and passes."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         hours_ago = (datetime.datetime.now(datetime.timezone.utc)
                      - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.items((7, "open"))
+        self.labelled(7, AUTHOR_LABEL)
         older = dict(screen_hold(at="1999-01-01T00:00:00Z"), id=4)
         self.held(7, older, limit_hold(50, at=hours_ago, kind="transient", tries=1))
         self.origin(50, "mallory")
@@ -2501,6 +2650,12 @@ class RescreenJobTest(Held):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
         self.assertIn(f"::error::#7: screened again {tries} times since its hold", out)
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
+        (method, _endpoint, label), = label_comments(self.api)
+        self.assertEqual(method, "POST")
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami reads the runs and starts the "
+                                         "work again.\n"), label)
+        self.assertTrue(label.endswith("\n<!-- waits-on-theorem: Sami -->"), label)
         patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
         self.assertEqual(len(patches), 1, gh_calls(self.api))
         self.assertEqual(patches[0][2], f"repos/{REPO}/issues/comments/50")
@@ -2520,6 +2675,21 @@ class RescreenJobTest(Held):
         self.assertEqual((rc, runs), (0, []), out)
         self.assertIn("#7: no hold that is tried again", out)
         self.assertFalse(any(c[:2] == ["--method", "PATCH"] for c in gh_calls(self.api)))
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+
+    def test_at_the_bound_a_label_that_cannot_be_set_leaves_the_hold_for_the_next_run(self):
+        """The labels of the item cannot be read: the hold comment keeps its marker, so the next run sets the label
+        and replaces the comment then."""
+        tries = int(WF["env"]["REVIEW_TRIES"])
+        self.items((7, "open"))
+        self.held(7, limit_hold(50, kind="cap", tries=0))
+        self.origin(50, "mallory")
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c"})
+        self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
+                    for i in range(tries)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (1, [], []), out)
+        self.assertIn("the label of #7 could not be set; the next run tries again", out)
 
     def test_at_the_bound_a_hold_that_changed_meanwhile_is_not_overwritten(self):
         """The comment is replaced only while the newest hold is still the one the run read. A newer hold written in
@@ -2531,6 +2701,7 @@ class RescreenJobTest(Held):
                 self.tearDown()
                 self.setUp()
                 self.items((7, "open"))
+                self.labelled(7)
                 self.held(7, limit_hold(50, kind="cap", tries=0))
                 if changed:
                     self.serve(f"repos/{REPO}/issues/7/comments.then",
@@ -2555,6 +2726,7 @@ class RescreenJobTest(Held):
         """The PATCH fails (no stand-in answer): the job fails, and the comment keeps its marker for the next run."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         self.items((7, "open"))
+        self.labelled(7)
         self.held(7, limit_hold(50, kind="cap", tries=0))
         self.origin(50, "mallory")
         self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
@@ -2699,9 +2871,10 @@ class RescreenJobTest(Held):
     def test_only_this_job_can_start_a_run(self):
         """actions: write is what starting a run needs: only this job has it, and only this job starts one."""
         self.assertEqual(WF["permissions"], {})
-        # actions: write starts the runs; issues and pull-requests: write replace a hold comment at REVIEW_TRIES.
+        # actions: write starts the runs; issues and pull-requests: write set waits-on-theorem and replace a hold
+        # comment at REVIEW_TRIES; contents: read checks out main's .github/ for .github/review/rules.py.
         self.assertEqual(JOBS["rescreen"]["permissions"],
-                         {"actions": "write", "issues": "write", "pull-requests": "write"})
+                         {"actions": "write", "contents": "read", "issues": "write", "pull-requests": "write"})
         for name, job in JOBS.items():
             if name != "rescreen":
                 with self.subTest(job=name):
@@ -2709,7 +2882,7 @@ class RescreenJobTest(Held):
                     self.assertNotIn("/dispatches", json.dumps(job))
                     self.assertNotIn("gh workflow run", "".join(s.get("run", "") for s in job["steps"])
                                      .replace("gh workflow run review.yml -R", ""))
-        self.assertFalse(any("uses" in s for s in JOBS["rescreen"]["steps"]))
+        self.assertEqual([s["uses"] for s in JOBS["rescreen"]["steps"] if "uses" in s], [CHECKOUT])
 
     def test_the_names_the_counts_read_are_the_ones_run_name_gives(self):
         """run-name gives each run the name that the counts and the trust job read: its task, its item, and the
@@ -2925,16 +3098,19 @@ class ConcurrencyTest(unittest.TestCase):
 
 class ConflictTest(Runner):
     """GitHub starts no CI run for a pull request with a merge conflict: the author's comment run, a run by hand and
-    the rescreen job's conflict run give it the task conflict, and the comment job gives it waits-on-author and a
-    comment that asks its author to resolve the conflict, and no review."""
+    the rescreen job's conflict run give it the task conflict, and the comment job gives it waits-on-author, a label
+    comment that holds the head's conflict-state line, and a comment that asks its author to resolve the conflict,
+    and no review."""
 
     STEP = "Ask the author to resolve the merge conflict"
-    LABEL = ["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=waits-on-author", "--jq", ".[].name"]
 
     def setUp(self):
         super().setUp()
+        self.checkout()
         self.permissions(alice="write", mallory="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        self.serve(f"repos/{REPO}/labels", {"name": AUTHOR_LABEL})
+        self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
         self.serve_item(7, "mallory", kind="pr", head=HEAD, mergeable="dirty")
 
     def clear(self):
@@ -2942,17 +3118,17 @@ class ConflictTest(Runner):
             if os.path.exists(os.path.join(self.api, name)):
                 os.remove(os.path.join(self.api, name))
 
-    def comment(self, head, comments=()):
-        """The comment job's step, and the bodies it posted."""
+    def comment(self, head, comments=(), labels=()):
+        """The comment job's step on #7, which has comments and labels; the bodies of the comments it posted on the
+        conflict."""
         self.clear()
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
-        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "waits-on-author"}])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
         rc, out, _ = self.run_script(step("comment", self.STEP)["run"], NUMBER="7", HEAD=head,
                                      POST_REVIEW=WF["env"]["POST_REVIEW"])
         self.assertEqual(rc, 0, out)
-        calls = gh_calls(self.api)
-        return calls, [a[len("body="):] for c in calls if c[:2] == ["--method", "POST"] for a in c
-                       if a.startswith("body=")]
+        return [a[len("body="):] for c in gh_calls(self.api) if c[:2] == ["--method", "POST"] for a in c
+                if a.startswith("body=<!-- review-conflict ")]
 
     def test_a_conflict_read_by_the_authors_comment_and_by_a_scheduled_run_gets_waits_on_author_and_the_comment(self):
         for case, event, kwargs in (
@@ -2966,28 +3142,38 @@ class ConflictTest(Runner):
                                  (0, "conflict", "review", HEAD), out)
                 ran = {n for n, r in run_graph(got, github={"github.event_name": event}).items() if r != "skipped"}
                 self.assertEqual(ran - {"trust"}, {"comment"})
-                calls, bodies = self.comment(got["head"])
-                self.assertIn(self.LABEL, calls)
-                self.assertIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/waits-on-theorem"],
-                              [c[:3] for c in calls])
-                self.assertEqual(len(bodies), 1, calls)
+                bodies = self.comment(got["head"], labels=("review-held", THEOREM_LABEL))
+                self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL), ("+", AUTHOR_LABEL)])
+                self.assertEqual(len(bodies), 1, gh_calls(self.api))
                 self.assertTrue(bodies[0].startswith(f"<!-- review-conflict {HEAD} -->\n"), bodies[0])
                 self.assertIn("merge conflict with `main`", bodies[0])
                 self.assertIn("Resolve the conflict", bodies[0])
                 self.assertNotIn("maintainer", bodies[0].lower())
+                (method, _endpoint, label), = label_comments(self.api)
+                self.assertEqual(method, "POST")
+                self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** You resolve the merge "
+                                                 "conflict"), label)
+                self.assertTrue(label.endswith(f"\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->"),
+                                label)
 
     def test_one_comment_for_each_head(self):
         """The author's next comment, or the next scheduled run, posts no second comment on the same head, and the
-        label stays; a new head that conflicts again gets its own. An outsider's copy of the marker is not the
+        label and the label comment stay as they are; a new head that conflicts again gets its own comment, and the
+        label comment's conflict-state line names the new head. An outsider's copy of the marker is not the
         workflow's."""
         posted = {"id": 31, "user": {"login": BOT}, "body": f"<!-- review-conflict {HEAD} -->\n**Merge conflict**"}
-        calls, bodies = self.comment(HEAD, [posted])
-        self.assertEqual(bodies, [])
-        self.assertIn(self.LABEL, calls)
+        label = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("conflict", head=HEAD)}
+        self.assertEqual(self.comment(HEAD, [posted, label], labels=(AUTHOR_LABEL,)), [])
+        self.assertEqual(writes(self.api), [])
         forged = {"id": 32, "user": {"login": "mallory"}, "body": f"<!-- review-conflict {OTHER_HEAD} -->"}
-        _calls, bodies = self.comment(OTHER_HEAD, [posted, forged])
+        bodies = self.comment(OTHER_HEAD, [posted, forged, label], labels=(AUTHOR_LABEL,))
         self.assertEqual(len(bodies), 1)
         self.assertTrue(bodies[0].startswith(f"<!-- review-conflict {OTHER_HEAD} -->\n"))
+        self.assertEqual(state_labels(self.api), [])
+        (method, endpoint, text), = label_comments(self.api)
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
+        self.assertIn(f"<!-- review-conflict-state {OTHER_HEAD} -->", text)
+        self.assertNotIn(HEAD, text)
 
     def test_a_conflict_that_cleared_is_none(self):
         """The rescreen job's conflict run of a head that no longer conflicts is refused, and the author's comment
@@ -3071,6 +3257,219 @@ class CatchupTest(Held):
         today = datetime.datetime.now(datetime.timezone.utc).date()
         self.assertEqual(days, [str(first + datetime.timedelta(days=i)) for i in range((today - first).days + 1)])
 
+
+def pr(**facts):
+    """The facts of a run on a pull request that took an outsider's path: its review followed a screen that passed."""
+    return {"kind": "pr", "outsider": True, **facts}
+
+
+class LabelRuleTest(unittest.TestCase):
+    """The state rule of .github/review/rules.py (R5, D2 to D4, R12): for the facts of a run, the item's state, its
+    one state label, and its label comment."""
+
+    # (case, facts, state, label)
+    TABLE = (
+        ("a review or a fix in flight, or a first-time contributor's held run: nothing judged", {}, "working", None),
+        ("a hold at the limit, at the cap, or of a review that did not finish", {"held": True}, "working", None),
+        ("a run that could not sign in", {"sign_in_failed": True, "screen_held": True}, "working", None),
+        ("a screen hold", {"screen_held": True}, "screen", THEOREM_LABEL),
+        ("the last try of the work", {"tries_used_up": True}, "stopped", THEOREM_LABEL),
+        ("a catch-up left closed", {"left_closed": True, "conflict": True}, "reopen", THEOREM_LABEL),
+        ("a conflict, before all else of its head", {"conflict": True, "tries_used_up": True, **pr(verdict="person")},
+         "conflict", AUTHOR_LABEL),
+        ("a stored draft of a reply", {"kind": "issue", "outsider": True, "draft_stored": True}, "draft",
+         THEOREM_LABEL),
+        ("an approved reply posted", {"kind": "issue", "outsider": True, "draft_stored": True, "reply_posted": True},
+         "replied", AUTHOR_LABEL),
+        ("a fix review posted", pr(verdict="blocking", fix_posted=True), "fix", AUTHOR_LABEL),
+        ("a fix review that an answer asked for", pr(fix_posted=True), "fix", AUTHOR_LABEL),
+        ("a blocking finding that no suggestion can fix", pr(verdict="blocking"), "change", AUTHOR_LABEL),
+        ("2 fixes since the author's last push", pr(verdict="blocking", fix_posted=True, fix_stop=True), "fix-stop",
+         THEOREM_LABEL),
+        ("the author will make the change", pr(verdict="blocking", will_fix=True, fix_stop=True), "will-fix",
+         THEOREM_LABEL),
+        ("a person verdict", pr(verdict="person"), "person", THEOREM_LABEL),
+        ("a person verdict on an issue", {"kind": "issue", "outsider": True, "verdict": "person"}, "person",
+         THEOREM_LABEL),
+        ("a pass with no import check run recorded", pr(verdict="pass"), "decide", THEOREM_LABEL),
+        ("a pass whose import check run the post job recorded", pr(verdict="pass", recorded=True), "working", None),
+        ("a pass on a writer's path, with no screen", dict(pr(verdict="pass"), outsider=False), "working", None),
+        ("a blocking finding on a writer's path", dict(pr(verdict="blocking"), outsider=False), "working", None),
+        ("a pass of an issue", {"kind": "issue", "outsider": True, "verdict": "pass"}, "working", None),
+        ("a hold of a reviewed head that is tried again", pr(verdict="blocking", held=True), "working", None),
+    )
+
+    def test_each_state_of_the_rule(self):
+        for case, facts, state, label in self.TABLE:
+            with self.subTest(case=case):
+                self.assertEqual(rules.label_state(**facts), state)
+                self.assertEqual(rules.label_of(state), label)
+        self.assertEqual({row[2] for row in self.TABLE}, set(rules.STATES))
+
+    def test_each_label_comment_names_the_next_step_and_who_takes_it(self):
+        """b1: each waits-on-theorem comes with a label comment whose next step is Sami's and whose last line is the
+        marker of Sami; each waits-on-author with one whose next step is the author's; no label, with one that names
+        no one at Theorem. No text says that anyone decides or will look at the item."""
+        for state in rules.STATES:
+            with self.subTest(state=state):
+                body = rules.label_comment(state, head=HEAD)
+                first, step_line = body.split("\n")[:2]
+                self.assertEqual(first, "<!-- review-label -->")
+                self.assertNotRegex(body, r"(?i)maintainer|decides|will look")
+                label = rules.label_of(state)
+                if label == THEOREM_LABEL:
+                    self.assertTrue(step_line.startswith("**Next step:** Sami "), step_line)
+                    self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+                elif label == AUTHOR_LABEL:
+                    self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
+                    self.assertTrue(body.endswith("\n<!-- waits-on-author -->"), body)
+                else:
+                    self.assertTrue(step_line.startswith("**Next step:** The automated workflow "), step_line)
+                    self.assertNotIn("<!-- waits-on-", body)
+                    self.assertNotIn("Sami", body)
+
+    def test_a_passed_pull_request_names_each_step_that_r12_gives_with_no_variable(self):
+        body = rules.label_comment("decide")
+        for words in ("Sami merges the pull request on this repository, while the rules of this repository allow",
+                      "once the import into the internal repository runs, Sami approves the head commit for the import",
+                      "Sami copies the change into the internal repository by hand, if the pull request changes a "
+                      "path that the import does not take"):
+            self.assertIn(words, body)
+
+    def test_the_label_comment_keeps_its_markers_and_takes_new_ones_in_their_place(self):
+        """The import's paths of a head, the stored draft and the posted reply stay through each state; a new marker
+        of a kind takes the place of the old one; the conflict-state line and the old label's marker go."""
+        old = "\n".join(["<!-- review-label -->", "**Next step:** You resolve the merge conflict.", "",
+                         f'<!-- repo-pairs-import-paths {HEAD}: "README.md" -->', "<!-- issue-draft 5-1 -->",
+                         "<!-- issue-reply-posted 41 -->", f"<!-- review-conflict-state {HEAD} -->",
+                         "<!-- waits-on-author -->"])
+        body = rules.label_comment("person", old, [f"<!-- repo-pairs-import-paths {OTHER_HEAD}: null -->"])
+        self.assertEqual(body.split("\n\n")[-1].split("\n"), [
+            "<!-- issue-draft 5-1 -->", "<!-- issue-reply-posted 41 -->",
+            f"<!-- repo-pairs-import-paths {OTHER_HEAD}: null -->", "<!-- waits-on-theorem: Sami -->"])
+        working = rules.label_comment("working", body)
+        self.assertTrue(working.endswith(f"\n\n<!-- issue-draft 5-1 -->\n<!-- issue-reply-posted 41 -->\n"
+                                         f"<!-- repo-pairs-import-paths {OTHER_HEAD}: null -->"), working)
+
+    def test_a_conflict_holds_the_conflict_state_line_of_its_head(self):
+        body = rules.label_comment("conflict", head=HEAD)
+        self.assertTrue(body.endswith(f"\n\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->"), body)
+        self.assertIn(f"at commit {HEAD[:12]}.", body)
+        for head in ("", HEAD[:12]):
+            with self.subTest(head=head), self.assertRaises(ValueError):
+                rules.label_comment("conflict", head=head)
+
+    def test_the_labels_are_described_in_words_github_takes(self):
+        """GitHub refuses a label description over 100 characters, which would leave the label with none."""
+        self.assertEqual(set(rules.LABELS), {AUTHOR_LABEL, THEOREM_LABEL, WF["env"]["HELD_LABEL"]})
+        for name, (color, description) in rules.LABELS.items():
+            with self.subTest(label=name):
+                self.assertRegex(color, r"^[0-9a-f]{6}$")
+                self.assertLessEqual(len(description), 100)
+                self.assertNotIn("maintainer", description.lower())
+
+    def test_a_fact_that_is_not_one_is_refused(self):
+        for args in (["kind=commit"], ["verdict=maybe"], ["held=yes"], ["colour=red"], ["held=true", "held=false"],
+                     ["head=abc"], ["marker=<!-- waits-on-author -->"], ["held"]):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                rules.label_state(**rules.parse(args)[0])
+
+
+class LabelTest(Runner):
+    """rules.py label and make-label, as the comment, hold and rescreen jobs run them, against the stand-in gh: one
+    state label at a time, the label comment edited in place, and the labels made with their descriptions."""
+
+    DESCRIBED = {name: description for name, (_color, description) in rules.LABELS.items()}
+
+    def setUp(self):
+        super().setUp()
+        self.checkout()
+        self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
+        self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
+
+    def rule(self, *args, labels=(), comments=()):
+        """rules.py with args, for #7 with labels and comments: its exit status and output."""
+        for name in ("calls", "args"):
+            if os.path.exists(os.path.join(self.api, name)):
+                os.remove(os.path.join(self.api, name))
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        rc, out, _ = self.run_script("python3 .github/review/rules.py " + shlex.join(args) + "\n")
+        return rc, out
+
+    def test_setting_one_label_takes_the_other_off(self):
+        """b1: review-held stays beside the state label; a label the item has already is not added again."""
+        rc, out = self.rule("label", "7", "screen_held=true", labels=("review-held", AUTHOR_LABEL))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
+        self.assertFalse(any(c[:2] == ["--method", "DELETE"] and c[2].endswith("/review-held")
+                             for c in gh_calls(self.api)))
+        rc, out = self.rule("label", "7", "screen_held=true", labels=("review-held", THEOREM_LABEL))
+        self.assertEqual((rc, state_labels(self.api)), (0, []), out)
+
+    def test_after_a_fix_review_posts_the_item_waits_on_its_author(self):
+        """b1, driven by the facts that the fix (t8) gives: waits-on-theorem comes off, waits-on-author goes on, and
+        the label comment names the author's next step."""
+        rc, out = self.rule("label", "7", "kind=pr", "outsider=true", "verdict=blocking", "fix_posted=true",
+                            labels=(THEOREM_LABEL,))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL), ("+", AUTHOR_LABEL)])
+        (method, _endpoint, body), = label_comments(self.api)
+        self.assertEqual((method, body), ("POST", rules.label_comment("fix")))
+
+    def test_labels_are_made_with_their_descriptions_and_a_422_is_accepted(self):
+        rc, out = self.rule("label", "7", "tries_used_up=true")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(["--method", "POST", f"repos/{REPO}/labels", "-f", f"name={THEOREM_LABEL}", "-f",
+                       f"color={rules.LABELS[THEOREM_LABEL][0]}", "-f",
+                       f"description={self.DESCRIBED[THEOREM_LABEL]}", "--jq", ".name"], gh_calls(self.api))
+        # The label is there already (HTTP 422): its description is set, and the item gets it.
+        self.refuse(f"repos/{REPO}/labels", 422)
+        for name in (AUTHOR_LABEL, "review-held"):
+            self.serve(f"repos/{REPO}/labels/{name}", {"name": name})
+        rc, out = self.rule("label", "7", "conflict=true", f"head={HEAD}")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(["--method", "PATCH", f"repos/{REPO}/labels/{AUTHOR_LABEL}", "-f",
+                       f"description={self.DESCRIBED[AUTHOR_LABEL]}", "--jq", ".name"], gh_calls(self.api))
+        self.assertEqual(state_labels(self.api), [("+", AUTHOR_LABEL)])
+        rc, out = self.rule("make-label", "review-held")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(["--method", "PATCH", f"repos/{REPO}/labels/review-held", "-f",
+                       f"description={self.DESCRIBED['review-held']}", "--jq", ".name"], gh_calls(self.api))
+        # Any other failure only warns: adding a label that does not exist makes it.
+        self.refuse(f"repos/{REPO}/labels", 500, "Server Error")
+        rc, out = self.rule("label", "7", "screen_held=true")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"::warning::the label {THEOREM_LABEL} could not be made or described", out)
+        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+
+    def test_the_label_comment_is_edited_in_place_and_keeps_its_markers(self):
+        """An item whose first reply posted, held at the cap: no state label, and its one label comment says that the
+        workflow works on it and keeps the marker that the trust job reads. An outsider's copy of a label comment is
+        not the workflow's. A comment that says the same already is not written again."""
+        old = {"id": 40, "user": {"login": BOT},
+               "body": rules.label_comment("replied", "<!-- issue-reply-posted 41 -->")}
+        forged = {"id": 41, "user": {"login": "mallory"}, "body": "<!-- review-label -->\n<!-- waits-on-author -->"}
+        rc, out = self.rule("label", "7", "kind=issue", "held=true", labels=(AUTHOR_LABEL,), comments=[old, forged])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
+        (method, endpoint, body), = label_comments(self.api)
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
+        self.assertEqual(body, rules.label_comment("working", "<!-- issue-reply-posted 41 -->"))
+        rc, out = self.rule("label", "7", "kind=issue", "held=true", comments=[dict(old, body=body), forged])
+        self.assertEqual((rc, writes(self.api)), (0, []), out)
+
+    def test_with_no_state_label_an_item_with_no_label_comment_gets_none(self):
+        rc, out = self.rule("label", "7", "held=true", labels=(THEOREM_LABEL,))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([("-", THEOREM_LABEL)], []))
+
+    def test_arguments_that_are_not_the_rules_write_nothing(self):
+        for args in (("label", "7", "conflict=true"), ("label", "7", "colour=red"), ("label", "x"),
+                     ("label", "7", "marker=<!-- waits-on-author -->"), ("make-label", "bug")):
+            with self.subTest(args=args):
+                rc, out = self.rule(*args)
+                self.assertEqual((rc, writes(self.api)), (2, []), out)
 
 
 if __name__ == "__main__":

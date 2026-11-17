@@ -101,28 +101,36 @@
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
 #           whose screen passed. It posts no comment and no label, holds no identity token and no model, and its own
 #           GitHub token can only read.
-#   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, and takes the
-#           label review-held off; for a merge conflict, it posts the comment that asks the author to resolve it, with
-#           the label waits-on-author. It uses this run's GitHub token, so none of its comments and labels starts a
-#           run of any workflow.
-#   hold    labels a held pull request or issue review-held and says so in a comment. It holds no model, and has no
-#           screen's reason to read: the screen job's outputs are its verdict and the names of the checks that ran. It
-#           reads this run's jobs and this workflow's runs: did a step that signs in fail (then it holds nothing, and
-#           the schedule takes the item again), was the review stopped at the cap, or cancelled by a newer run of the
-#           same item and task?
+#   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
+#           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
+#           the comment that asks the author to resolve it, with the label waits-on-author. It uses this run's GitHub
+#           token, so none of its comments and labels starts a run of any workflow.
+#   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
+#           label comment. It holds no model, and has no screen's reason to read: the screen job's outputs are its
+#           verdict and the names of the checks that ran. It reads this run's jobs and this workflow's runs: did a
+#           step that signs in fail (then it holds nothing, and the schedule takes the item again), was the review
+#           stopped at the cap, or cancelled by a newer run of the same item and task?
 #   rescreen
 #           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
 #           again. It is the only job with actions: write, which it needs to start a run. Its issues and pull-requests:
 #           write let it replace the hold comment of an item whose rescreens reached REVIEW_TRIES without settling, with
-#           one that says a maintainer will look at it. It reads the held items and this workflow's runs, checks
-#           nothing out and holds no model.
+#           one that says a maintainer will look at it, and give the item waits-on-theorem. It reads the held items and
+#           this workflow's runs, and holds no model.
+#
+# Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
+# the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
+# it. The comment, hold and rescreen jobs set it in the run of the event that changes the state, by the one rule of
+# .github/review/rules.py, and setting one takes the other off. With it, the item gets one label comment of the
+# workflow, edited in place, which names the next step and who takes it. review-held, the mark of a hold, stays beside
+# the state label.
 #
 # No job runs code of a pull request. The gather job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
 # out. Claude gets the tools Read, Glob and Grep only, in the permission mode dontAsk (a call that would need approval
 # is refused), and reads nothing outside the checkout: not the runner's temporary files, which hold the identity
 # token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The screen job runs
-# only .github/screen.py from main. The post, comment and hold jobs check out nothing.
+# only .github/screen.py from main. The comment, hold and rescreen jobs check out main's .github/ alone, and run only
+# .github/review/rules.py from it. The post job checks out nothing.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -1421,9 +1429,10 @@ jobs:
       # of the head's held runs (token B).
 
   # The posts, with this run's own GitHub token: the review comment, or the comment that asks the author of a pull
-  # request with a merge conflict to resolve it, with the label waits-on-author. No App token posts here, so none of
-  # these comments and labels starts a run of a workflow. It runs whatever the post job's result, and reads that job's
-  # recorded as false when it did not succeed.
+  # request with a merge conflict to resolve it, and the state label and the label comment of each, which
+  # .github/review/rules.py sets from main's checkout of .github/. No App token posts here, so none of these comments
+  # and labels starts a run of a workflow. It runs whatever the post job's result, and reads that job's recorded as
+  # false when it did not succeed.
   comment:
     needs: [trust, gather, screen, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
@@ -1439,7 +1448,8 @@ jobs:
       queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {issues: write, pull-requests: write}
+    # contents: read for main's .github/, which holds .github/review/rules.py.
+    permissions: {contents: read, issues: write, pull-requests: write}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1449,6 +1459,9 @@ jobs:
       RECORDED: ${{ needs.post.result == 'success' && needs.post.outputs.recorded || 'false' }}
       DECISION: ${{ needs.post.result == 'success' && needs.post.outputs.decision || '' }}
     steps:
+      # main's .github/, for .github/review/rules.py; never the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       - name: Post the review, or replace the one posted before
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         run: |
@@ -1464,36 +1477,47 @@ jobs:
           fi
       # A review replaces the hold: a request by hand, or a later push that the screen passed. Not the review of an
       # older head: a newer push may have been held since. Nor when a hold came after this run started: a newer event
-      # of the issue or the pull request was held.
-      - name: Take the label review-held off
+      # of the issue or the pull request was held. Then the state label of the review's outcome, and the label comment
+      # (.github/review/rules.py), from the item's kind, whether this run took an outsider's path (so the screen
+      # passed it), and whether the post job recorded the import check run at the head. A review that gives no
+      # verdict to the rule gives no state label: the state label comes off, and a label comment says that the
+      # workflow works on the item.
+      - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
           HEAD: ${{ needs.review.outputs.head }}
           STARTED: ${{ needs.review.outputs.started }}
+          KIND: ${{ needs.gather.outputs.kind }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
         run: |
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
             || { echo "::error::no start time of this run"; exit 1; }
           if [ -n "$HEAD" ]; then
             now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
-            [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the label stays."; exit 0; }
+            [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the labels stay."; exit 0; }
           fi
           held=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
             | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->"))) | .updated_at') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           last=$(sort <<< "$held" | tail -n 1)
           if [[ -n $last && ! $last < $STARTED ]]; then
-            echo "#$NUMBER was held at $last, after this run started at $STARTED: the label stays."
+            echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
             exit 0
           fi
-          out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) && exit 0
-          [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
+          out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
+            || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
+          outsider=false
+          [ -z "$OUTSIDER" ] || outsider=true
+          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" recorded="$RECORDED"
       - name: Keep the review in the run's summary
         if: env.POST_REVIEW != 'true' && needs.trust.outputs.task != 'conflict'
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
       # A pull request with a merge conflict starts no CI run, and so no review: its author resolves the conflict, and
       # the next push starts both. One comment for each head, which says so, and the label waits-on-author, which takes
-      # the place of waits-on-theorem.
+      # the place of waits-on-theorem, with a label comment that holds <!-- review-conflict-state <head> -->
+      # (.github/review/rules.py). The comment stays as the record of the conflict; the label comment's line goes
+      # when a later state of the item takes its place.
       - name: Ask the author to resolve the merge conflict
         if: needs.trust.outputs.task == 'conflict'
         env:
@@ -1518,9 +1542,7 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$body" --jq .html_url
           fi
-          gh api --method POST "repos/$REPO/issues/$NUMBER/labels" -f "labels[]=waits-on-author" --jq '.[].name' > /dev/null
-          out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/waits-on-theorem" 2>&1) \
-            || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label waits-on-theorem could not be taken off: $out"; exit 1; }
+          python3 .github/review/rules.py label "$NUMBER" conflict=true head="$HEAD"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
@@ -1530,11 +1552,14 @@ jobs:
   # finds it and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
   # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
   # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
-  # of it that failed so far. A cancelled screen holds nothing, nor a screened review that a newer run of the same item
-  # and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts with "Sign in"
-  # failed in this attempt of the run, in any of its jobs. Such a run judged nothing of the item, so it gets no
-  # comment, no label and no try, and the schedule takes the item again. The if below cannot see the steps of another
-  # job, so a screen job that failed at its sign-in starts this job, which reads this attempt's jobs first and stops.
+  # of it that failed so far. Such a hold gives the UTC time when the item is tried again, and no state label: the
+  # workflow still works on the item. A hold that is not tried again (the screen's, or the last try of a review) gives
+  # waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py, from main's checkout of
+  # .github/). A cancelled screen holds nothing, nor a screened review that a newer run of the same item and task
+  # cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts with "Sign in" failed in this
+  # attempt of the run, in any of its jobs. Such a run judged nothing of the item, so it gets no comment, no label and
+  # no try, and the schedule takes the item again. The if below cannot see the steps of another job, so a screen job
+  # that failed at its sign-in starts this job, which reads this attempt's jobs first and stops.
   hold:
     needs: [trust, gather, screen, review]
     if: >-
@@ -1555,8 +1580,8 @@ jobs:
     timeout-minutes: 5
     # actions: read for this run's jobs (did a sign-in fail? was the review stopped at the cap?) and this workflow's
     # runs (did a newer run of the item and task cancel it?); pull-requests: write reads the open pull requests too,
-    # which map a head to its pull request.
-    permissions: {issues: write, pull-requests: write, actions: read}
+    # which map a head to its pull request; contents: read for main's .github/, which holds .github/review/rules.py.
+    permissions: {contents: read, issues: write, pull-requests: write, actions: read}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1570,6 +1595,9 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
+      # main's .github/, for .github/review/rules.py; never the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       - name: Label it and say that it was held
         run: |
           set -euo pipefail
@@ -1596,10 +1624,12 @@ jobs:
               exit 0
             fi
           fi
-          ask="A maintainer can start the review with \`gh workflow run review.yml -R $REPO -f number=$NUMBER\`."
           tries=${TRIES:-0}
           [[ $tries =~ ^[0-9]+$ ]] || tries=0
           kind=""
+          # The fact that this hold gives the label rule (.github/review/rules.py): held, for a hold that is tried
+          # again, with no state label; screen_held or tries_used_up, for a hold that is not, with waits-on-theorem.
+          fact=held
           # The rescreen job takes a hold with a marker once its comment is an hour old, at its next run of the four
           # each hour. A limit hold says what happens if the account is still at its limit; the other holds say only
           # that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
@@ -1656,7 +1686,14 @@ jobs:
             kind=limit
             why="The account behind its latest event has no write access to this repository, and its pull requests, issues and pushes have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for the automated review. $again_limit"
           elif [ -z "$OUTSIDER" ]; then
-            why="A maintainer asked for the automated screen first, and the screen did not pass it, or the automated review after it did not finish. A maintainer will look at it."
+            # A run by hand that asked for the screen first: no account's limit, and no try again.
+            if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
+              fact=tries_used_up
+              why="A run started by hand asked for the automated screen first. The screen passed it, but the automated review after the screen did not finish. It is not tried again."
+            else
+              fact=screen_held
+              why="A run started by hand asked for the automated screen first. The automated screen held this item, so the automated review did not run. You do not need to do anything."
+            fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run (failed, read
             # above).
@@ -1669,24 +1706,29 @@ jobs:
                 kind=transient
                 why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish ($tries of the $REVIEW_TRIES times it is tried). $again_other"
               else
-                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish, $tries times. A maintainer will look at it."
+                fact=tries_used_up
+                why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish after $tries tries. It is not tried again."
               fi
             fi
           else
-            why="It comes from an account without write access to this repository, so an automated screen reads it before the automated review does, and the screen did not pass it. A maintainer will look at it."
+            fact=screen_held
+            item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
+              || { echo "::error::#$NUMBER could not be read"; exit 1; }
+            if [ "$item" = pr ]; then
+              why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
+            else
+              why="The automated screen held this issue, so no automated reply was written. You do not need to do anything."
+            fi
           fi
           marker=""
           if [ -n "$kind" ]; then
             [[ $ORIGIN =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: $ORIGIN"; exit 1; }
             marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries -->"
           fi
-          body=$(printf '%s\n%s\n\n%s %s\n%s' '<!-- review-held -->' "**Automated review held.**" "$why" "$ask" "$marker")
-          # Adding a label that does not exist makes it, so a failed creation (two holds at once) only loses the colour.
-          if ! gh api "repos/$REPO/labels/$HELD_LABEL" --jq .name > /dev/null 2>&1; then
-            gh api --method POST "repos/$REPO/labels" -f name="$HELD_LABEL" -f color=d93f0b \
-              -f description="The automated screen held this for a maintainer" --jq .name \
-              || echo "::warning::the label $HELD_LABEL could not be made; adding it makes it."
-          fi
+          body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**Automated review held.**" "$why" "$marker")
+          # Adding a label that does not exist makes it, so a failed creation (two holds at once) only loses its colour
+          # and its description.
+          python3 .github/review/rules.py make-label "$HELD_LABEL"
           gh api --method POST "repos/$REPO/issues/$NUMBER/labels" -f "labels[]=$HELD_LABEL" --jq '.[].name' > /dev/null
           id=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->"))) | .id' \
@@ -1696,6 +1738,7 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$body" --jq .html_url
           fi
+          python3 .github/review/rules.py label "$NUMBER" "$fact=true"
 
   # The schedule's job, in the public repository alone: each open pull request or issue whose newest hold is one that
   # is tried again, over an hour old, is screened again by a run of this file that this job starts (-f task=rescreen,
@@ -1705,13 +1748,15 @@ jobs:
   # those it had in the last hour; the trust job of each run counts again, with the account's own events, and holds
   # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
   # item for the next run and fails this job. An item whose rescreens since its hold reach REVIEW_TRIES with no new
-  # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job replaces its
-  # hold comment with one that says a maintainer will look at it, with no marker, and fails for that run. Before that,
-  # each try waits until the newest rescreen since the hold is over an hour old, as the first waits on the hold.
+  # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job gives it
+  # waits-on-theorem, with the label comment's step "Sami reads the runs and starts the work again"
+  # (.github/review/rules.py, from main's checkout of .github/), replaces its hold comment with one that says a
+  # maintainer will look at it, with no marker, and fails for that run. Before that, each try waits until the newest
+  # rescreen since the hold is over an hour old, as the first waits on the hold.
   # It is the only job of this file with actions: write, which starting a run needs; issues and pull-requests: write
-  # let it replace that hold comment. It checks nothing out, holds no model, and writes nothing but those runs and
-  # those comments. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose
-  # minutes GitHub does not bill in a public repository.
+  # let it set that label and replace that hold comment, and contents: read checks out main's .github/. It holds no
+  # model, and writes nothing but those runs, those labels and those comments. Its cost: one job of a few seconds
+  # every 15 minutes, 96 runs a day on a standard runner, whose minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -1720,8 +1765,11 @@ jobs:
     timeout-minutes: 10
     # One at a time, so that two runs cannot start the same item.
     concurrency: {group: review-rescreen, cancel-in-progress: false}
-    permissions: {actions: write, issues: write, pull-requests: write}
+    permissions: {actions: write, contents: read, issues: write, pull-requests: write}
     steps:
+      # main's .github/, for .github/review/rules.py; never the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       - name: Start the screen again of each held item whose hold is over an hour old
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1880,6 +1928,10 @@ jobs:
                 "review posted: a maintainer must look at it."
               failed=1
               [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::#$number has no hold comment to replace."; continue; }
+              # The work is not tried again: waits-on-theorem first, so that a label that could not be set leaves the
+              # hold comment's marker, and the next run tries both again.
+              python3 .github/review/rules.py label "$number" tries_used_up=true \
+                || { echo "::error::the label of #$number could not be set; the next run tries again."; continue; }
               body=$(printf '%s\n%s\n\n%s\n' '<!-- review-held -->' "**Automated review held.**" \
                 "It was screened again automatically $unsettled times since it was held, and none of those runs ended in a new hold or a posted review. It is not screened again automatically. A maintainer will look at it, and can start the screen and the review with \`gh workflow run review.yml -R $REPO -f number=$number -f screen=true\`.")
               gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url \
