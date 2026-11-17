@@ -6258,6 +6258,19 @@ class ScheduleTest(Scheduled):
             self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
             self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="900")["route"], "screen")
 
+    def test_an_answer_whose_comment_job_failed_is_taken_again(self):
+        """R1: when the author of an outside item writes a new comment, the workflow "answers there within 3 hours".
+        The run of comment 900's own event screened it and ran the model, and its comment job failed at "Post the
+        answer" (a GitHub error on the post, say): no answer posted, and no hold job runs for a failed comment job. 900
+        still waits for an answer. The schedule takes it again, and its trust job takes that run."""
+        self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED, said(900, 300)])
+        self.ran(80, "answer #7 for 900 by mallory", made=298, ended=290, event="issue_comment",
+                 jobs=[attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                       attempt_job("comment", "Post the answer")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
+        self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="900")["route"], "screen")
+
     def test_an_outside_issue_with_no_stored_draft_gets_one_draft(self):
         """b1 (R3, D16 (e)): an outside issue whose label comment holds no stored draft, and whose draft run (here its
         issues event's, which could not sign in) ended over an hour ago, gets one draft run. Not when its draft is
