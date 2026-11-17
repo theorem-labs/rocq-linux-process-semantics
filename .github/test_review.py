@@ -7587,6 +7587,20 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotRecorded(got, "screen")
         self.assertEqual(got["labels"], [])
 
+    def test_with_no_variable_a_markdown_only_change_under_github_gets_no_check_run(self):
+        """With no variable REPO_PAIRS_IMPORT_PATHS, no glob rule of the import refuses a path, so only the rule on
+        files under .github/ stops the check run: a change of .github/review.md alone, or a rename of README.md to
+        .github/README.md, which the screen and the review passed and which changes only Markdown files. No check run,
+        and waits-on-theorem with each step of R12 that can come next while the variable is not set. The marker line
+        holds null."""
+        for paths in ([".github/review.md"], [(".github/README.md", "README.md")]):
+            with self.subTest(paths=paths):
+                got = self.judge(paths, "pass", None)
+                self.assertNotRecorded(got, "steering")
+                self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and "
+                                 "takes each changed path", "Else, when the import runs, Sami copies the change",
+                                 value=None)
+
     def test_a_change_of_reports_corpus_replay_md_gets_the_copy_by_hand_comment(self):
         """A Markdown-only pull request that changes only reports/corpus-replay.md, with the variable set to the
         pair's import_paths, which take no path under reports/: no check run, and a copy by hand."""
