@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +29,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import screen  # noqa: E402
+# The screen's message for its DEADLINE_SECONDS, as the module sets it on import, before any main() changes it.
+OUT_OF_TIME = screen.OUT_OF_TIME
 
 TEMPLATE = "projects/p/locations/us/templates/review-screen"
 MARK = "SECRET-REASON-MARK"   # planted in the outside text and in service answers: it must reach no output
@@ -114,6 +117,10 @@ class Services:
 
 class ScreenTest(unittest.TestCase):
     def setUp(self):
+        # A new step process: DEADLINE_SECONDS from now, as screen.py sets them on import. A runner that imports this
+        # file long before it runs a test (pytest, after other files) would otherwise start the test out of time.
+        screen.DEADLINE = time.monotonic() + screen.DEADLINE_SECONDS
+        screen.OUT_OF_TIME = OUT_OF_TIME
         self.services = Services()
         self._tmp = tempfile.TemporaryDirectory(prefix="screen-test-")
         self.dir = self._tmp.name
