@@ -4,14 +4,15 @@
 Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail), against a stand-in gh that answers
 from files: which task and route a run gets (a CI run's workflow_run, an issue, an author's comment, a run by hand,
 the rescreen job's run), the hourly limit of an account without write access, which comments and reviews the review
-reads, what the posted comment can notify or link, what a held pull request or issue is told, the comment on a merge
-conflict, and how one held for a reason not its own is screened again (the rescreen job, and the trust job's check of
-its run). Each job's condition is evaluated for every task and route, to show which jobs run, and that a run by hand
-off main runs none. The rest checks what each job holds, that no job of either workflow holds a right on
-pull_request, and the settings that keep Claude to the checkout and to the pinned binaries. .github/test_screen.py
-tests the screen itself.
+reads, what the posted comment can notify or link, what a held pull request or issue is told, that a run whose
+sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, and how one held
+for a reason not its own is screened again (the rescreen job, and the trust job's check of its run). The review job's
+sign-in to Anthropic runs against a stand-in on 127.0.0.1. Each job's condition is evaluated for every task and
+route, to show which jobs run, and that a run by hand off main runs none. The rest checks what each job holds, that
+no job of either workflow holds a right on pull_request, and the settings that keep Claude to the checkout and to the
+pinned binaries. .github/test_screen.py tests the screen itself.
 
-No network is used. Needs python3, bash, git, jq and yq (mikefarah's, as GitHub's runners have):
+No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
 Exits non-zero on any failure.
 """
@@ -24,7 +25,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "review.yml")
 CI_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "ci.yml")
@@ -208,6 +212,27 @@ def gh_calls(api):
         return []
     with open(path, encoding="utf-8") as f:
         return [c.split("\0")[:-1] for c in f.read().split("\1")[:-1]]
+
+
+def writes(api):
+    """Each call of the stand-in gh that writes: one whose method is not GET, or one with fields and no method, which
+    gh sends as a POST."""
+    def method(c):
+        return c[c.index("--method") + 1] if "--method" in c else "POST" if {"-f", "-F"} & set(c) else "GET"
+    return [c for c in gh_calls(api) if method(c) != "GET"]
+
+
+def attempt_job(job, failed=None, name=None, steps=None):
+    """A job of a run attempt as GitHub's API lists it, with its steps: the workflow's own steps of job, or steps. Each
+    step before failed passed, failed failed and stopped the job, and each one after it was skipped; with no failed
+    step, every step passed. name is the job's name in the run (the screen job's holds its outsider)."""
+    names = steps if steps is not None else [s.get("name") or "Run " + s["uses"] for s in JOBS[job]["steps"]]
+    assert failed is None or failed in names, (job, failed)
+    stop = len(names) if failed is None else names.index(failed)
+    return {"name": name or job, "status": "completed", "conclusion": "success" if failed is None else "failure",
+            "steps": [{"name": n, "status": "completed",
+                       "conclusion": "success" if i < stop else "failure" if i == stop else "skipped"}
+                      for i, n in enumerate(names)]}
 
 
 def step(job, name):
@@ -935,7 +960,9 @@ class RouteTest(unittest.TestCase):
                 self.assertEqual(self.ran(self.OUTSIDER, outputs={"screen": {"verdict": verdict}}),
                                  {"gather", "screen", "hold"})
 
-    def test_a_screen_that_fails_holds_it(self):
+    def test_a_screen_that_fails_reaches_the_hold_job(self):
+        """The hold job's if cannot see which step failed: the job reads this attempt's jobs, and holds the item unless
+        a sign-in step failed (HoldTest)."""
         self.assertEqual(self.ran(self.OUTSIDER, results={"screen": "failure"}), {"gather", "screen", "hold"})
 
     def test_a_cancelled_screen_does_neither(self):
@@ -1063,16 +1090,18 @@ class LimitTest(Runner):
         super().setUp()
         self.permissions(alice="write", mallory="read", eve="read")
 
-    def runs(self, *runs):
+    def runs(self, *runs, jobs=None):
         """Serve the runs list and each run's jobs: (id, login, event, trust job's conclusion or None for unlisted,
-        and the run's name, if any)."""
+        and the run's name, if any); jobs: the jobs after the trust job, by run id (a review job that has not finished
+        when not given)."""
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
             {"id": r[0], "actor": {"login": r[1]}, "triggering_actor": {"login": "alice"}, "event": r[2],
              "created_at": "2026-11-02T10:00:00Z", **({"display_title": r[4]} if len(r) > 4 else {})}
             for r in runs]})
         for r in runs:
-            jobs = [] if r[3] is None else [{"name": "trust", "conclusion": r[3]}]
-            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": jobs + [{"name": "review", "conclusion": None}]})
+            listed = [] if r[3] is None else [{"name": "trust", "conclusion": r[3]}]
+            rest = (jobs or {}).get(r[0], [{"name": "review", "conclusion": None}])
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": listed + rest})
 
     def trust(self, author, actor, event="issues"):
         """A CI run of #7 by author at HEAD pushed by actor, a comment of actor on its pull request #7, or its
@@ -1115,6 +1144,29 @@ class LimitTest(Runner):
         self.runs(*[(10 + i, "mallory", "workflow_run", c)
                     for i, c in enumerate(["success", None, "failure", "cancelled"][:self.LIMIT])])
         self.assertEqual(self.route("mallory", "mallory"), "limit")
+
+    def test_a_run_that_could_not_sign_in_does_not_count(self):
+        """R10: a run whose screen or review job stopped at a failed step named "Sign in ..." uses none of the
+        account's hour, so the schedule's run of its item is not held at the limit for it. A run whose screen failed
+        after its sign-in, or whose App sign-in failed after its screen and review, still counts. Only the account's
+        runs have their jobs read."""
+        screened = attempt_job("screen", name="screen mallory")
+        for want, jobs in (
+                ("screen", [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]),
+                ("screen", [attempt_job("screen", "Sign in to Anthropic and Azure", name="screen mallory")]),
+                ("screen", [screened, attempt_job("review", "Sign in to Anthropic", name="review (screened)")]),
+                ("limit", [attempt_job("screen", "Screen", name="screen mallory")]),
+                ("limit", [screened, attempt_job("review", name="review (screened)"), attempt_job("post", MINT_A)])):
+            failed = [(j["name"], s["name"]) for j in jobs for s in j["steps"] if s["conclusion"] == "failure"]
+            with self.subTest(failed=failed):
+                self.tearDown()
+                self.setUp()
+                events = ["workflow_run", "issue_comment", "issues"]
+                runs = [(10 + i, "mallory", events[i % len(events)], "success") for i in range(self.LIMIT)]
+                self.runs(*runs, (30, "eve", "issues", "success"), jobs={r[0]: jobs for r in runs})
+                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
+                                 [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs])
 
     def test_only_that_accounts_earlier_event_runs_count(self):
         others = [(10, "eve", "issues", "success"), (11, "alice", "issues", "success"),
@@ -1351,29 +1403,34 @@ class TakeTest(Runner):
 
 
 class HoldTest(Runner):
-    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again."""
+    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again; and nothing
+    at all for a run whose sign-in failed."""
 
     STEP = "Label it and say that it was held"
     TRIES = int(WF["env"]["REVIEW_TRIES"])
 
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
-                 uncounted=False, runs=(), task="review", number=7, prs=()):
+                 uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None):
         """Run the hold step for a run of the task of #number; capped: this run's review stopped at the cap;
         uncounted: its count of the hour's reviews failed, so it stopped before the cap's step; runs: this workflow's
         runs, (id, name[, its trust job's conclusion, success when absent, None for not listed yet[, its event, issues
-        when absent]]); prs: the open pull requests (serve_prs)."""
+        when absent]]); prs: the open pull requests (serve_prs); jobs: this attempt's jobs as GitHub lists them
+        (attempt_job), in place of the ones capped and uncounted give, or False when GitHub cannot list them."""
         n = number
         self.serve(f"repos/{REPO}/issues/{n}/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/{n}/labels", [{"name": "review-held"}])
         self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
         self.serve(f"repos/{REPO}/issues/comments/5", {"html_url": f"https://github.com/acme/model/issues/{n}#c5"})
-        self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": [
-            {"name": "trust", "steps": [{"name": "Whether ...", "conclusion": "success"}]},
-            {"name": "review (screened)", "steps": [
-                {"name": "Count the reviews of the last hour", "conclusion": "failure" if uncounted else "success"},
-                {"name": "Hold at the hourly cap",
-                 "conclusion": "skipped" if uncounted else "failure" if capped else "success"},
-                {"name": "Review", "conclusion": "skipped" if capped or uncounted else "failure"}]}]})
+        if jobs is None:
+            jobs = [
+                {"name": "trust", "steps": [{"name": "Whether ...", "conclusion": "success"}]},
+                {"name": "review (screened)", "steps": [
+                    {"name": "Count the reviews of the last hour", "conclusion": "failure" if uncounted else "success"},
+                    {"name": "Hold at the hourly cap",
+                     "conclusion": "skipped" if uncounted else "failure" if capped else "success"},
+                    {"name": "Review", "conclusion": "skipped" if capped or uncounted else "failure"}]}]
+        if jobs is not False:
+            self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": jobs})
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
             {"id": r[0], "display_title": r[1], "event": r[3] if len(r) > 3 else "issues"} for r in runs]})
         for r in runs:
@@ -1381,15 +1438,23 @@ class HoldTest(Runner):
             self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
                        {"jobs": [] if trust is None else [{"name": "trust", "conclusion": trust}]})
         self.serve_prs(*prs)
+        summary = os.path.join(self.dir, "summary")
+        open(summary, "w").close()
         rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER=str(n), TASK=task, ROUTE=route,
                                      OUTSIDER=outsider, REVIEW=review, ORIGIN=origin, TRIES=tries, RUN_ID="100",
                                      RUN_ATTEMPT="1", HELD_LABEL=WF["env"]["HELD_LABEL"],
                                      REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
                                      SCREENED_HOURLY_CAP=WF["env"]["SCREENED_HOURLY_CAP"],
-                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                     GITHUB_STEP_SUMMARY=summary)
         posts = [c for c in gh_calls(self.api) if "body=" in " ".join(c)]
         body = next((a for c in posts for a in c if a.startswith("body=")), "body=")[len("body="):]
         return rc, out, posts, body
+
+    def summary(self):
+        """What the hold step wrote to the run's summary."""
+        with open(os.path.join(self.dir, "summary"), encoding="utf-8") as f:
+            return f.read()
 
     def hold(self, route, **kwargs):
         if route == "limit":
@@ -1552,6 +1617,116 @@ class HoldTest(Runner):
                                               (103, "review #1234")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
 
+    # A screened item's run, its trust job's outputs, and the jobs of its attempt before the screen.
+    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7"}
+
+    def gathered(self):
+        return [attempt_job("trust"), attempt_job("gather")]
+
+    def assertHeldNothing(self, rc, out, failed):
+        """No hold comment, no label and no try: the step writes nothing to GitHub, and the run's summary names the
+        step and says that the schedule takes the item again."""
+        self.assertEqual((rc, writes(self.api)), (0, []), out)
+        self.assertIn(f'the step "{failed}" failed in this run', self.summary())
+        self.assertIn("The schedule takes the item again.", self.summary())
+
+    def test_a_screen_that_could_not_sign_in_gives_no_verdict_and_holds_nothing(self):
+        """R10 (b8): a screen whose sign-in to Google Cloud, or to Anthropic and Azure (screen.py --sign-in), fails
+        stops before the Screen step, which gives the verdict, so the run has no verdict: no review, no App's job and
+        no comment job. The hold job runs, since its if cannot see the step, and holds nothing: no comment, no label,
+        and no try. A rescreen's run leaves the hold it came from as it was."""
+        names = [s.get("name") for s in JOBS["screen"]["steps"]]
+        self.assertIsNone(STATUS_FUNCTIONS.search(step("screen", "Screen")["if"]))
+        ran = run_graph(self.OUTSIDER, results={"screen": "failure"})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"}, {"trust", "gather", "screen", "hold"})
+        rescreened = limit_hold(50, kind="transient", tries=1)
+        for failed in ("Sign in to Google Cloud", "Sign in to Anthropic and Azure"):
+            for task, origin, tries, comments in (("review", "", "", ()), ("rescreen", "50", "1", (rescreened,))):
+                with self.subTest(step=failed, task=task):
+                    self.tearDown()
+                    self.setUp()
+                    self.assertLess(names.index(failed), names.index("Screen"))
+                    screen = attempt_job("screen", failed, name="screen mallory")
+                    rc, out, _, _ = self.run_hold("screen", task=task, origin=origin, tries=tries, comments=comments,
+                                                  jobs=self.gathered() + [screen])
+                    self.assertHeldNothing(rc, out, failed)
+
+    def test_a_review_that_could_not_sign_in_holds_nothing_and_counts_no_try(self):
+        """R10 (b8): the review job's "Sign in to Anthropic" comes before the step that runs the model. When Anthropic
+        refuses the run, the review job fails there: no App's job and no comment job, and the hold job holds nothing
+        and counts no try, at the last try too."""
+        names = [s.get("name") for s in JOBS["review"]["steps"]]
+        self.assertLess(names.index("Sign in to Anthropic"), names.index("Review"))
+        ran = run_graph(self.OUTSIDER, results={"review": "failure"}, outputs={"screen": {"verdict": "clean"}})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"},
+                         {"trust", "gather", "screen", "review", "hold"})
+        for task, tries in (("review", "0"), ("review", str(self.TRIES - 1)), ("rescreen", str(self.TRIES - 1))):
+            with self.subTest(task=task, tries=tries):
+                self.tearDown()
+                self.setUp()
+                review = attempt_job("review", "Sign in to Anthropic", name="review (screened)")
+                rc, out, _, _ = self.run_hold("screen", review="failure", task=task, origin="50", tries=tries,
+                                              jobs=self.gathered() + [attempt_job("screen", name="screen mallory"),
+                                                                      review])
+                self.assertHeldNothing(rc, out, "Sign in to Anthropic")
+
+    def test_a_draft_whose_check_step_failed_holds_nothing(self):
+        """b1: the draft's check step (its sign-in to Google Cloud for the draft store, before the model) fails when a
+        variable of the store is empty. As for any sign-in, nothing is held and no try counts."""
+        check = "Sign in to Google Cloud for the draft (check)"
+        review = attempt_job("review", check, name="review (screened)",
+                             steps=["Set up job", "Run actions/checkout", check, "Review", "Complete job"])
+        rc, out, _, _ = self.run_hold("screen", review="failure", task="draft", origin="50", tries="1",
+                                      jobs=self.gathered() + [attempt_job("screen", name="screen mallory"), review])
+        self.assertHeldNothing(rc, out, check)
+
+    def test_a_run_that_signed_in_is_held_as_before(self):
+        """screen.py makes a check that answered an error a held verdict: the screen job, whose sign-ins passed, passes
+        with it, and the item is held, as it was before. So is a screen job that failed after its sign-in, and a
+        review that failed after its own, which counts a try."""
+        ran = run_graph(self.OUTSIDER, outputs={"screen": {"verdict": "held"}})
+        self.assertEqual({n for n, r in ran.items() if r != "skipped"}, {"trust", "gather", "screen", "hold"})
+        label = ["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held", "--jq", ".[].name"]
+        for screen in (attempt_job("screen", name="screen mallory"),
+                       attempt_job("screen", "Screen", name="screen mallory")):
+            with self.subTest(screen=screen["conclusion"]):
+                self.tearDown()
+                self.setUp()
+                calls, _post, body = self.hold("screen", jobs=self.gathered() + [screen])
+                self.assertIn(label, calls)
+                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+        self.tearDown()
+        self.setUp()
+        calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", jobs=self.gathered() + [
+            attempt_job("screen", name="screen mallory"), attempt_job("review", "Review", name="review (screened)")])
+        self.assertIn(label, calls)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
+
+    def test_a_check_of_the_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
+        """The step "Check the count and the cap" fails before the cap's step, which is then skipped: the hold counts a
+        try, and does not say that the cap was reached."""
+        review = attempt_job("review", "Check the count and the cap", name="review (screened)")
+        _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1",
+                                        jobs=self.gathered() + [attempt_job("screen", name="screen mallory"), review])
+        self.assertNotIn("had reached their limit", body)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
+
+    def test_jobs_that_cannot_be_read_hold_nothing(self):
+        """Without this attempt's jobs the hold job cannot tell a failed sign-in: it fails and holds nothing, rather
+        than hold a run that could not sign in. A run at the limit ran no job but the trust job, so it is held with
+        no read."""
+        for review in ("skipped", "failure"):
+            with self.subTest(review=review):
+                self.tearDown()
+                self.setUp()
+                rc, out, _, _ = self.run_hold("screen", review=review, origin="50", tries="1", jobs=False)
+                self.assertEqual((rc, writes(self.api)), (1, []), out)
+                self.assertIn("the jobs of this run could not be read, so nothing is held", out)
+        self.tearDown()
+        self.setUp()
+        _calls, _post, body = self.hold("limit", jobs=False)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 -->"), body)
+
 
 class PostLabelTest(Runner):
     """The comment job takes the label review-held off when it posts a review."""
@@ -1704,12 +1879,6 @@ class CapTest(Runner):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("=~", step("review", self.CAP)["run"])
 
-    def test_a_check_that_fails_is_held_as_a_review_that_did_not_finish(self):
-        """Its failure leaves the cap's step skipped, which the hold job counts as a try, not as the cap."""
-        hold = step("hold", "Label it and say that it was held")["run"]
-        self.assertIn('select(.name == "Hold at the hourly cap" and .conclusion == "failure")', hold)
-        self.assertNotIn(self.CHECK, hold)
-
     def test_screened_reviews_do_not_use_up_the_writers_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
         writers = int(WF["env"]["HOURLY_CAP"])
@@ -1751,6 +1920,102 @@ class BunTest(Runner):
                 self.assertEqual(rc, 1, out)
                 self.assertIn("ahead of the pinned Bun", out)
                 os.remove(path)
+
+
+class ReviewSignInTest(Runner):
+    """The review job's step "Sign in to Anthropic", against a stand-in of GitHub's identity token service and of
+    Anthropic: before the model, it exchanges a new identity token with the Review step's federation rule and ids, and
+    fails the job when Anthropic refuses it. It prints, writes and keeps no token."""
+
+    STEP = "Sign in to Anthropic"
+
+    def setUp(self):
+        super().setUp()
+        self.requests = []
+        self.answer = (200, {"access_token": "claude-not-a-secret", "token_type": "Bearer", "expires_in": 3600})
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def reply(self, status, body):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                url = urllib.parse.urlsplit(self.path)
+                test.requests.append({"method": "GET", "path": url.path, "query": urllib.parse.parse_qs(url.query),
+                                      "authorization": self.headers.get("Authorization")})
+                self.reply(200, {"value": "github-jwt"})
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                test.requests.append({"method": "POST", "path": self.path, "type": self.headers.get("Content-Type"),
+                                      "body": json.loads(body)})
+                self.reply(*test.answer)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.url = f"http://127.0.0.1:{server.server_port}"
+
+    def sign_in(self, **env):
+        s = step("review", self.STEP)
+        env = {"ANTHROPIC_URL": f"{self.url}/anthropic",
+               "ACTIONS_ID_TOKEN_REQUEST_URL": f"{self.url}/oidc?api-version=2.0",
+               "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token", **env}
+        return self.run_script(s["run"], **dict(s["env"], **env))
+
+    def assertNoToken(self, out, got):
+        for token in ("claude-not-a-secret", "github-jwt", "request-token"):
+            self.assertNotIn(token, out)
+        self.assertEqual(got, {})
+        self.assertEqual(os.listdir(self.temp), [])
+
+    def test_it_exchanges_a_new_identity_token_as_the_review_step_does_and_keeps_no_token(self):
+        names = [s.get("name") for s in JOBS["review"]["steps"]]
+        self.assertLess(names.index(self.STEP), names.index("Review"))
+        self.assertEqual(step("review", self.STEP)["env"]["ANTHROPIC_URL"], "https://api.anthropic.com")
+        rc, out, got = self.sign_in()
+        self.assertEqual(rc, 0, out)
+        self.assertNoToken(out, got)
+        identity, exchange = self.requests
+        self.assertEqual((identity["path"], identity["query"], identity["authorization"]),
+                         ("/oidc", {"api-version": ["2.0"], "audience": ["https://api.anthropic.com"]},
+                          "Bearer request-token"))
+        review = step("review", "Review")["with"]
+        self.assertEqual((exchange["path"], exchange["type"], exchange["body"]), (
+            "/anthropic/v1/oauth/token", "application/json",
+            {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": "github-jwt",
+             "federation_rule_id": review["anthropic_federation_rule_id"],
+             "organization_id": review["anthropic_organization_id"],
+             "service_account_id": review["anthropic_service_account_id"],
+             "workspace_id": review["anthropic_workspace_id"]}))
+
+    def test_a_refused_exchange_fails_the_step_before_the_model(self):
+        """Anthropic's refusal (its rule does not admit this run's event yet, say), shown with its words; an answer
+        with no token; and a job with no identity token: each fails the step."""
+        refusal = (403, {"error": "invalid_grant", "error_description": "the rule admits no workflow_run event"})
+        for answer in (refusal, (200, {"token_type": "Bearer"}), (200, {"access_token": ""})):
+            with self.subTest(answer=answer):
+                self.answer = answer
+                rc, out, got = self.sign_in()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("The sign-in to Anthropic failed", out)
+                self.assertNoToken(out, got)
+                if answer is refusal:
+                    self.assertIn("HTTP 403 from Anthropic", out)
+                    self.assertIn("the rule admits no workflow_run event", out)
+        self.requests.clear()
+        rc, out, got = self.sign_in(ACTIONS_ID_TOKEN_REQUEST_URL="")
+        self.assertEqual((rc, self.requests), (1, []), out)
+        self.assertIn("this job can get no identity token", out)
 
 
 RESCREEN_JOB = "Start the screen again of each held item whose hold is over an hour old"
