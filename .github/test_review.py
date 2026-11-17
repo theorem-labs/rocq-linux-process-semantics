@@ -2459,6 +2459,24 @@ class ApproveTest(Holding):
         self.assertEqual(steps[self.APPROVE], "failure", self.logs)
         self.assertEqual(self.approvals(), self.APPROVED)
 
+    def test_a_held_run_in_the_form_that_github_lists_it_is_approved(self):
+        """b8 (R10): GitHub lists a run that it holds for a person's approval with status completed and conclusion
+        action_required, not with status action_required (read on 2026-11-17: run 39977702978 of
+        theorem-labs/rocq-linux-process-semantics, and the held runs of oss-verify, oss-verify-proofs and asan-static,
+        each listed by GET repos/<repo>/actions/runs?status=action_required). Such runs of the head still make a run by
+        hand with the number alone the task approve, and the post job approves each of them with token B after the
+        screen passed."""
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
+            {"id": i, "status": "completed", "conclusion": "action_required" if s == "action_required" else "success",
+             "event": e, "head_sha": h, "head_branch": b, "head_repository": {"id": r}}
+            for i, s, e, h, r, b in self.RUNS]})
+        for r in self.RUNS:
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/approve", {})
+        trust = self.by_hand()
+        steps = self.post(trust, "clean")
+        self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
+        self.assertEqual(self.approvals(), self.APPROVED)
+
     def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
         """No post job runs, and token B's step would not run even with held runs found: no approval. The hold job
         posts D21's text, which names no maintainer, labels the pull request review-held, and gives it
