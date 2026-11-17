@@ -6543,6 +6543,19 @@ class CatchUpScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, []), out)
 
+    def test_a_head_that_a_hold_names_gets_no_catch_up(self):
+        """R6 and D16 (a): the OSS Verify App closes and reopens a pull request only for a head "that no run of this
+        workflow names (no run met this head)". A hold at the limit of 9 days ago names the head in its marker, so a
+        run met it, though that run is older than the 8 days of runs that the schedule reads. Its rescreen is due, and
+        it gets no catchup run, which would close and reopen it."""
+        day = 24 * 60
+        self.origin(50, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+        self.item(kind="pr", labels=("review-held",), comments=[limit_hold(50, at=ago(9 * day), tries=0, head=HEAD)])
+        self.ci(ended=9 * day + 10)
+        rc, out, runs = self.started()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("catchup", [r[1] for r in runs], out)
+
     def test_a_head_whose_ci_run_has_not_ended_an_hour_ago_gets_no_catch_up(self):
         """A CI run of the head that is in progress or held (that head gets the approval of its held runs), one that
         ended under an hour ago, or no CI run at all: no catch-up."""
