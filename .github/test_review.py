@@ -5994,6 +5994,105 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_hold_of_one_task_does_not_lose_the_held_work_of_another(self):
+        """R1: the workflow "posts the review of each outside pull request at each new head", and answers each new
+        comment of its author "except while a cap holds it"; the rescreen job takes "the work that a hold names, once
+        the hold is over an hour old". Mallory is at OUTSIDE_HOURLY_LIMIT: her push of the head (run 41) and her
+        comment 900 (run 51) are each held by the hold job's own step, in one order or the other. The schedule takes
+        the work of the newer hold, and its trust job takes that run; the comment job's own steps post its answer or
+        its review. Then the schedule still takes the work of the older hold, and its trust job takes it. The comments
+        and labels that each step leaves are what the stand-in gh was asked to write; the trust job of a run of the
+        schedule reads the runs of the last hour, as GitHub lists them for its query."""
+        comments, labels = [], set()
+
+        def show():
+            self.listed[0]["labels"] = [{"name": n} for n in sorted(labels)]
+            self.serve(f"repos/{REPO}/issues/7", dict(self.listed[0], pull_request={"url": "x"}))
+            self.serve(f"repos/{REPO}/issues/7/labels", self.listed[0]["labels"])
+            self.comments(7, *comments)
+            self.publish()
+
+        def apply(at):
+            """Each comment that the job before posted or edited, as made at the time at, and each label that it
+            added or took off."""
+            for c in writes(self.api):
+                body = next((a[len("body="):] for a in c if a.startswith("body=")), None)
+                if c[:2] == ["--method", "PATCH"] and c[2].startswith(f"repos/{REPO}/issues/comments/") and body:
+                    for x in comments:
+                        if str(x["id"]) == c[2].rsplit("/", 1)[1]:
+                            x.update(body=body, updated_at=at)
+                elif c[:3] == ["--method", "POST", f"repos/{REPO}/issues/7/comments"] and body:
+                    comments.append({"id": 100 + len(comments), "user": {"login": BOT}, "created_at": at,
+                                     "updated_at": at, "body": body})
+                elif c[:3] == ["--method", "POST", f"repos/{REPO}/issues/7/labels"]:
+                    labels.update(a.split("=", 1)[1] for a in c if a.startswith("labels[]="))
+                elif c[:2] == ["--method", "DELETE"] and c[2].startswith(f"repos/{REPO}/issues/7/labels/"):
+                    labels.discard(c[2].rsplit("/", 1)[1])
+            show()
+
+        def hold(run, task, comment, at):
+            self.forget()
+            trust = {"task": task, "route": "limit", "outsider": "mallory", "number": "7", "head": HEAD,
+                     "comment": comment, "origin": str(run), "tries": "0"}
+            run_job(self, "hold", self.ctx(trust, **{"github.run_id": str(run), "github.run_attempt": "1"}), {})
+            apply(ago(at))
+
+        def taken(run):
+            """The outputs of the trust job of run, a run that the schedule started, which must take it."""
+            number, task, account, head, comment = run
+            self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs",
+                       {"workflow_runs": [r for r in self.listed_runs if r["created_at"] >= ago(60)]})
+            got = self.dispatched(task, head=head, account=account, comment=comment)
+            self.publish()
+            self.assertEqual(got["route"], "screen")
+            return got
+
+        def started(want):
+            rc, out, runs = self.started()
+            got = [r for r in runs if r[:2] == ("7", want) or (want == "review" and r[:2] == ("7", "rescreen"))]
+            self.assertEqual((rc, len(got)), (0, 1), out)
+            return got[0]
+
+        for case in ("the push, then the comment", "the comment, then the push"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                comments.clear()
+                labels.clear()
+                self.origin(41, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+                self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+                self.item(kind="pr")
+                self.ci(ended=180)
+                comments.append(said(900, 165))
+                pushed = 170 if case == "the push, then the comment" else 150
+                for run, task, comment, at in sorted(((41, "review", "", pushed), (51, "answer", "900", 160)),
+                                                     key=lambda h: -h[3]):
+                    hold(run, task, comment, at)
+                self.ran(41, f"review {HEAD} by mallory", made=pushed + 5, ended=pushed, event="workflow_run",
+                         jobs=[attempt_job("hold")])
+                self.ran(51, "answer #7 for 900 by mallory", made=165, ended=160, event="issue_comment",
+                         jobs=[attempt_job("hold")])
+                first, then = ("answer", "review") if case == "the push, then the comment" else ("review", "answer")
+                run = started(first)
+                trust = taken(run)
+                self.forget()
+                answer = "<!-- review-answer 900 -->\nThe answer."
+                outputs = ({"needs.review.outputs.answer": answer} if first == "answer"
+                           else {"needs.review.outputs.body": review_of(HEAD)["body"],
+                                 "needs.review.outputs.verdict": "pass", "needs.review.outputs.will_fix": "false",
+                                 "needs.review.outputs.fix_stop": "false"})
+                ctx = self.ctx(trust, **{"needs.review.result": "success", "needs.post.result": "skipped",
+                                         "needs.gather.outputs.kind": "pr", "needs.review.outputs.head": HEAD,
+                                         **outputs})
+                steps = run_job(self, "comment", ctx, {})
+                self.assertNotIn("failure", steps.values(), self.logs)
+                apply(ago(72))
+                self.ran(52, f"{run[1]} #7" + (f" at {run[3]}" if run[3] else "") + (f" for {run[4]}" if run[4] else "")
+                         + f" of {run[2]}", made=80, ended=70,
+                         jobs=[attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                               attempt_job("comment")])
+                taken(started(then))
+
     def test_review_tries_runs_of_a_held_answer_that_settle_nothing_stop_it(self):
         """b1 (D16): REVIEW_TRIES answer runs since the hold of an answer that ended with neither a new hold nor a post
         stop the item: its hold comment gets words that name Sami's next step and no marker of a hold that is tried
