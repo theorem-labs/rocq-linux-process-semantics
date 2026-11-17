@@ -1558,6 +1558,25 @@ class LimitTest(Runner):
         self.assertIn('-f created=">=$from"', run)
         self.assertIn('"repos/$REPO/actions/workflows/review.yml/runs"', run)
 
+    def test_a_list_of_runs_that_github_cuts_at_1000_does_not_put_the_account_under_its_limit(self):
+        """OUTSIDE_HOURLY_LIMIT: GitHub gives at most 1,000 runs for a list with created (its REST documentation of
+        GET /repos/{owner}/{repo}/actions/workflows/{id}/runs), newest first, and total_count says how many match. Each
+        comment of anyone on any item starts a run of this file, which the trust job skips. 1,000 such newer runs leave
+        mallory's runs of the hour out of the list: the account is not under its limit for that (the limit, or a run
+        that stops because GitHub could not say)."""
+        listed = [{"id": 5000 - i, "actor": {"login": "mallory"}, "event": "issue_comment", "conclusion": "skipped",
+                   "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
+        endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
+        for n in range(10):
+            with open(endpoint + (".json" if n == 0 else f".{n + 1}.json"), "w") as f:
+                json.dump({"total_count": 1000 + self.LIMIT, "workflow_runs": listed[n * 100:(n + 1) * 100]}, f)
+        rc, out, got = self.run_script(step("trust", TRUST)["run"], EVENT="issues", AUTHOR="mallory", ACTOR="mallory",
+                                       NUMBER="7", TASK="", SCREEN="", ACCOUNT="", COMMENT="", HEAD="",
+                                       HEAD_REPOSITORY="", REPLY="", RUN_ID="6000",
+                                       OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                       HELD_LABEL=WF["env"]["HELD_LABEL"])
+        self.assertNotEqual((rc, got.get("route")), (0, "screen"), out)
+
     def test_a_maintainers_re_run_still_counts(self):
         """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
