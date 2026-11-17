@@ -2867,6 +2867,35 @@ class CapTest(Runner):
         self.assertEqual(self.cap("review", ["review"] * int(WF["env"]["HOURLY_CAP"]), event="workflow_dispatch",
                                   steps=replied)[0], 0)
 
+    def test_a_list_of_runs_that_github_cuts_at_1000_lets_no_screened_review_under_its_cap(self):
+        """SCREENED_HOURLY_CAP: "A screened run at this cap is held." GitHub gives at most 1,000 runs for a list with
+        created (its REST documentation of GET /repos/{owner}/{repo}/actions/workflows/{id}/runs), newest first, and
+        total_count says how many match. Read live on 2026-11-17: a list with created that matched 2,500 runs gave
+        1,000 of them, and its page 11 was empty. Each comment of anyone on any item starts a run of this file, which
+        the trust job skips. 1,000 such newer runs leave the screened reviews of the hour out of the list: the next
+        screened review must not call the model for that (the Count step stops, or the cap's step holds it)."""
+        cap = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        listed = [{"id": 5000 - i, "event": "issue_comment", "status": "completed", "conclusion": "skipped",
+                   "created_at": "2099-01-01T00:00:00Z", "updated_at": "2099-01-01T00:00:00Z"} for i in range(1000)]
+        endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
+        for n in range(10):
+            with open(endpoint + (".json" if n == 0 else f".{n + 1}.json"), "w") as f:
+                json.dump({"total_count": 1000 + cap, "workflow_runs": listed[n * 100:(n + 1) * 100]}, f)
+        # The screened reviews of the hour: older than the 1,000 runs above, so GitHub does not list them.
+        for i in range(cap):
+            self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": [
+                {"name": "review (screened)", "run_id": 10 + i, "run_attempt": 1, "status": "completed",
+                 "started_at": "2099-01-01T00:00:00Z", "steps": list(self.REVIEWED)}]})
+        # The count, the check and the cap's step, as cap() runs them: a step does not run when one before it fails.
+        rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="6000", RUN_ATTEMPT="1",
+                                       **self.step_env(self.COUNT, "screen"))
+        for name in (self.CHECK, self.CAP):
+            if rc != 0:
+                break
+            rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"],
+                                         **self.step_env(name, "screen"))
+        self.assertNotEqual(rc, 0, out)
+
 
 class BunTest(Runner):
     def test_no_other_bun_can_come_first(self):
