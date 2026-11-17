@@ -300,7 +300,9 @@ env:
   # The most runs that one account without write access may start in an hour and have screened: its next pull request,
   # issue, push or comment in that hour is held without a screen. Every run its event started that the trust job did
   # not skip counts, the held ones too, so a burst stays held until an hour has passed since its runs. A run whose
-  # screen or review could not sign in does not count: the schedule takes its item again.
+  # screen or review could not sign in does not count: the schedule takes its item again. Only a run's jobs show that,
+  # and the trust job reads the jobs of at most twice this number of the account's runs that failed: each one more of
+  # them counts.
   # The runs that the rescreen job starts and that screen (a rescreen, a review, an answer, a draft or an approval)
   # count toward the same limit, with its events (their names end with " of <account>"): so N, the most such runs of
   # one account that are screened in an hour, is this number less what its own events used. (The rescreen job starts
@@ -585,44 +587,68 @@ jobs:
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
           # job did not skip and either <login> started by an event (workflow_run, issues or issue_comment), or whose
           # name, a name of the rescreen job's (titled), ends with " of <login>": the trust job of a run that
-          # github-actions[bot] started checks that name. A run whose trust job is not listed yet counts. A run that
-          # GitHub skipped, with each of its jobs, does not count, and its jobs are not read. A run by hand that its
-          # trust job refused (the item closed, or lost its label, in between), so that every other job of it was
-          # skipped, screened nothing and does not count. The rescreen job, which every dispatched run skips, is not
-          # one of those jobs: a run whose trust job has just accepted it and whose next jobs are not listed yet counts.
-          # A run whose screen or review job stopped at a failed step whose name starts with "Sign in" could not sign
-          # in, and does not count: the schedule takes its item again, and that run must not find the account at its
-          # limit because of it. The jobs of each run that would count show it. They are read once for each run, which
-          # counts once, also when two pages list it (verdict_of), and once count is at OUTSIDE_HOURLY_LIMIT no more
-          # jobs are read: the account is at its limit. When GitHub does not list every run of the hour (whole), the
-          # runs that it leaves out can be the account's: the account is at its limit.
+          # github-actions[bot] started checks that name, and a writer's run by hand names the account that the writer
+          # gives. Two lists give those runs: the runs of <login> (actor), and the runs by hand (workflow_dispatch),
+          # which only writers and the rescreen job start. So the runs of other accounts, which a comment of anyone on
+          # any item starts, are in neither list. A run that GitHub skipped, with each of its jobs, does not count. A
+          # run that has not finished counts, and so does a run of an event that succeeded: their jobs are not read.
+          # The jobs of a run of an event that failed or was cancelled show whether it counts: a run whose screen or
+          # review job stopped at a failed step whose name starts with "Sign in" could not sign in, and does not count:
+          # the schedule takes its item again, and that run must not find the account at its limit because of it. The
+          # jobs of a run by hand that finished show it too, and whether its trust job refused it (the item closed, or
+          # lost its label, in between): then every other job of it was skipped, it screened nothing, and it does not
+          # count. The rescreen job, which every dispatched run skips, is not one of those jobs. A run whose trust job
+          # is not listed counts. The jobs of each run are read once, also when two pages or both lists give it, and of
+          # at most 2 * OUTSIDE_HOURLY_LIMIT runs in this run: each run past those counts, as it may, so that a burst
+          # of runs that could not sign in costs each later run no more reads than that. No jobs are read once count
+          # is at OUTSIDE_HOURLY_LIMIT: the account is at its limit. When GitHub does not list every run of a list
+          # (whole), the runs that it leaves out can be the account's: the account is at its limit.
           # The run stops when GitHub could not say.
           earlier() {
-            local from out runs id kind verdict
-            local -A verdict_of=()
+            local from list out rows runs="" id kind state run verdict reads=0
+            local -a unread=()
+            local -A once=()
             count=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            out=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-              -f created=">=$from" -F per_page=100 --jq "$pages"'(.workflow_runs[] | (.display_title // "") as $title
-                | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
-                         and ((.actor.login == $ENV.LOGIN
-                               and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
-                              or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
-                                  and ($title | endswith(" of " + $ENV.LOGIN)))))
-                | "\(.id) \(if .event == "workflow_dispatch" then "dispatch" else "event" end)")') \
-              || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
-            if ! runs=$(whole <<< "$out"); then
-              echo "::notice::GitHub lists at most 1,000 runs of this workflow since $from, and more of them match." \
-                "The runs that it does not list can be runs of $1, so $1 is held at the limit."
-              count=$OUTSIDE_HOURLY_LIMIT
-              return 0
-            fi
-            while read -r id kind; do
-              (( count < OUTSIDE_HOURLY_LIMIT )) || break
+            # Each run of the list on one line: "<id> <kind> <state>", kind dispatch for a run by hand and event for
+            # the others, and state count for a run that counts with no read of its jobs, else read.
+            for list in "actor=$1" event=workflow_dispatch; do
+              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+              out=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate \
+                "repos/$REPO/actions/workflows/review.yml/runs" -f "$list" -f created=">=$from" -F per_page=100 \
+                --jq "$pages"'(.workflow_runs[] | (.display_title // "") as $title
+                  | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
+                           and ((.actor.login == $ENV.LOGIN
+                                 and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
+                                or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
+                                    and ($title | endswith(" of " + $ENV.LOGIN)))))
+                  | "\(.id) \(if .event == "workflow_dispatch" then "dispatch" else "event" end) \(
+                      if .status != "completed" or (.event != "workflow_dispatch" and .conclusion == "success")
+                      then "count" else "read" end)")') \
+                || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
+              if ! rows=$(whole <<< "$out"); then
+                echo "::notice::GitHub lists at most 1,000 runs of this workflow with $list since $from, and more of" \
+                  "them match. The runs that it does not list can be runs of $1, so $1 is held at the limit."
+                count=$OUTSIDE_HOURLY_LIMIT
+                return 0
+              fi
+              runs+=$rows$'\n'
+            done
+            while read -r id kind state; do
               [ -n "$id" ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
-              [ -z "${verdict_of[$id]:-}" ] || continue
+              [ -z "${once[$id]:-}" ] || continue
+              once[$id]=1
+              if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $kind"); fi
+            done <<< "$runs"
+            for run in "${unread[@]}"; do
+              (( count < OUTSIDE_HOURLY_LIMIT )) || break
+              read -r id kind <<< "$run"
+              if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
+                count=$((count + 1))
+                continue
+              fi
+              reads=$((reads + 1))
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               verdict=$(KIND=$kind gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
                 --jq '([.jobs[] | select(.name == "trust")] | first) as $t
@@ -634,9 +660,8 @@ jobs:
                              (.name | startswith("Sign in")) and .conclusion == "failure") then "signin"
                     else "count" end') \
                 || { echo "::error::the jobs of run $id could not be read. Re-run this run."; exit 1; }
-              verdict_of[$id]=${verdict:--}
               if [[ $verdict == *count* ]]; then count=$((count + 1)); fi
-            done <<< "$runs"
+            done
           }
           fail() { echo "::error::$1 Re-run this run."; exit 1; }
           # origin: the run whose event this item's hold names, for a hold that is tried again; tries: the screened
@@ -1554,13 +1579,18 @@ jobs:
       # up to 3 hours ago are read, which covers a job's 100 minutes and its time in the queue: the runs of
       # workflow_run, issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A
       # review job that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review,
-      # Answer or Draft step, so neither counts. A run that GitHub skipped, or that ended before the hour began, has no
-      # review job of the hour, so its jobs are not read. Only jobs of this run's kind count, by the job's name,
-      # whatever the task of their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among
-      # them) against SCREENED_HOURLY_CAP. GitHub gives at most 1,000 runs for a list with created, the newest first,
-      # and its total_count then says that more match: the runs that it does not list can hold reviews of the hour, so
-      # the count is then the cap. A read that fails stops the run here, not at "Hold at the hourly cap", so that the
-      # hold job, which reads a failure of that step as the cap, never says the cap was reached when it was not.
+      # Answer or Draft step, so neither counts. The runs are listed one status at a time (GitHub's status filter takes
+      # a status or a conclusion): each one that the filter takes but two, skipped, the end of a run whose every job
+      # GitHub skipped (the run of a comment of a person who is not the author of its item, say), and completed, which
+      # holds those runs too. So such runs never fill a list. The lists are read in the order in which a run goes
+      # through those statuses, so that a run that moves on between two reads is in a later list. A run that ended
+      # before the hour began has no review job of the hour, so its jobs are not read. Only jobs of this run's kind
+      # count, by the job's name, whatever the task of their run: a writer's review or answer against HOURLY_CAP, a
+      # screened one (a draft among them) against SCREENED_HOURLY_CAP. GitHub gives at most 1,000 runs for a list with
+      # created, the newest first, and its total_count then says that more match: the runs that such a list does not
+      # give can hold reviews of the hour, so the count is then the cap. A read that fails stops the run here, not at
+      # "Hold at the hourly cap", so that the hold job, which reads a failure of that step as the cap, never says the
+      # cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
         env:
@@ -1574,28 +1604,36 @@ jobs:
           SINCE=$(date -u -d '-1 hour' +%s) || stop "the time could not be read."
           from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || stop "the time could not be read."
           export SINCE
-          # Before the runs of each page, "= <total_count> <runs on the page>".
-          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-          out=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-            -f created=">=$from" -F per_page=100 \
-            --jq '"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length)", (.workflow_runs[]
-              | select((.id | tostring) != $ENV.RUN_ID
-                       and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
-                            or .event == "workflow_dispatch") and .conclusion != "skipped"
-                       and (.status != "completed" or .updated_at == null
-                            or (.updated_at | fromdateiso8601) >= ($ENV.SINCE | tonumber)))
-              | "\(.id) \(.created_at)")') \
-            || stop "the runs could not be read."
-          runs=$(awk '$1 == "=" { if ($2 > total) total = $2; listed += $3; next } { rows[++n] = $0 }
-            END { if (listed < total) exit 3; for (i = 1; i <= n; i++) print rows[i] }' <<< "$out")
-          whole=$?
+          runs="" cut=""
+          for status in requested queued pending waiting in_progress success failure cancelled timed_out neutral \
+            action_required stale; do
+            # Before the runs of each page, "= <total_count> <runs on the page>".
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            out=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+              -f status="$status" -f created=">=$from" -F per_page=100 \
+              --jq '"= \(.total_count // (.workflow_runs | length)) \(.workflow_runs | length)", (.workflow_runs[]
+                | select((.id | tostring) != $ENV.RUN_ID
+                         and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
+                              or .event == "workflow_dispatch") and .conclusion != "skipped"
+                         and (.status != "completed" or .updated_at == null
+                              or (.updated_at | fromdateiso8601) >= ($ENV.SINCE | tonumber)))
+                | "\(.id) \(.created_at)")') \
+              || stop "the runs could not be read."
+            # GitHub runs this step with bash -e: the status of awk is read with ||, so that a cut list does not end it.
+            whole=0
+            rows=$(awk '$1 == "=" { if ($2 > total) total = $2; listed += $3; next } { rows[++n] = $0 }
+              END { if (listed < total) exit 3; for (i = 1; i <= n; i++) print rows[i] }' <<< "$out") || whole=$?
+            case $whole in
+              0) runs+=$rows$'\n' ;;
+              3) cut=$status runs=""; break ;;
+              *) stop "the runs could not be read." ;;
+            esac
+          done
           count=0
-          if (( whole == 3 )); then
-            echo "GitHub lists at most 1,000 runs of this workflow since $from, and more of them match. The runs that it" \
-              "does not list can hold reviews of the last hour, so the count is the cap."
+          if [ -n "$cut" ]; then
+            echo "GitHub lists at most 1,000 runs of this workflow of the status $cut since $from, and more of them" \
+              "match. The runs that it does not list can hold reviews of the last hour, so the count is the cap."
             count=$CAP
-          elif (( whole != 0 )); then
-            stop "the runs could not be read."
           fi
           declare -A counted=()
           while read -r id created; do

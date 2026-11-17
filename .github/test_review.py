@@ -78,6 +78,8 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments, reviews
 # endpoint with no file answers as GitHub's 404 does, and one with a <endpoint>.fail file fails with that file's text,
 # as gh names an HTTP error (a 422, say). A call that holds an argument listed in <endpoint>.refuse, one on each line
 # (state=open, say), fails as GitHub's 422 does. <endpoint>.2.json and on are the pages that only --paginate reads.
+# A call with the field -f or -F <name>=<value> is answered from <endpoint>.<name>=<value>.json and its pages in the
+# place of <endpoint>.json, when that file exists: the list that GitHub gives for that filter (status=success, say).
 # <endpoint>.then.json, when there is one, takes the place of <endpoint>.json after the first read: an answer that
 # changes in between. The file of --input, the request's body, goes to $FAKE_GH/inputs (gh_inputs), and the GH_TOKEN
 # of each call to $FAKE_GH/tokens (gh_tokens).
@@ -98,13 +100,14 @@ fi
 [ "$1" = api ] || { echo "gh: only api is served here: $*" >&2; exit 9; }
 shift
 all=("$@")
-filter=. endpoint= paginate= input=
+filter=. endpoint= paginate= input= fields=()
 while [ $# -gt 0 ]; do
   case $1 in
     --paginate) paginate=1; shift ;;
     --jq) filter=$2; shift 2 ;;
     --input) input=$2; shift 2 ;;
-    --method|-f|-F|-H) shift 2 ;;
+    -f|-F) fields+=("$2"); shift 2 ;;
+    --method|-H) shift 2 ;;
     *) endpoint=$1; shift ;;
   esac
 done
@@ -122,6 +125,9 @@ if [ -f "${file%.json}.refuse" ]; then
     done
   done < "${file%.json}.refuse"
 fi
+for field in "${fields[@]}"; do
+  [ ! -f "${file%.json}.$field.json" ] || { file=${file%.json}.$field.json; break; }
+done
 [ -f "$file" ] || { echo "gh: Not Found (HTTP 404): $endpoint" >&2; exit 1; }
 jq -r "$filter" "$file"
 n=2
@@ -1595,18 +1601,30 @@ class LimitTest(Runner):
         super().setUp()
         self.permissions(alice="write", mallory="read", eve="read")
 
-    def runs(self, *runs, jobs=None):
+    def runs(self, *runs, jobs=None, of=None):
         """Serve the runs list and each run's jobs: (id, login, event, trust job's conclusion or None for unlisted,
         and the run's name, if any); jobs: the jobs after the trust job, by run id (a review job that has not finished
-        when not given)."""
-        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
-            {"id": r[0], "actor": {"login": r[1]}, "triggering_actor": {"login": "alice"}, "event": r[2],
-             "created_at": "2026-11-02T10:00:00Z", **({"display_title": r[4]} if len(r) > 4 else {})}
-            for r in runs]})
+        when not given). Each run has the status and the conclusion that GitHub gives it for those jobs: in progress
+        while its trust job is not listed or a job has not finished, skipped when its trust job was (every job after
+        it was then skipped too), else failure when a job failed, cancelled when one was cancelled, and success. of:
+        the filter whose list this is (actor=mallory, say), the list of every run when None."""
+        listed = []
         for r in runs:
-            listed = [] if r[3] is None else [{"name": "trust", "conclusion": r[3]}]
+            trust = [] if r[3] is None else [{"name": "trust", "conclusion": r[3]}]
             rest = (jobs or {}).get(r[0], [{"name": "review", "conclusion": None}])
-            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": listed + rest})
+            ends = [j["conclusion"] for j in trust + rest]
+            if r[3] == "skipped":
+                status, conclusion = "completed", "skipped"
+            elif r[3] is None or None in ends:
+                status, conclusion = "in_progress", None
+            else:
+                status, conclusion = "completed", next((c for c in ("failure", "cancelled") if c in ends), "success")
+            listed.append({"id": r[0], "actor": {"login": r[1]}, "triggering_actor": {"login": "alice"},
+                           "event": r[2], "status": status, "conclusion": conclusion,
+                           "created_at": "2026-11-02T10:00:00Z", **({"display_title": r[4]} if len(r) > 4 else {})})
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": trust + rest})
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs" + ("" if of is None else "." + of),
+                   {"workflow_runs": listed})
 
     def trust(self, author, actor, event="issues"):
         """A CI run of #7 by author at HEAD pushed by actor, a comment of actor on its pull request #7, or its
@@ -1722,26 +1740,91 @@ class LimitTest(Runner):
         self.assertEqual((rc, got.get("route")), (0, "screen"), out)
 
     def test_each_run_is_read_once_and_counts_once_and_no_run_is_read_past_the_limit(self):
-        """Decision 3: the trust job reads the jobs of each run once, and stops reading when the account is at its
-        limit, so the reads of one run grow with the account's runs of the hour and no more. Two pages can list one run
-        (a run made between the reads of two pages moves the rest down a page): it is read and counted once. 3 *
-        OUTSIDE_HOURLY_LIMIT runs of mallory that could not sign in, each listed twice, cost one read each and leave
-        her under her limit; OUTSIDE_HOURLY_LIMIT - 1 runs that count, each listed twice, leave her under it; and of 3 *
-        OUTSIDE_HOURLY_LIMIT runs that count, only the newest OUTSIDE_HOURLY_LIMIT are read."""
+        """Decision 3: the trust job reads the jobs of a run once, and only of a run that failed: one in progress, or
+        one that succeeded, counts with no read. Two pages can list one run (a run made between the reads of two pages
+        moves the rest down a page): it is read and counted once. 2 * OUTSIDE_HOURLY_LIMIT runs of mallory that could
+        not sign in, each listed twice, cost one read each and leave her under her limit; OUTSIDE_HOURLY_LIMIT - 1 runs
+        in progress, each listed twice, leave her under it with no read; 3 * OUTSIDE_HOURLY_LIMIT such runs put her at
+        it with no read; and of 3 * OUTSIDE_HOURLY_LIMIT runs that failed after their sign-in, only the newest
+        OUTSIDE_HOURLY_LIMIT are read."""
         signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
+        failed = [attempt_job("screen", "Screen", name="screen mallory")]
 
         def read(runs):
             return [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs]
         many = [(90 - i, "mallory", "issue_comment", "success") for i in range(3 * self.LIMIT)]
+        budget = many[:2 * self.LIMIT]
         for case, listed, jobs, want, reads in (
-                ("could not sign in, twice", many + many, {r[0]: signed_out for r in many}, "screen", read(many)),
-                ("count, twice", many[:self.LIMIT - 1] * 2, None, "screen", read(many[:self.LIMIT - 1])),
-                ("count", many, None, "limit", read(many[:self.LIMIT]))):
+                ("could not sign in, twice", budget + budget, {r[0]: signed_out for r in budget}, "screen",
+                 read(budget)),
+                ("in progress, twice", many[:self.LIMIT - 1] * 2, None, "screen", []),
+                ("in progress", many, None, "limit", []),
+                ("failed after the sign-in", many, {r[0]: failed for r in many}, "limit", read(many[:self.LIMIT]))):
             with self.subTest(case=case):
                 self.runs(*listed, jobs=jobs)
                 self.forget()
                 self.assertEqual(self.route("mallory", "mallory"), want)
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], reads)
+
+    def test_a_burst_of_runs_that_could_not_sign_in_costs_each_later_run_a_fixed_number_of_reads(self):
+        """Decision 3, across runs: only the jobs of a run show that it could not sign in, so each trust job reads the
+        jobs of at most 2 * OUTSIDE_HOURLY_LIMIT runs that failed, and each one more of them counts. M = 40 runs of
+        mallory in an hour that each could not sign in, the trust job of each one with the runs before it listed:
+        each reads at most 2 * OUTSIDE_HOURLY_LIMIT jobs, so the 40 read at most 2 * OUTSIDE_HOURLY_LIMIT * 40, where
+        a read of each earlier run would be 40 * 39 / 2 = 780. Once more than 3 * OUTSIDE_HOURLY_LIMIT such runs came
+        before it, a run is at the limit."""
+        signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
+        budget, m, total = 2 * self.LIMIT, 40, 0
+        for k in range(m):
+            earlier = [(99 - i, "mallory", "issue_comment", "success") for i in range(k)]
+            self.runs(*earlier, jobs={r[0]: signed_out for r in earlier})
+            self.forget()
+            route = self.route("mallory", "mallory")
+            reads = [c for c in self.calls() if c.endswith("/jobs")]
+            self.assertEqual((len(reads), route), (min(k, budget), "screen" if k < budget + self.LIMIT else "limit"),
+                             f"run {k + 1}")
+            total += len(reads)
+        self.assertLessEqual(total, budget * m)
+        self.assertLess(total, m * (m - 1) // 2)
+
+    def test_an_account_with_no_more_runs_that_failed_than_the_reads_is_judged_by_their_jobs(self):
+        """Under the budget nothing changes: 2 * OUTSIDE_HOURLY_LIMIT runs of mallory that failed are each read, and
+        those that could not sign in do not count. With OUTSIDE_HOURLY_LIMIT - 1 of them failed after their sign-in
+        she is under her limit, and with OUTSIDE_HOURLY_LIMIT she is at it."""
+        signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
+        failed = [attempt_job("screen", "Screen", name="screen mallory")]
+        runs = [(90 - i, "mallory", "issues", "success") for i in range(2 * self.LIMIT)]
+        for counted, want in ((self.LIMIT - 1, "screen"), (self.LIMIT, "limit")):
+            with self.subTest(counted=counted):
+                self.runs(*runs, jobs={r[0]: failed if i >= len(runs) - counted else signed_out
+                                       for i, r in enumerate(runs)})
+                self.forget()
+                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
+                                 [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs])
+
+    def test_the_runs_of_other_accounts_never_cut_the_list_of_an_account(self):
+        """Each comment of anyone on any item starts a run of this file. The trust job lists only the runs of the
+        account (actor=<login>) and the runs by hand (event=workflow_dispatch), which only writers and the rescreen job
+        start: 1,000 newer runs of eve's comments, which cut the list of every run, leave mallory judged by her own
+        runs and the rescreen job's runs of her."""
+        eve = [{"id": 5000 - i, "actor": {"login": "eve"}, "event": "issue_comment", "status": "completed",
+                "conclusion": "skipped", "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
+        endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
+        for n in range(10):
+            with open(endpoint + (".json" if n == 0 else f".{n + 1}.json"), "w") as f:
+                json.dump({"total_count": 1000 + self.LIMIT, "workflow_runs": eve[n * 100:(n + 1) * 100]}, f)
+        rescreen = (40, BOT, "workflow_dispatch", "success", "rescreen #8 of mallory")
+        for own, want in ((self.LIMIT - 2, "screen"), (self.LIMIT - 1, "limit")):
+            with self.subTest(own=own):
+                self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(own)], of="actor=mallory")
+                self.runs(rescreen, of="event=workflow_dispatch")
+                rc, out, got = self.run_script(step("trust", TRUST)["run"], EVENT="issues", AUTHOR="mallory",
+                                               ACTOR="mallory", NUMBER="7", TASK="", SCREEN="", ACCOUNT="",
+                                               COMMENT="", HEAD="", HEAD_REPOSITORY="", REPLY="", RUN_ID="6000",
+                                               OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
+                                               HELD_LABEL=WF["env"]["HELD_LABEL"])
+                self.assertEqual((rc, got.get("route")), (0, want), out)
 
     def test_a_forks_pull_request_into_another_branch_starts_only_its_authors_review_into_main_on_her_limit(self):
         """Decision 1: GitHub names no pull request in a CI run of a fork's pull request (CI run 40554405841 of #23),
@@ -3063,6 +3146,51 @@ class CapTest(Runner):
             rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"],
                                          **self.step_env(name, "screen"))
         self.assertNotEqual(rc, 0, out)
+
+    def test_runs_that_github_skipped_fill_no_list_of_the_count(self):
+        """SCREENED_HOURLY_CAP: a comment of a person who is not the author of its item starts a run whose every job
+        GitHub skips, and the run's conclusion is then skipped. GitHub's status filter takes a status or a conclusion,
+        and GitHub cuts each list at 1,000 runs: 1,000 such runs, newer than the two screened reviews of the hour (one
+        whose run ended, one whose run is in progress), fill the lists of skipped, of completed and of every run, and
+        no other. The count is two, and the review is under its cap. A list that is still cut (1,001 runs in progress)
+        can leave out reviews of the hour: the count is then the cap, and the cap's step holds the review."""
+        cap = WF["env"]["SCREENED_HOURLY_CAP"]
+        at = "2099-01-01T00:00:00Z"
+        skipped = [{"id": 5000 - i, "event": "issue_comment", "status": "completed", "conclusion": "skipped",
+                    "created_at": at, "updated_at": at} for i in range(1000)]
+        ended = {"id": 11, "event": "workflow_run", "status": "completed", "conclusion": "success", "created_at": at,
+                 "updated_at": at}
+        running = {"id": 10, "event": "issue_comment", "status": "in_progress", "conclusion": None, "created_at": at,
+                   "updated_at": at}
+        more = [dict(running, id=4000 - i) for i in range(1001)]
+        endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
+        for run in (10, 11):
+            self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"jobs": [
+                {"name": "review (screened)", "run_id": run, "run_attempt": 1, "status": "completed",
+                 "started_at": at, "steps": list(self.REVIEWED)}]})
+        for case, running_runs, want, held in (("skipped runs", [running], "2", 0),
+                                               ("a cut list of runs in progress", more + [running], cap, 1)):
+            with self.subTest(case=case):
+                lists = {"": skipped + running_runs + [ended], "completed": skipped + [ended], "skipped": skipped,
+                         "success": [ended], "in_progress": running_runs}
+                for status in ("", "completed", "action_required", "cancelled", "failure", "neutral", "skipped",
+                               "stale", "success", "timed_out", "in_progress", "queued", "requested", "waiting",
+                               "pending"):
+                    runs = lists.get(status, [])
+                    for n in range(min(10, max(1, -(-len(runs) // 100)))):
+                        name = (endpoint + (f".status={status}" if status else "")
+                                + (".json" if n == 0 else f".{n + 1}.json"))
+                        with open(name, "w") as f:
+                            json.dump({"total_count": len(runs), "workflow_runs": runs[n * 100:(n + 1) * 100]}, f)
+                rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="6000",
+                                               **self.step_env(self.COUNT, "screen"))
+                self.assertEqual((rc, got.get("count")), (0, want), out)
+                rc, out, _ = self.run_script(step("review", self.CHECK)["run"], COUNT=got["count"],
+                                             **self.step_env(self.CHECK, "screen"))
+                self.assertEqual(rc, 0, out)
+                rc, out, _ = self.run_script(step("review", self.CAP)["run"], COUNT=got["count"],
+                                             **self.step_env(self.CAP, "screen"))
+                self.assertEqual((rc, "HELD" in out), (held, bool(held)), out)
 
     def test_a_run_counts_once_whatever_its_attempts_and_this_runs_own_attempts_never_count(self):
         """Decision 2: the schedule runs again the failed jobs of a run whose screen passed and whose review could not
