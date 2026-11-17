@@ -4,7 +4,8 @@
 The three services (Model Armor, Prompt Shields with Microsoft Entra's token endpoint, and Anthropic with its token
 exchange), GitHub's identity token endpoint and Cloud Storage are stand-ins served on 127.0.0.1, which record each
 request. What is tested: the sign-in (--sign-in makes the two exchanges and writes their tokens to a file that the
-screen reads and deletes; a failed exchange writes nothing), the verdict for each answer and each failure, that the
+screen reads and deletes; a failed exchange writes no file and no verdict, logs the HTTP status and the error code
+alone, and puts its reason in the bucket), the verdict for each answer and each failure, that the
 reason, with the sentences the model quoted and its why, reaches the bucket and nothing else (no output, no log line),
 what is sent (only the outside author's text; the model gets no tool, temperature 0 and a schema of its word, its
 quotes and its why), and the size limits of the screen and of each service.
@@ -826,9 +827,11 @@ class ScreenTest(unittest.TestCase):
                       "claude: no answer, no token from the sign-in)", printed)
         self.assertEqual(self.services.to("/contentsafety/text:shieldPrompt") + self.services.to("/v1/messages"), [])
 
-    def test_a_failed_exchange_fails_the_sign_in_and_writes_nothing(self):
-        """R10: when an exchange fails, --sign-in exits non-zero, writes no verdict, no reason, no output line and no
-        file of tokens, and prints no token, the one it got before the failure included."""
+    def test_a_failed_exchange_fails_the_sign_in_and_writes_no_verdict(self):
+        """R10: when an exchange fails, --sign-in exits non-zero, writes no verdict, no output line and no file of
+        tokens, and prints no token, the one it got before the failure included. Why it failed goes to the run's reason
+        object in the private bucket, once, with the item and the run and no verdict, and the log says that it is
+        there."""
         cases = {
             "entra refuses": ("/entra/tenant/oauth2/v2.0/token", (401, {"error": "invalid_client"})),
             "entra gives no token": ("/entra/tenant/oauth2/v2.0/token", (200, {})),
@@ -850,11 +853,50 @@ class ScreenTest(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0)
                 with open(self.output) as f:
                     self.assertEqual(f.read(), "")
-                self.assertEqual([q["path"] for q in self.services.requests if q["path"].startswith("/storage")], [])
+                self.assertEqual([(q["method"], q["query"]["name"], q["query"]["ifGenerationMatch"])
+                                  for q in self.services.requests if q["path"].startswith("/storage")],
+                                 [("POST", ["acme/model/1-1.json"], ["0"])])
+                reason = self.services.objects["acme/model/1-1.json"]
+                self.assertEqual(sorted(reason), ["number", "repository", "run", "sign_in"])
+                self.assertEqual((reason["repository"], reason["number"], reason["run"]),
+                                 ("acme/model", "7", "https://github.com/acme/model/actions/runs/1"))
+                self.assertIn("Its reason is in the private bucket, as acme/model/1-1.json.", r.stderr)
                 self.assertFalse(os.path.exists(os.path.join(self.dir, screen.TOKENS_FILE)))
                 self.assertNotIn("verdict", r.stdout + r.stderr)
                 for token in ("azure-not-a-secret", "anthropic-not-a-secret", "github-jwt"):
-                    self.assertNotIn(token, r.stdout + r.stderr)
+                    self.assertNotIn(token, r.stdout + r.stderr + json.dumps(reason))
+
+    def test_a_refused_exchange_logs_its_status_and_error_code_and_stores_its_text(self):
+        """R10 (decision 8): the log of a failed sign-in gets the HTTP status and the error code of the exchange that a
+        service refused, never the service's text: the text goes to the reason object in the private bucket. Entra's
+        OAuth error, and an Anthropic error object that every retry got, each give their code. When the reason cannot
+        be stored, the text is lost, never printed, and the log says so."""
+        entra = "/entra/tenant/oauth2/v2.0/token"
+        refused = (401, {"error": "invalid_client", "error_description": MARK})
+        for case, path, answer, shown in (
+                ("entra refuses", entra, refused, "HTTP 401 from {}, error code invalid_client."),
+                ("anthropic stays overloaded", "/v1/oauth/token",
+                 (503, {"type": "error", "error": {"type": "overloaded_error", "message": MARK}}),
+                 "HTTP 503 from {}, error code overloaded_error.")):
+            with self.subTest(case=case):
+                self.fresh()
+                host = urllib.parse.urlsplit(self.services.url).netloc
+                self.services.answers[path] = answer
+                rc, printed = self.call("--sign-in")
+                self.assertEqual(rc, 1, printed)
+                self.assertIn(f"The sign-in failed: CheckError: {shown.format(host)} Its reason is in the private "
+                              "bucket, as acme/model/1-1.json.", printed)
+                self.assertNotIn(MARK, printed)
+                self.assertIn(MARK, self.services.objects["acme/model/1-1.json"]["sign_in"])
+        self.fresh()
+        host = urllib.parse.urlsplit(self.services.url).netloc
+        self.services.answers[entra] = refused
+        self.env["STORAGE_URL"] = "http://127.0.0.1:9"
+        rc, printed = self.call("--sign-in")
+        self.assertEqual(rc, 1, printed)
+        self.assertIn(f"The sign-in failed: CheckError: HTTP 401 from {host}, error code invalid_client. Its reason "
+                      "could not be stored.", printed)
+        self.assertNotIn(MARK, printed)
 
     # --- what cannot be screened, and the services' limits ----------------------------------------------------
 

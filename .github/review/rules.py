@@ -128,10 +128,12 @@ FACTS = {
     "fix_stop": False,
     # A merge conflict at the head.
     "conflict": False,
-    # The draft of the reply to an issue is stored.
+    # The draft of the reply to an issue is stored, as an artifact of its run.
     "draft_stored": False,
     # A reply that Sami approved posted.
     "reply_posted": False,
+    # The text that the fresh reader refused, so that nothing of it posted: review, answer or fix (REFUSALS).
+    "refused": "",
     # The screen held the item.
     "screen_held": False,
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
@@ -151,6 +153,10 @@ FACTS = {
     "decision": "",
 }
 VERDICTS = ("", "pass", "blocking", "person")
+# The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
+REFUSALS = ("", "review", "answer", "fix")
+# The words of a label comment on a text that the fresh reader refused.
+REFUSAL = "A second Claude session checks each automated text before the text posts."
 # The post job's decisions on the import check run at a head (import_decision): record, or the first rule of R12 that
 # does not hold, or moved when the pull request moved on from the head. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved")
@@ -195,6 +201,18 @@ STATES = {
         AUTHOR, "You read the reply to this issue.",
         "If a question stays open, write it in a comment on this issue."),
     "draft": (THEOREM, "Sami approves the text of a reply.", "You do not need to do anything."),
+    # The fresh reader refused the text (the fact refused): nothing of it posted.
+    "refused-review": (
+        THEOREM, "Sami writes the review by hand.",
+        f"{REFUSAL} It stopped the automated review, so the review did not post. You do not need to do anything."),
+    "refused-answer": (
+        THEOREM, "Sami answers your comment by hand.",
+        f"{REFUSAL} It stopped the automated answer to your comment, so the answer did not post. You do not need to do "
+        "anything."),
+    "refused-fix": (
+        THEOREM, "Sami writes the fix by hand.",
+        f"The automated review gave a blocking finding. {REFUSAL} It stopped the automated fix for the finding, so no "
+        "suggested change posted. You can push your own change."),
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the review or the checks of this item by hand.", "You do not need to do anything."),
@@ -237,7 +255,7 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
-                conflict=False, draft_stored=False, reply_posted=False, screen_held=False, held=False,
+                conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, held=False,
                 tries_used_up=False, left_closed=False, recorded=False, import_paths=None, decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
@@ -247,6 +265,8 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         raise ValueError(f"not a verdict: {verdict!r}")
     if decision not in DECISIONS:
         raise ValueError(f"not a decision of the post job: {decision!r}")
+    if refused not in REFUSALS:
+        raise ValueError(f"not a text that the fresh reader refuses: {refused!r}")
     if left_closed:
         return "reopen"
     # GitHub runs no checks on a pull request with a merge conflict: the author resolves it first.
@@ -262,6 +282,9 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         return "replied"
     if draft_stored:
         return "draft"
+    # A text that the fresh reader refused never posts: Sami writes it, whoever wrote the item.
+    if refused:
+        return f"refused-{refused}"
     # The review's outcome, for an item whose review followed a screen that passed.
     if outsider:
         if kind == "pr":

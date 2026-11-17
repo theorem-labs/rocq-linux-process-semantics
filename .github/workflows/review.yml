@@ -9,7 +9,9 @@
 # among the open ones into main. They read the number, the head, the author, the text and the diff from the GitHub
 # API, and never download an artifact of the CI run. The CI run's results reach the review as data: the head's check
 # runs and statuses (.review/checks.json). A run by hand on a ref other than main runs no job: the if of each job
-# checks the ref, so such a run holds no identity and posts nothing.
+# checks the ref, so such a run holds no identity and posts nothing. GitHub's == compares strings with no case, so
+# refs/heads/MAIN passes such an if: the step of the trust job, which every other job needs, and the step of the
+# rescreen job, which runs without it, also compare the ref byte for byte in the shell, and stop on any other ref.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -17,7 +19,8 @@
 #             the fix, as one review of suggested changes.
 #   answer    a new comment of an outside item's author in its conversation (issue_comment): the answer to each
 #             comment of the author that waits, and the fix when a comment asks for it.
-#   draft     a new issue of an outside author: a draft of the reply, which is stored and not posted.
+#   draft     a new issue of an outside author: a draft of the reply, which is uploaded as an artifact of the run and
+#             not posted.
 #   reply     a run by hand with a reply text that Sami approved, which is posted as it is.
 #   rescreen  a held item, screened again (below).
 #   approve   a first-time contributor's pull request whose CI runs GitHub holds: the screen, and, when it passes, the
@@ -76,11 +79,11 @@
 # the author and of accounts with write access, and no others. An answer reads them too, and the workflow's own
 # review, answers, hold comment, label comment and fix reviews on the item.
 #
-# - The reply to a new issue of an outside author is a draft, which this workflow stores and never posts
-#   (.github/review-answer.md, "An issue draft"). Sami approves the text of a reply, and a run by hand on main posts
-#   that text word for word, once, and stores it beside the draft. A person with write access starts it, or an App of
-#   the APPS (legion-implementer[bot]), and never the rescreen job. A run with no text, or of a pull request or of an
-#   issue that is not open, posts nothing and fails:
+# - The reply to a new issue of an outside author is a draft, which this workflow uploads as the artifact
+#   issue-draft-<n> of its run and never posts (.github/review-answer.md, "An issue draft"). Sami approves the text of a
+#   reply, and a run by hand on main posts that text word for word, once, and reads nothing else. A person with write
+#   access starts it, or an App of the APPS (legion-implementer[bot]), and never the rescreen job. A run with no text,
+#   or of a pull request or of an issue that is not open, posts nothing and fails:
 #
 #   gh workflow run review.yml -R theorem-labs/rocq-linux-process-semantics -f task=reply -f number=<n> -f reply=<text>
 #
@@ -116,9 +119,7 @@
 #           stored. Anthropic's federation rule admits this file alone, on refs/heads/main, for this file's events,
 #           and refuses a job in review-screen, so the screen job cannot get the review's Claude token. The review job
 #           cannot get the screen's tokens either: they need the environment. Before the model, a step signs in to
-#           Anthropic and drops the token, so that a run the rule does not admit fails there. For a draft, the sign-in
-#           to Google Cloud of the draft store (below) comes before it. A reply runs no model, so it does not sign in to
-#           Anthropic.
+#           Anthropic and drops the token, so that a run the rule does not admit fails there.
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
@@ -130,17 +131,15 @@
 #           runs when the author said they will make the change, or when 2 fix reviews since the author's last own
 #           push did not make the review pass. Code keeps only the suggestions on the diff (.github/review/rules.py
 #           suggestions). A step signs in again, and the fresh reader shortens the words of the fix, never the lines
-#           of a suggested change. The answer and the fix run in this job, so the hourly caps count them with the
-#           review. For a draft, Claude writes the reply to a new issue of an outside author (.github/review-answer.md,
-#           "An issue draft"), and the fresh reader trims it or refuses it, with the rules of the draft in its request.
-#           This job stores the draft, or the refused draft with the reader's reason, in a private bucket, with a
-#           Google Cloud token of 5 minutes of the account that dispatch://INFRA-3395's contract names, through its
-#           provider, which admits this job on main, with no environment, for the events issues and workflow_dispatch
-#           (the job's env, DRAFT_GCP_PROVIDER and DRAFT_GCP_SERVICE_ACCOUNT). Those two events alone give a draft or a
-#           reply, and the draft store's sign-ins run on them alone. The first sign-in comes before the model, so a run
-#           that the provider refuses fails there. No output, summary, log line or artifact of the run holds the draft,
-#           the refused draft or the reason. For a reply, this job runs no model and no cap: it stores the approved text
-#           beside the draft.
+#           of a suggested change. The fresh reader can refuse a review, an answer or the words of a fix: then nothing
+#           of that text posts, no fix follows a refused review or answer, the run's summary holds the reader's reason
+#           and no log line or output does, and the comment job gives the item waits-on-theorem with Sami's next step.
+#           The answer and the fix run in this job, so the hourly caps count them with the review. For a draft, Claude
+#           writes the reply to a new issue of an outside author (.github/review-answer.md, "An issue draft"), and the
+#           fresh reader trims it or refuses it, with the rules of the draft in its request. This job uploads the draft,
+#           or the refused draft with the reader's reason, as the artifact issue-draft-<n> of its run, which the OSSV
+#           controller copies into its ask to Sami. No output, summary or log line of the run holds the draft, the
+#           refused draft or the reason. No job signs in to Google Cloud for a draft, and a reply has no review job.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -158,8 +157,8 @@
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
 #           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
-#           for each comment, and the fix as one review of suggested changes, once for each head. For a stored draft, it
-#           posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel, it
+#           for each comment, and the fix as one review of suggested changes, once for each head. For a draft, it posts
+#           the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel, it
 #           sets the state label and the label comment of the head again, from what the workflow wrote of the head and
 #           what the post job decided. It never commits or pushes: its token can write no file of the repository. It
 #           uses this run's GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
@@ -390,6 +389,11 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # The if of this job compares the ref with no case, as GitHub's == does, so refs/heads/MAIN passes it. The
+          # shell compares it byte for byte: on any other ref this step reads nothing and gives no task, so no job after
+          # it runs.
+          [ "${GITHUB_REF:-}" = refs/heads/main ] \
+            || { echo "::error::This run is not on refs/heads/main, so no job runs."; exit 1; }
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
           # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
@@ -1256,6 +1260,12 @@ jobs:
       MODEL_ARMOR_TEMPLATE: projects/theorem-agent-infra/locations/us/templates/review-screen
       STORAGE_URL: https://storage.googleapis.com
       REASON_BUCKET: theorem-agent-infra-review-screen-reasons
+      # The reason object of this run's attempt, which the Screen step writes, or the sign-in to Anthropic and Azure
+      # when it fails, and what it names of the run.
+      REASON_OBJECT: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
+      REPOSITORY: ${{ github.repository }}
+      NUMBER: ${{ needs.trust.outputs.number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Azure: Theorem's tenant, the managed identity review-screen, whose federated credential admits this
       # repository's jobs in review-screen, and whose role allows text:shieldPrompt on the Content Safety account and
       # nothing else.
@@ -1317,8 +1327,12 @@ jobs:
       # Both tokens go to a file under the runner's temporary directory that only the runner's account can read, and
       # that the Screen or Measure step deletes as it reads it; never to this log or an output. An exchange that fails,
       # or that has not answered after the sign-in's own 120 seconds, fails this job before the screen, with no
-      # verdict, and the hold job holds nothing for it.
+      # verdict, and the hold job holds nothing for it. This log then gets the HTTP status and the error code of a
+      # refused exchange alone: the service's text goes to the reason object in REASON_BUCKET, with the Google token
+      # of the step before, and is lost when that object cannot be written.
       - name: Sign in to Anthropic and Azure
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
         run: python3 .github/screen.py --sign-in
       # The screen reads the tokens of the step before and deletes their file.
       - name: Screen
@@ -1326,10 +1340,6 @@ jobs:
         if: needs.trust.outputs.route != 'measure'
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
-          REPOSITORY: ${{ github.repository }}
-          NUMBER: ${{ needs.trust.outputs.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REASON_OBJECT: ${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
         run: python3 .github/screen.py .review
       # Every listed check, three times, on each text of the labelled set kept in the private bucket, and the verdict
       # of each rule of SCREEN_RULE's choices, with the tokens of the sign-in. The texts and their words stay in the
@@ -1338,7 +1348,6 @@ jobs:
         if: needs.trust.outputs.route == 'measure'
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MEASURE_SET: ${{ inputs.measure_set }}
           MEASURE_OBJECT: measure/runs/${{ github.repository }}/${{ github.run_id }}-${{ github.run_attempt }}.json
           MEASURE_REPEATS: ${{ inputs.measure_repeats }}
@@ -1354,19 +1363,17 @@ jobs:
     needs: [trust, gather, screen]
     # A writer's, or a request by hand; or one the screen passed. A run whose gather job failed, or whose screen held
     # it, failed or was cancelled, has no review. Its tasks: the review, the rescreen of a review, and the answer to the
-    # comments of an outside item's author, with the fix that a review or an answer starts; the draft of the reply to a
-    # new issue of an outside author; and the approved reply, which gathers nothing and is screened by no one: this job
-    # stores its text beside the draft.
+    # comments of an outside item's author, with the fix that a review or an answer starts; and the draft of the reply
+    # to a new issue of an outside author. The approved reply has no job here: the comment job posts the text of its
+    # run, which this job neither reads nor keeps.
     if: >-
       !cancelled() && github.ref == 'refs/heads/main'
-      && ((needs.gather.result == 'success' && needs.gather.outputs.digest != ''
-           && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-               || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
-           && (needs.trust.outputs.route == 'review'
-               || (needs.trust.outputs.route == 'screen' && needs.screen.result == 'success'
-                   && needs.screen.outputs.verdict == 'clean')))
-          || (needs.trust.result == 'success' && needs.trust.outputs.task == 'reply'
-              && needs.trust.outputs.route == 'review'))
+      && needs.gather.result == 'success' && needs.gather.outputs.digest != ''
+      && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
+      && (needs.trust.outputs.route == 'review'
+          || (needs.trust.outputs.route == 'screen' && needs.screen.result == 'success'
+              && needs.screen.outputs.verdict == 'clean'))
     # One run of this job at a time for each pull request or issue and task: a new push replaces the review of the old
     # head, and a later comment's answer run answers every comment that waits. An answer never cancels a review, nor a
     # review an answer: their groups differ. A draft or a reply is never cancelled. A run that the trust job stops, or
@@ -1392,9 +1399,12 @@ jobs:
       answer: ${{ steps.answered.outputs.body }}
       # The fix: the request of one review of suggested changes (POST pulls/<n>/reviews). It is empty when no fix posts.
       fix: ${{ steps.fixed.outputs.review }}
-      # The run and the attempt of a stored draft, <run>-<attempt>, which name its object in the private bucket: never
-      # its text. It is empty when no draft was stored.
-      draft: ${{ steps.stored.outputs.draft }}
+      # The text that the fresh reader refused, so that nothing of it posts: review, answer or fix. Empty when it
+      # refused none.
+      refused: ${{ steps.result.outputs.refused || steps.answered.outputs.refused || steps.fixed.outputs.refused }}
+      # The run and the attempt of a draft that this job uploaded, <run>-<attempt>, which name the run of its artifact:
+      # never its text. It is empty when no draft was uploaded.
+      draft: ${{ steps.drafted.outputs.draft }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1412,28 +1422,9 @@ jobs:
       LINUX_COMMIT: 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5
       QEMU_URL: https://github.com/qemu/qemu
       QEMU_COMMIT: e3ad0582fdcec5c194835b0b4e8342cdc197b5cb
-      # The draft store's Google identity (ids, not secrets), as dispatch://INFRA-3395's contract names it (its spec
-      # version 5, R1): the provider github-ossv-drafts, which admits this job of this file on refs/heads/main, with no
-      # environment, for the events issues and workflow_dispatch, and the account ossv-ci, which creates the objects of
-      # the drafts' bucket (DRAFT_BUCKET, in the store step). The two sign-ins of the draft store read them.
-      DRAFT_GCP_PROVIDER: projects/844532188053/locations/global/workloadIdentityPools/github/providers/github-ossv-drafts
-      DRAFT_GCP_SERVICE_ACCOUNT: ossv-ci@theorem-agent-root.iam.gserviceaccount.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {persist-credentials: false}
-
-      # The draft store's Google identity, for a draft and for a reply, before any other step: a sign-in with the
-      # provider and the account of the job's env, so that a run that the provider does not admit fails here, before
-      # the model. Its name starts with "Sign in", so the hold job holds nothing for it, and the issue gets no label.
-      # The token lasts 300 seconds, and no step reads it: this step has no id, the action writes no credentials file
-      # and sets no environment variable. The provider admits the events issues and workflow_dispatch alone. Those are
-      # the two events whose runs the trust job gives the task draft or reply, and the step runs on them alone.
-      - name: Sign in to Google Cloud for the draft (check the sign-in)
-        if: >-
-          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
-          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
-        with: {workload_identity_provider: "${{ env.DRAFT_GCP_PROVIDER }}", service_account: "${{ env.DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
 
       # Anthropic's exchange of a new identity token, with the federation rule, the organization, the service account
       # and the workspace of the job's env, which the Review step uses too, before any step that runs the model. The
@@ -1442,9 +1433,8 @@ jobs:
       # run of an event that the rule does not admit yet, say), the job fails here, at a step whose name starts with
       # "Sign in", before the model, and the hold job holds nothing for it: the schedule takes the item again. curl
       # reads the request header and the exchange's body from its standard input, so that no token is in a command
-      # line. A reply runs no model: it skips this step, the cap and every step for the model.
+      # line.
       - name: Sign in to Anthropic
-        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           fail() { echo "::error::The sign-in to Anthropic failed: $1 No model ran."; exit 1; }
@@ -1462,9 +1452,14 @@ jobs:
           jwt=""
           status=${answer##*$'\n'}
           answer=${answer%$'\n'*}
-          # An answer that is not 2xx holds no token: it says why Anthropic refused the run.
-          [[ $status == 2[0-9][0-9] ]] \
-            || fail "HTTP $status from Anthropic: $(printf '%s' "${answer:0:500}" | tr '\n' ' ')"
+          # An answer that is not 2xx holds no token. This log gets its HTTP status and its error code alone (OAuth's
+          # error field, or the type of Anthropic's error object), never Anthropic's text: the log of a public
+          # repository is public, and no private store is there for the text.
+          if [[ $status != 2[0-9][0-9] ]]; then
+            code=$(jq -r '.error | if type == "object" then .type else . end | strings
+              | select(test("^[A-Za-z0-9_.:-]{1,64}$"))' <<< "$answer" 2> /dev/null) || code=""
+            fail "HTTP $status from Anthropic, ${code:+error code }${code:-no error code}."
+          fi
           jq -e '.access_token | strings | length > 0' <<< "$answer" > /dev/null 2>&1 \
             || fail "Anthropic gave no access token."
           answer=""
@@ -1481,12 +1476,10 @@ jobs:
       # Draft step, so neither counts. A run that GitHub skipped, or that ended before the hour began, has no review job
       # of the hour, so its jobs are not read. Only jobs of this run's kind count, by the job's name, whatever the task
       # of their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among them) against
-      # SCREENED_HOURLY_CAP. A reply calls no model, so it has no cap: this step and the next two do not run for it. A
-      # read that fails stops the run here, not at "Hold at the hourly cap", so that the hold job, which reads a
-      # failure of that step as the cap, never says the cap was reached when it was not.
+      # SCREENED_HOURLY_CAP. A read that fails stops the run here, not at "Hold at the hourly cap", so that the hold
+      # job, which reads a failure of that step as the cap, never says the cap was reached when it was not.
       - name: Count the reviews of the last hour
         id: count
-        if: needs.trust.outputs.task != 'reply'
         env:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1535,7 +1528,6 @@ jobs:
       # A count that is not a number, or a cap that is not one, lets no model run. It fails here, in a step of its own,
       # so that the hold job reads it as a review that did not finish (a try counts), not as the cap reached.
       - name: Check the count and the cap
-        if: needs.trust.outputs.task != 'reply'
         env:
           COUNT: ${{ steps.count.outputs.count }}
           CAP: ${{ needs.trust.outputs.route == 'screen' && env.SCREENED_HOURLY_CAP || env.HOURLY_CAP }}
@@ -1548,7 +1540,6 @@ jobs:
       # Runs after the two steps above have passed, so it fails only when the count is at the cap: the hold job reads
       # this step's failure as the cap reached.
       - name: Hold at the hourly cap
-        if: needs.trust.outputs.task != 'reply'
         env:
           COUNT: ${{ steps.count.outputs.count }}
           POOL: ${{ needs.trust.outputs.route == 'screen' && 'review (screened)' || 'review' }}
@@ -1562,12 +1553,10 @@ jobs:
           fi
           echo "$COUNT reviews ($POOL) in the last hour, under the cap of $CAP."
 
-      # What the gather job kept: a reply gathers nothing.
+      # What the gather job kept.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
-        if: needs.trust.outputs.task != 'reply'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       - name: Take the gathered pull request or issue
-        if: needs.trust.outputs.task != 'reply'
         env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
         run: |
           set -euo pipefail
@@ -1586,7 +1575,6 @@ jobs:
 
       # The source the model describes, for the kernel and QEMU code that comments and issues cite.
       - name: Gather the Linux and QEMU source
-        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           out=.review
@@ -1608,7 +1596,6 @@ jobs:
       # URL), and Claude can read every file of the working directory. So git's own directory moves under the runner's
       # temporary directory, which Claude cannot read, and .git becomes a file that names it. git works as before.
       - name: Keep git's configuration out of Claude's reach
-        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           git init -q --separate-git-dir="$RUNNER_TEMP/review-git"
@@ -1621,7 +1608,6 @@ jobs:
       # (bun-version), and their digests from https://downloads.claude.ai/claude-code-releases/<version>/manifest.json
       # (platforms.linux-x64.checksum) and from the bun-linux-x64.zip asset of the oven-sh/bun release.
       - name: Download Claude Code and Bun at pinned digests
-        if: needs.trust.outputs.task != 'reply'
         env:
           CLAUDE_CODE_VERSION: 2.1.312
           CLAUDE_CODE_SHA256: 4f4178ce41d83e23341ebfbaecdbcf8ea6bf7baea0690025abe49eeec3a5d01d
@@ -1644,7 +1630,6 @@ jobs:
       # allowed_non_write_users, which a screened item sets, makes the action put /usr/bin and /bin before the pinned
       # Bun on the PATH. So no other Bun may be there.
       - name: No Bun but the pinned one
-        if: needs.trust.outputs.task != 'reply'
         run: |
           set -euo pipefail
           for bun in /usr/bin/bun /bin/bun; do
@@ -1762,9 +1747,9 @@ jobs:
 
       # The draft of the reply to a new issue of an outside author (.github/review-answer.md, "An issue draft"): the
       # first two of the three steps, with the rules of the draft and the whole copies of the three skills to write
-      # by. The settings are the Answer step's: the same tools, the same reach, the same identity. The draft never
-      # leaves this job: the action writes no report to the run's summary and no output of Claude to this log
-      # (display_report and show_full_output, each set to "false" here).
+      # by. The settings are the Answer step's: the same tools, the same reach, the same identity. The draft leaves
+      # this job only as its artifact (below): the action writes no report to the run's summary and no output of Claude
+      # to this log (display_report and show_full_output, each set to "false" here).
       - name: Draft
         id: draft
         if: needs.trust.outputs.task == 'draft'
@@ -1811,10 +1796,8 @@ jobs:
       # file in the runner's temporary directory that only the runner's account can read, and that the step that runs
       # the reader (the comment, the answer or the draft) reads and deletes. It never goes to this log or an output.
       # Claude has finished before this step. When the exchange fails, the job fails here, at a step whose name starts
-      # with "Sign in", and the hold job holds nothing for it: the schedule takes the item again. A reply has no text
-      # of the model to read.
+      # with "Sign in", and the hold job holds nothing for it: the schedule takes the item again.
       - name: Sign in to Anthropic for the fresh reader
-        if: needs.trust.outputs.task != 'reply'
         run: python3 .github/review/trim.py sign-in
 
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
@@ -1827,11 +1810,15 @@ jobs:
       # link or load anything outside github.com (trim.py's inert), and cuts it at 20,000 characters. Then it runs the
       # fresh reader: one request to Claude, with no tools, that holds the reader's instruction, the list and that text
       # alone, with the token of the step before. A reader that fails fails this job, so nothing posts untrimmed: a
-      # screened item is held as a review that did not finish, and is tried again. The comment: the header and its
-      # markers, the trimmed text, the section on soundness, each listed item that the trimmed text lacks, the footer,
-      # and the text that the reader read in a collapsed block. The model writes none of the fixed parts, and the
-      # reader never sees them. The trimmed text and the added items are made inert too. The run's summary gets the
-      # text that the reader read, the list, and the section on soundness with every line.
+      # screened item is held as a review that did not finish, and is tried again. A reader that refuses the review
+      # (trim.py's status 3) gives the output refused=review and no comment or verdict: nothing of the review posts, no
+      # fix runs, no import check run is recorded, and the comment job gives the item waits-on-theorem with Sami's next
+      # step. The run's summary then gets the reader's reason alone, for Sami, and neither this log nor an output holds
+      # it. The comment: the header and its markers, the trimmed text, the section on soundness, each listed item that
+      # the trimmed text lacks, the footer, and the text that the reader read in a collapsed block. The model writes
+      # none of the fixed parts, and the reader never sees them. The trimmed text and the added items are made inert
+      # too. The run's summary gets the text that the reader read, the list, and the section on soundness with every
+      # line.
       - name: The comment, as it is posted
         id: result
         if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -1870,20 +1857,28 @@ jobs:
           foot="Claude wrote this review with [these rules]($RULES), in [this workflow run]($RUN)."
           foot+=" A second Claude session shortened the review."
           printf '%s\n' "$foot" > "$work/foot.md"
+          rc=0
           python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
             --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
-            --summary "$GITHUB_STEP_SUMMARY" --summary-extra "$work/section-all.md" > "$work/body.md" \
-            || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+            --summary "$GITHUB_STEP_SUMMARY" --summary-extra "$work/section-all.md" > "$work/body.md" || rc=$?
+          if (( rc == 3 )); then
+            echo "refused=review" >> "$GITHUB_OUTPUT"
+            echo "The fresh reader refused the review. Nothing of it posts: Sami writes the review by hand."
+            exit 0
+          fi
+          (( rc == 0 )) || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
           { echo "verdict=$verdict"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           delimiter="body_$(openssl rand -hex 16)"
           { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
-      # The third of the three steps for an answer, and the answer as it is posted: one request to the fresh reader,
-      # which only trims the answer (trim.py answer), with the token of the sign-in step. The reader holds nothing
-      # back: whatever it gives is the trimmed text, a refusal too, so no answer is held for its words. A reader that
-      # fails fails this job, so nothing posts untrimmed. The answer: its marker, which names the newest comment that it
-      # answers (and, when the author said they will make the change, will-fix and the head), a fixed line, the
-      # trimmed text made inert, and the footer. An action of none posts nothing.
+      # The third of the three steps for an answer, and the answer as it is posted: one request to the fresh reader
+      # (trim.py answer), with the token of the sign-in step. A reader that fails fails this job, so nothing posts
+      # untrimmed. A reader that refuses the answer (trim.py's status 3) gives the output refused=answer, and no answer,
+      # action or will_fix: nothing of the answer posts, no fix runs, and the comment job gives the item
+      # waits-on-theorem with Sami's next step. The run's summary gets the reader's reason alone, for Sami, and neither
+      # this log nor an output holds it. The answer: its marker, which names the newest comment that it answers (and,
+      # when the author said they will make the change, will-fix and the head), a fixed line, the trimmed text made
+      # inert, and the footer. An action of none posts nothing.
       - name: The answer, as it is posted
         id: answered
         if: needs.trust.outputs.task == 'answer'
@@ -1909,11 +1904,11 @@ jobs:
             [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
             echo "head=$head" >> "$GITHUB_OUTPUT"
           fi
-          { echo "action=$action"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           newest=$(jq -r 'last | .id // empty' .review/answer-to.json)
           [[ $newest =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::.review/answer-to.json names no comment that waits for an answer. Nothing posts."; exit 1; }
           if [ "$action" = none ]; then
+            { echo "action=$action"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
             echo "The comments up to $newest ask nothing and change no next step: no answer posts."
             exit 0
           fi
@@ -1923,125 +1918,85 @@ jobs:
           printf '%s\n%s\n' "<!-- review-answer $newest$said -->" "**Automated answer**" > "$work/head.md"
           printf '%s\n' "Claude wrote this answer with [these rules]($RULES), in [this workflow run]($RUN)." \
             > "$work/foot.md"
+          rc=0
           python3 .github/review/trim.py answer --text "$work/answer.md" --head "$work/head.md" --foot "$work/foot.md" \
-            > "$work/body.md" || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+            --summary "$GITHUB_STEP_SUMMARY" > "$work/body.md" || rc=$?
+          if (( rc == 3 )); then
+            echo "refused=answer" >> "$GITHUB_OUTPUT"
+            echo "The fresh reader refused the answer. Nothing of it posts, and no fix runs: Sami answers the comment by hand."
+            exit 0
+          fi
+          (( rc == 0 )) || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+          { echo "action=$action"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           delimiter="body_$(openssl rand -hex 16)"
           { echo "body<<$delimiter"; cat "$work/body.md"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
       # The third of the three steps for the draft: one request to the fresh reader (trim.py draft), with the token of
       # the sign-in step, that holds the rules of the draft (.github/review-answer.md and the write-to-maintainer copy)
-      # beside the draft. The reader trims the draft, or refuses it and gives its reason. What it gives stays in the
-      # runner's temporary directory, for the store step: no output, summary or log line of this job holds the draft,
-      # the refused draft or the reason. A reader that fails fails this job, so nothing is stored: a screened issue is
-      # held as a review that did not finish, and tried again.
+      # beside the draft. The reader trims the draft, or refuses it and gives its reason. Then the file that the next
+      # step uploads as the artifact of this run: a header, the reason of a refused draft on one line, a line ---, and
+      # the draft as the reader trimmed it (draft.txt), or a refused draft as the model wrote it (refused-draft.txt).
+      # Sami reads it in a terminal, and the author of an issue can steer the model's text, so every control character
+      # but tab and newline, and every bidirectional-text control, is taken out of the file. No output, summary or log
+      # line of this job holds the draft, the refused draft or the reason: the summary names the artifact alone. A
+      # reader that fails fails this job, so nothing is uploaded: a screened issue is held as a review that did not
+      # finish, and tried again. The output draft, <run>-<attempt>, names the run of the artifact for the label comment.
       - name: The draft, as the fresh reader leaves it
+        id: drafted
         if: needs.trust.outputs.task == 'draft'
         env:
           RESULT: ${{ steps.draft.outputs.execution_file }}
-        run: |
-          set -euo pipefail
-          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
-          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
-          work=$RUNNER_TEMP/draft
-          mkdir -p "$work"
-          jq -j -e 'map(select(.type == "result")) | last | .structured_output
-            | select(type == "object" and (.text | type) == "string") | .text' "$RESULT" > "$work/draft.md" \
-            || { echo "::error::The draft gave no text. Nothing is stored."; exit 1; }
-          grep -q '[^[:space:]]' "$work/draft.md" || { echo "::error::The draft has no word in it. Nothing is stored."; exit 1; }
-          python3 .github/review/trim.py draft --text "$work/draft.md" --rules .github/review-answer.md \
-            --rules .github/review/skills/write-to-maintainer/SKILL.md > "$work/read.json" \
-            || { echo "::error::The fresh reader gave no answer for the draft. Nothing is stored."; exit 1; }
-          echo "The fresh reader read the draft. The store step stores what it gave."
-
-      # The draft store's Google identity again, for the store of a draft or of a reply: a new token of 300 seconds,
-      # with the provider and the account of the job's env, which the next step alone reads. The action writes no
-      # credentials file and sets no environment variable. When the sign-in fails, the job fails here, at a step whose
-      # name starts with "Sign in": nothing is stored, nothing posts, and the hold job holds nothing for it. As the
-      # first sign-in of the draft store, it runs on the events issues and workflow_dispatch alone.
-      - name: Sign in to Google Cloud for the draft
-        id: storage
-        if: >-
-          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
-          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
-        with: {workload_identity_provider: "${{ env.DRAFT_GCP_PROVIDER }}", service_account: "${{ env.DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
-
-      # One new object of the private bucket DRAFT_BUCKET, under DRAFT_PREFIX/<issue>/: <run>-<attempt> holds the draft
-      # as the fresh reader trimmed it; <run>-<attempt>-refused, a draft that the reader refused, as the model wrote
-      # it, with the reader's reason; approved-<run>-<attempt>, the text that a reply run posts. It is written only when
-      # no object of that name is there (ifGenerationMatch=0). Sami reads it in a terminal, and the author of an issue
-      # can steer the model's text, so every control character but tab and newline, and every bidirectional-text
-      # control, is taken out first. The run's summary gets the command that reads the object, and no text of it. A
-      # write that fails fails this step: nothing posts. The output draft, <run>-<attempt>, names a stored draft for the
-      # label comment.
-      - name: Store the draft, or the approved reply
-        id: stored
-        if: >-
-          (needs.trust.outputs.task == 'draft' || needs.trust.outputs.task == 'reply')
-          && (github.event_name == 'issues' || github.event_name == 'workflow_dispatch')
-        env:
-          TASK: ${{ needs.trust.outputs.task }}
           NUMBER: ${{ needs.trust.outputs.number }}
-          APPROVED: ${{ inputs.reply }}
-          GOOGLE_ACCESS_TOKEN: ${{ steps.storage.outputs.access_token }}
-          STORAGE_URL: https://storage.googleapis.com
-          # The private bucket of the drafts of the OSS Verify repositories, and this repository's prefix in it. The
-          # account DRAFT_GCP_SERVICE_ACCOUNT of the job's env writes there, from this job of this file on main, for the
-          # events issues and workflow_dispatch (dispatch://INFRA-3395).
-          DRAFT_BUCKET: theorem-agent-infra-oss-verify-held-findings
-          DRAFT_PREFIX: rocq-linux-process-semantics/issue-drafts
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [ -n "${GOOGLE_ACCESS_TOKEN:-}" ] || { echo "::error::The sign-in gave no token. Nothing is stored, and nothing posts."; exit 1; }
+          # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
+          trap 'rm -f -- "$RUNNER_TEMP/reader-token"' EXIT
           [[ $NUMBER =~ ^[1-9][0-9]*$ && $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] \
-            || { echo "::error::no issue number, run id or attempt. Nothing is stored, and nothing posts."; exit 1; }
-          work=$RUNNER_TEMP/draft
-          mkdir -p "$work"
-          refused=false
-          case $TASK in
-            draft)
-              refused=$(jq -r .refused "$work/read.json")
-              [[ $refused == true || $refused == false ]] \
-                || { echo "::error::The fresh reader neither kept nor refused the draft. Nothing is stored."; exit 1; }
-              name=$RUN_ID-$RUN_ATTEMPT kind="issue draft"
-              if [ "$refused" = true ]; then
-                name+=-refused kind="refused issue draft"
-                cp "$work/draft.md" "$work/text"
-                told="The fresh reader refused the draft of the reply to issue #$NUMBER. The private store holds the draft and the reason of the reader. No job posts them. To read them:"
-              else
-                jq -j .text "$work/read.json" > "$work/text"
-                told="The private store holds the draft of the reply to issue #$NUMBER. No job posts it: Sami approves the text of a reply first. To read it:"
-              fi ;;
-            reply)
-              [[ ${APPROVED:-} =~ [^[:space:]] ]] || { echo "::error::the run gives no text of a reply. Nothing is stored, and nothing posts."; exit 1; }
-              name=approved-$RUN_ID-$RUN_ATTEMPT kind="approved issue reply"
-              printf '%s' "$APPROVED" > "$work/text"
-              told="The private store holds the approved reply to issue #$NUMBER, beside its draft. The comment job of this run posts it. To read it:" ;;
-            *) echo "::error::the task $TASK stores nothing."; exit 1 ;;
-          esac
-          object=$DRAFT_PREFIX/$NUMBER/$name
-          # The object: a header, the reason of a refused draft on one line, and the text. Taken out of it: the C0
-          # controls but tab and newline, DEL, the C1 controls, and the bidirectional-text controls U+061C, U+200E,
-          # U+200F, U+202A to U+202E and U+2066 to U+2069.
+            || { echo "::error::no issue number, run id or attempt. Nothing is uploaded."; exit 1; }
+          work=$RUNNER_TEMP/draft kept=$RUNNER_TEMP/issue-draft
+          mkdir -p "$work" "$kept"
+          jq -j -e 'map(select(.type == "result")) | last | .structured_output
+            | select(type == "object" and (.text | type) == "string") | .text' "$RESULT" > "$work/draft.md" \
+            || { echo "::error::The draft gave no text. Nothing is uploaded."; exit 1; }
+          grep -q '[^[:space:]]' "$work/draft.md" || { echo "::error::The draft has no word in it. Nothing is uploaded."; exit 1; }
+          python3 .github/review/trim.py draft --text "$work/draft.md" --rules .github/review-answer.md \
+            --rules .github/review/skills/write-to-maintainer/SKILL.md > "$work/read.json" \
+            || { echo "::error::The fresh reader gave no answer for the draft. Nothing is uploaded."; exit 1; }
+          refused=$(jq -r .refused "$work/read.json")
+          if [ "$refused" = true ]; then
+            name=refused-draft.txt kind="refused issue draft"
+            cp "$work/draft.md" "$work/text"
+            told="The fresh reader refused the draft of the reply to issue #$NUMBER. The artifact issue-draft-$NUMBER of this run holds the draft and the reason of the reader. No job posts them."
+          else
+            name=draft.txt kind="issue draft"
+            jq -j .text "$work/read.json" > "$work/text"
+            told="The artifact issue-draft-$NUMBER of this run holds the draft of the reply to issue #$NUMBER. No job posts it: Sami approves the text of a reply first."
+          fi
+          # Taken out of the file: the C0 controls but tab and newline, DEL, the C1 controls, and the bidirectional-text
+          # controls U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
           { printf 'rocq-linux-process-semantics %s v1\nissue: %s\nrun: %s\n' "$kind" "$NUMBER" "$RUN"
             if [ "$refused" = true ]; then jq -j '"reason: \(.reason | gsub("\\s+"; " "))\n"' "$work/read.json"; fi
             printf -- '---\n'
             cat "$work/text"; } \
             | python3 -c 'import re, sys; sys.stdout.buffer.write(re.sub("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", sys.stdin.buffer.read().decode()).encode())' \
-            > "$work/object"
-          # The token reaches curl in its configuration, on standard input, never in a command line.
-          answer=$(printf 'header = "Authorization: Bearer %s"\n' "$GOOGLE_ACCESS_TOKEN" \
-            | curl -sS --fail --max-time 60 -K - -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$work/object" \
-                "$STORAGE_URL/upload/storage/v1/b/$DRAFT_BUCKET/o?uploadType=media&ifGenerationMatch=0&name=${object//\//%2F}") \
-            || { echo "::error::gs://$DRAFT_BUCKET/$object could not be written. Nothing posts."; exit 1; }
-          generation=$(jq -r '.generation // ""' <<< "$answer")
-          [[ $generation =~ ^[0-9]{1,20}$ ]] || { echo "::error::Google Cloud gave no generation of gs://$DRAFT_BUCKET/$object. Nothing posts."; exit 1; }
-          echo "Stored gs://$DRAFT_BUCKET/$object, generation $generation."
-          printf '%s\n\n    gcloud storage cat gs://%s/%s\n\n' "$told" "$DRAFT_BUCKET" "$object" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$TASK" = draft ]; then echo "draft=$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"; fi
+            > "$kept/$name"
+          echo "The fresh reader read the draft. The next step uploads it as the artifact issue-draft-$NUMBER."
+          printf '%s\n' "$told" >> "$GITHUB_STEP_SUMMARY"
+          echo "draft=$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      # The draft's file, as the artifact issue-draft-<issue> of this run. The OSSV controller lists the artifacts of
+      # that name with its own read-only token and copies the newest into its ask to Sami: Sami chose an artifact over
+      # a private store (dispatch://INFRA-3395/ask/5d55f3cb-5359-4b52-af6e-85231a37ccf7). Anyone who can read this
+      # repository can read the artifact: the draft is made only from the public issue and the public rules files, and
+      # it posts only after Sami approves its text. GitHub keeps it 90 days, the longest it keeps an artifact of a public
+      # repository (or less, when the repository's setting is shorter), as a draft can wait weeks for Sami. A new
+      # attempt of the run replaces the artifact of the attempt before it (overwrite).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        if: needs.trust.outputs.task == 'draft'
+        with: {name: "issue-draft-${{ needs.trust.outputs.number }}", path: "${{ runner.temp }}/issue-draft", if-no-files-found: error, retention-days: 90, overwrite: true}
 
       # Whether the fix runs (.github/review-answer.md, "The fix"): for a blocking finding of the review, after the
       # soundness rule, or for an answer whose action is fix, of an outside pull request. The two stops: no fix runs
@@ -2050,10 +2005,11 @@ jobs:
       # push did not make the review pass (rules.py fixes, from the head's history and the pull request's reviews, as
       # the API gives them). The outputs will_fix and fix_stop give the comment job the facts of the state label. When
       # the fix runs, this step writes what it is for into .review/fix.json, which the Fix step reads: the review's
-      # output, or the comments of the author and the answer. A draft and a reply have no fix.
+      # output, or the comments of the author and the answer. A draft has no fix, and neither has a review or an
+      # answer that the fresh reader refused: it gives no verdict and no action.
       - name: Whether a fix runs
         id: fixable
-        if: needs.trust.outputs.task != 'draft' && needs.trust.outputs.task != 'reply'
+        if: needs.trust.outputs.task != 'draft'
         env:
           TASK: ${{ needs.trust.outputs.task }}
           OUTSIDE: ${{ needs.gather.outputs.outside }}
@@ -2185,7 +2141,9 @@ jobs:
       # block, which holds the lines of the fix byte for byte (trim.py fix). The review: its marker (the head), a
       # fixed line, the trimmed summary and the footer, and one comment for each suggestion, on the right side of the
       # diff. With no suggestion on the diff, no fix posts. A reader that fails fails this job, so nothing posts
-      # untrimmed.
+      # untrimmed. A reader that refuses the summary or a why (trim.py's status 3) gives the output refused=fix and no
+      # review: nothing of the fix posts, and the comment job gives the item waits-on-theorem with Sami's next step.
+      # The run's summary gets the reader's reason alone, for Sami, and neither this log nor an output holds it.
       - name: The fix, as it is posted
         id: fixed
         if: steps.fixable.outputs.fix == 'true'
@@ -2215,9 +2173,15 @@ jobs:
             > "$work/head.md"
           printf '%s\n' "Claude wrote this fix with [these rules]($RULES), in [this workflow run]($RUN). A second Claude session shortened the words of this fix. It did not change the lines of any suggested change. A suggested change changes nothing until you apply it." \
             > "$work/foot.md"
+          rc=0
           python3 .github/review/trim.py fix --fix "$work/kept.json" --commit "$head" --head "$work/head.md" \
-            --foot "$work/foot.md" > "$work/review.json" \
-            || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
+            --foot "$work/foot.md" --summary "$GITHUB_STEP_SUMMARY" > "$work/review.json" || rc=$?
+          if (( rc == 3 )); then
+            echo "refused=fix" >> "$GITHUB_OUTPUT"
+            echo "The fresh reader refused the fix. Nothing of it posts: Sami writes the fix by hand."
+            exit 0
+          fi
+          (( rc == 0 )) || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
           echo "$kept suggested changes post."
           delimiter="review_$(openssl rand -hex 16)"
           { echo "review<<$delimiter"; cat "$work/review.json"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
@@ -2511,20 +2475,23 @@ jobs:
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
   # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
   # it, and the state label and the label comment of each, which .github/review/rules.py sets from main's checkout of
-  # .github/. A draft posts nothing but its label comment, after the review job stored it, and a relabel nothing but
-  # the state label and the label comment of its head. No App token posts here, so none of these comments, reviews and
-  # labels starts a run of a workflow. It never commits or pushes: its token can write no file of the repository. It
-  # runs whatever the post job's result, and reads that job's recorded as false when it did not succeed.
+  # .github/. A draft posts nothing but its label comment, after the review job uploaded it, and a relabel nothing but
+  # the state label and the label comment of its head. A review, an answer or a fix that the fresh reader refused posts
+  # nothing: the item gets waits-on-theorem and a label comment with Sami's next step. No App token posts here, so none
+  # of these comments, reviews and labels starts a run of a workflow. It never commits or pushes: its token can write
+  # no file of the repository. It runs whatever the post job's result, and reads that job's recorded as false when it
+  # did not succeed.
   comment:
     needs: [trust, gather, review, post]
-    # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
+    # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job. A reply
+    # has no gather, screen or review job: it needs the trust job alone.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-                || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft'
-                || needs.trust.outputs.task == 'reply')
+                || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
                && needs.review.result == 'success')
-              || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel')
+              || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel'
+                   || needs.trust.outputs.task == 'reply')
                   && needs.trust.result == 'success')) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max).
     concurrency:
@@ -2550,6 +2517,7 @@ jobs:
       - name: Post the review, or replace the one posted before
         if: >-
           env.POST_REVIEW == 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+          && needs.review.outputs.refused != 'review'
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ && -n $BODY ]] || { echo "::error::no review to post"; exit 1; }
@@ -2562,10 +2530,10 @@ jobs:
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$BODY" --jq .html_url
           fi
       # The answer, once for each comment that it answers: a comment of github-actions[bot] that starts with the
-      # answer's marker, <!-- review-answer <comment id>, is the answer posted already. An answer whose action is none
-      # posts nothing.
+      # answer's marker, <!-- review-answer <comment id>, is the answer posted already. An answer whose action is none,
+      # or that the fresh reader refused, posts nothing.
       - name: Post the answer
-        if: needs.trust.outputs.task == 'answer'
+        if: needs.trust.outputs.task == 'answer' && needs.review.outputs.refused != 'answer'
         env:
           ANSWER: ${{ needs.review.outputs.answer }}
         run: |
@@ -2634,9 +2602,9 @@ jobs:
       # The approved reply to an issue of an outside author (.github/review-answer.md, "An issue draft"): the text of the
       # run by hand, byte for byte, with no trim, no change and no added line, once: a comment of github-actions[bot]
       # with the same body is the reply posted already. The text comes from the run's input through this step's
-      # environment alone, never into the script. The review job stored it first: a run whose store failed posts
-      # nothing. The output id, the id of the reply's comment, goes to the label comment as the marker
-      # <!-- issue-reply-posted <id> -->, after which the trust job answers the comments of the issue's author.
+      # environment alone, never into the script. No job of the run reads or keeps it otherwise. The output id, the id
+      # of the reply's comment, goes to the label comment as the marker <!-- issue-reply-posted <id> -->, after which the
+      # trust job answers the comments of the issue's author.
       - name: Post the approved reply
         id: replied
         if: needs.trust.outputs.task == 'reply'
@@ -2674,16 +2642,18 @@ jobs:
       # whether this run took an outsider's path (so the screen passed it), the review's verdict, the two stops of the
       # fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import check run at
       # the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
-      # waits-on-theorem) and the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author). An answer
-      # changes the state only when the author said they will make the change, or when a fix posted or stopped: else the
-      # label stays as the item's review, hold or reply set it. A relabel posts no review and leaves review-held on: it
-      # sets the state of its head again from what the workflow wrote of that head (.github/review/rules.py relabel):
-      # the verdict and will-fix of the review comment that names it, an answer's will-fix at it, its fix reviews, and a
-      # hold comment that names it, the newer of a review and a hold first. With only a merge conflict of the head in
-      # the label comment, which is gone now, it gives no state label and takes that conflict's line out, so that the
-      # schedule reviews the head; with nothing of the head, the labels stay. The label comment of an outside pull
-      # request holds the marker line <!-- repo-pairs-import-paths <head>: <value> --> of R12, with the value of
-      # REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the import by that value.
+      # waits-on-theorem), the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author), and the text
+      # that the fresh reader refused (waits-on-theorem, with Sami's step for it). An answer changes the state only when
+      # the author said they will make the change, when a fix posted or stopped, or when the reader refused the answer or
+      # the fix: else the label stays as the item's review, hold or reply set it. A relabel posts no review and leaves
+      # review-held on: it sets the state of its head again from what the workflow wrote of that head
+      # (.github/review/rules.py relabel): the verdict and will-fix of the review comment that names it, an answer's
+      # will-fix at it, its fix reviews, and a hold comment that names it, the newer of a review and a hold first. With
+      # only a merge conflict of the head in the label comment, which is gone now, it gives no state label and takes that
+      # conflict's line out, so that the schedule reviews the head; with nothing of the head, the labels stay. The label
+      # comment of an outside pull request holds the marker line <!-- repo-pairs-import-paths <head>: <value> --> of R12,
+      # with the value of REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the import by
+      # that value.
       - name: Take the label review-held off and set the state label
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict'
         env:
@@ -2699,6 +2669,7 @@ jobs:
           FIX_POSTED: ${{ steps.fixed.outputs.posted }}
           DRAFT: ${{ needs.review.outputs.draft }}
           REPLIED: ${{ steps.replied.outputs.id }}
+          REFUSED: ${{ needs.review.outputs.refused }}
           # The import's paths, one glob on each line, while the import is live (R12), as the post job reads them. An
           # empty value is no variable: GitHub gives an empty value for a variable that is not set.
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
@@ -2741,7 +2712,7 @@ jobs:
           [ "${FIX_POSTED:-}" != true ] || fix_posted=true
           if [ "${TASK:-}" = answer ]; then
             [ "${of_answer:-}" != true ] || take_off
-            if [ "$will_fix" = false ] && [ "$fix_stop" = false ] && [ "$fix_posted" = false ]; then
+            if [ "$will_fix" = false ] && [ "$fix_stop" = false ] && [ "$fix_posted" = false ] && [ -z "${REFUSED:-}" ]; then
               echo "#$NUMBER: the answer changes no state, so the labels stay."
               exit 0
             fi
@@ -2769,11 +2740,12 @@ jobs:
           fi
           python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$verdict" \
             will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
-            decision="$DECISION" draft_stored="$draft_stored" reply_posted="$reply_posted" "${facts[@]}" \
-            "${markers[@]}"
+            decision="$DECISION" draft_stored="$draft_stored" reply_posted="$reply_posted" refused="${REFUSED:-}" \
+            "${facts[@]}" "${markers[@]}"
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
+          && needs.review.outputs.refused != 'review'
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
       # A pull request with a merge conflict starts no CI run, and so no review: its author resolves the conflict, and
       # the next push starts both. One comment for each head, which says so, and the label waits-on-author, which takes
@@ -3165,6 +3137,10 @@ jobs:
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
         run: |
           set -euo pipefail
+          # The if of this job compares the ref with no case, as GitHub's == does, so refs/heads/MAIN passes it. The
+          # shell compares it byte for byte: on any other ref this step reads, starts and writes nothing.
+          [ "${GITHUB_REF:-}" = refs/heads/main ] \
+            || { echo "::error::This run is not on refs/heads/main, so the schedule starts no run."; exit 1; }
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Without a posted review, answer or label comment, no run that this job starts settles an item: every held

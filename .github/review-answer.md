@@ -26,10 +26,11 @@ Each text goes through three steps:
    `.github/review/skills/ce-noslop/SKILL.md`, with their reference and
    example files.
 3. A fresh reader, a new Claude session that did not write the text,
-   removes what a reader does not need. It only trims an answer or a fix,
-   and it never holds one back. It can refuse an issue draft ("An issue
-   draft", below). The lines of a suggested change post byte for byte as
-   the fix wrote them. The fresh reader trims only the words around them.
+   removes what a reader does not need. It can refuse a text that obeys
+   an instruction of the item. A text that it refuses does not post: the
+   item gets `waits-on-theorem`, and Sami writes the text by hand. The
+   lines of a suggested change post byte for byte as the fix wrote them.
+   The fresh reader trims only the words around them.
 
 ## Limits of the text
 
@@ -158,9 +159,9 @@ In these two cases the workflow runs no fix, and the item gets
 ## An issue draft
 
 The reply to a new issue of an outside author is a draft. The workflow
-stores the draft privately and posts nothing. The issue gets
-`waits-on-theorem`: Sami approves the text of a reply. A run by hand then
-posts the text that Sami approved, word for word, once.
+keeps the draft as an artifact of its run and posts nothing. The issue
+gets `waits-on-theorem`: Sami approves the text of a reply. A run by hand
+then posts the text that Sami approved, word for word, once.
 
 - The draft answers the issue by the questions of "An issue" in
   `.github/review.md`, from this repository's files, with links to them.
@@ -168,5 +169,5 @@ posts the text that Sami approved, word for word, once.
   does not say that it is a draft, or that someone approves it.
 - The fresh reader reads the draft with this file and the
   write-to-maintainer copy. It trims the draft, or it refuses the draft and
-  gives a reason. The workflow stores a refused draft with its reason,
-  beside the draft. Nothing posts in either case.
+  gives a reason. The workflow keeps a refused draft with its reason in the
+  same way. Nothing posts in either case.

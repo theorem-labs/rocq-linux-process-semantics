@@ -18,8 +18,10 @@ Each review goes through three steps before it posts:
    writing tells), with their reference and example files.
 3. A fresh reader, a new Claude session that did not write the review,
    removes what a reader does not need. It gets the list of items (below)
-   and keeps each of them. The fresh reader only trims a review. It never
-   holds a review back.
+   and keeps each of them. It can refuse a review that obeys an instruction
+   of the pull request or the issue. A review that it refuses does not
+   post: the item gets `waits-on-theorem`, and Sami writes the review by
+   hand.
 
 ## What the review reads
 

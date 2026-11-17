@@ -35,9 +35,11 @@ Every setting is an environment variable that review.yml sets; the tokens come f
 the job's environment review-screen alone can exchange for them. Google Cloud's comes from the job's step "Sign in to
 Google Cloud". The tokens of Prompt Shields (Microsoft Entra's) and of the model (Anthropic's) come from --sign-in, the
 step "Sign in to Anthropic and Azure", which writes them to a file under RUNNER_TEMP that only the runner's account
-can read; the screen reads the file and deletes it. A sign-in that fails fails its step, and writes no verdict, no
-reason and no output. The sign-in has SIGN_IN_SECONDS of its own, and the screen DEADLINE_SECONDS, so that the two fit
-in the job's 15 minutes.
+can read; the screen reads the file and deletes it. A sign-in that fails fails its step, and writes no verdict and no
+output. Its log gives the HTTP status and the error code of an exchange that a service refused, and never the
+service's text: that text goes to the reason, in REASON_BUCKET, with the Google token of the step "Sign in to Google
+Cloud", and is lost when the reason cannot be stored. The sign-in has SIGN_IN_SECONDS of its own, and the screen
+DEADLINE_SECONDS, so that the two fit in the job's 15 minutes.
 
 --measure, the step "Measure", runs every listed check MEASURE_REPEATS times on each text of the labelled set
 MEASURE_SET in the private bucket, and gives the counts of each rule of RULES (measure).
@@ -115,7 +117,12 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["verdict
 
 
 class CheckError(Exception):
-    """A check that could not answer. Its message goes to the reason only."""
+    """A check that could not answer. Its message goes to the reason only. public is what the log of the sign-in may
+    show of it: for a request that a service refused, the HTTP status and the error code, never the service's text."""
+
+    def __init__(self, message, public=None):
+        super().__init__(message)
+        self.public = message if public is None else public
 
 
 def env(name):
@@ -305,9 +312,25 @@ def pieces(text, size, overlap):
 
 # --- HTTP ---------------------------------------------------------------------------------------------------------
 
+def error_code(body):
+    """What the public log may show of the answer body of a request that a service refused: its error code, OAuth's
+    error field ({"error": "invalid_client"}) or the type of Anthropic's error object ({"error": {"type": ...}}), when
+    it is one plain word. Never the service's text, its description or message of the error."""
+    try:
+        error = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return "no error code"
+    if isinstance(error, dict):
+        error = error.get("type")
+    if isinstance(error, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", error):
+        return f"error code {error}"
+    return "no error code"
+
+
 def http(method, url, body=None, headers=None, form=False, attempts=4):
     """The JSON answer of one request. Retries a 429 or a 5xx, and a connection that fails; any other answer that is
-    not 2xx, an answer that is not JSON, and a request after DEADLINE, is a CheckError."""
+    not 2xx, an answer that is not JSON, and a request after DEADLINE, is a CheckError. The error of an answer that is
+    not 2xx holds the service's text, and its public form the HTTP status and the error code alone."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -317,34 +340,36 @@ def http(method, url, body=None, headers=None, form=False, attempts=4):
         else:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-    last = "no attempt"
+    host = urllib.parse.urlsplit(url).netloc
+    last = public = "no attempt"
     for attempt in range(attempts):
         if attempt:
             time.sleep(min(2 ** attempt, 20))
         left = DEADLINE - time.monotonic()
         if left <= 0:
-            raise CheckError(f"{OUT_OF_TIME}; last: {last}")
+            raise CheckError(f"{OUT_OF_TIME}; last: {last}", f"{OUT_OF_TIME}; last: {public}")
         request = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=min(TIMEOUT, left)) as r:
                 raw = r.read()
         except urllib.error.HTTPError as e:
-            detail = e.read()[:2000].decode("utf-8", "replace")
-            last = f"HTTP {e.code} from {urllib.parse.urlsplit(url).netloc}: {detail}"
+            answer = e.read()
+            last = f"HTTP {e.code} from {host}: {answer[:2000].decode('utf-8', 'replace')}"
+            public = f"HTTP {e.code} from {host}, {error_code(answer)}"
             if e.code == 429 or e.code >= 500:
                 retry = e.headers.get("Retry-After", "")
                 if retry.isdigit():
                     time.sleep(min(int(retry), 30))
                 continue
-            raise CheckError(last) from None
+            raise CheckError(last, public) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            last = f"{type(e).__name__} reaching {urllib.parse.urlsplit(url).netloc}: {e}"
+            last = public = f"{type(e).__name__} reaching {host}: {e}"
             continue
         try:
             return json.loads(raw)
         except ValueError:
-            raise CheckError(f"an answer from {urllib.parse.urlsplit(url).netloc} that is not JSON") from None
-    raise CheckError(last)
+            raise CheckError(f"an answer from {host} that is not JSON") from None
+    raise CheckError(last, public)
 
 
 def identity_token(audience):
@@ -409,8 +434,9 @@ TOKENS = {}
 def sign_in():
     """The step "Sign in to Anthropic and Azure": the token of each check that SCREEN_CHECKS lists, that needs one and
     whose identity is set up, written to TOKENS_FILE under RUNNER_TEMP, which only this account can read. When an
-    exchange fails, the step fails and writes nothing: no file, no verdict, no reason and nothing to GITHUB_OUTPUT.
-    No token is printed."""
+    exchange fails, the step fails and writes no file, no verdict and nothing to GITHUB_OUTPUT. Why it failed goes to
+    the reason in the private bucket (store), and the log gets the HTTP status and the error code of a refused
+    exchange alone, and whether the reason was stored. No token is printed."""
     names = os.environ.get("SCREEN_CHECKS", "").split(",")
     tokens = {}
     try:
@@ -421,7 +447,14 @@ def sign_in():
         with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
             json.dump(tokens, f)
     except Exception as e:   # the message names a setting, a service or the file, and holds no token
-        print(f"The sign-in failed: {type(e).__name__}: {str(e)[:500]}", file=sys.stderr)
+        public = e.public if isinstance(e, CheckError) else str(e)
+        try:
+            store({"sign_in": f"{type(e).__name__}: {str(e)[:2000]}", "repository": os.environ.get("REPOSITORY", ""),
+                   "number": os.environ.get("NUMBER", ""), "run": os.environ.get("RUN_URL", "")})
+            kept = f"Its reason is in the private bucket, as {os.environ['REASON_OBJECT']}."
+        except Exception:   # the reason is lost, never printed
+            kept = "Its reason could not be stored."
+        print(f"The sign-in failed: {type(e).__name__}: {public[:500]}. {kept}", file=sys.stderr)
         return 1
     print(f"Signed in for {', '.join(tokens) or 'no check'}.")
     return 0

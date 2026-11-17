@@ -12,11 +12,13 @@ run), and the state label and the label comment that each of those gives (.githu
 tested on its own). The review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which
 trims the review and adds back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so
 does the soundness rule of an outside pull request's proof (.github/review/rules.py soundness), on a pull request that
-the gather job's step reads from git. The draft of the reply to an outside issue goes to a stand-in of Google Cloud's
-storage on 127.0.0.1 alone, and the reply that Sami approved posts byte for byte, once. The post job's steps approve a
-first-time contributor's held runs against the stand-in gh, with a stand-in token from each of the App's sign-in
-steps, only when the screen passed. Each job's condition is evaluated for every task and route, to show which jobs
-run, and that a run by hand off main runs none. The rest checks what each job holds, that no job of either workflow
+the gather job's step reads from git. The draft of the reply to an outside issue becomes a file of the runner's
+temporary directory, which the review job uploads as the artifact of its run, and nothing else holds it. A review, an
+answer or a fix that the fresh reader refuses posts nothing, and the item waits on Theorem. The reply that Sami approved
+posts byte for byte, once. The post job's steps approve a first-time contributor's held runs against the
+stand-in gh, with a stand-in token from each of the App's sign-in steps, only when the screen passed. Each job's
+condition is evaluated for every task and route, to show which jobs run, and that a run by hand off main runs none,
+with a ref that is main in another case too. The rest checks what each job holds, that no job of either workflow
 holds a right on pull_request, and the settings that keep Claude to the checkout and to the pinned binaries.
 .github/test_screen.py tests the screen itself.
 
@@ -379,8 +381,10 @@ class Runner(unittest.TestCase):
         os.chmod(os.path.join(bin_dir, "gh"), 0o755)
         self.output = os.path.join(self.dir, "output")
         self.env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        # A run of this workflow on main, as GitHub sets GITHUB_REF for each of its events there.
         self.env.update(PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH=self.api, REPO=REPO, APPS=APPS,
-                        GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output)
+                        GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output,
+                        GITHUB_REF="refs/heads/main")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -743,6 +747,22 @@ class TrustTest(Runner):
                 with self.subTest(job=name):
                     self.assertTrue(set(job["needs"] if isinstance(job["needs"], list) else [job["needs"]])
                                     & {"trust", "review"}, name)
+
+    def test_a_run_on_main_in_another_case_reads_nothing_and_runs_no_job(self):
+        """R6: GitHub's == compares strings with no case, so the trust job's if passes a run by hand on
+        refs/heads/MAIN, a branch that a writer can make. The trust step compares the ref byte for byte: it fails
+        before any read, with no task, so no job after it runs. On refs/heads/main the same run is reviewed."""
+        github = {"github.repository_id": 1425819621, "github.event_name": "workflow_dispatch"}
+        self.assertTrue(evaluate(JOBS["trust"]["if"], dict(github, **{"github.ref": "refs/heads/MAIN"})))
+        self.permissions(alice="write")
+        self.env["GITHUB_REF"] = "refs/heads/MAIN"
+        rc, out, got = self.trust("workflow_dispatch", "", "alice")
+        self.assertEqual((rc, got, self.calls()), (1, {}, []), out)
+        self.assertIn("::error::This run is not on refs/heads/main, so no job runs.", out)
+        ran = run_graph(got, trust_result="failure", github=dict(github, **{"github.ref": "refs/heads/MAIN"}))
+        self.assertEqual(ran_jobs(ran), {"trust"})
+        self.env["GITHUB_REF"] = "refs/heads/main"
+        self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
 
     def test_a_run_the_trust_job_stops_cancels_no_review(self):
         """The concurrency groups are the jobs', not the workflow's: an outsider's push to a pull request that a
@@ -1404,12 +1424,12 @@ class RouteTest(unittest.TestCase):
                 self.assertEqual(self.ran({"task": "relabel", "route": "review", "number": "7", "head": HEAD},
                                           results={"post": result}), {"post", "comment"})
 
-    def test_a_draft_takes_the_outsiders_path_and_a_reply_runs_the_review_and_comment_jobs_alone(self):
+    def test_a_draft_takes_the_outsiders_path_and_a_reply_runs_the_comment_job_alone(self):
         """b1 (R3): a draft is gathered and screened (the issue is outside text), then the review job writes it and
-        stores it, and the comment job posts its label comment; it is held at the limit, by the screen, or when the
-        review job did not finish. The App's job never runs for it. A reply gathers nothing and is screened by no
-        one: the review job stores it, and the comment job posts it; a review job that failed posts nothing, and holds
-        nothing. A reply whose trust job failed (no text, a pull request, a closed issue) runs no other job."""
+        uploads it, and the comment job posts its label comment; it is held at the limit, by the screen, or when the
+        review job did not finish. The App's job never runs for it. A reply gathers nothing, is screened by no one and
+        has no review job: the comment job posts it, and no job holds it. A reply whose trust job failed (no text, a
+        pull request, a closed issue) runs no other job."""
         draft = dict(self.OUTSIDER, task="draft")
         issue = {"kind": "issue", "number": "7", "digest": "0" * 64}
         clean = {"screen": {"verdict": "clean"}, "gather": issue}
@@ -1425,11 +1445,11 @@ class RouteTest(unittest.TestCase):
                                      {"gather", "screen", "review", "hold"})
         reply = {"task": "reply", "route": "review", "outsider": "", "number": "7"}
         dispatch = {"github.event_name": "workflow_dispatch"}
-        self.assertEqual(self.ran(reply, outputs={"gather": {}}, github=dispatch), {"review", "comment"})
+        self.assertEqual(self.ran(reply, outputs={"gather": {}}, github=dispatch), {"comment"})
         for result in ("failure", "cancelled"):
             with self.subTest(result=result):
-                self.assertEqual(self.ran(reply, results={"review": result}, outputs={"gather": {}}, github=dispatch),
-                                 {"review"})
+                self.assertEqual(self.ran(reply, results={"comment": result}, outputs={"gather": {}}, github=dispatch),
+                                 {"comment"})
         self.assertEqual(self.ran({}, outputs={"gather": {}}, github=dispatch, trust_result="failure"), set())
 
     def test_a_run_by_hand_off_main_runs_no_job(self):
@@ -1776,8 +1796,8 @@ class HoldingsTest(unittest.TestCase):
         self.assertNotIn("anthropic", json.dumps(job).lower())
 
     def test_the_screen_and_review_take_what_the_gather_job_kept(self):
-        """The same step in both jobs, but its if: the screen job's measurement and the review job's reply gather
-        nothing, and each job skips the step for its own one."""
+        """The same step in both jobs, but its if: the screen job's measurement gathers nothing, and the screen job
+        skips the step for it. The review job takes it for each of its tasks."""
         for job in ("screen", "review"):
             with self.subTest(job=job):
                 self.assertEqual(step(job, "Take the gathered pull request or issue")["env"],
@@ -2177,56 +2197,31 @@ class HoldTest(Holding):
                     self.assertHeldNothing(rc, out, failed)
 
     def test_a_review_that_could_not_sign_in_holds_nothing_and_counts_no_try(self):
-        """R10 (b8): the review job's "Sign in to Anthropic" comes before the step that runs the model. When Anthropic
-        refuses the run, the review job fails there: no App's job and no comment job, and the hold job holds nothing
-        and counts no try, at the last try too."""
-        names = [s.get("name") for s in JOBS["review"]["steps"]]
-        self.assertLess(names.index("Sign in to Anthropic"), names.index("Review"))
+        """R10 (b8): the review job's "Sign in to Anthropic", its first step after its checkout, comes before every
+        step that runs a model. When Anthropic refuses the run, the review job fails there: no App's job and no comment
+        job, and the hold job holds nothing and counts no try, at the last try too, for a draft too."""
+        steps = JOBS["review"]["steps"]
+        names = [s.get("name") or "Run " + s["uses"] for s in steps]
+        models = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("anthropics/claude-code-action@")]
+        self.assertEqual(names.index("Sign in to Anthropic"), 1)
+        self.assertLess(names.index("Sign in to Anthropic"), min(models))
+        # No step of the job has a status function in its if, so the failed step skips every step after it.
+        self.assertEqual([n for n, s in zip(names, steps) if STATUS_FUNCTIONS.search(str(s.get("if", "")))], [])
         ran = run_graph(self.OUTSIDER, results={"review": "failure"}, outputs={"screen": {"verdict": "clean"}})
         self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "review", "hold"})
-        for task, tries in (("review", "0"), ("review", str(self.TRIES - 1)), ("rescreen", str(self.TRIES - 1))):
+        for task, tries, kind, labels in (("review", "0", "pr", ("review-held",)),
+                                          ("review", str(self.TRIES - 1), "pr", ("review-held",)),
+                                          ("rescreen", str(self.TRIES - 1), "pr", ("review-held",)),
+                                          ("draft", "0", "issue", ()), ("draft", str(self.TRIES - 1), "issue", ())):
             with self.subTest(task=task, tries=tries):
                 self.tearDown()
                 self.setUp()
                 review = attempt_job("review", "Sign in to Anthropic", name="review (screened)")
                 rc, out, _, _ = self.run_hold("screen", review="failure", task=task, origin="50", tries=tries,
+                                              kind=kind, labels=labels,
                                               jobs=self.gathered() + [attempt_job("screen", name="screen mallory"),
                                                                       review])
                 self.assertHeldNothing(rc, out, "Sign in to Anthropic")
-
-    def test_a_draft_whose_sign_in_to_the_draft_store_failed_posts_nothing_and_holds_nothing(self):
-        """b1 (R3, R10): the draft store's first sign-in, the review job's first step after its checkout, comes before
-        every step of the model and before the sign-in to Anthropic. A draft run whose sign-in there fails (the
-        provider of dispatch://INFRA-3395 refuses the run) runs no model step and no comment job, so nothing posts.
-        The step's name starts with "Sign in", so the hold job writes no hold comment, sets no label and counts no try,
-        at the last try too. A reply's run whose review job failed runs no other job."""
-        check = DraftReplyTest.CHECK
-        steps = JOBS["review"]["steps"]
-        names = [s.get("name") or "Run " + s["uses"] for s in steps]
-        models = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("anthropics/claude-code-action@")]
-        self.assertEqual(names.index(check), 1)
-        self.assertLess(names.index(check), min(models + [names.index("Sign in to Anthropic")]))
-        # No step of the job has a status function in its if, so the failed step skips every step after it.
-        self.assertEqual([n for n, s in zip(names, steps) if STATUS_FUNCTIONS.search(str(s.get("if", "")))], [])
-        ran = run_graph(self.OUTSIDER | {"task": "draft"}, results={"review": "failure"},
-                        outputs={"screen": {"verdict": "clean"}, "gather": {"kind": "issue", "number": "7",
-                                                                           "digest": "0" * 64}},
-                        github={"github.event_name": "issues"})
-        self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "review", "hold"})
-        for tries in ("0", str(self.TRIES - 1)):
-            with self.subTest(tries=tries):
-                self.tearDown()
-                self.setUp()
-                review = attempt_job("review", check, name="review (screened)")
-                rc, out, _, _ = self.run_hold("screen", review="failure", task="draft", origin="50", tries=tries,
-                                              kind="issue", labels=(),
-                                              jobs=self.gathered() + [attempt_job("screen", name="screen mallory"),
-                                                                      review])
-                self.assertHeldNothing(rc, out, check)
-        # A reply's: no other job runs.
-        ran = run_graph({"task": "reply", "route": "review", "outsider": "", "number": "7"}, results={"review": "failure"},
-                        outputs={"gather": {}}, github={"github.event_name": "workflow_dispatch"})
-        self.assertEqual(ran_jobs(ran), {"trust", "review"})
 
     def test_a_run_that_signed_in_is_held(self):
         """screen.py makes a check that answered an error a held verdict: the screen job, whose sign-ins passed, passes
@@ -2804,14 +2799,14 @@ class CapTest(Runner):
         self.assertLess(names.index(self.CAP), names.index("Review"))
         for name in (self.CHECK, self.CAP):
             self.assertEqual(step("review", name)["env"]["COUNT"], "${{ steps.count.outputs.count }}")
-        # Each of the three steps runs for every task of a model, once the step before it passed (GitHub's implicit
-        # success()); a reply calls no model and skips all three.
+        # Each of the three steps runs for every task of the review job, a draft too (a reply has no review job), once
+        # the step before it passed (GitHub's implicit success()).
         for name in (self.COUNT, self.CHECK, self.CAP):
-            cond = step("review", name)["if"]
+            cond = step("review", name).get("if", "")
             self.assertIsNone(STATUS_FUNCTIONS.search(cond))
-            for task in ("review", "rescreen", "answer", "draft", "reply"):
+            for task in ("review", "rescreen", "answer", "draft"):
                 with self.subTest(step=name, task=task):
-                    self.assertEqual(bool(evaluate(cond, {"needs.trust.outputs.task": task})), task != "reply")
+                    self.assertTrue(not cond or evaluate(cond, {"needs.trust.outputs.task": task}))
         self.assertEqual(step("review", self.COUNT)["id"], "count")
         rc, out, _ = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100", RUN_ATTEMPT="1",
                                      **self.step_env(self.COUNT, "screen"))   # no runs served: GitHub's 404
@@ -2894,10 +2889,10 @@ class CapTest(Runner):
                 self.assertEqual(self.cap(route, [pool] * cap, event="issue_comment",
                                           steps=[ran("Review", "skipped"), ran("Answer", "skipped")])[0], 0)
 
-    def test_a_draft_counts_with_the_screened_reviews_and_a_reply_with_none(self):
+    def test_a_draft_counts_with_the_screened_reviews(self):
         """b1 (R3, D23): the draft runs in the review job of a screened item, so a job whose Draft step ran, of an
         issues run or a run by hand, counts toward SCREENED_HOURLY_CAP as one whose Review step ran, and stops the
-        next at the cap. A reply's finished job ran no model step and counts for none."""
+        next at the cap."""
         def ran(name, conclusion="success"):
             return {"name": name, "status": "completed", "conclusion": conclusion}
         drafted = [ran("Review", "skipped"), ran("Answer", "skipped"), ran("Draft")]
@@ -2910,13 +2905,6 @@ class CapTest(Runner):
                 rc, out = self.cap("screen", ["review (screened)"] * cap, event=event, steps=drafted)
                 self.assertEqual(rc, 1, out)
                 self.assertIn("HELD", out)
-        self.tearDown()
-        self.setUp()
-        replied = [ran("Count the reviews of the last hour", "skipped"), ran("Hold at the hourly cap", "skipped"),
-                   ran("Review", "skipped"), ran("Answer", "skipped"), ran("Draft", "skipped"),
-                   ran("Store the draft, or the approved reply")]
-        self.assertEqual(self.cap("review", ["review"] * int(WF["env"]["HOURLY_CAP"]), event="workflow_dispatch",
-                                  steps=replied)[0], 0)
 
     def test_a_list_of_runs_that_github_cuts_at_1000_lets_no_screened_review_under_its_cap(self):
         """SCREENED_HOURLY_CAP: "A screened run at this cap is held." GitHub gives at most 1,000 runs for a list with
@@ -3051,19 +3039,29 @@ class ReviewSignInTest(Runner):
              "workspace_id": review["anthropic_workspace_id"]}))
 
     def test_a_refused_exchange_fails_the_step_before_the_model(self):
-        """Anthropic's refusal (its rule does not admit this run's event yet, say), shown with its words; an answer
-        with no token; and a job with no identity token: each fails the step."""
-        refusal = (403, {"error": "invalid_grant", "error_description": "the rule admits no workflow_run event"})
-        for answer in (refusal, (200, {"token_type": "Bearer"}), (200, {"access_token": ""})):
-            with self.subTest(answer=answer):
+        """Anthropic's refusal (its rule does not admit this run's event yet, say), shown with its HTTP status and its
+        error code alone (OAuth's error field, or the type of Anthropic's error object), never Anthropic's text, as the
+        log of a public repository is public; a body with no plain error code shows none. An answer with no token, and
+        a job with no identity token: each fails the step too."""
+        words = "the rule admits no workflow_run event"
+        refusals = {
+            "oauth": ((403, {"error": "invalid_grant", "error_description": words}),
+                      "HTTP 403 from Anthropic, error code invalid_grant."),
+            "anthropic": ((403, {"type": "error", "error": {"type": "permission_error", "message": words}}),
+                          "HTTP 403 from Anthropic, error code permission_error."),
+            "no plain code": ((401, {"error": words}), "HTTP 401 from Anthropic, no error code."),
+            "not an object": ((400, words), "HTTP 400 from Anthropic, no error code.")}
+        for case, (answer, shown) in list(refusals.items()) + [("no token", ((200, {"token_type": "Bearer"}), None)),
+                                                                 ("empty token", ((200, {"access_token": ""}), None))]:
+            with self.subTest(case=case):
                 self.answer = answer
                 rc, out, got = self.sign_in()
                 self.assertEqual(rc, 1, out)
                 self.assertIn("The sign-in to Anthropic failed", out)
                 self.assertNoToken(out, got)
-                if answer is refusal:
-                    self.assertIn("HTTP 403 from Anthropic", out)
-                    self.assertIn("the rule admits no workflow_run event", out)
+                self.assertNotIn(words, out)
+                if shown:
+                    self.assertIn(f"The sign-in to Anthropic failed: {shown} No model ran.", out)
         self.requests.clear()
         rc, out, got = self.sign_in(ACTIONS_ID_TOKEN_REQUEST_URL="")
         self.assertEqual((rc, self.requests), (1, []), out)
@@ -3117,9 +3115,10 @@ class ReaderRunner(Runner):
         return rc, out, got
 
     @staticmethod
-    def answer(text, stop="end_turn"):
+    def answer(text, stop="end_turn", refused=False, reason=""):
+        """The stand-in reader's answer: one text, the JSON object {refused, reason, text} that trim.py asks for."""
         return {"id": "msg_1", "type": "message", "role": "assistant", "stop_reason": stop,
-                "content": [{"type": "text", "text": text}]}
+                "content": [{"type": "text", "text": json.dumps({"refused": refused, "reason": reason, "text": text})}]}
 
     def sign_in(self, name=None):
         s = step("review", name or self.SIGN_IN)
@@ -3236,8 +3235,11 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(rc, 0, out)
                 (reading,) = self.readings()
                 request = reading["body"]
-                self.assertEqual(sorted(request), ["max_tokens", "messages", "model", "system", "thinking"])
-                self.assertEqual((request["model"], request["system"]), ("claude-opus-5-5", trim.REVIEW_INSTRUCTION))
+                self.assertEqual(sorted(request),
+                                 ["max_tokens", "messages", "model", "output_config", "system", "thinking"])
+                self.assertEqual((request["model"], request["system"], request["output_config"]),
+                                 ("claude-opus-5-5", trim.REVIEW_INSTRUCTION,
+                                  {"format": {"type": "json_schema", "schema": trim.SCHEMA}}))
                 (message,) = request["messages"]
                 self.assertEqual(message["role"], "user")
                 (list_name, listed), (text_name, text) = self.parts(message["content"])
@@ -3339,11 +3341,14 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(trim.missing(items, trim.inert(text)), [])
 
     def test_a_reader_that_fails_posts_nothing(self):
-        """A refusal of the request, an answer that the reader did not finish, and an answer that is not text each
-        fail the step: no comment, no verdict and nothing in the summary. The token's file is gone."""
+        """A refusal of the request, an answer that the reader did not finish, an answer that is not text, a text that
+        is not the JSON object of trim.SCHEMA, and a refusal with no reason each fail the step: no comment, no verdict
+        and nothing in the summary. The token's file is gone."""
         for reader in ((400, {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}),
                        (200, self.answer("Trimmed.", stop="max_tokens")),
-                       (200, {"stop_reason": "end_turn", "content": [{"type": "tool_use", "name": "x", "input": {}}]})):
+                       (200, {"stop_reason": "end_turn", "content": [{"type": "tool_use", "name": "x", "input": {}}]}),
+                       (200, {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Trimmed."}]}),
+                       (200, self.answer("", refused=True, reason=" \n"))):
             with self.subTest(reader=reader):
                 self.tearDown()
                 self.setUp()
@@ -3384,13 +3389,24 @@ class FreshReaderTest(ReaderRunner):
         rc, out, got = self.run_script(s["run"], **dict(s["env"], RESULT=os.path.join(self.dir, "none.json")))
         self.assertEqual((rc, got), (1, {}), out)
         self.assertFalse(os.path.exists(self.token_file))
-        # Anthropic refuses: the step fails and writes no file.
-        self.exchange = (403, {"error": "invalid_grant", "error_description": "the rule admits no issue_comment event"})
-        rc, out, got = self.sign_in()
-        self.assertEqual((rc, got), (1, {}), out)
-        self.assertIn("the sign-in failed", out)
-        self.assertIn("the rule admits no issue_comment event", out)
-        self.assertFalse(os.path.exists(self.token_file))
+        # Anthropic refuses: the step fails and writes no file. The log gets the HTTP status and the error code, OAuth's
+        # error field or the type of Anthropic's error object, and never Anthropic's text; a body with no plain error
+        # code shows none.
+        for answer, code in (
+                ({"error": "invalid_grant", "error_description": "the rule admits no issue_comment event"},
+                 "error code invalid_grant"),
+                ({"type": "error", "error": {"type": "permission_error", "message": "the rule admits no issue_comment "
+                                                                                    "event"}},
+                 "error code permission_error"),
+                ({"error": "the rule admits no issue_comment event"}, "no error code")):
+            with self.subTest(answer=answer):
+                self.exchange = (403, answer)
+                rc, out, got = self.sign_in()
+                self.assertEqual((rc, got), (1, {}), out)
+                self.assertIn("the sign-in failed: HTTP 403 from 127.0.0.1:", out)
+                self.assertIn(f", {code}", out)
+                self.assertNotIn("the rule admits no issue_comment event", out)
+                self.assertFalse(os.path.exists(self.token_file))
 
     def test_the_fixed_parts_and_the_whole_review_keep_their_places_whatever_markup_a_text_leaves_open(self):
         """R9: the post step "puts the untrimmed review in one collapsed <details> block at the end of the comment".
@@ -3974,9 +3990,11 @@ class AnswerFixTest(ReaderRunner):
         self.assertEqual(got["body"], f"<!-- review-answer 900 -->\n**Automated answer**\n\n{shown}\n\n---\n"
                                       f"{self.ANSWER_FOOT}")
         (reading,) = self.readings()
-        self.assertEqual(sorted(reading["body"]), ["max_tokens", "messages", "model", "system", "thinking"])
-        self.assertEqual((reading["body"]["model"], reading["body"]["system"]), ("claude-opus-5-5",
-                                                                                 trim.ANSWER_INSTRUCTION))
+        self.assertEqual(sorted(reading["body"]),
+                         ["max_tokens", "messages", "model", "output_config", "system", "thinking"])
+        self.assertEqual((reading["body"]["model"], reading["body"]["system"], reading["body"]["output_config"]),
+                         ("claude-opus-5-5", trim.ANSWER_INSTRUCTION,
+                          {"format": {"type": "json_schema", "schema": trim.SCHEMA}}))
         self.assertEqual(self.parts(reading["body"]["messages"][0]["content"]), [("ANSWER", trim.inert(text))])
         self.assertFalse(os.path.exists(self.token_file))
         rc, out, fix = self.fixable("answer", got)
@@ -4177,28 +4195,98 @@ class AnswerFixTest(ReaderRunner):
                 rc, out, fixable = self.fixable("review", self.reviewed(), commits=commits, reviews=reviews)
                 self.assertEqual((rc, fixable["fix"], fixable["fix_stop"]), (0, "true", "false"), out)
 
-    def test_an_answer_and_a_fix_post_as_the_reader_trimmed_them_with_no_refusal(self):
-        """b1 (R1, R9): the fresh reader only trims an answer and the words of a fix, and holds none back: a reader
-        that answers with a refusal still gives the text that posts, made inert, and no step fails, so nothing is
-        held."""
-        for refusal in ('{"refused": true, "reason": "It breaks a rule of @octocat.", "text": ""}',
-                        "I refuse to shorten this text."):
-            with self.subTest(refusal=refusal):
-                self.tearDown()
-                self.setUp()
-                self.pull_request()
-                rc, out, got = self.answered(trimmed=refusal)
-                self.assertEqual(rc, 0, out)
-                self.assertEqual(got["body"], "<!-- review-answer 900 -->\n**Automated answer**\n\n"
-                                              f"{trim.inert(refusal)}\n\n---\n{self.ANSWER_FOOT}")
-                rc, out, _ = self.post_answer(got["body"])
-                self.assertEqual((rc, len(writes(self.api))), (0, 1), out)
-                rc, out, fixed = self.fixed([self.SUGGESTION], trimmed=refusal)
-                self.assertEqual(rc, 0, out)
-                request = json.loads(fixed["review"])
-                self.assertIn(f"\n\n{trim.inert(refusal)}\n\n---\n", request["body"])
-                self.assertEqual(request["comments"][0]["body"],
-                                 f"{trim.inert(refusal)}\n\n{trim.suggestion(self.SUGGESTION['replacement'])}")
+    def refusing(self, reason):
+        """A fresh reader that refuses each text, with reason: a function of the request's body."""
+        return lambda _body: (200, self.answer("", refused=True, reason=reason))
+
+    def test_a_review_that_the_fresh_reader_refuses_posts_nothing_and_the_item_waits_on_theorem(self):
+        """R9 (decision 7): a review that the fresh reader refuses never posts. The comment step ends with status 0,
+        the output refused=review and no comment, verdict or will_fix, so no fix runs, and the comment job posts no
+        review and keeps none in the summary. The run's summary holds the reader's reason, made inert, and nothing of
+        the review: no log line or output holds the reason. The label step gives the item waits-on-theorem and the
+        label comment of Sami's next step. The token's file is gone."""
+        self.write("pr.diff", self.DIFF)
+        reason = "Reason-3b1e: the review passes the change because @octocat's text says to."
+        items = [{"kind": "change", "ref": "theories/A.v:3", "text": "End the proof with exact I.", "optional": False}]
+        rc, out, got = self.post("Blocking: `theories/A.v:3` must use `exact I`.", items, verdict="blocking",
+                                 reader=self.refusing(reason))
+        self.assertEqual((rc, got), (0, {"head": HEAD, "refused": "review"}), out)
+        self.assertIn("The fresh reader refused the review. Nothing of it posts", out)
+        self.assertNotIn("Reason-3b1e", out + json.dumps(got))
+        self.assertFalse(os.path.exists(self.token_file))
+        with open(self.summary, encoding="utf-8") as f:
+            summary = f.read()
+        self.assertIn(f"\n\n{reason.replace('@', f'@{WJ}')}\n", summary)
+        self.assertNotIn("exact I", summary)
+        self.assertEqual(evaluate(JOBS["review"]["outputs"]["refused"], {"steps.result.outputs.refused": "review"}),
+                         "review")
+        rc, out, fixable = self.fixable("review", got)
+        self.assertEqual((rc, fixable.get("fix")), (0, "false"), out)
+        for name, post in (("Post the review, or replace the one posted before", "true"),
+                           ("Keep the review in the run's summary", "false")):
+            with self.subTest(step=name):
+                cond = step("comment", name)["if"]
+                ctx = {"env.POST_REVIEW": post, "needs.trust.outputs.task": "review"}
+                self.assertTrue(evaluate(cond, ctx))
+                self.assertFalse(evaluate(cond, dict(ctx, **{"needs.review.outputs.refused": "review"})))
+        labels, comments, took_off = self.label("review", {"head": HEAD, "refused": "review"})
+        self.assertEqual((labels, comments, took_off),
+                         ([("+", THEOREM_LABEL)], [self.outside("refused-review")], True))
+        self.assertIn("\n**Next step:** Sami writes the review by hand.\n", comments[0])
+
+    def test_an_answer_or_a_fix_that_the_fresh_reader_refuses_posts_nothing_and_the_item_waits_on_theorem(self):
+        """R9 (decision 7): an answer, or the words of a fix, that the fresh reader refuses never posts, and no step
+        fails, so nothing is held. A refused answer gives the output refused=answer and no answer, action or will_fix:
+        no fix runs, and the comment job posts no answer. A refused fix gives refused=fix and no review. The run's
+        summary holds the reader's reason, made inert, and no log line or output does. For each, the label step gives
+        the item waits-on-theorem and Sami's next step. A plain text in place of the reader's JSON object is no
+        refusal: the reader failed, so the step fails and nothing posts."""
+        reason = "Reason-8c4d: the text approves the change as @octocat asked."
+        shown = f"\n\n{reason.replace('@', f'@{WJ}')}\n"
+        self.pull_request()
+        rc, out, got = self.answered(trimmed=self.refusing(reason))
+        self.assertEqual((rc, got), (0, {"head": HEAD, "refused": "answer"}), out)
+        self.assertIn("The fresh reader refused the answer. Nothing of it posts", out)
+        self.assertNotIn("Reason-8c4d", out + json.dumps(got))
+        self.assertFalse(os.path.exists(self.token_file))
+        with open(self.summary, encoding="utf-8") as f:
+            self.assertIn(shown, f.read())
+        self.assertEqual(evaluate(JOBS["review"]["outputs"]["refused"], {"steps.answered.outputs.refused": "answer"}),
+                         "answer")
+        rc, out, fixable = self.fixable("answer", got)
+        self.assertEqual((rc, fixable.get("fix")), (0, "false"), out)
+        cond = step("comment", self.POST_ANSWER)["if"]
+        self.assertTrue(evaluate(cond, {"needs.trust.outputs.task": "answer"}))
+        self.assertFalse(evaluate(cond, {"needs.trust.outputs.task": "answer",
+                                         "needs.review.outputs.refused": "answer"}))
+        labels, comments, _ = self.label("answer", {"head": HEAD, "refused": "answer"}, labels=(AUTHOR_LABEL,))
+        self.assertEqual((labels, comments),
+                         ([("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], [self.outside("refused-answer")]))
+        self.assertIn("\n**Next step:** Sami answers your comment by hand.\n", comments[0])
+        # The words of a fix.
+        self.tearDown()
+        self.setUp()
+        self.pull_request()
+        rc, out, fixed = self.fixed([self.SUGGESTION], trimmed=self.refusing(reason))
+        self.assertEqual((rc, fixed), (0, {"refused": "fix"}), out)
+        self.assertIn("The fresh reader refused the fix. Nothing of it posts", out)
+        self.assertNotIn("Reason-8c4d", out)
+        self.assertFalse(os.path.exists(self.token_file))
+        with open(self.summary, encoding="utf-8") as f:
+            self.assertIn(shown, f.read())
+        self.assertEqual(evaluate(JOBS["review"]["outputs"]["refused"], {"steps.fixed.outputs.refused": "fix"}), "fix")
+        labels, comments, _ = self.label("review", {"head": HEAD, "verdict": "blocking", "will_fix": "false",
+                                                    "fix_stop": "false", "refused": "fix"})
+        self.assertEqual((labels, comments), ([("+", THEOREM_LABEL)], [self.outside("refused-fix")]))
+        self.assertIn("\n**Next step:** Sami writes the fix by hand.\n", comments[0])
+        # A plain text is no answer of the reader.
+        self.tearDown()
+        self.setUp()
+        self.pull_request()
+        rc, out, got = self.answered(trimmed=lambda _body: (200, {"stop_reason": "end_turn", "content": [
+            {"type": "text", "text": "I refuse to shorten this text."}]}))
+        self.assertEqual((rc, {k: got[k] for k in got if k != "head"}), (1, {}), out)
+        self.assertIn("The fresh reader gave no trimmed text. Nothing posts.", out)
 
     def test_a_suggestion_posts_the_fix_jobs_lines_byte_for_byte_whatever_the_trim_drops(self):
         """b1 (R1, D22): the reader gets the summary and each why, never a suggestion block, so a trim that drops
@@ -4320,69 +4408,20 @@ class AnswerFixTest(ReaderRunner):
                                     comments=[label], kind="issue"), ([], [], False))
 
 
-def storage(test):
-    """A stand-in on 127.0.0.1 of Google Cloud Storage's upload of one object (POST /upload/storage/v1/b/<bucket>/o
-    with uploadType=media and the object's name): each request goes to test.uploads, and each object that it takes to
-    test.objects, by its bucket and name. With ifGenerationMatch=0 it refuses, with 412, a name that it has already,
-    as Google Cloud does. Its address."""
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_POST(self):
-            url = urllib.parse.urlsplit(self.path)
-            query = urllib.parse.parse_qs(url.query)
-            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            test.uploads.append({"path": url.path, "query": query, "authorization": self.headers.get("Authorization"),
-                                 "type": self.headers.get("Content-Type"), "body": body})
-            m = re.fullmatch(r"/upload/storage/v1/b/([^/]+)/o", url.path)
-            key = (m.group(1), query["name"][0]) if m and query.get("name") else None
-            if key is None or query.get("uploadType") != ["media"]:
-                status, answer = 400, {"error": {"code": 400, "message": "not an upload of one object"}}
-            elif key in test.objects and query.get("ifGenerationMatch") == ["0"]:
-                status, answer = 412, {"error": {"code": 412, "message": "At least one of the pre-conditions you "
-                                                                         "specified did not hold."}}
-            else:
-                test.objects[key] = body
-                status, answer = 200, {"bucket": key[0], "name": key[1], "generation": "1763380000000001"}
-            data = json.dumps(answer).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    test.addCleanup(server.server_close)
-    test.addCleanup(server.shutdown)
-    return f"http://127.0.0.1:{server.server_port}"
-
-
 class DraftReplyTest(ReaderRunner):
     """b1 and b6 (R3, R9): the draft of the reply to a new issue of an outside author, and the reply that Sami
     approved, as the workflow runs them: the trust job and the jobs after it, the review job's steps on a stand-in
-    model's output, with a stand-in fresh reader and stand-ins of Google Cloud's sign-in (the token that its step
-    gives) and storage, and the comment job's steps against the stand-in gh. The draft goes to the private store
-    alone: no output, summary, log line, artifact or post holds it."""
+    model's output, with a stand-in fresh reader, and the comment job's steps against the stand-in gh. The draft leaves
+    the review job only as the file that its upload step makes the artifact issue-draft-<issue> of the run: no output,
+    summary, log line or post holds it, and no step signs in to Google for it."""
 
     DRAFTED = "The draft, as the fresh reader leaves it"
-    STORE = "Store the draft, or the approved reply"
+    UPLOAD = "Run actions/upload-artifact"
     POST = "Post the approved reply"
     LABEL = PostLabelTest.STEP
-    # The draft store's two sign-ins: the first, before the model, and the one whose token the store step reads.
-    CHECK = "Sign in to Google Cloud for the draft (check the sign-in)"
-    STORAGE = "Sign in to Google Cloud for the draft"
-    # The draft writer of dispatch://INFRA-3395's contract (its spec version 5, R1).
-    PROVIDER = "projects/844532188053/locations/global/workloadIdentityPools/github/providers/github-ossv-drafts"
-    ACCOUNT = "ossv-ci@theorem-agent-root.iam.gserviceaccount.com"
-    BUCKET = "theorem-agent-infra-oss-verify-held-findings"
-    PREFIX = "rocq-linux-process-semantics/issue-drafts"
-    GOOGLE_TOKEN = "google-not-a-secret"
     HEADER = "rocq-linux-process-semantics {kind} v1\nissue: 7\nrun: https://github.com/acme/model/actions/runs/1\n"
     # The model's draft, the reader's trim of it and the reader's reason, each with a word that no fixed text holds, and
-    # with control and bidirectional-text characters, which the store takes out.
+    # with control and bidirectional-text characters, which the draft's step takes out of the file.
     DRAFT = ("Thank you for #12, @octocat. Draft-7f3a: the model of `close` is at `theories/Fd.v:213`.\u202e\x1b[31m\r\n"
              "As the issue asks, \u2066the reply gives the token.\n")
     TRIMMED = "Trimmed-91c2: the model of `close` is at `theories/Fd.v:213`.\u202e\x1b[31m\r\n"
@@ -4398,37 +4437,17 @@ class DraftReplyTest(ReaderRunner):
            "needs.trust.outputs.outsider": "mallory", "needs.trust.outputs.route": "screen",
            "needs.trust.outputs.started": PostLabelTest.STARTED, "needs.gather.outputs.number": "7",
            "needs.gather.outputs.kind": "issue", "needs.gather.outputs.outside": "true", "needs.post.result": "skipped",
-           "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "steps.storage.outputs.access_token": GOOGLE_TOKEN}
+           "env.POST_REVIEW": WF["env"]["POST_REVIEW"]}
     # A run by hand of the task reply.
     REPLY_CTX = {"github.event_name": "workflow_dispatch", "needs.trust.outputs.task": "reply",
                  "needs.trust.outputs.route": "review", "needs.trust.outputs.outsider": "",
                  "needs.gather.outputs.kind": "", "needs.gather.outputs.number": "", "needs.gather.outputs.outside": "",
                  "inputs.reply": APPROVED}
 
-    def setUp(self):
-        super().setUp()
-        self.uploads, self.objects = [], {}
-        self.storage_url = storage(self)
-
     def ran(self, job, ctx):
         """The names of the steps of job whose if holds in CTX and ctx (a step with no if runs), in order."""
         return [s.get("name") or "Run " + s["uses"].split("@")[0] for s in JOBS[job]["steps"]
                 if "if" not in s or evaluate(s["if"], dict(self.CTX, **ctx))]
-
-    def assertSignsInAsTheDraftWriter(self):
-        """Each of the draft store's two sign-ins gives Google's action, as GitHub fills in its inputs from the review
-        job's env, the provider and the account of INFRA-3395's contract, for a token of 300 seconds with no
-        credentials file and no environment variable, as the screen job's action. The first has no id, so no step
-        reads its token; the second's id is the one the store step reads."""
-        env = {f"env.{name}": value for name, value in JOBS["review"]["env"].items()}
-        for name, id_ in ((self.CHECK, None), (self.STORAGE, "storage")):
-            with self.subTest(step=name):
-                s = step("review", name)
-                self.assertEqual((s["uses"], s.get("id")), (step("screen", "Sign in to Google Cloud")["uses"], id_))
-                self.assertEqual({k: interpolate(v, env) if isinstance(v, str) else v for k, v in s["with"].items()}, {
-                    "workload_identity_provider": self.PROVIDER, "service_account": self.ACCOUNT,
-                    "token_format": "access_token", "access_token_lifetime": "300s", "create_credentials_file": False,
-                    "export_environment_variables": False})
 
     def summary_text(self):
         with open(self.summary, encoding="utf-8") as f:
@@ -4442,20 +4461,28 @@ class DraftReplyTest(ReaderRunner):
         return [(n, t) for n, _m, t in found]
 
     def drafted(self, reader, draft=DRAFT):
-        """The Draft step's stand-in output draft, the reader's sign-in, the step that gives the draft to the reader,
-        whose answer is reader ({refused, reason, text}), and the store step: the store step's exit status, log and
-        outputs."""
-        ctx = {"needs.trust.outputs.task": "draft"}
-        self.reader = (200, self.answer(json.dumps(reader)))
+        """The Draft step's stand-in output draft, the reader's sign-in, and the step that gives the draft to the
+        reader, whose answer is reader ({refused, reason, text}) and that writes the file that the upload step takes:
+        that step's exit status, log and outputs."""
+        self.reader = (200, self.answer(reader["text"], refused=reader["refused"], reason=reader["reason"]))
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         self.logs.append(out)
         path = self.result({"text": draft})
-        rc, out, got = self.run_step("review", self.DRAFTED, dict(ctx, **{"steps.draft.outputs.execution_file": path}),
-                                     ANTHROPIC_URL=f"{self.url}/anthropic")
-        self.assertEqual((rc, got), (0, {}), out)
+        got = self.run_step("review", self.DRAFTED, {"needs.trust.outputs.task": "draft",
+                                                     "steps.draft.outputs.execution_file": path},
+                            ANTHROPIC_URL=f"{self.url}/anthropic")
         self.assertFalse(os.path.exists(self.token_file))
-        return self.run_step("review", self.STORE, ctx, STORAGE_URL=self.storage_url)
+        return got
+
+    def kept(self):
+        """The files that the draft's step left for the upload step, byte for byte: {name: text}."""
+        folder = os.path.join(self.temp, "issue-draft")
+        found = {}
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name), encoding="utf-8", newline="") as f:
+                found[name] = f.read()
+        return found
 
     def label(self, ctx, labels=(), comments=()):
         """The comment job's label step after the review job, on #7 with labels and comments: the state labels that
@@ -4476,13 +4503,23 @@ class DraftReplyTest(ReaderRunner):
 
     def assertKeptInside(self):
         """No log line, output, summary or call of gh of the steps that ran holds a word of the draft, of the trim or of
-        the reader's reason; and no job of the run keeps an artifact of them."""
+        the reader's reason. The one artifact of them is the review job's upload, for a draft alone, of the folder that
+        the draft's step wrote, as issue-draft-<issue>: it fails when the folder holds no file, GitHub keeps it 90 days
+        (its longest for a public repository), and a new attempt of the run replaces it. The comment job makes none."""
         seen = "\n".join(self.logs) + self.summary_text() + json.dumps(gh_calls(self.api))
         for word in self.SECRETS:
             self.assertNotIn(word, seen)
-        for name in ("review", "comment"):
-            self.assertEqual([s for s in JOBS[name]["steps"] if "artifact" in s.get("uses", "")
-                              and not s["uses"].startswith("actions/download-artifact@")], [], name)
+        made = {name: [s for s in JOBS[name]["steps"] if "artifact" in s.get("uses", "")
+                       and not s["uses"].startswith("actions/download-artifact@")] for name in ("review", "comment")}
+        self.assertEqual(made["comment"], [])
+        (upload,) = made["review"]
+        self.assertRegex(upload["uses"], r"^actions/upload-artifact@[0-9a-f]{40}$")
+        self.assertEqual(upload["if"], "needs.trust.outputs.task == 'draft'")
+        ctx = dict(self.CTX, **{"runner.temp": self.temp})
+        self.assertEqual({k: interpolate(v, ctx) if isinstance(v, str) else v for k, v in upload["with"].items()},
+                         {"name": "issue-draft-7", "path": os.path.join(self.temp, "issue-draft"),
+                          "if-no-files-found": "error", "retention-days": 90, "overwrite": True})
+        self.assertEqual(len(self.kept()), 1)
 
     def test_a_draft_is_an_artifact_of_its_run_and_no_step_of_a_draft_or_a_reply_signs_in_to_google(self):
         """b1 (R3, spec version 49, Verification version 40): the job review uploads the draft of an outside issue, or
@@ -4502,16 +4539,15 @@ class DraftReplyTest(ReaderRunner):
                                if s.get("uses", "").startswith("actions/upload-artifact@")]
                     self.assertEqual("issue-draft-7" in uploads, task == "draft", uploads)
 
-    def test_a_new_outside_issue_stores_a_draft_and_posts_nothing_but_its_label_comment(self):
+    def test_a_new_outside_issue_uploads_a_draft_and_posts_nothing_but_its_label_comment(self):
         """b1 and b6 (4) (R3, R9): a new issue of an outside author gets the task draft and the outsider's path. The
-        review job signs in before the model as the draft store's writer, the provider and the account of
-        dispatch://INFRA-3395's contract, runs the Draft step as its one model step, and gives the draft to the fresh
-        reader, whose one request holds its instruction for a draft, the rules of the draft (.github/review-answer.md
-        and the write-to-maintainer copy) and the draft alone, and no tools. The draft that the reader trimmed is
-        stored once, with no control or bidirectional-text character, under this repository's prefix of the private
-        bucket (ifGenerationMatch=0), and a second write of that name is refused. The run's summary names the command
-        that reads it, and holds neither the draft nor a list. After the store, the comment job posts nothing but the
-        label comment: waits-on-theorem, Sami's step, and the draft's marker."""
+        review job signs in to Anthropic before the model, runs the Draft step as its one model step, and gives the
+        draft to the fresh reader, whose one request holds its instruction for a draft, the rules of the draft
+        (.github/review-answer.md and the write-to-maintainer copy) and the draft alone, and no tools. The draft that
+        the reader trimmed becomes the one file draft.txt of the folder that the next step uploads, with its header
+        and with no control or bidirectional-text character. The run's summary names the artifact, and holds neither
+        the draft nor a list. The comment job then posts nothing but the label comment: waits-on-theorem, Sami's step,
+        and the draft's marker."""
         self.permissions(mallory="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         rc, out, trust = self.run_trust("issues", author="mallory", actor="mallory")
@@ -4523,19 +4559,17 @@ class DraftReplyTest(ReaderRunner):
         self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "review", "comment"})
         steps = self.ran("review", {"needs.trust.outputs.task": "draft"})
         models = [s["name"] for s in JOBS["review"]["steps"] if s.get("uses", "").startswith("anthropics/claude-code-action@")]
-        self.assertEqual(steps[1], self.CHECK)
+        self.assertEqual(steps[1], "Sign in to Anthropic")
         self.assertEqual([n for n in steps if n in models], ["Draft"])
-        self.assertEqual(steps[steps.index("Draft"):], ["Draft", self.SIGN_IN, self.DRAFTED, self.STORAGE, self.STORE])
-        self.assertSignsInAsTheDraftWriter()
+        self.assertEqual(steps[steps.index("Draft"):], ["Draft", self.SIGN_IN, self.DRAFTED, self.UPLOAD])
         rc, out, got = self.drafted({"refused": False, "reason": "", "text": self.TRIMMED})
         self.assertEqual((rc, got), (0, {"draft": "1-1"}), out)
-        self.assertNotIn(self.GOOGLE_TOKEN, out)
         (reading,) = self.readings()
         body = reading["body"]
         self.assertEqual(sorted(body), ["max_tokens", "messages", "model", "output_config", "system", "thinking"])
         self.assertEqual((body["model"], body["system"], body["output_config"]),
                          ("claude-opus-5-5", trim.DRAFT_INSTRUCTION,
-                          {"format": {"type": "json_schema", "schema": trim.DRAFT_SCHEMA}}))
+                          {"format": {"type": "json_schema", "schema": trim.SCHEMA}}))
         rules_files = (".github/review-answer.md", ".github/review/skills/write-to-maintainer/SKILL.md")
         texts = []
         for path in rules_files:
@@ -4544,23 +4578,10 @@ class DraftReplyTest(ReaderRunner):
         # trim.py reads the draft as Python reads a text file: a CR LF is a line break.
         self.assertEqual(self.draft_parts(body["messages"][0]["content"]),
                          texts + [("REPLY", self.DRAFT.replace("\r\n", "\n"))])
-        name = f"{self.PREFIX}/7/1-1"
-        (upload,) = self.uploads
-        self.assertEqual((upload["path"], upload["query"], upload["authorization"]),
-                         (f"/upload/storage/v1/b/{self.BUCKET}/o",
-                          {"uploadType": ["media"], "ifGenerationMatch": ["0"], "name": [name]},
-                          f"Bearer {self.GOOGLE_TOKEN}"))
-        self.assertEqual(self.objects[(self.BUCKET, name)].decode(),
-                         self.HEADER.format(kind="issue draft") + "---\n"
-                         "Trimmed-91c2: the model of `close` is at `theories/Fd.v:213`.[31m\n")
-        self.assertEqual(self.summary_text(), "The private store holds the draft of the reply to issue #7. No job posts "
-                                              "it: Sami approves the text of a reply first. To read it:\n\n"
-                                              f"    gcloud storage cat gs://{self.BUCKET}/{name}\n\n")
-        # The name is never written twice: a second write of it is refused, and the step fails.
-        rc, out, _ = self.run_step("review", self.STORE, {"needs.trust.outputs.task": "draft"},
-                                   STORAGE_URL=self.storage_url)
-        self.assertEqual((rc, len(self.uploads), len(self.objects)), (1, 2, 1), out)
-        self.assertIn(f"gs://{self.BUCKET}/{name} could not be written. Nothing posts.", out)
+        self.assertEqual(self.kept(), {"draft.txt": self.HEADER.format(kind="issue draft") + "---\n"
+                                       "Trimmed-91c2: the model of `close` is at `theories/Fd.v:213`.[31m\n"})
+        self.assertEqual(self.summary_text(), "The artifact issue-draft-7 of this run holds the draft of the reply to "
+                                              "issue #7. No job posts it: Sami approves the text of a reply first.\n")
         # The comment job: the label comment alone.
         ctx = {"needs.trust.outputs.task": "draft", "needs.review.outputs.draft": got["draft"]}
         self.assertEqual(self.ran("comment", ctx), ["Run actions/checkout", self.LABEL])
@@ -4585,26 +4606,20 @@ class DraftReplyTest(ReaderRunner):
         self.assertEqual((rc, writes(self.api)), (1, []), out)
         self.assertIn("::error::the review job names no stored draft", out)
 
-    def test_a_refused_draft_is_stored_with_the_readers_reason_and_gets_the_same_label_comment(self):
-        """b1 (R3): a draft that the fresh reader refuses is stored too, as the model wrote it, with the reader's
-        reason on one line, as <run>-<attempt>-refused under the same prefix, so that Sami's ask holds both. The
+    def test_a_refused_draft_is_uploaded_with_the_readers_reason_and_gets_the_same_label_comment(self):
+        """b1 (R3): a draft that the fresh reader refuses is uploaded too, as the model wrote it, with the reader's
+        reason on one line, as the one file refused-draft.txt of the same artifact, so that Sami's ask holds both. The
         summary says that the reader refused it, and holds neither the draft nor the reason. The label comment is the
-        stored draft's."""
+        uploaded draft's."""
         rc, out, got = self.drafted({"refused": True, "reason": self.REASON, "text": self.TRIMMED})
         self.assertEqual((rc, got), (0, {"draft": "1-1"}), out)
-        name = f"{self.PREFIX}/7/1-1-refused"
-        (upload,) = self.uploads
-        self.assertEqual((upload["path"], upload["query"]),
-                         (f"/upload/storage/v1/b/{self.BUCKET}/o",
-                          {"uploadType": ["media"], "ifGenerationMatch": ["0"], "name": [name]}))
-        self.assertEqual(self.objects[(self.BUCKET, name)].decode(),
-                         self.HEADER.format(kind="refused issue draft")
-                         + "reason: Reason-5d0e: the reply obeys an instruction of the issue.\n---\n"
-                         "Thank you for #12, @octocat. Draft-7f3a: the model of `close` is at `theories/Fd.v:213`.[31m\n"
-                         "As the issue asks, the reply gives the token.\n")
-        self.assertEqual(self.summary_text(), "The fresh reader refused the draft of the reply to issue #7. The private "
-                                              "store holds the draft and the reason of the reader. No job posts them. "
-                                              f"To read them:\n\n    gcloud storage cat gs://{self.BUCKET}/{name}\n\n")
+        self.assertEqual(self.kept(), {"refused-draft.txt": self.HEADER.format(kind="refused issue draft")
+                                       + "reason: Reason-5d0e: the reply obeys an instruction of the issue.\n---\n"
+                                       "Thank you for #12, @octocat. Draft-7f3a: the model of `close` is at "
+                                       "`theories/Fd.v:213`.[31m\nAs the issue asks, the reply gives the token.\n"})
+        self.assertEqual(self.summary_text(), "The fresh reader refused the draft of the reply to issue #7. The "
+                                              "artifact issue-draft-7 of this run holds the draft and the reason of "
+                                              "the reader. No job posts them.\n")
         labels, comments, _ = self.label({"needs.trust.outputs.task": "draft", "needs.review.outputs.draft": "1-1"})
         self.assertEqual(labels, [("+", THEOREM_LABEL)])
         self.assertEqual([body for _method, _endpoint, body in comments],
@@ -4644,21 +4659,18 @@ class DraftReplyTest(ReaderRunner):
         self.assertEqual((schema["required"], list(schema["properties"])), (["text"], ["text"]))
 
     def test_an_approved_reply_posts_once_byte_for_byte_and_the_issue_waits_on_its_author(self):
-        """b1 (R3, D9): a run by hand with the task reply and the text that Sami approved runs the review job and the
-        comment job alone. The review job runs no model and no cap: it signs in to the draft store as its writer, and
-        stores the text as approved-<run>-<attempt> beside the draft. The comment job posts the text byte for byte,
-        with no trim, no neutralising and no added marker. The label comment keeps the draft's marker and gets the
-        reply's, and the issue waits on its author. A second run posts nothing, and a comment of another account with
-        the same text is not the reply. The text reaches the scripts through their environment alone. Once the reply
-        posted, the author's comment gets an answer."""
+        """b1 (R3, D9): a run by hand with the task reply and the text that Sami approved runs the trust job and the
+        comment job alone: no gather, screen, model, cap or store, and no job keeps the text. The comment job posts the
+        text byte for byte, with no trim, no neutralising and no added marker. The label comment keeps the draft's
+        marker and gets the reply's, and the issue waits on its author. A second run posts nothing, and a comment of
+        another account with the same text is not the reply. The text reaches the scripts through their environment
+        alone. Once the reply posted, the author's comment gets an answer."""
         self.serve_item(7, "mallory")
         rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task="reply", reply=self.APPROVED)
         self.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "reply", "review"), out)
         self.assertNotIn("Thanks, @octocat", out)
         ran = run_graph(trust, outputs={"gather": {}}, github={"github.event_name": "workflow_dispatch"})
-        self.assertEqual(ran_jobs(ran), {"trust", "review", "comment"})
-        self.assertEqual(self.ran("review", self.REPLY_CTX), ["Run actions/checkout", self.CHECK, self.STORAGE, self.STORE])
-        self.assertSignsInAsTheDraftWriter()
+        self.assertEqual(ran_jobs(ran), {"trust", "comment"})
         # The text goes to a script through its environment, and never into a script, an action's input or a
         # condition.
         for name, job in JOBS.items():
@@ -4667,20 +4679,6 @@ class DraftReplyTest(ReaderRunner):
                     self.assertNotIn("inputs.reply", json.dumps({k: v for k, v in s.items() if k != "env"}))
                     self.assertTrue(all(v == "${{ inputs.reply }}" for v in s.get("env", {}).values()
                                         if "inputs.reply" in str(v)))
-        rc, out, got = self.run_step("review", self.STORE, self.REPLY_CTX, STORAGE_URL=self.storage_url)
-        self.assertEqual((rc, got), (0, {}), out)
-        name = f"{self.PREFIX}/7/approved-1-1"
-        (upload,) = self.uploads
-        self.assertEqual((upload["path"], upload["query"], upload["authorization"]),
-                         (f"/upload/storage/v1/b/{self.BUCKET}/o",
-                          {"uploadType": ["media"], "ifGenerationMatch": ["0"], "name": [name]},
-                          f"Bearer {self.GOOGLE_TOKEN}"))
-        self.assertEqual(self.objects[(self.BUCKET, name)].decode(),
-                         self.HEADER.format(kind="approved issue reply") + "---\n"
-                         + self.APPROVED.replace("\u202e", "").replace("\u202c", ""))
-        self.assertEqual(self.summary_text(), "The private store holds the approved reply to issue #7, beside its "
-                                              "draft. The comment job of this run posts it. To read it:\n\n"
-                                              f"    gcloud storage cat gs://{self.BUCKET}/{name}\n\n")
         self.assertEqual(self.ran("comment", self.REPLY_CTX), ["Run actions/checkout", self.POST, self.LABEL])
         # The post: GitHub answers the new comment's id.
         self.serve(f"repos/{REPO}/issues/7/comments", [])
@@ -4725,23 +4723,6 @@ class DraftReplyTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", [replied, posted])
         rc, out, trust = self.run_trust("issue_comment", actor="mallory", comment="900")
         self.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "answer", "screen"), out)
-
-    def test_the_draft_store_signs_in_on_the_events_issues_and_workflow_dispatch_alone(self):
-        """dispatch://INFRA-3395's provider admits the review job for the events issues and workflow_dispatch alone.
-        The draft store's two sign-ins, which are the review job's only steps with Google's action, and the store step
-        that reads the token, run for a draft or a reply on those two events. They run on no other event of this
-        workflow (workflow_run, issue_comment, schedule), and for no other task."""
-        self.assertEqual([s["name"] for s in JOBS["review"]["steps"]
-                          if s.get("uses", "").startswith("google-github-actions/auth@")], [self.CHECK, self.STORAGE])
-        events = {"issues", "workflow_dispatch", "workflow_run", "issue_comment", "schedule"} | set(WF["on"])
-        for name in (self.CHECK, self.STORAGE, self.STORE):
-            cond = step("review", name)["if"]
-            for event in sorted(events):
-                for task in WF["on"]["workflow_dispatch"]["inputs"]["task"]["options"]:
-                    with self.subTest(step=name, event=event, task=task):
-                        want = task in ("draft", "reply") and event in ("issues", "workflow_dispatch")
-                        ctx = {"github.event_name": event, "needs.trust.outputs.task": task}
-                        self.assertIs(bool(evaluate(cond, ctx)), want)
 
 
 class FixRuleTest(unittest.TestCase):
@@ -5295,6 +5276,23 @@ class RescreenJobTest(Held):
         rc, out, runs = self.started(post_review="false")
         self.assertEqual((rc, runs), (0, []), out)
         self.assertIn("POST_REVIEW is not true", out)
+
+    def test_a_run_on_main_in_another_case_starts_no_run(self):
+        """R6: GitHub's == compares strings with no case, so the rescreen job's if passes a run on refs/heads/MAIN.
+        The job runs without the trust job, so its own step compares the ref byte for byte: it fails before any read,
+        and starts and writes nothing. The same step on refs/heads/main starts the held item's run."""
+        github = {"github.event_name": "schedule", "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                  "github.repository_id": 1425819621}
+        self.assertTrue(evaluate(JOBS["rescreen"]["if"], dict(github, **{"github.ref": "refs/heads/MAIN"})))
+        self.items((7, "open"))
+        self.held(7, limit_hold(50))
+        self.origin(50, "mallory")
+        self.env["GITHUB_REF"] = "refs/heads/MAIN"
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, self.calls()), (1, [], []), out)
+        self.assertIn("::error::This run is not on refs/heads/main, so the schedule starts no run.", out)
+        self.env["GITHUB_REF"] = "refs/heads/main"
+        self.assertEqual(self.started()[2], [("7", "rescreen", "mallory")])
 
     def test_the_selection(self):
         """A hold at the limit over an hour old is picked; a fresh one, a hold of the screen, a closed item, an
@@ -7532,6 +7530,17 @@ class LabelRuleTest(unittest.TestCase):
          THEOREM_LABEL),
         ("an approved reply posted", {"kind": "issue", "outsider": True, "draft_stored": True, "reply_posted": True},
          "replied", AUTHOR_LABEL),
+        ("a review that the fresh reader refused, of an outside pull request", pr(refused="review"), "refused-review",
+         THEOREM_LABEL),
+        ("a review that the fresh reader refused, of a writer's item", {"kind": "pr", "refused": "review"},
+         "refused-review", THEOREM_LABEL),
+        ("an answer that the fresh reader refused, before a will-fix", pr(refused="answer", will_fix=True),
+         "refused-answer", THEOREM_LABEL),
+        ("an answer that the fresh reader refused, on an issue",
+         {"kind": "issue", "outsider": True, "refused": "answer"}, "refused-answer", THEOREM_LABEL),
+        ("a fix that the fresh reader refused, after a blocking finding", pr(verdict="blocking", refused="fix"),
+         "refused-fix", THEOREM_LABEL),
+        ("a hold, before a refusal", pr(refused="review", held=True), "working", None),
         ("a fix review posted", pr(verdict="blocking", fix_posted=True), "fix", AUTHOR_LABEL),
         ("a fix review that an answer asked for", pr(fix_posted=True), "fix", AUTHOR_LABEL),
         ("a blocking finding that no suggestion can fix", pr(verdict="blocking"), "change", AUTHOR_LABEL),
@@ -7679,7 +7688,8 @@ class LabelRuleTest(unittest.TestCase):
 
     def test_a_fact_that_is_not_one_is_refused(self):
         for args in (["kind=commit"], ["verdict=maybe"], ["held=yes"], ["colour=red"], ["held=true", "held=false"],
-                     ["head=abc"], ["marker=<!-- waits-on-author -->"], ["held"]):
+                     ["head=abc"], ["marker=<!-- waits-on-author -->"], ["held"], ["refused=draft"],
+                     ["refused=true"]):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 rules.label_state(**rules.parse(args)[0])
 
