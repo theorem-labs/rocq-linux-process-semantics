@@ -117,10 +117,10 @@
 #           cannot get the screen's tokens either: they need the environment. Its first step after the checkout signs
 #           in to Anthropic and drops the token, so that a run the rule does not admit fails there, before the model.
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
-#           shortens the comment (.github/review/trim.py). Code adds each listed item that the shorter text left out,
+#           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
 #           to the review of an outside pull request that adds, changes or deletes a .v file, and adds the section on
-#           soundness after the shorter text (.github/review/rules.py soundness). For an answer, Claude answers the
+#           soundness after the shortened review (.github/review/rules.py soundness). For an answer, Claude answers the
 #           comments of the author that wait (.github/review-answer.md, "An answer"), and the fresh reader shortens
 #           the answer. For a blocking finding of an outside pull request, or an answer that asks for it, Claude then
 #           writes the fix as suggested changes on the lines of the diff (.github/review-answer.md, "The fix"). No fix
@@ -1859,8 +1859,8 @@ jobs:
             echo "head=$head" >> "$GITHUB_OUTPUT"
           fi
           printf '%s%s\n%s\n' '<!-- review -->' "$markers" "**Automated review** of $what" > "$work/head.md"
-          foot="Claude wrote this review by [these rules]($RULES) ([run]($RUN))."
-          foot+=" A second Claude session shortened the review. The block below holds the whole review."
+          foot="Claude wrote this review with [these rules]($RULES), in [this workflow run]($RUN)."
+          foot+=" A second Claude session shortened the review."
           printf '%s\n' "$foot" > "$work/foot.md"
           python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
             --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
@@ -1914,7 +1914,7 @@ jobs:
           said=""
           if [ "$will_fix" = true ] && [ -n "$head" ]; then said=" will-fix $head"; fi
           printf '%s\n%s\n' "<!-- review-answer $newest$said -->" "**Automated answer**" > "$work/head.md"
-          printf '%s\n' "Claude wrote this answer by [these rules]($RULES) ([run]($RUN)). A second Claude session shortened it." \
+          printf '%s\n' "Claude wrote this answer with [these rules]($RULES), in [this workflow run]($RUN)." \
             > "$work/foot.md"
           python3 .github/review/trim.py answer --text "$work/answer.md" --head "$work/head.md" --foot "$work/foot.md" \
             > "$work/body.md" || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
@@ -2208,7 +2208,7 @@ jobs:
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
           printf '%s\n%s\n' "<!-- review-fix $head -->" "**Automated fix** of commit ${head:0:12}, as suggested changes" \
             > "$work/head.md"
-          printf '%s\n' "Claude wrote this fix by [these rules]($RULES) ([run]($RUN)). A second Claude session shortened its text, and not the lines of a suggested change. A suggested change changes nothing until you apply it." \
+          printf '%s\n' "Claude wrote this fix with [these rules]($RULES), in [this workflow run]($RUN). A second Claude session shortened the words of this fix. It did not change the lines of any suggested change. A suggested change changes nothing until you apply it." \
             > "$work/foot.md"
           python3 .github/review/trim.py fix --fix "$work/kept.json" --commit "$head" --head "$work/head.md" \
             --foot "$work/foot.md" > "$work/review.json" \
@@ -2785,8 +2785,8 @@ jobs:
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit of #$NUMBER"; exit 1; }
           marker="<!-- review-conflict $HEAD -->"
-          body=$(printf '%s\n%s\n\n%s\n' "$marker" "**Merge conflict** at commit ${HEAD:0:12}." \
-            "This pull request has a merge conflict with \`main\`. GitHub runs no checks on a pull request with a merge conflict, so the automated review does not run. Resolve the conflict: merge \`main\` into the branch, or rebase the branch on \`main\`. Then push the branch. After the push, the checks and the automated review run again.")
+          body=$(printf '%s\n%s\n\n%s\n' "$marker" "**Merge conflict with \`main\`** at commit ${HEAD:0:12}." \
+            "GitHub runs no checks on a pull request with a merge conflict, so the automated review does not run. Resolve the conflict: merge \`main\` into the branch, or rebase the branch on \`main\`. Then push the branch. After the push, the checks and the automated review run again.")
           if [ "$POST_REVIEW" != true ]; then
             printf '%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -2902,22 +2902,15 @@ jobs:
           # The fact that this hold gives the label rule (.github/review/rules.py): held, for a hold that is tried
           # again, with no state label; screen_held or tries_used_up, for a hold that is not, with waits-on-theorem.
           fact=held
-          # The rescreen job takes a hold with a marker once its comment is an hour old, at its next run of the four
-          # each hour. A limit hold says what happens if the account is still at its limit; the other holds say only
-          # that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
-          next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
-          again="It is screened again automatically from $next, by a check that runs every 15 minutes."
-          again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
-          again_other="$again If it is held again, this comment says why."
           # The work that was held: the review of the item, the answer to the comments of its author, the draft of the
           # reply to an issue, or the approval of a first-time contributor's held runs.
-          work="review" work_of="the automated review of it" title="Automated review held."
+          work="review" work_of="the automated review" title="Automated review held."
           if [ "$TASK" = answer ]; then
-            work="answer" work_of="the automated answer to the comment of its author" title="Automated answer held."
+            work="answer" work_of="the automated answer to the author's comment" title="Automated answer held."
           elif [ "$TASK" = draft ]; then
-            work="draft" work_of="the automated draft of a reply to it" title="Automated reply held."
+            work="draft" work_of="the automated draft of a reply" title="Automated reply held."
           elif [ "$TASK" = approve ]; then
-            work="approval" work_of="the automated approval of its checks" title="Automated approval held."
+            work="approval" work_of="the automated approval of the checks" title="Automated approval held."
           fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
@@ -2963,49 +2956,56 @@ jobs:
               esac
             done <<< "$newer"
           fi
+          item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
+            || { echo "::error::#$NUMBER could not be read"; exit 1; }
+          what="this pull request"
+          [ "$item" = pr ] || what="this issue"
+          # The rescreen job takes a hold with a marker once its comment is an hour old, at its next run of the four
+          # each hour. A limit hold says what happens if the account is still at its limit; the other holds say only
+          # that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
+          next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
+          again="The workflow screens $what again at its first scheduled run after $next. A scheduled run starts every 15 minutes."
+          again_limit="$again If the account is still at the limit then, the workflow holds $what again. This comment then gives the new time."
+          again_other="$again If the workflow holds it again, this comment says why."
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             kind=limit
-            why="The account behind its latest event has no write access to this repository, and its pull requests, issues, pushes and comments have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for automated reviews and answers. $again_limit"
+            why="The latest event of $what comes from an account with no write access to this repository. The workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account each hour for automated reviews and answers. This account is at that limit. $again_limit"
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
               fact=tries_used_up
-              why="A run started by hand asked for the automated screen first. The screen passed it, but the automated review after the screen did not finish. It is not tried again."
+              why="This run started by hand with the option \`screen\` set, so the automated screen ran first. The automated screen passed $what, but the automated review did not finish. The workflow does not try it again."
             else
               fact=screen_held
-              why="A run started by hand asked for the automated screen first. The automated screen held this item, so the automated review did not run. You do not need to do anything."
+              why="This run started by hand with the option \`screen\` set, so the automated screen ran first. The automated screen held $what, so the automated review did not run. You do not need to do anything."
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run (failed, read
             # above).
             if grep -qxF 'Hold at the hourly cap' <<< "$failed"; then
               kind=cap
-              why="It comes from an account without write access to this repository. The automated screen passed it, but the automated reviews and answers of such items had reached their limit of $SCREENED_HOURLY_CAP an hour. $again_other"
+              why="${what^} comes from an account without write access to this repository. The automated screen passed it, but the workflow already ran its limit of $SCREENED_HOURLY_CAP automated reviews and answers an hour for such accounts. $again_other"
             else
               tries=$((tries + 1))
               if (( tries < REVIEW_TRIES )); then
                 kind=transient
-                why="It comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish ($tries of the $REVIEW_TRIES times it is tried). $again_other"
+                why="${what^} comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish. This was try $tries of $REVIEW_TRIES. $again_other"
               else
                 fact=tries_used_up
-                why="It comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish after $tries tries. It is not tried again."
+                why="${what^} comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish after $tries tries. The workflow does not try it again."
               fi
             fi
           else
             fact=screen_held
-            item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
-              || { echo "::error::#$NUMBER could not be read"; exit 1; }
             if [ "$work" = answer ]; then
-              what="this pull request"
-              [ "$item" = pr ] || what="this issue"
-              why="The automated screen held $what, so no automated answer was written. You do not need to do anything."
+              why="The automated screen held $what, so the workflow wrote no answer. You do not need to do anything."
             elif [ "$work" = approval ]; then
               why="The automated screen held this pull request, so its checks have not run. You do not need to do anything."
             elif [ "$item" = pr ]; then
               why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
             else
-              why="The automated screen held this issue, so no automated reply was written. You do not need to do anything."
+              why="The automated screen held this issue, so the workflow wrote no reply. You do not need to do anything."
             fi
           fi
           marker=""
@@ -3104,8 +3104,8 @@ jobs:
   # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
   # try of the head. After REVIEW_TRIES of them, the item gets a hold comment that names the head and says that its
   # automated work did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami
-  # reads the runs and starts the work again" (.github/review/rules.py, from main's checkout of .github/), and this
-  # job fails for that run.
+  # starts the automated work on this item again by hand" (.github/review/rules.py, from main's checkout of .github/),
+  # and this job fails for that run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the 15
   # minutes between runs, and a second run would use the hour's screens twice. It reads this workflow's runs of the
@@ -3527,37 +3527,43 @@ jobs:
             case $1 in
               answer) title="Automated answer held." work="the automated answer" ;;
               draft) title="Automated reply held." work="the automated draft of a reply" ;;
-              approve) title="Automated approval held." work="the automated approval of its checks" ;;
+              approve) title="Automated approval held." work="the automated approval of the checks" ;;
               *) title="Automated review held." work="the automated review" ;;
             esac
             what="this issue"
             [ "$kind" != pr ] || what="this pull request"
-            say_held "$id" "$title" "The workflow tried $work again $2 times after it held $what, and none of these tries finished. It is not tried again. Sami reads the runs and starts the work again. You do not need to do anything." \
+            say_held "$id" "$title" "The workflow tried $work again $2 times after it held $what, and none of these tries finished. The workflow does not try it again. You do not need to do anything." \
               || echo "::error::the hold comment of #$number could not be replaced; the next run tries again."
           }
-          # head_stopped <work> <tries>: the automated <work> of the head of #number did not finish after <tries> tries,
-          # and is not tried again: waits-on-theorem, with the label comment's step "Sami reads the runs and starts the
-          # work again", then a hold comment that says so and names the head, in the place of the newest hold comment.
-          # That hold stops each later try of the head, and no other reason takes the head in this run (taken). This
-          # run fails for it.
+          # head_stopped <work> <tries>: the automated <work> (review; approval, of the held runs; import, the import
+          # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again:
+          # waits-on-theorem, with the label comment's step "Sami starts the automated work on this item again by hand",
+          # then a hold comment that says so and names the head, in the place of the newest hold comment. That hold
+          # stops each later try of the head, and no other reason takes the head in this run (taken). This run fails
+          # for it.
           head_stopped() {
-            local line id title
+            local line id title text commit="the head commit ${head:0:12}"
             taken=1
-            echo "::error::#$number: the automated $1 of $head did not finish after $2 tries: it is not tried again," \
-              "and the label comment names the next step for Sami."
+            case $1 in
+              review) title="Automated review held." text="The automated review of $commit did not finish after $2 tries." ;;
+              approval)
+                title="Automated approval held."
+                text="The automated approval of the checks of $commit did not finish after $2 tries." ;;
+              import)
+                title="Automated check for the import held."
+                text="The automated check of $commit for the import into the internal repository did not finish after $2 tries." ;;
+              *)
+                title="Automated close and reopen held."
+                text="The workflow tried $2 times to close and reopen this pull request so that GitHub starts the checks of $commit. No try finished." ;;
+            esac
+            echo "::error::#$number at $head: $text It is not tried again, and the label comment names the next step" \
+              "for Sami."
             failed=1
             python3 .github/review/rules.py label "$number" tries_used_up=true \
               || { echo "::error::the label of #$number could not be set; the next run tries again."; return 0; }
             line=$(newest_hold) || { echo "::error::the comments of #$number could not be read."; return 0; }
             read -r _ id _ <<< "$line"
-            case $1 in
-              review) title="Automated review held." ;;
-              "approval of its checks") title="Automated approval held." ;;
-              "import check") title="Automated import check held." ;;
-              *) title="Automated catch-up held." ;;
-            esac
-            say_held "${id:--}" "$title" \
-              "The automated $1 of this head did not finish after $2 tries. It is not tried again." \
+            say_held "${id:--}" "$title" "$text The workflow does not try it again." \
               || echo "::error::the hold comment of #$number could not be written; the next run tries again."
           }
           # left_stopped <tries>: the catch-up that closed #number could not reopen it after <tries> runs that only
@@ -3574,7 +3580,7 @@ jobs:
             line=$(newest_hold) || { echo "::error::the comments of #$number could not be read."; return 0; }
             read -r _ id _ <<< "$line"
             say_held "${id:--}" "Automated catch-up held." \
-              "The automated catch-up closed this pull request and could not reopen it after $1 tries." \
+              "The automated catch-up closed this pull request and could not reopen it after $1 tries. The workflow closed it so that GitHub starts its checks." \
               || echo "::error::the hold comment of #$number could not be written; the next run tries again."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
@@ -3766,7 +3772,7 @@ jobs:
                 if [ "$post" = failure ]; then
                   tries=$(failures approve) || return 1
                   if (( tries >= REVIEW_TRIES )); then
-                    head_stopped "approval of its checks" "$tries"
+                    head_stopped approval "$tries"
                     return 0
                   fi
                 fi
@@ -3777,7 +3783,7 @@ jobs:
           # due_retry <tasks> <task> <work>: the App's retry. When the post job of the newest run of the head of #number
           # of a task of <tasks> failed, at a sign-in or at a write of the App, the head is due <task> again, once an
           # hour after that run ended. A post job that failed at a step that is not a sign-in counts a try of the head;
-          # after REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped).
+          # after REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped <work>).
           due_retry() {
             local created ended run f post tries
             read -r created ended run <<< "$(runs_of "$1" "$head" | tail -n 1)"
@@ -3873,7 +3879,7 @@ jobs:
             since=$(runs_of relabel "$head" workflow_dispatch | awk -v at="$at" '$1 >= at')
             tries=$(grep -c . <<< "$since" || true)
             if (( tries >= REVIEW_TRIES )); then
-              head_stopped "import check" "$tries"
+              head_stopped import "$tries"
               return 0
             fi
             if (( tries > 0 )); then
@@ -4087,9 +4093,9 @@ jobs:
               "due_$reason" || return 1
               [ -z "$taken" ] || return 0
             done
-            due_retry 'review|rescreen|relabel' relabel "import check" || return 1
+            due_retry 'review|rescreen|relabel' relabel import || return 1
             [ -z "$taken" ] || return 0
-            due_retry catchup catchup catch-up || return 1
+            due_retry catchup catchup catchup || return 1
           }
           # consider_closed: a catch-up left closed, the one closed item that this job takes: #number, a pull request
           # of an outside author that is not merged, whose newest close is oss-verify[bot]'s and falls between the

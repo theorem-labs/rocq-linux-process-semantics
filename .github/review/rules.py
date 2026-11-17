@@ -163,18 +163,18 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 # paths that the pull request changes.
 PASSED = "The automated screen and the automated review passed this pull request."
 MERGE_STEPS = (
-    "- Sami merges the pull request on this repository, while the rules of this repository allow a merge.\n"
-    "- Else, once the import into the internal repository runs, Sami approves the head commit for the import.\n"
-    "- Else, once the import runs, Sami copies the change into the internal repository by hand, if the pull "
-    "request changes a path that the import does not take.")
+    "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
+    "- Else, when the import into the internal repository runs and takes each changed path, Sami approves the head "
+    "commit for the import.\n"
+    "- Else, when the import runs, Sami copies the change into the internal repository by hand.")
 IMPORT_STEPS = (
     "- Sami approves the head commit for the import into the internal repository, if the import takes each path "
     "that the pull request changes.\n"
-    "- Else, Sami or another member of Theorem copies the change into the internal repository by hand.")
+    "- Else, Sami copies the change into the internal repository by hand.")
 APPROVE = "Sami approves the head commit for the import into the internal repository."
-COPY = "Sami or another member of Theorem copies the change into the internal repository by hand."
-UNREAD = ("GitHub did not give the full list of the files that this pull request changes. So the workflow did not "
-          "record the check `repo-pairs/import-approved`.")
+COPY = "Sami copies the change into the internal repository by hand."
+UNREAD = ("GitHub did not give the full list of the files that this pull request changes, so the workflow cannot "
+          "tell which step comes next.")
 # Why the import does not take the pull request, for each decision whose step is COPY.
 NOT_TAKEN = {
     "steering": ("This pull request changes a file under `.github/`. The workflow never records the check "
@@ -182,63 +182,54 @@ NOT_TAKEN = {
     "outside": "This pull request changes a path that the import does not take.",
 }
 
-# Each state: its label (None for no state label), the next step, which names who takes it, and the text after it.
-# {head} is the first 12 characters of the head commit.
+# Each state: its label (None for no state label), the next step, which names who takes it, and the text after it
+# ("" for none).
 STATES = {
-    "conflict": (
-        AUTHOR, "You resolve the merge conflict with `main`, and push the branch.",
-        "This pull request has a merge conflict with `main` at commit {head}. After your push, the checks and the "
-        "automated review run again."),
+    # The comment on the merge conflict, which the same run posts, says why and how to resolve it.
+    "conflict": (AUTHOR, "You resolve the merge conflict with `main`. Then you push the branch.", ""),
     "fix": (
-        AUTHOR, "You apply the suggested changes of the automated review, or push your own change.",
-        "The automated review gave a blocking finding, and it posted a fix as suggested changes. When the branch gets "
-        "a new commit, the automated review runs again."),
+        AUTHOR, "You apply the suggested changes of the automated fix, or push your own change.",
+        "The automated review gave a blocking finding. The automated fix posted suggested changes for it. When the "
+        "branch gets a new commit, the automated review runs again."),
     "change": (
-        AUTHOR, "You make the change that the automated review names, and push it.",
-        "The automated review gave a blocking finding that no suggested change can fix. After your push, the "
-        "automated review runs again."),
+        AUTHOR, "You make the change that the automated review names. Then you push the change.",
+        "The automated review gave a blocking finding, and the automated fix posted no suggested change for it. "
+        "After your push, the automated review runs again."),
     "replied": (
         AUTHOR, "You read the reply to this issue.",
         "If a question stays open, write it in a comment on this issue."),
-    "draft": (
-        THEOREM, "Sami approves the text of a reply.",
-        "The workflow wrote a draft of a reply to this issue, and keeps it private. The workflow posts no reply "
-        "before Sami approves its text. You do not need to do anything now."),
-    "person": (
-        THEOREM, "Sami examines the points of the automated review that need a person.",
-        "You do not need to do anything now."),
+    "draft": (THEOREM, "Sami approves the text of a reply.", "You do not need to do anything."),
+    "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
-        THEOREM, "Sami reads the item and starts its review or its checks by hand.",
-        "The automated screen held this item. You do not need to do anything."),
+        THEOREM, "Sami starts the review or the checks of this item by hand.", "You do not need to do anything."),
     "will-fix": (
-        THEOREM, "Sami reads the automated review and your comment.",
+        THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
         "runs again."),
     "fix-stop": (
-        THEOREM, "Sami reads the automated review and its fixes.",
-        "The automated review posted 2 fixes since your last push, and it still gives a blocking finding. No "
-        "automated fix runs again. You do not need to do anything now."),
+        THEOREM, "Sami writes the next step for the blocking finding that the automated fixes did not fix.",
+        "The workflow posted 2 automated fixes since your last push, and the automated review still gives a blocking "
+        "finding. No automated fix runs again. You do not need to do anything."),
+    # The hold comment says what did not finish, after how many tries, and that the workflow does not try it again.
     "stopped": (
-        THEOREM, "Sami reads the runs and starts the work again.",
-        "The automated work on this item did not finish, and the workflow does not try it again. You do not need "
-        "to do anything."),
+        THEOREM, "Sami starts the automated work on this item again by hand.", "You do not need to do anything."),
     "reopen": (
         THEOREM, "Sami reopens the pull request.",
-        "The automated catch-up closed this pull request and could not reopen it. You do not need to do anything."),
+        "The workflow closed this pull request to start its checks. It could not reopen the pull request. You do not "
+        "need to do anything."),
     # An outside pull request that the screen and the review passed (R12), with no variable REPO_PAIRS_IMPORT_PATHS;
     # import_steps gives the text for the variable and the post job's decision.
     "decide": (
-        THEOREM, "Sami takes one of the steps below.",
-        f"{PASSED} You do not need to do anything. The step is one of these:\n\n{MERGE_STEPS}"),
+        THEOREM, "Sami takes one of the steps below.", f"{PASSED} You do not need to do anything.\n\n{MERGE_STEPS}"),
     # An outside pull request whose head has the import check run, while the variable gives the import's paths.
     "import": (
         None, "The automated import copies the head commit into the internal repository.",
         f"{PASSED} The workflow recorded the check `repo-pairs/import-approved` on its head commit. You do not need "
         "to do anything."),
     "working": (
-        None, "The automated workflow works on this item.",
-        "You do not need to do anything now. When a hold comment gives a time, the workflow tries the item again "
-        "from that time."),
+        None, "The automated work on this item is not finished.",
+        "You do not need to do anything. When a hold comment gives a time, the workflow tries the item again from "
+        "that time."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -330,28 +321,29 @@ def import_steps(state, value, decision):
     if state == "decide":
         if live and decision in ("person", "markdown"):
             return APPROVE, (f"{PASSED} The import takes each path that this pull request changes. You do not need "
-                             "to do anything now.")
+                             "to do anything.")
         if live and decision in NOT_TAKEN:
-            return COPY, f"{PASSED} {NOT_TAKEN[decision]} You do not need to do anything now."
-        return (STATES[state][1],
-                f"{PASSED} {unread}You do not need to do anything. The step is one of these:\n\n{steps}")
+            return COPY, f"{PASSED} {NOT_TAKEN[decision]} You do not need to do anything."
+        return STATES[state][1], f"{PASSED} {unread}You do not need to do anything.\n\n{steps}"
     _label, step, text = STATES[state]
+    # No text promises a merge or an import before the questions have their answers.
+    answered = "If the answers to the questions leave no blocking finding,"
     if live and decision in ("person", "markdown"):
-        after = f"After that, {APPROVE}"
+        after = f"{answered} {APPROVE}"
     elif live and decision in NOT_TAKEN:
-        after = f"After that, {COPY} {NOT_TAKEN[decision]}"
+        after = f"{answered} {COPY} {NOT_TAKEN[decision]}"
     else:
-        after = f"{unread}After that, the step is one of these:\n\n{steps}"
+        after = f"{unread}{answered} the next step is one of these:\n\n{steps}"
     return step, f"{text}\n\n{after}"
 
 
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
-    it has none): FIRST, the next step, the text, then each marker line of KEPT that old holds or markers gives (a
-    marker of markers takes the place of old's line of its kind), the conflict-state line of head for a conflict, and
-    the marker of the state label. imports is (value, decision) of import_steps for an outside pull request, and None
-    for any other item. The state decide is an outside pull request's alone, so there None reads as no variable and
-    no decision."""
+    it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
+    or markers gives (a marker of markers takes the place of old's line of its kind), the conflict-state line of head
+    for a conflict, and the marker of the state label. imports is (value, decision) of import_steps for an outside
+    pull request, and None for any other item. The state decide is an outside pull request's alone, so there None
+    reads as no variable and no decision."""
     label, step, text = STATES[state]
     if state == "decide" or (state == "person" and imports is not None):
         step, text = import_steps(state, *(imports or (None, "")))
@@ -372,9 +364,10 @@ def label_comment(state, old="", markers=(), head="", imports=None):
         lines.append(f"<!-- {AUTHOR} -->")
     elif label == THEOREM:
         lines.append(f"<!-- {THEOREM}: {WHO} -->")
-    body = f"{FIRST}\n**Next step:** {step}\n\n{text.format(head=head[:12])}"
-    if lines:
-        body += "\n\n" + "\n".join(lines)
+    body = f"{FIRST}\n**Next step:** {step}"
+    for part in (text, "\n".join(lines)):
+        if part:
+            body += "\n\n" + part
     return body
 
 
@@ -789,8 +782,8 @@ def check_run(head, value, hold):
     summary = ["The automated screen and the automated review passed this head commit.",
                "No changed file is under `.github/`."]
     if hold:
-        summary.append("While the soundness hold lasts, the workflow records this check only when each changed file "
-                       "is a Markdown file, and each one is.")
+        summary.append("Each changed file is a Markdown file. While the soundness hold lasts, the workflow records "
+                       "this check only for such a change.")
     summary.append("The import takes each changed path." if value is not None else
                    "The variable `REPO_PAIRS_IMPORT_PATHS` is not set, so the workflow did not compare the changed "
                    "paths with the paths of the import.")
@@ -925,10 +918,10 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS):
     """The fixed section on soundness, with the lines that found holds (uses): at most listed lines, in at most
     characters characters, and then a line that says how many more there are."""
     issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
-    head = ("**Soundness of the proof.** This pull request adds, changes or deletes a Rocq proof (a `.v` file). The CI "
-            "lanes of this repository check the proofs on stock Rocq. Stock Rocq accepts three public proofs of "
-            f"`False`: {issues}. So a pass of these lanes does not show that the proof is sound. The soundness of the "
-            "proof is a question for Sami. You do not need to do anything for this point.")
+    head = ("**Soundness of the proofs.** This pull request adds, changes or deletes a `.v` file, which holds Rocq "
+            "proofs. The CI lanes of this repository check the proofs on stock Rocq. Stock Rocq accepts three public "
+            f"proofs of `False`: {issues}. So when these lanes pass, that does not show that the proofs are sound. "
+            "Sami answers whether the proofs are sound. You do not need to do anything for this point.")
     what = "the VM, the native compiler, a cast with no check or a primitive array"
     searched = "The workflow searched the text of the `.v` files that this pull request adds or changes."
     forgery = ("A text search cannot show that a proof is not forged. For example, a proof can use the VM through a "
@@ -946,8 +939,8 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS):
     if more:
         lines.append(f"- {more} more {'line uses' if more == 1 else 'lines use'} these constructs. The summary of the "
                      "workflow run lists all lines.")
-    return (f"{head}\n\n{searched} It found these uses of {what}. The uses are facts for Sami, not failures. Honest "
-            f"proofs use the same constructs. {forgery}\n\n" + "\n".join(lines))
+    return (f"{head}\n\n{searched} It found these uses of {what}. The workflow lists these uses as facts, not as "
+            f"failures. Honest proofs use the same constructs. {forgery}\n\n" + "\n".join(lines))
 
 
 def forced(output):

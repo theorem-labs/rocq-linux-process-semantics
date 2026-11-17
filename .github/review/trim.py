@@ -33,8 +33,8 @@ this order:
     <head>                             the caller's fixed text, with its markers
     the trimmed text
     <section>                          the caller's fixed text (rules.py's soundness section)
-    Items the shorter text left out:   each listed item that is not optional and that the trimmed text lacks
-    Optional items:                    each listed optional item that the trimmed text lacks
+    LEFT_OUT                           each listed item that is not optional and that the trimmed text lacks
+    OPTIONAL                           each listed optional item that the trimmed text lacks
     ---  <foot>                        the caller's fixed text
     <details>                          the review, made inert and cut, collapsed
 
@@ -88,8 +88,8 @@ MAX_COMMENT = 60_000
 # The file under RUNNER_TEMP that sign-in writes the token to, and that the other commands read and delete.
 TOKEN_FILE = "reader-token"
 
-LEFT_OUT = "Items the shorter text left out:"
-OPTIONAL = "Optional items:"
+LEFT_OUT = "Items that the shortened review omits:"
+OPTIONAL = "Optional items that the shortened review omits:"
 WHOLE = "The whole review, before the second Claude session shortened it"
 CUT_WHOLE = "(The rest of the whole review is in the summary of the run.)"
 # A review, an answer, the summary of a fix and each why are cut at this many characters before the reader reads them.

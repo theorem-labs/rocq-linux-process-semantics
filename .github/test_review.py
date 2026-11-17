@@ -1861,8 +1861,8 @@ class HoldTest(Holding):
         run; the item gets review-held, and waits-on-theorem with the label comment's step for Sami."""
         for kind, words in (("pr", "The automated screen held this pull request, so the automated review did not "
                                    "run. You do not need to do anything."),
-                            ("issue", "The automated screen held this issue, so no automated reply was written. You "
-                                      "do not need to do anything.")):
+                            ("issue", "The automated screen held this issue, so the workflow wrote no reply. You do not "
+                                      "need to do anything.")):
             with self.subTest(kind=kind):
                 self.tearDown()
                 self.setUp()
@@ -1871,23 +1871,24 @@ class HoldTest(Holding):
                                "--jq", ".[].name"], calls)
                 self.assertIn(f"repos/{REPO}/issues/7/comments", post)
                 self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
-                self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
+                self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
 
-    AGAIN = (r"It is screened again automatically from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC, by a check "
-             r"that runs every 15 minutes\. ")
+    AGAIN = (r"The workflow screens this (pull request|issue) again at its first scheduled run after "
+             r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\. A scheduled run starts every 15 minutes\. ")
     # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
     # be held for another reason, says only that a new hold says why. The marker follows, and nothing asks anyone to
     # start a run.
-    AGAIN_LIMIT = AGAIN + (r"If that account is still at the limit then, the check tries again later, and if the item "
-                           r"is held again, this comment gives the new time\.\n\n<!-- ")
-    AGAIN_OTHER = AGAIN + r"If it is held again, this comment says why\.\n\n<!-- "
+    AGAIN_LIMIT = AGAIN + (r"If the account is still at the limit then, the workflow holds this (pull request|issue) "
+                           r"again\. This comment then gives the new time\.\n\n<!-- ")
+    AGAIN_OTHER = AGAIN + r"If the workflow holds it again, this comment says why\.\n\n<!-- "
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
         of the screen carries no such marker, so it is never screened again on its own. The workflow still works on
         the item: no state label."""
         _calls, _post, body = self.hold("limit", tries="1")
-        self.assertIn(f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour", body)
+        self.assertIn(f"The workflow screens at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes "
+                      "and comments of such an account each hour", body)
         self.assertRegex(body, self.AGAIN_LIMIT)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
@@ -1903,7 +1904,8 @@ class HoldTest(Holding):
 
     def test_a_review_stopped_at_the_cap_is_tried_again_and_counts_no_try(self):
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", capped=True)
-        self.assertIn(f"had reached their limit of {WF['env']['SCREENED_HOURLY_CAP']} an hour", body)
+        self.assertIn(f"the workflow already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and "
+                      "answers an hour", body)
         self.assertRegex(body, self.AGAIN_OTHER)
         self.assertNotIn("account is still at the limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
@@ -1916,7 +1918,7 @@ class HoldTest(Holding):
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/issues/7#c40"})
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="0", capped=True,
                                         labels=("review-held", THEOREM_LABEL), comments=[label])
-        self.assertRegex(body, r"from [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC")
+        self.assertRegex(body, r"after [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\.")
         self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL)])
         (method, endpoint, text), = label_comments(self.api)
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
@@ -1927,7 +1929,7 @@ class HoldTest(Holding):
         """The count of the hour's reviews could not be read: the cap was not reached, so the hold says so and counts a
         try, and REVIEW_TRIES still ends the tries."""
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", uncounted=True)
-        self.assertNotIn("had reached their limit", body)
+        self.assertNotIn("already ran its limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
     def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
@@ -1940,7 +1942,7 @@ class HoldTest(Holding):
                     self.tearDown()
                     self.setUp()
                     _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(before))
-                    self.assertIn(f"did not finish ({before + 1} of the {self.TRIES} times it is tried)", body)
+                    self.assertIn(f"did not finish. This was try {before + 1} of {self.TRIES}.", body)
                     self.assertRegex(body, self.AGAIN_OTHER)
                     self.assertNotIn("account is still at the limit", body)
                     self.assertTrue(body.endswith(f"\n\n<!-- review-held-transient 50 {before + 1} -->"), body)
@@ -1949,10 +1951,10 @@ class HoldTest(Holding):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(self.TRIES - 1))
-                self.assertIn(f"did not finish after {self.TRIES} tries. It is not tried again.", body)
+                self.assertIn(f"did not finish after {self.TRIES} tries. The workflow does not try it again.", body)
                 self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-                self.assertWaitsOnSami("Sami reads the runs and starts the work again.")
+                self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
 
     def test_a_review_that_a_newer_run_of_the_item_and_task_cancelled_holds_nothing(self):
         """Only a newer run of the same item and task is in the review job's group, so only it can have cancelled this
@@ -2009,14 +2011,15 @@ class HoldTest(Holding):
         """A run by hand with -f screen=true has no outsider: the comment does not say the account lacks write access,
         names no maintainer, and nothing tries it again. The item waits on Sami: to start the review or the checks
         when the screen held it, or to start the work again when the review after the screen did not finish."""
-        for review, step in (("skipped", "Sami reads the item and starts its review or its checks by hand."),
-                             ("failure", "Sami reads the runs and starts the work again."),
-                             ("cancelled", "Sami reads the runs and starts the work again.")):
+        for review, step in (("skipped", "Sami starts the review or the checks of this item by hand."),
+                             ("failure", "Sami starts the automated work on this item again by hand."),
+                             ("cancelled", "Sami starts the automated work on this item again by hand.")):
             with self.subTest(review=review):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", outsider="", review=review)
-                self.assertIn("A run started by hand asked for the automated screen first.", body)
+                self.assertIn("This run started by hand with the option `screen` set, so the automated screen ran "
+                              "first.", body)
                 self.assertNotIn("without write access", body)
                 self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
@@ -2166,7 +2169,7 @@ class HoldTest(Holding):
         review = attempt_job("review", "Check the count and the cap", name="review (screened)")
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1",
                                         jobs=self.gathered() + [attempt_job("screen", name="screen mallory"), review])
-        self.assertNotIn("had reached their limit", body)
+        self.assertNotIn("already ran its limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
     def test_jobs_that_cannot_be_read_hold_nothing(self):
@@ -2192,13 +2195,13 @@ class HoldTest(Holding):
         for the answer. The screen's hold of an answer, and its last try, give waits-on-theorem."""
         label = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("change")}
         for route, kwargs, words, marker in (
-                ("limit", {}, f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour",
+                ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
                  "<!-- review-held-limit 50 0 answer 900 -->"),
                 ("screen", {"review": "failure", "capped": True},
-                 f"had reached their limit of {WF['env']['SCREENED_HOURLY_CAP']} an hour",
+                 f"already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers an hour",
                  "<!-- review-held-cap 50 0 answer 900 -->"),
                 ("screen", {"review": "failure"},
-                 f"the automated answer to the comment of its author did not finish (1 of the {self.TRIES} times",
+                 f"the automated answer to the author's comment did not finish. This was try 1 of {self.TRIES}.",
                  "<!-- review-held-transient 50 1 answer 900 -->")):
             with self.subTest(route=route, **kwargs):
                 self.tearDown()
@@ -2215,17 +2218,17 @@ class HoldTest(Holding):
                 self.setUp()
                 _calls, _post, body = self.hold("screen", task="answer", comment="900", kind=kind)
                 self.assertEqual(body, "<!-- review-held -->\n**Automated answer held.**\n\nThe automated screen held "
-                                       f"this {where}, so no automated answer was written. You do not need to do "
+                                       f"this {where}, so the workflow wrote no answer. You do not need to do "
                                        "anything.")
-                self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
+                self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
         self.tearDown()
         self.setUp()
         _calls, _post, body = self.hold("screen", task="answer", comment="900", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated answer to the comment of its author did not finish after {self.TRIES} tries. "
-                      "It is not tried again.", body)
+        self.assertIn(f"the automated answer to the author's comment did not finish after {self.TRIES} tries. "
+                      "The workflow does not try it again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-        self.assertWaitsOnSami("Sami reads the runs and starts the work again.")
+        self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
         # A newer answer run of the item, which answers this comment too, cancelled this one: it holds nothing.
         self.tearDown()
         self.setUp()
@@ -2242,13 +2245,13 @@ class HoldTest(Holding):
         try, give waits-on-theorem."""
         self.permissions(mallory="read")
         for route, kwargs, words, marker in (
-                ("limit", {}, f"the limit of {WF['env']['OUTSIDE_HOURLY_LIMIT']} an hour",
+                ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
                  "<!-- review-held-limit 50 0 draft -->"),
                 ("screen", {"review": "failure", "capped": True},
-                 f"had reached their limit of {WF['env']['SCREENED_HOURLY_CAP']} an hour",
+                 f"already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers an hour",
                  "<!-- review-held-cap 50 0 draft -->"),
                 ("screen", {"review": "failure"},
-                 f"the automated draft of a reply to it did not finish (1 of the {self.TRIES} times",
+                 f"the automated draft of a reply did not finish. This was try 1 of {self.TRIES}.",
                  "<!-- review-held-transient 50 1 draft -->")):
             with self.subTest(route=route, **kwargs):
                 self.tearDown()
@@ -2269,16 +2272,16 @@ class HoldTest(Holding):
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue")
         self.assertEqual(body, "<!-- review-held -->\n**Automated reply held.**\n\nThe automated screen held this "
-                               "issue, so no automated reply was written. You do not need to do anything.")
-        self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
+                               "issue, so the workflow wrote no reply. You do not need to do anything.")
+        self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
         self.tearDown()
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated draft of a reply to it did not finish after {self.TRIES} tries. It is not tried "
-                      "again.", body)
+        self.assertIn(f"the automated draft of a reply did not finish after {self.TRIES} tries. The workflow does not "
+                      "try it again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-        self.assertWaitsOnSami("Sami reads the runs and starts the work again.")
+        self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
 
     def test_each_hold_of_a_pull_request_names_its_head(self):
         """D16 (c) and (g) read which head a hold names: each hold comment of a pull request, of every kind (at the
@@ -2469,7 +2472,7 @@ class ApproveTest(Holding):
         self.assertNotIn("maintainer", body.lower())
         self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
                        "--jq", ".[].name"], calls)
-        self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
+        self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
         self.assertEqual(self.approvals(), [])
 
     def test_a_pull_request_whose_runs_are_not_held_gets_no_approval(self):
@@ -2947,8 +2950,8 @@ class ReaderRunner(Runner):
     SIGN_IN = "Sign in to Anthropic for the fresh reader"
     STEP = "The comment, as it is posted"
     TOKEN = "reader-not-a-secret"
-    FOOT = (f"Claude wrote this review by [these rules]({RULES}) ([run]({RUN})). A second Claude session shortened the "
-            "review. The block below holds the whole review.")
+    FOOT = (f"Claude wrote this review with [these rules]({RULES}), in [this workflow run]({RUN}). A second Claude "
+            "session shortened the review.")
     WHOLE = "<details>\n<summary>The whole review, before the second Claude session shortened it</summary>"
 
     def setUp(self):
@@ -3122,9 +3125,9 @@ class FreshReaderTest(ReaderRunner):
         lacking = "Blocking findings.\n\n1. `theories/Fd.v:213` and `:222` leave the case open."
         rc, out, got = self.post(self.REVIEW, items, lacking)
         self.assertEqual(rc, 0, out)
-        added = ("Items the shorter text left out:\n\n"
+        added = ("Items that the shortened review omits:\n\n"
                  f"**Question at `SCOPE.md:301`:** Does SCOPE.md:301 still hold for @{WJ}octocat's case #{WJ}12?\n\n"
-                 "Optional items:\n\n"
+                 "Optional items that the shortened review omits:\n\n"
                  "**Change at `tools/check_one.py:31`:** Name the lane in tools/check_one.py:31.")
         self.assertEqual(got["body"], self.body(lacking, added))
         self.assertEqual(self.block(got["body"]), self.REVIEW_INERT)
@@ -3163,7 +3166,7 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(trim.missing([item], trim.inert(text)), [item])
         # An item with no key optional, as in the trim test's lists, is not optional.
         self.assertTrue(trim.added([{"kind": "change", "ref": "a.v:1", "text": "Fix it."}])
-                        .startswith("Items the shorter text left out:\n\n"))
+                        .startswith("Items that the shortened review omits:\n\n"))
         names = sorted(os.listdir(os.path.join(TRIM_FIXTURES, "lists")))
         self.assertEqual(names, [f"r{n:02}.json" for n in range(1, 31)])
         for name in names:
@@ -3565,11 +3568,10 @@ class AnswerFixTest(ReaderRunner):
     POST_FIX = "Post the fix as suggested changes"
     LABEL = PostLabelTest.STEP
     ANSWER_RULES = f"https://github.com/{REPO}/blob/main/.github/review-answer.md"
-    ANSWER_FOOT = (f"Claude wrote this answer by [these rules]({ANSWER_RULES}) ([run]({RUN})). A second Claude session "
-                   "shortened it.")
-    FIX_FOOT = (f"Claude wrote this fix by [these rules]({ANSWER_RULES}) ([run]({RUN})). A second Claude session "
-                "shortened its text, and not the lines of a suggested change. A suggested change changes nothing "
-                "until you apply it.")
+    ANSWER_FOOT = f"Claude wrote this answer with [these rules]({ANSWER_RULES}), in [this workflow run]({RUN})."
+    FIX_FOOT = (f"Claude wrote this fix with [these rules]({ANSWER_RULES}), in [this workflow run]({RUN}). A second "
+                "Claude session shortened the words of this fix. It did not change the lines of any suggested change. "
+                "A suggested change changes nothing until you apply it.")
     # The contexts of the steps of this run of #7, an outside pull request whose screen passed, on GitHub.
     CTX = {"github.server_url": "https://github.com", "github.repository": REPO, "github.run_id": "1",
            "needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
@@ -5191,10 +5193,10 @@ class RescreenJobTest(Held):
                     self.assertIn("it is not tried again", out)
 
     def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
-        """The hold comment stops promising an automatic try: it is replaced with fixed words that name no maintainer
-        and give Sami's next step, with no marker of a hold that is tried again, and the item gets waits-on-theorem with
-        the label comment's step for Sami (b1, the third end of tries). That run fails; the next one finds no hold that
-        is tried again, starts nothing, labels nothing and passes."""
+        """The hold comment stops promising an automatic try: it is replaced with fixed words that name no maintainer,
+        with no marker of a hold that is tried again, and the item gets waits-on-theorem with the label comment's step
+        for Sami (b1, the third end of tries). That run fails; the next one finds no hold that is tried again, starts
+        nothing, labels nothing and passes."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         hours_ago = (datetime.datetime.now(datetime.timezone.utc)
                      - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -5212,8 +5214,8 @@ class RescreenJobTest(Held):
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
         self.assertEqual(method, "POST")
-        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami reads the runs and starts the "
-                                         "work again.\n"), label)
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the automated work on this "
+                                         "item again by hand.\n"), label)
         self.assertTrue(label.endswith("\n<!-- waits-on-theorem: Sami -->"), label)
         patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
         self.assertEqual(len(patches), 1, gh_calls(self.api))
@@ -5221,8 +5223,7 @@ class RescreenJobTest(Held):
         body = next(a for a in patches[0] if a.startswith("body="))[len("body="):]
         self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nThe workflow tried the automated "
                                f"review again {tries} times after it held this issue, and none of these tries "
-                               "finished. It is not tried again. Sami reads the runs and starts the work again. You do "
-                               "not need to do anything.")
+                               "finished. The workflow does not try it again. You do not need to do anything.")
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
         self.assertNotRegex(body, r"(?i)maintainer|decide|will look")
         # The next run sees the comment as it was replaced.
@@ -5318,6 +5319,7 @@ class RescreenJobTest(Held):
         self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": [
             {"name": "review (screened)", "steps": [
                 {"name": "Hold at the hourly cap", "conclusion": "failure" if kind == "cap" else "success"}]}]})
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7})
         self.serve(f"repos/{REPO}/issues/7/comments", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
         self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
@@ -5628,8 +5630,8 @@ class Scheduled(Held):
         """The screen job of a run of mallory's item: it passed, or it failed at the step failed."""
         return attempt_job("screen", failed, name="screen mallory")
 
-    def assertStopped(self, title, text, edited=False, step_line="Sami reads the runs and starts the work again.",
-                      number=7):
+    def assertStopped(self, title, text, edited=False,
+                      step_line="Sami starts the automated work on this item again by hand.", number=7):
         """The run gave #number waits-on-theorem with the label comment's step step_line for Sami, in a new label
         comment (or in the one it had, when edited), and posted one hold comment with title and text, which names
         HEAD."""
@@ -5747,15 +5749,14 @@ class ScheduleTest(Scheduled):
         self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
         (method, endpoint, label), = label_comments(self.api)
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/3"))
-        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami reads the runs and starts the "
-                                         "work again.\n"), label)
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the automated work on this "
+                                         "item again by hand.\n"), label)
         self.assertTrue(label.endswith("\n<!-- issue-reply-posted 4 -->\n<!-- waits-on-theorem: Sami -->"), label)
         patch, = [c for c in writes(self.api) if c[:3] == ["--method", "PATCH", f"repos/{REPO}/issues/comments/5"]]
         body = next(a for a in patch if a.startswith("body="))[len("body="):]
         self.assertEqual(body, "<!-- review-held -->\n**Automated answer held.**\n\nThe workflow tried the automated "
                                f"answer again {self.TRIES} times after it held this issue, and none of these tries "
-                               "finished. It is not tried again. Sami reads the runs and starts the work again. You do "
-                               "not need to do anything.")
+                               "finished. The workflow does not try it again. You do not need to do anything.")
         self.comments(7, self.REPLIED, said(900, 500), dict(hold, updated_at=ago(1), body=body))
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
@@ -5903,8 +5904,9 @@ class ScheduleTest(Scheduled):
                     self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
                     continue
                 self.assertEqual((rc, runs), (1, []), out)
-                body = self.assertStopped("Automated approval held.", "The automated approval of its checks of this "
-                                          f"head did not finish after {self.TRIES} tries. It is not tried again.")
+                body = self.assertStopped("Automated approval held.", "The automated approval of the checks of the "
+                                          f"head commit {HEAD[:12]} did not finish after {self.TRIES} tries. The "
+                                          "workflow does not try it again.")
                 self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
                                   "body": body})
                 rc, out, runs = self.started()
@@ -5957,8 +5959,9 @@ class ScheduleTest(Scheduled):
             self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 90 * i, jobs=[refused])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
-        self.assertStopped("Automated import check held.", "The automated import check of this head did not finish "
-                           f"after {self.TRIES} tries. It is not tried again.", edited=True)
+        self.assertStopped("Automated check for the import held.", f"The automated check of the head commit {HEAD[:12]} "
+                           f"for the import into the internal repository did not finish after {self.TRIES} tries. The "
+                           "workflow does not try it again.", edited=True)
 
     def test_runs_that_screen_stay_under_the_limit_of_one_account(self):
         """D16: mallory's items are due two drafts and an approval, and she had one run of the last hour that counts
@@ -6232,7 +6235,8 @@ class LeftClosedTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
         body = self.assertStopped("Automated catch-up held.", "The automated catch-up closed this pull request and "
-                                  f"could not reopen it after {self.TRIES} tries.",
+                                  f"could not reopen it after {self.TRIES} tries. The workflow closed it so that GitHub "
+                                  "starts its checks.",
                                   step_line="Sami reopens the pull request.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         rc, out, runs = self.started()
@@ -6394,8 +6398,8 @@ class HeadScheduleTest(Scheduled):
         self.ran(22, title, made=80, jobs=self.REVIEWED_NONE)
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
-        body = self.assertStopped("Automated review held.", f"The automated review of this head did not finish after "
-                                  f"{self.TRIES} tries. It is not tried again.")
+        body = self.assertStopped("Automated review held.", f"The automated review of the head commit {HEAD[:12]} did not "
+                                  f"finish after {self.TRIES} tries. The workflow does not try it again.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
@@ -6470,12 +6474,12 @@ class HeadScheduleTest(Scheduled):
                         f"<!-- review-held-head {HEAD} -->"}
         for case, comments, labels, step_line in (
                 ("a blocking finding", [review_of(HEAD, "blocking", at=ago(300))], [],
-                 "You make the change that the automated review names, and push it."),
+                 "You make the change that the automated review names. Then you push the change."),
                 ("a blocking finding that the author will fix", [review_of(HEAD, "blocking", True, at=ago(300))],
-                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], "Sami reads the automated review and your comment."),
+                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], "Sami replies to your comment."),
                 ("a screen hold after the review", [review_of(HEAD, at=ago(300)), hold],
                  [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)],
-                 "Sami reads the item and starts its review or its checks by hand.")):
+                 "Sami starts the review or the checks of this item by hand.")):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
@@ -6492,8 +6496,8 @@ class HeadScheduleTest(Scheduled):
         self.relabelled([self.line_label()])
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
         body = self.label_of()
-        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The automated workflow works on this "
-                                        "item.\n"), body)
+        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The automated work on this item is not "
+                                        "finished.\n"), body)
         self.assertNotIn("review-conflict-state", body)
         self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
@@ -6511,8 +6515,8 @@ class HeadScheduleTest(Scheduled):
                   "body": f"<!-- review-answer 900 will-fix {HEAD} -->\n**Automated answer**\n\nYou will fix it."}
         self.relabelled([review_of(HEAD, "blocking", at=ago(300)), answer, self.line_label()])
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
-        self.assertTrue(self.label_of().startswith("<!-- review-label -->\n**Next step:** Sami reads the automated "
-                                                   "review and your comment.\n"))
+        self.assertTrue(self.label_of().startswith("<!-- review-label -->\n**Next step:** Sami replies to your "
+                                                   "comment.\n"))
 
     def test_a_head_that_conflicts_again_with_no_push_gets_a_second_conflict_run(self):
         """The relabel took the line out, and the head has a merge conflict again: a second conflict run, which its
@@ -6552,8 +6556,9 @@ class HeadScheduleTest(Scheduled):
             self.ran(11 + i, f"relabel #7 at {HEAD}", made=200 - 10 * i, jobs=self.stopped_jobs())
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, []), out)
-        self.assertStopped("Automated import check held.", "The automated import check of this head did not finish "
-                           f"after {self.TRIES} tries. It is not tried again.", edited=True)
+        self.assertStopped("Automated check for the import held.", f"The automated check of the head commit {HEAD[:12]} "
+                           f"for the import into the internal repository did not finish after {self.TRIES} tries. The "
+                           "workflow does not try it again.", edited=True)
         self.merge(7, "unknown")
         self.dispatched("relabel", want=False)
 
@@ -6860,7 +6865,7 @@ class ConflictTest(Runner):
                 self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL), ("+", AUTHOR_LABEL)])
                 self.assertEqual(len(bodies), 1, gh_calls(self.api))
                 self.assertTrue(bodies[0].startswith(f"<!-- review-conflict {HEAD} -->\n"), bodies[0])
-                self.assertIn("merge conflict with `main`", bodies[0])
+                self.assertIn(f"**Merge conflict with `main`** at commit {HEAD[:12]}.", bodies[0])
                 self.assertIn("Resolve the conflict", bodies[0])
                 self.assertNotIn("maintainer", bodies[0].lower())
                 (method, _endpoint, label), = label_comments(self.api)
@@ -7070,9 +7075,10 @@ class LabelRuleTest(unittest.TestCase):
         path (a person verdict, or a change that is not Markdown alone while the hold lasts), and a copy by hand for a
         path that it does not take or a file under .github/. A list of files that was not read whole says so, and
         names both, as a post job that gave no decision does. With no variable, each step that can follow."""
-        merge = "Sami merges the pull request on this repository, while the rules of this repository allow a merge."
+        merge = "If the rules of this repository allow a merge, Sami merges the pull request in this repository."
         approve = "Sami approves the head commit for the import into the internal repository."
-        copy = "Sami or another member of Theorem copies the change into the internal repository by hand."
+        copy = "Sami copies the change into the internal repository by hand."
+        live = "if the import takes each path"
         unread = "GitHub did not give the full list of the files that this pull request changes"
         for state in ("decide", "person"):
             for value, decision, step_words, words, absent in (
@@ -7081,12 +7087,12 @@ class LabelRuleTest(unittest.TestCase):
                     ("README.md", "outside", copy, ["changes a path that the import does not take"],
                      [approve, merge, "`.github/`"]),
                     ("README.md", "steering", copy, ["changes a file under `.github/`"], [approve, merge]),
-                    ("README.md", "unread", None, [unread, "if the import takes each path", copy], [merge]),
-                    ("README.md", "", None, ["if the import takes each path", copy], [merge, unread]),
-                    (None, "markdown", None, [merge, "Sami approves the head commit for the import"], [copy, unread]),
-                    (None, "steering", None, [merge, "Sami copies the change into the internal repository by hand"],
-                     [copy, unread]),
-                    (None, "unread", None, [merge, unread], [copy])):
+                    ("README.md", "unread", None, [unread, live, copy], [merge]),
+                    ("README.md", "", None, [live, copy], [merge, unread]),
+                    (None, "markdown", None, [merge, "Sami approves the head commit for the import"], [live, unread]),
+                    (None, "steering", None, [merge, "Else, when the import runs, Sami copies the change"],
+                     [live, unread]),
+                    (None, "unread", None, [merge, unread], [live])):
                 if state == "decide" and decision == "person":
                     continue
                 with self.subTest(state=state, value=value, decision=decision):
@@ -7097,10 +7103,11 @@ class LabelRuleTest(unittest.TestCase):
                     elif state == "decide":
                         self.assertEqual(step_line, "**Next step:** Sami takes one of the steps below.")
                     else:
-                        self.assertEqual(step_line, "**Next step:** Sami examines the points of the automated review "
-                                                    "that need a person.")
+                        self.assertEqual(step_line, "**Next step:** Sami answers the questions of the automated "
+                                                    "review.")
                         if step_words:
-                            self.assertIn(f"After that, {step_words}", body)
+                            self.assertIn(f"If the answers to the questions leave no blocking finding, {step_words}",
+                                          body)
                     for w in words:
                         self.assertIn(w, body)
                     for w in absent:
@@ -7110,10 +7117,11 @@ class LabelRuleTest(unittest.TestCase):
 
     def test_a_passed_pull_request_names_each_step_that_r12_gives_with_no_variable(self):
         body = rules.label_comment("decide")
-        for words in ("Sami merges the pull request on this repository, while the rules of this repository allow",
-                      "once the import into the internal repository runs, Sami approves the head commit for the import",
-                      "Sami copies the change into the internal repository by hand, if the pull request changes a "
-                      "path that the import does not take"):
+        for words in ("- If the rules of this repository allow a merge, Sami merges the pull request in this "
+                      "repository.\n",
+                      "- Else, when the import into the internal repository runs and takes each changed path, Sami "
+                      "approves the head commit for the import.\n",
+                      "- Else, when the import runs, Sami copies the change into the internal repository by hand."):
             self.assertIn(words, body)
 
     def test_the_label_comment_keeps_its_markers_and_takes_new_ones_in_their_place(self):
@@ -7132,9 +7140,11 @@ class LabelRuleTest(unittest.TestCase):
                                          f"<!-- repo-pairs-import-paths {OTHER_HEAD}: null -->"), working)
 
     def test_a_conflict_holds_the_conflict_state_line_of_its_head(self):
+        """The comment on the merge conflict, posted in the same run, says why and how to resolve it: the label comment
+        holds the step and its markers, with no empty paragraph between them."""
         body = rules.label_comment("conflict", head=HEAD)
-        self.assertTrue(body.endswith(f"\n\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->"), body)
-        self.assertIn(f"at commit {HEAD[:12]}.", body)
+        self.assertEqual(body, "<!-- review-label -->\n**Next step:** You resolve the merge conflict with `main`. Then "
+                               f"you push the branch.\n\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->")
         for head in ("", HEAD[:12]):
             with self.subTest(head=head), self.assertRaises(ValueError):
                 rules.label_comment("conflict", head=head)
@@ -7395,10 +7405,12 @@ class ImportCheckTest(ReaderRunner):
                "started": PostLabelTest.STARTED}
     # The steps of R12 that a label comment names.
     SOME = "Sami takes one of the steps below."
-    PERSON = "Sami examines the points of the automated review that need a person."
-    MERGE = "Sami merges the pull request on this repository, while the rules of this repository allow a merge."
+    PERSON = "Sami answers the questions of the automated review."
+    MERGE = "If the rules of this repository allow a merge, Sami merges the pull request in this repository."
     APPROVE = "Sami approves the head commit for the import into the internal repository."
-    COPY = "Sami or another member of Theorem copies the change into the internal repository by hand."
+    COPY = "Sami copies the change into the internal repository by hand."
+    # The text before Sami's step of the import in the label comment of a person verdict.
+    ANSWERED = "If the answers to the questions leave no blocking finding,"
     NOT_TAKEN = "This pull request changes a path that the import does not take."
     UNREAD = "GitHub did not give the full list of the files that this pull request changes"
 
@@ -7551,8 +7563,8 @@ class ImportCheckTest(ReaderRunner):
         cannot tell apart, a merge on this repository first. Both marker lines hold null."""
         got = self.judge(["docs/guide.md"], value=None)
         self.assertRecorded(got, None)
-        self.assertWaits(got, self.SOME, self.MERGE, "once the import into the internal repository runs",
-                         "if the pull request changes a path that the import does not take", value=None)
+        self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and takes each "
+                         "changed path", "Else, when the import runs, Sami copies the change", value=None)
 
     def test_with_the_variable_and_each_path_matching_the_check_run_and_no_label(self):
         """The variable holds the pair's import_paths, and each changed path is a Markdown file that they take: the
@@ -7583,7 +7595,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
         got = self.judge(["README.md"], "person", self.LPS)
         self.assertNotRecorded(got, "person")
-        self.assertWaits(got, self.PERSON, f"After that, {self.APPROVE}", value=self.LPS)
+        self.assertWaits(got, self.PERSON, f"{self.ANSWERED} {self.APPROVE}", value=self.LPS)
         got = self.judge(["README.md"], "pass", self.LPS, screen="held")
         self.assertNotRecorded(got)
         self.assertEqual((got["result"], got["labels"], got["comments"]), ("skipped", [], []))
@@ -7682,7 +7694,8 @@ class ImportCheckTest(ReaderRunner):
                     step_line = self.PERSON if verdict == "person" else self.SOME if value is None else self.APPROVE
                     words = [self.MERGE] if value is None else [self.APPROVE]
                     body = self.assertWaits(got, step_line, *words, value=value)
-                    self.assertNotIn(self.COPY, body)
+                    # With no variable, no step of the live import; with it, no copy by hand.
+                    self.assertNotIn("if the import takes each path" if value is None else self.COPY, body)
 
     def test_a_new_head_after_an_approved_one_gets_no_check_run_until_it_passes(self):
         """HEAD got the check run. The author pushed OTHER_HEAD: the post job of HEAD's review that runs after the push
@@ -7832,7 +7845,7 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                          comments=[self.review_comment(HEAD, "person")])
         self.assertNotRecorded(got, "person")
-        self.assertWaits(got, self.PERSON, f"After that, {self.APPROVE}", value=self.LPS)
+        self.assertWaits(got, self.PERSON, f"{self.ANSWERED} {self.APPROVE}", value=self.LPS)
         self.assertNotIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"], gh_calls(self.api))
         for case, trusted, comments in (
                 ("no review", relabel, []),
