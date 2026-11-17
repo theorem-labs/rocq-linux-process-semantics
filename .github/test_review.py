@@ -3440,6 +3440,29 @@ class SoundnessTest(ReaderRunner):
                 self.assertNotRegex(shown, r"(?m)^- `")
                 self.assertEqual(listed, [rules.QUESTION])
 
+    def test_a_proof_under_a_directory_that_the_gather_job_removes_still_gets_the_person_verdict(self):
+        """R8: the gather job removes each directory named like an instructions file of Claude Code (agents.md,
+        CLAUDE.md), with the .v files in it, and gh pr view --json files lists at most the first 100 files of a pull
+        request (read on 2026-11-17: gh pr view 131 -R theorem-labs/rocq-linux-process-semantics gives 100 of its 147
+        files). dune builds theories/agents.md/Evil.v into the theory all the same, so an outside pull request of 100
+        Markdown files and that proof still gets the person verdict and the section on soundness."""
+        serve = self.serve
+
+        def as_gh_lists_them(endpoint, data):
+            if endpoint == "pr_view_7":
+                data = dict(data, files=sorted(data["files"], key=lambda f: f["path"])[:100])
+            serve(endpoint, data)
+        for directory in ("agents.md", "CLAUDE.md"):
+            with self.subTest(directory=directory):
+                self.tearDown()
+                self.setUp()
+                self.serve = as_gh_lists_them
+                changes = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(100)}
+                changes[f"theories/{directory}/Evil.v"] = self.VM["theories/B.v"]
+                head, got, shown, _listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
+                                                                  "No blocking finding.")
+                self.assertSoundness(head, got, shown)
+
     def test_the_rule_needs_the_hold_an_outside_author_and_a_v_file(self):
         """A writer's proof, an outside proof with SOUNDNESS_HOLD not "true", and an outside change of no .v file
         keep the model's verdict, and get no section."""
