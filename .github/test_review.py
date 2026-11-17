@@ -6123,6 +6123,42 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_comment_that_no_answer_or_review_read_gets_an_answer(self):
+        """R1: "When the author of an outside item writes a new comment in its conversation, it answers there within 3
+        hours, except while a cap holds it". A text that the workflow posted after the comment, but whose run read the
+        conversation before the comment was made, did not read it and answers nothing. (1) The answer run of 900
+        started 100 minutes ago and posted its answer, whose marker names 900, 61 minutes ago; mallory wrote 901 62
+        minutes ago, and the run of 901's own event could not sign in. (2) The answer to 900 was held at
+        OUTSIDE_HOURLY_LIMIT; the workflow_run review of the head, which started 100 minutes ago, before 900, posted
+        its review 60 minutes ago. Each comment gets one answer run from the schedule, which its trust job takes."""
+        posted = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                  attempt_job("comment")]
+        answer = {"id": 6, "user": {"login": BOT}, "created_at": ago(61), "updated_at": ago(61),
+                  "body": "<!-- review-answer 900 -->\nThe answer to 900."}
+        with self.subTest(case="posted after the answer run started"):
+            self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED, said(900, 100), said(901, 62), answer])
+            self.ci(ended=300)
+            self.ran(80, "answer #7 for 900 of mallory", made=100, ended=61, jobs=posted)
+            self.ran(81, "answer #7 for 901 by mallory", made=62, ended=61, event="issue_comment",
+                     jobs=[attempt_job("gather"), self.screened("Sign in to Google Cloud")])
+            rc, out, runs = self.started()
+            self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "901")]), out)
+            self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="901")["route"], "screen")
+        with self.subTest(case="held at the limit, then a review that started before it"):
+            self.tearDown()
+            self.setUp()
+            self.origin(50, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+            hold = dict(limit_hold(50, at=ago(85), tries=0, task="answer", comment="900", head=HEAD), id=5)
+            self.item(kind="pr", labels=("review-held",),
+                      comments=[said(900, 90), hold, review_of(HEAD, at=ago(60), id_=1), self.LABELLED])
+            self.ci(ended=110)
+            self.ran(40, f"review {HEAD} by mallory", made=100, ended=60, event="workflow_run", jobs=posted)
+            self.ran(50, "answer #7 for 900 by mallory", made=90, ended=85, event="issue_comment",
+                     jobs=[attempt_job("hold")])
+            rc, out, runs = self.started()
+            self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
+            self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="900")["route"], "screen")
+
     def test_an_outside_issue_with_no_stored_draft_gets_one_draft(self):
         """b1 (R3, D16 (e)): an outside issue whose label comment holds no stored draft, and whose draft run (here its
         issues event's, which could not sign in) ended over an hour ago, gets one draft run. Not when its draft is
