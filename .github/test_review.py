@@ -7015,6 +7015,36 @@ class HeadScheduleTest(Scheduled):
         got = self.dispatched("review", account="mallory")
         self.assertEqual((got["task"], got["route"]), ("review", "screen"))
 
+    def test_the_text_of_a_review_that_names_the_next_head_is_no_review_of_it(self):
+        """R1 and D18: a head has a review in the form of before when a comment of github-actions[bot] that starts
+        with <!-- review --> holds "of commit " and the head's first 12 characters, the review of before the move off
+        pull_request_target, which names no head in a marker. A review of now holds its head's marker, and the model
+        writes its text: an outside author can steer that text to name a commit that they push next. Mallory pushed
+        that head with a merge conflict, so GitHub started no CI run of it; the conflict run gave it the line, and the
+        relabel took the line out when the conflict went away with no push. The head has no review, so at the next run
+        it gets a review run, which its trust job takes: the same as when the older review's text names no commit."""
+        older = review_of(OTHER_HEAD, at=ago(500))
+        for text in ("The next push fixes it.", f"Compare it with the change of commit {HEAD[:12]}."):
+            with self.subTest(text=text):
+                self.tearDown()
+                self.setUp()
+                review = dict(older, body=older["body"] + "\n\n" + text)
+                self.item(kind="pr", labels=(AUTHOR_LABEL,), comments=[review, self.line_label()])
+                self.ran(10, f"conflict #7 at {HEAD}", made=120, jobs=self.conflict_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+                steps = self.commented(self.dispatched("relabel"))
+                self.assertEqual(steps[self.LABEL], "success", self.logs)
+                body = self.label_of()
+                self.assertNotIn("review-conflict-state", body)
+                self.comments(7, review, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                                          "body": body})
+                self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
+                         jobs=[post_job({ScheduleTest.DECIDE: "success"}), attempt_job("comment")])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
+                self.assertEqual(self.dispatched("review", account="mallory")["route"], "screen")
+
     def test_an_answer_that_will_fix_then_a_conflict_that_went_away_with_no_push_waits_on_theorem(self):
         """The review of the head gave a blocking finding, the author's answer said they will make the change, then
         the head got a merge conflict, which went away with no push: the relabel reads the answer's will-fix, and the
