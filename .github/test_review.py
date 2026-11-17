@@ -6132,6 +6132,34 @@ class ScheduleTest(Scheduled):
         self.assertEqual([(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api))
                           if any(a.endswith("/approve") for a in c)], ApproveTest.APPROVED)
 
+    def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
+        """b8 (R10, D16 (a) and (f)): GitHub lists a run that it holds for a person's approval with status completed
+        and conclusion action_required, not with status action_required, and its updated_at is its created_at (read on
+        2026-11-17: run 39977702978 of theorem-labs/rocq-linux-process-semantics, and the held runs of oss-verify,
+        oss-verify-proofs and asan-static, each listed by GET repos/<repo>/actions/runs?status=action_required). A
+        first-time contributor's pull request whose head has such runs, and that no run screened, gets one approve run
+        of that head, for its author: with no run of this workflow that names the head, and with a workflow_run of the
+        held CI run whose trust job GitHub skipped. It gets no catchup, which closes and reopens it (D16 (a): its CI run
+        is held, not completed), and no review."""
+        for case in ("no run of this workflow names the head", "a workflow_run whose trust job was skipped"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.of_heads += [{"id": i, "status": "completed", "conclusion": "action_required",
+                                   "event": "pull_request", "head_sha": HEAD, "path": ".github/workflows/ci.yml",
+                                   "head_branch": BRANCH, "head_repository": {"id": FORK_ID},
+                                   "created_at": ago(300), "updated_at": ago(300)} for i in (61, 62)]
+                self.publish()
+                if case.startswith("a workflow_run"):
+                    self.ran(40, f"review {HEAD} by mallory", made=300, ended=299, event="workflow_run")
+                    self.serve(f"repos/{REPO}/actions/runs/40/jobs", {"jobs": [
+                        {"name": n, "status": "completed", "conclusion": "skipped"}
+                        for n in ("trust", "gather", "screen", "review", "post", "comment", "hold")]})
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+                self.assertEqual(self.patches(), [])
+
     def test_a_held_head_that_a_run_screened_with_a_verdict_since_its_newest_held_run_gets_no_approval(self):
         """b8 (D16 (f)): an approve run of the head after its newest held run, whose screen job passed and whose post
         job did not fail (the screen held it, so no post job ran; or its post job passed): no approve run. A verdict
