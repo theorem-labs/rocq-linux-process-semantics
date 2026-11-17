@@ -130,8 +130,10 @@
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
-#           whose screen passed. It posts no comment and no label, holds no identity token and no model, and its own
-#           GitHub token can only read.
+#           whose screen passed. For an approval, it reads the pull request again with its own token, and when the
+#           head is still the one the screen read, it approves each run that GitHub holds of that head from the pull
+#           request's head repository and branch. It posts no comment and no label, holds no identity token and no
+#           model, and its own GitHub token can only read.
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off, and sets the state label and the label comment (below); for a merge conflict, it posts
 #           the comment that asks the author to resolve it, with the label waits-on-author. It posts the answer, once
@@ -146,10 +148,11 @@
 #           newer run of the same item and task?
 #   rescreen
 #           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
-#           again. It is the only job with actions: write, which it needs to start a run. Its issues and pull-requests:
-#           write let it replace the hold comment of an item whose rescreens reached REVIEW_TRIES without settling, with
-#           one that says that it is not screened again automatically, and give the item waits-on-theorem. It reads the
-#           held items and this workflow's runs, and holds no model.
+#           again. It is the only job whose own token has actions: write, which it needs to start a run, and it uses
+#           it for nothing else. Its issues and pull-requests: write let it replace the hold comment of an item whose
+#           rescreens reached REVIEW_TRIES without settling, with one that says that it is not screened again
+#           automatically, and give the item waits-on-theorem. It reads the held items and this workflow's runs, and
+#           holds no model.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
@@ -783,14 +786,16 @@ jobs:
   # come from the GitHub API, never from the CI run. The pull request's files come from git objects of its head
   # (git diff, git cat-file), never from a checkout, so no attribute, filter or hook of the pull request applies. What
   # .review/ leaves out is listed in omitted.txt. It is kept as one tar file, so that no file name of the pull request
-  # can stop the upload, for a day, and the screen and review jobs take it by its SHA-256.
+  # can stop the upload, for a day, and the screen and review jobs take it by its SHA-256. An approval is gathered
+  # only for its screen: no review follows it.
   gather:
     needs: trust
     if: >-
       github.ref == 'refs/heads/main'
       && (needs.trust.outputs.route == 'review' || needs.trust.outputs.route == 'screen')
       && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
+          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft'
+          || (needs.trust.outputs.task == 'approve' && needs.trust.outputs.route == 'screen'))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read}
@@ -2014,10 +2019,11 @@ jobs:
   # runs reach and which holds the App's key (OSS_VERIFY_APP_PRIVATE_KEY). Each write comes after a step of its own
   # that mints a token for this repository alone: token A, with checks: write and pull-requests: write, for the import
   # check run of a review or a relabel and for the close and reopen of a catch-up; token B, with actions: write alone,
-  # for the approval of a head's held runs, minted only for the task approve when the screen passed. A missing key
-  # fails these steps alone. Its own token can only read (actions: read lists a head's held runs). It holds no identity
-  # token and no model. Its outputs: recorded, true when it recorded the import check run at the head, and decision,
-  # what it decided for that check run. It records no check run yet, so recorded is false.
+  # for the approval of a head's held runs, minted only for the task approve when the screen passed and GitHub holds
+  # runs of the head that the screen read. A missing key fails these steps alone. Its own token can only read
+  # (actions: read lists a head's held runs). It holds no identity token and no model. Its outputs: recorded, true when
+  # it recorded the import check run at the head, and decision, what it decided for that check run. It records no
+  # check run yet, so recorded is false.
   post:
     needs: [trust, gather, screen, review]
     # The review of an outside pull request whose screen passed and whose review succeeded, a relabel, a catch-up, and
@@ -2058,10 +2064,63 @@ jobs:
           repositories: rocq-linux-process-semantics
           permission-checks: write
           permission-pull-requests: write
-      # Token B: for the approval of the head's held runs, only when the screen passed.
+      # The App's writes with token A follow here: the import check run at the head, which sets the outputs recorded
+      # and decision, and the close and reopen of a catch-up.
+
+      # An approval whose screen passed. With this job's own token: the pull request now, and the runs that GitHub
+      # holds of the head that the screen read (status action_required). When the head moved since the trust job read
+      # it, the screen did not read the new head: nothing is approved, and the new head's held runs wait for a run of
+      # their own. Only a run of the event pull_request at that head, from the pull request's head repository and head
+      # branch, is approved, and no other run of the same commit (OSSV-679's decision 7).
+      - name: The held runs of the screened head
+        id: held
+        if: needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ needs.trust.outputs.number }}
+          HEAD: ${{ needs.trust.outputs.head }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the trust job gave no head commit: $HEAD"; exit 1; }
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.head.repo.id // 0) \(.head.ref)"') \
+            || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
+          read -r sha repository branch <<< "$pr"
+          if [ "$sha" != "$HEAD" ]; then
+            echo "::notice::#$NUMBER moved from $HEAD to $sha after the screen. No run is approved."
+            exit 0
+          fi
+          if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
+            echo "::notice::#$NUMBER has no head repository. No run is approved."
+            exit 0
+          fi
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          runs=$(SHA=$HEAD REPOSITORY=$repository BRANCH=$branch gh api --method GET --paginate "repos/$REPO/actions/runs" \
+            -f head_sha="$HEAD" -f status=action_required -F per_page=100 --jq '.workflow_runs[]
+              | select(.status == "action_required" and .event == "pull_request" and .head_sha == $ENV.SHA
+                       and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
+                       and .head_branch == $ENV.BRANCH)
+              | .id') \
+            || { echo "::error::the runs of $HEAD could not be read."; exit 1; }
+          ids=""
+          while read -r id; do
+            [ -n "$id" ] || continue
+            [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::a run id is not a number: $id"; exit 1; }
+            ids="$ids${ids:+ }$id"
+          done <<< "$runs"
+          if [ -z "$ids" ]; then
+            echo "#$NUMBER: GitHub holds no run of $HEAD from its head repository and branch. No run is approved."
+            exit 0
+          fi
+          echo "#$NUMBER: GitHub holds the runs $ids of $HEAD."
+          echo "runs=$ids" >> "$GITHUB_OUTPUT"
+      # Token B: for the approval of the runs that the step before found, only when the screen passed.
       - name: Sign in as the OSS Verify App to approve
         id: approver
-        if: needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+        if: >-
+          needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+          && steps.held.outputs.runs != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
           app-id: 5447700
@@ -2069,9 +2128,29 @@ jobs:
           owner: theorem-labs
           repositories: rocq-linux-process-semantics
           permission-actions: write
-      # The App's writes follow here, each with the token of its step above: the import check run at the head (token
-      # A), which sets the outputs recorded and decision; the close and reopen of a catch-up (token A); the approval
-      # of the head's held runs (token B).
+      # Each of those runs, approved with token B: GitHub then starts it. Every run is tried, and a call that fails
+      # fails this step and the job: the App's write failed, and the schedule takes the head again.
+      - name: Approve the held runs of the screened head
+        if: steps.approver.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.approver.outputs.token }}
+          REPO: ${{ github.repository }}
+          RUNS: ${{ steps.held.outputs.runs }}
+        run: |
+          set -euo pipefail
+          read -r -a ids <<< "$RUNS"
+          (( ${#ids[@]} > 0 )) || { echo "::error::the step before found no run to approve."; exit 1; }
+          failed=0
+          for id in "${ids[@]}"; do
+            [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: $id"; exit 1; }
+            if gh api --method POST "repos/$REPO/actions/runs/$id/approve" > /dev/null; then
+              echo "Approved run $id."
+            else
+              echo "::error::run $id could not be approved."
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
   # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
@@ -2354,10 +2433,12 @@ jobs:
   # <!-- review-held-<kind> <run> <tries> draft -->, so that the draft is tried again as a draft, which posts nothing,
   # and never as a review. Such a hold gives the UTC time when the item is tried again, and no state label: the
   # workflow still works on the item. An answer's hold of that kind leaves the state label as it is: the state of the
-  # item does not wait for the answer. A hold that is not tried again (the screen's, or the last try of a review, an
-  # answer or a draft) gives waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py,
-  # from main's checkout of .github/). A cancelled screen holds nothing, nor a screened review or answer that a newer
-  # run of the same item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts
+  # item does not wait for the answer. An approval has no review, so it is held only at the limit, with the marker
+  # <!-- review-held-limit <run> <tries> approve -->, or by its screen, whose hold says that the checks of the pull
+  # request have not run. A hold that is not tried again (the screen's, or the last try of a review, an answer or a
+  # draft) gives waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py, from
+  # main's checkout of .github/). A cancelled screen holds nothing, nor a screened review or answer that a newer run
+  # of the same item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts
   # with "Sign in" failed in this attempt of the run, in any of its jobs.
   # Such a run judged nothing of the item, so it gets no comment, no label and no try, and the schedule takes the item
   # again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this
@@ -2367,7 +2448,8 @@ jobs:
     if: >-
       !cancelled() && github.ref == 'refs/heads/main'
       && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
+          || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft'
+          || needs.trust.outputs.task == 'approve')
       && (needs.trust.outputs.route == 'limit'
       || (needs.trust.outputs.route == 'screen'
           && (needs.gather.result == 'failure' || needs.screen.result == 'failure'
@@ -2442,13 +2524,15 @@ jobs:
           again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
           again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
           again_other="$again If it is held again, this comment says why."
-          # The work that was held: the review of the item, the answer to the comments of its author, or the draft of
-          # the reply to an issue.
+          # The work that was held: the review of the item, the answer to the comments of its author, the draft of the
+          # reply to an issue, or the approval of a first-time contributor's held runs.
           work="review" work_of="the automated review of it" title="Automated review held."
           if [ "$TASK" = answer ]; then
             work="answer" work_of="the automated answer to the comment of its author" title="Automated answer held."
           elif [ "$TASK" = draft ]; then
             work="draft" work_of="the automated draft of a reply to it" title="Automated reply held."
+          elif [ "$TASK" = approve ]; then
+            work="approval" work_of="the automated approval of its checks" title="Automated approval held."
           fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
@@ -2531,6 +2615,8 @@ jobs:
               what="this pull request"
               [ "$item" = pr ] || what="this issue"
               why="The automated screen held $what, so no automated answer was written. You do not need to do anything."
+            elif [ "$work" = approval ]; then
+              why="The automated screen held this pull request, so its checks have not run. You do not need to do anything."
             elif [ "$item" = pr ]; then
               why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
             else
@@ -2546,6 +2632,8 @@ jobs:
               marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries answer $COMMENT -->"
             elif [ "$work" = draft ]; then
               marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries draft -->"
+            elif [ "$work" = approval ]; then
+              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries approve -->"
             fi
           fi
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
@@ -2582,10 +2670,12 @@ jobs:
   # (.github/review/rules.py, from main's checkout of .github/), replaces its hold comment with one that says that it
   # is not screened again automatically, with no marker, and fails for that run. Before that, each try waits until the
   # newest rescreen since the hold is over an hour old, as the first waits on the hold.
-  # It is the only job of this file with actions: write, which starting a run needs; issues and pull-requests: write
-  # let it set that label and replace that hold comment, and contents: read checks out main's .github/. It holds no
-  # model, and writes nothing but those runs, those labels and those comments. Its cost: one job of a few seconds
-  # every 15 minutes, 96 runs a day on a standard runner, whose minutes GitHub does not bill in a public repository.
+  # It is the only job of this file whose own token has actions: write, which starting a run needs, and it uses that
+  # right only to start runs: it approves no held run (the post job does, with the OSS Verify App's token, and only that
+  # job holds the App's key). Its issues and pull-requests: write let it set that label and replace that hold comment,
+  # and contents: read checks out main's .github/. It holds no model, and writes nothing but those runs, those labels
+  # and those comments. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose
+  # minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.ref == 'refs/heads/main'

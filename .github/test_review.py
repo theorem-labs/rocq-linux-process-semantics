@@ -12,11 +12,12 @@ review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim
 back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so does the soundness rule of
 an outside pull request's proof (.github/review/rules.py soundness), on a pull request that the gather job's step reads
 from git. The draft of the reply to an outside issue goes to a stand-in of Google Cloud's storage on 127.0.0.1 alone,
-and the reply that Sami approved posts byte for byte, once. Each job's condition is evaluated for every task and
-route, to show which jobs run, and that a run by hand off main runs none. The rest checks what each job holds, that
-no job of either workflow holds a right on pull_request, and the settings that keep Claude to the checkout and to the
-pinned binaries. .github/test_screen.py tests the screen
-itself.
+and the reply that Sami approved posts byte for byte, once. The post job's steps approve a first-time contributor's
+held runs against the stand-in gh, with a stand-in token from each of the App's sign-in steps, only when the screen
+passed. Each job's condition is evaluated for every task and route, to show which jobs run, and that a run by hand
+off main runs none. The rest checks what each job holds, that no job of either workflow holds a right on
+pull_request, and the settings that keep Claude to the checkout and to the pinned binaries. .github/test_screen.py
+tests the screen itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -55,6 +56,7 @@ RUN = "https://github.com/acme/model/actions/runs/1"
 HEAD = "ab" * 20            # a pull request's head commit
 OTHER_HEAD = "cd" * 20      # another commit
 FORK_ID = 555               # the id of the head repository of that pull request
+BRANCH = "patch-1"          # its head branch in that repository
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
 MINT_A = "Sign in as the OSS Verify App"
 MINT_B = "Sign in as the OSS Verify App to approve"
@@ -67,7 +69,8 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments, reviews
 # endpoint with no file answers as GitHub's 404 does, and one with a <endpoint>.fail file fails with that file's text,
 # as gh names an HTTP error (a 422, say). <endpoint>.2.json and on are the pages that only --paginate reads.
 # <endpoint>.then.json, when there is one, takes the place of <endpoint>.json after the first read: an answer that
-# changes in between. The file of --input, the request's body, goes to $FAKE_GH/inputs (gh_inputs).
+# changes in between. The file of --input, the request's body, goes to $FAKE_GH/inputs (gh_inputs), and the GH_TOKEN
+# of each call to $FAKE_GH/tokens (gh_tokens).
 # gh pr view <n> and gh issue view <n> answer the --json fields from $FAKE_GH/pr_view_<n>.json or issue_view_<n>.json.
 FAKE_GH = r"""#!/usr/bin/env bash
 if [ "$1" = pr ] || [ "$1" = issue ]; then
@@ -75,6 +78,7 @@ if [ "$1" = pr ] || [ "$1" = issue ]; then
   [ "$2" = view ] || { echo "gh: only api, pr view and issue view are served here: $*" >&2; exit 9; }
   echo "$kind view $number" >> "$FAKE_GH/calls"
   printf '%s\0' "$@" >> "$FAKE_GH/args"; printf '\1' >> "$FAKE_GH/args"
+  printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
   while [ $# -gt 0 ]; do [ "$1" != --json ] || fields=$2; shift; done
   file="$FAKE_GH/${kind}_view_$number.json"
   [ -f "$file" ] || { echo "gh: no $kind $number" >&2; exit 1; }
@@ -97,6 +101,7 @@ done
 endpoint=${endpoint%%\?*}
 echo "$endpoint" >> "$FAKE_GH/calls"
 printf '%s\0' "${all[@]}" >> "$FAKE_GH/args"; printf '\1' >> "$FAKE_GH/args"
+printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
 [ -z "$input" ] || { cat "$input" >> "$FAKE_GH/inputs"; printf '\1' >> "$FAKE_GH/inputs"; }
 file="$FAKE_GH/${endpoint//\//_}.json"
 [ ! -f "${file%.json}.fail" ] || { cat "${file%.json}.fail" >&2; exit 1; }
@@ -259,6 +264,15 @@ def gh_inputs(api):
         return [json.loads(c) for c in f.read().split("\1")[:-1]]
 
 
+def gh_tokens(api):
+    """The GH_TOKEN of each call of the stand-in gh, in the order of gh_calls."""
+    path = os.path.join(api, "tokens")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return f.read().split("\1")[:-1]
+
+
 def writes(api):
     """Each call of the stand-in gh that writes: one whose method is not GET, or one with fields and no method, which
     gh sends as a POST."""
@@ -369,15 +383,17 @@ class Runner(unittest.TestCase):
             self.serve(f"repos/{REPO}/collaborators/{login}/permission", {"permission": permission})
 
     def serve_item(self, number=7, author="mallory", kind="issue", state="open", head=HEAD, mergeable="clean",
-                   draft=False, base="main", merged=False, labels=()):
-        """What the API says of an issue or a pull request: its issue, and for a pull request its pull."""
+                   draft=False, base="main", merged=False, labels=(), branch=BRANCH):
+        """What the API says of an issue or a pull request: its issue, and for a pull request its pull, whose head is
+        head on branch of the head repository FORK_ID."""
         data = {"number": number, "state": state, "user": {"login": author}, "draft": draft,
                 "labels": [{"name": n} for n in labels]}
         if kind == "pr":
             data["pull_request"] = {"url": f"https://api.github.com/repos/{REPO}/pulls/{number}"}
             self.serve(f"repos/{REPO}/pulls/{number}", {
                 "number": number, "state": state, "draft": draft, "merged": merged, "user": {"login": author},
-                "base": {"ref": base}, "head": {"sha": head, "repo": {"id": FORK_ID}}, "mergeable_state": mergeable})
+                "base": {"ref": base}, "head": {"sha": head, "ref": branch, "repo": {"id": FORK_ID}},
+                "mergeable_state": mergeable})
         self.serve(f"repos/{REPO}/issues/{number}", data)
 
     def serve_prs(self, *prs):
@@ -1214,13 +1230,33 @@ class RouteTest(unittest.TestCase):
                 self.assertEqual(self.ran({"task": "conflict", "route": "review", "number": "7", "head": HEAD},
                                           github={"github.event_name": event}), {"comment"})
 
-    def test_the_tasks_whose_jobs_are_not_here_screen_nothing_and_post_nothing(self):
-        """An approval runs no job yet: no screen, no model, no comment, no hold, not even at the limit. A catch-up and
-        a relabel run only the App's job, whose sign-in steps are all it has (HoldingsTest)."""
-        for route in ("screen", "limit"):
-            with self.subTest(route=route):
-                self.assertEqual(self.ran(dict(self.OUTSIDER, task="approve", route=route),
-                                          outputs={"screen": {"verdict": "clean"}}), set())
+    def test_an_approval_is_screened_then_approved_or_held_and_never_reviewed(self):
+        """b8 (R10): an approval takes the outsider's path with no review job and no comment job: the gather and the
+        screen, then the App's job when the screen passed, or the hold job when the screen held it, failed, or could
+        not gather; the hold job alone at the limit. An App's job that failed holds nothing (ApproveTest). A writer's
+        pull request is not screened, so nothing runs for it."""
+        approve = dict(self.OUTSIDER, task="approve", head=HEAD)
+        dispatch = {"github.event_name": "workflow_dispatch"}
+        clean = {"screen": {"verdict": "clean"}}
+        self.assertEqual(self.ran(approve, outputs=clean, github=dispatch), {"gather", "screen", "post"})
+        for result in ("failure", "cancelled"):
+            with self.subTest(post=result):
+                self.assertEqual(self.ran(approve, results={"post": result}, outputs=clean, github=dispatch),
+                                 {"gather", "screen", "post"})
+        for verdict in ("held", "", "CLEAN?"):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(self.ran(approve, outputs={"screen": {"verdict": verdict}}, github=dispatch),
+                                 {"gather", "screen", "hold"})
+        self.assertEqual(self.ran(approve, results={"screen": "failure"}, github=dispatch), {"gather", "screen", "hold"})
+        self.assertEqual(self.ran(approve, results={"screen": "cancelled"}, github=dispatch), {"gather", "screen"})
+        self.assertEqual(self.ran(approve, results={"gather": "failure"}, github=dispatch), {"gather", "hold"})
+        self.assertEqual(self.ran(approve, outputs={"gather": {"kind": "pr", "number": "7", "digest": ""}},
+                                  github=dispatch), {"gather"})
+        self.assertEqual(self.ran(dict(approve, route="limit"), github=dispatch), {"hold"})
+        self.assertEqual(self.ran(dict(approve, route="review", outsider=""), outputs=clean, github=dispatch), set())
+
+    def test_a_catchup_and_a_relabel_run_the_apps_job_alone(self):
+        """No gather, screen, model, comment or hold."""
         for task in ("catchup", "relabel"):
             with self.subTest(task=task):
                 self.assertEqual(self.ran({"task": task, "route": "review", "number": "7", "head": HEAD}), {"post"})
@@ -1543,7 +1579,7 @@ class HoldingsTest(unittest.TestCase):
 
     def test_the_app_signs_in_for_this_repository_alone_and_approves_only_after_a_passed_screen(self):
         """Token A: checks: write and pull-requests: write; token B: actions: write alone, minted only for the task
-        approve when the screen's verdict is clean."""
+        approve when the screen's verdict is clean and the step before it found held runs of the screened head."""
         for name, rights in ((MINT_A, {"permission-checks": "write", "permission-pull-requests": "write"}),
                              (MINT_B, {"permission-actions": "write"})):
             with self.subTest(step=name):
@@ -1554,11 +1590,14 @@ class HoldingsTest(unittest.TestCase):
                                   "private-key": "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}"})
                 self.assertEqual(s, rights)
         b = step("post", MINT_B)["if"]
-        for task, verdict, want in (("approve", "clean", True), ("approve", "held", False), ("approve", "", False),
-                                    ("review", "clean", False), ("catchup", "clean", False)):
-            with self.subTest(task=task, verdict=verdict):
+        for task, verdict, runs, want in (("approve", "clean", "61 62", True), ("approve", "held", "61 62", False),
+                                          ("approve", "", "61 62", False), ("approve", "clean", "", False),
+                                          ("approve", "clean", None, False), ("review", "clean", "61 62", False),
+                                          ("catchup", "clean", "61 62", False)):
+            with self.subTest(task=task, verdict=verdict, runs=runs):
                 self.assertEqual(bool(evaluate(b, {"needs.trust.outputs.task": task,
-                                                   "needs.screen.outputs.verdict": verdict})), want)
+                                                   "needs.screen.outputs.verdict": verdict,
+                                                   "steps.held.outputs.runs": runs})), want)
         a = step("post", MINT_A)["if"]
         for task, want in (("review", True), ("relabel", True), ("catchup", True), ("approve", False)):
             with self.subTest(task=task):
@@ -1667,9 +1706,8 @@ class TakeTest(Runner):
         self.assertFalse(os.path.exists(os.path.join(self.work, ".github")))
 
 
-class HoldTest(Runner):
-    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again; the state
-    label and the label comment that the hold gives; and nothing at all for a run whose sign-in failed."""
+class Holding(Runner):
+    """The hold job's step, run against the stand-in gh: its comment, its labels and the run's summary."""
 
     STEP = "Label it and say that it was held"
     TRIES = int(WF["env"]["REVIEW_TRIES"])
@@ -1742,6 +1780,24 @@ class HoldTest(Runner):
         self.assertEqual(method, "POST")
         self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {step}\n"), body)
         self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+
+    # A screened item's run, its trust job's outputs, and the jobs of its attempt before the screen.
+    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7"}
+
+    def gathered(self):
+        return [attempt_job("trust"), attempt_job("gather")]
+
+    def assertHeldNothing(self, rc, out, failed):
+        """No hold comment, no label and no try: the step writes nothing to GitHub, and the run's summary names the
+        step and says that the schedule takes the item again."""
+        self.assertEqual((rc, writes(self.api)), (0, []), out)
+        self.assertIn(f'the step "{failed}" failed in this run', self.summary())
+        self.assertIn("The schedule takes the item again.", self.summary())
+
+
+class HoldTest(Holding):
+    """The hold job's comment: fixed words, which say nothing of why, and the marker of a hold tried again; the state
+    label and the label comment that the hold gives; and nothing at all for a run whose sign-in failed."""
 
     def test_a_held_item_is_labelled_and_told_in_fixed_words(self):
         """b1 and b8: the screen's hold of a pull request or an issue names no maintainer and asks nobody to start a
@@ -1929,19 +1985,6 @@ class HoldTest(Runner):
                                               (102, f"review #123 at {HEAD} of mallory", "success", "workflow_dispatch"),
                                               (103, "review #1234")])
         self.assertIn("<!-- review-held-transient 50 1 -->", body)
-
-    # A screened item's run, its trust job's outputs, and the jobs of its attempt before the screen.
-    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7"}
-
-    def gathered(self):
-        return [attempt_job("trust"), attempt_job("gather")]
-
-    def assertHeldNothing(self, rc, out, failed):
-        """No hold comment, no label and no try: the step writes nothing to GitHub, and the run's summary names the
-        step and says that the schedule takes the item again."""
-        self.assertEqual((rc, writes(self.api)), (0, []), out)
-        self.assertIn(f'the step "{failed}" failed in this run', self.summary())
-        self.assertIn("The schedule takes the item again.", self.summary())
 
     def test_a_screen_that_could_not_sign_in_gives_no_verdict_and_holds_nothing(self):
         """R10 (b8): a screen whose sign-in to Google Cloud, or to Anthropic and Azure (screen.py --sign-in), fails
@@ -2179,6 +2222,200 @@ class HoldTest(Runner):
                       "again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
         self.assertWaitsOnSami("Sami reads the runs and starts the work again.")
+
+
+class ApproveTest(Holding):
+    """b8 (R10): a first-time contributor's pull request whose runs GitHub holds (status action_required), taken by a
+    run by hand on main with its number: the trust job's step, the jobs that run (each job's if), a stand-in verdict
+    of the screen, and the post job's own steps against the stand-in gh, with a stand-in token from each sign-in step.
+    When the screen passes, the OSS Verify App approves the held runs of the screened head with token B. When it does
+    not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
+    request."""
+
+    # This run's own token (github.token), and the token that each of the App's sign-in steps gives.
+    RUN_TOKEN = "token-of-this-run"
+    TOKENS = {MINT_A: "token-A", MINT_B: "token-B"}
+    HELD = "The held runs of the screened head"
+    APPROVE = "Approve the held runs of the screened head"
+    DISPATCH = {"github.event_name": "workflow_dispatch"}
+    # The runs of the repository that GitHub lists for the head: (id, status, event, head commit, head repository id,
+    # head branch). Only 61 and 62 are held runs of pull request #7's head: 63 is of another head, 64 of another head
+    # repository with the same commit, 65 of another branch of the same repository, 66 of another event, and GitHub
+    # does not hold 67.
+    RUNS = [(61, "action_required", "pull_request", HEAD, FORK_ID, BRANCH),
+            (62, "action_required", "pull_request", HEAD, FORK_ID, BRANCH),
+            (63, "action_required", "pull_request", OTHER_HEAD, FORK_ID, BRANCH),
+            (64, "action_required", "pull_request", HEAD, FORK_ID + 1, BRANCH),
+            (65, "action_required", "pull_request", HEAD, FORK_ID, "patch-2"),
+            (66, "action_required", "push", HEAD, FORK_ID, BRANCH),
+            (67, "completed", "pull_request", HEAD, FORK_ID, BRANCH)]
+    APPROVED = [("token-B", ["--method", "POST", f"repos/{REPO}/actions/runs/{run}/approve"]) for run in (61, 62)]
+
+    def setUp(self):
+        super().setUp()
+        self.permissions(mallory="read")
+        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        self.logs = []
+
+    def runs(self, *runs):
+        """The runs of the repository as GitHub lists them (RUNS), and GitHub's answer to the approval of each."""
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
+            {"id": i, "status": s, "event": e, "head_sha": h, "head_branch": b, "head_repository": {"id": r}}
+            for i, s, e, h, r, b in runs]})
+        for r in runs:
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/approve", {})
+
+    def by_hand(self, task="", want=("approve", "screen")):
+        """The outputs of the trust job of alice's run by hand on main for #7, mallory's pull request, with the number
+        alone, or with task; want is the task and the route that it must give."""
+        rc, out, got = self.run_trust("workflow_dispatch", actor="alice", task=task)
+        self.assertEqual((rc, got.get("task"), got.get("route"), got.get("head")), (0, *want, HEAD), out)
+        return got
+
+    def jobs(self, trust, **kwargs):
+        """The jobs that run after trust, with the screen's verdict and the results in kwargs (run_graph)."""
+        return {n for n, r in run_graph(trust, github=self.DISPATCH, **kwargs).items() if r != "skipped"}
+
+    def clear(self):
+        """Forgets the calls of the stand-in gh so far."""
+        for name in ("calls", "args", "inputs", "tokens"):
+            if os.path.exists(os.path.join(self.api, name)):
+                os.remove(os.path.join(self.api, name))
+
+    def post(self, trust, verdict, mint=True):
+        """The post job's steps after the trust job's outputs trust and a screen whose verdict is verdict, as GitHub
+        runs them: each step whose if holds, in order, and none after a step that failed (GitHub's implicit
+        success()). A sign-in step gives its token in TOKENS, or fails when mint is False. Each other step runs against
+        the stand-in gh, with its env as GitHub fills it in. The outcome of each step, by its name."""
+        self.clear()
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.screen.result": "success",
+                    "needs.screen.outputs.verdict": verdict, "github.repository": REPO, "github.token": self.RUN_TOKEN})
+        outcomes, failed = {}, False
+        for s in JOBS["post"]["steps"]:
+            self.assertIsNone(STATUS_FUNCTIONS.search(s.get("if", "")), s["name"])
+            if failed or ("if" in s and not evaluate(s["if"], ctx)):
+                outcome = "skipped"
+            elif "uses" in s:
+                self.assertEqual(s["uses"], APP_TOKEN)
+                outcome = "success" if mint else "failure"
+                if mint:
+                    ctx[f"steps.{s['id']}.outputs.token"] = self.TOKENS[s["name"]]
+            else:
+                env = filled(dict(JOBS["post"].get("env", {}), **s.get("env", {})), ctx)
+                rc, out, got = self.run_script(s["run"], **dict({"GH_TOKEN": ""}, **env))
+                self.logs.append(out)
+                outcome = "success" if rc == 0 else "failure"
+                ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
+            if "id" in s:
+                ctx[f"steps.{s['id']}.outcome"] = outcome
+            failed = failed or outcome == "failure"
+            outcomes[s["name"]] = outcome
+        return outcomes
+
+    def approvals(self):
+        """Each call of the stand-in gh that approves a run, in order, with its GH_TOKEN: (token, call)."""
+        return [(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if any(a.endswith("/approve") for a in c)]
+
+    def test_when_the_screen_passes_each_held_run_of_the_screened_head_is_approved_with_token_b(self):
+        """A run by hand with the number alone, on a pull request whose head has held runs, gets the task approve: the
+        gather and the screen, and when the screen passes, the post job. That job reads the pull request and the runs
+        with this run's own token, mints token B, and approves once, with token B and never with this run's token,
+        each held run of the event pull_request at the screened head from the pull request's head repository and
+        branch: no run of another head, head repository, branch or event, and no run that GitHub does not hold. An
+        approval that GitHub refuses fails the job, after the job tried every run."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}}), {"trust", "gather", "screen", "post"})
+        steps = self.post(trust, "clean")
+        self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
+        self.assertNotIn("failure", steps.values())
+        self.assertEqual(self.approvals(), self.APPROVED)
+        self.assertEqual(writes(self.api), [c for _t, c in self.APPROVED])
+        self.assertEqual({t for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if c not in writes(self.api)},
+                         {self.RUN_TOKEN})
+        self.refuse(f"repos/{REPO}/actions/runs/61/approve", 403, "Resource not accessible by integration")
+        steps = self.post(trust, "clean")
+        self.assertEqual(steps[self.APPROVE], "failure", self.logs)
+        self.assertEqual(self.approvals(), self.APPROVED)
+
+    def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
+        """No post job runs, and token B's step would not run even with held runs found: no approval. The hold job
+        posts D21's text, which names no maintainer, labels the pull request review-held, and gives it
+        waits-on-theorem, whose label comment names Sami's step."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        for verdict in ("held", ""):
+            with self.subTest(verdict=verdict):
+                self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": verdict}}),
+                                 {"trust", "gather", "screen", "hold"})
+                self.assertFalse(evaluate(step("post", MINT_B)["if"], {
+                    "needs.trust.outputs.task": "approve", "needs.screen.outputs.verdict": verdict,
+                    "steps.held.outputs.runs": "61 62"}))
+                steps = self.post(trust, verdict)
+                self.assertEqual((steps[MINT_B], steps[self.APPROVE]), ("skipped", "skipped"))
+                self.assertEqual(writes(self.api), [])
+        self.clear()
+        calls, _post, body = self.hold("screen", task="approve", jobs=[
+            attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory")])
+        self.assertEqual(body, "<!-- review-held -->\n**Automated approval held.**\n\nThe automated screen held this "
+                               "pull request, so its checks have not run. You do not need to do anything.")
+        self.assertNotIn("maintainer", body.lower())
+        self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
+                       "--jq", ".[].name"], calls)
+        self.assertWaitsOnSami("Sami reads the item and starts its review or its checks by hand.")
+        self.assertEqual(self.approvals(), [])
+
+    def test_a_pull_request_whose_runs_are_not_held_gets_no_approval(self):
+        """Held runs of another head only, or runs that GitHub does not hold: a run by hand with the number alone is a
+        review, which runs no post job. A run by hand that asks for the task approve is screened, and when the screen
+        passes, its post job finds no held run of the head: it mints no token B and approves nothing."""
+        self.runs(*[r for r in self.RUNS if r[0] in (63, 67)])
+        trust = self.by_hand(want=("review", "review"))
+        self.assertNotIn("post", self.jobs(trust))
+        trust = self.by_hand(task="approve")
+        self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}}), {"trust", "gather", "screen", "post"})
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]), ("success", "skipped", "skipped"))
+        self.assertEqual(writes(self.api), [])
+
+    def test_a_head_that_moved_after_the_screen_gets_no_approval(self):
+        """The author pushed after the trust job read the head, and GitHub holds the runs of both heads: the post job
+        reads the pull request again, finds a head that the screen did not read, mints no token B and approves
+        nothing. The new head waits for a run of its own."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        self.serve_item(7, "mallory", kind="pr", head=OTHER_HEAD)
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]), ("success", "skipped", "skipped"))
+        self.assertEqual(writes(self.api), [])
+
+    def test_a_token_b_that_cannot_be_minted_holds_nothing_and_labels_nothing(self):
+        """D19: until the environment post holds the App's key, token B's step fails. The post job fails there and
+        approves nothing, and neither the hold job nor the comment job runs: no hold comment and no label. A hold job
+        that reads this attempt's jobs with that failed step holds nothing either, and says that the schedule takes
+        the item again."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        steps = self.post(trust, "clean", mint=False)
+        self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]), ("success", "failure", "skipped"))
+        self.assertEqual(writes(self.api), [])
+        self.assertEqual(self.jobs(trust, results={"post": "failure"}, outputs={"screen": {"verdict": "clean"}}),
+                         {"trust", "gather", "screen", "post"})
+        self.clear()
+        rc, out, _, _ = self.run_hold("screen", task="approve", jobs=[
+            attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+            attempt_job("post", MINT_B)])
+        self.assertHeldNothing(rc, out, MINT_B)
+
+    def test_an_approval_at_the_limit_is_held_with_its_task(self):
+        """An approval of an account at OUTSIDE_HOURLY_LIMIT is held with no screen. Its marker names the task
+        approve, so that it is tried again as an approval and never as a review, and the workflow still works on the
+        pull request: no state label."""
+        _calls, _post, body = self.hold("limit", task="approve", tries="0")
+        self.assertTrue(body.startswith("<!-- review-held -->\n**Automated approval held.**\n\n"), body)
+        self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 approve -->"), body)
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
 
 class PostLabelTest(Runner):
