@@ -8052,6 +8052,94 @@ class ImportCheckTest(ReaderRunner):
         self.assertMarker(body, self.LPS)
         self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
 
+    def test_a_variable_that_appears_after_the_post_job_decided_leaves_no_head_outside_its_paths_unlabelled(self):
+        """b10 (R12): "the value each decision rested on is recorded with the head it judged", and "a check run
+        recorded before the variable does not keep a head outside import_paths unlabelled". The post job and the
+        comment job each read REPO_PAIRS_IMPORT_PATHS when they start, so the variable can appear between the two. The
+        review of mallory's pull request, which changes only reports/corpus-replay.md, passed. Its post job reads no
+        variable and records the check run. Then the variable appears with the pair's import_paths, which do not take
+        that path, and the comment job reads it. The item has the label comment of an earlier head. The head must get
+        waits-on-theorem with the step of a copy by hand: from this run, or from the relabel that the next scheduled
+        run starts."""
+        paths = ["reports/corpus-replay.md"]
+        review = review_of(HEAD)
+        earlier = {"id": 40, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                   "body": rules.label_comment("decide", markers=[rules.import_marker(OTHER_HEAD, None)])}
+        self.serve(f"repos/{REPO}/pulls/7/files", [{"filename": p, "previous_filename": None} for p in paths])
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": len(paths)})
+        self.serve(f"repos/{REPO}/issues/7/comments", [review, earlier])
+        self.serve(f"repos/{REPO}/pulls/7/reviews", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}, {"name": THEOREM_LABEL}])
+        # The post job of the review, which reads no variable.
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in self.REVIEWED.items()}
+        ctx.update({"github.event_name": "workflow_run", "github.ref": "refs/heads/main", "github.repository": REPO,
+                    "github.token": self.RUN_TOKEN, "vars.REPO_PAIRS_IMPORT_PATHS": "",
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success",
+                    "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                    "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean",
+                    "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                    "needs.review.outputs.verdict": "pass", "needs.review.outputs.will_fix": "false",
+                    "needs.review.outputs.fix_stop": "false"})
+        self.forget()
+        steps = run_post(self, ctx, self.TOKENS)
+        self.assertNotIn("failure", steps.values(), self.logs)
+        (check,) = gh_inputs(self.api)
+        self.assertMarker(check["output"]["text"], None)
+        # The comment job's label step, which reads the variable that appeared after the post job read it.
+        ctx.update({"needs.post.result": "success",
+                    **{f"needs.post.outputs.{k}": v for k, v in filled(JOBS["post"]["outputs"], ctx).items()},
+                    "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS})
+        s = step("comment", self.LABEL)
+        env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+        rc, out, _ = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+        self.assertEqual(rc, 0, out)
+
+        def labelled(have):
+            """The state labels of #7 after the writes of the stand-in gh, from have before them."""
+            for sign, name in state_labels(self.api):
+                have = have | {name} if sign == "+" else have - {name}
+            return have
+        labels = labelled({THEOREM_LABEL})
+        body = ([earlier["body"]] + [b for _m, _e, b in label_comments(self.api)])[-1]
+        copy = f"<!-- review-label -->\n**Next step:** {self.COPY}\n"
+        if not (labels == {THEOREM_LABEL} and body.startswith(copy)):
+            # Not at once: the next scheduled run, with the variable set, must start a relabel of the head.
+            comments = [review, dict(earlier, updated_at="2026-11-02T10:06:00Z", body=body)]
+            self.permissions(mallory="read")
+            self.serve_prs((7, "mallory", HEAD))
+            for endpoint, data in (
+                    ("issues", [{"number": 7, "state": "open", "user": {"login": "mallory"}, "created_at": OLD,
+                                 "labels": [{"name": n} for n in sorted(labels)], "pull_request": {}}]),
+                    ("actions/workflows/review.yml/runs", {"workflow_runs": []}),
+                    ("actions/runs", {"workflow_runs": []}), ("actions/workflows/review.yml/dispatches", {}),
+                    ("issues/7/comments", comments), ("pulls/7/comments", []),
+                    ("pulls/7", {"number": 7, "state": "open", "merged": False,
+                                 "head": {"sha": HEAD, "repo": {"id": FORK_ID}}, "base": {"ref": "main"},
+                                 "mergeable": True, "mergeable_state": "clean"}),
+                    (f"commits/{HEAD}/check-runs",
+                     {"check_runs": [dict(check, app={"id": 5447700}, completed_at="2026-11-02T10:05:00Z")]})):
+                self.serve(f"repos/{REPO}/{endpoint}", data)
+            self.serve("graphql", closed_pulls())
+            self.checkout()
+            self.forget()
+            rc, out, runs = schedule(self, variable=self.LPS)
+            self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]),
+                             f"#7 has the state labels {sorted(labels)} and the label comment {body!r}, and the next "
+                             f"scheduled run starts no relabel of its head:\n{out}")
+            self.serve_item(7, "mallory", kind="pr", head=HEAD)
+            rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="relabel", head=HEAD)
+            self.assertEqual((rc, trust.get("task"), trust.get("outsider")), (0, "relabel", "mallory"), out)
+            relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+            got = self.judge(paths, value=self.LPS, trust=relabel, event="workflow_dispatch", comments=comments,
+                             labels=("review-held", *sorted(labels)))
+            self.assertNotRecorded(got, "outside")
+            labels = labelled(labels)
+            body = ([body] + got["comments"])[-1]
+        self.assertEqual(labels, {THEOREM_LABEL}, body)
+        self.assertTrue(body.startswith(copy), body)
+        self.assertIn(self.NOT_TAKEN, body)
+        self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+
     def test_a_relabel_applies_the_decision_again_to_its_head_with_no_model(self):
         """A relabel by hand of mallory's pull request: the trust job gives the outsider, no job runs a model, and the
         post job takes the verdict from the marker of the review comment that names the head. A pass records the check
