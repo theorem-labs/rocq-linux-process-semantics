@@ -4338,6 +4338,24 @@ class DraftReplyTest(ReaderRunner):
             self.assertEqual([s for s in JOBS[name]["steps"] if "artifact" in s.get("uses", "")
                               and not s["uses"].startswith("actions/download-artifact@")], [], name)
 
+    def test_a_draft_is_an_artifact_of_its_run_and_no_step_of_a_draft_or_a_reply_signs_in_to_google(self):
+        """b1 (R3, spec version 49, Verification version 40): the job review uploads the draft of an outside issue, or
+        the refused draft with the fresh reader's reason, as the artifact issue-draft-<issue> of its run
+        (dispatch://INFRA-3395/ask/5d55f3cb-5359-4b52-af6e-85231a37ccf7: no private draft store). No step of the task
+        draft or reply signs in to Google, whatever the event, and the reply reads nothing from a store."""
+        for task in ("draft", "reply"):
+            for event in ("issues", "workflow_dispatch"):
+                ctx = {"needs.trust.outputs.task": task, "github.event_name": event, "github.ref": "refs/heads/main",
+                       "needs.trust.outputs.number": "7", "needs.gather.outputs.number": "7"}
+                running = [s for s in JOBS["review"]["steps"] if "if" not in s or evaluate(s["if"], ctx)]
+                with self.subTest(task=task, event=event):
+                    self.assertEqual([s.get("name") or s["uses"] for s in running
+                                      if s.get("uses", "").startswith("google-github-actions/auth@")
+                                      or (s.get("name") or "").startswith("Sign in to Google")], [])
+                    uploads = [interpolate(str((s.get("with") or {}).get("name", "")), ctx) for s in running
+                               if s.get("uses", "").startswith("actions/upload-artifact@")]
+                    self.assertEqual("issue-draft-7" in uploads, task == "draft", uploads)
+
     def test_a_new_outside_issue_stores_a_draft_and_posts_nothing_but_its_label_comment(self):
         """b1 and b6 (4) (R3, R9): a new issue of an outside author gets the task draft and the outsider's path. The
         review job signs in before the model as the draft store's writer, the provider and the account of
