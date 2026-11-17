@@ -4,6 +4,7 @@ labels").
 
     python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py make-label <name>
+    python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
@@ -19,6 +20,21 @@ gets none. GH_TOKEN and REPO come from the job's environment, as for gh in the w
 
 make-label: makes the label <name> of LABELS with its colour and description. When it is there (HTTP 422), it sets the
 description. A failure only warns: adding a label that does not exist makes it, with no description.
+
+soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
+model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
+on stock Rocq, as the checks that the import's copy must pass do. So a pass of the checks does not show a proof sound.
+The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the gather job's outside,
+is not false) that adds, changes or deletes a .v file (changed_proofs). Then <output.json>, the review's output
+{comment, verdict, will_fix, items}, gets the verdict person whatever the model gave, and QUESTION when its list has
+no question on soundness (forced). <section> gets the fixed section on soundness, which trim.py puts after the trimmed
+text, where the reader never sees it: it lists, as facts for Sami, each line of the changed .v files at the head that
+uses one of USES, an array literal or make of the array module (uses). None of them is a fail: honest proofs use the
+same constructs. A proof with no such line gets the section too: a proof reaches the VM through a tactic such as lia,
+and a primitive array through make with no array literal, so a search of the text cannot rule a forgery out. The
+section lists at most LISTED lines in at most LISTED_CHARACTERS characters, and says how many more there are. <all>
+gets the section with every line, for the run's summary. When the rule does not hold, <output.json> stays as it is
+and the two files are empty.
 
 The standard library of Python 3 alone.
 """
@@ -333,6 +349,165 @@ def parse(args):
     return facts, markers, head
 
 
+# --- the soundness rule (R8) --------------------------------------------------------------------------------------
+# changed_proofs, uses, code, section and the constants from USES to LISTED are copied from
+# theorem-labs/oss-verify-proofs-internal .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its
+# checks are its CI lanes on stock Rocq, not oft check; .review/ is the one that this file's gather job writes, which
+# names a deleted file in omitted.txt and in pr.json; code keeps a path of any form in one code span, because trim.py
+# does not make the section inert; and the section names Sami. The rule itself (soundness, forced) is this file's own.
+
+# Each construct of "Soundness of a Rocq proof" that a line can use: its name in the section, and its pattern.
+USES = (
+    ("vm_compute", re.compile(r"\bvm_compute\b")),
+    ("vm_cast_no_check", re.compile(r"\bvm_cast_no_check\b")),
+    ("native_compute", re.compile(r"\bnative_compute\b")),
+    ("native_cast_no_check", re.compile(r"\bnative_cast_no_check\b")),
+    ("<:", re.compile(r"(?<!<)<:")),
+    ("<<:", re.compile(r"<<:")),
+    ("PArray", re.compile(r"\bPArray\b")),
+    ("PrimArray", re.compile(r"\bPrimArray\b")),
+    # The primitives of the array type, which a file can register itself with no PArray (Primitive array := ...).
+    ("#array_", re.compile(r"#array_\w*")),
+)
+# An array literal, [| a; b | default |], which can span lines: the elements and the default hold no |, [ or ]. An
+# intro pattern such as [|n IH], [|[|]] or [|destruct n as [|]] is none.
+LITERAL = re.compile(r"\[\|[^|\[\]]*\|[^|\[\]]*\|\]")
+# make of the array module: PArray.make, or make in a file that names the array module or its primitives.
+MAKE = re.compile(r"\bmake\b")
+ARRAY_MODULE = re.compile(r"\bPArray\b|\bPrimArray\b|#array_")
+# The most lines that the section of the comment lists, and the most characters of its list, so that the comment
+# stays under GitHub's limit whatever the paths are; the section in the run's summary lists them all.
+LISTED = 100
+LISTED_CHARACTERS = 10_000
+# The issues of stock Rocq's three public proofs of False. The section gives each in a code span: GitHub links none of
+# them, and so adds no mention of each review to these issues of rocq-prover/rocq.
+ISSUES = ("rocq-prover/rocq#22651", "rocq-prover/rocq#22760", "rocq-prover/rocq#22772")
+# A line of omitted.txt, as the gather job writes it, for a changed file that .review/head/ does not hold.
+NOT_AT_HEAD = re.compile(r"(.+): (?:deleted|not a regular file \(mode [0-7]+\))")
+# A question on soundness in the review's list, and the question that the rule adds when the list has none.
+ON_SOUNDNESS = re.compile(r"(?i)sound")
+QUESTION = {"kind": "question", "ref": None, "optional": False,
+            "text": "Are the proofs sound after the changes to the `.v` files? A pass of the CI lanes on stock Rocq "
+                    "does not show it."}
+
+
+def head_proofs(review):
+    """The .v files under <review>/head/, which holds each file that the pull request adds or changes as its head has
+    it, as paths of the pull request, in order."""
+    head = os.path.join(review, "head")
+    found = []
+    for root, _dirs, files in os.walk(head):
+        for name in files:
+            if name.endswith(".v"):
+                found.append(os.path.relpath(os.path.join(root, name), head).replace(os.sep, "/"))
+    return sorted(found)
+
+
+def changed_proofs(review):
+    """The .v files that the pull request adds, changes or deletes, as its paths, in order: each one under
+    <review>/head/, each one that omitted.txt names as deleted or as not a regular file, and each one of pr.json's
+    files. An issue's .review/ has none."""
+    found = set(head_proofs(review))
+    path = os.path.join(review, "omitted.txt")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f.read().split("\n"):
+                m = NOT_AT_HEAD.fullmatch(line)
+                if m and m.group(1).endswith(".v"):
+                    found.add(m.group(1))
+    path = os.path.join(review, "pr.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            files = json.load(f).get("files") or []
+        found.update(f["path"] for f in files
+                     if isinstance(f, dict) and isinstance(f.get("path"), str) and f["path"].endswith(".v"))
+    return sorted(found)
+
+
+def uses(review):
+    """[(path, line, [construct, ...])] of each line of the .v files under <review>/head/ that uses a construct of
+    USES, an array literal or make of the array module, in the order of the files and their lines. A deleted file has
+    no line."""
+    found = []
+    for path in head_proofs(review):
+        with open(os.path.join(review, "head", path), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        lines = text.split("\n")
+        at = {}
+        for n, line in enumerate(lines, 1):
+            for name, pattern in USES:
+                if pattern.search(line):
+                    at.setdefault(n, []).append(name)
+        for m in LITERAL.finditer(text):
+            at.setdefault(text.count("\n", 0, m.start()) + 1, []).append("[| |]")
+        array_module = bool(ARRAY_MODULE.search(text))
+        for n, line in enumerate(lines, 1):
+            if MAKE.search(line) and (array_module or re.search(r"\bPArray\.make\b", line)):
+                at.setdefault(n, []).append("make")
+        found += [(path, n, names) for n, names in sorted(at.items())]
+    return found
+
+
+def code(text):
+    """text as one Markdown code span on one line, whatever it holds: a path of a pull request can hold backticks and
+    line breaks. Each control character shows as \\x and its two hex digits, and the backticks of the span outnumber
+    each run of backticks in text. GitHub shows no mention, reference, link or HTML in a code span."""
+    text = re.sub(r"[\x00-\x1f\x7f]", lambda m: f"\\x{ord(m.group(0)):02x}", text)
+    ticks = "`" * (max((len(r) for r in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
+
+
+def section(found, listed=LISTED, characters=LISTED_CHARACTERS):
+    """The fixed section on soundness, with the lines that found holds (uses): at most listed lines, in at most
+    characters characters, and then a line that says how many more there are."""
+    issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
+    head = ("**Soundness of the proof.** This pull request adds, changes or deletes a Rocq proof (a `.v` file). The CI "
+            "lanes of this repository check the proofs on stock Rocq. Stock Rocq accepts three public proofs of "
+            f"`False`: {issues}. So a pass of these lanes does not show that the proof is sound. The soundness of the "
+            "proof is a question for Sami. You do not need to do anything for this point.")
+    what = "the VM, the native compiler, a cast with no check or a primitive array"
+    searched = "The workflow searched the text of the `.v` files that this pull request adds or changes."
+    forgery = ("A text search cannot show that a proof is not forged. For example, a proof can use the VM through a "
+               "tactic such as `lia`, with no line that names the VM.")
+    if not found:
+        return f"{head}\n\n{searched} It found no use of {what}. {forgery}"
+    lines, size = [], 0
+    for path, n, names in found:
+        line = f"- {code(f'{path}:{n}')}: {', '.join(code(name) for name in names)}"
+        if len(lines) == listed or size + len(line) > characters:
+            break
+        lines.append(line)
+        size += len(line) + 1
+    more = len(found) - len(lines)
+    if more:
+        lines.append(f"- {more} more {'line uses' if more == 1 else 'lines use'} these constructs. The summary of the "
+                     "workflow run lists all lines.")
+    return (f"{head}\n\n{searched} It found these uses of {what}. The uses are facts for Sami, not failures. Honest "
+            f"proofs use the same constructs. {forgery}\n\n" + "\n".join(lines))
+
+
+def forced(output):
+    """The review's output after the soundness rule: the verdict person, whatever the model gave, and QUESTION at the
+    end of the list when the list has no question on soundness that is not optional."""
+    items = list(output["items"])
+    if not any(isinstance(i, dict) and i.get("kind") == "question" and not i.get("optional")
+               and ON_SOUNDNESS.search(i.get("text") or "") for i in items):
+        items.append(dict(QUESTION))
+    return dict(output, verdict="person", items=items)
+
+
+def soundness(review, output, hold, outside):
+    """(output, section, all): the review's output after the soundness rule, the section of the comment, and the
+    section with every line for the run's summary. The rule holds while hold is true, for an outside pull request
+    (outside is not false) that adds, changes or deletes a .v file. When it does not hold: output as it is, and no
+    section."""
+    if hold != "true" or outside == "false" or not changed_proofs(review):
+        return output, "", ""
+    found = uses(review)
+    return forced(output), section(found), section(found, len(found), sys.maxsize)
+
+
 def main(argv):
     try:
         if len(argv) == 2 and argv[0] == "make-label" and argv[1] in LABELS:
@@ -343,6 +518,20 @@ def main(argv):
             state = label_state(**facts)
             label_comment(state, "", markers, head)
             apply(argv[1], state, markers, head)
+            return 0
+        if len(argv) == 7 and argv[0] == "soundness":
+            review, path, hold, outside, section_path, all_path = argv[1:]
+            with open(path, encoding="utf-8") as f:
+                output = json.load(f)
+            output, text, whole = soundness(review, output, hold, outside)
+            if text:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(output, f, ensure_ascii=False)
+            for name, part in ((section_path, text), (all_path, whole)):
+                with open(name, "w", encoding="utf-8") as f:
+                    f.write(part + "\n" if part else "")
+            print("The soundness rule holds: the verdict is person, and the comment gets the section on soundness."
+                  if text else "The soundness rule does not hold: the verdict is the review's own.")
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)

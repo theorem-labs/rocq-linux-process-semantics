@@ -86,8 +86,8 @@
 #           verdict. SCREEN_CHECKS names the checks that run. Its GitHub token can only read, and no key is stored.
 #           The checks get the text as data, and each answers a word; none can act on it. The screen reads up to
 #           400,000 characters of an item and holds a longer one unread. Claude reads the text in pieces of at most
-#           150,000 characters. A check that has not answered after 600 seconds holds the item. Its outputs are the
-#           verdict and the names of the checks that ran.
+#           150,000 characters. A check that has not answered after 600 seconds holds the item. Its one output is the
+#           verdict.
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment, its verdict and the list of what it asks (.github/review.md). It holds an identity
 #           token, which Anthropic exchanges for a short-lived token that can call Claude and nothing else; no key is
@@ -97,7 +97,9 @@
 #           in to Anthropic and drops the token, so that a run the rule does not admit fails there, before the model.
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shorter text left out,
-#           and the whole review in a collapsed block.
+#           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
+#           to the review of an outside pull request that adds, changes or deletes a .v file, and adds the section on
+#           soundness after the shorter text (.github/review/rules.py soundness).
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -108,10 +110,10 @@
 #           the comment that asks the author to resolve it, with the label waits-on-author. It uses this run's GitHub
 #           token, so none of its comments and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in a comment, and sets the state label and the
-#           label comment. It holds no model, and has no screen's reason to read: the screen job's outputs are its
-#           verdict and the names of the checks that ran. It reads this run's jobs and this workflow's runs: did a
-#           step that signs in fail (then it holds nothing, and the schedule takes the item again), was the review
-#           stopped at the cap, or cancelled by a newer run of the same item and task?
+#           label comment. It holds no model, and has no screen's reason to read: the screen job's one output is its
+#           verdict. It reads this run's jobs and this workflow's runs: did a step that signs in fail (then it holds
+#           nothing, and the schedule takes the item again), was the review stopped at the cap, or cancelled by a
+#           newer run of the same item and task?
 #   rescreen
 #           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
 #           again. It is the only job with actions: write, which it needs to start a run. Its issues and pull-requests:
@@ -255,6 +257,15 @@ env:
   # It is also the most rescreens of a held item, since its hold, that may end with neither a new hold nor a posted
   # review (a run that failed on a GitHub read, say) before the rescreen job leaves it to a person.
   REVIEW_TRIES: "3"
+  # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
+  # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
+  # in theorem-labs/rocq-linux-process-semantics-internal, run stock Rocq, as this repository's CI lanes do. While this
+  # is "true", code gives the review of an outside pull request that adds, changes or deletes a .v file the verdict
+  # person and a section on soundness, whatever the model wrote (.github/review/rules.py soundness). The hold lasts
+  # until those checks run a Rocq with the fixes for the three issues: only then set another value. Another value also
+  # ends R12's Markdown-only rule: while the hold lasts, the post job records the import's check run only for a pull
+  # request whose changed files are all Markdown files.
+  SOUNDNESS_HOLD: "true"
 
 jobs:
   # The task and the route of a run (the top of this file). Nothing runs in a fork of this repository, nor for a run by
@@ -748,7 +759,7 @@ jobs:
       number: ${{ steps.what.outputs.number }}
       digest: ${{ steps.keep.outputs.digest }}
       # true for an outside item: its author has no write access and is not one of the APPS. The review's prompt says
-      # which it is (.github/review.md, "Outside items and labels").
+      # which it is (.github/review.md, "Outside items and labels"), and the soundness rule reads it (SOUNDNESS_HOLD).
       outside: ${{ steps.gather.outputs.outside }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -925,7 +936,6 @@ jobs:
     permissions: {contents: read, id-token: write}
     outputs:
       verdict: ${{ steps.screen.outputs.verdict }}
-      checks: ${{ steps.screen.outputs.checks }}
     env:
       # Ids and endpoints, not secrets. Google Cloud: the pool, its provider and the account that only this
       # environment's jobs of this file reach, Model Armor's template, and the bucket the reason goes to.
@@ -1053,7 +1063,8 @@ jobs:
       number: ${{ needs.gather.outputs.number }}
       started: ${{ needs.trust.outputs.started }}
       head: ${{ steps.result.outputs.head }}
-      # The review's verdict (pass, blocking or person) and will_fix (true or false), for the state label.
+      # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD), and will_fix (true
+      # or false), for the state label.
       verdict: ${{ steps.result.outputs.verdict }}
       will_fix: ${{ steps.result.outputs.will_fix }}
       body: ${{ steps.result.outputs.body }}
@@ -1352,21 +1363,27 @@ jobs:
         run: python3 .github/review/trim.py sign-in
 
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
-      # comment, its verdict, will_fix and its list. .github/review/trim.py makes the comment unable to notify anyone,
-      # to link another issue or pull request, or to link or load anything outside github.com (trim.py's inert), and
-      # cuts it at 20,000 characters. Then it runs the fresh reader: one request to Claude, with no tools, that holds
-      # the reader's instruction, the list and that text alone, with the token of the step before. A reader that fails
-      # fails this job, so nothing posts untrimmed: a screened item is held as a review that did not finish, and is
-      # tried again. The comment: the header and its markers, the trimmed text, each listed item that the trimmed text
-      # lacks, the footer, and the text that the reader read in a collapsed block. The model writes none of the fixed
-      # parts, and the reader never sees them. The trimmed text and the added items are made inert too. The run's
-      # summary gets the text that the reader read and the list.
+      # comment, its verdict, will_fix and its list. First comes the soundness rule of R8, whatever the model wrote
+      # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
+      # gather job's outside) that adds, changes or deletes a .v file gets the verdict person, a question on soundness
+      # in its list when the list has none, and the section on soundness. The section lists, as facts, the lines of
+      # the changed .v files at the head that use the VM, the native compiler or a primitive array.
+      # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
+      # link or load anything outside github.com (trim.py's inert), and cuts it at 20,000 characters. Then it runs the
+      # fresh reader: one request to Claude, with no tools, that holds the reader's instruction, the list and that text
+      # alone, with the token of the step before. A reader that fails fails this job, so nothing posts untrimmed: a
+      # screened item is held as a review that did not finish, and is tried again. The comment: the header and its
+      # markers, the trimmed text, the section on soundness, each listed item that the trimmed text lacks, the footer,
+      # and the text that the reader read in a collapsed block. The model writes none of the fixed parts, and the
+      # reader never sees them. The trimmed text and the added items are made inert too. The run's summary gets the
+      # text that the reader read, the list, and the section on soundness with every line.
       - name: The comment, as it is posted
         id: result
         env:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTSIDE: ${{ needs.gather.outputs.outside }}
           ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
@@ -1378,6 +1395,8 @@ jobs:
             | select(type == "object" and (.comment | type) == "string" and (.verdict | IN("pass", "blocking", "person"))
                      and (.will_fix | type) == "boolean" and (.items | type) == "array")' "$RESULT" > "$work/output.json" \
             || { echo "::error::The review gave no comment, verdict, will_fix and list. Nothing posts."; exit 1; }
+          python3 .github/review/rules.py soundness .review "$work/output.json" "${SOUNDNESS_HOLD:-}" "$OUTSIDE" \
+            "$work/section.md" "$work/section-all.md"
           jq -j .comment "$work/output.json" > "$work/review.md"
           jq .items "$work/output.json" > "$work/items.json"
           verdict=$(jq -r .verdict "$work/output.json")
@@ -1397,7 +1416,8 @@ jobs:
           foot+=" A second Claude session shortened the review. The block below holds the whole review."
           printf '%s\n' "$foot" > "$work/foot.md"
           python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
-            --head "$work/head.md" --foot "$work/foot.md" --summary "$GITHUB_STEP_SUMMARY" > "$work/body.md" \
+            --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
+            --summary "$GITHUB_STEP_SUMMARY" --summary-extra "$work/section-all.md" > "$work/body.md" \
             || { echo "::error::The fresh reader gave no trimmed text. Nothing posts."; exit 1; }
           { echo "verdict=$verdict"; echo "will_fix=$will_fix"; } >> "$GITHUB_OUTPUT"
           delimiter="body_$(openssl rand -hex 16)"
@@ -1587,9 +1607,9 @@ jobs:
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
   # the label review-held, and one comment that says it was held, which a later hold replaces. The comment says
-  # nothing of why the screen held it: the screen job's outputs are its verdict and the names of its checks. A hold
-  # that the rescreen job tries again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which that job
-  # finds it and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
+  # nothing of why the screen held it: the screen job's one output is its verdict. A hold that the rescreen job tries
+  # again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which that job finds it and the account:
+  # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
   # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
   # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
   # of it that failed so far. Such a hold gives the UTC time when the item is tried again, and no state label: the

@@ -9,10 +9,12 @@ sign-in failed holds nothing and uses none of an account's limit, the comment on
 reason not its own is screened again (the rescreen job, and the trust job's check of its run), and the state label
 and the label comment that each of those gives (.github/review/rules.py, whose rule is also tested on its own). The
 review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which trims the review and adds
-back each listed item that the trim left out, run against a stand-in on 127.0.0.1. Each job's condition is evaluated
-for every task and route, to show which jobs run, and that a run by hand off main runs none. The rest checks what each
-job holds, that no job of either workflow holds a right on pull_request, and the settings that keep Claude to the
-checkout and to the pinned binaries. .github/test_screen.py tests the screen itself.
+back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so does the soundness rule of
+an outside pull request's proof (.github/review/rules.py soundness), on a pull request that the gather job's step reads
+from git. Each job's condition is evaluated for every task and route, to show which jobs run, and that a run by hand
+off main runs none. The rest checks what each job holds, that no job of either workflow holds a right on pull_request,
+and the settings that keep Claude to the checkout and to the pinned binaries. .github/test_screen.py tests the screen
+itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -1297,8 +1299,7 @@ class HoldingsTest(unittest.TestCase):
         job = JOBS["screen"]
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
         self.assertEqual(job["environment"], {"name": "review-screen", "deployment": False})
-        self.assertEqual(job["outputs"], {"verdict": "${{ steps.screen.outputs.verdict }}",
-                                          "checks": "${{ steps.screen.outputs.checks }}"})
+        self.assertEqual(job["outputs"], {"verdict": "${{ steps.screen.outputs.verdict }}"})
         for s in job["steps"]:
             if "uses" in s and s["uses"].startswith("actions/checkout@"):
                 self.assertIs(s["with"]["persist-credentials"], False)
@@ -2190,13 +2191,9 @@ class ReviewSignInTest(Runner):
         self.assertIn("this job can get no identity token", out)
 
 
-class FreshReaderTest(Runner):
-    """b6: the fresh reader of the review job (.github/review/trim.py), against a stand-in of GitHub's identity token
-    service and of Anthropic. After the model, the step "Sign in to Anthropic for the fresh reader" gets a token of the
-    review's own rule into a file that only the next step reads. That step sends one request to Claude, with no tools,
-    that holds the reader's instruction, the review's list and the model's text alone. It posts the trimmed text with
-    the script's markers and fixed texts, each listed item that the trimmed text lacks, and the whole review in a
-    collapsed block. A reader that fails posts nothing."""
+class ReaderRunner(Runner):
+    """The review job's step "Sign in to Anthropic for the fresh reader" and the step after it, which makes the
+    comment, against a stand-in of GitHub's identity token service and of Anthropic."""
 
     SIGN_IN = "Sign in to Anthropic for the fresh reader"
     STEP = "The comment, as it is posted"
@@ -2204,20 +2201,6 @@ class FreshReaderTest(Runner):
     FOOT = (f"Claude wrote this review by [these rules]({RULES}) ([run]({RUN})). A second Claude session shortened the "
             "review. The block below holds the whole review.")
     WHOLE = "<details>\n<summary>The whole review, before the second Claude session shortened it</summary>"
-    # A list with a change asked at one file and line, a question left at another, and an optional change.
-    CHANGE = {"kind": "change", "ref": "theories/Fd.v:213 and :222", "optional": False,
-              "text": "Close the case of `fd_close` at the two lines."}
-    QUESTION = {"kind": "question", "ref": "SCOPE.md:301", "optional": False,
-                "text": "Does SCOPE.md:301 still hold for @octocat's case #12?"}
-    OPTIONAL = {"kind": "change", "ref": "tools/check_one.py:31", "optional": True,
-                "text": "Name the lane in tools/check_one.py:31."}
-    REVIEW = ("Blocking findings.\n\n"
-              "1. `theories/Fd.v:213` and `:222` leave the case of `fd_close` open. Close the case at the two lines.\n"
-              "2. Does SCOPE.md:301 still hold for @octocat's case #12? The review cannot check it.\n"
-              "3. Optional: name the lane in tools/check_one.py:31.\n\n"
-              "It is worth noting that the change is otherwise in line with the rules.")
-    # The review as the block holds it: made inert.
-    REVIEW_INERT = REVIEW.replace("@octocat", f"@{WJ}octocat").replace("#12", f"#{WJ}12")
 
     def setUp(self):
         super().setUp()
@@ -2241,22 +2224,30 @@ class FreshReaderTest(Runner):
         s = step("review", self.SIGN_IN)
         return self.run_script(s["run"], **dict(s["env"], ANTHROPIC_URL=f"{self.url}/anthropic"))
 
-    def post(self, review, items, trimmed="", verdict="blocking", will_fix=False, reader=None, result=None):
-        """The sign-in, then the comment step on the model's output for the head HEAD, with a reader that answers
-        trimmed (or reader, the stand-in's whole answer): the step's exit status, output and outputs."""
+    def post(self, review, items, trimmed="", verdict="blocking", will_fix=False, reader=None, result=None,
+             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"]):
+        """The sign-in, then the comment step on the model's output, with a reader that answers trimmed (or reader, the
+        stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing).
+        The step's env is the one that the workflow gives it, for the gather job's outside, with SOUNDNESS_HOLD hold
+        (None: not set). The step's exit status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
         with open(path, "w") as f:
             json.dump(result if result is not None else [{"type": "assistant"}, {"type": "result", "structured_output": {
                 "comment": review, "verdict": verdict, "will_fix": will_fix, "items": items}}], f)
         os.makedirs(os.path.join(self.work, ".review"), exist_ok=True)
-        with open(os.path.join(self.work, ".review", "commits.txt"), "w") as f:
-            f.write(f"base {OTHER_HEAD}\nhead {HEAD}\n")
+        commits = os.path.join(self.work, ".review", "commits.txt")
+        if not os.path.exists(commits):
+            with open(commits, "w") as f:
+                f.write(f"base {OTHER_HEAD}\nhead {HEAD}\n")
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         s = step("review", self.STEP)
-        return self.run_script(s["run"], **dict(s["env"], RESULT=path, RULES=RULES, RUN=RUN,
-                                                ANTHROPIC_URL=f"{self.url}/anthropic"))
+        env = {name: interpolate(value, {"needs.gather.outputs.outside": outside}) for name, value in s["env"].items()}
+        env.update(RESULT=path, RULES=RULES, RUN=RUN, ANTHROPIC_URL=f"{self.url}/anthropic")
+        if hold is not None:
+            env["SOUNDNESS_HOLD"] = hold
+        return self.run_script(s["run"], **env)
 
     def readings(self):
         """The requests to the fresh reader."""
@@ -2268,6 +2259,30 @@ class FreshReaderTest(Runner):
         found = re.findall(r"The ([A-Z]+):\n(=+ [0-9a-f]{32} =+)\n(.*?)\n\2(?=\n\n|$)", content, re.S)
         assert "\n\n".join(f"The {n}:\n{m}\n{t}\n{m}" for n, m, t in found) == content, content
         return [(n, t) for n, _m, t in found]
+
+
+class FreshReaderTest(ReaderRunner):
+    """b6: the fresh reader of the review job (.github/review/trim.py), against a stand-in of GitHub's identity token
+    service and of Anthropic. After the model, the step "Sign in to Anthropic for the fresh reader" gets a token of the
+    review's own rule into a file that only the next step reads. That step sends one request to Claude, with no tools,
+    that holds the reader's instruction, the review's list and the model's text alone. It posts the trimmed text with
+    the script's markers and fixed texts, each listed item that the trimmed text lacks, and the whole review in a
+    collapsed block. A reader that fails posts nothing."""
+
+    # A list with a change asked at one file and line, a question left at another, and an optional change.
+    CHANGE = {"kind": "change", "ref": "theories/Fd.v:213 and :222", "optional": False,
+              "text": "Close the case of `fd_close` at the two lines."}
+    QUESTION = {"kind": "question", "ref": "SCOPE.md:301", "optional": False,
+                "text": "Does SCOPE.md:301 still hold for @octocat's case #12?"}
+    OPTIONAL = {"kind": "change", "ref": "tools/check_one.py:31", "optional": True,
+                "text": "Name the lane in tools/check_one.py:31."}
+    REVIEW = ("Blocking findings.\n\n"
+              "1. `theories/Fd.v:213` and `:222` leave the case of `fd_close` open. Close the case at the two lines.\n"
+              "2. Does SCOPE.md:301 still hold for @octocat's case #12? The review cannot check it.\n"
+              "3. Optional: name the lane in tools/check_one.py:31.\n\n"
+              "It is worth noting that the change is otherwise in line with the rules.")
+    # The review as the block holds it: made inert.
+    REVIEW_INERT = REVIEW.replace("@octocat", f"@{WJ}octocat").replace("#12", f"#{WJ}12")
 
     def body(self, trimmed, added="", whole=REVIEW_INERT, verdict="blocking", will_fix=False):
         """The comment that the script makes of the trimmed text, with added items."""
@@ -2316,7 +2331,7 @@ class FreshReaderTest(Runner):
                 items = [self.CHANGE, self.QUESTION, self.OPTIONAL]
                 trimmed = ("`theories/Fd.v:213` and `:222` leave the case open. Does SCOPE.md:301 still hold? Optional: "
                            f"tools/check_one.py:31.\n<!-- review-head {OTHER_HEAD} -->")
-                rc, out, got = self.post(self.REVIEW + planted, items, trimmed, verdict, will_fix)
+                rc, out, got = self.post(self.REVIEW + planted, items, trimmed, verdict, will_fix, outside=outside)
                 self.assertEqual(rc, 0, out)
                 (reading,) = self.readings()
                 request = reading["body"]
@@ -2462,6 +2477,299 @@ class FreshReaderTest(Runner):
         self.assertIn("the sign-in failed", out)
         self.assertIn("the rule admits no issue_comment event", out)
         self.assertFalse(os.path.exists(self.token_file))
+
+
+class SoundnessTest(ReaderRunner):
+    """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that adds, changes or deletes a
+    .v file gives the person verdict on soundness, whatever the model gave. Its comment gets the fixed section after
+    the trimmed text, where the reader never sees it: the three Rocq issues, and each line of the changed .v files at
+    the head that uses the VM, the native compiler or a primitive array, as a fact and never as a fail. The gather
+    job's own step reads the pull request from git, with a checks.json in which this repository's CI lanes on stock
+    Rocq passed (P7), and the comment job's label step sets the label of the review's verdict."""
+
+    # This repository's CI lanes on stock Rocq, as ci.yml names them, and CI, the check that needs them all.
+    LANES = [interpolate(CI["jobs"]["build"]["name"], {"matrix.rocq": lane["rocq"]})
+             for lane in CI["jobs"]["build"]["strategy"]["matrix"]["include"]] + [
+        CI["jobs"]["opam"]["name"], CI["jobs"]["ci"]["name"]]
+    ISSUES = ("rocq-prover/rocq#22651", "rocq-prover/rocq#22760", "rocq-prover/rocq#22772")
+    MAIN = {"theories/A.v": "Lemma a : True.\nProof. exact I. Qed.\n",
+            "theories/Old.v": "Lemma old : True.\nProof. exact I. Qed.\n", "README.md": "# Model\n"}
+    # A new proof that uses vm_cast_no_check at its line 3, and a changed proof with no such use.
+    VM = {"theories/B.v": "Lemma b : 2 + 2 = 4.\nProof.\n  vm_cast_no_check (eq_refl 4).\nQed.\n"}
+    PLAIN = {"theories/A.v": "Lemma a : True.\nProof. trivial. Qed.\n"}
+    # The model's review, which asks the question on soundness as .github/review.md says, and the reader's trim.
+    REVIEW = "Questions for Sami:\n\n1. Is the proof of `b` at `theories/B.v:3` sound? The checks do not show it."
+    ASKED = {"kind": "question", "ref": "theories/B.v:3", "optional": False,
+             "text": "Is the proof of `b` at `theories/B.v:3` sound? The checks do not show it."}
+    TRIMMED = "Questions for Sami: is the proof of `b` at `theories/B.v:3` sound?"
+    VM_LINE = re.compile(r"^- `theories/B\.v:3`: `vm_cast_no_check`$", re.M)
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, src, files, message):
+        """A commit in src that gives each path of files its text, or deletes the path for None."""
+        for path, text in files.items():
+            full = os.path.join(src, path)
+            if text is None:
+                os.remove(full)
+                continue
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write(text)
+        self.git("add", "-A", cwd=src)
+        self.git("commit", "-q", "-m", message, cwd=src)
+        return self.git("rev-parse", "HEAD", cwd=src)
+
+    def gather(self, changes, author="mallory"):
+        """Pull request #7 of author, whose head makes changes on MAIN, gathered into .review/ by the gather job's
+        step, with a checks.json in which each of LANES passed: the head, and the gather job's outside."""
+        origin, src = os.path.join(self.dir, "origin.git"), os.path.join(self.dir, "src")
+        self.git("init", "-q", "--bare", origin)
+        self.git("init", "-q", "-b", "main", src)
+        self.commit(src, self.MAIN, "main")
+        self.git("push", "-q", origin, "main", cwd=src)
+        head = self.commit(src, changes, "the pull request")
+        self.git("push", "-q", origin, "HEAD:refs/pull/7/head", cwd=src)
+        os.remove(os.path.join(self.work, ".github"))
+        os.rmdir(self.work)
+        self.git("clone", "-q", origin, self.work)
+        self.checkout()
+        self.serve_item(7, author, kind="pr", head=head)
+        for endpoint in ("issues/7/comments", "pulls/7/reviews", "pulls/7/comments"):
+            self.serve(f"repos/{REPO}/{endpoint}", [])
+        self.serve("pr_view_7", {
+            "number": 7, "title": "t", "author": {"login": author}, "isDraft": False, "baseRefName": "main",
+            "headRefOid": head, "body": "b", "commits": [],
+            "files": [{"path": path, "additions": 1, "deletions": 1} for path in changes],
+            "statusCheckRollup": [{"__typename": "CheckRun", "name": name, "status": "COMPLETED",
+                                   "conclusion": "SUCCESS"} for name in self.LANES]})
+        rc, out, got = self.run_script(step("gather", "Gather the pull request or issue")["run"], KIND="pr",
+                                       NUMBER="7", EVENT_HEAD=head)
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(self.work, ".review", "checks.json")) as f:
+            self.assertEqual({(c["name"], c["conclusion"]) for c in json.load(f)["statusCheckRollup"]},
+                             {(name, "SUCCESS") for name in self.LANES})
+        return head, got["outside"]
+
+    def review(self, changes, verdict="person", items=None, review=REVIEW, trimmed=TRIMMED, author="mallory",
+               **kwargs):
+        """The gather job's step, then the comment step on a stand-in model's review with verdict and items (ASKED
+        when None), which the reader trims to trimmed: the head, the step's outputs, the visible part of the comment,
+        the list that the run's summary holds, and the gather job's outside."""
+        head, outside = self.gather(changes, author)
+        rc, out, got = self.post(review, [self.ASKED] if items is None else items, trimmed, verdict, outside=outside,
+                                 **kwargs)
+        self.assertEqual(rc, 0, out)
+        with open(self.summary, encoding="utf-8") as f:
+            listed = json.loads(re.search(r"```json\n(.*?)\n```", f.read(), re.S).group(1))
+        return head, got, got["body"].split(self.WHOLE, 1)[0], listed, outside
+
+    def label(self, got):
+        """The comment job's label step on #7 with the review job's outputs got, for a run that took the outsider's
+        path, as the workflow maps them: the state labels that it set, and its label comments."""
+        s = step("comment", PostLabelTest.STEP)
+        ctx = {"needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
+               "needs.gather.outputs.kind": "pr", "needs.review.outputs.head": got["head"],
+               "needs.review.outputs.started": PostLabelTest.STARTED, "needs.review.outputs.verdict": got["verdict"],
+               "needs.review.outputs.will_fix": got["will_fix"], "needs.post.result": "success",
+               "needs.post.outputs.recorded": "false"}
+        env = {name: interpolate(value, ctx) for name, value in dict(JOBS["comment"]["env"], **s["env"]).items()
+               if name not in ("GH_TOKEN", "REPO")}
+        self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        rc, out, _ = self.run_script(s["run"], HELD_LABEL=WF["env"]["HELD_LABEL"], **env)
+        self.assertEqual(rc, 0, out)
+        return state_labels(self.api), [body for _method, _endpoint, body in label_comments(self.api)]
+
+    def assertSoundness(self, head, got, shown):
+        """The person verdict, in the marker and the output, and the section after the trimmed text, which names the
+        three issues, each in a code span: GitHub links none, so no review adds a mention to rocq-prover/rocq's
+        issues."""
+        self.assertEqual(got["verdict"], "person")
+        self.assertIn(f"<!-- review-verdict {head} person -->", got["body"])
+        for issue in self.ISSUES:
+            self.assertIn(f"`{issue}`", shown)
+            self.assertEqual(shown.count(issue), 1)
+        self.assertLess(shown.index("rocq-prover/rocq#"), shown.index("\n---\n"))
+
+    def test_an_outside_proof_that_uses_vm_cast_no_check_gets_the_person_verdict_with_the_line_as_a_fact(self):
+        """The CI lanes passed and the model asked its question: the comment names the three issues and lists the
+        vm_cast_no_check line after the trimmed text. It fails nothing for it: no item is added, the verdict is
+        person and not blocking, and the item waits on Sami. The reader never sees the section, and the run's
+        summary holds it."""
+        head, got, shown, listed, _outside = self.review(self.VM)
+        self.assertSoundness(head, got, shown)
+        self.assertLess(shown.index(self.TRIMMED), shown.index("rocq-prover/rocq#"))
+        self.assertRegex(shown, self.VM_LINE)
+        self.assertEqual(listed, [self.ASKED])
+        self.assertNotIn(trim.LEFT_OUT, got["body"])
+        for reading in self.readings():
+            self.assertNotIn("rocq-prover", json.dumps(reading["body"]))
+        with open(self.summary, encoding="utf-8") as f:
+            self.assertRegex(f.read(), self.VM_LINE)
+        self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [rules.label_comment("person")]))
+
+    def test_a_model_that_passes_or_blocks_an_outside_proof_still_gives_the_person_verdict(self):
+        """Code gives the verdict, whatever the model wrote: the list gets the question on soundness, the model's
+        blocking finding stays in it, and the item waits on Sami, not on its author."""
+        change = {"kind": "change", "ref": "theories/B.v:4", "optional": False, "text": "End the proof with Qed."}
+        for verdict, items, review in (("pass", [], "No blocking finding."),
+                                       ("blocking", [change], "Blocking findings.\n\n1. `theories/B.v:4`: end it.")):
+            with self.subTest(verdict=verdict):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review(self.VM, verdict, items, review, review)
+                self.assertSoundness(head, got, shown)
+                self.assertRegex(shown, self.VM_LINE)
+                self.assertEqual(listed, items + [rules.QUESTION])
+                self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [rules.label_comment("person")]))
+
+    def test_a_changed_proof_with_no_such_use_or_a_deleted_one_gets_the_soundness_verdict_too(self):
+        for name, changes in (("changed", self.PLAIN), ("deleted", {"theories/Old.v": None})):
+            with self.subTest(proof=name):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
+                                                                 "No blocking finding.")
+                self.assertSoundness(head, got, shown)
+                self.assertNotRegex(shown, r"(?m)^- `")
+                self.assertEqual(listed, [rules.QUESTION])
+
+    def test_the_rule_needs_the_hold_an_outside_author_and_a_v_file(self):
+        """A writer's proof, an outside proof with SOUNDNESS_HOLD not "true", and an outside change of no .v file
+        keep the model's verdict, and get no section."""
+        for name, changes, author, hold, outside in (
+                ("a writer's proof", self.VM, "alice", WF["env"]["SOUNDNESS_HOLD"], "false"),
+                ("the hold off", self.VM, "mallory", "false", "true"),
+                ("no hold set", self.VM, "mallory", None, "true"),
+                ("no .v file", {"README.md": "# Model of Linux\n"}, "mallory", WF["env"]["SOUNDNESS_HOLD"], "true")):
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                self.permissions(alice="write")
+                head, got, _shown, listed, gathered = self.review(changes, "pass", [], "No blocking finding.",
+                                                                 "No blocking finding.", author, hold=hold)
+                self.assertEqual((gathered, got["verdict"]), (outside, "pass"))
+                self.assertIn(f"<!-- review-verdict {head} pass -->", got["body"])
+                self.assertNotIn("rocq-prover", got["body"])
+                self.assertEqual(listed, [])
+                with open(self.summary, encoding="utf-8") as f:
+                    self.assertNotIn("rocq-prover", f.read())
+
+
+class SoundnessScanTest(unittest.TestCase):
+    """rules.py's scan of a pull request's .v files (changed_proofs, uses), its section and its rule."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="review-test-")
+        self.addCleanup(tmp.cleanup)
+        self.review = tmp.name
+
+    def write(self, path, text):
+        full = os.path.join(self.review, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as f:
+            f.write(text)
+
+    def test_each_construct_is_found_with_its_line(self):
+        """Each construct of USES, an array literal (also over two lines, not an intro pattern), and make only of
+        the array module. A name inside a longer word is none, and a file that is not a .v file is not read."""
+        self.write("head/theories/S.v", "\n".join((
+            "Lemma s1 : True. Proof. vm_compute. exact I. Qed.",
+            "Lemma s2 : 1 = 1. Proof. vm_cast_no_check (eq_refl 1). Qed.",
+            "Lemma s3 : 1 = 1. Proof. native_compute. reflexivity. Qed.",
+            "Lemma s4 : 1 = 1. Proof. native_cast_no_check (eq_refl 1). Qed.",
+            "Definition s5 := (eq_refl 1 <: 1 = 1).",
+            "Definition s6 := (eq_refl 1 <<: 1 = 1).",
+            "(* vm_computed, my_native_compute, PArrays *)",
+            "Lemma s8 : forall n : nat, n = n. Proof. intros [|n]; [|destruct n as [|]]; reflexivity. Qed.",
+            "Definition s9 := [| 1; 2 | 0 |].",
+            "Definition s10 := [| 1;",
+            "  2 | 0 |].",
+            "")))
+        self.write("head/theories/Arr.v", "From Stdlib Require Import PArray.\nDefinition t := make 3 0.\n"
+                                          "Definition u := PArray.make 2 true.\n")
+        self.write("head/theories/Prim.v", "Primitive array := #array_type.\nPrimitive mk := #array_make.\n"
+                                           "Definition t := make.\n")
+        self.write("head/theories/List.v", "Definition make := 1.\nDefinition u := make.\n")
+        self.write("head/README.md", "vm_compute\n")
+        self.assertEqual(rules.uses(self.review), [
+            ("theories/Arr.v", 1, ["PArray"]), ("theories/Arr.v", 2, ["make"]),
+            ("theories/Arr.v", 3, ["PArray", "make"]),
+            ("theories/Prim.v", 1, ["#array_"]), ("theories/Prim.v", 2, ["#array_"]), ("theories/Prim.v", 3, ["make"]),
+            ("theories/S.v", 1, ["vm_compute"]), ("theories/S.v", 2, ["vm_cast_no_check"]),
+            ("theories/S.v", 3, ["native_compute"]), ("theories/S.v", 4, ["native_cast_no_check"]),
+            ("theories/S.v", 5, ["<:"]), ("theories/S.v", 6, ["<<:"]),
+            ("theories/S.v", 9, ["[| |]"]), ("theories/S.v", 10, ["[| |]"])])
+
+    def test_a_deleted_proof_is_a_change_with_no_line_to_read(self):
+        """The .v files that the head holds, those that omitted.txt names as deleted or as not a regular file, and
+        those of pr.json's files; an issue has none."""
+        self.assertEqual(rules.changed_proofs(self.review), [])
+        self.write("issue.json", "{}")
+        self.assertEqual(rules.changed_proofs(self.review), [])
+        self.write("head/theories/A.v", "Lemma a : True.\nProof. vm_compute. exact I. Qed.\n")
+        self.write("head/theories/Big.v", "Lemma big : True.\n")
+        self.write("omitted.txt", "theories/Old.v: deleted\ndocs/Old.md: deleted\n"
+                                  "theories/link.v: not a regular file (mode 120000)\n"
+                                  "theories/Big.v: cut at 2 MiB of its 3000000 bytes\n"
+                                  "2 comments by accounts without write access: not read\n")
+        self.write("pr.json", json.dumps({"files": [{"path": "theories/A.v"}, {"path": "theories/.claude/Hidden.v"},
+                                                    {"path": "README.md"}]}))
+        self.assertEqual(rules.changed_proofs(self.review), ["theories/.claude/Hidden.v", "theories/A.v",
+                                                             "theories/Big.v", "theories/Old.v", "theories/link.v"])
+        self.assertEqual(rules.uses(self.review), [("theories/A.v", 2, ["vm_compute"])])
+
+    def test_the_section_lists_at_most_listed_lines_and_says_how_many_more(self):
+        line = re.compile(r"^- `theories/.+\.v:\d+`: `vm_compute`$", re.M)
+        found = [(f"theories/F{n}.v", 1, ["vm_compute"]) for n in range(rules.LISTED + 5)]
+        text = rules.section(found)
+        self.assertEqual(len(line.findall(text)), rules.LISTED)
+        self.assertRegex(text, r"(?m)^- 5 more lines\b")
+        whole = rules.section(found, len(found), sys.maxsize)
+        self.assertEqual((len(line.findall(whole)), re.search(r"(?m)^- \d+ more", whole)), (len(found), None))
+        self.assertRegex(rules.section(found[:rules.LISTED + 1]), r"(?m)^- 1 more line\b")
+        # Long paths: the list stays under LISTED_CHARACTERS characters, and the count of the others is right.
+        found = [("theories/" + "d" * 3000 + ".v", n, ["vm_compute"]) for n in range(1, 11)]
+        text = rules.section(found)
+        listed = line.findall(text)
+        self.assertLessEqual(sum(len(x) + 1 for x in listed), rules.LISTED_CHARACTERS)
+        more = int(re.search(r"(?m)^- (\d+) more lines\b", text).group(1))
+        self.assertEqual((len(listed) + more, more > 0), (len(found), True))
+
+    def test_a_path_cannot_leave_its_code_span(self):
+        """A path of a pull request can hold backticks and line breaks: it stays in one code span on one line, so it
+        cannot notify anyone, link anything or start a block of the comment."""
+        for path in ("a`b.v", "a``b``.v", "`x.v", "x.v`", "a\n\n# @octocat <img src=x>\n.v", "a\r\n- @octocat.v"):
+            with self.subTest(path=path):
+                span = rules.code(path)
+                self.assertFalse({"\n", "\r"} & set(span), span)
+                ticks = re.match(r"`+", span).group(0)
+                self.assertTrue(span.endswith(ticks))
+                self.assertTrue(all(len(run) < len(ticks) for run in re.findall(r"`+", span[len(ticks):-len(ticks)])))
+                one = rules.section([(path, 1, ["vm_compute"])])
+                self.assertEqual(one.count("\n"), rules.section([("x.v", 1, ["vm_compute"])]).count("\n"))
+
+    def test_the_rule_adds_one_question_on_soundness_and_reads_outside_as_outside_unless_false(self):
+        self.write("head/theories/A.v", "Lemma a : True.\nProof. exact I. Qed.\n")
+        asked = {"kind": "question", "ref": None, "optional": False, "text": "Is the proof unsound?"}
+        optional = dict(asked, optional=True)
+        other = {"kind": "question", "ref": "SCOPE.md:3", "optional": False, "text": "Does SCOPE.md:3 hold?"}
+        for items, want in (([asked], [asked]), ([optional], [optional, rules.QUESTION]),
+                            ([other], [other, rules.QUESTION])):
+            with self.subTest(items=items):
+                output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": items}
+                got, section, whole = rules.soundness(self.review, output, "true", "true")
+                self.assertEqual((got, bool(section), bool(whole)),
+                                 ({"comment": "c", "verdict": "person", "will_fix": False, "items": want}, True, True))
+                self.assertEqual(output["items"], items)
+        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
+        self.assertEqual(rules.soundness(self.review, output, "true", "")[0]["verdict"], "person")
+        for hold, outside in (("true", "false"), ("false", "true"), ("", "true"), ("TRUE", "true")):
+            with self.subTest(hold=hold, outside=outside):
+                self.assertEqual(rules.soundness(self.review, output, hold, outside), (output, "", ""))
 
 
 RESCREEN_JOB = "Start the screen again of each held item whose hold is over an hour old"
