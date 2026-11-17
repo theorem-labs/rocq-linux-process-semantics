@@ -3392,6 +3392,72 @@ class FreshReaderTest(ReaderRunner):
         self.assertIn("the rule admits no issue_comment event", out)
         self.assertFalse(os.path.exists(self.token_file))
 
+    def test_the_fixed_parts_and_the_whole_review_keep_their_places_whatever_markup_a_text_leaves_open(self):
+        """R9: the post step "puts the untrimmed review in one collapsed <details> block at the end of the comment".
+        The comment is the header, the trimmed text, the section on soundness, the added items, the footer and the
+        collapsed block, in that order (review.yml, "The comment, as it is posted"). A fence that a text leaves open, a
+        <details> that it opens, or a </details> that it holds must not put a fixed part into a code block or into the
+        text's own <details>, and must not take the whole review out of its block. The cases: (a) a review cut at
+        20,000 characters inside a code block, which is no attack; (b) a model text that ends inside a ``` fence, which
+        the reader keeps; (c) one that opens <details><summary>; (d) a review that holds </details>, which the reader
+        leaves out. The comment is read line by line, as CommonMark reads a fence and as HTML counts <details>."""
+        def layout(body):
+            """(states, end): for each line of body, whether a fenced code block holds it and how many <details> are
+            open before it; and the same after its last line."""
+            states, fence, depth = [], "", 0
+            for line in body.split("\n"):
+                states.append((bool(fence), depth))
+                if fence:
+                    if re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{%d,}[ \t]*" % len(fence), line):
+                        fence = ""
+                    continue
+                m = re.match(r" {0,3}(`{3,}(?=[^`]*$)|~{3,})", line)
+                if m:
+                    fence = m.group(1)
+                    continue
+                depth += len(re.findall(r"(?i)<details\b", line)) - len(re.findall(r"(?i)</details\s*>", line))
+            return states, (bool(fence), depth)
+
+        open_fence = "Blocking findings.\n\n```text\nlog line 1\nlog line 2"
+        opened = "Blocking findings.\n\n<details><summary>Notes</summary>\n\nMore notes."
+        cases = {
+            "a control: plain texts": ("Blocking findings.\n\n```text\nlog line\n```", "Trimmed."),
+            "(a) a review cut inside a code block": ("Intro.\n\n```text\n" + "log line\n" * 2600 + "```\n\nThe end.",
+                                                      "Trimmed."),
+            "(b) a text that ends inside a fence": (open_fence, open_fence),
+            "(c) a text that opens <details>": (opened, opened),
+            "(d) a review that holds </details>": ("Blocking.\n\n</details>\n\nThe rest of the review.", "Trimmed."),
+        }
+        summary = self.WHOLE.split("\n")[1]
+        for case, (review, trimmed) in cases.items():
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                # A changed .v file at the head, so that the comment has the section on soundness.
+                proof = os.path.join(self.work, ".review", "head", "theories", "A.v")
+                os.makedirs(os.path.dirname(proof))
+                with open(proof, "w") as f:
+                    f.write("Lemma a : True.\nProof. vm_compute. exact I. Qed.\n")
+                rc, out, got = self.post(review, [self.CHANGE], trimmed)
+                self.assertEqual(rc, 0, out)
+                lines = got["body"].split("\n")
+                states, end = layout(got["body"])
+                fixed = []
+                for start in ("**Soundness of the proofs.**", trim.LEFT_OUT, self.FOOT):
+                    found = [i for i, line in enumerate(lines) if line.startswith(start)]
+                    self.assertEqual(len(found), 1, (start, got["body"]))
+                    fixed += found
+                # The block's <details>, after the footer, and its </details>, the comment's last line.
+                top = fixed[-1] + lines[fixed[-1]:].index(summary) - 1
+                self.assertEqual(lines[top], "<details>")
+                last = len(lines) - 1 - lines[::-1].index("</details>")
+                for i in fixed + [top]:
+                    self.assertEqual(states[i], (False, 0), lines[i])   # in no code block and no <details>
+                for i in range(top + 2, last):
+                    self.assertGreaterEqual(states[i][1], 1, lines[i])   # the whole review stays in its block
+                self.assertEqual("".join(lines[last + 1:]).strip(), "")   # the block ends the comment
+                self.assertEqual((states[last], end), ((False, 1), (False, 0)))   # and its </details> closes it
+
 
 class SoundnessTest(ReaderRunner):
     """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that adds, changes or deletes a
