@@ -44,19 +44,23 @@
 #   short comment, and no review. Why it was held goes to a private bucket, never to this run's log or outputs. When
 #   the account that started the run has no write access and its runs have reached the screen OUTSIDE_HOURLY_LIMIT
 #   times in the last hour, it is held without a screen, and screened again later with no person (below).
-# - An item held for a reason that is not its own is screened again with no person: at that limit; a screened review
-#   stopped at SCREENED_HOURLY_CAP; or a screened review that failed or ran out of time, until it has failed
-#   REVIEW_TRIES times. After REVIEW_TRIES rescreens since its hold that end with neither a new hold nor a posted
-#   review, its hold comment says that it is not screened again. Every 15 minutes (the schedule below) the rescreen
-#   job lists the open pull requests and issues labelled review-held whose newest hold comment is such a hold, not the
-#   screen's, and is over an hour old, and starts this workflow for each with -f task=rescreen and the account the hold
-#   names (-f account=<login>). Such a run takes an outsider's path: the trust job reads the author, the hold and the
-#   account again from the API, never from the inputs alone, and the item is screened, then reviewed and the review
-#   posted, as for an event; only when the author and that account both have write access is it reviewed without the
-#   screen, as a writer's item is. When that account has no write access, its screen counts toward the account's
-#   OUTSIDE_HOURLY_LIMIT with the account's own runs, so an account still at the limit stays held, and its hold comment
-#   says from when it is tried again. An account with write access has no such limit: its rescreens are bounded by the
-#   rescreen job's count alone (below). An item that the screen held is never screened again this way.
+# - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
+#   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
+#   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
+#   hold comment says that it is not tried again. Every 15 minutes (the schedule below) the rescreen job lists the open
+#   pull requests and issues labelled review-held whose newest hold comment is such a hold, not the screen's, and is
+#   over an hour old, and starts this workflow for each with the task that the marker of the hold names: the answer of
+#   the comment that it names (-f task=answer -f comment=<id>), the draft, the approval, or else -f task=rescreen, with
+#   the account the hold names (-f account=<login>). Such a run takes an outsider's path: the trust job reads the
+#   author, the hold and the account again from the API, never from the inputs alone, and the item is screened, then
+#   reviewed and the review posted, as for an event; only when the author and that account both have write access is
+#   it reviewed without the screen, as a writer's item is. When that account has no write access, its screen counts
+#   toward the account's OUTSIDE_HOURLY_LIMIT with the account's own runs, so an account still at the limit stays
+#   held, and its hold comment says from when it is tried again. An account with write access has no such limit: its
+#   rescreens are bounded by the rescreen job's count alone (below). An item that the screen held is never taken again
+#   this way. The same job also starts the answer to a comment of an outside author that waits for one, the draft of
+#   the reply to an outside issue that has none stored, the approval of a first-time contributor's held runs, and the
+#   App's writes again when the post job could not make them (the rescreen job, below).
 # - An account with write access can start a run by hand for any pull request or issue, with a task (-f task=<task>,
 #   review when none is given) and, for a review, with the screen first (-f screen=true):
 #
@@ -64,10 +68,10 @@
 #
 # or "Run workflow" on this workflow's page in the Actions tab. GitHub lets only an account with write access start a
 # run that way. An App must be one of the APPS. A run that github-actions[bot] starts (the rescreen job's) is taken
-# only for that job's tasks, and only when its name is the one that job gives the task and what it names reads the
-# same from the API now. Every review reads the comments and reviews of the author and of accounts with write access,
-# and no others. An answer reads them too, and the workflow's own review, answers, hold comment, label comment and
-# fix reviews on the item.
+# only for that job's tasks, and only when its name is the one that job gives the task, what it names reads the same
+# from the API now, and the reason why that job started it still holds. Every review reads the comments and reviews of
+# the author and of accounts with write access, and no others. An answer reads them too, and the workflow's own
+# review, answers, hold comment, label comment and fix reviews on the item.
 #
 # - The reply to a new issue of an outside author is a draft, which this workflow stores and never posts
 #   (.github/review-answer.md, "An issue draft"). Sami approves the text of a reply, and a run by hand on main posts
@@ -154,12 +158,13 @@
 #           nothing, and the schedule takes the item again), was the review stopped at the cap, or cancelled by a
 #           newer run of the same item and task?
 #   rescreen
-#           runs on the schedule alone, in the public repository alone, and starts the runs that screen a held item
-#           again. It is the only job whose own token has actions: write, which it needs to start a run, and it uses
-#           it for nothing else. Its issues and pull-requests: write let it replace the hold comment of an item whose
-#           rescreens reached REVIEW_TRIES without settling, with one that says that it is not screened again
-#           automatically, and give the item waits-on-theorem. It reads the held items and this workflow's runs, and
-#           holds no model.
+#           runs on the schedule alone, in the public repository alone, and starts on main the runs that the open items
+#           are due: the work that a hold names, an answer that waits, a draft that is not stored, the approval of
+#           held runs, and the App's writes that failed. It is the only job whose own token has actions: write, which
+#           it needs to start a run, and it uses it for nothing else. Its issues and pull-requests: write let it
+#           replace the hold comment of an item whose work reached REVIEW_TRIES without settling, with one that says
+#           that it is not tried again, and give the item waits-on-theorem. It reads the open items and this
+#           workflow's runs, and holds no model.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's, and none while the workflow works on
@@ -276,25 +281,26 @@ env:
   # issue, push or comment in that hour is held without a screen. Every run its event started that the trust job did
   # not skip counts, the held ones too, so a burst stays held until an hour has passed since its runs. A run whose
   # screen or review could not sign in does not count: the schedule takes its item again.
-  # The runs that the rescreen job starts for its held items count toward the same limit, with its events (their names
-  # end with " of <account>"): so N, the most rescreens of one
-  # account that are screened in an hour, is this number less what its own events used. (The rescreen job starts up
-  # to this number of an account's rescreens an hour whatever its events used, and the trust job holds the extra ones
-  # at the limit.) One count and one limit, because a rescreen is the screen that the held event did not get: it gives
-  # an account no more screens an hour than its events alone could, which keeps it under SCREENED_HOURLY_CAP, so one
-  # account cannot fill that pool. A smaller N for rescreens would only leave a burst held for longer; an account that
-  # keeps opening, pushing or reopening stays held. An account with write access has no such limit (a writer's push to
-  # an outsider's item, whose cap or transient hold names the writer's run): the rescreen job still starts at most this
-  # number of its rescreens an hour.
+  # The runs that the rescreen job starts and that screen (a rescreen, a review, an answer, a draft or an approval)
+  # count toward the same limit, with its events (their names end with " of <account>"): so N, the most such runs of
+  # one account that are screened in an hour, is this number less what its own events used. (The rescreen job starts
+  # up to this number of an account's such runs an hour whatever its events used, and the trust job holds the extra
+  # ones at the limit.) One count and one limit, because such a run is the screen that the held or missed event did
+  # not get: it gives an account no more screens an hour than its events alone could, which keeps it under
+  # SCREENED_HOURLY_CAP, so one account cannot fill that pool. A smaller N for those runs would only leave a burst held
+  # for longer; an account that keeps opening, pushing or reopening stays held. An account with write access has no
+  # such limit (a writer's push to an outsider's item, whose cap or transient hold names the writer's run): the
+  # rescreen job still starts at most this number of its rescreens an hour.
   OUTSIDE_HOURLY_LIMIT: "3"
   # The label a held pull request or issue gets, and the marker of the comment that says so.
   HELD_LABEL: review-held
-  # The most times the review of a screened item that the screen passed may fail, or run out of time, before a person
-  # decides: each such hold is tried again with no person (the rescreen job) while it has failed fewer times than this
+  # The most times the review of a screened item that the screen passed may fail, or run out of time, before it waits
+  # on Sami: each such hold is tried again with no person (the rescreen job) while it has failed fewer times than this
   # number, and the hold of the last failure is not. A review stopped at SCREENED_HOURLY_CAP is not such a failure,
   # and is tried again whatever this number: the cap is not the item's.
-  # It is also the most rescreens of a held item, since its hold, that may end with neither a new hold nor a posted
-  # review (a run that failed on a GitHub read, say) before the rescreen job leaves it to a person.
+  # It is also the most runs of the work that a hold names, since the hold, that may end with neither a new hold nor a
+  # post (a run that failed on a GitHub read, say), and the most post jobs of a head that may fail at a step that is
+  # not a sign-in, before the rescreen job leaves the work to Sami.
   REVIEW_TRIES: "3"
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
@@ -368,6 +374,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
           # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
           # gives admin or write; 1 when it is neither; 2 when the API could not say.
@@ -391,20 +398,57 @@ jobs:
           # titled: the names of the runs that the rescreen job starts and that name an account (run-name):
           # <task> #<n>[ at <head>][ for <comment>] of <login>. BASH_REMATCH[2] is then the number, and [5] the login.
           titled='^(rescreen|review|answer|draft|approve) #([1-9][0-9]*)( at [0-9a-f]{40})?( for [1-9][0-9]*)? of ([A-Za-z0-9-]+(\[bot\])?)$'
-          # limit_hold <number>: "<time> <run> <tries> <kind>" of the newest hold comment of <number> when it is one
-          # that the rescreen job tries again (its marker <!-- review-held-<kind> <run> <tries> -->): <kind> is limit
-          # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
-          # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
-          # reviews of it that failed so far.
+          # comments <number>: each comment of <number>, one JSON object on each line, as GitHub lists them. They are
+          # read once in this step, and kept in $seen, a directory that the step makes for itself.
+          comments() {
+            local file=$seen/comments-$1
+            if [ ! -f "$file" ]; then
+              gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[] | @json' > "$file.part" || return 1
+              mv "$file.part" "$file"
+            fi
+            cat "$file"
+          }
+          # limit_hold <number>: "<time> <run> <tries> <kind> <task> <comment>" of the newest hold comment of <number>
+          # when it is one that the rescreen job tries again (its marker
+          # <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit (OUTSIDE_HOURLY_LIMIT),
+          # cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that failed or ran out of time),
+          # <run> the run of the event this hold comes from (a run that takes the hold again keeps it), <tries> the
+          # screened reviews of it that failed so far, <task> the task that takes it again (answer, draft or approve as
+          # the marker names it; rescreen for a marker with no task, or with review), and <comment> the comment that a
+          # held answer answers (- for none).
           # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
           # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
-            gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[]
-              | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+            comments "$1" | jq -r 'select(.user.login == "github-actions[bot]"
+                and (.body | startswith("<!-- review-held -->")))
               | "\(.updated_at) \((.body
-                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+))? -->(\n|$)")
-                  | "\(.run) \(.tries // "0") \(.kind)") // "-")"' \
+                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve|review|rescreen)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
+                  | "\(.run) \(.tries // "0") \(.kind) \(if (.task // "review") == "review" then "rescreen" else .task end) \(.comment // "-")") // "-")"' \
               | sort | tail -n 1
+          }
+          # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
+          # <author> on <number> (a pull request when <kind> is pr) that waits for an answer, oldest first: each one
+          # after the workflow's newest review, answer, fix review or hold, as the gather job lists them for an answer
+          # (answer-to.json). A hold that the workflow tries again as an answer answers nothing.
+          waiting() {
+            local found
+            found=$(comments "$1" | jq -c '{made: .created_at, at: .updated_at, id, author: .user.login,
+              own: (.user.login == "github-actions[bot]" and ((.body // "") as $b
+                | ($b | test("^<!-- review(-answer [0-9]+| -->|-held -->)"))
+                  and ($b | test("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer [0-9]+ -->(\n|$)") | not)))}') \
+              || return 1
+            if [ "$3" = pr ]; then
+              found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/reviews" --jq '.[] | {made: .submitted_at,
+                at: .submitted_at, id, author: .user.login, text: ((.body // "") | test("\\S")),
+                own: (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-fix ")))}
+                | @json') || return 1
+              found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/comments" \
+                --jq '.[] | {made: .created_at, id, author: .user.login, own: false} | @json') || return 1
+            fi
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            AUTHOR_OF=$2 jq -rs '([.[] | select(.own) | .at] | map(strings) | max // "") as $since
+              | .[] | select(.author == $ENV.AUTHOR_OF and .text != false and (.made // "") > $since)
+              | "\(.made) \(.id)"' <<< "$found" | sort
           }
           # held_account <run>: the account whose limit a hold of <run> counts on, when <run> is a run of this
           # workflow: the account that started it, for a run of workflow_run, issues or issue_comment; the account its
@@ -550,6 +594,33 @@ jobs:
               | awk '{ n += $1 } END { print n + 0 }') || fail "the comments of #$NUMBER could not be read."
             (( n > 0 ))
           }
+          # stored: true when the label comment of #NUMBER says that the draft of its reply is stored, or that its
+          # first reply posted.
+          stored() {
+            local n
+            n=$(comments "$NUMBER" | jq -s '[.[] | select(.user.login == "github-actions[bot]"
+              and ((.body // "") | startswith("<!-- review-label -->"))
+              and ((.body // "") | test("(^|\n)<!-- (issue-draft [0-9]+-[0-9]+|issue-reply-posted [0-9]+) -->(\n|$)")))]
+              | length') || fail "the comments of #$NUMBER could not be read."
+            (( n > 0 ))
+          }
+          # newest: the newest hold of #NUMBER (limit_hold): held_at, and held_run, held_tries and held_task when the
+          # rescreen job tries it again (held_run is - for a hold that it does not try again, and empty with no hold).
+          newest() {
+            local hold
+            hold=$(limit_hold "$NUMBER") || fail "the comments of #$NUMBER could not be read."
+            read -r held_at held_run held_tries _ held_task _ <<< "$hold"
+          }
+          # again <task>: for a run of the rescreen job, when the newest hold (newest) is one that that job tries again
+          # as <task>. That job takes such a hold again only when it is over an hour old, so a younger one stops this
+          # run. This run then keeps the hold's run and tries (origin and tries), so that a hold of it counts on.
+          again() {
+            [[ -n ${held_run:-} && $held_run != - && ${held_task:-} == "$1" ]] || return 0
+            [[ $held_at < $(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ) ]] \
+              || stop "its hold of $held_at is under an hour old."
+            [[ $held_tries =~ ^[0-9]+$ ]] || stop "its hold names no count of tries."
+            origin=$held_run tries=$held_tries
+          }
           # comment_author: the author of the comment COMMENT, when it is an issue comment, a review comment or a
           # review of #NUMBER. Nothing when it is none of them.
           comment_author() {
@@ -692,9 +763,10 @@ jobs:
                 approve|catchup|conflict|relabel) [ "$kind" = pr ] || stop "it is not a pull request." ;;
               esac
               # The rescreen job's name for the task, from what the API says now: the item, its head, and its author
-              # when the author has no write access (a rescreen names the account its hold names, checked below). The
-              # account a name gives is the one whose limit the run counts on; a run by hand of a person or an App
-              # counts on none.
+              # when the author has no write access (a rescreen names the account its hold names, checked below, and
+              # the head of a pull request). The account a name gives is the one whose limit the run counts on; a run
+              # by hand of a person or an App counts on none. Each task below then reads again, for the rescreen job's
+              # run, the reason why that job started it, and stops when the reason no longer holds.
               limited=""
               if [ "$ACTOR" = 'github-actions[bot]' ]; then
                 [ "$is_draft" = false ] || stop "it is a draft."
@@ -702,7 +774,7 @@ jobs:
                 known "$AUTHOR" || a=$?
                 (( a == 0 )) || of=" of $AUTHOR"
                 case $task in
-                  rescreen) want="rescreen #$NUMBER of $ACCOUNT" ;;
+                  rescreen) want="rescreen #$NUMBER${pr_head:+ at $pr_head} of $ACCOUNT" ;;
                   review|approve) want="$task #$NUMBER at $pr_head$of" ;;
                   answer) want="answer #$NUMBER for $COMMENT$of" ;;
                   draft) want="draft #$NUMBER$of" ;;
@@ -715,16 +787,20 @@ jobs:
               fi
               case $task in
                 # A held item screened again: an outsider's path, decided from what the API says now, never from the
-                # inputs alone. The item must be held, its newest hold must be one that is tried again (at the limit,
-                # at the cap, or a review that did not finish), and the run that hold names must give the account that
-                # the inputs give.
+                # inputs alone. The item must be held, its newest hold must be one that is tried again as a rescreen (at
+                # the limit, at the cap, or a review that did not finish, whose marker names no other task), and the run
+                # that hold names must give the account that the inputs give. The rescreen job's run also needs that
+                # hold to be over an hour old.
                 rescreen)
                   [ "$is_draft" = false ] || stop "it is a draft."
                   [ "$labelled" = true ] || stop "it is not labelled $HELD_LABEL."
-                  hold=$(limit_hold "$NUMBER") || fail "the comments of #$NUMBER could not be read."
-                  read -r _ origin tries _ <<< "$hold"
-                  [[ -n $origin && $origin != - ]] || stop "it has no hold that is tried again."
+                  newest
+                  [[ -n $held_run && $held_run != - ]] || stop "it has no hold that is tried again."
+                  [ "$held_task" = rescreen ] \
+                    || stop "its hold is tried again as the task $held_task, not as a rescreen."
+                  origin=$held_run tries=$held_tries
                   [[ $tries =~ ^[0-9]+$ ]] || stop "its hold names no count of tries."
+                  [ "$ACTOR" != 'github-actions[bot]' ] || again rescreen
                   account=$(held_account "$origin") || fail "run $origin could not be read."
                   [ -n "$account" ] || stop "its hold names no run whose account this workflow can tell."
                   [ "$ACCOUNT" = "$account" ] || stop "the account its hold names is $account, not ${ACCOUNT:-none}."
@@ -746,7 +822,9 @@ jobs:
                   fi
                   [ "$SCREEN" != true ] || route screen ""
                   route review "" ;;
-                # The answer to a comment of the item's author, as for the event issue_comment.
+                # The answer to a comment of the item's author, as for the event issue_comment. The rescreen job's run
+                # needs the comment to wait still (waiting), and a hold of an answer that it tries again to be over an
+                # hour old.
                 answer)
                   [ -n "$COMMENT" ] || stop "it names no comment to answer."
                   who=$(comment_author) || fail "comment $COMMENT could not be read."
@@ -756,23 +834,41 @@ jobs:
                   known "$AUTHOR" || a=$?
                   (( a != 0 )) || stop "its author $AUTHOR has write access."
                   [ "$kind" = pr ] || replied || stop "its first reply has not posted."
+                  if [ "$ACTOR" = 'github-actions[bot]' ]; then
+                    waits=$(waiting "$NUMBER" "$AUTHOR" "$kind") || fail "the comments of #$NUMBER could not be read."
+                    grep -q " $COMMENT\$" <<< "$waits" \
+                      || stop "comment $COMMENT waits for no answer: the workflow answered, reviewed or held it after it."
+                    newest
+                    again answer
+                  fi
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   screened "$AUTHOR" "$limited" ;;
-                # The draft of the reply to an outside author's issue.
+                # The draft of the reply to an outside author's issue. The rescreen job's run needs no stored draft and
+                # no posted reply, a newest hold, if there is one, that is tried again, and a hold of a draft that that
+                # job tries again to be over an hour old.
                 draft)
                   a=0
                   known "$AUTHOR" || a=$?
                   (( a != 0 )) || stop "its author $AUTHOR has write access."
+                  if [ "$ACTOR" = 'github-actions[bot]' ]; then
+                    if stored; then stop "the draft of its reply is stored, or its reply posted."; fi
+                    newest
+                    [ "${held_run:-}" != - ] || stop "its newest hold is not tried again."
+                    again draft
+                  fi
                   screened "$AUTHOR" "$limited" ;;
                 # A reply text that Sami approved: no screen and no model.
                 reply) route review "" ;;
                 # The screen of a first-time contributor's pull request, and the approval of its held runs when it
-                # passes. The rescreen job's run needs held runs at the head.
+                # passes. The rescreen job's run needs held runs at the head, and a hold of an approval that it tries
+                # again to be over an hour old.
                 approve)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
                     n=$(held_runs) || fail "the runs of $pr_head could not be read."
                     (( n > 0 )) || stop "GitHub holds no run of $pr_head."
+                    newest
+                    again approve
                   fi
                   screened "$AUTHOR" "$limited" ;;
                 # The comment that asks the author to resolve a merge conflict, while the conflict is there.
@@ -2564,24 +2660,25 @@ jobs:
   # the label review-held, and one comment that says it was held, which a later hold replaces. The comment says
   # nothing of why the screen held it: the screen job's one output is its verdict. A hold that the rescreen job tries
   # again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which that job finds it and the account:
-  # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or
-  # transient, a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES
-  # times. <run> is the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened reviews
-  # of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
+  # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient, a screened
+  # review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES times. <run> is the run
+  # of the event this hold comes from (a run that takes the hold again keeps it), and <tries> the screened reviews of
+  # it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
   # <!-- review-held-<kind> <run> <tries> answer <comment id> -->, and the marker of a draft's hold with the task:
-  # <!-- review-held-<kind> <run> <tries> draft -->, so that the draft is tried again as a draft, which posts nothing,
-  # and never as a review. Such a hold gives the UTC time when the item is tried again, and no state label: the
-  # workflow still works on the item. An answer's hold of that kind leaves the state label as it is: the state of the
-  # item does not wait for the answer. An approval has no review, so it is held only at the limit, with the marker
-  # <!-- review-held-limit <run> <tries> approve -->, or by its screen, whose hold says that the checks of the pull
-  # request have not run. A hold that is not tried again (the screen's, or the last try of a review, an answer or a
-  # draft) gives waits-on-theorem and a label comment that names Sami's next step (.github/review/rules.py, from
-  # main's checkout of .github/). A cancelled screen holds nothing, nor a screened review or answer that a newer run
-  # of the same item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts
-  # with "Sign in" failed in this attempt of the run, in any of its jobs.
-  # Such a run judged nothing of the item, so it gets no comment, no label and no try, and the schedule takes the item
-  # again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this
-  # job, which reads this attempt's jobs first and stops.
+  # <!-- review-held-<kind> <run> <tries> draft -->, so that the rescreen job tries the answer again as the answer of
+  # that comment, and the draft as a draft, which posts nothing, and never either as a review. Such a hold gives the
+  # UTC time when the item is tried again, and no state label: the workflow still works on the item. An answer's hold
+  # of that kind leaves the state label as it is: the state of the item does not wait for the answer. An approval has
+  # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, or by
+  # its screen, whose hold says that the checks of the pull request have not run. A hold that is not tried again (the
+  # screen's, or the last try of a review, an answer or a draft) gives waits-on-theorem and a label comment that names
+  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). Each hold of a pull request also
+  # names the head that the run read, in the marker <!-- review-held-head <head> -->, by which the schedule tells which
+  # head a hold stops. A cancelled screen holds nothing, nor a screened review or answer that a newer run of the same
+  # item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts with "Sign in"
+  # failed in this attempt of the run, in any of its jobs. Such a run judged nothing of the item, so it gets no
+  # comment, no label and no try, and the schedule takes the item again. The if below cannot see the steps of another
+  # job, so a screen job that failed at its sign-in starts this job, which reads this attempt's jobs first and stops.
   hold:
     needs: [trust, gather, screen, review]
     if: >-
@@ -2618,6 +2715,8 @@ jobs:
       TRIES: ${{ needs.trust.outputs.tries }}
       # The comment that an answer answers, which the marker of its hold names.
       COMMENT: ${{ needs.trust.outputs.comment }}
+      # The head of a pull request, as the trust job read it, which each hold of a pull request names.
+      HEAD: ${{ needs.trust.outputs.head }}
       RUN_ID: ${{ github.run_id }}
       RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
@@ -2660,7 +2759,7 @@ jobs:
           # each hour. A limit hold says what happens if the account is still at its limit; the other holds say only
           # that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
-          again="It is screened again automatically, with no maintainer, from $next, by a check that runs every 15 minutes."
+          again="It is screened again automatically from $next, by a check that runs every 15 minutes."
           again_limit="$again If that account is still at the limit then, the check tries again later, and if the item is held again, this comment gives the new time."
           again_other="$again If it is held again, this comment says why."
           # The work that was held: the review of the item, the answer to the comments of its author, the draft of the
@@ -2775,6 +2874,11 @@ jobs:
               marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries approve -->"
             fi
           fi
+          # The head of a pull request that the run read, which the schedule reads: a hold that is not tried again
+          # stops the work on that head.
+          if [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]]; then
+            marker+=$'\n'"<!-- review-held-head $HEAD -->"
+          fi
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
           # Adding a label that does not exist makes it, so a failed creation (two holds at once) only loses its colour
           # and its description.
@@ -2796,25 +2900,58 @@ jobs:
           fi
           python3 .github/review/rules.py label "$NUMBER" "$fact=true"
 
-  # The schedule's job, in the public repository alone: each open pull request or issue whose newest hold is one that
-  # is tried again, over an hour old, is screened again by a run of this file that this job starts (-f task=rescreen,
-  # the top of this file). Those holds: at OUTSIDE_HOURLY_LIMIT; of a screened review stopped at SCREENED_HOURLY_CAP;
-  # and of a screened review that failed or ran out of time, under REVIEW_TRIES. Never one that the screen held: that
-  # item waits on Sami. Oldest hold first, each account gets at most OUTSIDE_HOURLY_LIMIT rescreens an hour, less
-  # those it had in the last hour; the trust job of each run counts again, with the account's own events, and holds
-  # the item again at the limit, with a comment that says when it is tried next. A failed read or start leaves that
-  # item for the next run and fails this job. An item whose rescreens since its hold reach REVIEW_TRIES with no new
-  # hold and no posted review (a run that failed on a GitHub read, say) is not started again: this job gives it
-  # waits-on-theorem, with the label comment's step "Sami reads the runs and starts the work again"
-  # (.github/review/rules.py, from main's checkout of .github/), replaces its hold comment with one that says that it
-  # is not screened again automatically, with no marker, and fails for that run. Before that, each try waits until the
-  # newest rescreen since the hold is over an hour old, as the first waits on the hold.
+  # The schedule's job, in the public repository alone. Every 15 minutes it starts, on main, the runs of this file that
+  # the open items are due, at most one for each item and task (-f task=<task>, the top of this file):
+  #   held      the work that a hold names, once the hold is over an hour old: a hold at OUTSIDE_HOURLY_LIMIT, of a
+  #             screened review stopped at SCREENED_HOURLY_CAP, or of a screened review, answer or draft that failed or
+  #             ran out of time, under REVIEW_TRIES. The marker of the hold names the task: answer (with the comment
+  #             that it answers), draft or approve, and else rescreen. Never a hold that is not tried again (the
+  #             screen's, or a last try): that item waits on Sami.
+  #   answer    a comment of an outside item's author that waits for an answer (as the gather job lists them) and is
+  #             over 15 minutes old, on an issue only after its first reply posted: once for each comment, then once
+  #             an hour while the runs of that comment end at a failed sign-in.
+  #   draft     an outside issue whose label comment holds no stored draft and no posted reply, once an hour after its
+  #             newest draft run ended.
+  #   approve   a first-time contributor's pull request whose head has runs that GitHub holds, while no approval run
+  #             screened that head with a verdict since the newest held run (its screen job passed and its post job
+  #             did not fail, or a hold that is not tried again names the head), once an hour.
+  #   retry     the App's retry: a run of a head whose post job failed, at a sign-in (until the environment post holds
+  #             the App's key) or at a write of the App, gets an approval again for an approval, a relabel for a review
+  #             or a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an
+  #             hour.
+  # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
+  # try of the head. After REVIEW_TRIES of them, the item gets a hold comment that names the head and says that its
+  # automated work did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami
+  # reads the runs and starts the work again" (.github/review/rules.py, from main's checkout of .github/), and this
+  # job fails for that run.
+  # Never for a draft pull request, a closed item, or a pull request into another branch than main, and nothing for an
+  # item while a run of it has not finished: its screen and review can outlast the 15 minutes between runs, and a
+  # second run would use the hour's screens twice. It reads this workflow's runs of the last 8 days by their names: the
+  # runs by hand one day at a time, as a list with created gives at most 1,000 runs and the App's retry can start 24 a
+  # day for each item, and the runs of workflow_run, issue_comment and issues once each; never the scheduled runs. It
+  # reads the jobs only of the runs that decide an item. Oldest reason first, each account gets at most
+  # OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose name
+  # ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job of
+  # each run counts again, with the account's own events, and holds the item again at the limit. A catch-up, a
+  # conflict and a relabel screen nothing, run no model and count toward no limit. The trust job of each run reads
+  # again from the API why this job started it, and stops when the reason no longer holds.
+  # The work that a hold names is tried up to REVIEW_TRIES times since the hold: each run of its task since the hold
+  # counts, as one that ended with neither a new hold nor a post (either would have replaced the hold or taken its
+  # label off), and each try waits until the newest such run is over an hour old, as the first waits on the hold. Then
+  # this job gives the item waits-on-theorem, with the same step for Sami, replaces its hold comment with one that says
+  # that the work is not tried again, and fails for that run. A hold whose newest run of its task had a post job that
+  # approved held runs or recorded the import check run is settled: it counts no try and starts nothing, and the held
+  # runs decide an approval.
+  # Each reason is a function due_<reason> of the step below, which consider calls for each open item. A failed read
+  # or start for one item leaves that item for the next run: the job goes on with the others, and fails at the end.
   # It is the only job of this file whose own token has actions: write, which starting a run needs, and it uses that
   # right only to start runs: it approves no held run (the post job does, with the OSS Verify App's token, and only that
-  # job holds the App's key). Its issues and pull-requests: write let it set that label and replace that hold comment,
-  # and contents: read checks out main's .github/. It holds no model, and writes nothing but those runs, those labels
-  # and those comments. Its cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose
-  # minutes GitHub does not bill in a public repository.
+  # job holds the App's key). A run that this token starts starts no run of another workflow when it ends, and none
+  # needs to: an approval and a reopen start CI with the App's token, in the post job. Its issues and pull-requests:
+  # write let it set labels and write hold comments, checks: read lets it read the check runs of a head, and contents:
+  # read checks out main's .github/. It holds no model, and writes nothing but those runs, labels and comments. Its
+  # cost: one job of a few seconds every 15 minutes, 96 runs a day on a standard runner, whose minutes GitHub does not
+  # bill in a public repository.
   rescreen:
     if: >-
       github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -2823,12 +2960,12 @@ jobs:
     timeout-minutes: 10
     # One at a time, so that two runs cannot start the same item.
     concurrency: {group: review-rescreen, cancel-in-progress: false}
-    permissions: {actions: write, contents: read, issues: write, pull-requests: write}
+    permissions: {actions: write, issues: write, pull-requests: write, checks: read, contents: read}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
-      - name: Start the screen again of each held item whose hold is over an hour old
+      - name: Start the runs that the open items are due
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -2836,30 +2973,80 @@ jobs:
           set -euo pipefail
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
-          # Without a posted review the label never comes off, so every held item would be screened and reviewed again
-          # up to REVIEW_TRIES times for nothing, and then left to a person.
+          # Without a posted review, answer or label comment, no run that this job starts settles an item: every held
+          # item would be tried again up to REVIEW_TRIES times for nothing, and then left to Sami.
           if [ "$POST_REVIEW" != true ]; then
-            echo "::notice::POST_REVIEW is not true: reviews are not posted, so held items are not screened again."
+            echo "::notice::POST_REVIEW is not true: reviews are not posted, so the schedule starts no run."
             exit 0
           fi
+          seen=$(mktemp -d -p "$RUNNER_TEMP")
+          # trusted
+          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
+          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          trusted() {
+            local permission
+            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
+            [[ ,$APPS, != *",$1,"* ]] || return 0
+            [[ $1 != *'[bot]' ]] || return 1
+            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+            [[ $permission == admin || $permission == write ]]
+          }
+          # end of trusted
           # held
           # titled: the names of the runs that the rescreen job starts and that name an account (run-name):
           # <task> #<n>[ at <head>][ for <comment>] of <login>. BASH_REMATCH[2] is then the number, and [5] the login.
           titled='^(rescreen|review|answer|draft|approve) #([1-9][0-9]*)( at [0-9a-f]{40})?( for [1-9][0-9]*)? of ([A-Za-z0-9-]+(\[bot\])?)$'
-          # limit_hold <number>: "<time> <run> <tries> <kind>" of the newest hold comment of <number> when it is one
-          # that the rescreen job tries again (its marker <!-- review-held-<kind> <run> <tries> -->): <kind> is limit
-          # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review that failed or ran out of
-          # time), <run> the run of the event this hold comes from (a rescreen keeps it), and <tries> the screened
-          # reviews of it that failed so far.
+          # comments <number>: each comment of <number>, one JSON object on each line, as GitHub lists them. They are
+          # read once in this step, and kept in $seen, a directory that the step makes for itself.
+          comments() {
+            local file=$seen/comments-$1
+            if [ ! -f "$file" ]; then
+              gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[] | @json' > "$file.part" || return 1
+              mv "$file.part" "$file"
+            fi
+            cat "$file"
+          }
+          # limit_hold <number>: "<time> <run> <tries> <kind> <task> <comment>" of the newest hold comment of <number>
+          # when it is one that the rescreen job tries again (its marker
+          # <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit (OUTSIDE_HOURLY_LIMIT),
+          # cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that failed or ran out of time),
+          # <run> the run of the event this hold comes from (a run that takes the hold again keeps it), <tries> the
+          # screened reviews of it that failed so far, <task> the task that takes it again (answer, draft or approve as
+          # the marker names it; rescreen for a marker with no task, or with review), and <comment> the comment that a
+          # held answer answers (- for none).
           # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
           # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
-            gh api --paginate "repos/$REPO/issues/$1/comments" --jq '.[]
-              | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+            comments "$1" | jq -r 'select(.user.login == "github-actions[bot]"
+                and (.body | startswith("<!-- review-held -->")))
               | "\(.updated_at) \((.body
-                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+))? -->(\n|$)")
-                  | "\(.run) \(.tries // "0") \(.kind)") // "-")"' \
+                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve|review|rescreen)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
+                  | "\(.run) \(.tries // "0") \(.kind) \(if (.task // "review") == "review" then "rescreen" else .task end) \(.comment // "-")") // "-")"' \
               | sort | tail -n 1
+          }
+          # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
+          # <author> on <number> (a pull request when <kind> is pr) that waits for an answer, oldest first: each one
+          # after the workflow's newest review, answer, fix review or hold, as the gather job lists them for an answer
+          # (answer-to.json). A hold that the workflow tries again as an answer answers nothing.
+          waiting() {
+            local found
+            found=$(comments "$1" | jq -c '{made: .created_at, at: .updated_at, id, author: .user.login,
+              own: (.user.login == "github-actions[bot]" and ((.body // "") as $b
+                | ($b | test("^<!-- review(-answer [0-9]+| -->|-held -->)"))
+                  and ($b | test("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer [0-9]+ -->(\n|$)") | not)))}') \
+              || return 1
+            if [ "$3" = pr ]; then
+              found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/reviews" --jq '.[] | {made: .submitted_at,
+                at: .submitted_at, id, author: .user.login, text: ((.body // "") | test("\\S")),
+                own: (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-fix ")))}
+                | @json') || return 1
+              found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/comments" \
+                --jq '.[] | {made: .created_at, id, author: .user.login, own: false} | @json') || return 1
+            fi
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            AUTHOR_OF=$2 jq -rs '([.[] | select(.own) | .at] | map(strings) | max // "") as $since
+              | .[] | select(.author == $ENV.AUTHOR_OF and .text != false and (.made // "") > $since)
+              | "\(.made) \(.id)"' <<< "$found" | sort
           }
           # held_account <run>: the account whose limit a hold of <run> counts on, when <run> is a run of this
           # workflow: the account that started it, for a run of workflow_run, issues or issue_comment; the account its
@@ -2890,141 +3077,552 @@ jobs:
             esac
           }
           # end of held
-          from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-          since=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
-          # This workflow's runs of the last 3 hours, by their names: an item with a run not finished, of any task, is
-          # not started again, because its screen and review can outlast this job's 15 minutes, and a second run would
-          # use the hour's screened reviews twice; and the runs of the last hour that this job starts count toward each
-          # account's limit (their names, which their trust job checks, end with the account). 3 hours cover a run's
-          # jobs and their time in the queue. A name gives its item as #<n>, which ends at a space or at the end of the
-          # name; a workflow_run's name gives its head, which the open pull requests map to its pull request.
-          runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
-            -f created=">=$since" -F per_page=100 \
-            --jq '.workflow_runs[]
-              | "\(.created_at // "-") \(.status // "-") \(.event // "-") \(.display_title // "" | gsub("[\r\n]"; " "))"') \
-            || { echo "::error::the runs of this workflow could not be read."; exit 1; }
-          declare -A used=() running=() heads=()
-          item_re='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel) #([0-9]+)( |$)'
-          pushed_re='^review ([0-9a-f]{40}) by '
-          while read -r created status event title; do
-            # Only this workflow's own events name a run: a fork's pull request can run its own copy of this file
-            # (event pull_request) under any name.
-            case $event in workflow_run|issues|issue_comment|workflow_dispatch) ;; *) continue ;; esac
-            if [[ $event == workflow_dispatch && ${title:-} =~ $titled && ! $created < $from ]]; then
-              used[${BASH_REMATCH[5]}]=$(( ${used[${BASH_REMATCH[5]}]:-0} + 1 ))
-            fi
-            [ "$status" != completed ] || continue
-            if [[ ${title:-} =~ $item_re ]]; then
-              running[${BASH_REMATCH[2]}]=1
-            elif [[ $event == workflow_run && ${title:-} =~ $pushed_re ]]; then
-              heads[${BASH_REMATCH[1]}]=1
-            fi
-          done <<< "$runs"
-          if (( ${#heads[@]} > 0 )); then
-            open=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[] | "\(.head.sha) \(.number)"') \
-              || { echo "::error::the open pull requests could not be read."; exit 1; }
-            while read -r sha number; do
-              if [ -n "${sha:-}" ] && [ -n "${heads[$sha]:-}" ]; then running[$number]=1; fi
-            done <<< "$open"
-          fi
-          # Not a draft: the trust job takes none, and a run it stops would still count toward the account's limit.
-          # Marking it ready starts its own run.
-          numbers=$(gh api --paginate "repos/$REPO/issues?state=open&labels=$HELD_LABEL&per_page=100" \
-            --jq '.[] | select(.state == "open" and ((.draft // false) | not)) | .number') \
-            || { echo "::error::the held pull requests and issues could not be read."; exit 1; }
+          hour=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
+          quarter=$(date -u -d '-15 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          first=$(date -u -d '-7 days' +%Y-%m-%d)
           failed=0
-          : > "$RUNNER_TEMP/due"
-          for number in $numbers; do
-            [[ $number =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $number"; exit 1; }
+          # The open pull requests: the head, the base, and whether each is a draft. A workflow_run's name gives its
+          # head, which they map to its pull request.
+          pulls=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | "\(.number) \(.head.sha) \(.base.ref) \((.draft // false) | tostring)"') \
+            || { echo "::error::the open pull requests could not be read."; exit 1; }
+          declare -A pr_of=() pr_head=() pr_base=() pr_draft=()
+          while read -r n sha base draft; do
+            [[ ${n:-} =~ ^[1-9][0-9]*$ && ${sha:-} =~ ^[0-9a-f]{40}$ ]] || continue
+            pr_of[$sha]=$n pr_head[$n]=$sha pr_base[$n]=$base pr_draft[$n]=$draft
+          done <<< "$pulls"
+          # This workflow's runs of the last 8 days, by their names: the runs by hand one day at a time, the runs of
+          # each event once, and never the scheduled runs. row gives each run on one line: "<id> <created> <ended>
+          # <status> <conclusion> <event> <name>", - for none (ended, for a run that is not completed).
+          row='def row: "\(.id) \(.created_at // "-") \(if .status == "completed"
+            then (.updated_at // .created_at // "-") else "-" end) \(.status // "-") \(.conclusion // "-") \(.event) \(
+            .display_title // "" | gsub("[\r\n]"; " "))";'
+          : > "$seen/listed"
+          for back in 7 6 5 4 3 2 1 0; do
+            day=$(date -u -d "-$back days" +%Y-%m-%d)
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            DAY=$day gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+              -f event=workflow_dispatch -f created="$day" -F per_page=100 --jq "$row"' .workflow_runs[]
+                | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row' \
+              >> "$seen/listed" || { echo "::error::the runs of $day could not be read."; exit 1; }
+          done
+          for event in workflow_run issue_comment issues; do
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            EVENT=$event FROM="${first}T00:00:00Z" gh api --method GET --paginate \
+              "repos/$REPO/actions/workflows/review.yml/runs" -f event="$event" -f created=">=${first}T00:00:00Z" \
+              -F per_page=100 --jq "$row"' .workflow_runs[]
+                | select(.event == $ENV.EVENT and (.created_at // "") >= $ENV.FROM) | row' \
+              >> "$seen/listed" || { echo "::error::the runs of the event $event could not be read."; exit 1; }
+          done
+          # Each run that names an item, in $seen/runs: "<id> <created> <ended> <status> <conclusion> <event> <number>
+          # <task> <head> <comment> <account>", - for none. A name gives its task and its item (run-name): #<n> ends at
+          # a space or at the end of the name, so that #12 is never #123, and a workflow_run's name gives its head,
+          # which the open pull requests map to its pull request. An item with a run that has not finished, of any
+          # task, gets no run (running).
+          named='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel) #([1-9][0-9]*)( at ([0-9a-f]{40}))?( for ([1-9][0-9]*))?( of ([A-Za-z0-9-]+(\[bot\])?))?$'
+          pushed='^review ([0-9a-f]{40}) by '
+          opened='^review #([1-9][0-9]*)$'
+          answered='^answer #([1-9][0-9]*) by '
+          declare -A running=()
+          : > "$seen/runs"
+          while read -r id created ended status conclusion event title; do
+            [[ ${id:-} =~ ^[1-9][0-9]*$ ]] || continue
+            number="" task="" head=- comment=- account=-
+            case $event in
+              workflow_dispatch)
+                [[ ${title:-} =~ $named ]] || continue
+                task=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]} head=${BASH_REMATCH[4]:--}
+                comment=${BASH_REMATCH[6]:--} account=${BASH_REMATCH[8]:--} ;;
+              workflow_run)
+                [[ ${title:-} =~ $pushed ]] || continue
+                task=review head=${BASH_REMATCH[1]}
+                number=${pr_of[$head]:-} ;;
+              issues)
+                [[ ${title:-} =~ $opened ]] || continue
+                task=review number=${BASH_REMATCH[1]} ;;
+              issue_comment)
+                [[ ${title:-} =~ $answered ]] || continue
+                task=answer number=${BASH_REMATCH[1]} ;;
+              *) continue ;;
+            esac
+            [ -n "$number" ] || continue
+            [ "$status" = completed ] || running[$number]=1
+            echo "$id $created $ended $status $conclusion $event $number $task $head $comment $account" >> "$seen/runs"
+          done < "$seen/listed"
+          # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <counts>", - for
+          # none. signin: a step whose name starts with "Sign in" failed in a job of the run, which so judged nothing.
+          # screen: the conclusion of its screen job. post: the conclusion of its post job, signin for one that failed
+          # at such a step and failure for one that failed at another (a write of the App, say). settled: its post job
+          # approved held runs or recorded the import check run. counts: count when the run counts toward the limit of
+          # the account that its name ends with, as the trust job's earlier counts it (not a run that its trust job
+          # refused, nor one whose screen or review could not sign in), else skip.
+          facts() {
+            local file=$seen/jobs-$1
+            if [ ! -f "$file" ]; then
+              gh api --method GET --paginate "repos/$REPO/actions/runs/$1/jobs" -F per_page=100 --jq '.jobs[] | @json' \
+                > "$file.part" || return 1
+              mv "$file.part" "$file"
+            fi
+            jq -rs 'def signed_out:
+                any(.steps[]?; ((.name // "") | startswith("Sign in")) and .conclusion == "failure");
+              (map(select(.name == "trust")) | first) as $t | (map(select(.name == "post")) | first) as $p
+              | map(select(.name != "trust" and .name != "rescreen")) as $rest
+              | [(if any(.[]; signed_out) then "signin" else "-" end),
+                 ((map(select(.name | test("^screen( |$)"))) | first | .conclusion) // "-"),
+                 (if $p == null then "-" elif $p.conclusion != "failure" then ($p.conclusion // "running")
+                  elif ($p | signed_out) then "signin" else "failure" end),
+                 (if $p != null and any($p.steps[]?; .conclusion == "success" and (.name
+                    | IN("Approve the held runs of the screened head", "Record the import check of the head")))
+                  then "settled" else "-" end),
+                 (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
+                  elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
+                  then "skip"
+                  elif any($rest[] | select(.name | test("^(screen|review)( |$)")); signed_out) then "skip"
+                  else "count" end)] | join(" ")' "$file"
+          }
+          declare -A used=() paced=() owed=() access=()
+          # pace <login>: used[<login>], the runs of the last hour whose names end with " of <login>" and that count
+          # toward its limit (facts), with the runs that this job started for it in this run.
+          pace() {
+            local id f
+            [ -z "${paced[$1]:-}" ] || return 0
+            used[$1]=0
+            while read -r id; do
+              f=$(facts "$id") || { echo "::error::the jobs of run $id could not be read."; return 1; }
+              [ "${f##* }" != count ] || used[$1]=$(( ${used[$1]} + 1 ))
+            done < <(awk -v a="$1" -v from="$hour" '$6 == "workflow_dispatch" && $11 == a && $2 >= from &&
+              $8 ~ /^(rescreen|review|answer|draft|approve)$/ { print $1 }' "$seen/runs")
+            paced[$1]=1
+          }
+          : > "$seen/due"
+          # owe <at> <task> <account> <head> <comment> <why>: #number is due a run of <task>, for <account> (empty for
+          # none), at most one for each item and task. The runs start oldest <at> (when the reason began) first.
+          owe() {
+            local key=$number:$2
+            [ -z "${owed[$key]:-}" ] || return 0
+            owed[$key]=1
+            echo "$1 $number $2 ${3:--} ${4:--} ${5:--} $6" >> "$seen/due"
+          }
+          # runs_of <tasks> [<head>] [<event>]: "<created> <ended> <run>" of each run of #number of a task of <tasks>
+          # (a regular expression), of <head> and of <event> when they are given, oldest first.
+          runs_of() {
+            awk -v n="$number" -v re="^($1)\$" -v h="${2:-}" -v e="${3:-}" '$7 == n && $8 ~ re &&
+              (h == "" || $9 == h) &&
+              (e == "" || $6 == e) { print $2, $3, $1 }' "$seen/runs" | sort
+          }
+          # newest_hold: "<time> <id> <head>" of the newest hold comment of #number, with the head that it names (- for
+          # none).
+          newest_hold() {
+            comments "$number" | jq -r 'select(.user.login == "github-actions[bot]"
+                and ((.body // "") | startswith("<!-- review-held -->")))
+              | "\(.updated_at) \(.id) \((.body
+                  | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "-")"' \
+              | sort | tail -n 1
+          }
+          # marks_of: marks, the markers of the label comment of #number that this job reads, one on each line: draft
+          # for the stored draft of its reply, and replied for a reply that posted.
+          marks_of() {
+            [ -z "$marks_read" ] || return 0
+            marks=$(comments "$number" | jq -r 'select(.user.login == "github-actions[bot]"
+                and ((.body // "") | startswith("<!-- review-label -->")))
+              | (if (.body | test("(^|\n)<!-- issue-draft [0-9]+-[0-9]+ -->(\n|$)")) then "draft" else empty end),
+                (if (.body | test("(^|\n)<!-- issue-reply-posted [0-9]+ -->(\n|$)")) then "replied" else empty end)' \
+              | sort -u) || { echo "::error::the comments of #$number could not be read."; return 1; }
+            marks_read=1
+          }
+          # waits_of: waits, the comments of the author of #number that wait for an answer (waiting).
+          waits_of() {
+            [ -z "$waits_read" ] || return 0
+            waits=$(waiting "$number" "$author" "$kind") \
+              || { echo "::error::the comments of #$number could not be read."; return 1; }
+            waits_read=1
+          }
+          # say_held <id> <title> <text>: the hold comment of #number with <title> and <text>, which names the head of a
+          # pull request and holds no marker of a hold that is tried again, in the place of the comment <id> (- for a
+          # new comment).
+          say_held() {
+            local body
+            body=$(printf '%s\n%s\n\n%s' '<!-- review-held -->' "**$2**" "$3")
+            [ -z "$head" ] || body+=$'\n\n'"<!-- review-held-head $head -->"
+            if [ "$1" != - ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$1" -f body="$body" --jq .html_url
+            else
+              gh api --method POST "repos/$REPO/issues/$number/comments" -f body="$body" --jq .html_url
+            fi
+          }
+          # stopped <task> <tries>: the work of the hold is not tried again, after <tries> runs of <task>. Only while
+          # the newest hold comment is still the one read above (at h_at): a newer hold (a new event's, or a run's that
+          # finished meanwhile) is not overwritten, and the next run decides from it. waits-on-theorem first, so that a
+          # label that could not be set leaves the hold comment's marker, and the next run tries both again. A comment
+          # that could not be replaced keeps its marker, and the next run tries again. This run fails for it.
+          stopped() {
+            local newest at id title work what
+            newest=$(gh api --paginate "repos/$REPO/issues/$number/comments" --jq '.[]
+              | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
+              | "\(.updated_at) \(.id)"' | sort | tail -n 1) \
+              || { echo "::error::the comments of #$number could not be read."; return 1; }
+            read -r at id <<< "$newest"
+            if [ "${at:-}" != "$h_at" ]; then
+              echo "#$number: its hold changed (${at:-none}, read at $h_at) since this run read it: left for the next" \
+                "run."
+              return 0
+            fi
+            echo "::error::#$number: $1 ran $2 times since its hold at $h_at, with no new hold and nothing posted: it" \
+              "is not tried again, and the label comment names the next step for Sami."
+            failed=1
+            [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::#$number has no hold comment to replace."; return 0; }
+            python3 .github/review/rules.py label "$number" tries_used_up=true \
+              || { echo "::error::the label of #$number could not be set; the next run tries again."; return 0; }
+            case $1 in
+              answer) title="Automated answer held." work="the automated answer" ;;
+              draft) title="Automated reply held." work="the automated draft of a reply" ;;
+              approve) title="Automated approval held." work="the automated approval of its checks" ;;
+              *) title="Automated review held." work="the automated review" ;;
+            esac
+            what="this issue"
+            [ "$kind" != pr ] || what="this pull request"
+            say_held "$id" "$title" "The workflow tried $work again $2 times after it held $what, and none of these tries finished. It is not tried again. Sami reads the runs and starts the work again. You do not need to do anything." \
+              || echo "::error::the hold comment of #$number could not be replaced; the next run tries again."
+          }
+          # head_stopped <work> <tries>: the automated <work> of the head of #number did not finish after <tries> tries,
+          # and is not tried again: waits-on-theorem, with the label comment's step "Sami reads the runs and starts the
+          # work again", then a hold comment that says so and names the head, in the place of the newest hold comment.
+          # That hold stops each later try of the head. This run fails for it.
+          head_stopped() {
+            local line id title
+            echo "::error::#$number: the automated $1 of $head did not finish after $2 tries: it is not tried again," \
+              "and the label comment names the next step for Sami."
+            failed=1
+            python3 .github/review/rules.py label "$number" tries_used_up=true \
+              || { echo "::error::the label of #$number could not be set; the next run tries again."; return 0; }
+            line=$(newest_hold) || { echo "::error::the comments of #$number could not be read."; return 0; }
+            read -r _ id _ <<< "$line"
+            case $1 in
+              review) title="Automated review held." ;;
+              "approval of its checks") title="Automated approval held." ;;
+              "import check") title="Automated import check held." ;;
+              *) title="Automated catch-up held." ;;
+            esac
+            say_held "${id:--}" "$title" \
+              "The automated $1 of this head did not finish after $2 tries. It is not tried again." \
+              || echo "::error::the hold comment of #$number could not be written; the next run tries again."
+          }
+          # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
+          # whose post job succeeded, how many failed in the post job at a step that is not a sign-in (at most
+          # REVIEW_TRIES): each counts a try of the head.
+          failures() {
+            local n=0 run f post
+            while read -r _ _ run; do
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read." >&2; return 1; }
+              read -r _ _ post _ <<< "$f"
+              [ "$post" != success ] || break
+              [ "$post" != failure ] || n=$((n + 1))
+              (( n < REVIEW_TRIES )) || break
+            done < <(runs_of "$1" "$head" | sort -r)
+            echo "$n"
+          }
+          # due_held: the work that the newest hold of #number names, labelled review-held, once the hold is over an
+          # hour old. It is due while its reason holds (an answer while its comment waits, a draft while none is
+          # stored), and while its hold is not settled: the newest run of its task since the hold had no post job that
+          # approved held runs or recorded the import check run. Each run of its task since the hold is a try that
+          # settled nothing (a review's hold is taken again as a rescreen, and counts the rescreens and the reviews): a
+          # new hold or a post would have replaced the hold or taken its label off. After REVIEW_TRIES tries (stopped),
+          # or while the newest try is under an hour old, it is not started. retaken is the task of a hold that this
+          # takes, which the other reasons leave to it.
+          due_held() {
+            local task pattern since tries newest run f who
+            if [[ -z ${h_origin:-} || $h_origin == - ]]; then
+              echo "#$number: no hold that is tried again (the screen held it, or its tries are used up)."
+              return 0
+            fi
+            retaken=$h_task
+            [[ $h_at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+              || { echo "::error::#$number: its hold has no time."; return 1; }
+            if [[ ! $h_at < $hour ]]; then
+              echo "#$number: held at $h_at, less than an hour ago."
+              return 0
+            fi
+            task=$h_task
+            case $task in
+              answer)
+                if [ "$h_comment" = - ]; then
+                  echo "#$number: its hold of an answer names no comment: left alone."
+                  retaken=""
+                  return 0
+                fi
+                waits_of || return 1
+                if ! grep -q " $h_comment\$" <<< "$waits"; then
+                  echo "#$number: comment $h_comment waits for no answer, so its hold is settled."
+                  retaken=""
+                  return 0
+                fi ;;
+              draft)
+                marks_of || return 1
+                if [ -n "$marks" ]; then
+                  echo "#$number: its draft is stored, or its reply posted, so its hold is settled."
+                  retaken=""
+                  return 0
+                fi ;;
+            esac
+            pattern=$task
+            [ "$task" != rescreen ] || pattern='rescreen|review'
+            since=$(runs_of "$pattern" "" workflow_dispatch | awk -v at="$h_at" '$1 >= at')
+            tries=$(grep -c . <<< "$since" || true)
+            if (( tries > 0 )); then
+              read -r newest _ run <<< "$(tail -n 1 <<< "$since")"
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              if [ "$(cut -d' ' -f4 <<< "$f")" = settled ]; then
+                echo "#$number: run $run of $task approved the held runs or recorded the import check, so its hold is" \
+                  "settled."
+                retaken=""
+                return 0
+              fi
+            fi
+            if (( tries >= REVIEW_TRIES )); then
+              stopped "$task" "$tries"
+              return
+            fi
+            if (( tries > 0 )); then
+              # Spaced as the hold's own hour is, so that a short outage of GitHub does not use up the tries.
+              if [[ ! $newest < $hour ]]; then
+                echo "#$number: $task ran at $newest, less than an hour ago, with no new hold: tried again later."
+                return 0
+              fi
+              echo "#$number: $tries runs of $task since its hold settled nothing; trying again."
+            fi
+            who=$(held_account "$h_origin") || { echo "::error::run $h_origin could not be read."; return 1; }
+            if [ -z "$who" ]; then
+              echo "#$number: its hold names no run whose account this job can tell: left alone."
+              retaken=""
+              return 0
+            fi
+            # A rescreen counts on the account that the hold names; an answer, a draft and an approval on the outside
+            # author, as the trust job names them.
+            case $task in
+              rescreen) owe "$h_at" rescreen "$who" "$head" - "held at $h_at, for $who" ;;
+              answer) owe "$h_at" answer "$limited" - "$h_comment" "its answer held at $h_at" ;;
+              draft) owe "$h_at" draft "$limited" - - "its draft held at $h_at" ;;
+              approve) owe "$h_at" approve "$limited" "$head" - "its approval held at $h_at" ;;
+            esac
+          }
+          # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
+          # over 15 minutes old, on an issue only after its first reply posted. Once for each comment, then once an hour
+          # while the newest run of that comment ended at a failed sign-in. A hold of an answer that is tried again
+          # leaves the comments to that hold (due_held).
+          due_answer() {
+            local at id created ended run f
+            if [ "$kind" = issue ]; then
+              marks_of || return 1
+              grep -qx replied <<< "$marks" || return 0
+            fi
+            [ "$retaken" != answer ] || return 0
+            waits_of || return 1
+            [ -n "$waits" ] || return 0
+            read -r at id <<< "$(awk -v q="$quarter" '$1 < q' <<< "$waits" | tail -n 1)"
+            if [ -z "${id:-}" ]; then
+              echo "#$number: a comment of $author waits for an answer, and is under 15 minutes old."
+              return 0
+            fi
+            read -r created ended run <<< "$(awk -v n="$number" -v c="$id" '$6 == "workflow_dispatch" && $7 == n &&
+              $8 == "answer" && $10 == c { print $2, $3, $1 }' "$seen/runs" | sort | tail -n 1)"
+            if [ -n "${run:-}" ]; then
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              if [ "${f%% *}" != signin ]; then
+                echo "#$number: run $run took comment $id."
+                return 0
+              fi
+              if [[ ! $ended < $hour ]]; then
+                echo "#$number: run $run of comment $id could not sign in, less than an hour ago: tried again later."
+                return 0
+              fi
+            fi
+            owe "$at" answer "$limited" - "$id" "comment $id of $author waits for an answer"
+          }
+          # due_draft: the draft of the reply to an outside issue whose label comment holds neither a stored draft nor
+          # a posted reply, once an hour after its newest draft run (of its issues event, by hand or of this job) ended.
+          # Not after a hold that is not tried again (the issue waits on Sami), and not while a hold is tried again
+          # (due_held takes it).
+          due_draft() {
+            local last
+            marks_of || return 1
+            [ -z "$marks" ] || return 0
+            if [ "${h_origin:-}" = - ]; then
+              echo "#$number: its hold is not tried again, so its draft waits on Sami."
+              return 0
+            fi
+            [ -z "$retaken" ] || return 0
+            last=$(awk -v n="$number" '$7 == n && (($6 == "workflow_dispatch" && $8 == "draft") || $6 == "issues") {
+              print $3 }' "$seen/runs" | sort | tail -n 1)
+            if [ -n "$last" ] && [[ ! $last < $hour ]]; then
+              echo "#$number: its draft run ended at $last, less than an hour ago: tried again later."
+              return 0
+            fi
+            owe "${last:-$opened}" draft "$limited" - - "no draft of a reply to it is stored"
+          }
+          # due_approve: the approval of the runs of the head of #number that GitHub holds (status action_required),
+          # while no approval run screened the head with a verdict since the newest held run: its screen job passed and
+          # its post job did not fail (by the App's retry, one that failed leaves no verdict), or a hold that is not
+          # tried again names the head. Once an hour after the newest approval run of the head. A post job that failed
+          # at a step that is not a sign-in counts a try of the head; after REVIEW_TRIES of them, the head is not tried
+          # again (head_stopped). A hold of an approval that is tried again leaves it to that hold (due_held).
+          due_approve() {
+            local list n last created ended run f screen post tries
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            list=$(SHA=$head gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$head" \
+              -f status=action_required -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required"
+                and .head_sha == $ENV.SHA and .event == "pull_request") | .created_at // "-"') \
+              || { echo "::error::the runs of $head could not be read."; return 1; }
+            n=$(grep -c . <<< "$list" || true)
+            (( n > 0 )) || return 0
+            last=$(sort <<< "$list" | tail -n 1)
+            [ "$retaken" != approve ] || return 0
+            if [ "${h_origin:-}" = - ] && [ "$h_head" = "$head" ] && [[ ! $h_at < $last ]]; then
+              echo "#$number: a hold that is not tried again names $head."
+              return 0
+            fi
+            read -r created ended run <<< "$(runs_of approve "$head" workflow_dispatch | tail -n 1)"
+            if [ -n "${run:-}" ]; then
+              if [[ ! $ended < $hour ]]; then
+                echo "#$number: approval run $run of $head ended at $ended, less than an hour ago."
+                return 0
+              fi
+              if [[ ! $created < $last ]]; then
+                f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+                read -r _ screen post _ <<< "$f"
+                if [ "$screen" = success ] && [ "$post" != failure ] && [ "$post" != signin ]; then
+                  echo "#$number: run $run screened $head with a verdict."
+                  return 0
+                fi
+                if [ "$post" = failure ]; then
+                  tries=$(failures approve) || return 1
+                  if (( tries >= REVIEW_TRIES )); then
+                    head_stopped "approval of its checks" "$tries"
+                    return 0
+                  fi
+                fi
+              fi
+            fi
+            owe "$last" approve "$limited" "$head" - "GitHub holds $n runs of $head"
+          }
+          # due_retry <tasks> <task> <work>: the App's retry. When the post job of the newest run of the head of #number
+          # of a task of <tasks> failed, at a sign-in or at a write of the App, the head is due <task> again, once an
+          # hour after that run ended. A post job that failed at a step that is not a sign-in counts a try of the head;
+          # after REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped).
+          due_retry() {
+            local created ended run f post tries
+            read -r created ended run <<< "$(runs_of "$1" "$head" | tail -n 1)"
+            [ -n "${run:-}" ] || return 0
+            f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+            read -r _ _ post _ <<< "$f"
+            [ "$post" = signin ] || [ "$post" = failure ] || return 0
+            if [[ ! $ended < $hour ]]; then
+              echo "#$number: the post job of run $run failed, less than an hour ago: tried again later."
+              return 0
+            fi
+            if [ "$post" = failure ]; then
+              tries=$(failures "$1") || return 1
+              if (( tries >= REVIEW_TRIES )); then
+                head_stopped "$3" "$tries"
+                return 0
+              fi
+            fi
+            owe "$ended" "$2" "" "$head" - "the post job of run $run failed"
+          }
+          # consider: the runs that #number is due, by each reason above (due_*), in order. A read that fails for it
+          # leaves it for the next run, and this run fails at its end.
+          consider() {
+            local head="" rc=0 outsider=false limited="" hold h_at="" h_origin="" h_tries="" h_task="" h_comment=""
+            local h_head=- line retaken="" waits="" waits_read="" marks="" marks_read=""
+            if [ "$draft" != false ]; then
+              echo "#$number: a draft, of which the trust job takes no run."
+              return 0
+            fi
+            if [ "$kind" = pr ]; then
+              head=${pr_head[$number]:-}
+              if [ -z "$head" ]; then
+                echo "#$number: not in the list of open pull requests: left for the next run."
+                return 0
+              fi
+              if [ "${pr_draft[$number]}" != false ]; then
+                echo "#$number: a draft, of which the trust job takes no run."
+                return 0
+              fi
+              if [ "${pr_base[$number]}" != main ]; then
+                echo "#$number: into ${pr_base[$number]}, not main."
+                return 0
+              fi
+            fi
             if [ -n "${running[$number]:-}" ]; then
               echo "#$number: a run of it has not finished."
+              return 0
+            fi
+            if [ -z "${access[$author]:-}" ]; then
+              trusted "$author" || rc=$?
+              (( rc != 2 )) || { echo "::error::GitHub did not say whether $author has write access."; return 1; }
+              access[$author]=$rc
+            fi
+            if (( ${access[$author]} != 0 )); then outsider=true limited=$author; fi
+            [ "$labelled" = true ] || [ "$outsider" = true ] || return 0
+            hold=$(limit_hold "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
+            read -r h_at h_origin h_tries _ h_task h_comment <<< "$hold"
+            if [ "$labelled" = true ]; then due_held || return 1; fi
+            [ "$outsider" = true ] || return 0
+            due_answer || return 1
+            if [ "$kind" = issue ]; then
+              due_draft || return 1
+              return 0
+            fi
+            line=$(newest_hold) || { echo "::error::the comments of #$number could not be read."; return 1; }
+            read -r _ _ h_head <<< "$line"
+            h_head=${h_head:--}
+            due_approve || return 1
+            if [ "${h_origin:-}" = - ] && [ "$h_head" = "$head" ]; then
+              echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
+              return 0
+            fi
+            due_retry 'review|rescreen|relabel' relabel "import check" || return 1
+            due_retry catchup catchup catch-up || return 1
+          }
+          # The open pull requests and issues, each with its kind, whether it is a draft or labelled review-held, when
+          # it was opened, and its author.
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          items=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.state == "open")
+            | [.number, (if .pull_request then "pr" else "issue" end), (.draft // false),
+               any(.labels[]?; .name == $ENV.HELD_LABEL), (.created_at // "-"), (.user.login // "")]
+            | map(tostring) | join(" ")') \
+            || { echo "::error::the open pull requests and issues could not be read."; exit 1; }
+          while read -r number kind draft labelled opened author; do
+            [ -n "${number:-}" ] || continue
+            [[ $number =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $number"; failed=1; continue; }
+            if [ -z "${author:-}" ]; then
+              echo "#$number: GitHub names no author of it: left alone."
               continue
             fi
-            hold=$(limit_hold "$number") \
-              || { echo "::error::the comments of #$number could not be read."; failed=1; continue; }
-            read -r at origin _ <<< "$hold"
-            if [[ -z ${origin:-} || $origin == - ]]; then
-              echo "#$number: no hold that is tried again (the screen held it, or its tries are used up)."
-              continue
-            fi
-            if [[ ! $at < $from ]]; then
-              echo "#$number: held at $at, less than an hour ago."
-              continue
-            fi
-            # An item rescreened after its hold whose rescreens left neither a new hold nor a posted review is started
-            # again up to REVIEW_TRIES times in all: one such run may have failed on a GitHub read, or its hold job may
-            # have failed to write. After that the item waits on Sami, so that no item is screened and reviewed
-            # without end, and this job fails, so that someone sees it. The runs since the hold are read, however long
-            # ago it was: each run of the item that this job starts for any task a hold can name (its name, titled, ends
-            # with an account; #<n> in it ends at the space before " at", " for" or " of").
-            [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-              || { echo "::error::#$number: its hold has no time."; failed=1; continue; }
-            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            since_hold=$(AT=$at PATTERN="^(rescreen|review|answer|draft|approve) #$number( at [0-9a-f]{40})?( for [1-9][0-9]*)? of " \
-              gh api --method GET --paginate \
-              "repos/$REPO/actions/workflows/review.yml/runs" -f event=workflow_dispatch -f created=">=$at" \
-              -F per_page=100 --jq '.workflow_runs[] | select(.event == "workflow_dispatch"
-                and (.created_at // "") >= $ENV.AT and ((.display_title // "") | test($ENV.PATTERN))) | .created_at') \
-              || { echo "::error::the runs since the hold of #$number could not be read."; failed=1; continue; }
-            unsettled=$(grep -c . <<< "$since_hold" || true)
-            if (( unsettled >= REVIEW_TRIES )); then
-              # The hold comment is replaced with words that promise nothing, and with no marker, so no later run picks
-              # the item again, and this run alone fails for it. Only while the newest hold comment is still the one
-              # read above, at $at: a newer hold (a new event's, or a rescreen's that finished meanwhile) is not
-              # overwritten, and the next run decides from it. A comment that could not be replaced keeps its marker,
-              # and the next run tries again.
-              newest_hold=$(gh api --paginate "repos/$REPO/issues/$number/comments" --jq '.[]
-                | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->")))
-                | "\(.updated_at) \(.id)"' | sort | tail -n 1) \
-                || { echo "::error::the comments of #$number could not be read."; failed=1; continue; }
-              read -r now_at id <<< "$newest_hold"
-              if [ "${now_at:-}" != "$at" ]; then
-                echo "#$number: its hold changed (${now_at:-none}, read at $at) since this run read it: left for the next run."
+            consider || failed=1
+          done <<< "$items"
+          # The runs due, oldest reason first. A run that screens counts toward the limit of the account that its name
+          # ends with: at OUTSIDE_HOURLY_LIMIT runs of the last hour, the next one of that account waits for a later run
+          # of this job.
+          while read -r at number task account head comment why; do
+            [ "$account" != - ] || account=""
+            [ "$head" != - ] || head=""
+            [ "$comment" != - ] || comment=""
+            if [ -n "$account" ]; then
+              pace "$account" || { failed=1; continue; }
+              if (( ${used[$account]} >= OUTSIDE_HOURLY_LIMIT )); then
+                echo "#$number waits: $account had ${used[$account]} runs that screen in the last hour, the limit is" \
+                  "$OUTSIDE_HOURLY_LIMIT."
                 continue
               fi
-              echo "::error::#$number: screened again $unsettled times since its hold at $at, with no new hold and no" \
-                "review posted: a maintainer must look at it."
-              failed=1
-              [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::#$number has no hold comment to replace."; continue; }
-              # The work is not tried again: waits-on-theorem first, so that a label that could not be set leaves the
-              # hold comment's marker, and the next run tries both again.
-              python3 .github/review/rules.py label "$number" tries_used_up=true \
-                || { echo "::error::the label of #$number could not be set; the next run tries again."; continue; }
-              body=$(printf '%s\n%s\n\n%s\n' '<!-- review-held -->' "**Automated review held.**" \
-                "It was screened again automatically $unsettled times since it was held, and none of those runs ended in a new hold or a posted review. It is not screened again automatically. A maintainer will look at it, and can start the screen and the review with \`gh workflow run review.yml -R $REPO -f number=$number -f screen=true\`.")
-              gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url \
-                || echo "::error::the hold comment of #$number could not be replaced; the next run tries again."
-              continue
-            fi
-            if (( unsettled > 0 )); then
-              # Spaced as the hold's own hour is: the next try waits until the newest rescreen since the hold is over
-              # an hour old, so a short outage of GitHub does not use up the tries.
-              newest=$(sort <<< "$since_hold" | tail -n 1)
-              if [[ ! $newest < $from ]]; then
-                echo "#$number: rescreened at $newest, less than an hour ago, with no new hold: tried again later."
-                continue
-              fi
-              echo "#$number: $unsettled rescreens since its hold settled nothing; trying again."
-            fi
-            account=$(held_account "$origin") || { echo "::error::run $origin could not be read."; failed=1; continue; }
-            if [ -z "$account" ]; then
-              echo "#$number: its hold names no run whose account this job can tell: left alone."
-              continue
-            fi
-            echo "$at $number $account" >> "$RUNNER_TEMP/due"
-          done
-          while read -r at number account; do
-            if (( ${used[$account]:-0} >= OUTSIDE_HOURLY_LIMIT )); then
-              echo "#$number waits: $account had ${used[$account]} rescreens in the last hour, the limit is $OUTSIDE_HOURLY_LIMIT."
-              continue
             fi
             if gh api --method POST "repos/$REPO/actions/workflows/review.yml/dispatches" -f ref=main \
-                -f "inputs[number]=$number" -f "inputs[task]=rescreen" -f "inputs[account]=$account" > /dev/null; then
-              used[$account]=$(( ${used[$account]:-0} + 1 ))
-              echo "#$number: screened again (held at $at, for $account)."
+                -f "inputs[number]=$number" -f "inputs[task]=$task" -f "inputs[account]=$account" \
+                -f "inputs[head]=$head" -f "inputs[comment]=$comment" > /dev/null; then
+              [ -z "$account" ] || used[$account]=$(( ${used[$account]} + 1 ))
+              echo "#$number: started $task ($why, since $at)."
             else
-              echo "::error::the rescreen of #$number could not be started."
+              echo "::error::the run of $task for #$number could not be started."
               failed=1
             fi
-          done < <(sort "$RUNNER_TEMP/due")
+          done < <(sort "$seen/due")
           exit "$failed"
