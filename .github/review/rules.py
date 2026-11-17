@@ -21,15 +21,16 @@ label comment is one comment of github-actions[bot] on the item, edited in place
 <!-- review-label -->, its text names the next step and who takes it, and with a state label its last line is the
 marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds,
 and a marker=<line> of the same kind takes the place of that line. It holds <!-- review-conflict-state <head> -->
-while it gives the head waits-on-author for a merge conflict, and loses that line with any other state. With no state
-label, an item that has a label comment gets the text that the workflow works on the item, and an item that has none
-gets none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or person, the text
-also names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths,
-the text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
-(import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+while it gives the head waits-on-author for a merge conflict, and loses that line with any other state. In a state
+with no state label (working, or import), an item that has a label comment gets the text of its state, and an item
+that has none gets none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or
+person, the text also names the step of R12 for the import into the internal repository (import_steps), from the
+facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the
+post job's decision (import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
-make-label: makes the label <name> of LABELS with its colour and description. When it is there (HTTP 422), it sets the
-description. A failure only warns: adding a label that does not exist makes it, with no description.
+make-label: makes the label <name> of LABELS with its colour and description, or sets its description when the label
+is there with another one. It reads the label first, and writes only what differs. A failure only warns: adding a
+label that does not exist makes it, with no description.
 
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
@@ -80,8 +81,7 @@ so that the line holds no line break and no --> before its end.
 
 verdict: the review's verdict at <head> of the pull request <number>, from the marker
 <!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment of github-actions[bot] that names <head>
-(review_verdict): <verdict>, or <verdict> will-fix, on standard output, and an empty line when no review comment names
-<head>.
+(review_verdict): <verdict> on standard output, and an empty line when no review comment names <head>.
 
 relabel: label (above) for the head <head> of the pull request <number>, with the facts that the workflow wrote of
 that head (relabel_facts) beside the facts and the marker lines of the job: the verdict and will-fix of the review
@@ -137,8 +137,6 @@ FACTS = {
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
     "held": False,
-    # A step whose name starts with "Sign in" failed: the run judged nothing, and the schedule takes the item again.
-    "sign_in_failed": False,
     # The workflow does not try the work again: the hold job's last try, the schedule's last try of a head, or the
     # rescreens of a hold that settled nothing.
     "tries_used_up": False,
@@ -167,12 +165,10 @@ MERGE_STEPS = (
     "- Else, when the import into the internal repository runs and takes each changed path, Sami approves the head "
     "commit for the import.\n"
     "- Else, when the import runs, Sami copies the change into the internal repository by hand.")
-IMPORT_STEPS = (
-    "- Sami approves the head commit for the import into the internal repository, if the import takes each path "
-    "that the pull request changes.\n"
-    "- Else, Sami copies the change into the internal repository by hand.")
 APPROVE = "Sami approves the head commit for the import into the internal repository."
 COPY = "Sami copies the change into the internal repository by hand."
+IMPORT_STEPS = (f"- {APPROVE.removesuffix('.')}, if the import takes each path that the pull request changes.\n"
+                f"- Else, {COPY}")
 UNREAD = ("GitHub did not give the full list of the files that this pull request changes, so the workflow cannot "
           "tell which step comes next.")
 # Why the import does not take the pull request, for each decision whose step is COPY.
@@ -183,7 +179,7 @@ NOT_TAKEN = {
 }
 
 # Each state: its label (None for no state label), the next step, which names who takes it, and the text after it
-# ("" for none).
+# ("" for none, and None when import_steps writes it).
 STATES = {
     # The comment on the merge conflict, which the same run posts, says why and how to resolve it.
     "conflict": (AUTHOR, "You resolve the merge conflict with `main`. Then you push the branch.", ""),
@@ -217,10 +213,9 @@ STATES = {
         THEOREM, "Sami reopens the pull request.",
         "The workflow closed this pull request to start its checks. It could not reopen the pull request. You do not "
         "need to do anything."),
-    # An outside pull request that the screen and the review passed (R12), with no variable REPO_PAIRS_IMPORT_PATHS;
-    # import_steps gives the text for the variable and the post job's decision.
-    "decide": (
-        THEOREM, "Sami takes one of the steps below.", f"{PASSED} You do not need to do anything.\n\n{MERGE_STEPS}"),
+    # An outside pull request that the screen and the review passed (R12). Its text is import_steps' own, for the
+    # variable REPO_PAIRS_IMPORT_PATHS and the post job's decision.
+    "decide": (THEOREM, "Sami takes one of the steps below.", None),
     # An outside pull request whose head has the import check run, while the variable gives the import's paths.
     "import": (
         None, "The automated import copies the head commit into the internal repository.",
@@ -243,8 +238,7 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
                 conflict=False, draft_stored=False, reply_posted=False, screen_held=False, held=False,
-                sign_in_failed=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
-                decision=""):
+                tries_used_up=False, left_closed=False, recorded=False, import_paths=None, decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
     if kind not in ("", "pr", "issue"):
@@ -253,9 +247,6 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         raise ValueError(f"not a verdict: {verdict!r}")
     if decision not in DECISIONS:
         raise ValueError(f"not a decision of the post job: {decision!r}")
-    # The run judged nothing, and the schedule takes the item again.
-    if sign_in_failed:
-        return "working"
     if left_closed:
         return "reopen"
     # GitHub runs no checks on a pull request with a merge conflict: the author resolves it first.
@@ -337,6 +328,11 @@ def import_steps(state, value, decision):
     return step, f"{text}\n\n{after}"
 
 
+def conflict_state(head):
+    """The marker line of the label comment while it gives head waits-on-author for a merge conflict."""
+    return f"<!-- review-conflict-state {head} -->"
+
+
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
@@ -359,7 +355,7 @@ def label_comment(state, old="", markers=(), head="", imports=None):
         kept[kind] = line
     lines = list(kept.values())
     if state == "conflict":
-        lines.append(f"<!-- review-conflict-state {head} -->")
+        lines.append(conflict_state(head))
     if label == AUTHOR:
         lines.append(f"<!-- {AUTHOR} -->")
     elif label == THEOREM:
@@ -388,28 +384,43 @@ def gh(*args):
     return r.stdout
 
 
+def gh_objects(*args):
+    """The JSON objects that gh api with args gives, one on each line (its --jq ends with @json)."""
+    return [json.loads(line) for line in gh(*args).split("\n") if line.strip()]
+
+
 def make_label(name):
-    """Makes the label name of LABELS, or sets its description when it is there. A failure only warns."""
+    """Makes the label name of LABELS, or sets its description when the label is there with another one: one read,
+    and a write only when one is needed. A failure only warns."""
     repo = os.environ["REPO"]
     color, description = LABELS[name]
     try:
-        gh("--method", "POST", f"repos/{repo}/labels", "-f", f"name={name}", "-f", f"color={color}",
-           "-f", f"description={description}", "--jq", ".name")
-        return
-    except GhError as e:
-        if e.status == 422:
-            try:
-                gh("--method", "PATCH", f"repos/{repo}/labels/{name}", "-f", f"description={description}",
-                   "--jq", ".name")
+        try:
+            label = json.loads(gh(f"repos/{repo}/labels/{name}"))
+            if isinstance(label, dict) and label.get("description") == description:
                 return
-            except GhError:
-                pass
+        except GhError as e:
+            if e.status != 404:
+                raise
+            try:
+                gh("--method", "POST", f"repos/{repo}/labels", "-f", f"name={name}", "-f", f"color={color}",
+                   "-f", f"description={description}", "--jq", ".name")
+                return
+            except GhError as made:
+                # Made in between, by another run.
+                if made.status != 422:
+                    raise
+        gh("--method", "PATCH", f"repos/{repo}/labels/{name}", "-f", f"description={description}", "--jq", ".name")
+        return
+    except (GhError, ValueError):
+        pass
     print(f"::warning::the label {name} could not be made or described; adding it makes it, with no description.")
 
 
-def apply(number, state, markers=(), head="", imports=None):
+def apply(number, state, markers=(), head="", imports=None, labels=None):
     """Gives the item number the state label of state, takes the other one off, and writes its label comment
-    (label_comment, with imports)."""
+    (label_comment, with imports). labels are the item's label comments of BOT, each {id, body}, when the caller read
+    them already; else this reads them."""
     repo = os.environ["REPO"]
     want = label_of(state)
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
@@ -423,11 +434,11 @@ def apply(number, state, markers=(), head="", imports=None):
     if want and want not in have:
         make_label(want)
         gh("--method", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={want}", "--jq", ".[].name")
-    found = gh("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
-               '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-label -->")))'
-               ' | {id, body} | @json')
-    comments = [json.loads(line) for line in found.split("\n") if line.strip()]
-    old = comments[-1] if comments else None
+    if labels is None:
+        mine = f"select(.user.login == {json.dumps(BOT)} and (.body | startswith({json.dumps(FIRST)})))"
+        labels = gh_objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
+                            f".[] | {mine} | {{id, body}} | @json")
+    old = labels[-1] if labels else None
     shown = f"#{number}: {want or 'no state label'} ({state})"
     if old is None and want is None:
         print(f"{shown}, and no label comment to change.")
@@ -437,12 +448,24 @@ def apply(number, state, markers=(), head="", imports=None):
         print(f"{shown}, as its label comment says already.")
         return
     if old is not None:
-        if not re.fullmatch(r"[1-9][0-9]*", str(old["id"])):
+        if not NUMBER.fullmatch(str(old["id"])):
             raise GhError(f"the label comment of #{number} has no id")
         gh("--method", "PATCH", f"repos/{repo}/issues/comments/{old['id']}", "-f", f"body={body}", "--jq", ".html_url")
     else:
         gh("--method", "POST", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}", "--jq", ".html_url")
     print(f"{shown}.")
+
+
+def set_state(number, facts, markers=(), head="", labels=None):
+    """Gives the item number the state that facts give (label_state), with its state label and its label comment
+    (apply, with labels): for an outside pull request, with the steps of R12 for the import. The label comment is made
+    once before any write, so that a marker or a head that it refuses changes nothing on GitHub."""
+    state = label_state(**facts)
+    imports = None
+    if facts.get("kind") == "pr" and facts.get("outsider"):
+        imports = (facts.get("import_paths"), facts.get("decision", ""))
+    label_comment(state, "", markers, head, imports)
+    apply(number, state, markers, head, imports, labels)
 
 
 def parse(args):
@@ -793,15 +816,14 @@ def check_run(head, value, hold):
 
 
 def review_verdict(comments, head):
-    """(verdict, will_fix) of the review comment of BOT that names head, from comments, the item's comments as the API
-    lists them (issues/<n>/comments), the last one when more name it. ("", False) when none names head. Only the
-    markers at the start of the comment count: no marker of the model's or the reader's text reaches a comment
-    (trim.py inert)."""
-    found = ("", False)
+    """The verdict of the review comment of BOT that names head, from comments, the item's comments as the API lists
+    them (issues/<n>/comments), the last one when more name it. "" when none names head. Only the markers at the start
+    of the comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert)."""
+    found = ""
     for c in comments:
         m = REVIEWED.match(c.get("body") or "")
-        if m and (c.get("user") or {}).get("login") == BOT and m.group(1) == head:
-            found = (m.group(2), bool(m.group(3)))
+        if m and of_bot(c) and m.group(1) == head:
+            found = m.group(2)
     return found
 
 
@@ -1123,6 +1145,16 @@ def hold_fact(body):
     return "tries_used_up"
 
 
+def of_bot(item):
+    """Whether item, a comment or a review as the API lists it, is BOT's."""
+    return (item.get("user") or {}).get("login") == BOT
+
+
+def fix_heads(reviews):
+    """The head that each fix review of BOT among reviews names (FIX_MARKER), in order."""
+    return [m.group(1) for r in reviews if of_bot(r) and (m := FIX_MARKER.search(r.get("body") or ""))]
+
+
 def relabel_facts(comments, reviews, head, history):
     """The facts of label_state for head from what the workflow wrote of it, or None when it wrote nothing of it.
     comments are the item's comments as the API lists them (issues/<n>/comments, with updated_at), reviews() gives the
@@ -1137,7 +1169,7 @@ def relabel_facts(comments, reviews, head, history):
     verdict, will_fix, reviewed, answered = "", False, "", ""
     fact, held, conflicted = None, "", False
     for c in comments:
-        if (c.get("user") or {}).get("login") != BOT:
+        if not of_bot(c):
             continue
         body, at = c.get("body") or "", c.get("updated_at") or ""
         m = REVIEWED.match(body)
@@ -1151,7 +1183,7 @@ def relabel_facts(comments, reviews, head, history):
             m = HELD_HEAD.search(body)
             if m and m.group(1) == head and hold_fact(body) and at >= held:
                 fact, held = hold_fact(body), at
-        elif body.startswith(FIRST) and f"<!-- review-conflict-state {head} -->" in body.split("\n"):
+        elif body.startswith(FIRST) and conflict_state(head) in body.split("\n"):
             conflicted = True
     side = max(reviewed, answered)
     if fact and held > side:
@@ -1159,17 +1191,14 @@ def relabel_facts(comments, reviews, head, history):
     if side:
         will_fix = will_fix or bool(answered)
         found = reviews()
-        own = sum(1 for r in found if (r.get("user") or {}).get("login") == BOT
-                  and (m := FIX_MARKER.search(r.get("body") or "")) and m.group(1) == head)
-        every = sum(1 for r in found if (r.get("user") or {}).get("login") == BOT
-                    and FIX_MARKER.search(r.get("body") or ""))
-        fix_stop = (verdict == "blocking" and not will_fix and every - own >= 2
+        heads = fix_heads(found)
+        own = heads.count(head)
+        fix_stop = (verdict == "blocking" and not will_fix and len(heads) - own >= 2
                     and fixes(history(), found, head) - own >= 2)
         return {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
     if conflicted:
         return {}
     return None
-
 
 
 def json_lines(path):
@@ -1184,12 +1213,7 @@ def main(argv):
             return 0
         if len(argv) >= 2 and argv[0] == "label" and NUMBER.fullmatch(argv[1]):
             facts, markers, head = parse(argv[2:])
-            state = label_state(**facts)
-            imports = None
-            if facts.get("kind") == "pr" and facts.get("outsider"):
-                imports = (facts.get("import_paths"), facts.get("decision", ""))
-            label_comment(state, "", markers, head, imports)
-            apply(argv[1], state, markers, head, imports)
+            set_state(argv[1], facts, markers, head)
             return 0
         if len(argv) == 7 and argv[0] == "soundness":
             review, path, hold, outside, section_path, all_path = argv[1:]
@@ -1230,12 +1254,10 @@ def main(argv):
             print(import_marker(argv[1], argv[2] if len(argv) == 3 else None))
             return 0
         if len(argv) == 3 and argv[0] == "verdict" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
-            found = gh("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
-                       '.[] | select(.user.login == "github-actions[bot]") | {user: {login: .user.login}, body}'
-                       ' | @json')
-            comments = [json.loads(line) for line in found.split("\n") if line.strip()]
-            verdict, will_fix = review_verdict(comments, argv[2])
-            print(verdict + (" will-fix" if will_fix else ""))
+            comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
+                                  f".[] | select(.user.login == {json.dumps(BOT)})"
+                                  " | {user: {login: .user.login}, body} | @json")
+            print(review_verdict(comments, argv[2]))
             return 0
         if len(argv) >= 3 and argv[0] == "relabel" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
             number, head = argv[1], argv[2]
@@ -1243,15 +1265,13 @@ def main(argv):
             if given:
                 raise ValueError("relabel names its head before the facts, not as head=")
             repo = os.environ["REPO"]
-
-            def objects(*args):
-                return [json.loads(line) for line in gh(*args).split("\n") if line.strip()]
-            comments = objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
-                               '.[] | select(.user.login == "github-actions[bot]")'
-                               ' | {user: {login: .user.login}, body, updated_at} | @json')
+            comments = gh_objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
+                                  f".[] | select(.user.login == {json.dumps(BOT)})"
+                                  " | {id, user: {login: .user.login}, body, updated_at} | @json")
             found = relabel_facts(
-                comments, lambda: objects("--paginate", f"repos/{repo}/pulls/{number}/reviews", "--jq", ".[] | @json"),
-                head, lambda: objects(f"repos/{repo}/commits?sha={head}&per_page=100", "--jq", ".[] | @json"))
+                comments,
+                lambda: gh_objects("--paginate", f"repos/{repo}/pulls/{number}/reviews", "--jq", ".[] | @json"),
+                head, lambda: gh_objects(f"repos/{repo}/commits?sha={head}&per_page=100", "--jq", ".[] | @json"))
             if found is None:
                 print(f"#{number}: the workflow wrote nothing of {head}, so the labels stay.")
                 return 0
@@ -1259,12 +1279,10 @@ def main(argv):
             if both:
                 raise ValueError(f"relabel reads these facts itself: {', '.join(both)}")
             facts.update(found)
-            state = label_state(**facts)
-            imports = None
-            if facts.get("kind") == "pr" and facts.get("outsider"):
-                imports = (facts.get("import_paths"), facts.get("decision", ""))
-            label_comment(state, "", markers, head, imports)
-            apply(number, state, markers, head, imports)
+            # The label comments that apply would read again: nothing between the two reads writes a comment.
+            labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
+                      if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
+            set_state(number, facts, markers, head, labels)
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)

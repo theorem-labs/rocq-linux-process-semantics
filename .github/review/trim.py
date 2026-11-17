@@ -2,8 +2,9 @@
 """The fresh reader of the review workflow, and the comment of a review that it trimmed.
 
 Copied from theorem-labs/oss-verify-proofs-internal .github/review/trim.py at 573d0cde18e1, and adapted to this
-repository: its token comes from a step of its own (sign-in), and each text that the model or the reader writes is
-made inert here (inert).
+repository: its token comes from a step of its own (sign-in), and each text of the model or the reader that a comment,
+an answer or a fix posts is made inert here (inert). A draft posts nowhere, so its text and the reader's answer for it
+stay as they are.
 
     python3 .github/review/trim.py sign-in
     python3 .github/review/trim.py review --review <file> --items <file> [--head <file>] [--section <file>]
@@ -465,6 +466,14 @@ def cut(text):
     return text if len(text) <= CUT else text[:CUT] + "\n\n" + CUT_NOTE
 
 
+def framed(parts, foot=""):
+    """The parts that are not empty, with a blank line between each two, then --- and foot when there is a foot."""
+    text = "\n\n".join(p for p in parts if p)
+    if foot:
+        text += "\n\n---\n" + foot
+    return text
+
+
 def comment(review, trimmed, items, head="", section="", foot=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
     read, made inert and cut; the trimmed text and the added items are made inert here. The collapsed copy loses its
@@ -473,10 +482,8 @@ def comment(review, trimmed, items, head="", section="", foot=""):
     extra = inert(added(missing(items, trimmed)))
 
     def build(whole):
-        text = "\n\n".join(p for p in (head, trimmed, section, extra) if p)
-        if foot:
-            text += "\n\n---\n" + foot
-        return text + f"\n\n<details>\n<summary>{WHOLE}</summary>\n\n{whole}\n\n</details>\n"
+        return (framed((head, trimmed, section, extra), foot)
+                + f"\n\n<details>\n<summary>{WHOLE}</summary>\n\n{whole}\n\n</details>\n")
     text = build(review)
     if len(text) > MAX_COMMENT:
         keep = max(0, len(review) - (len(text) - MAX_COMMENT) - len(CUT_WHOLE) - 200)
@@ -497,10 +504,7 @@ def summary(review, items, extra=""):
 
 def answer_comment(trimmed, head="", foot=""):
     """The comment of an answer: head, the trimmed text made inert, and --- and foot."""
-    text = "\n\n".join(p for p in (head, inert(trimmed)) if p)
-    if foot:
-        text += "\n\n---\n" + foot
-    text += "\n"
+    text = framed((head, inert(trimmed)), foot) + "\n"
     if len(text) > MAX_COMMENT:
         raise ReaderError(f"the answer is {len(text)} characters long")
     return text
@@ -518,9 +522,7 @@ def fix_review(fix, summary_trimmed, whys, commit, head="", foot=""):
     """The request of the review of a fix: the body, and one comment for each suggestion of fix, on the right side of
     the diff, with its trimmed why and its suggestion block. The trimmed words are made inert, never a suggestion
     block."""
-    body = "\n\n".join(p for p in (head, inert(summary_trimmed)) if p)
-    if foot:
-        body += "\n\n---\n" + foot
+    body = framed((head, inert(summary_trimmed)), foot)
     comments = []
     for s, why in zip(fix["suggestions"], whys, strict=True):
         c = {"path": s["path"], "line": s["line"], "side": "RIGHT",

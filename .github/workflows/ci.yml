@@ -30,7 +30,8 @@ jobs:
   #            .github/test_review.py, .github/test_screen.py,
   #            .github/screen.py, .github/review.md,
   #            .github/review-answer.md, or any file under .github/review/.
-  #            The tests read the workflow and import the screen.
+  #            The tests read the workflow and import the screen,
+  #            .github/review/rules.py and .github/review/trim.py.
   #
   # It fails safe: no usable base, an empty diff or a change to this file
   # runs every job. .github/test_ci.py runs this script and the `ci` job's on

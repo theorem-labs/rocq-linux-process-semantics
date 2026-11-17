@@ -107,15 +107,18 @@
 #           verdict. SCREEN_CHECKS names the checks that run. Its GitHub token can only read, and no key is stored.
 #           The checks get the text as data, and each answers a word; none can act on it. The screen reads up to
 #           400,000 characters of an item and holds a longer one unread. Claude reads the text in pieces of at most
-#           150,000 characters. A check that has not answered after 600 seconds holds the item. Its one output is the
-#           verdict.
+#           150,000 characters. A check that has not answered after 600 seconds holds the item. The sign-in to
+#           Anthropic and Azure has 120 seconds of its own, so that the sign-in and the screen fit the job's 15
+#           minutes. Its one output is the verdict.
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment, its verdict and the list of what it asks (.github/review.md). It holds an identity
 #           token, which Anthropic exchanges for a short-lived token that can call Claude and nothing else; no key is
 #           stored. Anthropic's federation rule admits this file alone, on refs/heads/main, for this file's events,
 #           and refuses a job in review-screen, so the screen job cannot get the review's Claude token. The review job
-#           cannot get the screen's tokens either: they need the environment. Its first step after the checkout signs
-#           in to Anthropic and drops the token, so that a run the rule does not admit fails there, before the model.
+#           cannot get the screen's tokens either: they need the environment. Before the model, a step signs in to
+#           Anthropic and drops the token, so that a run the rule does not admit fails there. For a draft, the two
+#           sign-ins to Google Cloud of the draft store (below) come before it. A reply runs no model, so it does not
+#           sign in to Anthropic.
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
@@ -184,8 +187,9 @@
 # out. Claude gets the tools Read, Glob and Grep only, in the permission mode dontAsk (a call that would need approval
 # is refused), and reads nothing outside the checkout: not the runner's temporary files, which hold the identity
 # token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The screen job runs
-# only .github/screen.py from main, and the review job runs .github/review/trim.py from main after Claude. The post,
-# comment, hold and rescreen jobs check out main's .github/ alone, and run only .github/review/rules.py from it.
+# only .github/screen.py from main, and the review job runs only .github/review/trim.py and .github/review/rules.py
+# from main, each after Claude. The post, comment, hold and rescreen jobs check out main's .github/ alone, and run
+# only .github/review/rules.py from it.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -197,15 +201,18 @@
 name: review
 # The name of each run: its task, its item and the account whose limit it counts on, which the trust job, the Count
 # step, the hold job and the rescreen job read. A workflow_run's name holds the whole head commit, because GitHub's
-# expressions have no substring function, and that head maps to its pull request through the open pull requests. A
-# run by hand: <task> #<n>, then " at <head>", " for <comment>" and " of <account>" for the inputs given.
+# expressions have no substring function, and that head maps to its pull request through the open pull requests. An
+# issue_comment's name holds the comment's id (answer #<n> for <comment> by <login>), by which the rescreen job sees
+# that the run took the comment. A run by hand: <task> #<n>, then " at <head>", " for <comment>" and " of <account>"
+# for the inputs given.
 run-name: >-
   ${{ github.event_name == 'schedule' && 'rescreen the held items'
   || github.event_name == 'workflow_run'
      && format('review {0} by {1}', github.event.workflow_run.head_sha, github.actor)
   || github.event_name == 'issues' && format('review #{0}', github.event.issue.number)
   || github.event_name == 'issue_comment'
-     && format('answer #{0} by {1}', github.event.issue.number, github.event.comment.user.login)
+     && format('answer #{0} for {1} by {2}', github.event.issue.number, github.event.comment.id,
+               github.event.comment.user.login)
   || inputs.task == 'measure' && 'measure the screen'
   || format('{0} #{1}{2}{3}{4}', inputs.task, inputs.number, inputs.head && format(' at {0}', inputs.head) || '',
             inputs.comment && format(' for {0}', inputs.comment) || '',
@@ -351,9 +358,6 @@ jobs:
       number: ${{ steps.trust.outputs.number }}
       # The head commit of a pull request, as the API gave it to the trust job.
       head: ${{ steps.trust.outputs.head }}
-      # The account whose limit the run counts on: the one whose action started it, or the one its hold or its name
-      # gives.
-      account: ${{ steps.trust.outputs.account }}
       # The comment that an answer answers.
       comment: ${{ steps.trust.outputs.comment }}
       # The run whose event this item's hold names (a hold that is tried again), and the screened reviews of the item
@@ -385,14 +389,19 @@ jobs:
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
           # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
+          # login in this step (permission_of).
+          declare -A permission_of=()
           trusted() {
             local permission
             [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
             [[ ,$APPS, != *",$1,"* ]] || return 0
             [[ $1 != *'[bot]' ]] || return 1
-            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-            [[ $permission == admin || $permission == write ]]
+            if [ -z "${permission_of[$1]+set}" ]; then
+              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+              permission_of[$1]=$permission
+            fi
+            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
           }
           # end of trusted
           # known <login>: trusted's answer, 0 or 1; the run stops when GitHub could not say.
@@ -422,16 +431,16 @@ jobs:
           # cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that failed or ran out of time),
           # <run> the run of the event this hold comes from (a run that takes the hold again keeps it), <tries> the
           # screened reviews of it that failed so far, <task> the task that takes it again (answer, draft or approve as
-          # the marker names it; rescreen for a marker with no task, or with review), and <comment> the comment that a
-          # held answer answers (- for none).
+          # the marker names it, and rescreen for a marker with no task), and <comment> the comment that a held answer
+          # answers (- for none).
           # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
           # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
             comments "$1" | jq -r 'select(.user.login == "github-actions[bot]"
                 and (.body | startswith("<!-- review-held -->")))
               | "\(.updated_at) \((.body
-                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve|review|rescreen)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
-                  | "\(.run) \(.tries // "0") \(.kind) \(if (.task // "review") == "review" then "rescreen" else .task end) \(.comment // "-")") // "-")"' \
+                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
+                  | "\(.run) \(.tries // "0") \(.kind) \(.task // "rescreen") \(.comment // "-")") // "-")"' \
               | sort | tail -n 1
           }
           # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
@@ -459,30 +468,28 @@ jobs:
               | "\(.made) \(.id)"' <<< "$found" | sort
           }
           # held_account <run>: the account whose limit a hold of <run> counts on, when <run> is a run of this
-          # workflow: the account that started it, for a run of workflow_run, issues or issue_comment; the account its
-          # name ends with, for a run that github-actions[bot] started (the rescreen job's) with one of that job's
-          # names (titled); the account that started it, for a run by hand of an App in APPS or of an account with
-          # write access, which has no limit. Nothing for any other run, or when GitHub no longer has it (a deleted or
-          # expired run). It fails when GitHub could not say.
+          # workflow (by its path): the account that started it, for a run of workflow_run, issues or issue_comment;
+          # the account its name ends with, for a run that github-actions[bot] started (the rescreen job's) with one of
+          # that job's names (titled); the account that started it, for a run by hand of an App in APPS or of an
+          # account with write access (trusted), which has no limit. Nothing for any other run, or when GitHub no
+          # longer has it (a deleted or expired run). It fails when GitHub could not say.
           held_account() {
-            local workflow run id event login title permission
+            local run path event login title rc=0
             [[ $1 =~ ^[1-9][0-9]*$ ]] || return 0
-            workflow=$(gh api "repos/$REPO/actions/workflows/review.yml" --jq .id) || return 1
             run=$(gh api "repos/$REPO/actions/runs/$1" \
-              --jq '"\(.workflow_id) \(.event) \(.actor.login) \(.display_title // "" | gsub("[\r\n]"; " "))"' 2>&1) \
+              --jq '"\(.path // "-") \(.event) \(.actor.login) \(.display_title // "" | gsub("[\r\n]"; " "))"' 2>&1) \
               || { [[ $run == *"(HTTP 404)"* ]] || return 1; return 0; }
-            read -r id event login title <<< "$run"
-            [[ $id == "$workflow" && $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 0
+            read -r path event login title <<< "$run"
+            [[ $path == '.github/workflows/review.yml' && $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 0
             case $event in
               workflow_run|issues|issue_comment) echo "$login" ;;
               workflow_dispatch)
                 if [ "$login" = 'github-actions[bot]' ]; then
                   if [[ $title =~ $titled ]]; then echo "${BASH_REMATCH[5]}"; fi
-                elif [[ ,$APPS, == *",$login,"* ]]; then
-                  echo "$login"
-                elif [[ $login != *'[bot]' ]]; then
-                  permission=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission) || return 1
-                  if [[ $permission == admin || $permission == write ]]; then echo "$login"; fi
+                else
+                  trusted "$login" || rc=$?
+                  (( rc != 2 )) || return 1
+                  (( rc != 0 )) || echo "$login"
                 fi ;;
             esac
           }
@@ -525,13 +532,15 @@ jobs:
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
           # job did not skip and either <login> started by an event (workflow_run, issues or issue_comment), or whose
           # name, a name of the rescreen job's (titled), ends with " of <login>": the trust job of a run that
-          # github-actions[bot] started checks that name. A run whose trust job is not listed yet counts. A run by hand
-          # that its trust job refused (the item closed, or lost its label, in between), so that every other job of it
-          # was skipped, screened nothing and does not count. The rescreen job, which every dispatched run skips, is not
+          # github-actions[bot] started checks that name. A run whose trust job is not listed yet counts. A run that
+          # GitHub skipped, with each of its jobs, does not count, and its jobs are not read. A run by hand that its
+          # trust job refused (the item closed, or lost its label, in between), so that every other job of it was
+          # skipped, screened nothing and does not count. The rescreen job, which every dispatched run skips, is not
           # one of those jobs: a run whose trust job has just accepted it and whose next jobs are not listed yet counts.
           # A run whose screen or review job stopped at a failed step whose name starts with "Sign in" could not sign
           # in, and does not count: the schedule takes its item again, and that run must not find the account at its
-          # limit because of it. The jobs read for each run that would count show it, so nothing more is read.
+          # limit because of it. The jobs read for each run that would count show it, so nothing more is read, and once
+          # count is at OUTSIDE_HOURLY_LIMIT no more jobs are read: the account is at its limit.
           # The run stops when GitHub could not say.
           earlier() {
             local from runs id kind verdict
@@ -540,7 +549,7 @@ jobs:
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             runs=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
               -f created=">=$from" -F per_page=100 --jq '.workflow_runs[] | (.display_title // "") as $title
-                | select(.id < ($ENV.RUN_ID | tonumber)
+                | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
                          and ((.actor.login == $ENV.LOGIN
                                and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
                               or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
@@ -548,6 +557,7 @@ jobs:
                 | "\(.id) \(if .event == "workflow_dispatch" then "dispatch" else "event" end)"') \
               || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
             while read -r id kind; do
+              (( count < OUTSIDE_HOURLY_LIMIT )) || break
               [ -n "$id" ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -633,10 +643,10 @@ jobs:
           # replied: true when the label comment of #NUMBER says that its first reply posted.
           replied() {
             local n
-            n=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '[.[]
-              | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-label -->"))
-                       and (.body | test("(^|\n)<!-- issue-reply-posted [0-9]+ -->(\n|$)")))] | length' \
-              | awk '{ n += $1 } END { print n + 0 }') || fail "the comments of #$NUMBER could not be read."
+            n=$(comments "$NUMBER" | jq -s '[.[] | select(.user.login == "github-actions[bot]"
+              and (.body | startswith("<!-- review-label -->"))
+              and (.body | test("(^|\n)<!-- issue-reply-posted [0-9]+ -->(\n|$)")))] | length') \
+              || fail "the comments of #$NUMBER could not be read."
             (( n > 0 ))
           }
           # stored: true when the label comment of #NUMBER says that the draft of its reply is stored, or that its
@@ -1045,14 +1055,19 @@ jobs:
           : > "$out/omitted.txt"
           # trusted
           # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
+          # login in this step (permission_of).
+          declare -A permission_of=()
           trusted() {
             local permission
             [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
             [[ ,$APPS, != *",$1,"* ]] || return 0
             [[ $1 != *'[bot]' ]] || return 1
-            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-            [[ $permission == admin || $permission == write ]]
+            if [ -z "${permission_of[$1]+set}" ]; then
+              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+              permission_of[$1]=$permission
+            fi
+            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
           }
           # end of trusted
           # comments
@@ -1296,8 +1311,9 @@ jobs:
       # This step exchanges the identity token for Microsoft Entra's token for Prompt Shields and for Anthropic's token
       # for the screen's model, each when SCREEN_CHECKS lists its check and the job's env above sets up its identity.
       # Both tokens go to a file under the runner's temporary directory that only the runner's account can read, and
-      # that the Screen or Measure step deletes as it reads it; never to this log or an output. An exchange that fails
-      # fails this job before the screen, with no verdict, and the hold job holds nothing for it.
+      # that the Screen or Measure step deletes as it reads it; never to this log or an output. An exchange that fails,
+      # or that has not answered after the sign-in's own 120 seconds, fails this job before the screen, with no
+      # verdict, and the hold job holds nothing for it.
       - name: Sign in to Anthropic and Azure
         run: python3 .github/screen.py --sign-in
       # The screen reads the tokens of the step before and deletes their file.
@@ -1359,8 +1375,6 @@ jobs:
     timeout-minutes: 100
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
     outputs:
-      number: ${{ needs.gather.outputs.number }}
-      started: ${{ needs.trust.outputs.started }}
       head: ${{ steps.result.outputs.head || steps.answered.outputs.head }}
       # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD), for the state label.
       verdict: ${{ steps.result.outputs.verdict }}
@@ -1380,6 +1394,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      # Theorem's Anthropic organization, its service account oss-verify-ci and its workspace, and the federation rule
+      # that admits this file on main (ids, not secrets), which the Claude steps, the sign-ins to Anthropic and the
+      # fresh reader read.
+      ANTHROPIC_URL: https://api.anthropic.com
+      ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+      ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+      ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
+      ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
       # The Linux the model describes (README.md, SCOPE.md: stable Linux v6.18.46), and QEMU 10.0.11, the version of
       # SCOPE.md's QEMU measurements.
       LINUX_URL: https://github.com/gregkh/linux
@@ -1418,21 +1440,15 @@ jobs:
         with: {workload_identity_provider: "${{ vars.REVIEW_DRAFT_GCP_PROVIDER }}", service_account: "${{ vars.REVIEW_DRAFT_GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: 300s, create_credentials_file: false, export_environment_variables: false}
 
       # Anthropic's exchange of a new identity token, with the federation rule, the organization, the service account
-      # and the workspace of the Review step below, before any step that runs the model. The step only shows that the
-      # rule admits this run: the Claude token it gets is checked and then dropped, never printed, written or kept,
-      # and the Review step gets a token of its own. When the rule does not admit the run (a run of an event that the
-      # rule does not admit yet, say), the job fails here, at a step whose name starts with "Sign in", before the
-      # model, and the hold job holds nothing for it: the schedule takes the item again. curl reads the request
-      # header and the exchange's body from its standard input, so that no token is in a command line. A reply runs no
-      # model: it skips this step, the cap and every step for the model.
+      # and the workspace of the job's env, which the Review step uses too, before any step that runs the model. The
+      # step only shows that the rule admits this run: the Claude token it gets is checked and then dropped, never
+      # printed, written or kept, and the Review step gets a token of its own. When the rule does not admit the run (a
+      # run of an event that the rule does not admit yet, say), the job fails here, at a step whose name starts with
+      # "Sign in", before the model, and the hold job holds nothing for it: the schedule takes the item again. curl
+      # reads the request header and the exchange's body from its standard input, so that no token is in a command
+      # line. A reply runs no model: it skips this step, the cap and every step for the model.
       - name: Sign in to Anthropic
         if: needs.trust.outputs.task != 'reply'
-        env:
-          ANTHROPIC_URL: https://api.anthropic.com
-          FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
-          WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
         run: |
           set -euo pipefail
           fail() { echo "::error::The sign-in to Anthropic failed: $1 No model ran."; exit 1; }
@@ -1443,8 +1459,8 @@ jobs:
                 "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)') \
             || fail "GitHub gave no identity token."
           answer=$(JWT=$jwt jq -n '{grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: $ENV.JWT,
-              federation_rule_id: $ENV.FEDERATION_RULE_ID, organization_id: $ENV.ORGANIZATION_ID,
-              service_account_id: $ENV.SERVICE_ACCOUNT_ID, workspace_id: $ENV.WORKSPACE_ID}' \
+              federation_rule_id: $ENV.ANTHROPIC_FEDERATION_RULE_ID, organization_id: $ENV.ANTHROPIC_ORGANIZATION_ID,
+              service_account_id: $ENV.ANTHROPIC_SERVICE_ACCOUNT_ID, workspace_id: $ENV.ANTHROPIC_WORKSPACE_ID}' \
             | curl -sS --retry 3 -H 'Content-Type: application/json' --data-binary @- -w '\n%{http_code}' \
                 "$ANTHROPIC_URL/v1/oauth/token") || fail "Anthropic could not be reached."
           jwt=""
@@ -1466,8 +1482,9 @@ jobs:
       # hours ago are read, which covers a job's 100 minutes and its time in the queue: the runs of workflow_run,
       # issues, issue_comment and workflow_dispatch, never a fork's own run of this file (pull_request). A review job
       # that waits for its run's trust job is not listed yet, and one the trust job skipped has no Review, Answer or
-      # Draft step, so neither counts. Only jobs of this run's kind count, by the job's name, whatever the task of
-      # their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among them) against
+      # Draft step, so neither counts. A run that GitHub skipped, or that ended before the hour began, has no review job
+      # of the hour, so its jobs are not read. Only jobs of this run's kind count, by the job's name, whatever the task
+      # of their run: a writer's review or answer against HOURLY_CAP, a screened one (a draft among them) against
       # SCREENED_HOURLY_CAP. A reply calls no model, so it has no cap: this step and the next two do not run for it. A
       # read that fails stops the run here, not at "Hold at the hourly cap", so that the hold job, which reads a
       # failure of that step as the cap, never says the cap was reached when it was not.
@@ -1486,10 +1503,13 @@ jobs:
           SINCE=$(date -u -d '-1 hour' +%s) || stop "the time could not be read."
           from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || stop "the time could not be read."
           export SINCE
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
             -f created=">=$from" -F per_page=100 --jq '.workflow_runs[]
-              | select(.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
-                       or .event == "workflow_dispatch")
+              | select((.event == "workflow_run" or .event == "issues" or .event == "issue_comment"
+                        or .event == "workflow_dispatch") and .conclusion != "skipped"
+                       and (.status != "completed" or .updated_at == null
+                            or (.updated_at | fromdateiso8601) >= ($ENV.SINCE | tonumber)))
               | "\(.id) \(.created_at)"') \
             || stop "the runs could not be read."
           count=0
@@ -1641,12 +1661,11 @@ jobs:
         timeout-minutes: 50
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
-          # Theorem's Anthropic organization, its service account oss-verify-ci and its workspace, and the federation
-          # rule that admits this file on main (ids, not secrets).
-          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
-          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          # The job's Anthropic ids (ids, not secrets).
+          anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ env.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ env.ANTHROPIC_WORKSPACE_ID }}
           github_token: ${{ github.token }}
           # The action itself refuses a run started by an account without write access (its default), and any App
           # but these, except the account whose pull request or issue the screen passed: this job runs for a
@@ -1706,10 +1725,10 @@ jobs:
         timeout-minutes: 30
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
-          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
-          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ env.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ env.ANTHROPIC_WORKSPACE_ID }}
           github_token: ${{ github.token }}
           allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
           allowed_bots: >-
@@ -1756,10 +1775,10 @@ jobs:
         timeout-minutes: 30
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
-          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
-          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ env.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ env.ANTHROPIC_WORKSPACE_ID }}
           github_token: ${{ github.token }}
           allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
           allowed_bots: >-
@@ -1800,12 +1819,6 @@ jobs:
       # of the model to read.
       - name: Sign in to Anthropic for the fresh reader
         if: needs.trust.outputs.task != 'reply'
-        env:
-          ANTHROPIC_URL: https://api.anthropic.com
-          ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
-          ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
         run: python3 .github/review/trim.py sign-in
 
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
@@ -1831,7 +1844,6 @@ jobs:
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OUTSIDE: ${{ needs.gather.outputs.outside }}
-          ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
           # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
@@ -1883,7 +1895,6 @@ jobs:
           RESULT: ${{ steps.answer.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review-answer.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
           # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
@@ -1931,7 +1942,6 @@ jobs:
         if: needs.trust.outputs.task == 'draft'
         env:
           RESULT: ${{ steps.draft.outputs.execution_file }}
-          ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
           # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
@@ -2121,10 +2131,10 @@ jobs:
         timeout-minutes: 30
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
         with:
-          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
-          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
+          anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
+          anthropic_service_account_id: ${{ env.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          anthropic_workspace_id: ${{ env.ANTHROPIC_WORKSPACE_ID }}
           github_token: ${{ github.token }}
           allowed_non_write_users: ${{ needs.trust.outputs.route == 'screen' && needs.trust.outputs.outsider || '' }}
           allowed_bots: >-
@@ -2165,12 +2175,6 @@ jobs:
       # fails here, at a step whose name starts with "Sign in", and the hold job holds nothing for it.
       - name: Sign in to Anthropic for the fresh reader of the fix
         if: steps.fixable.outputs.fix == 'true'
-        env:
-          ANTHROPIC_URL: https://api.anthropic.com
-          ANTHROPIC_FEDERATION_RULE_ID: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
-          ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
-          ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01WdHTLcJPEfiPttcuLK1hGT
-          ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
         run: python3 .github/review/trim.py sign-in
 
       # The fix as it is posted: code keeps only the suggestions whose lines are right-side lines of one hunk of
@@ -2187,7 +2191,6 @@ jobs:
           RESULT: ${{ steps.fix.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review-answer.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ANTHROPIC_URL: https://api.anthropic.com
         run: |
           set -euo pipefail
           # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
@@ -2315,7 +2318,7 @@ jobs:
           if [ "$TASK" = relabel ]; then
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            verdict=${reviewed%% *}
+            verdict=$reviewed
             [ -n "$verdict" ] || screen=false
           fi
           # The import check run is for an outside pull request alone, which the screen passed before its review.
@@ -2511,7 +2514,7 @@ jobs:
   # labels starts a run of a workflow. It never commits or pushes: its token can write no file of the repository. It
   # runs whatever the post job's result, and reads that job's recorded as false when it did not succeed.
   comment:
-    needs: [trust, gather, screen, review, post]
+    needs: [trust, gather, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
@@ -2685,8 +2688,7 @@ jobs:
           TASK: ${{ needs.trust.outputs.task }}
           # The head that the review read, or the head of a relabel, which the trust job read.
           HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
-          STARTED: >-
-            ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.started || needs.review.outputs.started }}
+          STARTED: ${{ needs.trust.outputs.started }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
           VERDICT: ${{ needs.review.outputs.verdict }}
@@ -2902,15 +2904,15 @@ jobs:
           # The fact that this hold gives the label rule (.github/review/rules.py): held, for a hold that is tried
           # again, with no state label; screen_held or tries_used_up, for a hold that is not, with waits-on-theorem.
           fact=held
-          # The work that was held: the review of the item, the answer to the comments of its author, the draft of the
-          # reply to an issue, or the approval of a first-time contributor's held runs.
-          work="review" work_of="the automated review" title="Automated review held."
+          # What was held, for the texts: the review of the item, the answer to the comments of its author, the draft of
+          # the reply to an issue, or the approval of a first-time contributor's held runs.
+          work_of="the automated review" title="Automated review held."
           if [ "$TASK" = answer ]; then
-            work="answer" work_of="the automated answer to the author's comment" title="Automated answer held."
+            work_of="the automated answer to the author's comment" title="Automated answer held."
           elif [ "$TASK" = draft ]; then
-            work="draft" work_of="the automated draft of a reply" title="Automated reply held."
+            work_of="the automated draft of a reply" title="Automated reply held."
           elif [ "$TASK" = approve ]; then
-            work="approval" work_of="the automated approval of the checks" title="Automated approval held."
+            work_of="the automated approval of the checks" title="Automated approval held."
           fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
@@ -2998,9 +3000,9 @@ jobs:
             fi
           else
             fact=screen_held
-            if [ "$work" = answer ]; then
+            if [ "$TASK" = answer ]; then
               why="The automated screen held $what, so the workflow wrote no answer. You do not need to do anything."
-            elif [ "$work" = approval ]; then
+            elif [ "$TASK" = approve ]; then
               why="The automated screen held this pull request, so its checks have not run. You do not need to do anything."
             elif [ "$item" = pr ]; then
               why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
@@ -3011,15 +3013,15 @@ jobs:
           marker=""
           if [ -n "$kind" ]; then
             [[ $ORIGIN =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: $ORIGIN"; exit 1; }
-            marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries -->"
-            if [ "$work" = answer ]; then
-              [[ ${COMMENT:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a comment id: ${COMMENT:-}"; exit 1; }
-              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries answer $COMMENT -->"
-            elif [ "$work" = draft ]; then
-              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries draft -->"
-            elif [ "$work" = approval ]; then
-              marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries approve -->"
-            fi
+            # The task that takes the hold again, when it is not a rescreen, and the comment of an answer.
+            suffix=""
+            case $TASK in
+              answer)
+                [[ ${COMMENT:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a comment id: ${COMMENT:-}"; exit 1; }
+                suffix=" answer $COMMENT" ;;
+              draft|approve) suffix=" $TASK" ;;
+            esac
+            marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries$suffix -->"
           fi
           # The head of a pull request that the run read, which the schedule reads: a hold that is not tried again
           # stops the work on that head.
@@ -3041,7 +3043,7 @@ jobs:
           fi
           # An answer's hold that is tried again leaves the state label and the label comment as they are: the next
           # step of the item does not change while its answer waits.
-          if [ "$work" = answer ] && [ "$fact" = held ]; then
+          if [ "$TASK" = answer ] && [ "$fact" = held ]; then
             echo "#$NUMBER: the answer is held and tried again, so its state label stays."
             exit 0
           fi
@@ -3056,7 +3058,8 @@ jobs:
   #             screen's, or a last try): that item waits on Sami.
   #   answer    a comment of an outside item's author that waits for an answer (as the gather job lists them) and is
   #             over 15 minutes old, on an issue only after its first reply posted: once for each comment, then once
-  #             an hour while the runs of that comment end at a failed sign-in.
+  #             an hour while the newest run of that comment ends at a failed sign-in. A run of the comment's own event
+  #             names the comment too. A run that its trust job stopped takes no comment.
   #   draft     an outside issue whose label comment holds no stored draft and no posted reply, once an hour after its
   #             newest draft run ended.
   #   approve   a first-time contributor's pull request whose head has runs that GitHub holds, while no approval run
@@ -3111,8 +3114,10 @@ jobs:
   # minutes between runs, and a second run would use the hour's screens twice. It reads this workflow's runs of the
   # last 8 days by their names: the runs by hand one day at a time, as a list with created gives at most 1,000 runs and
   # the App's retry can start 24 a day for each item, and the runs of workflow_run, issue_comment and issues once each;
-  # never the scheduled runs. It reads the jobs only of the runs that decide an item, the head's CI runs only for a
-  # catch-up or a review, and the head's check runs only for the variable. Oldest reason first, each account gets at
+  # never the scheduled runs. It reads the closed pull requests that are not merged in one GraphQL query, with the
+  # newest close of each. It reads the jobs only of the runs that decide an item, the runs that GitHub holds for a
+  # person's approval once for all heads, the head's CI runs only for a catch-up or a review, and the head's check runs
+  # only for the variable. Oldest reason first, each account gets at
   # most OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose
   # name ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job
   # of each run counts again, with the account's own events, and holds the item again at the limit. A catch-up, a
@@ -3169,14 +3174,19 @@ jobs:
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
           # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
+          # login in this step (permission_of).
+          declare -A permission_of=()
           trusted() {
             local permission
             [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
             [[ ,$APPS, != *",$1,"* ]] || return 0
             [[ $1 != *'[bot]' ]] || return 1
-            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-            [[ $permission == admin || $permission == write ]]
+            if [ -z "${permission_of[$1]+set}" ]; then
+              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+              permission_of[$1]=$permission
+            fi
+            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
           }
           # end of trusted
           # held
@@ -3199,16 +3209,16 @@ jobs:
           # cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that failed or ran out of time),
           # <run> the run of the event this hold comes from (a run that takes the hold again keeps it), <tries> the
           # screened reviews of it that failed so far, <task> the task that takes it again (answer, draft or approve as
-          # the marker names it; rescreen for a marker with no task, or with review), and <comment> the comment that a
-          # held answer answers (- for none).
+          # the marker names it, and rescreen for a marker with no task), and <comment> the comment that a held answer
+          # answers (- for none).
           # "<time> -" when the hold is not tried again (the screen held it, or its tries are used up). Nothing when it
           # has no hold comment. Only github-actions[bot]'s comments count.
           limit_hold() {
             comments "$1" | jq -r 'select(.user.login == "github-actions[bot]"
                 and (.body | startswith("<!-- review-held -->")))
               | "\(.updated_at) \((.body
-                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve|review|rescreen)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
-                  | "\(.run) \(.tries // "0") \(.kind) \(if (.task // "review") == "review" then "rescreen" else .task end) \(.comment // "-")") // "-")"' \
+                  | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
+                  | "\(.run) \(.tries // "0") \(.kind) \(.task // "rescreen") \(.comment // "-")") // "-")"' \
               | sort | tail -n 1
           }
           # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
@@ -3236,30 +3246,28 @@ jobs:
               | "\(.made) \(.id)"' <<< "$found" | sort
           }
           # held_account <run>: the account whose limit a hold of <run> counts on, when <run> is a run of this
-          # workflow: the account that started it, for a run of workflow_run, issues or issue_comment; the account its
-          # name ends with, for a run that github-actions[bot] started (the rescreen job's) with one of that job's
-          # names (titled); the account that started it, for a run by hand of an App in APPS or of an account with
-          # write access, which has no limit. Nothing for any other run, or when GitHub no longer has it (a deleted or
-          # expired run). It fails when GitHub could not say.
+          # workflow (by its path): the account that started it, for a run of workflow_run, issues or issue_comment;
+          # the account its name ends with, for a run that github-actions[bot] started (the rescreen job's) with one of
+          # that job's names (titled); the account that started it, for a run by hand of an App in APPS or of an
+          # account with write access (trusted), which has no limit. Nothing for any other run, or when GitHub no
+          # longer has it (a deleted or expired run). It fails when GitHub could not say.
           held_account() {
-            local workflow run id event login title permission
+            local run path event login title rc=0
             [[ $1 =~ ^[1-9][0-9]*$ ]] || return 0
-            workflow=$(gh api "repos/$REPO/actions/workflows/review.yml" --jq .id) || return 1
             run=$(gh api "repos/$REPO/actions/runs/$1" \
-              --jq '"\(.workflow_id) \(.event) \(.actor.login) \(.display_title // "" | gsub("[\r\n]"; " "))"' 2>&1) \
+              --jq '"\(.path // "-") \(.event) \(.actor.login) \(.display_title // "" | gsub("[\r\n]"; " "))"' 2>&1) \
               || { [[ $run == *"(HTTP 404)"* ]] || return 1; return 0; }
-            read -r id event login title <<< "$run"
-            [[ $id == "$workflow" && $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 0
+            read -r path event login title <<< "$run"
+            [[ $path == '.github/workflows/review.yml' && $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 0
             case $event in
               workflow_run|issues|issue_comment) echo "$login" ;;
               workflow_dispatch)
                 if [ "$login" = 'github-actions[bot]' ]; then
                   if [[ $title =~ $titled ]]; then echo "${BASH_REMATCH[5]}"; fi
-                elif [[ ,$APPS, == *",$login,"* ]]; then
-                  echo "$login"
-                elif [[ $login != *'[bot]' ]]; then
-                  permission=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission) || return 1
-                  if [[ $permission == admin || $permission == write ]]; then echo "$login"; fi
+                else
+                  trusted "$login" || rc=$?
+                  (( rc != 2 )) || return 1
+                  (( rc != 0 )) || echo "$login"
                 fi ;;
             esac
           }
@@ -3347,7 +3355,7 @@ jobs:
           named='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel) #([1-9][0-9]*)( at ([0-9a-f]{40}))?( for ([1-9][0-9]*))?( of ([A-Za-z0-9-]+(\[bot\])?))?$'
           pushed='^review ([0-9a-f]{40}) by '
           opened='^review #([1-9][0-9]*)$'
-          answered='^answer #([1-9][0-9]*) by '
+          answered='^answer #([1-9][0-9]*) for ([1-9][0-9]*) by '
           declare -A running=() reached=()
           # take <file>: each run of the rows of <file> that names an item, into $seen/runs.
           take() {
@@ -3369,7 +3377,7 @@ jobs:
                   task=review number=${BASH_REMATCH[1]} ;;
                 issue_comment)
                   [[ ${title:-} =~ $answered ]] || continue
-                  task=answer number=${BASH_REMATCH[1]} ;;
+                  task=answer number=${BASH_REMATCH[1]} comment=${BASH_REMATCH[2]} ;;
                 *) continue ;;
               esac
               [ -n "$number" ] || continue
@@ -3432,6 +3440,25 @@ jobs:
                   else "count" end)] | join(" ")' "$file"
           }
           declare -A used=() paced=() owed=() access=()
+          # access_of <login>: access[<login>], trusted's answer for <login>, 0 or 1, kept for this run. It fails when
+          # GitHub could not say.
+          access_of() {
+            local rc=0
+            [ -z "${access[$1]:-}" ] || return 0
+            trusted "$1" || rc=$?
+            (( rc != 2 )) || { echo "::error::GitHub did not say whether $1 has write access."; return 1; }
+            access[$1]=$rc
+          }
+          # held_of: held_list, "<head> <created>" of each run of the event pull_request that GitHub holds for a
+          # person's approval (status action_required), read once in this run.
+          held_list="" held_read=""
+          held_of() {
+            [ -z "$held_read" ] || return 0
+            held_list=$(gh api --method GET --paginate "repos/$REPO/actions/runs" -f status=action_required \
+              -f event=pull_request -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required"
+                and .event == "pull_request") | "\(.head_sha) \(.created_at // "-")"') || return 1
+            held_read=1
+          }
           # pace <login>: used[<login>], the runs of the last hour whose names end with " of <login>" and that count
           # toward its limit (facts), with the runs that this job started for it in this run.
           pace() {
@@ -3682,11 +3709,12 @@ jobs:
             esac
           }
           # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
-          # over 15 minutes old, on an issue only after its first reply posted. Once for each comment, then once an hour
-          # while the newest run of that comment ended at a failed sign-in. A hold of an answer that is tried again
-          # leaves the comments to that hold (due_held).
+          # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
+          # of its own event (issue_comment) or by hand, took it, but one that its trust job stopped. Once for each
+          # comment, then once an hour while the newest run of that comment ended at a failed sign-in. A hold of an
+          # answer that is tried again leaves the comments to that hold (due_held).
           due_answer() {
-            local at id created ended run f
+            local at id created ended run f signin early
             if [ "$kind" = issue ]; then
               marks_of || return 1
               grep -qx replied <<< "$marks" || return 0
@@ -3699,16 +3727,18 @@ jobs:
               echo "#$number: a comment of $author waits for an answer, and is under 15 minutes old."
               return 0
             fi
-            read -r created ended run <<< "$(awk -v n="$number" -v c="$id" '$6 == "workflow_dispatch" && $7 == n &&
-              $8 == "answer" && $10 == c { print $2, $3, $1 }' "$seen/runs" | sort | tail -n 1)"
+            read -r created ended run <<< "$(awk -v n="$number" -v c="$id" '$7 == n && $8 == "answer" && $10 == c {
+              print $2, $3, $1 }' "$seen/runs" | sort | tail -n 1)"
             if [ -n "${run:-}" ]; then
               f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-              if [ "${f%% *}" != signin ]; then
+              read -r signin _ _ _ early _ <<< "$f"
+              if [ "$signin" = signin ]; then
+                if [[ ! $ended < $hour ]]; then
+                  echo "#$number: run $run of comment $id could not sign in, less than an hour ago: tried again later."
+                  return 0
+                fi
+              elif [ "$early" != stopped ]; then
                 echo "#$number: run $run took comment $id."
-                return 0
-              fi
-              if [[ ! $ended < $hour ]]; then
-                echo "#$number: run $run of comment $id could not sign in, less than an hour ago: tried again later."
                 return 0
               fi
             fi
@@ -3743,11 +3773,8 @@ jobs:
           # again (head_stopped). A hold of an approval that is tried again leaves it to that hold (due_held).
           due_approve() {
             local list n last created ended run f screen post tries
-            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            list=$(SHA=$head gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$head" \
-              -f status=action_required -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required"
-                and .head_sha == $ENV.SHA and .event == "pull_request") | .created_at // "-"') \
-              || { echo "::error::the runs of $head could not be read."; return 1; }
+            held_of || { echo "::error::the runs of $head could not be read."; return 1; }
+            list=$(awk -v h="$head" '$1 == h { print $2 }' <<< "$held_list")
             n=$(grep -c . <<< "$list" || true)
             (( n > 0 )) || return 0
             last=$(sort <<< "$list" | tail -n 1)
@@ -4029,7 +4056,7 @@ jobs:
           # that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the head
           # (taken), no later one takes it in this run.
           consider() {
-            local head="" rc=0 outsider=false limited="" hold h_at="" h_origin="" h_tries="" h_task="" h_comment=""
+            local head="" outsider=false limited="" hold h_at="" h_origin="" h_task="" h_comment=""
             local h_head=- line retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
             local review=none held=false conflicted=false head_read="" merge="" ci="" ci_read=""
             if [ "$draft" != false ]; then
@@ -4055,16 +4082,12 @@ jobs:
               echo "#$number: a run of it has not finished."
               return 0
             fi
-            if [ -z "${access[$author]:-}" ]; then
-              trusted "$author" || rc=$?
-              (( rc != 2 )) || { echo "::error::GitHub did not say whether $author has write access."; return 1; }
-              access[$author]=$rc
-            fi
+            access_of "$author" || return 1
             if (( ${access[$author]} != 0 )); then outsider=true limited=$author; fi
             [ "$labelled" = true ] || [ "$outsider" = true ] || [ "$kind" = pr ] || return 0
             if [ "$labelled" = true ] || [ "$outsider" = true ]; then
               hold=$(limit_hold "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
-              read -r h_at h_origin h_tries _ h_task h_comment <<< "$hold"
+              read -r h_at h_origin _ _ h_task h_comment <<< "$hold"
             fi
             if [ "$labelled" = true ]; then due_held || return 1; fi
             if [ "$outsider" = false ]; then
@@ -4098,30 +4121,23 @@ jobs:
             due_retry catchup catchup catchup || return 1
           }
           # consider_closed: a catch-up left closed, the one closed item that this job takes: #number, a pull request
-          # of an outside author that is not merged, whose newest close is oss-verify[bot]'s and falls between the
-          # start and the end of a catchup run of it whose post job failed or was cancelled (the closing run), as the
-          # trust job tells it (left_closed). Its runs by hand are read back to the day before the close. It is due a
-          # catchup run, which only reopens it, once an hour after the newest catchup run of it ended. Each catchup
-          # run since the closing run counts, whatever its outcome, but one that failed at a sign-in: after
-          # REVIEW_TRIES of them it is not tried again (left_stopped), and nothing more of it is read (gave_up).
+          # of an outside author that is not merged, whose newest close (at and by, of the list of the closed pull
+          # requests) is oss-verify[bot]'s and falls between the start and the end of a catchup run of it whose post job
+          # failed or was cancelled (the closing run), as the trust job tells it (left_closed). Its runs by hand are
+          # read back to the day before the close. It is due a catchup run, which only reopens it, once an hour after
+          # the newest catchup run of it ended. Each catchup run since the closing run counts, whatever its outcome, but
+          # one that failed at a sign-in: after REVIEW_TRIES of them it is not tried again (left_stopped), and nothing
+          # more of it is read (gave_up).
           consider_closed() {
-            local rc=0 head="" line at by given closing="" made="" created ended run started f post count=0 newest=""
+            local head="" given closing="" made="" created ended run started f post count=0 newest=""
             if [ -n "${running[$number]:-}" ]; then
               echo "#$number: a run of it has not finished."
               return 0
             fi
-            if [ -z "${access[$author]:-}" ]; then
-              trusted "$author" || rc=$?
-              (( rc != 2 )) || { echo "::error::GitHub did not say whether $author has write access."; return 1; }
-              access[$author]=$rc
-            fi
+            access_of "$author" || return 1
             (( ${access[$author]} != 0 )) || return 0
-            line=$(gh api --paginate "repos/$REPO/issues/$number/events" --jq '.[] | select(.event == "closed")
-              | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) \
-              || { echo "::error::the events of #$number could not be read."; return 1; }
-            read -r at by <<< "$line"
             [ "${by:-}" = 'oss-verify[bot]' ] || return 0
-            [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
+            [[ ${at:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
             given=$(gave_up "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
             if [ "$given" = true ]; then
               echo "#$number: the catch-up closed it and could not reopen it: Sami reopens it."
@@ -4176,14 +4192,32 @@ jobs:
             fi
             consider || failed=1
           done <<< "$items"
-          # The closed pull requests that are not merged, each with its author: a catch-up left closed among them is due
-          # its reopen (consider_closed). A list that cannot be read leaves them for the next run.
-          closed=$(gh api --paginate "repos/$REPO/issues?state=closed&per_page=100" --jq '.[]
-            | select(.state == "closed" and .pull_request != null and .pull_request.merged_at == null)
-            | "\(.number) \(.user.login // "")"') \
+          # The closed pull requests that are not merged, each with its author and its newest close, when and by whom,
+          # - for none, in one GraphQL query: a catch-up left closed among them is due its reopen (consider_closed).
+          # GraphQL names an App <name>, and login gives it as <name>[bot], as the REST API names it. A list that cannot
+          # be read leaves them for the next run.
+          # shellcheck disable=SC2016 # $owner, $name and $endCursor are GraphQL's
+          closed=$(gh api graphql --paginate -f owner="${REPO%%/*}" -f name="${REPO#*/}" -f query='
+            query($owner: String!, $name: String!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequests(states: CLOSED, first: 100, after: $endCursor) {
+                  nodes {
+                    number
+                    author { __typename login }
+                    timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
+                      nodes { ... on ClosedEvent { createdAt actor { __typename login } } }
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }' --jq 'def login: if .__typename == "Bot" then .login + "[bot]" else .login end;
+              .data.repository.pullRequests.nodes[] | (.timelineItems.nodes[0] // {}) as $close
+              | "\(.number) \(.author // {} | login // "-") \($close.createdAt // "-")"
+                + " \($close.actor // {} | login // "-")"') \
             || { echo "::error::the closed pull requests could not be read."; closed="" failed=1; }
-          while read -r number author; do
-            [[ ${number:-} =~ ^[1-9][0-9]*$ && -n ${author:-} ]] || continue
+          while read -r number author at by; do
+            [[ ${number:-} =~ ^[1-9][0-9]*$ && ${author:--} != - ]] || continue
             consider_closed || failed=1
           done <<< "$closed"
           # The runs due, oldest reason first. A run that screens counts toward the limit of the account that its name

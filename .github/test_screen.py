@@ -188,8 +188,10 @@ class ScreenTest(unittest.TestCase):
             f.write(lines[:rest - len(end)] + end)
 
     def call(self, *args):
-        """main() with args, as a step runs it, in this process: (its exit code, everything it printed)."""
+        """main() with args, as a step runs it, in this process: (its exit code, everything it printed). The time that
+        main() gives a step (the sign-in's own) ends with the call, as it ends with the step's process."""
         saved = dict(os.environ)
+        times = screen.DEADLINE, screen.OUT_OF_TIME
         os.environ.update(self.env)
         out, err = io.StringIO(), io.StringIO()
         try:
@@ -199,6 +201,7 @@ class ScreenTest(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(saved)
+            screen.DEADLINE, screen.OUT_OF_TIME = times
         return rc, out.getvalue() + err.getvalue()
 
     def sign_in(self):
@@ -647,7 +650,7 @@ class ScreenTest(unittest.TestCase):
             screen.DEADLINE = saved
         self.assertEqual(v, "held")
         self.assertIn("ran out of its 600 seconds", reason["checks"]["model_armor"]["error"])
-        self.assertLess(screen.DEADLINE_SECONDS, 15 * 60)
+        self.assertLess(screen.SIGN_IN_SECONDS + screen.DEADLINE_SECONDS, 15 * 60)
 
     def test_a_file_the_diff_shows_as_binary_is_held(self):
         """A text file that an attribute makes the diff show as binary: its lines are in no text the checks read."""
@@ -744,7 +747,8 @@ class ScreenTest(unittest.TestCase):
             "entra gives no token": ("/entra/tenant/oauth2/v2.0/token", (200, {})),
             "anthropic refuses": ("/v1/oauth/token", (401, {"type": "error"})),
             "anthropic gives no token": ("/v1/oauth/token", (200, {"token_type": "Bearer"})),
-            "github gives no identity token": ("/oidc", (403, {"message": "no"})),
+            "github refuses the identity token": ("/oidc", (403, {"message": "no"})),
+            "github gives no identity token": ("/oidc", (200, {})),
         }
         for name, (path, answer) in cases.items():
             with self.subTest(case=name):
