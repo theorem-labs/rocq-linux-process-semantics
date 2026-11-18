@@ -459,18 +459,21 @@ class Runner(unittest.TestCase):
         self.serve(f"repos/{REPO}/issues/{number}", data)
 
     def serve_prs(self, *prs):
-        """The open pull requests, as GitHub lists them: (number, author, head[, head repository id[, draft[, base]]])."""
+        """The open pull requests, as GitHub lists them: (number, author, head[, head repository id[, draft[, base[,
+        head branch]]]]), the head branch BRANCH when it is not given."""
         self.serve(f"repos/{REPO}/pulls", [
             {"number": p[0], "user": {"login": p[1]},
-             "head": {"sha": p[2], "repo": {"id": p[3] if len(p) > 3 else FORK_ID}},
+             "head": {"sha": p[2], "ref": p[6] if len(p) > 6 else BRANCH,
+                      "repo": {"id": p[3] if len(p) > 3 else FORK_ID}},
              "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}} for p in prs])
 
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
-                  head_repository="", title=None, reply="", pulls=None, variable=None):
+                  head_repository="", title=None, reply="", pulls=None, variable=None, head_branch=None):
         """The trust step, with the event and the inputs as GitHub gives them. A run by hand has run 100's name:
         the one run-name gives its inputs, or title. pulls: the pull requests that a CI run names
-        (workflow_run.pull_requests; named_pr), None for an event that names none. variable: the variable
-        REPO_PAIRS_IMPORT_PATHS (None: not set, so GitHub gives an empty value), which the check of a stop reads."""
+        (workflow_run.pull_requests; named_pr), None for an event that names none. head_branch: a CI run's head branch
+        (BRANCH when not given; GitHub gives none for another event). variable: the variable REPO_PAIRS_IMPORT_PATHS
+        (None: not set, so GitHub gives an empty value), which the check of a stop reads."""
         if event == "workflow_dispatch":
             if title is None:
                 title = run_name(**{"github.event_name": event, "inputs.task": task or "review",
@@ -478,11 +481,13 @@ class Runner(unittest.TestCase):
                                     "inputs.comment": comment, "inputs.account": account})
             self.serve(f"repos/{REPO}/actions/runs/100",
                        {"id": 100, "event": event, "display_title": title, "actor": {"login": actor}})
+        if head_branch is None:
+            head_branch = BRANCH if event == "workflow_run" else ""
         s = step("trust", TRUST)
         (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
         return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
                                TASK=task, SCREEN=screen, ACCOUNT=account, COMMENT=comment, HEAD=head,
-                               HEAD_REPOSITORY=head_repository, REPLY=reply, RUN_ID="100",
+                               HEAD_REPOSITORY=head_repository, HEAD_BRANCH=head_branch, REPLY=reply, RUN_ID="100",
                                PULLS="" if pulls is None else json.dumps(pulls),
                                **{name: "" if variable is None else variable},
                                **{k: WF["env"][k] for k in ("OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES",
@@ -621,9 +626,13 @@ class TrustTest(Runner):
         self.assertReview("screen", "issues", "github-actions[bot]", "github-actions[bot]")
 
     def test_a_ci_run_is_matched_to_its_pull_request_by_head_and_head_repository(self):
-        """The number and the author come from the open pull requests into main, never from the CI run: another
-        repository's pull request with the same head, another head, or a pull request into another branch is not it.
-        No pull request, two of them, or a draft gives no route."""
+        """Ruling 1: GitHub names no pull request in a CI run of a fork's pull request, so the number and the author
+        come from the open pull requests, never from the CI run: the one whose head commit, head repository and head
+        branch are the CI run's, when exactly one open pull request of any base has them, and only when that one is
+        into main. Another repository's pull request with the same head, another head, or the same head on another
+        branch of the same repository is not it. No such pull request, one into another branch, or a draft gives no
+        route. More than one, into main or not, gives no route either: the run is none of theirs alone, so it counts
+        toward no account's limit, and the rescreen pass reviews each one into main in a run of its own."""
         self.permissions(mallory="read", eve="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
 
@@ -631,15 +640,25 @@ class TrustTest(Runner):
             self.serve_prs(*prs)
             return self.run_trust("workflow_run", actor="mallory", number="", head=HEAD, head_repository=str(FORK_ID))
         rc, out, got = run((8, "eve", HEAD, 999), (9, "eve", OTHER_HEAD), (7, "mallory", HEAD),
-                           (10, "eve", HEAD, FORK_ID, False, "dev"))
+                           (10, "eve", HEAD, FORK_ID, False, "dev", "copy"),
+                           (11, "eve", HEAD, FORK_ID, False, "main", "copy"))
         self.assertEqual((rc, got.get("number"), got.get("route"), got.get("task"), got.get("head")),
                          (0, "7", "screen", "review", HEAD), out)
-        for case, prs in (("none", [(7, "mallory", OTHER_HEAD)]), ("two", [(7, "mallory", HEAD), (8, "eve", HEAD)]),
-                          ("a draft", [(7, "mallory", HEAD, FORK_ID, True)]),
-                          ("another repository", [(7, "mallory", HEAD, 999)])):
+        dev = (10, "eve", HEAD, FORK_ID, False, "dev")
+        for case, prs, why in (
+                ("none", [(7, "mallory", OTHER_HEAD)], "no open pull request has this head"),
+                ("another branch", [(7, "mallory", HEAD, FORK_ID, False, "main", "copy")],
+                 "no open pull request has this head"),
+                ("one into another branch", [dev], "#10: it is into dev, not main"),
+                ("two into main", [(7, "mallory", HEAD), (8, "eve", HEAD)], "2 open pull requests have this head"),
+                ("one into main and one into another branch", [(7, "mallory", HEAD), dev],
+                 "2 open pull requests have this head"),
+                ("a draft", [(7, "mallory", HEAD, FORK_ID, True)], "#7: it is a draft"),
+                ("another repository", [(7, "mallory", HEAD, 999)], "no open pull request has this head")):
             with self.subTest(case=case):
                 rc, out, got = run(*prs)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
+                self.assertIn(why, out)
 
     def test_a_ci_run_of_a_pull_request_of_this_repository_is_the_one_into_main_that_it_names(self):
         """Decision 1: GitHub names the pull requests of a CI run of a pull request of this repository
@@ -665,8 +684,8 @@ class TrustTest(Runner):
         """Decision 1: a CI run whose pull requests are all into another branch, or into main of another repository,
         starts no review, so no job after the trust job runs and it counts toward no cap: not even a review of alice's
         open pull request into main with the same head, which would count toward HOURLY_CAP. A CI run that names a
-        pull request into main that is closed now, a draft, into another base now, or whose head moved on, starts none
-        either."""
+        pull request into main that is closed now, a draft, into another base now, or whose head moved on, or is now
+        the head of another branch than the CI run's, starts none either."""
         self.permissions(alice="write", mallory="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         self.serve_prs((7, "alice", HEAD, REPO_ID))
@@ -675,7 +694,8 @@ class TrustTest(Runner):
                                  ("closed now", [named_pr(7)], {"state": "closed"}),
                                  ("a draft", [named_pr(7)], {"draft": True}),
                                  ("into another base now", [named_pr(7)], {"base": "dev"}),
-                                 ("its head moved on", [named_pr(7)], {"head": OTHER_HEAD})):
+                                 ("its head moved on", [named_pr(7)], {"head": OTHER_HEAD}),
+                                 ("its head is another branch's now", [named_pr(7)], {"branch": "copy"})):
             for actor in ("alice", "mallory"):
                 with self.subTest(case=case, actor=actor):
                     self.serve_item(7, "alice", kind="pr", repository=REPO_ID, **dict({"head": HEAD}, **now))
@@ -737,21 +757,29 @@ class TrustTest(Runner):
         self.assertReview(None, "workflow_dispatch", "", "dependabot[bot]", screen="true")
 
     def test_a_run_by_hand_with_only_a_number_on_a_held_head_approves(self):
-        """A person's review of a pull request whose head has runs that GitHub holds (a first-time contributor's) gets
-        the task approve, which screens it. Held runs of another head, or none, leave it a review."""
+        """A person's review of a pull request whose head has runs that GitHub holds (a first-time contributor's), from
+        the pull request's head repository and head branch, gets the task approve, which screens it. Held runs of
+        another head, held runs of the same head from another repository or another branch (another fork's pull
+        request of the same commit, whose runs the post job never approves), or none, leave it a review; so do held
+        runs of a pull request whose head repository is gone, of which the post job approves none."""
         self.permissions(mallory="read")
         self.serve_item(7, "mallory", kind="pr", head=HEAD)
 
         def held(*runs):
             self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
-                {"id": 60 + i, "status": s, "head_sha": h, "event": "pull_request"} for i, (s, h) in enumerate(runs)]})
-        held(("action_required", HEAD))
+                {"id": 60 + i, "status": s, "head_sha": h, "event": "pull_request", "head_branch": b,
+                 "head_repository": {"id": r}} for i, (s, h, r, b) in enumerate(runs)]})
+        held(("action_required", HEAD, FORK_ID, BRANCH))
         _out, got = self.assertReview("screen", "workflow_dispatch", "", "alice", want_task="approve")
         self.assertEqual((got["outsider"], got["head"]), ("mallory", HEAD))
-        for runs in ((), (("action_required", OTHER_HEAD),), (("completed", HEAD),)):
+        for runs in ((), (("action_required", OTHER_HEAD, FORK_ID, BRANCH),), (("completed", HEAD, FORK_ID, BRANCH),),
+                     (("action_required", HEAD, 999, BRANCH),), (("action_required", HEAD, FORK_ID, "copy"),)):
             with self.subTest(runs=runs):
                 held(*runs)
                 self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, repository=None)
+        held(("action_required", HEAD, None, BRANCH))
+        self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
 
     def test_a_reply_is_posted_only_for_a_writer_or_an_app_of_ours(self):
         """The approved reply's run: a person with write access, or an App in APPS, legion-implementer[bot] among them,
@@ -1909,15 +1937,19 @@ class LimitTest(Runner):
         self.assertEqual(self.route("mallory", "mallory"), "limit")
 
     def test_a_run_that_could_not_sign_in_does_not_count(self):
-        """R10: a run whose screen or review job stopped at a failed step named "Sign in ..." uses none of the
-        account's hour, so the schedule's run of its item is not held at the limit for it. A run whose screen failed
+        """R10: a run whose screen job stopped at a failed step named "Sign in ..." screened nothing and uses none of
+        the account's hour, so the schedule's run of its item is not held at the limit for it. Ruling 4: a run whose
+        screen passed and whose review then could not sign in, before the model or at the fresh reader, counts once:
+        its screen ran, and the rescreen pass runs its failed jobs again with no new screen. A run whose screen failed
         after its sign-in, or whose App sign-in failed after its screen and review, still counts. Only the account's
         runs have their jobs read."""
         screened = attempt_job("screen", name="screen mallory")
         for want, jobs in (
                 ("screen", [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]),
                 ("screen", [attempt_job("screen", "Sign in to Anthropic and Azure", name="screen mallory")]),
-                ("screen", [screened, attempt_job("review", "Sign in to Anthropic", name="review (screened)")]),
+                ("limit", [screened, attempt_job("review", "Sign in to Anthropic", name="review (screened)")]),
+                ("limit", [screened, attempt_job("review", "Sign in to Anthropic for the fresh reader",
+                                                 name="review (screened)")]),
                 ("limit", [attempt_job("screen", "Screen", name="screen mallory")]),
                 ("limit", [screened, attempt_job("review", name="review (screened)"), attempt_job("post", MINT_A)])):
             failed = [(j["name"], s["name"]) for j in jobs for s in j["steps"] if s["conclusion"] == "failure"]
@@ -2067,19 +2099,23 @@ class LimitTest(Runner):
                 self.assertEqual((rc, got.get("route")), (0, want), out)
 
     def test_a_forks_pull_request_into_another_branch_starts_only_its_authors_review_into_main_on_her_limit(self):
-        """Decision 1: GitHub names no pull request in a CI run of a fork's pull request (CI run 40554405841 of #23),
-        so the trust job takes the one open pull request into main whose head is the CI run's head, from its head
-        repository. A CI run of mallory's pull request #8 into dev, whose head her pull request #7 into main also has,
-        starts the review of #7 alone: screened, and counted toward mallory's limit with her other runs."""
-        self.serve_prs((8, "mallory", HEAD, FORK_ID, False, "dev"), (7, "mallory", HEAD), (9, "eve", OTHER_HEAD))
+        """Decision 1 and ruling 1: GitHub names no pull request in a CI run of a fork's pull request (CI run
+        40554405841 of #23), so the trust job takes the one open pull request whose head commit, head repository and
+        head branch are the CI run's, when it is into main. Mallory's pull request #8 into dev, from another branch of
+        her fork, has the head that her pull request #7 into main also has. The CI run of #8's branch starts no review
+        and counts toward no limit; the CI run of #7's branch starts the review of #7 alone: screened, and counted
+        toward mallory's limit with her other runs."""
+        self.serve_prs((8, "mallory", HEAD, FORK_ID, False, "dev", "copy"), (7, "mallory", HEAD),
+                       (9, "eve", OTHER_HEAD))
 
-        def route():
+        def route(branch=BRANCH):
             rc, out, got = self.run_trust("workflow_run", actor="mallory", number="", head=HEAD,
-                                          head_repository=str(FORK_ID), pulls=[])
+                                          head_repository=str(FORK_ID), pulls=[], head_branch=branch)
             self.assertEqual(rc, 0, out)
             return got.get("number"), got.get("route"), got.get("outsider")
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT - 1)])
         self.assertEqual(route(), ("7", "screen", "mallory"))
+        self.assertEqual(route("copy"), (None, None, None))
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
         self.assertEqual(route(), ("7", "limit", "mallory"))
 
@@ -2127,6 +2163,26 @@ class LimitTest(Runner):
         self.serve_item(7, "bob", kind="pr")
         rc, out, got = self.run_trust("issue_comment", "bob", "bob", comment="900")
         self.assertEqual((rc, got.get("route")), (0, "screen"), out)
+
+    def test_runs_that_the_trust_job_stopped_are_read_within_the_budget(self):
+        """Decision 1 and decision 3: a run of mallory's event that the trust job stopped (a CI run of a pull request
+        into another branch) counts for nothing, and only its jobs show that: each costs a read, within the
+        2 * OUTSIDE_HOURLY_LIMIT reads of a trust job, and each one past them counts, as it may.
+        OUTSIDE_HOURLY_LIMIT + 1 such runs leave her under her limit; 3 * OUTSIDE_HOURLY_LIMIT put her at it after
+        2 * OUTSIDE_HOURLY_LIMIT reads."""
+        stopped = [{"name": "trust", "status": "completed", "conclusion": "success"}] + [
+            {"name": n, "status": "completed", "conclusion": "skipped"}
+            for n in ("gather", "screen", "review", "post", "comment", "hold")]
+        for n, want, reads in ((self.LIMIT + 1, "screen", self.LIMIT + 1), (3 * self.LIMIT, "limit", 2 * self.LIMIT)):
+            with self.subTest(runs=n):
+                runs = [(90 - i, "mallory", "workflow_run", "success", f"review {HEAD} by mallory") for i in range(n)]
+                self.runs(*runs, jobs={r[0]: stopped[1:] for r in runs})
+                for r in runs:
+                    self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": stopped})
+                self.forget()
+                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
+                                 [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs[:reads]])
 
     def test_a_maintainers_re_run_still_counts(self):
         """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
@@ -3643,6 +3699,66 @@ class CapTest(Runner):
                                                  **self.step_env(name, "screen"))
                 self.assertEqual(rc, 1, out)
                 self.assertIn("HELD", out)
+
+    def test_a_re_run_that_ended_in_the_hour_counts_and_each_list_keeps_its_bound(self):
+        """Decision 2: GitHub's created filter reads the time when a run was made, which a re-run keeps. The rescreen
+        pass runs the failed jobs of a run again only while the data of its gather job is kept (review-data's
+        retention-days): so the Count step reads each run that ended when it was made up to that time and 3 hours ago,
+        and each run that has not finished whenever it was made. A re-run of a run made 20 hours ago, whose review job
+        called the model 40 minutes ago and ended, and SCREENED_HOURLY_CAP - 1 screened reviews of the hour fill the
+        cap. A run made 28 hours ago that ended in the hour is not read. Each list keeps its status filter, so runs
+        that GitHub skipped fill none, and a cut list still makes the count the cap
+        (test_a_list_of_runs_that_github_cuts_at_1000_lets_no_screened_review_under_its_cap)."""
+        cap = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        (upload,) = [s for s in JOBS["gather"]["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
+        hours = int(upload["with"]["retention-days"]) * 24 + 3
+        self.assertIn(f"date -u -d '-{hours} hours'", step("review", self.COUNT)["run"])
+        bin_dir = os.path.join(self.dir, "bin")
+        os.rename(os.path.join(bin_dir, "gh"), os.path.join(bin_dir, "gh-served"))
+        # The stand-in gh lists runs by GitHub's created filter, as the red case above does.
+        with open(os.path.join(bin_dir, "gh"), "w") as f:
+            f.write('#!/usr/bin/env bash\nargs=("$@") created=\n'
+                    'for a in "$@"; do case $a in \'created=>=\'*) created=${a#created=>=} ;; esac; done\n'
+                    'for i in "${!args[@]}"; do\n'
+                    '  if [ -n "$created" ] && [ "${args[$i]}" = --jq ]; then\n'
+                    '    args[$((i + 1))]="(.workflow_runs |= map(select(.created_at >= \\"$created\\")))'
+                    ' | .total_count = (.workflow_runs | length) | ${args[$((i + 1))]}"\n'
+                    '  fi\ndone\nexec "$(dirname "$0")/gh-served" "${args[@]}"\n')
+        os.chmod(os.path.join(bin_dir, "gh"), 0o755)
+
+        def ago(minutes):
+            return (datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for made, held in ((20 * 60, True), (28 * 60, False)):
+            with self.subTest(made_hours_ago=made // 60):
+                self.forget()
+                fresh = [{"id": 10 + i, "event": "issue_comment", "status": "completed", "conclusion": "success",
+                          "created_at": ago(30), "updated_at": ago(20)} for i in range(cap - 1)]
+                rerun = {"id": 50, "event": "workflow_run", "status": "completed", "conclusion": "success",
+                         "created_at": ago(made), "updated_at": ago(10), "run_started_at": ago(41), "run_attempt": 2}
+                # GitHub's list of each status: the runs that ended with success, and none of another status.
+                runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
+                self.serve(runs, {"workflow_runs": []})
+                self.serve(f"{runs}.status=success", {"workflow_runs": fresh + [rerun]})
+                for r in fresh:
+                    self.serve(f"repos/{REPO}/actions/runs/{r['id']}/jobs", {"jobs": [
+                        dict(attempt_job("review", name="review (screened)"), run_id=r["id"], run_attempt=1,
+                             started_at=ago(29))]})
+                self.serve(f"repos/{REPO}/actions/runs/50/jobs", {"jobs": [
+                    dict(attempt_job("review", "Sign in to Anthropic", name="review (screened)"), run_id=50,
+                         run_attempt=1, started_at=ago(made - 2)),
+                    dict(attempt_job("review", name="review (screened)"), run_id=50, run_attempt=2,
+                         started_at=ago(40))]})
+                rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100",
+                                               **self.step_env(self.COUNT, "screen"))
+                self.assertEqual((rc, got.get("count")), (0, str(cap if held else cap - 1)), out)
+                lists = [dict(c[i + 1].split("=", 1) for i, a in enumerate(c) if a == "-f")
+                         for c in gh_calls(self.api) if f"repos/{REPO}/actions/workflows/review.yml/runs" in c]
+                self.assertEqual({f["status"]: "created" in f for f in lists},
+                                 {s: s not in ("requested", "queued", "pending", "waiting", "in_progress")
+                                  for s in ("requested", "queued", "pending", "waiting", "in_progress", "success",
+                                            "failure", "cancelled", "timed_out", "neutral", "action_required",
+                                            "stale")})
 
 
 class BunTest(Runner):
@@ -6089,12 +6205,18 @@ class RescreenTrustTest(Held):
         self.serve(f"repos/{REPO}/actions/runs/{rescreens[0][0]}/jobs", {"jobs": accepted})
         self.assertEqual(self.route().get("route"), "limit")
 
-    def test_an_events_run_with_every_other_job_skipped_still_counts(self):
-        """Only a rescreen is let off: an event's run is counted as before, whatever its trust job decided."""
+    def test_an_events_run_that_its_trust_job_stopped_does_not_count(self):
+        """Decision 1: an event's run whose trust job stopped it (every job after it skipped, a run that GitHub lists as
+        one that succeeded) screened nothing and counts toward no limit, as a rescreen that its trust job refused: the
+        CI run of a pull request into another branch, say. An event's run whose trust job routed it counts."""
         self.runs(*self.rescreened("mallory", self.LIMIT - 1), (30, "mallory", "issues", "review #8"))
         self.serve(f"repos/{REPO}/actions/runs/30/jobs", {"jobs": [
             {"name": "trust", "status": "completed", "conclusion": "success"},
             {"name": "gather", "status": "completed", "conclusion": "skipped"}]})
+        self.assertEqual(self.route().get("route"), "screen")
+        self.serve(f"repos/{REPO}/actions/runs/30/jobs", {"jobs": [
+            {"name": "trust", "status": "completed", "conclusion": "success"},
+            {"name": "gather", "status": "completed", "conclusion": "success"}]})
         self.assertEqual(self.route().get("route"), "limit")
 
     def test_the_cap(self):
@@ -6163,7 +6285,8 @@ class RescreenTrustTest(Held):
         the comment of an answer), and never for a reply. A rescreen of a pull request names its head too."""
         self.item(kind="pr", head=HEAD)
         self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
-            {"id": 60, "status": "action_required", "head_sha": HEAD, "event": "pull_request"}]})
+            {"id": 60, "status": "action_required", "head_sha": HEAD, "event": "pull_request", "head_branch": BRANCH,
+             "head_repository": {"id": FORK_ID}}]})
         for task, account, head in (("review", "mallory", HEAD), ("approve", "mallory", HEAD),
                                     ("rescreen", "mallory", HEAD)):
             with self.subTest(task=task, account=account, head=head):
@@ -6228,7 +6351,8 @@ class RescreenTrustTest(Held):
                                  ("screen", inputs["task"]) if taken else (None, None), case)
         self.item(kind="pr", head=HEAD)
         self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
-            {"id": 60, "status": "action_required", "head_sha": HEAD, "event": "pull_request"}]})
+            {"id": 60, "status": "action_required", "head_sha": HEAD, "event": "pull_request", "head_branch": BRANCH,
+             "head_repository": {"id": FORK_ID}}]})
         for case, comments, taken in (("an approval of a held head", [], True),
                                       ("an approval whose held approval's hold is over an hour old",
                                        [hold("approve", 65)], True),
@@ -6297,10 +6421,27 @@ class RescreenTrustTest(Held):
                 self.held(7, *comments)
                 self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
                     {"id": 70, "status": ci[0], "conclusion": ci[2] if len(ci) > 2 else None, "event": "pull_request",
-                     "path": ".github/workflows/ci.yml", "head_sha": HEAD, "updated_at": ago(ci[1])}]})
+                     "path": ".github/workflows/ci.yml", "head_sha": HEAD, "head_branch": BRANCH,
+                     "head_repository": {"id": FORK_ID}, "updated_at": ago(ci[1])}]})
                 account = "mallory" if task == "review" and more.get("author", "mallory") == "mallory" else ""
                 got = self.route(task=task, account=account, head=HEAD)
                 self.assertEqual(bool(got.get("route")), taken, got)
+        # Another fork's CI runs of the same commit, or the runs of another branch of the same fork, are not the head's
+        # CI: one that GitHub holds stops neither the review nor the catch-up of the head.
+        for repository, branch in ((999, BRANCH), (FORK_ID, "copy")):
+            for task, account in (("review", "mallory"), ("catchup", "")):
+                with self.subTest(task=task, repository=repository, branch=branch):
+                    self.item(kind="pr", head=HEAD, labels=())
+                    self.held(7)
+                    self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
+                        {"id": 70, "status": "completed", "conclusion": "success", "event": "pull_request",
+                         "path": ".github/workflows/ci.yml", "head_sha": HEAD, "head_branch": BRANCH,
+                         "head_repository": {"id": FORK_ID}, "updated_at": ago(90)},
+                        {"id": 71, "status": "action_required", "conclusion": None, "event": "pull_request",
+                         "path": ".github/workflows/ci.yml", "head_sha": HEAD, "head_branch": branch,
+                         "head_repository": {"id": repository}, "updated_at": ago(5)}]})
+                    got = self.route(task=task, account=account, head=HEAD)
+                    self.assertEqual(got.get("task"), task, got)
 
     def test_an_event_never_takes_the_rescreen_path(self):
         """An event has no task input; were one given, the event's own path decides, from its own author and account,
@@ -7873,6 +8014,27 @@ class ScheduleTest(Scheduled):
         for number, *_ in due[limit - 1:]:
             self.assertIn(f"#{number} waits: mallory had {limit} runs that screen in the last hour", out)
 
+    def test_a_run_whose_screen_passed_and_whose_review_could_not_sign_in_counts_once_toward_the_limit(self):
+        """Ruling 4: the screen of a run whose review then could not sign in ran, so the rescreen pass counts that run
+        once toward its account's hourly limit, as the trust job does; a run whose screen could not sign in counts for
+        nothing. mallory's issues #7, #8 and #12 are due drafts. With one run of each kind in the last hour,
+        OUTSIDE_HOURLY_LIMIT - 1 of the drafts start, the oldest reason first, and the other waits."""
+        limit = int(WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        self.item(7, opened=500)
+        self.item(8, opened=400)
+        self.item(12, opened=300)
+        self.ran(20, "draft #30 of mallory", made=30, jobs=[attempt_job("gather"), self.screened(),
+                                                            attempt_job("review", "Sign in to Anthropic",
+                                                                        name="review (screened)")])
+        self.ran(21, "draft #31 of mallory", made=20,
+                 jobs=[attempt_job("gather"), self.screened("Sign in to Google Cloud")])
+        rc, out, runs = self.started()
+        self.assertEqual(rc, 0, out)
+        due = [("7", "draft", "mallory", "", ""), ("8", "draft", "mallory", "", ""), ("12", "draft", "mallory", "", "")]
+        self.assertEqual(runs, due[:limit - 1])
+        for number, *_ in due[limit - 1:]:
+            self.assertIn(f"#{number} waits: mallory had {limit} runs that screen in the last hour", out)
+
     def test_the_runs_are_read_by_hand_one_day_at_a_time_and_of_each_event_once(self):
         """D16: the runs by hand of the last 8 days, one list for each day (a list with created gives at most 1,000
         runs), and the runs of workflow_run, issue_comment and issues, one list each from the first of those days;
@@ -8597,6 +8759,40 @@ class HeadScheduleTest(Scheduled):
                 rc, out, _runs = self.started()
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(["--method", "POST", rerun] in writes(self.api), made + 60 < kept, out)
+
+    def test_the_rerun_window_is_the_time_that_github_keeps_the_gathered_data(self):
+        """Decision 2: kept_days of the block that the trust job and the rescreen pass share, the days after which the
+        failed jobs of a run do not run again (rerun), is the retention-days of the artifact review-data that the
+        gather job keeps and that the re-run review job reads."""
+        (upload,) = [s for s in JOBS["gather"]["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertEqual(upload["with"]["name"], "review-data")
+        held = re.search(r"# held\n(.*?)# end of held\n", step("trust", TRUST)["run"], re.S).group(1)
+        self.assertEqual(re.findall(r"^ *kept_days=([0-9]+)$", held, re.M), [str(upload["with"]["retention-days"])])
+
+    def test_the_pull_requests_into_main_of_a_head_that_more_than_one_has_each_get_a_review_run(self):
+        """Ruling 1: eve's #7 and mallory's #11 into main, and mallory's #8 into dev, all have the head of a branch of
+        eve's fork. A push to that branch starts a CI run of each, in which GitHub names no pull request: the trust job
+        stops each one, as the run of none of the three alone, so each counts toward no limit. The next run of the
+        rescreen pass starts a review run of each pull request into main, on its own author's limit, and none of the
+        one into dev. The trust job of each takes it, with the stopped runs counted for no account."""
+        self.item(7, kind="pr", author="eve")
+        self.item(11, kind="pr")
+        self.item(8, kind="pr", base="dev")
+        self.ci(ended=90)
+        rc, out, trust = self.run_trust("workflow_run", actor="eve", number="", head=HEAD,
+                                        head_repository=str(FORK_ID), pulls=[])
+        self.assertEqual((rc, trust.get("route")), (0, None), out)
+        self.assertIn("3 open pull requests have this head from its repository and branch", out)
+        for run in (40, 41, 42):
+            self.ran(run, f"review {HEAD} by eve", made=80, ended=79, event="workflow_run", jobs=self.stopped_jobs())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, sorted(runs)),
+                         (0, [("11", "review", "mallory", HEAD, ""), ("7", "review", "eve", HEAD, "")]), out)
+        self.assertIn("#8: into dev, not main.", out)
+        for number, account in (("7", "eve"), ("11", "mallory")):
+            with self.subTest(number=number):
+                got = self.dispatched("review", account=account, number=number)
+                self.assertEqual((got["task"], got["route"], got["outsider"]), ("review", "screen", account))
 
     def test_a_draft_marked_ready_and_a_base_changed_to_main_get_a_review_at_the_next_run(self):
         """The trust job stopped the run of the head's CI run (a draft, or another base): no review while it is so,
