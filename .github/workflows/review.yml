@@ -2534,9 +2534,11 @@ jobs:
             # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files of the
             # head and of main from git objects, since the merge builds with the dune files of main where the head
             # leaves them as they were, and writes soundness.json: each changed path that can change a proof (a .v
-            # file, a dune, dune-project, dune-workspace or opam file, a file that a dune file names, a file of an OCaml
-            # module or a C file that a dune stanza builds, or the file that such a link points to), whether the list is
-            # whole, and each dune file that it could not read.
+            # file, a dune, dune-project, dune-workspace, opam or *.opam file, a file that a dune file names or reads,
+            # also a header, object or archive of a C stub and a file below a directory that a stanza installs, a file
+            # of an OCaml module or a C file that a dune stanza builds, a link that a dune file reads through, and the
+            # file or the files below the directory that such a link points to), whether the list is whole, and each
+            # dune file or link that it could not read.
             count=""
             : > "$RUNNER_TEMP/files.jsonl"
             if pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \

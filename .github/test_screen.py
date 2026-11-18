@@ -1033,6 +1033,34 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("Its reason is in the private bucket, as acme/model/1-1.json.", printed)
         self.assertIn(MARK, self.services.objects["acme/model/1-1.json"]["sign_in"])
 
+    def test_an_answer_that_nests_too_deep_to_read_is_a_failed_exchange_and_the_log_holds_none_of_its_text(self):
+        """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads. Such
+        an answer is an answer that the screen cannot read: a refused exchange whose body nests too deep gives the HTTP
+        status and no error code, a token exchange that answers it fails the sign-in, each with the one line of the log
+        and none of the answer's text, and a model whose text nests too deep gives no word, so the item is held."""
+        deep = b"[" * 100_000 + b"]" * 100_000
+        for case, path, answer, shown in (
+                ("entra refuses", "/entra/tenant/oauth2/v2.0/token", (401, deep), "HTTP 401 from {}, no error code."),
+                ("anthropic answers", "/v1/oauth/token", (200, deep),
+                 "an answer from {} that is not JSON, or that nests too deep to read.")):
+            with self.subTest(case=case):
+                self.fresh()
+                host = urllib.parse.urlsplit(self.services.url).netloc
+                self.services.answers[path] = answer
+                rc, printed = self.call("--sign-in")
+                self.assertEqual(rc, 1, printed)
+                self.assertEqual(printed, f"The sign-in failed: CheckError: {shown.format(host)} Its reason is in the "
+                                          "private bucket, as acme/model/1-1.json.\n")
+        self.fresh()
+        self.item()
+        self.services.answers["/v1/messages"] = lambda _b: message(deep.decode())
+        v, reason = self.verdict()
+        self.assertEqual(v, "held")
+        claude = reason["checks"]["claude"]
+        self.assertEqual((claude["word"], claude["outcome"]),
+                         ("error", "no answer, an answer in a form the screen does not know"))
+        self.assertIn("the model's answer is not JSON, or it nests too deep to read (piece 1 of 1)", claude["error"])
+
     # --- what cannot be screened, and the services' limits ----------------------------------------------------
 
     def test_a_changed_file_that_is_not_text_is_held_unscreened(self):

@@ -316,12 +316,22 @@ def pieces(text, size, overlap):
 
 # --- HTTP ---------------------------------------------------------------------------------------------------------
 
+def loads(text):
+    """json.loads of a service's answer, with a ValueError also for JSON that nests deeper than Python reads: json.loads
+    raises RecursionError for it, which is no ValueError. So each caller takes such an answer as one that it cannot
+    read."""
+    try:
+        return json.loads(text)
+    except RecursionError:
+        raise ValueError("JSON that nests too deep to read") from None
+
+
 def error_code(body):
     """What the public log may show of the answer body of a request that a service refused: its error code, OAuth's
     error field ({"error": "invalid_client"}) or the type of Anthropic's error object ({"error": {"type": ...}}), when
     it is one plain word. Never the service's text, its description or message of the error."""
     try:
-        error = json.loads(body).get("error")
+        error = loads(body).get("error")
     except (ValueError, AttributeError):
         return "no error code"
     if isinstance(error, dict):
@@ -333,9 +343,10 @@ def error_code(body):
 
 def http(method, url, body=None, headers=None, form=False, attempts=4):
     """The JSON answer of one request. Retries a 429 or a 5xx, a connection that fails, and an answer that is no whole
-    HTTP answer (with no HTTP status line, or cut short); any other answer that is not 2xx, an answer that is not JSON,
-    and a request after DEADLINE, is a CheckError. The error of an answer that is not 2xx or no whole HTTP answer holds
-    the service's text, and its public form the HTTP status and the error code, or the kind of answer, alone."""
+    HTTP answer (with no HTTP status line, or cut short); any other answer that is not 2xx, an answer that is not JSON
+    or that nests too deep to read, and a request after DEADLINE, is a CheckError. The error of an answer that is not
+    2xx or no whole HTTP answer holds the service's text, and its public form the HTTP status and the error code, or
+    the kind of answer, alone."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -377,9 +388,9 @@ def http(method, url, body=None, headers=None, form=False, attempts=4):
             last, public = f"{type(e).__name__} from {host}: {e}", f"{type(e).__name__} from {host}"
             continue
         try:
-            return json.loads(raw)
+            return loads(raw)
         except ValueError:
-            raise CheckError(f"an answer from {host} that is not JSON") from None
+            raise CheckError(f"an answer from {host} that is not JSON, or that nests too deep to read") from None
     raise CheckError(last, public)
 
 
@@ -597,9 +608,9 @@ def claude_answer(answer):
             or content[0].get("type") != "text" or not isinstance(content[0].get("text"), str):
         raise CheckError("the model's answer is not one text block")
     try:
-        verdict = json.loads(content[0]["text"])
+        verdict = loads(content[0]["text"])
     except ValueError:
-        raise CheckError("the model's answer is not JSON") from None
+        raise CheckError("the model's answer is not JSON, or it nests too deep to read") from None
     if not isinstance(verdict, dict) or not set(verdict) <= set(SCHEMA["properties"]) \
             or verdict.get("verdict") not in WORDS:
         raise CheckError("the model's answer is not one of the two words")

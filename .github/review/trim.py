@@ -257,12 +257,22 @@ def env(name, default=None):
 
 # --- the request --------------------------------------------------------------------------------------------------
 
+def loads(text):
+    """json.loads of a service's answer or of a file that the model wrote, with a ValueError also for JSON that nests
+    deeper than Python reads: json.loads raises RecursionError for it, which is no ValueError. So each caller takes such
+    a text as one that it cannot read."""
+    try:
+        return json.loads(text)
+    except RecursionError:
+        raise ValueError("JSON that nests too deep to read") from None
+
+
 def error_code(body):
     """What a public log may show of the answer body of a request that a service refused: its error code, OAuth's error
     field ({"error": "invalid_grant"}) or the type of Anthropic's error object ({"error": {"type": ...}}), when it is
     one plain word. Never the service's text, its description or message of the error."""
     try:
-        error = json.loads(body).get("error")
+        error = loads(body).get("error")
     except (ValueError, AttributeError):
         return "no error code"
     if isinstance(error, dict):
@@ -275,8 +285,9 @@ def error_code(body):
 def http(method, url, body=None, headers=None):
     """The JSON answer of one request. A 429, a 5xx, a connection that fails and an answer that is no whole HTTP answer
     (with no HTTP status line, or cut short) are tried again, up to ATTEMPTS times; any other answer that is not 2xx,
-    and an answer that is not JSON, is a ReaderError. The error of an answer that is not 2xx or no whole HTTP answer
-    holds the service's text, and its public form the HTTP status and the error code, or the kind of answer, alone."""
+    and an answer that is not JSON or that nests too deep to read, is a ReaderError. The error of an answer that is not
+    2xx or no whole HTTP answer holds the service's text, and its public form the HTTP status and the error code, or
+    the kind of answer, alone."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -308,9 +319,9 @@ def http(method, url, body=None, headers=None):
             last, public = f"{type(e).__name__} from {host}: {e}", f"{type(e).__name__} from {host}"
             continue
         try:
-            return json.loads(raw)
+            return loads(raw)
         except ValueError:
-            raise ReaderError(f"an answer from {host} that is not JSON") from None
+            raise ReaderError(f"an answer from {host} that is not JSON, or that nests too deep to read") from None
     raise ReaderError(last, public)
 
 
@@ -405,9 +416,9 @@ def read(kind, text, items=(), rules=()):
                   request(kind, text, items, rules),
                   {"Authorization": "Bearer " + TOKEN, "anthropic-version": ANTHROPIC_VERSION})
     try:
-        got = json.loads(answer_text(answer))
+        got = loads(answer_text(answer))
     except ValueError:
-        raise ReaderError("the reader's answer is not JSON") from None
+        raise ReaderError("the reader's answer is not JSON, or it nests too deep to read") from None
     if not (isinstance(got, dict) and set(got) == {"refused", "reason", "text"}
             and isinstance(got["refused"], bool) and isinstance(got["reason"], str) and isinstance(got["text"], str)):
         raise ReaderError("the reader's answer is not {refused, reason, text}")
@@ -1437,9 +1448,9 @@ def main(argv):
             if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
                 raise ReaderError(f"not a commit: {args.commit}")
             try:
-                fix = kept_fix(json.loads(text_of(args.fix)))
+                fix = kept_fix(loads(text_of(args.fix)))
             except ValueError:
-                raise ReaderError("the fix is not JSON") from None
+                raise ReaderError("the fix is not JSON, or it nests too deep to read") from None
             summary_trimmed = trimmed_words(fix["summary"])
             whys = [trimmed_words(s["why"]) for s in fix["suggestions"]]
             out = json.dumps(fix_review(fix, summary_trimmed, whys, args.commit, **fixed), ensure_ascii=False) + "\n"
@@ -1451,9 +1462,9 @@ def main(argv):
             if not re.search(r"\w", text):
                 raise ReaderError("the review has no word in it")
             try:
-                items = checked(json.loads(text_of(args.items)))
+                items = checked(loads(text_of(args.items)))
             except ValueError:
-                raise ReaderError("the list is not JSON") from None
+                raise ReaderError("the list is not JSON, or it nests too deep to read") from None
             out = comment(text, trimmed("review", text, items), items, **fixed)
             if args.summary:
                 extra = text_of(args.summary_extra).strip("\n") if args.summary_extra else ""

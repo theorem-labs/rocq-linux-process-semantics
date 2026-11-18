@@ -141,21 +141,37 @@ many files the pull request has:
   file that a rule reads or writes (its `deps`, its `targets` or `target`,
   and the files of its `action`, such as `run`, `with-stdout-to` and
   `copy`), a file of a glob (`glob_files`, `glob_files_rec`, `copy_files`),
-  each file of a `source_tree`, and the file of an `(include ...)` or a
-  `(:include ...)`. The `dune` files of `main` count too: a pull request
+  each file below a `source_tree`, below the `source_trees` or `dirs` of an
+  `install` stanza or below a `(dir ...)` of `targets`, and the file of an
+  `(include ...)` or a `(:include ...)`. A path that leaves `_build` and
+  reaches the tree (`%{project_root}/../../include`) counts, with each
+  file below it. The `dune` files of `main` count too: a pull request
   that starts from an older `main` merges into the newest one.
 - a file of an OCaml module that an `executable`, `executables`,
   `library`, `test` or `tests` stanza builds (`.ml`, `.mli`, `.mll`,
   `.mly`): every module of its directory, or the modules of its `modules`
   field. Also such a file of a directory with an `ocamllex`, `ocamlyacc`
   or `menhir` stanza, and a C file of a stanza with C stubs.
+- a file that a stanza with C stubs reads beside its C files: each file
+  below a directory of its `include_dirs`, also outside the directory of
+  the stanza (`../include`), the object `x.o` of `(extra_objects x)`, the
+  archives `libx.a` and `dllx.so` of `(foreign_archives x)`, and the
+  header `x.h` of `(install_c_headers x)`.
 - the file that a link points to, when the link is one of these files.
+  Also a file that the build reads through a link to its directory: with
+  `t/ext` a link to `../vendor`, a rule of `t/dune` that reads
+  `ext/x.hex` reads `vendor/x.hex`. Such a link counts too.
 
 The workflow reads the changed files itself, from every page of the list
-of files of the pull request, and the `dune` files of the head and of
-`main` from git: `soundness.json` gives the result. When GitHub does not
-give the whole list, or the workflow cannot read a `dune` file, the pull
-request counts as one that can change a Rocq proof.
+of files of the pull request, and the `dune` files and the links of the
+head and of `main` from git: `soundness.json` gives the result. The pull
+request also counts as one that can change a Rocq proof in these cases:
+
+- GitHub does not give the whole list.
+- The workflow cannot read a `dune` file, or cannot read a field of one
+  for certain. For example: a variable, an `(:include ...)` or an
+  absolute path in a C field.
+- A link leaves the tree or makes a loop.
 
 For each outside pull request that can change a Rocq proof, the review
 does these three things:

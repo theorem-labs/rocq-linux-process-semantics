@@ -4409,6 +4409,61 @@ class FreshReaderTest(ReaderRunner):
         self.assertNotIn("Traceback", out)
         self.assertFalse(os.path.exists(self.token_file))
 
+    def test_an_answer_or_a_file_that_nests_too_deep_to_read_fails_the_reader_with_one_line_and_no_traceback(self):
+        """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads, and
+        trim.py takes such JSON as JSON that it cannot read. A sign-in exchange that answers it, or refuses with it (no
+        error code), a reader's answer whose text nests too deep, and a list or a fix of the model that nests too deep
+        each fail with the one line of the log, with no traceback and none of the text, and nothing posts."""
+        deep = "[" * 100_000 + '"x"' + "]" * 100_000
+
+        class Deep(BaseHTTPRequestHandler):
+            status = 200
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(Deep.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(deep)))
+                self.end_headers()
+                self.wfile.write(deep.encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Deep)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host = f"127.0.0.1:{server.server_port}"
+        s = step("review", self.SIGN_IN)
+        for status, shown in ((200, f"an answer from {host} that is not JSON, or that nests too deep to read"),
+                              (403, f"HTTP 403 from {host}, no error code")):
+            with self.subTest(status=status):
+                Deep.status = status
+                rc, out, got = self.run_script(s["run"], **dict(ANTHROPIC, ANTHROPIC_URL=f"http://{host}"))
+                self.assertEqual((rc, got), (1, {}), out)
+                self.assertIn(f"the sign-in failed: {shown}", out)
+                self.assertNotIn("Traceback", out)
+                self.assertFalse(os.path.exists(self.token_file))
+        rc, out, got = self.post(self.REVIEW, [self.CHANGE], reader=(200, {
+            "stop_reason": "end_turn", "content": [{"type": "text", "text": deep}]}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("trim.py: no text: the reader's answer is not JSON, or it nests too deep to read\n", out)
+        self.assertIn("The fresh reader gave no trimmed text. Nothing posts.", out)
+        self.assertNotIn("Traceback", out)
+        self.assertEqual({k: got[k] for k in got if k != "head"}, {})
+        paths = {}
+        for name, text in (("review.md", "A review of `theories/A.v`.\n"), ("deep.json", deep)):
+            paths[name] = os.path.join(self.dir, name)
+            with open(paths[name], "w", encoding="utf-8") as f:
+                f.write(text)
+        for args, what in ((("review", "--review", paths["review.md"], "--items", paths["deep.json"]), "the list"),
+                           (("fix", "--fix", paths["deep.json"], "--commit", HEAD), "the fix")):
+            with self.subTest(command=args[0]):
+                r = subprocess.run([sys.executable, TRIM_PY, *args], capture_output=True, text=True,
+                                   env=dict(os.environ, RUNNER_TEMP=self.temp))
+                self.assertEqual((r.returncode, r.stdout, r.stderr),
+                                 (1, "", f"trim.py: no text: {what} is not JSON, or it nests too deep to read\n"))
+
     def test_the_fixed_parts_and_the_whole_review_keep_their_places_whatever_markup_a_text_leaves_open(self):
         """R9: the post step "puts the untrimmed review in one collapsed <details> block at the end of the comment".
         The comment is the header, the trimmed text, the section on soundness, the added items, the footer and the
@@ -5165,6 +5220,185 @@ class SoundnessScanTest(unittest.TestCase):
         for hold, outside in (("true", "false"), ("false", "true"), ("", "true"), ("TRUE", "true")):
             with self.subTest(hold=hold, outside=outside):
                 self.assertEqual(rules.soundness(self.review, output, hold, outside), (output, "", ""))
+
+    def repository(self, files, links=None, at=None):
+        """A commit of files ({path: text}) and links ({path: its target}), and of nothing else, in the git repository
+        at, or in a new one when at is None: (the repository's directory, the commit)."""
+        def git(*args, **kwargs):
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=at,
+                                  check=True, capture_output=True, text=True, **kwargs).stdout.strip()
+        if at is None:
+            at = tempfile.mkdtemp(prefix="repository-", dir=self.review)
+            git("init", "-q", "-b", "main")
+        else:
+            git("rm", "-rqf", "--ignore-unmatch", ".")
+        for path, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(at, path)) or at, exist_ok=True)
+            with open(os.path.join(at, path), "w") as f:
+                f.write(text)
+        for path, to in (links or {}).items():
+            os.makedirs(os.path.dirname(os.path.join(at, path)) or at, exist_ok=True)
+            os.symlink(to, os.path.join(at, path))
+        git("add", "-A")
+        git("commit", "-q", "--allow-empty", "-m", "a commit")
+        return at, git("rev-parse", "HEAD")
+
+    def test_the_c_fields_of_a_stanza_name_the_files_that_they_read_and_one_that_the_job_cannot_read_is_refused(self):
+        """R8 (v56): a stanza with C stubs reads, beside its C files, each file below a directory of its include_dirs
+        (dune 3.23 depends on every file there, a README.md among them, and the directory can be outside the stanza's
+        own: ../include, %{project_root}/gen), the object x.o of (extra_objects x), the archives libx.a and dllx.so of
+        (foreign_archives x), and the header x.h of (install_c_headers x), each from the stanza's directory, as does
+        the include_dirs of a foreign_library. A field that the job cannot read for certain (a (lib ...) of
+        include_dirs, a variable, an (:include ...), an absolute path, a path outside the repository) is refused, so
+        that its dune file is a file of the build that the job could not read."""
+        texts = {
+            "stubs/dune": "(library (name stubs)\n (foreign_stubs (language c) (names s)"
+                          " (include_dirs ../include %{project_root}/gen))\n"
+                          " (extra_objects ../obj/foo :standard (bar))\n (foreign_archives ../lib/baz qux)\n"
+                          " (install_c_headers api))\n",
+            "clib/dune": "(foreign_library (archive_name c) (language c) (names c) (include_dirs ../h))\n"}
+        names = rules.Names()
+        for by, text in texts.items():
+            for stanza in rules.dune_sexps(text):
+                rules.dune_names(names, by, stanza, os.path.dirname(by), [os.path.dirname(by)], lambda p: "")
+        for path, by in (("include/h.h", "stubs/dune"), ("include/sub/deep.h", "stubs/dune"),
+                         ("include/README.md", "stubs/dune"), ("gen/g.h", "stubs/dune"), ("obj/foo.o", "stubs/dune"),
+                         ("stubs/bar.o", "stubs/dune"), ("lib/libbaz.a", "stubs/dune"), ("lib/dllbaz.so", "stubs/dune"),
+                         ("stubs/libqux.a", "stubs/dune"), ("stubs/dllqux.so", "stubs/dune"),
+                         ("stubs/api.h", "stubs/dune"), ("h/c.h", "clib/dune")):
+            with self.subTest(path=path):
+                self.assertEqual(names.of(path), by)
+        for path in ("include.md", "obj/foo.c", "stubs/foo.o", "lib/baz.a", "lib/README.md", "h.md"):
+            with self.subTest(path=path):
+                self.assertIsNone(names.of(path))
+        for field in ("(foreign_stubs (language c) (names s) (include_dirs (lib foo)))",
+                      "(foreign_stubs (language c) (names s) (include_dirs (lib_rec foo)))",
+                      "(foreign_stubs (language c) (names s) (include_dirs %{env:INC=inc}))",
+                      "(foreign_stubs (language c) (names s) (include_dirs /usr/include))",
+                      "(foreign_stubs (language c) (names s) (include_dirs ../../x))",
+                      "(extra_objects (:include objs.sexp))", "(extra_objects %{read-lines:objs})",
+                      "(foreign_archives %{env:A=a})"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                for stanza in rules.dune_sexps(f"(library (name stubs) {field})"):
+                    rules.dune_names(rules.Names(), "stubs/dune", stanza, "stubs", ["stubs"], lambda p: "")
+
+    def test_an_install_stanza_a_directory_target_and_a_path_that_leaves_build_name_each_file_below_them(self):
+        """R8, the other fields of a dune file that name a directory: an install stanza copies each file below a
+        directory of its source_trees or its dirs (dune 3.23 installs docs/a.md and docs/sub/b.md for (source_trees
+        docs)), and a rule with (targets (dir out)) writes the files below out. A program of a rule runs in the rule's
+        directory under _build/default, so a path that leaves the repository from there by those two directories reads
+        the source tree itself (gcc compiles with -I %{project_root}/../../include, with no dependency of dune on it):
+        that path counts, with each file below it, and so does each file below a chdir there. A file that no field
+        names does not."""
+        text = ("(install (section doc) (source_trees docs (manual as man)))\n"
+                "(install (section share) (dirs (gen as g)))\n"
+                "(rule (targets (dir out)) (action (system \"mkdir out\")))\n"
+                "(rule (target t) (action (system \"cat ../../../data/z.txt > t\")))\n"
+                "(rule (target u) (action (chdir %{project_root}/../../notes (run cat n.txt))))\n")
+        names = rules.Names()
+        for stanza in rules.dune_sexps(text):
+            rules.dune_names(names, "tests/dune", stanza, "tests", ["tests"], lambda p: "")
+        for path in ("tests/docs/a.md", "tests/docs/sub/b.md", "tests/manual/m.txt", "tests/gen/x", "tests/out/y",
+                     "data/z.txt", "data/z.txt/part", "notes/n.txt", "notes/other.txt"):
+            with self.subTest(path=path):
+                self.assertEqual(names.of(path), "tests/dune")
+        for path in ("README.md", "tests/README.md", "data/other.txt", "docs/a.md", "notes.md"):
+            with self.subTest(path=path):
+                self.assertIsNone(names.of(path))
+
+    def test_the_dune_files_and_the_files_behind_a_link_to_a_directory_count_and_so_does_the_link(self):
+        """R8: dune follows a link to a directory, in the head and in main. Main's t/ext points to ../vendor: the
+        (glob_files_rec *.hex) of t/dune reads vendor/x.hex, dune 3.23 reads vendor/dune as t/ext/dune, whose
+        ../secret.txt is t/secret.txt (and secret.txt as vendor/dune), and main's link theories/Foo.v, to
+        ../t/ext/y.txt, reads vendor/y.txt. The head points t/ext to ../other, so other/y.hex counts too. The link
+        t/ext counts, as the way to those files. A Markdown file in either directory, which nothing reads, does not.
+        The section names the link of each."""
+        files = {"t/dune": "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
+                           " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n",
+                 "vendor/x.hex": "00\n", "vendor/README.md": "# Vendor\n", "vendor/y.txt": "y\n",
+                 "vendor/dune": "(rule (target V.txt) (deps ../secret.txt) (action (copy ../secret.txt V.txt)))\n",
+                 "t/secret.txt": "s\n", "secret.txt": "s\n", "other/y.hex": "01\n", "other/README.md": "# Other\n"}
+        d, main = self.repository(files, {"t/ext": "../vendor", "theories/Foo.v": "../t/ext/y.txt"})
+        _d, head = self.repository(files, {"t/ext": "../other", "theories/Foo.v": "../t/ext/y.txt"}, at=d)
+        changed = ["vendor/x.hex", "vendor/README.md", "vendor/y.txt", "t/secret.txt", "secret.txt", "other/y.hex",
+                   "other/README.md", "t/ext"]
+        facts = rules.proofs(head, [{"filename": p, "previous_filename": None} for p in changed], len(changed), cwd=d,
+                             main=main)
+        got = {f["path"]: (f["why"], f["by"]) for f in facts["files"]}
+        self.assertEqual(got, {"vendor/x.hex": ("target", "t/ext"), "other/y.hex": ("target", "t/ext"),
+                               "vendor/y.txt": ("target", "theories/Foo.v"), "t/secret.txt": ("named", "t/ext/dune"),
+                               "secret.txt": ("named", "vendor/dune"), "t/ext": ("link", "t/ext/y.hex")})
+        self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
+        scope = {"v": False, "others": [(p, why, by) for p, (why, by) in got.items()], "whole": True, "unparsed": [],
+                 "unread": []}
+        shown = rules.section([], scope=scope)
+        self.assertRegex(shown, r"(?m)^- `vendor/x\.hex`: the build reads it through the link `t/ext`\.$")
+        self.assertRegex(shown, r"(?m)^- `t/ext`: the build reads `t/ext/y\.hex` through this link\.$")
+
+    def test_a_link_that_dune_cannot_follow_in_the_tree_is_a_file_of_the_build_that_the_job_could_not_read(self):
+        """R8: a link whose way leaves the tree (an absolute target, or one above the root), a loop (a link to a
+        directory on its own way, which dune 3.23 refuses: "Path . has already been scanned", or two links to each
+        other), and a link whose target git holds in more than LINK_BYTES bytes can lead anywhere: each is a file of
+        the build that the job could not read, so every outside pull request gets the person verdict. So are the links
+        to directories that would take dune's view of the tree over VIEW_PATHS paths: two links in each of 18
+        directories, each to the next one, make 2^18 paths of the last file."""
+        d, _head = self.repository({"t/dune": "(rule (deps (glob_files_rec *.hex)) (action (echo \"\")))\n",
+                                    "vendor/x.hex": "00\n"},
+                                   {"t/up": "..", "t/self": ".", "t/abs": "/usr/include", "t/out": "../../x",
+                                    "loop/a": "b", "loop/b": "a", "t/ok": "../vendor"})
+        long = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=d, input="x/" * 2500, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        for args in (("update-index", "--add", "--cacheinfo", f"120000,{long},t/long"), ("commit", "-q", "-m", "long")):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
+                           capture_output=True)
+        files = [{"filename": "vendor/x.hex", "previous_filename": None}]
+        facts = rules.proofs("HEAD", files, 1, cwd=d)
+        self.assertEqual(facts["unparsed"], ["loop/a", "loop/b", "t/abs", "t/long", "t/out", "t/self", "t/up"])
+        self.assertEqual(facts["files"], [{"path": "vendor/x.hex", "why": "target", "by": "t/ok", "at_head": True}])
+        levels = 18
+        d, _head = self.repository({f"d{i}/f": "f\n" for i in range(levels + 1)},
+                                   {f"d{i}/{c}": f"../d{i + 1}" for i in range(levels) for c in "ab"})
+        unparsed = rules.proofs("HEAD", [], 0, cwd=d)["unparsed"]
+        self.assertTrue(unparsed)
+        self.assertTrue(all(re.fullmatch(r"d[0-9]+/[ab]", p) for p in unparsed), unparsed)
+
+    def test_a_dune_file_that_nests_too_deep_to_read_is_a_file_of_the_build_that_the_job_could_not_read(self):
+        """R8: a dune file whose lists nest deeper than DUNE_DEPTH is one that the job does not read. A chain of
+        includes, each one nested less deep, can still nest deeper than Python reads (RecursionError, which is no
+        ValueError): its dune file is a file of the build that the job could not read too, and the job goes on."""
+        self.assertEqual(len(rules.dune_sexps("(" * rules.DUNE_DEPTH + ")" * rules.DUNE_DEPTH)), 1)
+        with self.assertRaises(ValueError):
+            rules.dune_sexps("(" * (rules.DUNE_DEPTH + 1) + ")" * (rules.DUNE_DEPTH + 1))
+        nested = rules.DUNE_DEPTH - 4
+        files = {"t/dune": "(include i0.inc)\n", f"t/i{rules.INCLUDES - 1}.inc": "(rule (deps x))\n"}
+        for k in range(rules.INCLUDES - 1):
+            files[f"t/i{k}.inc"] = "(a " * nested + f"(include i{k + 1}.inc)" + ")" * nested + "\n"
+        with self.assertRaises(RecursionError):
+            for stanza in rules.dune_sexps(files["t/dune"]):
+                rules.dune_names(rules.Names(), "t/dune", stanza, "t", ["t"], lambda p: files[p])
+        d, _head = self.repository(dict(files, **{"u/dune": "(rule " + "(" * 100 + ")" * 100 + ")\n"}))
+        facts = rules.proofs("HEAD", [{"filename": "t/x", "previous_filename": None}], 1, cwd=d)
+        self.assertEqual(facts["unparsed"], ["t/dune", "u/dune"])
+
+    def test_the_commands_of_the_gather_job_and_of_the_comment_take_json_that_nests_too_deep_as_json_they_cannot_read(
+            self):
+        """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads. The
+        soundness command reads the review's output, which the model wrote: such an output fails the command with its
+        one line and no traceback, as one that is not JSON does. The proofs command reads the files of the pull request
+        from the API: such a line makes the list not whole."""
+        deep = "[" * 100_000 + "]" * 100_000
+        self.write("output.json", deep)
+        r = subprocess.run([sys.executable, RULES_PY, "soundness", self.review, os.path.join(self.review, "output.json"),
+                            "true", "true", os.path.join(self.review, "s.md"), os.path.join(self.review, "a.md")],
+                           capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout, r.stderr),
+                         (2, "", "::error::rules.py: JSON that nests too deep to read\n"))
+        d, head = self.repository({"README.md": "# Model\n"})
+        self.write("files.jsonl", deep + "\n")
+        r = subprocess.run([sys.executable, RULES_PY, "proofs", head, head, os.path.join(self.review, "files.jsonl"),
+                            "1"], cwd=d, capture_output=True, text=True)
+        self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
+                         (0, {"whole": False, "files": [], "unparsed": []}))
 
 
 def filled(env, ctx, **extra):
@@ -6258,6 +6492,37 @@ class FixRuleTest(unittest.TestCase):
             rc, out, err = run("suggestions", bad, diff)
             self.assertEqual((rc, out), (2, ""))
             self.assertIn("::error::rules.py:", err)
+
+    def test_the_commands_take_json_that_nests_too_deep_as_json_that_they_cannot_read(self):
+        """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads: the
+        fix of the model, a line of the API's commits, or an answer of gh api. Each command then fails with its one line
+        and no traceback, as for a text that is not JSON, and make-label warns as for any other failure."""
+        deep = "[" * 100_000 + "]" * 100_000
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            def write(name, text):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                    f.write(text)
+                return os.path.join(d, name)
+            # A stand-in gh whose every answer is the deep JSON.
+            os.chmod(write("gh", f"#!/usr/bin/env bash\ncat {shlex.quote(write('deep.json', deep + chr(10)))}\n"),
+                     0o755)
+            env = dict(os.environ, PATH=d + os.pathsep + os.environ["PATH"], REPO=REPO)
+
+            def run(*args):
+                r = subprocess.run([sys.executable, RULES_PY, *args], capture_output=True, text=True, env=env)
+                return r.returncode, r.stdout, r.stderr
+            reviews = write("reviews.jsonl", json.dumps(fix_review(self.H1)) + "\n")
+            diff = write("pr.diff", AnswerFixTest.DIFF)
+            one = (2, "", "::error::rules.py: JSON that nests too deep to read\n")
+            for args in (("fixes", write("commits.jsonl", deep + "\n"), reviews, self.H2),
+                         ("suggestions", write("fix.json", deep), diff), ("verdict", "7", self.H2),
+                         ("relabel", "7", self.H2)):
+                with self.subTest(command=args[0]):
+                    self.assertEqual(run(*args), one)
+            rc, out, err = run("make-label", "review-held")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(out, "::warning::the label review-held could not be made or described; adding it makes "
+                                  "it, with no description.\n")
 
     def test_a_suggestion_on_a_file_whose_path_holds_a_space_is_kept(self):
         """D22: "Code keeps a suggestion only when its lines are right-side lines of one hunk of .review/pr.diff". The
