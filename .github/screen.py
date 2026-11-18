@@ -36,10 +36,10 @@ the job's environment review-screen alone can exchange for them. Google Cloud's 
 Google Cloud". The tokens of Prompt Shields (Microsoft Entra's) and of the model (Anthropic's) come from --sign-in, the
 step "Sign in to Anthropic and Azure", which writes them to a file under RUNNER_TEMP that only the runner's account
 can read; the screen reads the file and deletes it. A sign-in that fails fails its step, and writes no verdict and no
-output. Its log gives the HTTP status and the error code of an exchange that a service refused, and never the
-service's text: that text goes to the reason, in REASON_BUCKET, with the Google token of the step "Sign in to Google
-Cloud", and is lost when the reason cannot be stored. The sign-in has SIGN_IN_SECONDS of its own, and the screen
-DEADLINE_SECONDS, so that the two fit in the job's 15 minutes.
+output. Its log gives the HTTP status and the error code of an exchange that a service refused, or the kind of an
+answer that is no whole HTTP answer, and never the service's text: that text goes to the reason, in REASON_BUCKET, with
+the Google token of the step "Sign in to Google Cloud", and is lost when the reason cannot be stored. The sign-in has
+SIGN_IN_SECONDS of its own, and the screen DEADLINE_SECONDS, so that the two fit in the job's 15 minutes.
 
 --measure, the step "Measure", runs every listed check MEASURE_REPEATS times on each text of the labelled set
 MEASURE_SET in the private bucket, and gives the counts of each rule of RULES (measure).
@@ -55,6 +55,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.client import HTTPException   # not import http: this file's http() would take that name
 
 WORDS = ("clean", "suspicious")
 # The most text one item may hold. Above it the item is held, not screened in part.
@@ -117,9 +118,10 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["verdict
 
 
 class CheckError(Exception):
-    """A check that could not answer. Its message goes to the reason only. public is what the log of the sign-in may
-    show of it: for a request that a service refused, the HTTP status and the error code, never the service's text.
-    found is what the check found before it could not answer, which the reason keeps beside the error."""
+    """A check that could not answer. Its message goes to the reason only. public is what a public log (the sign-in's,
+    the measurement's) may show of it: for a request that a service refused, the HTTP status and the error code, and
+    for an answer that is no whole HTTP answer its kind, never the service's text. found is what the check found
+    before it could not answer, which the reason keeps beside the error."""
 
     def __init__(self, message, public=None, found=None):
         super().__init__(message)
@@ -330,9 +332,10 @@ def error_code(body):
 
 
 def http(method, url, body=None, headers=None, form=False, attempts=4):
-    """The JSON answer of one request. Retries a 429 or a 5xx, and a connection that fails; any other answer that is
-    not 2xx, an answer that is not JSON, and a request after DEADLINE, is a CheckError. The error of an answer that is
-    not 2xx holds the service's text, and its public form the HTTP status and the error code alone."""
+    """The JSON answer of one request. Retries a 429 or a 5xx, a connection that fails, and an answer that is no whole
+    HTTP answer (with no HTTP status line, or cut short); any other answer that is not 2xx, an answer that is not JSON,
+    and a request after DEADLINE, is a CheckError. The error of an answer that is not 2xx or no whole HTTP answer holds
+    the service's text, and its public form the HTTP status and the error code, or the kind of answer, alone."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -355,7 +358,10 @@ def http(method, url, body=None, headers=None, form=False, attempts=4):
             with urllib.request.urlopen(request, timeout=min(TIMEOUT, left)) as r:
                 raw = r.read()
         except urllib.error.HTTPError as e:
-            answer = e.read()
+            try:
+                answer = e.read()
+            except (OSError, HTTPException):   # an answer cut short has no error code to give
+                answer = b""
             last = f"HTTP {e.code} from {host}: {answer[:2000].decode('utf-8', 'replace')}"
             public = f"HTTP {e.code} from {host}, {error_code(answer)}"
             if e.code == 429 or e.code >= 500:
@@ -366,6 +372,9 @@ def http(method, url, body=None, headers=None, form=False, attempts=4):
             raise CheckError(last, public) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last = public = f"{type(e).__name__} reaching {host}: {e}"
+            continue
+        except HTTPException as e:   # its message can hold the service's text (the line that is not a status line)
+            last, public = f"{type(e).__name__} from {host}: {e}", f"{type(e).__name__} from {host}"
             continue
         try:
             return json.loads(raw)
@@ -809,14 +818,21 @@ def outcome(word, error):
 
 
 def store(reason):
-    """The reason, as a new object in the private bucket. Never overwrites one (ifGenerationMatch=0)."""
+    """The reason, as a new object in the private bucket. Never overwrites one (ifGenerationMatch=0). An answer that is
+    not 2xx, or no whole HTTP answer, is a CheckError whose public form holds no text of the answer."""
     name = env("REASON_OBJECT")
     url = (f"{env('STORAGE_URL')}/upload/storage/v1/b/{urllib.parse.quote(env('REASON_BUCKET'), safe='')}/o?"
            + urllib.parse.urlencode({"uploadType": "media", "name": name, "ifGenerationMatch": "0"}))
     request = urllib.request.Request(url, data=json.dumps(reason, indent=1).encode(), method="POST", headers={
         "Authorization": "Bearer " + env("GOOGLE_ACCESS_TOKEN"), "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as r:
-        r.read()
+    host = urllib.parse.urlsplit(url).netloc
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as r:
+            r.read()
+    except urllib.error.HTTPError as e:
+        raise CheckError(f"HTTP {e.code} from {host}: {e.reason}", f"HTTP {e.code} from {host}") from None
+    except HTTPException as e:
+        raise CheckError(f"{type(e).__name__} from {host}: {e}", f"{type(e).__name__} from {host}") from None
 
 
 def main():
@@ -830,8 +846,9 @@ def main():
         TOKENS = take_tokens()
         try:
             return measure()
-        except Exception as e:   # the message names a setting or a service, never a text of the set
-            print(f"The measurement failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
+        except Exception as e:   # it names a setting or a service, never a text of the set or of a service's answer
+            public = e.public if isinstance(e, CheckError) else str(e)
+            print(f"The measurement failed: {type(e).__name__}: {public[:300]}", file=sys.stderr)
             return 1
     if len(sys.argv) != 2:
         print("usage: screen.py --sign-in | screen.py <the .review directory> | screen.py --measure", file=sys.stderr)

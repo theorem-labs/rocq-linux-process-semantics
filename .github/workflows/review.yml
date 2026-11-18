@@ -167,8 +167,9 @@
 #           repo-pairs/import-approved on the head when R12's rule holds (.github/review/rules.py import-check): the
 #           screen passed, the verdict is pass, no changed file is under .github/, each changed file is a Markdown file
 #           while SOUNDNESS_HOLD is true, and, while the repository variable REPO_PAIRS_IMPORT_PATHS gives the import's
-#           paths, the import takes each changed path. For an approval, it reads the pull request again with its own
-#           token, and when the head is still the one the screen read, it approves each run that GitHub holds of that
+#           paths, the import takes each changed path. The check run's external_id, <number>:<head>, names the pull
+#           request that it approves. For an approval, it reads the pull request again with its own token, and when
+#           the head is still the one the screen read, it approves each run that GitHub holds of that
 #           head from the pull request's head repository and branch. For a catch-up, it closes and reopens the pull
 #           request with the first token, so that GitHub starts a CI run of its head, or only reopens one that a
 #           catch-up closed and could not reopen. It posts no comment and no label, holds no identity token and no
@@ -480,13 +481,13 @@ jobs:
           # another, and the rescreen pass takes each work again. A hold that the rescreen pass tries again names its
           # work in its marker: answer, draft or approve as the marker names the task, and review for a marker with no
           # task (a rescreen takes it again). Any other hold names it in its title: answer ("Automated answer held."),
-          # draft ("Automated reply held."), approve ("Automated approval held."), import ("Automated check for the
-          # import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and review for
-          # any other.
+          # draft ("Automated reply held."), approve ("Automated start of the checks held."), import ("Automated check
+          # for the import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and
+          # review for any other.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|approval|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
-              | {"answer": "answer", "reply": "draft", "approval": "approve", "check for the import": "import",
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+              | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                  "close and reopen": "catchup", "catch-up": "catchup"}[.t])
             // "review"; '
           # holds <number>: the newest hold comment of each work (works) on <number>, one on each line: "<work> <time>
@@ -958,27 +959,29 @@ jobs:
           }
           # stopped <task> <tries>: the work of the hold that held_work read is not tried again, after <tries> runs of
           # <task> since the hold (halt, with the stop hold-<work>): waits-on-theorem, with the label comment's step
-          # "Sami starts the automated work on this item again by hand", and a hold comment that says so in the place
-          # of that hold. The hold comment of other work stays as it is.
+          # "Sami starts the work that the hold comment names again, by hand", and a hold comment that says so in the
+          # place of that hold. The hold comment of other work stays as it is.
           stopped() {
-            local title work what of=$1
+            local title work what tried of=$1
             [ "$of" != rescreen ] || of=review
             echo "::error::#$number: $1 ran $2 times since its hold at $h_at, with no new hold and nothing posted: it" \
               "is not tried again, and the label comment names the next step for Sami."
             case $1 in
               answer) title="Automated answer held." work="the automated answer" ;;
               draft) title="Automated reply held." work="the automated reply" ;;
-              approve) title="Automated approval held." work="the automated approval of the checks" ;;
+              approve) title="Automated start of the checks held." work="" ;;
               *) title="Automated review held." work="the automated review" ;;
             esac
             what="this issue"
             [ "$kind" != pr ] || what="this pull request"
-            halt "hold-$of" tries_used_up "$of" "$title" "The workflow tried $work again $2 times after it held $what, and none of these tries finished. The workflow does not try it again. You do not need to do anything."
+            tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
+            [ -n "$work" ] || tried="The workflow tried $2 times to start the checks of $what after it held them, and no try finished."
+            halt "hold-$of" tries_used_up "$of" "$title" "$tried The workflow does not try it again. You do not need to do anything."
           }
           # head_stopped <work> <tries>: the automated <work> (review; approval, of the held runs; import, the import
           # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
-          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the automated work
-          # on this item again by hand", then a hold comment that says so and names the head, in the place of the
+          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the work that the
+          # hold comment names again, by hand", then a hold comment that says so and names the head, in the place of the
           # newest hold comment of that work (works), and never of a hold of other work, which the rescreen pass still
           # takes again. That hold stops each later try of the head, and no other reason takes the head in this run
           # (taken).
@@ -988,8 +991,8 @@ jobs:
             case $1 in
               review) of=review title="Automated review held." text="The automated review of $commit did not finish after $2 tries." ;;
               approval)
-                of=approve title="Automated approval held."
-                text="The automated approval of the checks of $commit did not finish after $2 tries." ;;
+                of=approve title="Automated start of the checks held."
+                text="The workflow tried $2 times to start the checks of $commit, and no try finished." ;;
               import)
                 of=import title="Automated check for the import held."
                 text="The automated check of $commit for the import into the internal repository did not finish after $2 tries." ;;
@@ -1136,7 +1139,7 @@ jobs:
           }
           # answer_stopped <comment> <tries>: the comment job of <tries> answer runs of <comment> failed, so its answer
           # is not tried again (halt, with the stop answer-post): waits-on-theorem, with the label comment's step "Sami
-          # starts the automated work on this item again by hand", then a hold comment that says so, in the place of
+          # starts the work that the hold comment names again, by hand", then a hold comment that says so, in the place of
           # the newest hold comment of an answer. That hold is not tried again, so the comments before it wait for no
           # answer (waiting).
           answer_stopped() {
@@ -1526,9 +1529,11 @@ jobs:
           }
           # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
           # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
-          # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App.
-          # When it is not the value now (IMPORT_PATHS, none when empty), or the head has a review of now and neither
-          # line: a relabel, which decides R12 again by the value now and sets the label again. Once an hour.
+          # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App,
+          # of this pull request: a check run belongs to a commit, so only one whose external_id is <number>:<head>
+          # counts, and one of another pull request of the same commit does not. When it is not the value now
+          # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
+          # R12 again by the value now and sets the label again. Once an hour.
           due_variable() {
             local found checks at value same ended run
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1540,9 +1545,10 @@ jobs:
               || { echo "::error::the comments of #$number could not be read."; return 1; }
             [ -n "$found" ] || [ "$review" = new ] || return 0
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            checks=$(SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
+            checks=$(SHA=$head NUMBER=$number gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
               -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
-                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700)
+                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700
+                         and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
                 | (.completed_at // .started_at // "-") as $at | .output.text // "" | split("\n")[]
                 | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
                 | select(.h == $ENV.SHA) | "\($at) \(.v)"') \
@@ -3696,8 +3702,8 @@ jobs:
           # The variable's text, given only when it is set: an empty value is no variable.
           imports=()
           [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
-          decision=$(python3 .github/review/rules.py import-check "$RUNNER_TEMP/files.jsonl" "$count" "$HEAD" \
-            "$screen" "$verdict" "${SOUNDNESS_HOLD:-}" "$RUNNER_TEMP/import-check.json" "${imports[@]}") \
+          decision=$(python3 .github/review/rules.py import-check "$RUNNER_TEMP/files.jsonl" "$count" "$NUMBER" \
+            "$HEAD" "$screen" "$verdict" "${SOUNDNESS_HOLD:-}" "$RUNNER_TEMP/import-check.json" "${imports[@]}") \
             || { echo "::error::the import check of $HEAD could not be decided."; exit 1; }
           decided "$decision" "$(grep -c . "$RUNNER_TEMP/files.jsonl" || true) of $count changed files read"
       # Token A: for the import check run when the step before decided to record it, and for the close and reopen of a
@@ -3714,24 +3720,28 @@ jobs:
           permission-checks: write
           permission-pull-requests: write
       # The import check run repo-pairs/import-approved, with conclusion success, on the head that the decision judged,
-      # recorded with token A. Its output text holds the marker line of the value of REPO_PAIRS_IMPORT_PATHS that the
-      # decision read. A call that fails fails the job: recorded stays false, and the rescreen pass takes the head
-      # again. A token A that could not be minted skips this step for the same end.
+      # recorded with token A. A check run belongs to a commit, and so shows on each pull request of that commit: its
+      # external_id, <number>:<head>, and its output title name this pull request, and the import counts the check run
+      # as the approval of that pull request alone. Its output text holds the marker line of the value of
+      # REPO_PAIRS_IMPORT_PATHS that the decision read. A call that fails fails the job: recorded stays false, and the
+      # rescreen pass takes the head again. A token A that could not be minted skips this step for the same end.
       - name: Record the import check of the head
         id: record
         if: steps.decide.outputs.decision == 'record'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
+          NUMBER: ${{ needs.trust.outputs.number }}
         run: |
           set -euo pipefail
           request=$RUNNER_TEMP/import-check.json
-          head=$(jq -r 'select(.name == "repo-pairs/import-approved" and .conclusion == "success") | .head_sha' \
-            "$request" 2> /dev/null || true)
+          # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+          head=$(jq -r 'select(.name == "repo-pairs/import-approved" and .conclusion == "success"
+              and .external_id == "\($ENV.NUMBER):\(.head_sha)") | .head_sha' "$request" 2> /dev/null || true)
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the decision wrote no import check to record."; exit 1; }
           id=$(gh api --method POST "repos/$REPO/check-runs" --input "$request" --jq .id) \
             || { echo "::error::the import check of $head could not be recorded."; exit 1; }
-          echo "Recorded the check run $id, repo-pairs/import-approved, on $head."
+          echo "Recorded the check run $id, repo-pairs/import-approved, for #$NUMBER on $head."
           echo "recorded=true" >> "$GITHUB_OUTPUT"
       # The catch-up, with token A: a pull request that is closed and reopened gets a new CI run of its head (the event
       # pull_request), and the review of that CI run follows. An open pull request is closed, then reopened; one that a
@@ -4152,8 +4162,8 @@ jobs:
           # task), else the title's.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|approval|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
-              | {"answer": "answer", "reply": "draft", "approval": "approve", "check for the import": "import",
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+              | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                  "close and reopen": "catchup", "catch-up": "catchup"}[.t])
             // "review"; '
           # What the hold comments of github-actions[bot] say, as "<last> <pending> <unsettled> <own>". last: when
@@ -4266,7 +4276,7 @@ jobs:
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit of #$NUMBER"; exit 1; }
           marker="<!-- review-conflict $HEAD -->"
           body=$(printf '%s\n%s\n\n%s\n' "$marker" "**Merge conflict with \`main\`** at commit ${HEAD:0:12}." \
-            "GitHub runs no checks on a pull request with a merge conflict, so the automated review does not run. Resolve the conflict: merge \`main\` into the branch, or rebase the branch on \`main\`. Then push the branch. After the push, the checks and the automated review run again.")
+            "GitHub runs no checks on a pull request with a merge conflict, so the automated review does not run. Merge \`main\` into the branch, or rebase the branch on \`main\`. Resolve each conflict. Then push the branch. After the push, the checks and the automated review run again.")
           if [ "$POST_REVIEW" != true ]; then
             printf '%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -4449,11 +4459,11 @@ jobs:
           # the reply to an issue, or the approval of a first-time contributor's held runs.
           work_of="the automated review" title="Automated review held."
           if [ "$TASK" = answer ]; then
-            work_of="the automated answer to the author's comment" title="Automated answer held."
+            work_of="the automated answer to your comment" title="Automated answer held."
           elif [ "$TASK" = draft ]; then
             work_of="the automated reply" title="Automated reply held."
           elif [ "$TASK" = approve ]; then
-            work_of="the automated approval of the checks" title="Automated approval held."
+            work_of="the automated start of the checks" title="Automated start of the checks held."
           fi
           if [ "$ROUTE" != limit ] && [ "$REVIEW" = cancelled ]; then
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
@@ -4484,12 +4494,12 @@ jobs:
               END { exit (listed < total && (oldest == "" || oldest > run)) }' <<< "$newer" \
               || { echo "::error::GitHub lists at most 1,000 runs of this workflow since a day ago, and the runs that it" \
                      "does not list can be newer than this run. Nothing is held."; exit 1; }
-            while read -r id event title; do
+            while read -r id event name; do
               [ -n "$id" ] && [ "$id" != = ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
-              if [[ $title =~ $same ]]; then
+              if [[ $name =~ $same ]]; then
                 :
-              elif [[ $TASK == review && $event == workflow_run && $title =~ $pushed ]]; then
+              elif [[ $TASK == review && $event == workflow_run && $name =~ $pushed ]]; then
                 sha=${BASH_REMATCH[1]}
                 if [ -z "$heads" ]; then
                   heads=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[] | "\(.head.sha) \(.number)"') \
@@ -4530,10 +4540,10 @@ jobs:
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
               fact=tries_used_up
-              why="This run started by hand with the option \`screen\` set, so the automated screen ran first. The automated screen passed $what, but the automated review did not finish. The workflow does not try it again."
+              why="The automated screen passed $what, but the automated review did not finish. The workflow does not try it again."
             else
               fact=screen_held
-              why="This run started by hand with the option \`screen\` set, so the automated screen ran first. The automated screen held $what, so the automated review did not run. You do not need to do anything."
+              why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run (failed, read
@@ -4595,8 +4605,8 @@ jobs:
           id=$(W=$work gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq 'def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
                   | .t // "review")
-                // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|approval|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
-                  | {"answer": "answer", "reply": "draft", "approval": "approve", "check for the import": "import",
+                // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+                  | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                      "close and reopen": "catchup", "catch-up": "catchup"}[.t])
                 // "review";
               .[] | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->"))

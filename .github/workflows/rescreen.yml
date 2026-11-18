@@ -133,8 +133,8 @@ jobs:
   # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
   # try of the head. After REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that names the
   # head and says that its automated work did not finish and is not tried again, and waits-on-theorem with the label
-  # comment's step "Sami starts the automated work on this item again by hand" (.github/review/rules.py), and this pass
-  # fails for that run.
+  # comment's step "Sami starts the work that the hold comment names again, by hand" (.github/review/rules.py), and
+  # this pass fails for that run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the time
   # between two runs of this pass, and a second run would use the hour's screens twice. It reads review.yml's runs of
@@ -245,13 +245,13 @@ jobs:
           # another, and the rescreen pass takes each work again. A hold that the rescreen pass tries again names its
           # work in its marker: answer, draft or approve as the marker names the task, and review for a marker with no
           # task (a rescreen takes it again). Any other hold names it in its title: answer ("Automated answer held."),
-          # draft ("Automated reply held."), approve ("Automated approval held."), import ("Automated check for the
-          # import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and review for
-          # any other.
+          # draft ("Automated reply held."), approve ("Automated start of the checks held."), import ("Automated check
+          # for the import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and
+          # review for any other.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|approval|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
-              | {"answer": "answer", "reply": "draft", "approval": "approve", "check for the import": "import",
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+              | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                  "close and reopen": "catchup", "catch-up": "catchup"}[.t])
             // "review"; '
           # holds <number>: the newest hold comment of each work (works) on <number>, one on each line: "<work> <time>
@@ -723,27 +723,29 @@ jobs:
           }
           # stopped <task> <tries>: the work of the hold that held_work read is not tried again, after <tries> runs of
           # <task> since the hold (halt, with the stop hold-<work>): waits-on-theorem, with the label comment's step
-          # "Sami starts the automated work on this item again by hand", and a hold comment that says so in the place
-          # of that hold. The hold comment of other work stays as it is.
+          # "Sami starts the work that the hold comment names again, by hand", and a hold comment that says so in the
+          # place of that hold. The hold comment of other work stays as it is.
           stopped() {
-            local title work what of=$1
+            local title work what tried of=$1
             [ "$of" != rescreen ] || of=review
             echo "::error::#$number: $1 ran $2 times since its hold at $h_at, with no new hold and nothing posted: it" \
               "is not tried again, and the label comment names the next step for Sami."
             case $1 in
               answer) title="Automated answer held." work="the automated answer" ;;
               draft) title="Automated reply held." work="the automated reply" ;;
-              approve) title="Automated approval held." work="the automated approval of the checks" ;;
+              approve) title="Automated start of the checks held." work="" ;;
               *) title="Automated review held." work="the automated review" ;;
             esac
             what="this issue"
             [ "$kind" != pr ] || what="this pull request"
-            halt "hold-$of" tries_used_up "$of" "$title" "The workflow tried $work again $2 times after it held $what, and none of these tries finished. The workflow does not try it again. You do not need to do anything."
+            tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
+            [ -n "$work" ] || tried="The workflow tried $2 times to start the checks of $what after it held them, and no try finished."
+            halt "hold-$of" tries_used_up "$of" "$title" "$tried The workflow does not try it again. You do not need to do anything."
           }
           # head_stopped <work> <tries>: the automated <work> (review; approval, of the held runs; import, the import
           # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
-          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the automated work
-          # on this item again by hand", then a hold comment that says so and names the head, in the place of the
+          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the work that the
+          # hold comment names again, by hand", then a hold comment that says so and names the head, in the place of the
           # newest hold comment of that work (works), and never of a hold of other work, which the rescreen pass still
           # takes again. That hold stops each later try of the head, and no other reason takes the head in this run
           # (taken).
@@ -753,8 +755,8 @@ jobs:
             case $1 in
               review) of=review title="Automated review held." text="The automated review of $commit did not finish after $2 tries." ;;
               approval)
-                of=approve title="Automated approval held."
-                text="The automated approval of the checks of $commit did not finish after $2 tries." ;;
+                of=approve title="Automated start of the checks held."
+                text="The workflow tried $2 times to start the checks of $commit, and no try finished." ;;
               import)
                 of=import title="Automated check for the import held."
                 text="The automated check of $commit for the import into the internal repository did not finish after $2 tries." ;;
@@ -901,7 +903,7 @@ jobs:
           }
           # answer_stopped <comment> <tries>: the comment job of <tries> answer runs of <comment> failed, so its answer
           # is not tried again (halt, with the stop answer-post): waits-on-theorem, with the label comment's step "Sami
-          # starts the automated work on this item again by hand", then a hold comment that says so, in the place of
+          # starts the work that the hold comment names again, by hand", then a hold comment that says so, in the place of
           # the newest hold comment of an answer. That hold is not tried again, so the comments before it wait for no
           # answer (waiting).
           answer_stopped() {
@@ -1291,9 +1293,11 @@ jobs:
           }
           # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
           # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
-          # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App.
-          # When it is not the value now (IMPORT_PATHS, none when empty), or the head has a review of now and neither
-          # line: a relabel, which decides R12 again by the value now and sets the label again. Once an hour.
+          # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App,
+          # of this pull request: a check run belongs to a commit, so only one whose external_id is <number>:<head>
+          # counts, and one of another pull request of the same commit does not. When it is not the value now
+          # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
+          # R12 again by the value now and sets the label again. Once an hour.
           due_variable() {
             local found checks at value same ended run
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1305,9 +1309,10 @@ jobs:
               || { echo "::error::the comments of #$number could not be read."; return 1; }
             [ -n "$found" ] || [ "$review" = new ] || return 0
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            checks=$(SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
+            checks=$(SHA=$head NUMBER=$number gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
               -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
-                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700)
+                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700
+                         and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
                 | (.completed_at // .started_at // "-") as $at | .output.text // "" | split("\n")[]
                 | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
                 | select(.h == $ENV.SHA) | "\($at) \(.v)"') \

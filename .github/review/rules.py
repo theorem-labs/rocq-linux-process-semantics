@@ -9,8 +9,8 @@ labels").
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
-    python3 .github/review/rules.py import-check <files.jsonl> <changed files> <head> <screen> <verdict> <hold>
-        <request.json> [<import paths>]
+    python3 .github/review/rules.py import-check <files.jsonl> <changed files> <number> <head> <screen> <verdict>
+        <hold> <request.json> [<import paths>]
     python3 .github/review/rules.py import-marker <head> [<import paths>]
     python3 .github/review/rules.py verdict <number> <head>
     python3 .github/review/rules.py relabel <number> <head> [<fact>=<value> ...] [marker=<line> ...]
@@ -85,19 +85,21 @@ sentence that names its file and lines, with its why: a suggested change can cha
 trim.py fix puts these sentences after the trimmed summary, where the reader never sees them. The status is 2 when
 <fix.json> is not such a fix.
 
-import-check: the decision of R12 on the head <head> of an outside pull request (import_decision), on standard output:
-record, or the first rule that does not hold. <files.jsonl> holds the files of the pull request at <head> as the API
-lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line, and <changed files> is
-the pull request's changed_files. <screen> is true when the screen passed the head, <verdict> is the review's verdict
-after the soundness rule, and <hold> is SOUNDNESS_HOLD. <import paths> is the text of the variable
+import-check: the decision of R12 on the head <head> of the outside pull request <number> (import_decision), on
+standard output: record, or the first rule that does not hold. <files.jsonl> holds the files of the pull request at
+<head> as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line, and
+<changed files> is the pull request's changed_files. <screen> is true when the screen passed the head, <verdict> is the
+review's verdict after the soundness rule, and <hold> is SOUNDNESS_HOLD. <import paths> is the text of the variable
 REPO_PAIRS_IMPORT_PATHS, one glob of the import on each line, given only when the variable is set: with none, the
 import is not live. The check run repo-pairs/import-approved is recorded only when the screen passed, the verdict is
 pass, no changed path (of a file, or the path it had before a rename) is a steering file (under .github/), with the
 variable each changed path matches one of its globs by the import's glob rules (glob_match), the list holds each
 changed file (GitHub lists at most 3,000), and, while the hold lasts, each changed path ends with .md. Then
-<request.json> gets the body of the request that records it (check_run, for POST repos/<repo>/check-runs), whose
-output text is the marker line of import-marker. The status is 2 when an argument is not one of these, or when the
-import's glob rules refuse a glob of the variable.
+<request.json> gets the body of the request that records it (check_run, for POST repos/<repo>/check-runs). A check run
+belongs to a commit, and so shows on each pull request of that commit: its external_id, <number>:<head>, names the
+pull request that it approves, as the import reads it, and so does its output title. Its output text is the marker
+line of import-marker. The status is 2 when an argument is not one of these, or when the import's glob rules refuse a
+glob of the variable.
 
 import-marker: the marker line <!-- repo-pairs-import-paths <head>: <value> --> of R12, which the output text of the
 check run and each label comment of an outside pull request hold (import_marker): <value> is <import paths> as one
@@ -228,19 +230,18 @@ STATES = {
     # The fresh reader refused the text (the fact refused): nothing of it posted.
     "refused-review": (
         THEOREM, "Sami writes the review by hand.",
-        "A second Claude session read the automated review and stopped it, so the review did not post. You do not "
-        "need to do anything."),
+        "The workflow stopped the automated review, so it did not post. You do not need to do anything."),
     "refused-answer": (
         THEOREM, "Sami answers your comment by hand.",
-        "A second Claude session read the automated answer to your comment and stopped it, so the answer did not "
-        "post. You do not need to do anything."),
+        "The workflow stopped the automated answer to your comment, so it did not post. You do not need to do "
+        "anything."),
     "refused-fix": (
         THEOREM, "Sami writes the fix by hand.",
-        "The automated review gave a blocking finding. A second Claude session read the automated fix for the "
-        "finding and stopped it, so no suggested change posted. You can push your own change."),
+        "The automated review gave a blocking finding. The workflow stopped the automated fix for the finding, so no "
+        "suggested change posted. You can push your own change."),
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
-        THEOREM, "Sami starts the review or the checks of this item by hand.", "You do not need to do anything."),
+        THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
     "will-fix": (
         THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
@@ -251,7 +252,7 @@ STATES = {
         "finding. No automated fix runs again. You do not need to do anything."),
     # The hold comment says what did not finish, after how many tries, and that the workflow does not try it again.
     "stopped": (
-        THEOREM, "Sami starts the automated work on this item again by hand.", "You do not need to do anything."),
+        THEOREM, "Sami starts the work that the hold comment names again, by hand.", "You do not need to do anything."),
     "reopen": (
         THEOREM, "Sami reopens the pull request.",
         "The workflow closed this pull request to start its checks. It could not reopen the pull request. You do not "
@@ -265,7 +266,7 @@ STATES = {
         f"{PASSED} The workflow recorded the check `repo-pairs/import-approved` on its head commit. You do not need "
         "to do anything."),
     "working": (
-        None, "The workflow continues the automated work on this item.",
+        None, "The workflow tries the item again.",
         "You do not need to do anything. When a hold comment gives a time, the workflow tries the item again from "
         "that time."),
 }
@@ -896,20 +897,25 @@ def import_marker(head, value):
     return f"<!-- repo-pairs-import-paths {head}: {data} -->"
 
 
-def check_run(head, value, hold):
-    """The body of the request that records the import check run on head (POST repos/<repo>/check-runs), when
-    import_decision gives record. Its output text is the marker line of import_marker, alone."""
+def check_run(number, head, value, hold):
+    """The body of the request that records the import check run on head of pull request number (POST
+    repos/<repo>/check-runs), when import_decision gives record. Its external_id, <number>:<head>, and its output title
+    name the pull request that it approves: the check run of a commit shows on each pull request of that commit. Its
+    output text is the marker line of import_marker, alone."""
+    if not (NUMBER.fullmatch(number) and HEAD.fullmatch(head)):
+        raise ValueError(f"not a pull request number and a head commit: {number!r} {head!r}")
     summary = ["The automated screen and the automated review passed this head commit.",
                "No changed file is under `.github/`."]
     if hold:
-        summary.append("Each changed file is a Markdown file. For now, the workflow records this check only for such "
-                       "a change, because stock Rocq accepts three public proofs of `False`.")
+        summary.append("Each changed file is a Markdown file. Until the import's checks run a Rocq with the fixes for "
+                       "the three public proofs of `False`, the workflow records this check only for such a change.")
     summary.append("The import copies each changed path." if value is not None else
                    "The variable `REPO_PAIRS_IMPORT_PATHS` is not set, so the workflow did not compare the changed "
                    "paths with the paths of the import.")
-    return {"name": CHECK, "head_sha": head, "status": "completed", "conclusion": "success",
-            "output": {"title": "Approved for the import", "summary": " ".join(summary),
-                       "text": import_marker(head, value)}}
+    return {"name": CHECK, "head_sha": head, "external_id": f"{number}:{head}", "status": "completed",
+            "conclusion": "success",
+            "output": {"title": f"Approved for the import: pull request #{number} at {head[:12]}",
+                       "summary": " ".join(summary), "text": import_marker(head, value)}}
 
 
 def review_verdict(comments, head):
@@ -1002,8 +1008,8 @@ CUT = re.compile(r"(.+): cut at 2 MiB of its [0-9]+ bytes")
 # A question on soundness in the review's list, and the question that the rule adds when the list has none.
 ON_SOUNDNESS = re.compile(r"(?i)sound")
 QUESTION = {"kind": "question", "ref": None, "optional": False,
-            "text": "Are the proofs sound after the changes of this pull request? A pass of the CI lanes on stock Rocq "
-                    "does not show it."}
+            "text": "Sami answers whether the proofs are sound after the changes of this pull request. When the CI "
+                    "checks pass on stock Rocq, that does not show that the proofs are sound."}
 
 
 def head_proofs(review):
@@ -1491,10 +1497,10 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
         why = "This pull request changes a file that the build of the Rocq proofs reads or writes."
     else:
         why = "The workflow cannot show that this pull request changes no Rocq proof."
-    parts = [f"**Soundness of the proofs.** {why} The CI lanes of this repository check the proofs on stock Rocq. "
-             f"Stock Rocq accepts three public proofs of `False`: {issues}. So when these lanes pass, that does not "
-             "show that the proofs are sound. Sami answers whether the proofs are sound. You do not need to do "
-             "anything for this point."]
+    parts = [f"**Soundness of the proofs.** {why} The CI checks of this repository (Build and check) check the proofs "
+             f"on stock Rocq. Stock Rocq accepts three public proofs of `False`: {issues}. So when these checks pass, "
+             "that does not show that the proofs are sound. Sami answers whether the proofs are sound. You do not need "
+             "to do anything for this point."]
     room = [listed, characters]
 
     def listing(lines, more):
@@ -1846,15 +1852,17 @@ def main(argv):
                 diff = f.read().decode("utf-8", "surrogateescape")
             sys.stdout.write(json.dumps(suggestions(fix, diff), ensure_ascii=False) + "\n")
             return 0
-        if len(argv) in (8, 9) and argv[0] == "import-check":
-            path, count, head, screen, verdict, hold, request = argv[1:8]
-            value = argv[8] if len(argv) == 9 else None
-            if not (re.fullmatch(r"0|[1-9][0-9]*", count) and HEAD.fullmatch(head) and screen in ("true", "false")):
-                raise ValueError("not a count of changed files, a head commit and true or false for the screen")
+        if len(argv) in (9, 10) and argv[0] == "import-check":
+            path, count, number, head, screen, verdict, hold, request = argv[1:9]
+            value = argv[9] if len(argv) == 10 else None
+            if not (re.fullmatch(r"0|[1-9][0-9]*", count) and NUMBER.fullmatch(number) and HEAD.fullmatch(head)
+                    and screen in ("true", "false")):
+                raise ValueError("not a count of changed files, a pull request number, a head commit and true or false "
+                                 "for the screen")
             decision = import_decision(json_lines(path), int(count), screen == "true", verdict, hold == "true", value)
             if decision == "record":
                 with open(request, "w", encoding="utf-8") as f:
-                    json.dump(check_run(head, value, hold == "true"), f)
+                    json.dump(check_run(number, head, value, hold == "true"), f)
             print(decision)
             return 0
         if len(argv) in (2, 3) and argv[0] == "import-marker":

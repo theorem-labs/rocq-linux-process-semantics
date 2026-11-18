@@ -160,7 +160,7 @@ request counts as one that can change a Rocq proof.
 For each outside pull request that can change a Rocq proof, the review
 does these three things:
 
-1. The comment says that a pass of this repository's CI lanes on stock Rocq
+1. The comment says that a pass of this repository's CI checks on stock Rocq
    does not show the proof sound, because stock Rocq accepts three public
    proofs of `False`. It names rocq-prover/rocq#22651, #22760 and #22772.
 2. The review gives the verdict `person`, with a `question` item on the

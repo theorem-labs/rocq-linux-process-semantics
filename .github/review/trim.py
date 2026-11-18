@@ -26,8 +26,8 @@ the federation rule ANTHROPIC_FEDERATION_RULE_ID, for ANTHROPIC_ORGANIZATION_ID,
 ANTHROPIC_WORKSPACE_ID: the review's own. The token goes to TOKEN_FILE under RUNNER_TEMP, which only the runner's
 account can read. The other commands read that file and delete it before they do anything else. A sign-in that fails
 exits with status 1 and writes no file. Its message gives the HTTP status and the error code of a request that a
-service refused, and never the service's text: the log of a public repository is public, and no private store is
-there for the text.
+service refused, or the kind of an answer that is no whole HTTP answer, and never the service's text: the log of a
+public repository is public, and no private store is there for the text.
 
 review: <file> of --review is the comment of the model's review, and <file> of --items the list of its output
 (.github/review.md, "What the review gives"), as JSON. The review is made inert, cut at CUT characters and closed:
@@ -46,12 +46,13 @@ An item is in the trimmed text when each path and each line number that its ref 
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
 names no path and no line, is left to the reader, whose instruction says to keep each item. An item with no optional
 key is not optional. An item is added word for word. The trimmed text and each added item are made inert and closed.
-A closed text (closed) leaves nothing open that would take in the part after it: no fenced code block, no HTML block
-that a blank line does not end and no <details>, and it has no </details> that could close the collapsed block. So
-each fixed part keeps its place, and the whole review stays in its block. The reader never sees the head, the section
-or the foot, and they are neither made inert nor closed. A comment over MAX_COMMENT characters loses the end of the
-collapsed copy. --summary appends the review (made inert, cut and closed) and its list to that file, the run's
-summary, and --summary-extra appends that file's text after them.
+A closed text (closed) leaves nothing open that would take in the part after it, as GitHub renders it: no fenced code
+block, no HTML block that a blank line does not end and no element of HTML (a <details>, a <b>, an <a>), and it closes
+no element outside it (the collapsed block). So each fixed part keeps its place and its form, and the whole review
+stays in its block. The reader never sees the head, the section or the foot, and they are neither made inert nor
+closed. A comment over MAX_COMMENT characters loses the end of the collapsed copy. --summary appends the review (made
+inert, cut and closed) and its list to that file, the run's summary, and --summary-extra appends that file's text after
+them.
 
 answer: the answer to a comment of the author of an outside item (.github/review-answer.md), on standard output:
 <head>, the trimmed text, and --- and <foot>; with neither, the trimmed text alone. fix: the request of one review of
@@ -77,11 +78,13 @@ and the write-to-maintainer copy). It has no --summary: review.yml uploads the d
 reason, as an artifact of its run, and the run's summary holds none of it.
 
 A request that fails, an answer in a form this script does not know, and a list that is not one, end the script with
-status 1 and nothing on standard output, so that nothing posts untrimmed. The script prints no token. It uses the
-standard library of Python 3 alone.
+status 1 and nothing on standard output, so that nothing posts untrimmed. The message names a setting, a service or a
+file, and for a request that a service refused its HTTP status and its error code alone (ReaderError's public form),
+never the service's text. The script prints no token. It uses the standard library of Python 3 alone.
 """
 
 import argparse
+import bisect
 import html
 import json
 import os
@@ -92,6 +95,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.client import HTTPException   # not import http: this file's http() would take that name
 
 MODEL = "claude-opus-5-5"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -269,9 +273,10 @@ def error_code(body):
 
 
 def http(method, url, body=None, headers=None):
-    """The JSON answer of one request. A 429, a 5xx and a connection that fails are tried again, up to ATTEMPTS
-    times; any other answer that is not 2xx, and an answer that is not JSON, is a ReaderError. The error of an answer
-    that is not 2xx holds the service's text, and its public form the HTTP status and the error code alone."""
+    """The JSON answer of one request. A 429, a 5xx, a connection that fails and an answer that is no whole HTTP answer
+    (with no HTTP status line, or cut short) are tried again, up to ATTEMPTS times; any other answer that is not 2xx,
+    and an answer that is not JSON, is a ReaderError. The error of an answer that is not 2xx or no whole HTTP answer
+    holds the service's text, and its public form the HTTP status and the error code, or the kind of answer, alone."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -287,7 +292,10 @@ def http(method, url, body=None, headers=None):
             with urllib.request.urlopen(request, timeout=TIMEOUT) as r:
                 raw = r.read()
         except urllib.error.HTTPError as e:
-            answer = e.read()
+            try:
+                answer = e.read()
+            except (OSError, HTTPException):   # an answer cut short has no error code to give
+                answer = b""
             last = f"HTTP {e.code} from {host}: {answer[:500].decode('utf-8', 'replace')}"
             public = f"HTTP {e.code} from {host}, {error_code(answer)}"
             if e.code == 429 or e.code >= 500:
@@ -295,6 +303,9 @@ def http(method, url, body=None, headers=None):
             raise ReaderError(last, public) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last = public = f"{type(e).__name__} reaching {host}: {e}"
+            continue
+        except HTTPException as e:   # its message can hold the service's text (the line that is not a status line)
+            last, public = f"{type(e).__name__} from {host}: {e}", f"{type(e).__name__} from {host}"
             continue
         try:
             return json.loads(raw)
@@ -492,16 +503,17 @@ def code(text):
 
 
 def added(items):
-    """The added items, under the two fixed lines: each item's kind, its ref, and its text word for word, each item
-    made inert and closed."""
+    """The added items, under the two fixed lines: each item's kind (a question is for Sami, as .github/review.md says),
+    its ref, and its text word for word, each item made inert and closed."""
     out = []
     for line, optional in ((LEFT_OUT, False), (OPTIONAL, True)):
         these = [i for i in items if bool(i.get("optional")) is optional]
         if these:
             out.append(line)
             for item in these:
+                kind = "Question for Sami" if item["kind"] == "question" else item["kind"].capitalize()
                 where = f" at {code(item['ref'])}" if item.get("ref") else ""
-                out.append(closed(inert(f"**{item['kind'].capitalize()}{where}:** {item['text']}")))
+                out.append(closed(inert(f"**{kind}{where}:** {item['text']}")))
     return "\n\n".join(out)
 
 
@@ -552,84 +564,702 @@ def inert(text):
     return text.replace("<!--", "<\u2060!--")
 
 
-# A line that opens a fenced code block, as CommonMark reads it: at most 3 spaces, then 3 or more backticks with no
-# backtick after them on the line, or 3 or more tildes.
+# --- what a text leaves open --------------------------------------------------------------------------------------
+# GitHub renders a comment in two steps: CommonMark's blocks, with GitHub's tables and footnotes, give HTML, and an HTML
+# parser builds the elements of that HTML, as a browser and GitHub's sanitizer do (the WHATWG tree construction).
+# Markup reads a text so, and closed makes the text leave nothing open.
+
+# The names of elements, by how that parser reads their tags. A void element has no end tag. GitHub's tag filter shows
+# the tags of FILTERED as text, and the parser makes no element of the others in IGNORED.
+VOID = frozenset("area base basefont bgsound br col embed frame hr image img input keygen link meta param source track "
+                 "wbr".split())
+FILTERED = frozenset("iframe noembed noframes plaintext script style textarea title xmp".split())
+IGNORED = VOID | FILTERED | {"body", "frameset", "head", "html"}
+# A formatting element that a block closes opens again for the text after that block, until its end tag.
+FORMATTING = frozenset("a b big code em font i nobr s small strike strong tt u".split())
+# The end tag of an element of SCOPED closes the last open element of its name and each element opened after that one,
+# unless an element of its scope's boundary (SCOPES, by name, else BOUNDARY) was opened after that one. The end tag of
+# any other element closes the last one of its name only when no element of SPECIAL was opened after it. A start tag of
+# P_CLOSERS first closes the last open <p>, when it is in its scope.
+SCOPED = frozenset("address applet article aside blockquote button caption center colgroup dd details dialog dir div "
+                   "dl dt fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup li listing main "
+                   "marquee menu nav object ol p pre search section select summary table tbody td template tfoot th "
+                   "thead tr ul".split())
+SPECIAL = SCOPED | {"noscript"}
+BOUNDARY = frozenset("applet caption html marquee object table td template th".split())
+TABLE_SCOPE = frozenset(("html", "table", "template"))
+# The parts of a table: the parser reads their tags only in a table, and their end tags by the table's scope.
+TABLE_PARTS = frozenset("caption col colgroup tbody td tfoot th thead tr".split())
+SCOPES = {"li": BOUNDARY | {"ol", "ul"}, "p": BOUNDARY | {"button"}, "table": TABLE_SCOPE,
+          **dict.fromkeys(TABLE_PARTS, TABLE_SCOPE)}
+HEADINGS = frozenset("h1 h2 h3 h4 h5 h6".split())
+P_CLOSERS = frozenset("address article aside blockquote center dd details dialog dir div dl dt fieldset figcaption "
+                      "figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main menu nav ol p plaintext "
+                      "pre search section summary table ul xmp".split())
+# A name that CommonMark reads as a tag's name, so that an end tag of it after the text is a tag.
+NAME = re.compile(r"[a-z][a-z0-9-]*")
+# The elements whose content the parser reads by rules of its own (a select's options, a template's inert content, the
+# foreign content of svg and math, and a table of HTML, whose tags close the elements that it holds and which moves
+# before itself any content that is not a part of it; a Markdown table is no such table), and those that older parsers,
+# GitHub's sanitizer among them perhaps, read by other rules than the HTML standard does now (dialog, figcaption,
+# hgroup, main and search, command and isindex): a start tag of one is text. A </summary> closes its element only when
+# both readings agree.
+UNREAD = frozenset("command dialog figcaption hgroup isindex main math search select svg table template".split()) | (
+    TABLE_PARTS)
+# The most readings of a text that closed makes.
+READINGS = 8
+
+# CommonMark's block starts, on a line whose tabs are expanded to stops of 4.
+QUOTE = re.compile(r" {0,3}>")
+ITEM = re.compile(r" {0,3}(?:([-+*])|([0-9]{1,9})[.)])(?=[ \t]|$)")
+THEMATIC = re.compile(r" {0,3}(?:(?:\*[ \t]*+){3,}+|(?:-[ \t]*+){3,}+|(?:_[ \t]*+){3,}+)$")
+ATX = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+SETEXT = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
+# A line that opens a fenced code block: at most 3 spaces, then 3 or more backticks with no backtick after them on the
+# line, or 3 or more tildes.
 FENCE = re.compile(r" {0,3}(?:`{3,}(?=[^`]*$)|~{3,})")
-# A line that starts an HTML block that a blank line does not end, as CommonMark reads it: <pre>, <script>, <style> or
-# <textarea>, <?, <![CDATA[, or <! and a letter. ENDS: for each kind, what a line of the block holds when the block
-# ends, and the line that ends it (for the first kind, the end tag of the block's own name).
-LONG_HTML = re.compile(r"(?i) {0,3}<(?:(pre|script|style|textarea)(?=[ \t>]|$)|(\?)|(!\[CDATA\[)|(![A-Za-z]))")
+# GitHub's cmark-gfm reads raw HTML as CommonMark 0.29 does. A line that starts an HTML block that a blank line does
+# not end: <pre>, <script>, <style> or <textarea>, <?, <![CDATA[, <! and an upper-case letter, or <!--. ENDS: for each
+# kind, what a line of the block holds when the block ends, and the line that ends it (for the first kind, the end tag
+# of the block's own name).
+LONG_HTML = re.compile(r"(?i) {0,3}<(?:(pre|script|style|textarea)(?=[ \t>]|$)|(\?)|(!\[CDATA\[)|(?-i:(![A-Z]))"
+                       r"|(!--))")
 ENDS = ((re.compile(r"(?i)</(?:pre|script|style|textarea)>"), ""), (re.compile(r"\?>"), "?>"),
-        (re.compile(r"\]\]>"), "]]>"), (re.compile(r">"), ">"))
-# A line that starts an HTML block that a blank line ends: a tag with one of CommonMark's names of such blocks.
+        (re.compile(r"\]\]>"), "]]>"), (re.compile(r">"), ">"), (re.compile(r"-->"), "-->"))
+# Lines that start an HTML block that a blank line ends: a tag with one of CommonMark's names of such blocks
+# (BLOCK_HTML), or one whole tag alone, of any name (TAG_LINE), which cannot interrupt a paragraph of the same block.
 BLOCK_HTML = re.compile(
     r"(?i) {0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
     r"dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|"
-    r"legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|"
+    r"legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|"
     r"td|tfoot|th|thead|title|tr|track|ul)(?=[ \t>]|/>|$)")
-# A <details> or </details> tag, and, in Markdown, a code span on one line, whose text holds no tag.
-DETAILS = re.compile(r"<(?P<close>/?)details\b", re.I)
-SPAN_OR_DETAILS = re.compile(r"(?P<span>(?<!`)(`+)(?!`).*?(?<!`)\2(?!`))|<(?P<close>/?)details\b", re.I)
+OPEN_TAG = (r"<[A-Za-z][A-Za-z0-9-]*+(?:\s++[A-Za-z_:][A-Za-z0-9_.:-]*+(?:\s*+=\s*+(?:[^\s\"'=<>`]++|'[^']*+'"
+            r"|\"[^\"]*+\"))?+)*+\s*+/?>")
+CLOSE_TAG = r"</[A-Za-z][A-Za-z0-9-]*+\s*+>"
+TAG_LINE = re.compile(r" {0,3}(?:" + OPEN_TAG + "|" + CLOSE_TAG + r")[ \t]*$")
+# A cell of the delimiter row of a GitHub table, the start of a footnote's text, and of a link reference definition.
+DELIMITER = re.compile(r"[ \t]*:?-+:?[ \t]*")
+FOOTNOTE = re.compile(r" {0,3}\[\^[^\]]+\]:")
+REFERENCE = re.compile(r" {0,3}\[(?!\^)(?:[^\]\\]|\\.)+\]:")
+# CommonMark's raw HTML in a paragraph (an open or a closing tag, a comment, a processing instruction, a declaration or
+# a CDATA section), and an autolink, which is no HTML.
+RAW = re.compile(OPEN_TAG + "|" + CLOSE_TAG + r"|<!-->|<!--->|<!--.*?-->|<\?.*?\?>|<![A-Z]++\s++[^>]*+>"
+                 r"|<!\[CDATA\[.*?\]\]>", re.S)
+DOMAIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^\x00-\x20<>]*+>"
+                      r"|<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]++@" + DOMAIN + r"(?:\." + DOMAIN + r")*+>")
+PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+# A tag as the HTML parser reads it: < and a letter start a start tag, </ and a letter an end tag.
+TAG = re.compile(r"<(/?)([A-Za-z][^\t\n\f\r />]*)")
+SPACE = " \t\n\f\r"
+
+
+def indent(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def index_at(line, column):
+    """The index in line of its character at column, with tabs at stops of 4."""
+    c = 0
+    for k, ch in enumerate(line):
+        if c >= column:
+            return k
+        c = c + 4 - c % 4 if ch == "\t" else c + 1
+    return len(line)
+
+
+def joined(lines):
+    """The text of lines [(line, column, text)], joined by line breaks, and where(k): the (line, column) of its index
+    k."""
+    starts, n = [], 0
+    for _line, _column, part in lines:
+        starts.append(n)
+        n += len(part) + 1
+
+    def where(k):
+        j = bisect.bisect_right(starts, k) - 1
+        return lines[j][0], lines[j][1] + k - starts[j]
+    return "\n".join(part for _line, _column, part in lines), where
+
+
+def cells(row):
+    """The cells of a row of a GitHub table, as (start, end) in row: split at each | that no backslash escapes, less a
+    | that starts or ends the row."""
+    s = row.rstrip()
+    i = indent(s)
+    i += s.startswith("|", i)
+    out, start = [], i
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == "|":
+            out.append((start, i))
+            start = i + 1
+        i += 1
+    if start < len(s) or not out:
+        out.append((start, len(s)))
+    return out
+
+
+def tag_end(s, i, stop):
+    """(the index after the > that ends a tag whose name ends at i, as the HTML parser reads it, ""), or (None, the text
+    that would end it, a quote and then >) when s ends inside it at stop."""
+    while i < stop:
+        if s[i] == ">":
+            return i + 1, ""
+        if s[i] in SPACE or s[i] == "/":
+            i += 1
+            continue
+        i += 1   # the first character of an attribute's name, which can be =
+        while i < stop and s[i] not in SPACE and s[i] not in "/>=":
+            i += 1
+        j = i
+        while j < stop and s[j] in SPACE:
+            j += 1
+        if j < stop and s[j] == "=":
+            j += 1
+            while j < stop and s[j] in SPACE:
+                j += 1
+            if j < stop and s[j] in "\"'":
+                k = s.find(s[j], j + 1, stop)
+                if k < 0:
+                    return None, s[j] + ">"
+                i = k + 1
+            else:
+                while j < stop and s[j] not in SPACE and s[j] != ">":
+                    j += 1
+                i = j
+    return None, ">"
+
+
+def html_tags(s, start=0, stop=None):
+    """The tags of s[start:stop], raw HTML, as the HTML parser reads it: (the index of the <, whether it is an end tag,
+    the name in lower case) for each. Then the index of a tag or a comment that it leaves open and the text that would
+    end it, or None."""
+    stop = len(s) if stop is None else stop
+    tags, i = [], start
+    while 0 <= (i := s.find("<", i, stop)):
+        m = TAG.match(s, i, stop)
+        if m:
+            end, ending = tag_end(s, m.end(), stop)
+            if end is None:
+                return tags, (i, ending)
+            tags.append((i, bool(m.group(1)), m.group(2).lower()))
+            i = end
+        elif s.startswith(("<!-->", "<!--->"), i, stop):
+            i = s.index(">", i) + 1
+        elif s.startswith("<!--", i, stop):
+            ends = [k + len(t) for t in ("-->", "--!>") if (k := s.find(t, i + 4, stop)) >= 0]
+            if not ends:
+                return tags, (i, "-->")
+            i = min(ends)
+        elif s.startswith(("<!", "<?", "</"), i, stop):   # a bogus comment, up to the next >
+            end = s.find(">", i + 2, stop)
+            if end < 0:
+                return tags, (i, ">")
+            i = end + 1
+        else:
+            i += 1
+    return tags, None
+
+
+class Element:
+    """An open element: its name, whether the Markdown made it (else a tag of the text did), where the < of that tag
+    is, as (line, column), and whether that tag is in a place where it may be no tag (unsure)."""
+    __slots__ = ("name", "md", "at", "unsure")
+
+    def __init__(self, name, md, at=None, unsure=False):
+        self.name, self.md, self.at, self.unsure = name, md, at, unsure
+
+
+class Block:
+    """An open block of CommonMark: a container (quote or item) or a leaf (para, fence, code, html or table)."""
+
+    def __init__(self, kind, **fields):
+        self.kind, self.lines, self.full = kind, [], False
+        self.__dict__.update(fields)
+
+
+class Markup:
+    """What the lines of a text leave open, as GitHub renders them: CommonMark's blocks (block quotes, list items,
+    fenced and indented code, HTML blocks, paragraphs, headings and GitHub's tables), and the elements that the HTML
+    parser builds of the HTML that they give. stack holds the open elements, the Markdown's and the text's, in the
+    order in which they opened. A tag of the text that would make the Markdown and the HTML disagree on what is open is
+    made text: edits holds, by line, each (column, text) to insert, with the column of the line with its tabs
+    expanded, None for its end."""
+
+    def __init__(self, lines):
+        self.lines, self.edits, self.stack, self.containers, self.leaf = lines, {}, [], [], None
+        self.count = dict.fromkeys(("p", "table"), 0)   # how many open elements have each of these names
+        for i, line in enumerate(lines):
+            self.line(i, line.expandtabs(4))
+
+    # --- the blocks ---
+
+    def line(self, i, s):
+        """Line i of the text, s with its tabs expanded."""
+        p, matched = 0, 0
+        for c in self.containers:
+            rest = s[p:]
+            if c.kind == "quote":
+                m = QUOTE.match(rest)
+                if not m:
+                    break
+                p += m.end() + (rest[m.end():m.end() + 1] == " ")
+            elif indent(rest) >= c.width:   # cmark-gfm reads the indent first, also of a blank line
+                p += c.width
+            elif rest.strip() or not c.full:   # an item that holds nothing yet ends at a blank line
+                break
+            matched += 1
+        rest, leaf = s[p:], self.leaf
+        rule = s.rstrip()[-1:] in ("*", "-", "_")   # a thematic break can end the line only with its own mark
+        whole = matched == len(self.containers)
+        if whole and leaf is not None:
+            if leaf.kind == "fence":
+                if re.fullmatch(" {0,3}%s{%d,}[ \t]*" % (re.escape(leaf.mark[0]), len(leaf.mark)), rest):
+                    self.end_leaf()
+                return
+            if leaf.kind == "html" and (rest.strip() or leaf.end):
+                leaf.lines.append((i, p, rest))
+                if leaf.end and leaf.end.search(rest):
+                    self.end_leaf()
+                return
+            if leaf.kind == "code" and (not rest.strip() or indent(rest) >= 4):
+                return
+        if not rest.strip():
+            self.close(matched)
+            return
+        para = leaf is not None and leaf.kind == "para"   # a line of text goes on with it, also lazily
+        started = False
+        while indent(rest) < 4:
+            m = QUOTE.match(rest)
+            if m:
+                self.close(matched)
+                self.open("quote")
+                p += m.end() + (rest[m.end():m.end() + 1] == " ")
+            else:
+                m = ITEM.match(rest)
+                if not m or rule and THEMATIC.match(rest):
+                    break
+                after = rest[m.end():]
+                empty = not after.strip()
+                if whole and para and not started and (empty or m.group(2) and int(m.group(2)) != 1):
+                    break   # such an item cannot interrupt a paragraph
+                self.close(matched)
+                self.open("item", m.end() + (1 if empty or indent(after) > 4 else indent(after)), bool(m.group(2)))
+                if empty:
+                    return
+                p += self.containers[-1].width
+            matched, started, whole = len(self.containers), True, True
+            rest = s[p:]
+            if not rest.strip():
+                return
+        cont = para and not started
+        interrupt = cont and whole
+        if indent(rest) >= 4:
+            if cont:
+                leaf.lines.append((i, p, rest))
+            else:
+                self.close(matched)
+                self.start(Block("code", md=self.md_open("pre")))
+            return
+        if ATX.match(rest):
+            self.close(matched)
+            self.fill()
+            self.paragraph([(i, p, rest)], "h1")
+            return
+        m = FENCE.match(rest)
+        if m:
+            self.close(matched)
+            self.start(Block("fence", fence=m.group(0), mark=m.group(0).lstrip(" "), md=self.md_open("pre")))
+            return
+        html = self.html_start(rest, interrupt)
+        if html:
+            self.close(matched)
+            self.start(Block("html", end=html[0], last=html[1]))
+            self.leaf.lines.append((i, p, rest))
+            if html[0] and html[0].search(rest):
+                self.end_leaf()
+            return
+        if interrupt and SETEXT.match(rest):
+            leaf.heading = True
+            self.end_leaf()
+            return
+        if rule and THEMATIC.match(rest):
+            self.close(matched)
+            self.fill()
+            self.md_open("hr")
+            return
+        if interrupt and "|" in rest and self.table(i, p, rest):
+            return
+        if FOOTNOTE.match(rest):   # GitHub would show its text after the whole comment: here it stays text
+            self.insert(i, p + indent(rest), "\\")
+        if cont:
+            leaf.lines.append((i, p, rest))
+        elif whole and not started and leaf is not None and leaf.kind == "table":
+            self.row(i, p, rest, "td")
+        else:
+            self.close(matched)
+            self.start(Block("para", heading=False))
+            self.leaf.lines.append((i, p, rest))
+
+    @staticmethod
+    def html_start(rest, interrupt):
+        """(the pattern of the line that ends it, that line) for an HTML block that rest starts, (None, None) for a
+        block that a blank line ends, or None. One whole tag alone does not interrupt a paragraph (interrupt), but
+        cmark-gfm lets it end a paragraph that a line would only go on with lazily."""
+        m = LONG_HTML.match(rest)
+        if m:
+            end, last = ENDS[next(k for k in range(5) if m.group(k + 1))]
+            return end, last or f"</{m.group(1).lower()}>"
+        if BLOCK_HTML.match(rest) or not interrupt and TAG_LINE.match(rest):
+            return None, None
+        return None
+
+    def table(self, i, p, rest):
+        """Whether rest is the delimiter row of a GitHub table whose header row is the paragraph's last line: then the
+        lines before the header are a paragraph of their own, and the table starts."""
+        header = self.leaf.lines[-1]
+        found = cells(rest)
+        if len(cells(header[2])) != len(found) or not all(DELIMITER.fullmatch(rest[a:b]) for a, b in found):
+            return False
+        self.leaf.lines.pop()
+        self.end_leaf()
+        self.start(Block("table", width=len(found), md=self.md_open("table")))
+        self.row(*header, "th")
+        return True
+
+    def row(self, i, p, rest, cell):
+        """A row of the open table: each of its cells, up to as many as the header has (GitHub shows no other), holds
+        its own elements."""
+        tr = self.md_open("tr")
+        for a, b in cells(rest)[:self.leaf.width]:
+            td = self.md_open(cell)
+            self.inline(rest[a:b], lambda k, c=p + a: (i, c + k))
+            self.md_close(td)
+        self.md_close(tr)
+
+    def fill(self):
+        for c in reversed(self.containers):   # a container that holds something lies in ones that do too
+            if c.full:
+                break
+            c.full = True
+
+    def start(self, leaf):
+        self.fill()
+        self.leaf = leaf
+
+    def open(self, kind, width=0, ordered=False):
+        """A block quote, or a list item whose text starts width columns in."""
+        self.fill()
+        names = ("blockquote",) if kind == "quote" else ("ol" if ordered else "ul", "li")
+        self.containers.append(Block(kind, width=width, md=[self.md_open(name) for name in names]))
+
+    def end_leaf(self):
+        leaf, self.leaf = self.leaf, None
+        if leaf is None:
+            return
+        if leaf.kind == "para":
+            if leaf.lines:
+                self.paragraph(leaf.lines, "h1" if leaf.heading else "p")
+        elif leaf.kind == "html":
+            self.html_block(leaf.lines, leaf.last is not None and leaf.last.startswith("</"))
+        else:
+            self.md_close(leaf.md)
+
+    def close(self, k):
+        """Ends the open leaf, then each container from the innermost down to the kth."""
+        self.end_leaf()
+        while len(self.containers) > k:
+            for e in reversed(self.containers.pop().md):
+                self.md_close(e)
+
+    def finish(self):
+        """(the line that ends a fenced code block or an HTML block that a blank line does not end, open at the end of
+        the text outside any container, or None; the end tag of each element that the text leaves open, the last
+        opened first)."""
+        end, leaf = None, self.leaf
+        if not self.containers and leaf is not None and (leaf.kind == "fence" or leaf.kind == "html" and leaf.last):
+            end = leaf.fence if leaf.kind == "fence" else leaf.last
+            self.lines.append(end)
+            self.line(len(self.lines) - 1, end)
+        self.close(0)
+        return end, [f"</{e.name}>" for e in reversed(self.stack)]
+
+    # --- the text of the blocks ---
+
+    def paragraph(self, lines, name):
+        """A paragraph or a heading (name h1): its inline text. GitHub shows no part of a link reference definition."""
+        e = self.md_open(name)
+        text, where = joined(lines)
+        self.inline(text, where, name == "p" and bool(REFERENCE.match(lines[0][2])))
+        self.md_close(e)
+
+    def inline(self, s, where, unsure=False):
+        """The raw HTML of an inline text s (of a paragraph, a heading or a cell), as CommonMark reads it: outside code
+        spans, autolinks and backslash escapes. The HTML parser then reads each piece of it; a piece that the parser
+        reads on past its end (an attribute's quote that does not close) is text. A tag in a link's text, address or
+        title, or in a link reference definition (unsure), may be no tag."""
+        runs = {}   # the backtick strings that can close a code span, by length
+        for m in re.finditer(r"`+", s):
+            runs.setdefault(len(m.group()), []).append(m.start())
+        last = {t: s.rfind(t) for t in ("?>", "]]>", "-->", ">")}
+        i = depth = link = 0
+        while i < len(s):
+            c = s[i]
+            if c == "\\" and s[i + 1:i + 2] in PUNCTUATION:
+                i += 2
+            elif c == "`":
+                j = i
+                while j < len(s) and s[j] == "`":
+                    j += 1
+                starts = runs.get(j - i, [])
+                k = bisect.bisect_left(starts, j)
+                i = starts[k] + j - i if k < len(starts) else j
+            elif c == "<":
+                m = AUTOLINK.match(s, i)
+                if m:
+                    i = m.end()
+                    continue
+                ends = any(s.startswith(a, i) and i > last[t] for a, t in (
+                    ("<?", "?>"), ("<![CDATA[", "]]>"), ("<!--", "-->"), ("<!", ">")))
+                m = None if ends else RAW.match(s, i)
+                if not m:
+                    i += 1
+                    continue
+                tags, left = html_tags(s, i, m.end())
+                if left is not None:   # CommonMark then reads the < as text
+                    self.escape(where(i))
+                    i += 1
+                    continue
+                for k, close, name in tags:
+                    self.tag(where(k), close, name, unsure or depth > 0 or link > 0)
+                i = m.end()
+            elif c == "[":
+                depth += 1
+                i += 1
+            elif c == "]":
+                depth = max(depth - 1, 0)
+                link += s.startswith("(", i + 1)
+                i += 1 + s.startswith("(", i + 1)
+            elif c in "()" and link:
+                link += 1 if c == "(" else -1
+                i += 1
+            else:
+                i += 1
+
+    def html_block(self, lines, ended=False):
+        """The raw HTML of an HTML block, as the HTML parser reads it. A tag or a comment that the block leaves open
+        would take in what comes after the block: the one that starts the block ends at the end of the block, which so
+        keeps its kind, and any other is text. The end tag that ends a block of a <pre>, a <script>, a <style> or a
+        <textarea> (ended) stays a tag: CommonMark ends the block at it."""
+        s, where = joined(lines)
+        first, i = indent(lines[0][2]), 0
+        last = len(s) - len(lines[-1][2]) if ended else len(s) + 1
+        while True:
+            tags, left = html_tags(s, i)
+            for k, close, name in tags:
+                self.tag(where(k), close, name, ends=k >= last)
+            if left is None:
+                return
+            k, ending = left
+            if k != first:
+                self.escape(where(k))
+                i = k + 1
+                continue
+            self.insert(lines[-1][0], None, ending)
+            m = TAG.match(s, k)
+            if m:
+                self.tag(where(k), bool(m.group(1)), m.group(2).lower())
+            return
+
+    # --- the elements ---
+
+    def insert(self, line, column, text):
+        self.edits.setdefault(line, []).append((column, text))
+
+    def escape(self, at):
+        """A word joiner after the < at (line, column): what it starts shows as text."""
+        self.insert(at[0], at[1] + 1, "\u2060")
+
+    def edited(self):
+        """The lines, each with its edits."""
+        out = []
+        for i, line in enumerate(self.lines):
+            for column, text in sorted(self.edits.get(i, ()), key=lambda e: (e[0] is None, e[0] or 0), reverse=True):
+                k = len(line) if column is None else index_at(line, column)
+                line = line[:k] + text + line[k:]
+            out.append(line)
+        return out
+
+    def target(self, name):
+        """The index in stack of the element that an end tag of name closes, or None: the last one of its name (of any
+        heading, for a heading), unless an element of its scope's boundary comes after it."""
+        names = HEADINGS if name in HEADINGS else (name,)
+        scope = SCOPES.get(name, BOUNDARY)
+        for k in range(len(self.stack) - 1, -1, -1):
+            if self.stack[k].name in names:
+                return k
+            if self.stack[k].name in scope:
+                return None
+        return None
+
+    def push(self, e):
+        self.stack.append(e)
+        if e.name in self.count:
+            self.count[e.name] += 1
+
+    def pop(self, k, cell=False):
+        """Closes the element at k of stack and each element after it. A formatting element of the text stays: the
+        parser opens it again for the text after it, until its end tag; but not after the end of a cell (cell)."""
+        kept = [] if cell else [e for e in self.stack[k + 1:] if e.name in FORMATTING and not e.md]
+        for e in self.stack[k:]:
+            if e.name in self.count:
+                self.count[e.name] -= 1
+        self.stack[k:] = kept
+
+    def close_p(self):
+        if self.count["p"] and (k := self.target("p")) is not None:
+            self.pop(k)
+
+    def md_open(self, name):
+        """An element that the Markdown opens: blockquote, ul, ol, li, p, h1 (for any heading), pre, table, tr, th, td
+        or hr."""
+        if name in P_CLOSERS:
+            self.close_p()
+        if name in VOID:
+            return None
+        e = Element(name, True)
+        self.push(e)
+        return e
+
+    def md_close(self, e):
+        """The end that the Markdown gives its element e. An element of the text that would keep e open is made text
+        first: one of the boundary of e's scope opened after it, or one of e's own kind (any heading, for a heading)
+        opened after it, which the end tag would close in the place of e. When a tag of the text closed e (a <p> or an
+        <li> in its place), the parser reads the end tag by its name, and it closes that element."""
+        if e is None:
+            return
+        k = next((k for k in range(len(self.stack) - 1, -1, -1) if self.stack[k] is e), None)
+        if k is None:
+            if (k := self.target(e.name)) is not None:
+                self.pop(k)
+            return
+        scope = SCOPES.get(e.name, BOUNDARY) | (HEADINGS if e.name == "h1" else {e.name})
+        for x in self.stack[k + 1:]:
+            if not x.md and x.name in scope:
+                self.escape(x.at)
+        self.pop(k, cell=e.name in ("td", "th"))   # the end of a cell ends each formatting element opened in it too
+
+    def tag(self, at, close, name, unsure=False, ends=False):
+        """A tag of the text, whose < is at (line, column). A start tag in a place where it may be no tag (unsure)
+        opens an element all the same, but one of SCOPED, which a closer after the text could close in the place of
+        another one, is text. So is one of UNREAD, and one whose name CommonMark reads as no name, which no closer
+        could end. The parser reads a tag of a part of a table (TABLE_PARTS) outside any table as nothing. ends: the
+        tag is on the line that ends an HTML block of a <pre> or a <script> (html_block)."""
+        if name in TABLE_PARTS and not self.count["table"]:
+            return
+        if close:
+            self.end_tag(at, name, unsure, ends)
+        elif name in FILTERED:
+            return
+        elif unsure and name in SCOPED or name in UNREAD or not NAME.fullmatch(name):
+            self.escape(at)
+        else:
+            if name in P_CLOSERS:
+                self.close_p()
+            if name == "button" and (k := self.target("button")) is not None:   # a button in a button ends the first
+                self.pop(k)
+            if name in ("li", "dd", "dt"):   # it ends the last one of its kind, unless a special element comes after
+                for k in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[k].name in (("li",) if name == "li" else ("dd", "dt")):
+                        self.pop(k)
+                        break
+                    if self.stack[k].name in SPECIAL and self.stack[k].name not in ("address", "div", "p"):
+                        break
+            if name not in IGNORED:
+                self.push(Element(name, False, at, unsure))
+
+    def end_tag(self, at, name, unsure, ends=False):
+        """An end tag of the text, whose < is at (line, column). One of SCOPED in a place where it may be no tag
+        (unsure), or that would close no element of the text, or one of the Markdown with it (all but a paragraph),
+        is text: it could close the collapsed block that holds the text, or a list item, a block quote or a cell of the
+        Markdown. But the </pre> that ends an HTML block (ends) stays a tag. Any other end tag in a place where it may
+        be no tag closes nothing."""
+        stack = self.stack
+        if name in IGNORED:
+            return
+        if name in SCOPED:
+            k = None if unsure else self.target(name)
+            if unsure:
+                self.escape(at)
+            elif name == "p":
+                if k is not None:
+                    self.pop(k)
+            elif k is not None and not stack[k].md and all(e.name == "p" or not e.md for e in stack[k + 1:]) and not (
+                    name == "summary" and any(e.name in SPECIAL for e in stack[k + 1:])):
+                self.pop(k)
+            elif not (name == "pre" and ends):
+                self.escape(at)
+            return
+        k = next((k for k in range(len(stack) - 1, -1, -1) if stack[k].name == name and not stack[k].md), None)
+        if k is None or unsure:
+            return
+        if stack[k].unsure:   # it may be no element: whatever it is, it closes nothing else
+            del stack[k]
+            return
+        after = stack[k + 1:]
+        special = sum(e.name in SPECIAL for e in after)
+        if name in FORMATTING:
+            # The parser moves each special element after it into a copy of it, at most 7 of them, then closes it.
+            if special >= 7 or any(e.name in BOUNDARY for e in after):
+                return
+            if special:
+                del stack[k]   # only that element closes; a formatting element's name is never counted
+                return
+        elif special:
+            return
+        self.pop(k)
+
+
+def close_once(text):
+    """One reading of text by Markup, with its edits made and its ends after it (closed)."""
+    text = re.sub(r"<(?=[A-Za-z/!?][^<>]*\Z)", "<\u2060", text)
+    # CommonMark ends a line at a line feed, a carriage return, or both.
+    parts = re.split(r"(\r\n|\r|\n)", text)
+    lines, breaks = parts[0::2], parts[1::2]
+    n = len(lines)
+    markup = Markup(lines)
+    end, closers = markup.finish()
+    lines = markup.edited()
+    text = "".join(line + brk for line, brk in zip(lines, breaks + [""]))
+    if end is not None:
+        text += ("" if n > 1 and lines[n - 1] == "" else "\n") + lines[n]
+    return text + "".join("\n\n" + c for c in closers)
 
 
 def closed(text):
     """text, which the model or the reader wrote, with nothing left open that would take in the fixed part after it,
-    as CommonMark and HTML read it. A < that the end of text cuts from its > (the cut of a tag) gets a word joiner
-    after it, and shows as text. A fenced code block that text leaves open gets its closing fence, with the indent and
-    the fence of its first line. An HTML block that a blank line does not end (LONG_HTML) gets its end on a line of its
-    own. Each <details> that text leaves open gets a </details> after it, and a </details> with no <details> of text
-    before it gets a word joiner after its <: it shows as text, and cannot close the collapsed block that holds the
-    text. A tag in a fenced or an indented code block, or in a code span on one line, is text. So no fixed part after
-    text goes into a code block of text or into its collapsed block. text closed again does not change."""
-    text = re.sub(r"<(?=[A-Za-z/!?][^<>]*\Z)", "<\u2060", text)
-    lines = text.split("\n")
-    fence, end, block, para, depth = "", None, False, False, 0
-
-    def tag(m):
-        nonlocal depth
-        if m.groupdict().get("span"):
-            return m.group(0)
-        if not m.group("close"):
-            depth += 1
-        elif depth:
-            depth -= 1
-        else:
-            return "<\u2060" + m.group(0)[1:]
-        return m.group(0)
-    for i, line in enumerate(lines):
-        if fence:
-            mark = fence.lstrip()
-            if re.fullmatch(" {0,3}%s{%d,}[ \t]*\r?" % (re.escape(mark[0]), len(mark)), line):
-                fence = ""
-            continue
-        if block and not line.strip():
-            block = False
-            continue
-        if not (end or block):
-            if not line.strip():
-                para = False
-                continue
-            if not para and line.expandtabs(4).startswith("    "):   # a line of an indented code block
-                continue
-            if m := FENCE.match(line):
-                fence, para = m.group(0), False
-                continue
-            if m := LONG_HTML.match(line):
-                found, last = ENDS[next(k for k in range(4) if m.group(k + 1))]
-                end, para = (found, last or f"</{m.group(1).lower()}>"), False
-            elif BLOCK_HTML.match(line):
-                block, para = True, False
-            else:
-                para = True
-        lines[i] = (DETAILS if end or block else SPAN_OR_DETAILS).sub(tag, line)
-        if end and end[0].search(line):
-            end = None
-    text = "\n".join(lines)
-    if fence or end:
-        text += ("" if text.endswith("\n") else "\n") + (fence or end[1])
-    if depth:
-        text += "\n\n" + "\n".join(["</details>"] * depth)
-    return text
+    as GitHub renders it (Markup). A < that the end of text cuts from its > (the cut of a tag) gets a word joiner after
+    it, and shows as text. A fenced code block, or an HTML block that a blank line does not end, that text leaves open
+    outside a list item or a block quote gets its end on a line of its own; in one, the unindented fixed part after
+    text ends it. Each element that text leaves open (a <details>, a <b>, an <a> or a <sub>, say) gets its end tag after
+    text, each in a block of its own, the last opened first. A tag of text that would close an element of the Markdown,
+    or one outside text (the collapsed block that holds it), or that would keep a list item, a block quote, a paragraph
+    or a table cell of the Markdown open, gets a word joiner after its <, and shows as text. So does a <details> in a
+    link, a <select>, a <template>, an <svg> or a <math>, a tag that an attribute's quote leaves open (when it starts an
+    HTML block, it gets the quote and the > that it lacks), and the [ of a footnote (with a backslash before it), whose
+    text GitHub would show after the whole comment. A tag in a code block or a code span is text. A word joiner can
+    change what a line starts, so the text is read again until a reading changes nothing. So no fixed part after text
+    goes into a code block or an element of text, and text closes no element outside it. text closed again does not
+    change."""
+    for _ in range(READINGS):
+        once = close_once(text)
+        if once == text:
+            return text
+        text = once
+    raise ReaderError(f"the text still leaves markup open after {READINGS} readings")
 
 
 def cut(text):
@@ -823,13 +1453,14 @@ def main(argv):
         print(f"trim.py: the fresh reader refused the {args.kind}. Nothing of it posts.", file=sys.stderr)
         if args.summary:
             try:
+                text = refusal(args.kind, refused.reason)
                 with open(args.summary, "a", encoding="utf-8") as f:
-                    f.write(refusal(args.kind, refused.reason))
-            except OSError as e:   # the message names the file, and holds no part of the reason
+                    f.write(text)
+            except (OSError, ReaderError) as e:   # the message names the file or closed's bound, never the reason
                 print(f"trim.py: the reason could not be written to the run's summary: {e}", file=sys.stderr)
         return REFUSED
-    except (ReaderError, OSError) as e:   # the message names a setting, a service or a file, and holds no token
-        print(f"trim.py: no text: {e}", file=sys.stderr)
+    except (ReaderError, OSError) as e:   # it names a setting, a service or a file, and holds no token
+        print(f"trim.py: no text: {e.public if isinstance(e, ReaderError) else e}", file=sys.stderr)
         return 1
     sys.stdout.write(out)
     return 0

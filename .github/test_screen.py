@@ -439,6 +439,47 @@ class ScreenTest(unittest.TestCase):
                          ["0"])
         self.assertFalse(os.path.exists(os.path.join(self.dir, screen.TOKENS_FILE)))
 
+    def test_a_measurement_that_a_service_refuses_logs_its_status_and_none_of_its_text(self):
+        """Decision 8: the measurement's log gets the HTTP status and the error code of a request that a service
+        refused, or the kind of an answer that is no whole HTTP answer, never the service's text: when the bucket
+        refuses the labelled set, and when it answers the store of the words with a line that is not an HTTP status
+        line."""
+        labelled = {"items": [{"name": "ordinary", "label": "ordinary", "parts": [["body", "A fine report."]]}]}
+
+        class Bucket(BaseHTTPRequestHandler):
+            refuse = True
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                data = json.dumps({"error": {"code": 403, "message": MARK}} if Bucket.refuse else labelled).encode()
+                self.send_response(403 if Bucket.refuse else 200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.wfile.write(f"NOT-HTTP {MARK}\r\n\r\n".encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Bucket)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host = f"127.0.0.1:{server.server_port}"
+        self.env.update(MEASURE_SET="measure/set-v1.json", MEASURE_OBJECT="measure/runs/acme/model/1-1.json",
+                        MEASURE_REPEATS="1")
+        for refuse, shown in ((True, f"The measurement failed: CheckError: HTTP 403 from {host}, no error code\n"),
+                              (False, f"The measurement failed: CheckError: BadStatusLine from {host}\n")):
+            with self.subTest(refused="the set" if refuse else "the store"):
+                Bucket.refuse = refuse
+                self.env["STORAGE_URL"] = f"{self.services.url}/storage"
+                self.sign_in()
+                self.env["STORAGE_URL"] = f"http://{host}"
+                rc, printed = self.call("--measure")
+                self.assertEqual((rc, printed), (1, shown))
+
     def test_a_service_that_cannot_be_reached_holds_it(self):
         self.item()
         self.env["CONTENT_SAFETY_URL"] = "http://127.0.0.1:9"   # discard port: nothing listens

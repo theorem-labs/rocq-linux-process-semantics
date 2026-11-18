@@ -1445,6 +1445,44 @@ class ClosedTest(unittest.TestCase):
         review = "Blocking.\n\n- A list item.\n\n    </details>\n\nThe rest of the review."
         self.assertNotIn("</details>", trim.closed(review))   # it shows as text, and closes no block
 
+    def test_an_element_that_a_text_leaves_open_gets_its_end_tag_after_the_text(self):
+        """An HTML parser opens a formatting element (<b>, <a>) that a paragraph's end closed again for the text after
+        it, and an element opened outside a paragraph (<sub>, <div align=...>) holds each block after it: either would
+        format or move the fixed part after the text. Each gets its end tag after the text, in a block of its own, the
+        last opened first. An element that the paragraph's end closes (<del> in a paragraph), or that the text closes,
+        gets none: the text keeps its own words."""
+        for text, want in (
+                ("Use the <b>bold words", "Use the <b>bold words\n\n</b>"),
+                ('See <a href="https://github.com/o/r">the file',
+                 'See <a href="https://github.com/o/r">the file\n\n</a>'),
+                ("<sub>\n\nSmall text.", "<sub>\n\nSmall text.\n\n</sub>"),
+                ('<div align="center">\n\nCentred.', '<div align="center">\n\nCentred.\n\n</div>'),
+                ("<details>\n<b>\n\nBold notes.", "<details>\n<b>\n\nBold notes.\n\n</b>\n\n</details>"),
+                ("A <del>struck text", "A <del>struck text"),
+                ("Bold <b>x</b> and <kbd>Ctrl</kbd>.", "Bold <b>x</b> and <kbd>Ctrl</kbd>.")):
+            with self.subTest(text=text):
+                self.assertEqual(trim.closed(text), want)
+                self.assertEqual(trim.closed(want), want)
+
+    def test_a_tag_that_would_close_or_hold_open_a_block_of_the_markdown_shows_as_text(self):
+        """A </li> or a </blockquote> of the text would close the Markdown's list item or block quote, and with it the
+        text's own elements in it, or the collapsed block. A </details> in a table cell closes no <details> outside the
+        cell, and one in a link's address is no tag. Each shows as text. A tag whose attribute's quote does not close
+        in an HTML block would take in what comes after the block; a footnote's text would show after the whole
+        comment, outside the collapsed block; each is text. A text whose lines end at a carriage return alone is read
+        as CommonMark reads it."""
+        for text, want in (
+                ("- An item. </li> More.", f"- An item. <{WJ}/li> More."),
+                ("> A quote. </blockquote> More.", f"> A quote. <{WJ}/blockquote> More."),
+                ("| A | B |\n|---|---|\n| </details> | x |", f"| A | B |\n|---|---|\n| <{WJ}/details> | x |"),
+                ("[x](</details>) more", f"[x](<{WJ}/details>) more"),
+                ('<div>\n<a title="x\n\nThe rest.', f'<div>\n<{WJ}a title="x\n\nThe rest.\n\n</div>'),
+                ("A note[^1].\n\n[^1]: <details>", "A note[^1].\n\n\\[^1]: <details>\n\n</details>"),
+                ("Text.\r```\rcode", "Text.\r```\rcode\n```")):
+            with self.subTest(text=text):
+                self.assertEqual(trim.closed(text), want)
+                self.assertEqual(trim.closed(want), want)
+
     def test_an_answer_or_a_fix_whose_text_leaves_markup_open_keeps_its_footer_and_its_suggestion_blocks(self):
         """The answer's footer, the fix's footer and each suggestion block come after the text that leaves a fence
         or a <details> open, and a </details> of a why shows as text."""
@@ -2544,7 +2582,7 @@ class HoldTest(Holding):
                                "--jq", ".[].name"], calls)
                 self.assertIn(f"repos/{REPO}/issues/7/comments", post)
                 self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
-                self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
+                self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
 
     # A hold that is tried again says from when, and which events start the run that takes it again: there is no
     # schedule.
@@ -2632,7 +2670,7 @@ class HoldTest(Holding):
                 self.assertIn(f"did not finish after {self.TRIES} tries. The workflow does not try it again.", body)
                 self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-                self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
+                self.assertWaitsOnSami("Sami starts the work that the hold comment names again, by hand.")
 
     def test_a_review_that_a_newer_run_of_the_item_and_task_cancelled_holds_nothing(self):
         """Only a newer run of the same item and task is in the review job's group, so only it can have cancelled this
@@ -2713,22 +2751,27 @@ class HoldTest(Holding):
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
 
-    def test_a_screen_asked_for_by_hand_says_so(self):
-        """A run by hand with -f screen=true has no outsider: the comment does not say the account lacks write access,
-        names no maintainer, and nothing tries it again. The item waits on Sami: to start the review or the checks
-        when the screen held it, or to start the work again when the review after the screen did not finish."""
-        for review, step in (("skipped", "Sami starts the review or the checks of this item by hand."),
-                             ("failure", "Sami starts the automated work on this item again by hand."),
-                             ("cancelled", "Sami starts the automated work on this item again by hand.")):
+    def test_a_screen_asked_for_by_hand_says_what_the_screen_did(self):
+        """A run by hand with -f screen=true has no outsider: the comment says what the screen and the review did, and
+        not how the run started, nor that the account lacks write access; it names no maintainer, and nothing tries it
+        again. The item waits on Sami: to start the work that the hold comment names, again when the review after the
+        screen did not finish."""
+        held = ("The automated screen held this pull request, so the automated review did not run. You do not need to "
+                "do anything.")
+        unfinished = ("The automated screen passed this pull request, but the automated review did not finish. The "
+                      "workflow does not try it again.")
+        for review, step, words in (("skipped", "Sami starts the work that the hold comment names, by hand.", held),
+                                    ("failure", "Sami starts the work that the hold comment names again, by hand.",
+                                     unfinished),
+                                    ("cancelled", "Sami starts the work that the hold comment names again, by hand.",
+                                     unfinished)):
             with self.subTest(review=review):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", outsider="", review=review)
-                self.assertIn("This run started by hand with the option `screen` set, so the automated screen ran "
-                              "first.", body)
+                self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
                 self.assertNotIn("without write access", body)
                 self.assertNotIn("maintainer", body)
-                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
                 self.assertWaitsOnSami(step)
 
     def test_a_maintainers_screened_review_that_a_newer_run_cancelled_holds_nothing(self):
@@ -2876,7 +2919,7 @@ class HoldTest(Holding):
                  f"at most {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers each hour",
                  "<!-- review-held-cap 50 0 answer 900 -->"),
                 ("screen", {"review": "failure"},
-                 f"the automated answer to the author's comment did not finish. This was try 1 of {self.TRIES}.",
+                 f"the automated answer to your comment did not finish. This was try 1 of {self.TRIES}.",
                  "<!-- review-held-transient 50 1 answer 900 -->")):
             with self.subTest(route=route, **kwargs):
                 self.tearDown()
@@ -2895,15 +2938,15 @@ class HoldTest(Holding):
                 self.assertEqual(body, "<!-- review-held -->\n**Automated answer held.**\n\nThe automated screen held "
                                        f"this {where}, so the workflow wrote no answer. You do not need to do "
                                        "anything.")
-                self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
+                self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
         self.tearDown()
         self.setUp()
         _calls, _post, body = self.hold("screen", task="answer", comment="900", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated answer to the author's comment did not finish after {self.TRIES} tries. "
+        self.assertIn(f"the automated answer to your comment did not finish after {self.TRIES} tries. "
                       "The workflow does not try it again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-        self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
+        self.assertWaitsOnSami("Sami starts the work that the hold comment names again, by hand.")
         # A newer answer run of the item, which answers this comment too, cancelled this one: it holds nothing.
         self.tearDown()
         self.setUp()
@@ -2948,7 +2991,7 @@ class HoldTest(Holding):
         _calls, _post, body = self.hold("screen", task="draft", kind="issue")
         self.assertEqual(body, "<!-- review-held -->\n**Automated reply held.**\n\nThe automated screen held this "
                                "issue, so the workflow wrote no reply. You do not need to do anything.")
-        self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
+        self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
         self.tearDown()
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue", review="failure", origin="50",
@@ -2956,7 +2999,7 @@ class HoldTest(Holding):
         self.assertIn(f"the automated reply did not finish after {self.TRIES} tries. The workflow does not try it "
                       "again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
-        self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
+        self.assertWaitsOnSami("Sami starts the work that the hold comment names again, by hand.")
 
     def test_each_hold_of_a_pull_request_names_its_head(self):
         """D16 (c) and (g) read which head a hold names: each hold comment of a pull request, of every kind (at the
@@ -3154,12 +3197,12 @@ class ApproveTest(Holding):
         self.forget()
         calls, _post, body = self.hold("screen", task="approve", jobs=[
             attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory")])
-        self.assertEqual(body, "<!-- review-held -->\n**Automated approval held.**\n\nThe automated screen held this "
-                               "pull request, so its checks have not run. You do not need to do anything.")
+        self.assertEqual(body, "<!-- review-held -->\n**Automated start of the checks held.**\n\nThe automated screen "
+                               "held this pull request, so its checks have not run. You do not need to do anything.")
         self.assertNotIn("maintainer", body.lower())
         self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
                        "--jq", ".[].name"], calls)
-        self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
+        self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
         self.assertEqual(self.approvals(), [])
 
     def test_a_pull_request_whose_runs_are_not_held_gets_no_approval(self):
@@ -3209,7 +3252,7 @@ class ApproveTest(Holding):
         approve, so that it is tried again as an approval and never as a review, and the workflow still works on the
         pull request: no state label."""
         _calls, _post, body = self.hold("limit", task="approve", tries="0")
-        self.assertTrue(body.startswith("<!-- review-held -->\n**Automated approval held.**\n\n"), body)
+        self.assertTrue(body.startswith("<!-- review-held -->\n**Automated start of the checks held.**\n\n"), body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 approve -->"), body)
         self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
@@ -4143,7 +4186,8 @@ class FreshReaderTest(ReaderRunner):
         rc, out, got = self.post(self.REVIEW, items, lacking)
         self.assertEqual(rc, 0, out)
         added = ("This review also has these items:\n\n"
-                 f"**Question at `SCOPE.md:301`:** Does SCOPE.md:301 still hold for @{WJ}octocat's case #{WJ}12?\n\n"
+                 f"**Question for Sami at `SCOPE.md:301`:** Does SCOPE.md:301 still hold for @{WJ}octocat's case "
+                 f"#{WJ}12?\n\n"
                  "This review also has these optional items:\n\n"
                  "**Change at `tools/check_one.py:31`:** Name the lane in tools/check_one.py:31.")
         self.assertEqual(got["body"], self.body(lacking, added))
@@ -4273,6 +4317,32 @@ class FreshReaderTest(ReaderRunner):
                 self.assertIn(f", {code}", out)
                 self.assertNotIn("the rule admits no issue_comment event", out)
                 self.assertFalse(os.path.exists(self.token_file))
+
+    def test_a_sign_in_answer_with_no_http_status_line_logs_none_of_its_text_and_no_traceback(self):
+        """trim.py's sign-in: an exchange whose answer is no HTTP answer (its first line is no HTTP status line) fails
+        the step after its tries, and writes no file. The log names the kind of answer and the service, and holds none
+        of the answer's text and no traceback."""
+        mark = "Not-an-HTTP-answer-7c1e"
+
+        class NotHttp(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.wfile.write(f"{mark} the service's text\r\n\r\n".encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), NotHttp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        s = step("review", self.SIGN_IN)
+        rc, out, got = self.run_script(s["run"], **dict(ANTHROPIC,
+                                                        ANTHROPIC_URL=f"http://127.0.0.1:{server.server_port}"))
+        self.assertEqual((rc, got), (1, {}), out)
+        self.assertIn("the sign-in failed: BadStatusLine from 127.0.0.1:", out)
+        self.assertNotIn(mark, out)
+        self.assertNotIn("Traceback", out)
+        self.assertFalse(os.path.exists(self.token_file))
 
     def test_the_fixed_parts_and_the_whole_review_keep_their_places_whatever_markup_a_text_leaves_open(self):
         """R9: the post step "puts the untrimmed review in one collapsed <details> block at the end of the comment".
@@ -6936,8 +7006,8 @@ class RescreenJobTest(Held):
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
         self.assertEqual(method, "POST")
-        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the automated work on this "
-                                         "item again by hand.\n"), label)
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the work that the hold "
+                                         "comment names again, by hand.\n"), label)
         self.assertTrue(label.endswith("\n<!-- waits-on-theorem: Sami -->"), label)
         patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
         self.assertEqual(len(patches), 1, gh_calls(self.api))
@@ -7403,7 +7473,7 @@ class Scheduled(Held):
         return attempt_job("screen", failed, name="screen mallory")
 
     def assertStopped(self, stop, title, text, edited=False,
-                      step_line="Sami starts the automated work on this item again by hand.", number=7):
+                      step_line="Sami starts the work that the hold comment names again, by hand.", number=7):
         """The run of the stop that the rescreen pass started (stop #<number> at HEAD for <stop>): its trust job takes
         it, and its comment job gives #number waits-on-theorem with the label comment's step step_line for Sami, in a
         new label comment (or in the one it had, when edited), and posts one hold comment with title and text, which
@@ -7619,8 +7689,8 @@ class ScheduleTest(Scheduled):
         self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
         (method, endpoint, label), = label_comments(self.api)
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/3"))
-        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the automated work on this "
-                                         "item again by hand.\n"), label)
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts the work that the hold "
+                                         "comment names again, by hand.\n"), label)
         self.assertTrue(label.endswith("\n<!-- issue-reply-posted 4 -->\n<!-- waits-on-theorem: Sami -->"), label)
         patch, = [c for c in writes(self.api) if c[:3] == ["--method", "PATCH", f"repos/{REPO}/issues/comments/5"]]
         body = next(a for a in patch if a.startswith("body="))[len("body="):]
@@ -8108,9 +8178,10 @@ class ScheduleTest(Scheduled):
                     self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
                     continue
                 self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
-                body = self.assertStopped("head-approve", "Automated approval held.", "The automated approval of the "
-                                          f"checks of the head commit {HEAD[:12]} did not finish after {self.TRIES} "
-                                          "tries. The workflow does not try it again.")
+                body = self.assertStopped("head-approve", "Automated start of the checks held.",
+                                          f"The workflow tried {self.TRIES} times to start the checks of the head "
+                                          f"commit {HEAD[:12]}, and no try finished. The workflow does not try it "
+                                          "again.")
                 self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
                                   "body": body})
                 rc, out, runs = self.started()
@@ -8771,7 +8842,8 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual((got.get("task"), got.get("route"), got.get("number"), got.get("head")),
                          ("stop", "review", "7", HEAD), out)
         self.assertEqual({k: v for k, v in json.loads(got["stop"]).items() if k != "text"},
-                         {"stop": "head-approve", "fact": "tries_used_up", "id": "", "title": "Automated approval held.",
+                         {"stop": "head-approve", "fact": "tries_used_up", "id": "",
+                          "title": "Automated start of the checks held.",
                           "head": HEAD})
         for case, kwargs in (("a writer's run by hand", {"actor": "alice"}),
                              ("an App's run by hand", {"actor": "sjawhar-agent[bot]"}),
@@ -8790,9 +8862,9 @@ class RescreenEventsTest(Scheduled):
         self.tearDown()
         self.setUp()
         self.approval_tried(self.TRIES)
-        body = self.assertStopped("head-approve", "Automated approval held.", "The automated approval of the checks "
-                                  f"of the head commit {HEAD[:12]} did not finish after {self.TRIES} tries. The workflow "
-                                  "does not try it again.")
+        body = self.assertStopped("head-approve", "Automated start of the checks held.",
+                                  f"The workflow tried {self.TRIES} times to start the checks of the head commit "
+                                  f"{HEAD[:12]}, and no try finished. The workflow does not try it again.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         out, got = self.stop_trust()
         self.assertEqual(got.get("route"), None, out)
@@ -9106,7 +9178,7 @@ class HeadScheduleTest(Scheduled):
                  [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], "Sami replies to your comment."),
                 ("a screen hold after the review", [review_of(HEAD, at=ago(300)), hold],
                  [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)],
-                 "Sami starts the review or the checks of this item by hand.")):
+                 "Sami starts the work that the hold comment names, by hand.")):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
@@ -9123,8 +9195,8 @@ class HeadScheduleTest(Scheduled):
         self.relabelled([self.line_label()])
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
         body = self.label_of()
-        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The workflow continues the automated "
-                                        "work on this item.\n"), body)
+        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The workflow tries the item again.\n"),
+                        body)
         self.assertNotIn("review-conflict-state", body)
         self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
@@ -9237,10 +9309,12 @@ class VariableScheduleTest(Scheduled):
                 "body": rules.label_comment("decide", markers=[rules.import_marker(head, value)])}
 
     @staticmethod
-    def check(head, value, at, app=5447700):
-        """The check run repo-pairs/import-approved of head, of the App app, that recorded value at at."""
-        return {"name": "repo-pairs/import-approved", "head_sha": head, "app": {"id": app}, "status": "completed",
-                "conclusion": "success", "completed_at": at, "output": {"text": rules.import_marker(head, value)}}
+    def check(head, value, at, app=5447700, number=7):
+        """The check run repo-pairs/import-approved of pull request number at head, of the App app, that recorded value
+        at at."""
+        return {"name": "repo-pairs/import-approved", "head_sha": head, "external_id": f"{number}:{head}",
+                "app": {"id": app}, "status": "completed", "conclusion": "success", "completed_at": at,
+                "output": {"text": rules.import_marker(head, value)}}
 
     def test_the_first_run_after_the_variable_appears_changes_or_goes_relabels_each_open_outside_pull_request(self):
         """Mallory has 5 open pull requests, more than OUTSIDE_HOURLY_LIMIT, and her runs of the last hour reached that
@@ -9292,6 +9366,20 @@ class VariableScheduleTest(Scheduled):
                 self.listed_runs.clear()
                 self.ran(10, f"relabel #7 at {HEAD}", made=ended + 5, ended=ended, jobs=relabelled)
                 rc, out, runs = self.started(variable=self.LPS)
+                self.assertEqual((rc, runs), (0, want), out)
+
+    def test_a_check_run_of_another_pull_request_of_the_same_commit_records_nothing_for_this_one(self):
+        """A check run belongs to a commit, and so shows on each pull request of that commit: the value of #7 is the
+        one that a check run whose external_id is 7:<head> records. The OSS Verify App's check run of #8 at #7's head,
+        newer than #7's label comment, counts for nothing for #7, so #7 keeps its label comment's value; the same check
+        run of #7 records #7's value."""
+        self.item(kind="pr", comments=[review_of(HEAD), self.label(HEAD, None, at=ago(300))])
+        for number, value, want in ((8, None, []), (8, self.LPS, [("7", "relabel", "", HEAD, "")]),
+                                    (7, self.LPS, []), (7, None, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(check_run_of=number, variable=value):
+                self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs",
+                           {"check_runs": [self.check(HEAD, self.LPS, ago(100), number=number)]})
+                rc, out, runs = self.started(variable=value)
                 self.assertEqual((rc, runs), (0, want), out)
 
 
@@ -9532,7 +9620,7 @@ class ConflictTest(Runner):
                 self.assertEqual(len(bodies), 1, gh_calls(self.api))
                 self.assertTrue(bodies[0].startswith(f"<!-- review-conflict {HEAD} -->\n"), bodies[0])
                 self.assertIn(f"**Merge conflict with `main`** at commit {HEAD[:12]}.", bodies[0])
-                self.assertIn("Resolve the conflict", bodies[0])
+                self.assertIn("Resolve each conflict", bodies[0])
                 self.assertNotIn("maintainer", bodies[0].lower())
                 (method, _endpoint, label), = label_comments(self.api)
                 self.assertEqual(method, "POST")
@@ -10217,9 +10305,9 @@ class ImportCheckTest(ReaderRunner):
 
     def assertRecorded(self, got, value, head=HEAD):
         """One check run repo-pairs/import-approved, with conclusion success on head, recorded with token A as the
-        post job's only write, and one marker line of value in its output text: recorded is true, the output imports
-        gives the comment job value as JSON, and the job caught up no head (caught is empty), so the comment job
-        records no catch-up."""
+        post job's only write, whose external_id (7:<head>) and output title name pull request #7 and head, and one
+        marker line of value in its output text: recorded is true, the output imports gives the comment job value as
+        JSON, and the job caught up no head (caught is empty), so the comment job records no catch-up."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -10231,6 +10319,8 @@ class ImportCheckTest(ReaderRunner):
                           "conclusion": "success"})
         self.assertEqual(sorted(body["output"]), ["summary", "text", "title"])
         self.assertMarker(body["output"]["text"], value, head)
+        self.assertEqual((body["external_id"], body["output"]["title"]),
+                         (f"7:{head}", f"Approved for the import: pull request #7 at {head[:12]}"))
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
                          {"recorded": "true", "decision": "record", "caught": ""})
@@ -10268,6 +10358,22 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(["docs/guide.md", ("notes/new.md", "notes/old.md")], trust=trust, event=event)
                 self.assertRecorded(got, None)
                 self.assertEqual(got["steps"][MINT_A], "success")
+
+    def test_the_record_step_posts_no_check_run_that_names_another_pull_request(self):
+        """A check run belongs to a commit, so the import counts it only for the pull request that its external_id
+        names. The step that records it posts the decision's request only when the request names this run's pull
+        request and the head: a request that names #8 at #7's head posts no check run, and the step fails."""
+        s = step("post", self.RECORD)
+        for number, rc_wanted, posted in (("8", 1, 0), ("7", 0, 1)):
+            with self.subTest(external_id=f"{number}:<head>"):
+                self.forget()
+                with open(os.path.join(self.temp, "import-check.json"), "w", encoding="utf-8") as f:
+                    json.dump(rules.check_run(number, HEAD, None, True), f)
+                env = filled({**WF["env"], **JOBS["post"].get("env", {}), **s["env"]},
+                             {"needs.trust.outputs.number": "7", "steps.app.outputs.token": "token-A",
+                              "github.repository": REPO})
+                rc, out, _ = self.run_script(s["run"], **dict({"GH_TOKEN": ""}, **env))
+                self.assertEqual((rc, len(writes(self.api))), (rc_wanted, posted), out)
 
     def test_with_no_variable_the_check_run_and_waits_on_theorem_with_a_merge_on_this_repository(self):
         """The pull request of the first case with no variable REPO_PAIRS_IMPORT_PATHS: the decision step and the
