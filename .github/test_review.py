@@ -1055,6 +1055,59 @@ class CommentsTest(Runner):
                     self.assertEqual((got.get("answered"), waiting), (None, want))
                     self.assertEqual(self.held_waiting(), want)
 
+    def test_what_the_workflow_posted_answers_only_the_comments_that_its_run_read(self):
+        """R1: a review, a fix review or an answer that the workflow posted after a comment answers it only when its
+        run read it. A review and a fix review read the conversation when their run started, as their marker
+        <!-- review-read <time> --> says, so a comment made while the run ran still waits; one with no such marker
+        counts from the time GitHub last changed it. An answer answers the comments up to the one that its marker
+        names. A hold of an answer that is tried again keeps the comments that waited when it was written waiting,
+        whatever review came after it, and not a comment that a review before it had read. The gather job's
+        answer-to.json and the trust and rescreen jobs' waiting give the same comments."""
+        def review(read, posted):
+            marker = f"<!-- review-read {read} -->\n" if read else ""
+            return {"id": 1, "login": BOT, "at": "2026-11-02T09:00:00Z", "edited": posted,
+                    "body": f"<!-- review -->\n<!-- review-head {HEAD} -->\n<!-- review-verdict {HEAD} pass -->\n"
+                            f"{marker}**Automated review** of commit {HEAD[:12]}"}
+
+        def fix(read, posted):
+            return {"id": 10, "login": BOT, "at": posted,
+                    "body": f"<!-- review-fix {HEAD} -->\n<!-- review-read {read} -->\n**Automated fix**"}
+        before = {"id": 899, "login": "mallory", "at": "2026-11-02T12:00:00Z", "body": "Before the run started."}
+        during = {"id": 900, "login": "mallory", "at": "2026-11-02T12:30:00Z", "body": "While the run ran."}
+        old = review(None, "2026-11-02T11:00:00Z")
+        answer = {"id": 3, "login": BOT, "at": "2026-11-02T13:00:00Z",
+                  "body": "<!-- review-answer 899 -->\n**Automated answer**\n\nYes."}
+        hold = {"id": 8, "login": BOT, "at": "2026-11-02T12:40:00Z",
+                "body": "<!-- review-held -->\n**Automated answer held.**\n\nHeld.\n\n"
+                        "<!-- review-held-limit 50 0 answer 900 -->"}
+        late = review("2026-11-02T12:50:00Z", "2026-11-02T13:00:00Z")
+        for case, comments, reviews, want in (
+                ("a review whose run started before the comment",
+                 [review("2026-11-02T12:10:00Z", "2026-11-02T13:00:00Z"), before, during], [], [900]),
+                ("a review with no marker, posted after the comment",
+                 [review(None, "2026-11-02T13:00:00Z"), before, during], [], None),
+                ("a review whose run started after the comment", [late, before, during], [], None),
+                ("a fix review whose run started before the comment", [old, before, during],
+                 [fix("2026-11-02T12:10:00Z", "2026-11-02T13:00:00Z")], [900]),
+                ("an answer to the comment before it", [old, before, during, answer], [], [900]),
+                ("a held answer, then a review whose run started after the comment", [late, before, during, hold], [],
+                 [899, 900]),
+                ("a fix review that read the first comment, a held answer, then a review",
+                 [late, before, during, hold], [fix("2026-11-02T12:10:00Z", "2026-11-02T12:20:00Z")], [900]),
+                ("a held answer, then an answer to its comment",
+                 [old, before, during, hold, dict(answer, body="<!-- review-answer 900 -->\n**Automated answer**")], [],
+                 None)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                got, _read, waiting = self.answering(comments, reviews)
+                if want is None:
+                    self.assertEqual(got.get("answered"), "true")
+                    self.assertNotIn(900, self.held_waiting())
+                else:
+                    self.assertEqual((got.get("answered"), waiting), (None, want))
+                    self.assertEqual(self.held_waiting(), want)
+
 
 class InertTest(unittest.TestCase):
     """trim.py's inert, which the review job applies to the model's text, to the fresh reader's text and to the items
@@ -2324,6 +2377,34 @@ class HoldTest(Holding):
             {"id": 5, "user": {"login": "github-actions[bot]"}, "body": "<!-- review-held -->\nold"}])
         self.assertEqual(post[:3], ["--method", "PATCH", f"repos/{REPO}/issues/comments/5"])
 
+    def test_a_hold_replaces_the_hold_comment_of_its_own_work_and_leaves_the_hold_of_other_work(self):
+        """R1: the review, the answer, the draft and the approval of an item each have their own hold comment. A hold
+        replaces the newest hold comment of its work: the task of the marker of a hold that is tried again (the review
+        for a marker with no task), else the work of its title. It posts a new comment when its work has none. So the
+        hold of other work keeps its marker, and the schedule still takes that work again."""
+        def held(comment, title, marker=""):
+            return {"id": comment, "user": {"login": BOT},
+                    "body": f"<!-- review-held -->\n**Automated {title} held.**\n\nHeld.{marker}"}
+        review = held(5, "review", "\n\n<!-- review-held-limit 41 0 -->")
+        answer = held(6, "answer", "\n\n<!-- review-held-limit 51 0 answer 900 -->")
+        screened = held(8, "answer")
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        for task, comments, want in (("review", [review, answer], 5), ("rescreen", [review, answer], 5),
+                                     ("answer", [review, answer], 6), ("answer", [review], None),
+                                     ("review", [answer], None), ("answer", [review, screened], 8),
+                                     ("review", [review, screened], 5), ("approve", [review, answer], None)):
+            with self.subTest(task=task, comments=[c["id"] for c in comments]):
+                self.tearDown()
+                self.setUp()
+                for c in comments:
+                    self.serve(f"repos/{REPO}/issues/comments/{c['id']}", {"html_url": "https://github.com/acme/model"})
+                _calls, post, body = self.hold("limit", task=task, comments=comments,
+                                               comment="901" if task == "answer" else "")
+                self.assertEqual(post[:3], new if want is None
+                                 else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
+                self.assertIn("<!-- review-held-limit 50 0" + {"answer": " answer 901", "approve": " approve"}.get(task, "")
+                              + " -->", body)
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "REVIEW", "ORIGIN",
@@ -2892,6 +2973,50 @@ class PostLabelTest(Runner):
             self.assertEqual(evaluate(started, {"needs.trust.outputs.task": task,
                                                 "needs.trust.outputs.started": "trust's"}), "trust's")
 
+    def test_a_hold_of_other_work_that_is_tried_again_keeps_the_label(self):
+        """R1: each work of an item has its own hold comment, and the rescreen job takes a held review again only
+        while the item has review-held. So a run that posted takes the label off only when no hold of other work is
+        still tried again: a held review until a review that names its head posted after it, a held answer until an
+        answer posted after it, whichever of the holds is the newer. An answer also leaves the label on for the
+        screen's hold of the review, which waits on Sami, until a review posts. A hold of an answer that is tried again
+        leaves the state as it is: one that came after a review's run started does not stop the review's state label,
+        and keeps review-held on; it stops the labels of an answer's run, whose answer did not read its comment."""
+        def hold(marker, at, title="review"):
+            return {"user": {"login": BOT}, "created_at": at, "updated_at": at,
+                    "body": f"<!-- review-held -->\n**Automated {title} held.**\n\nHeld.\n\n{marker}\n"
+                            f"<!-- review-held-head {HEAD} -->"}
+
+        def posted(body, at="2026-11-02T09:00:00Z"):
+            return {"user": {"login": BOT}, "created_at": at, "updated_at": at, "body": body}
+        held_review = hold("<!-- review-held-limit 41 0 -->", "2026-11-02T08:00:00Z")
+        held_answer = hold("<!-- review-held-limit 51 0 answer 900 -->", "2026-11-02T08:30:00Z", "answer")
+        first_answer = hold("<!-- review-held-limit 51 0 answer 900 -->", "2026-11-02T07:00:00Z", "answer")
+        screened = hold("", "2026-11-02T08:00:00Z")
+        review, other = posted(review_of(HEAD)["body"]), posted(review_of(OTHER_HEAD)["body"])
+        answer = posted("<!-- review-answer 900 -->\nThe answer.")
+        for task, comments, off in (("answer", [held_review, held_answer], False),
+                                    ("answer", [held_review, held_answer, other], False),
+                                    ("answer", [held_review, held_answer, review], True),
+                                    ("answer", [first_answer, held_review, review], True),
+                                    ("answer", [first_answer, screened], False),
+                                    ("answer", [first_answer, screened, review], True),
+                                    ("rescreen", [held_review, held_answer], False),
+                                    ("rescreen", [held_review, held_answer, answer], True),
+                                    ("rescreen", [held_review], True)):
+            with self.subTest(task=task, comments=len(comments)):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(HEAD, HEAD, comments=comments, TASK=task),
+                                 [self.DELETE] if off else [])
+        late = hold("<!-- review-held-limit 51 0 answer 900 -->", "2026-11-02T10:30:00Z", "answer")
+        for task, facts, labels in (("rescreen", {"VERDICT": "blocking", "WILL_FIX": "false"}, [("+", AUTHOR_LABEL)]),
+                                    ("answer", {"WILL_FIX": "true"}, [])):
+            with self.subTest(task=task, hold="after this run started"):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(HEAD, HEAD, comments=[held_review, late], TASK=task, **facts), [])
+                self.assertEqual(state_labels(self.api), labels)
+
     def test_a_posted_review_ends_the_conflict_state(self):
         """The author resolved the conflict and pushed, and the review of the new head posted: waits-on-author comes
         off, and the label comment loses the conflict-state line, keeps its other markers, and gets the marker line of
@@ -3412,11 +3537,11 @@ class ReaderRunner(Runner):
         return self.run_script(s["run"], **dict(ANTHROPIC, ANTHROPIC_URL=f"{self.url}/anthropic"))
 
     def post(self, review, items, trimmed="", verdict="blocking", will_fix=False, reader=None, result=None,
-             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"]):
+             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED):
         """The sign-in, then the comment step on the model's output, with a reader that answers trimmed (or reader, the
         stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing).
-        The step's env is the one that the workflow gives it, for the gather job's outside, with SOUNDNESS_HOLD hold
-        (None: not set). The step's exit status, output and outputs."""
+        The step's env is the one that the workflow gives it, for the gather job's outside and the trust job's
+        started, with SOUNDNESS_HOLD hold (None: not set). The step's exit status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
         with open(path, "w") as f:
@@ -3430,7 +3555,8 @@ class ReaderRunner(Runner):
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         s = step("review", self.STEP)
-        env = {name: interpolate(value, {"needs.gather.outputs.outside": outside}) for name, value in s["env"].items()}
+        env = {name: interpolate(value, {"needs.gather.outputs.outside": outside, "needs.trust.outputs.started": started})
+               for name, value in s["env"].items()}
         env.update(RESULT=path, RULES=RULES, RUN=RUN, ANTHROPIC_URL=f"{self.url}/anthropic")
         if hold is not None:
             env["SOUNDNESS_HOLD"] = hold
@@ -3472,9 +3598,11 @@ class FreshReaderTest(ReaderRunner):
     REVIEW_INERT = REVIEW.replace("@octocat", f"@{WJ}octocat").replace("#12", f"#{WJ}12")
 
     def body(self, trimmed, added="", whole=REVIEW_INERT, verdict="blocking", will_fix=False):
-        """The comment that the script makes of the trimmed text, with added items."""
+        """The comment that the script makes of the trimmed text, with added items: its header ends with the marker of
+        the time when the run's trust job decided it, before the run read the conversation."""
         head = (f"<!-- review -->\n<!-- review-head {HEAD} -->\n"
                 f"<!-- review-verdict {HEAD} {verdict}{' will-fix' if will_fix else ''} -->\n"
+                f"<!-- review-read {PostLabelTest.STARTED} -->\n"
                 f"**Automated review** of commit {HEAD[:12]}")
         text = "\n\n".join(p for p in (head, trimmed, added) if p)
         return f"{text}\n\n---\n{self.FOOT}\n\n{self.WHOLE}\n\n{whole}\n\n</details>"
@@ -3539,7 +3667,8 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(got["body"], self.body(posted, whole=text, verdict=verdict, will_fix=will_fix))
                 self.assertEqual(MARKER.findall(got["body"]),
                                  ["<!-- review -->", f"<!-- review-head {HEAD} -->",
-                                  f"<!-- review-verdict {HEAD} {verdict}{' will-fix' if will_fix else ''} -->"])
+                                  f"<!-- review-verdict {HEAD} {verdict}{' will-fix' if will_fix else ''} -->",
+                                  f"<!-- review-read {PostLabelTest.STARTED} -->"])
                 self.assertEqual((got["head"], got["verdict"], got["will_fix"]),
                                  (HEAD, verdict, "true" if will_fix else "false"))
                 self.assertFalse(os.path.exists(self.token_file))
@@ -3557,7 +3686,20 @@ class FreshReaderTest(ReaderRunner):
                                  f"Trimmed.\n{spanning}\n{bang}", "pass")
         self.assertEqual(rc, 0, out)
         self.assertEqual(MARKER.findall(got["body"]),
-                         ["<!-- review -->", f"<!-- review-head {HEAD} -->", f"<!-- review-verdict {HEAD} pass -->"])
+                         ["<!-- review -->", f"<!-- review-head {HEAD} -->", f"<!-- review-verdict {HEAD} pass -->",
+                          f"<!-- review-read {PostLabelTest.STARTED} -->"])
+
+    def test_a_review_whose_run_gives_no_start_time_posts_nothing(self):
+        """R1: the header's marker <!-- review-read <time> --> tells which comments of the author the review did not
+        read, so that each still gets its answer. A run that gives no such time, or one that is no time, fails the step
+        before the reader runs: no review posts with no marker, which would answer a comment that it never read."""
+        for started in ("", "soon"):
+            with self.subTest(started=started):
+                self.tearDown()
+                self.setUp()
+                rc, out, got = self.post(self.REVIEW, [self.CHANGE], "Trimmed.", started=started)
+                self.assertEqual((rc, "body" in got, self.readings()), (1, False, []), out)
+                self.assertIn("::error::no start time of this run", out)
 
     def test_each_listed_item_that_the_trimmed_text_lacks_is_added_word_for_word(self):
         """b6 (2): a trimmed text that keeps each listed file and line posts with nothing added. One that lacks the
@@ -4372,8 +4514,8 @@ class AnswerFixTest(ReaderRunner):
         request = json.loads(fixed["review"])
         self.assertEqual(request, {
             "commit_id": head, "event": "COMMENT",
-            "body": f"<!-- review-fix {head} -->\n**Automated fix** of commit {head[:12]}, as suggested changes\n\n"
-                    f"Trimmed.\n\n---\n{self.FIX_FOOT}",
+            "body": f"<!-- review-fix {head} -->\n<!-- review-read {PostLabelTest.STARTED} -->\n"
+                    f"**Automated fix** of commit {head[:12]}, as suggested changes\n\nTrimmed.\n\n---\n{self.FIX_FOOT}",
             "comments": [{"path": "theories/A.v", "line": 4, "side": "RIGHT", "start_line": 3, "start_side": "RIGHT",
                           "body": "Trimmed.\n\n```suggestion\n  exact I.\n```"}]})
         rc, out, posted = self.post_fix(fixed["review"], head=head, now=head)
@@ -6557,6 +6699,151 @@ class ScheduleTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
         self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="900")["route"], "screen")
 
+    def test_review_tries_answers_whose_comment_job_failed_stop_it(self):
+        """R1, D16: an answer whose comment job failed is taken again once an hour, and each such run ran the screen
+        and the model. After REVIEW_TRIES runs of the comment whose comment job failed, the answer is not tried again:
+        the item gets a hold comment that says so and waits-on-theorem with the label comment's step for Sami, and
+        the run fails. That hold answers the comment, so the next run starts nothing and writes nothing."""
+        failed = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                  attempt_job("comment", "Post the answer")]
+        waits = [self.REVIEWED, self.LABELLED, said(900, 500)]
+        self.item(kind="pr", comments=waits)
+        for i in range(self.TRIES - 1):
+            self.ran(80 + i, "answer #7 for 900 of mallory", made=70 + 90 * i, jobs=failed)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
+        self.ran(89, "answer #7 for 900 by mallory", made=400, event="issue_comment", jobs=failed)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        body = self.assertStopped(
+            "Automated answer held.", "The workflow wrote the automated answer to the author's comment on this pull "
+            f"request {self.TRIES} times, and could not post it. The workflow does not try it again. You do not need "
+            "to do anything.", edited=True)
+        self.comments(7, *waits, {"id": 9, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                                  "body": body})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
+
+    def test_a_comment_made_while_a_review_ran_gets_an_answer(self):
+        """R1: the review of a head read the conversation when its run started, as the marker <!-- review-read <time>
+        --> of its comment says. The schedule's review run started 100 minutes ago and posted 60 minutes ago. Mallory
+        wrote 900 before it started and 901 while it ran, and the run of 901's own event could not sign in. 901 gets
+        one answer run, which the trust job takes. 900, which the review read, gets none, and the trust job takes no
+        run for it."""
+        reviewed = review_of(HEAD, at=ago(60), id_=1)
+        reviewed["body"] = reviewed["body"].replace("\n**Automated review**",
+                                                    f"\n<!-- review-read {ago(100)} -->\n**Automated review**")
+        self.item(kind="pr", comments=[said(900, 110), said(901, 80), reviewed, self.LABELLED])
+        self.ci(ended=300)
+        self.ran(40, f"review #7 at {HEAD} of mallory", made=100, ended=60,
+                 jobs=[attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                       attempt_job("comment")])
+        self.ran(81, "answer #7 for 901 by mallory", made=80, ended=79, event="issue_comment",
+                 jobs=[attempt_job("gather"), self.screened("Sign in to Google Cloud")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "901")]), out)
+        self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="901")["route"], "screen")
+        self.dispatched("answer", head="", account="mallory", comment="900", want=False)
+
+    def test_a_held_answer_whose_label_is_off_is_still_taken_again(self):
+        """R1: the run of comment 900's own event was held at OUTSIDE_HOURLY_LIMIT, so it posted nothing of its own,
+        and the item has no review-held now (a post of other work took the label off). 900 still waits: an hour after
+        that run ended, the schedule starts its answer, and the trust job takes it with the hold's run and tries. Not
+        before."""
+        for ended, want in ((30, []), (65, [("7", "answer", "mallory", "", "900")])):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.origin(50, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+                hold = limit_hold(50, at=ago(ended), tries=1, task="answer", comment="900", head=HEAD)
+                self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED, said(900, ended + 5), hold])
+                self.ran(50, "answer #7 for 900 by mallory", made=ended + 5, ended=ended, event="issue_comment",
+                         jobs=[attempt_job("hold")])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+        got = self.dispatched("answer", head="", account="mallory", comment="900")
+        self.assertEqual((got["route"], got["origin"], got["tries"]), ("screen", "50", "1"))
+
+    def test_a_held_work_that_its_run_posted_is_settled_though_the_label_stays_for_other_work(self):
+        """R1: review-held stays on while a hold of other work is tried again, so the hold of a work whose run posted
+        can still be there with the label. Mallory's held review was taken again 80 minutes ago and its comment job
+        posted the review: that hold is settled, counts no try and starts no second review. Her held answer of 900 is
+        under an hour old, and waits."""
+        self.origin(41, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+        self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+        self.item(kind="pr", labels=("review-held",), comments=[
+            said(900, 200), limit_hold(41, at=ago(300), tries=0, head=HEAD),
+            limit_hold(51, at=ago(30), tries=0, task="answer", comment="900", head=HEAD),
+            review_of(HEAD, at=ago(72), id_=1), self.LABELLED])
+        self.ci(ended=400)
+        self.ran(52, f"rescreen #7 at {HEAD} of mallory", made=80, ended=70,
+                 jobs=[attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                       attempt_job("comment")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn("#7: run 52 of rescreen approved the held runs, recorded the import check or posted, so its hold "
+                      "is settled.", out)
+
+    def test_the_bound_of_one_held_work_leaves_the_hold_of_another(self):
+        """R1, D16: REVIEW_TRIES answer runs since the hold of an answer settled nothing, and the item has a newer hold
+        of its review too. The schedule stops the answer alone: it replaces the hold comment of the answer, never the
+        newer hold of the review, whose rescreen it still starts."""
+        self.origin(41, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+        self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+        self.item(kind="pr", labels=("review-held",), comments=[
+            said(900, 500),
+            dict(limit_hold(51, at=ago(400), tries=0, task="answer", comment="900", head=HEAD), id=5),
+            dict(limit_hold(41, at=ago(300), tries=0, head=HEAD), id=6)])
+        self.ci(ended=600)
+        self.ran(41, f"review {HEAD} by mallory", made=305, ended=300, event="workflow_run",
+                 jobs=[attempt_job("hold")])
+        for i in range(self.TRIES):
+            self.ran(10 + i, "answer #7 for 900 of mallory", made=70 + 90 * i)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "rescreen", "mallory", HEAD, "")]), out)
+        self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        holds = [c[:3] for c in writes(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
+        self.assertEqual(holds, [["--method", "PATCH", f"repos/{REPO}/issues/comments/5"]])
+
+    def test_a_head_that_is_not_tried_again_leaves_the_hold_of_other_work(self):
+        """R1, D16: the import check of the head that the App could not record REVIEW_TRIES times stops the head with a
+        hold comment of its own. The hold of an answer that is tried again keeps its comment and its marker, and the
+        schedule still starts that answer."""
+        refused = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "failure"})
+        self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+        self.item(kind="pr", labels=("review-held",), comments=[
+            self.REVIEWED, self.LABELLED, said(900, 100),
+            dict(limit_hold(51, at=ago(65), tries=0, task="answer", comment="900", head=HEAD), id=5)])
+        self.ran(10, f"review {HEAD} by mallory", made=400, event="workflow_run", jobs=[
+            attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), refused])
+        for i in range(1, self.TRIES):
+            self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 90 * i, jobs=[refused])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "answer", "mallory", "", "900")]), out)
+        holds = [c[:3] for c in writes(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
+        self.assertEqual(holds, [["--method", "POST", f"repos/{REPO}/issues/7/comments"]])
+
+    def test_runs_that_could_not_sign_in_do_not_keep_a_held_work_from_its_bound(self):
+        """D19, D16: a run of a held task that ended at a failed sign-in counts no try, and each other run of it since
+        the hold still counts one. With REVIEW_TRIES - 1 runs that settled nothing and two that could not sign in, the
+        answer is taken again. One more run that settled nothing stops it."""
+        self.origin(50, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+        self.item(labels=("review-held",), comments=[
+            self.REPLIED, said(900, 800),
+            dict(limit_hold(50, at=ago(700), tries=0, task="answer", comment="900"), id=5)])
+        for i in range(self.TRIES - 1):
+            self.ran(10 + i, "answer #7 for 900 of mallory", made=200 + 90 * i)
+        for i in range(2):
+            self.ran(20 + i, "answer #7 for 900 of mallory", made=70 + 60 * i,
+                     jobs=[attempt_job("gather"), self.screened("Sign in to Google Cloud")])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
+        self.assertIn(f"#7: {self.TRIES - 1} runs of answer since its hold settled nothing; trying again.", out)
+        self.ran(30, "answer #7 for 900 of mallory", made=600)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+
     def test_an_outside_issue_with_no_stored_draft_gets_one_draft(self):
         """b1 (R3, D16 (e)): an outside issue whose label comment holds no stored draft, and whose draft run (here its
         issues event's, which could not sign in) ended over an hour ago, gets one draft run. Not when its draft is
@@ -6987,6 +7274,30 @@ class CatchUpScheduleTest(Scheduled):
                        attempt_job("review", "Sign in to Anthropic", name="review (screened)")])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], [["--method", "POST", rerun]]), out)
+
+    def test_a_review_of_a_head_with_a_review_of_before_whose_comment_job_failed_is_taken_again(self):
+        """R1 ((b)): the review run of a head with a review of before screened it and ran the model, and its comment
+        job failed at the post (a GitHub error, say): no review of now posted, and no hold job runs for a failed
+        comment job. The schedule starts the review again an hour after that run ended, and not before. After
+        REVIEW_TRIES such runs, the head is not tried again: it gets the hold comment for the review, which names the
+        head, and waits-on-theorem, and the run fails."""
+        failed = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                  attempt_job("comment", "Post the review, or replace the one posted before")]
+        for ended, want in ((30, []), (61, [("7", "review", "mallory", HEAD, "")])):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=[self.OLD_REVIEW])
+                self.ci(ended=600)
+                self.ran(10, f"review #7 at {HEAD} of mallory", made=ended + 10, ended=ended, jobs=failed)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+        for i in range(1, self.TRIES):
+            self.ran(10 + i, f"review #7 at {HEAD} of mallory", made=71 + 90 * i, jobs=failed)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, []), out)
+        self.assertStopped("Automated review held.", f"The automated review of the head commit {HEAD[:12]} did not "
+                           f"finish after {self.TRIES} tries. The workflow does not try it again.")
 
     def test_a_head_whose_ci_runs_github_does_not_list_whole_gets_no_catch_up(self):
         """GitHub gives at most 1,000 runs for a list with head_sha, and total_count then says that more match. When it
