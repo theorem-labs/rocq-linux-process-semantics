@@ -42,8 +42,10 @@
 #             says so. No screen and no model.
 #   measure   the screen, measured on its private labelled set.
 # An answer run, or a run by hand, that reads a merge conflict in its pull request gets the task conflict. The name of a
-# run gives its task, its item and the account whose limit it counts on (run-name, below). The scripts that count runs
-# read that name, and #<n> in it ends at a space or at the end of the name, so that #12 is never #123.
+# run gives its task, its item and the account whose limit it counts on (run-name, below), but a CI run's name gives the
+# account that pushed: the name of its screen job (screen <account>) gives the account whose limit it counts on. The
+# scripts that count runs read those names, and #<n> in a run's name ends at a space or at the end of the name, so that
+# #12 is never #123.
 #
 # Who is screened. Write access is what GitHub's collaborator permission API answers: admin or write (maintain counts
 # as write). Membership of the organisation alone is not write access. The Apps in APPS count as having it.
@@ -55,8 +57,14 @@
 #   suspicious, each when its identity is set up below. When every check that ran answers clean it is reviewed, as a
 #   writer's is. Otherwise, and when a check that ran cannot answer, it is held: it gets the label review-held and a
 #   short comment, and no review. Why it was held goes to a private bucket, never to this run's log or outputs. When
-#   the account that started the run has no write access and its runs have reached the screen OUTSIDE_HOURLY_LIMIT
-#   times in the last hour, it is held without a screen, and screened again later with no person (below).
+#   the account that started the run has no write access and the runs of the account whose limit the run counts on
+#   have reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, it is held without a screen, and screened
+#   again later with no person (below). An event's run counts on the account that started it, but a CI run of a pull
+#   request whose author and pusher both have no write access counts on the author, never on the pusher: anyone can
+#   open a pull request whose head is another account's fork branch. The trust job finds the author's own runs and the
+#   runs by hand whose names end with the author, and not the CI runs that another account's pushes start for the
+#   author's pull request (their names give the pusher): those pushes are bounded by SCREENED_HOURLY_CAP alone, as the
+#   accounts of one person are. To count them would let the pusher put the author at the limit.
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
 #   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
@@ -226,7 +234,9 @@ name: review
 # The name of each run: its task, its item and the account whose limit it counts on, which the trust job, the Count
 # step, the hold job and the rescreen pass (rescreen.yml) read. A workflow_run's name holds the whole head commit,
 # because GitHub's expressions have no substring function, and that head maps to its pull request through the open pull
-# requests. An issue_comment's name holds the comment's id (answer #<n> for <comment> by <login>), by which the rescreen
+# requests (for the rescreen pass, the one that the run's trust job names, when more than one into main has the head).
+# It holds the account that pushed: the name of the run's screen job gives the account whose limit it counts on.
+# An issue_comment's name holds the comment's id (answer #<n> for <comment> by <login>), by which the rescreen
 # pass sees that the run took the comment. A run by hand: <task> #<n>, then " at <head>", " for <comment>" and
 # " of <account>" for the inputs given; a stop of the rescreen pass names its stop as its comment:
 # stop #<n>[ at <head>] for <stop>.
@@ -318,9 +328,10 @@ env:
   # that the trust job stopped screened nothing and does not count: a CI run of a pull request into another branch, or
   # of a fork's branch that more than one open pull request has as its head. A run whose screen could not sign in does
   # not count: the rescreen pass takes its item again. A run whose screen passed and whose review could not sign in
-  # counts once: the rescreen pass runs its failed jobs again, with no new screen. Only a run's jobs show those, and
-  # the trust job reads the jobs of at most twice this number of the account's runs that finished: each one more of
-  # them counts.
+  # counts once: the rescreen pass runs its failed jobs again, with no new screen. A CI run of the account's push whose
+  # screen job names another account (the author of the pull request, the top of this file) used that account's limit
+  # and does not count for this one. Only a run's jobs show those, and the trust job reads the jobs of at most twice
+  # this number of the account's runs that finished or are CI runs: each one more of them counts.
   # The runs that the rescreen pass starts and that screen (a rescreen, a review, an answer, a draft or an approval)
   # count toward the same limit, with its events (their names end with " of <account>"): so N, the most such runs of
   # one account that are screened in an hour, is this number less what its own events used. (The rescreen pass starts
@@ -379,7 +390,8 @@ jobs:
     timeout-minutes: 5
     # actions: read for OUTSIDE_HOURLY_LIMIT, which reads this workflow's runs, and for a head's runs and their jobs;
     # issues and pull-requests: read for the item, its comments and its events, and the open pull requests; checks: read
-    # for the check runs of a head, which the rescreen pass's functions read again for a stop (due_variable).
+    # for the check runs of a head, which the rescreen pass's functions read again for a stop (due_variable), and for
+    # the notices of a CI run's trust job (reviewed).
     permissions: {actions: read, issues: read, pull-requests: read, checks: read}
     outputs:
       # review, answer, draft, reply, rescreen, approve, catchup, conflict, relabel, stop or measure (the top of this
@@ -388,6 +400,9 @@ jobs:
       # review (no screen), screen (the screen first), limit (held at OUTSIDE_HOURLY_LIMIT) or measure.
       route: ${{ steps.trust.outputs.route }}
       outsider: ${{ steps.trust.outputs.outsider }}
+      # The account whose OUTSIDE_HOURLY_LIMIT the run counts on (an account with write access has none), which the
+      # name of the screen job gives: earlier and held_account read it back from there.
+      account: ${{ steps.trust.outputs.account }}
       number: ${{ steps.trust.outputs.number }}
       # The head commit of a pull request, as the API gave it to the trust job.
       head: ${{ steps.trust.outputs.head }}
@@ -566,14 +581,19 @@ jobs:
                       and $m > ([$reads[] | select(.at < $h.at) | .read] | map(strings) | max // ""))))
               | "\(.made) \(.id)"' <<< "$found" | sort
           }
-          # held_account <run>: the account whose limit a hold of <run> counts on, when <run> is a run of review.yml
-          # (by its path): the account that started it, for a run of workflow_run, issues or issue_comment;
-          # the account its name ends with, for a run that github-actions[bot] started (the rescreen pass's) with one of
-          # the pass's names (titled); the account that started it, for a run by hand of an App in APPS or of an
-          # account with write access (trusted), which has no limit. Nothing for any other run, or when GitHub no
-          # longer has it (a deleted or expired run). It fails when GitHub could not say.
+          # held_account <run> <author>: the account whose limit a hold of <run>, on an item of <author>, counts on,
+          # when <run> is a run of review.yml (by its path): the account that started it, for a run of issues or
+          # issue_comment; for a CI run's (workflow_run), the account that its screen job names (screen <account>),
+          # on whose limit its trust job counted it, and for one with no such job (its screen job was skipped at the
+          # limit, and GitHub can list a skipped job with its name not filled in), the account that the trust job
+          # counts such a run on: <author> when neither <author> nor the account that started it has write access,
+          # else that account; the account its name ends with, for a run that github-actions[bot] started (the
+          # rescreen pass's) with one of the pass's names (titled); the account that started it, for a run by hand of
+          # an App in APPS or of an account with write access (trusted), which has no limit. Nothing for any other run,
+          # or when GitHub no longer has it (a deleted or expired run). It fails when GitHub could not say.
           held_account() {
-            local run path event login title rc=0
+            local run path event login title names name a=0 rc=0
+            local named='^screen ([A-Za-z0-9-]+(\[bot\])?)$'
             [[ $1 =~ ^[1-9][0-9]*$ ]] || return 0
             run=$(gh api "repos/$REPO/actions/runs/$1" \
               --jq '"\(.path // "-") \(.event) \(.actor.login) \(.display_title // "" | gsub("[\r\n]"; " "))"' 2>&1) \
@@ -581,7 +601,26 @@ jobs:
             read -r path event login title <<< "$run"
             [[ $path == '.github/workflows/review.yml' && $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 0
             case $event in
-              workflow_run|issues|issue_comment) echo "$login" ;;
+              issues|issue_comment) echo "$login" ;;
+              workflow_run)
+                names=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$1/jobs" -F per_page=100 \
+                  --jq '.jobs[] | .name // ""' 2>&1) || { [[ $names == *"(HTTP 404)"* ]] || return 1; names=""; }
+                while IFS= read -r name; do
+                  if [[ $name =~ $named ]]; then
+                    echo "${BASH_REMATCH[1]}"
+                    return 0
+                  fi
+                done <<< "$names"
+                if [[ ${2:-} =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+                  trusted "$2" || a=$?
+                  trusted "$login" || rc=$?
+                  (( a != 2 && rc != 2 )) || return 1
+                  if (( a != 0 && rc != 0 )); then
+                    echo "$2"
+                    return 0
+                  fi
+                fi
+                echo "$login" ;;
               workflow_dispatch)
                 if [ "$login" = 'github-actions[bot]' ]; then
                   if [[ $title =~ $titled ]]; then echo "${BASH_REMATCH[5]}"; fi
@@ -695,9 +734,9 @@ jobs:
           # read_pulls: the open pull requests, each with its head, its base, whether it is a draft, the id of its head
           # repository (0 when that repository is gone) and its head branch, into pr_head, pr_base, pr_draft, pr_repo
           # and pr_ref, and the numbers of the pull requests into main of each head into pr_of: a workflow_run's name
-          # gives its head, and no head repository or branch, so the run is taken as a run of each pull request into
-          # main with that head (two forks can push the same commit), and of none into another branch, whose CI run
-          # starts no review.
+          # gives its head, and no head repository or branch, so the run is taken as a run of the pull request into
+          # main with that head, or of the one of them that its trust job names when two forks pushed the same commit
+          # (reviewed), and of none into another branch, whose CI run starts no review.
           read_pulls() {
             local pulls n sha base draft repository ref
             pulls=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
@@ -723,13 +762,55 @@ jobs:
               | select(.event == "workflow_dispatch" and ((.created_at // "") | startswith($ENV.DAY))) | row)'
           }
           declare -A running=() reached=()
+          # jobs_of <run>: $seen/jobs-<run>, the jobs of <run>, one JSON object on each line, read once in this step.
+          jobs_of() {
+            local file=$seen/jobs-$1
+            [ ! -f "$file" ] || return 0
+            gh api --method GET --paginate "repos/$REPO/actions/runs/$1/jobs" -F per_page=100 --jq '.jobs[] | @json' \
+              > "$file.part" || return 1
+            mv "$file.part" "$file"
+          }
+          # reviewed <run> <numbers>: of <numbers>, the pull requests into main of the head of the CI run <run>, the one
+          # that its trust job names in its notice: "#<n>: the task <task>, the route <route>." (route), or "No
+          # <task> of #<n>: <why>" (stop). Another fork can push the same commit and open a pull request of it into
+          # main: the trust job reviews each CI run as the run of its own pull request alone, by its head commit, head
+          # repository and head branch. None of <numbers> when the trust job names another pull request (one into
+          # another branch). All of <numbers> when its pull request cannot be told: its trust job names none (the CI
+          # run of a head that more than one open pull request has, which is the run of none of them alone, or a run
+          # from before the notice), or its jobs or its notices cannot be read. The run is then taken as a run of each.
+          reviewed() {
+            local check notes line n=""
+            local routed='^#([1-9][0-9]*): the task [a-z]+, the route [a-z]+\.$'
+            local halted='^No [a-z]+ of #([1-9][0-9]*): '
+            if ! jobs_of "$1"; then echo "$2"; return 0; fi
+            check=$(jq -r 'select(.name == "trust") | .check_run_url // "" | split("/") | last' "$seen/jobs-$1" \
+              | head -n 1)
+            if ! [[ $check =~ ^[1-9][0-9]*$ ]]; then echo "$2"; return 0; fi
+            if ! notes=$(gh api --method GET --paginate "repos/$REPO/check-runs/$check/annotations" -F per_page=100 \
+              --jq '.[] | select(.annotation_level == "notice") | .message // "" | gsub("[\r\n]"; " ")'); then
+              echo "$2"
+              return 0
+            fi
+            while IFS= read -r line; do
+              if [[ $line =~ $routed || $line =~ $halted ]]; then
+                n=${BASH_REMATCH[1]}
+                break
+              fi
+            done <<< "$notes"
+            if [ -z "$n" ]; then
+              echo "$2"
+            elif [[ " $2 " == *" $n "* ]]; then
+              echo "$n"
+            fi
+          }
           # take <file>: each run of the rows of <file> that names an item, into $seen/runs: "<id> <created> <ended>
           # <status> <conclusion> <event> <number> <task> <head> <comment> <account> <started> <attempt>", - for none. A
           # name gives its task and its item (run-name): #<n> ends at a space or at the end of the name, so that #12 is
-          # never #123, and a workflow_run's name gives its head, which the open pull requests into main map to each
-          # pull request into main with that head (pr_of): the run is taken as a run of each of them. The comment of a
-          # stop's name is the stop. An item with a run that has not finished, of any task, gets no run (running). The
-          # run of this step (RUN_ID, the run of a stop whose trust job decides it again) is not one of them.
+          # never #123, and a workflow_run's name gives its head, which the open pull requests into main map to the
+          # pull request into main with that head (pr_of), or, when more than one into main has it, to the one that the
+          # run's trust job names (reviewed). The comment of a stop's name is the stop. An item with a run that has not
+          # finished, of any task, gets no run (running). The run of this step (RUN_ID, the run of a stop whose trust
+          # job decides it again) is not one of them.
           take() {
             local id created ended status conclusion event started attempt title number task head comment account
             local numbers
@@ -749,7 +830,8 @@ jobs:
                 workflow_run)
                   [[ ${title:-} =~ $pushed ]] || continue
                   task=review head=${BASH_REMATCH[1]}
-                  numbers=${pr_of[$head]:-} ;;
+                  numbers=${pr_of[$head]:-}
+                  [[ ${numbers# } != *" "* ]] || numbers=$(reviewed "$id" "$numbers" < /dev/null) ;;
                 issues)
                   [[ ${title:-} =~ $opened ]] || continue
                   task=review numbers=${BASH_REMATCH[1]} ;;
@@ -817,11 +899,7 @@ jobs:
           # none of the run's jobs.
           facts() {
             local file=$seen/jobs-$1
-            if [ ! -f "$file" ]; then
-              gh api --method GET --paginate "repos/$REPO/actions/runs/$1/jobs" -F per_page=100 --jq '.jobs[] | @json' \
-                > "$file.part" || return 1
-              mv "$file.part" "$file"
-            fi
+            jobs_of "$1" || return 1
             jq -rs 'def signed_out:
                 any(.steps[]?; ((.name // "") | startswith("Sign in")) and .conclusion == "failure");
               (map(select(.name == "trust")) | first) as $t | (map(select(.name == "post")) | first) as $p
@@ -1122,7 +1200,7 @@ jobs:
                 echo "#$number: each run of $task since its hold could not sign in, which counts no try; trying again."
               fi
             fi
-            who=$(held_account "$h_origin") || { echo "::error::run $h_origin could not be read."; return 1; }
+            who=$(held_account "$h_origin" "$author") || { echo "::error::run $h_origin could not be read."; return 1; }
             if [ -z "$who" ]; then
               echo "#$number: its hold names no run whose account this pass can tell: left alone."
               retaken=${retaken%" $task"}
@@ -1270,14 +1348,19 @@ jobs:
           }
           # due_retry <tasks> <task> <work>: the App's retry. When the post job of the newest run of the head of #number
           # of a task of <tasks> failed, at a sign-in or at a write of the App, the head is due <task> again, once an
-          # hour after that run ended. A post job that failed at a step that is not a sign-in counts a try of the head;
-          # after REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped <work>).
+          # hour after that run ended. A CI run that its trust job stopped is not that newest run: it posted nothing,
+          # and it can be the run of another pull request of the head (one into another branch). A post job that
+          # failed at a step that is not a sign-in counts a try of the head; after REVIEW_TRIES of them, the automated
+          # <work> of the head is not tried again (head_stopped <work>).
           due_retry() {
-            local created ended run f post tries
-            read -r created ended run <<< "$(runs_of "$1" "$head" | tail -n 1)"
+            local created ended run event f post early tries
+            while read -r created ended run event; do
+              f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
+              read -r _ _ post _ early _ <<< "$f"
+              [ "$event" = workflow_run ] && [ "$early" = stopped ] || break
+            done < <(awk -v n="$number" -v re="^($1)\$" -v h="$head" '$7 == n && $8 ~ re && $9 == h {
+              print $2, $3, $1, $6 }' "$seen/runs" | sort -r)
             [ -n "${run:-}" ] || return 0
-            f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-            read -r _ _ post _ <<< "$f"
             [ "$post" = signin ] || [ "$post" = failure ] || return 0
             if [[ ! $ended < $hour ]]; then
               echo "#$number: the post job of run $run failed, less than an hour ago: tried again later."
@@ -1479,11 +1562,13 @@ jobs:
           # ready, a base changed to main, a conflict that went away); else once the newest of them ended over an hour
           # ago, as for a run that could not sign in: the failed jobs of that run when its screen passed and its review
           # could not sign in (rerun), else a new run. Not when the post job of that newest run failed: the App's retry
-          # takes it. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
+          # takes it. A CI run that its trust job stopped reviewed nothing, and can be the run of another pull request
+          # of the head (one into another branch): it is never that newest run, so it holds back no re-run and no
+          # review. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
           # conflict, the head is not tried again (head_stopped).
           due_unreviewed() {
             local list created ended run task event f signin post early all=true newest="" last="" tries=0
-            local latest="" known=""
+            local latest="" known="" met=""
             [ -z "$retaken" ] || return 0
             list=$(awk -v n="$number" -v h="$head" '$7 == n && $9 == h { print $2, $3, $1, $8, $6 }' "$seen/runs" \
               | sort)
@@ -1506,11 +1591,12 @@ jobs:
             while read -r created ended run task event; do
               f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
               read -r signin _ post _ early _ <<< "$f"
-              newest=$ended last=$post latest=$run known=$f
               [[ $early == stopped || $early == conflict || $task == relabel ]] || all=false
               if [[ $task == review && $event == workflow_dispatch && $signin != signin && $early != conflict ]]; then
                 tries=$((tries + 1))
               fi
+              met=$ended
+              [[ $event == workflow_run && $early == stopped ]] || newest=$ended last=$post latest=$run known=$f
             done <<< "$list"
             if (( tries >= REVIEW_TRIES )); then
               head_stopped review "$tries"
@@ -1525,7 +1611,7 @@ jobs:
               return 0
             fi
             rerun "$latest" "$known" && return 0
-            owe "$newest" review "$limited" "$head" - "the runs of $head ended with no review"
+            owe "${newest:-$met}" review "$limited" "$head" - "the runs of $head ended with no review"
           }
           # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
           # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
@@ -1703,8 +1789,11 @@ jobs:
           # gives. Two lists give those runs: the runs of <login> (actor), and the runs by hand (workflow_dispatch),
           # which only writers and the rescreen pass start. So the runs of other accounts, which a comment of anyone on
           # any item starts, are in neither list. A run that GitHub skipped, with each of its jobs, does not count. A
-          # run that has not finished counts: its jobs are not read. The jobs of a run that finished show whether it
-          # counts. A run whose trust job stopped it screened nothing, and does not count: every job after the trust
+          # run that has not finished counts with no read of its jobs, but a CI run (workflow_run), whose screen job can
+          # name another account. The jobs of a run show whether it counts. A run of <login>'s event whose screen job
+          # names another account (screen <account>: the account whose limit its trust job counted it on, as the
+          # author of a pull request on <login>'s fork branch) used that account's limit, and does not count for
+          # <login>. A run whose trust job stopped it screened nothing, and does not count: every job after the trust
           # job was skipped, and GitHub lists the run as one that succeeded (the CI run of a pull request into another
           # branch, of a head that more than one open pull request has, or a run by hand whose item closed, or lost its
           # label, in between). Nor does a run whose screen job stopped at a failed step whose name starts with "Sign
@@ -1719,13 +1808,13 @@ jobs:
           # does not list every run of a list (whole), the runs that it leaves out can be the account's: the account is
           # at its limit. The run stops when GitHub could not say.
           earlier() {
-            local from list out rows runs="" id state verdict reads=0
+            local from list out rows runs="" id state own entry verdict reads=0
             local -a unread=()
             local -A once=()
             count=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-            # Each run of the list on one line: "<id> <state>", state count for a run that counts with no read of its
-            # jobs, else read.
+            # Each run of the list on one line: "<id> <state> <own>", state count for a run that counts with no read
+            # of its jobs, else read, and own 1 for a run of <login>'s event, 0 for a run by hand.
             for list in "actor=$1" event=workflow_dispatch; do
               # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
               out=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate \
@@ -1736,7 +1825,8 @@ jobs:
                                  and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
                                 or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
                                     and ($title | endswith(" of " + $ENV.LOGIN)))))
-                  | "\(.id) \(if .status != "completed" then "count" else "read" end)")') \
+                  | "\(.id) \(if .status != "completed" and .event != "workflow_run" then "count" else "read" end) \(
+                    if .event == "workflow_dispatch" then 0 else 1 end)")') \
                 || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
               if ! rows=$(whole <<< "$out"); then
                 echo "::notice::GitHub lists at most 1,000 runs of this workflow with $list since $from, and more of" \
@@ -1746,26 +1836,31 @@ jobs:
               fi
               runs+=$rows$'\n'
             done
-            while read -r id state; do
+            while read -r id state own; do
               [ -n "$id" ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
               [ -z "${once[$id]:-}" ] || continue
               once[$id]=1
-              if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id"); fi
+              if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $own"); fi
             done <<< "$runs"
-            for id in "${unread[@]}"; do
+            for entry in "${unread[@]}"; do
+              read -r id own <<< "$entry"
               (( count < OUTSIDE_HOURLY_LIMIT )) || break
               if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
                 count=$((count + 1))
                 continue
               fi
               reads=$((reads + 1))
-              verdict=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
-                --jq '([.jobs[] | select(.name == "trust")] | first) as $t
+              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+              verdict=$(LOGIN=$1 OWN=$own gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
+                -F per_page=100 --jq '([.jobs[] | select(.name == "trust")] | first) as $t
                   | [.jobs[] | select(.name != "trust" and .name != "rescreen")] as $rest
+                  | ([$rest[] | .name // "" | capture("^screen (?<a>[A-Za-z0-9-]+(\\[bot\\])?)$") | .a]
+                     | first) as $named
                   | if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                     elif $t.status == "completed" and ($rest | length) > 0
                          and ($rest | all(.conclusion == "skipped")) then "skip"
+                    elif $ENV.OWN == "1" and $named != null and $named != $ENV.LOGIN then "other"
                     elif any($rest[] | select(.name | test("^screen( |$)")) | .steps[]?;
                              (.name | startswith("Sign in")) and .conclusion == "failure") then "signin"
                     else "count" end') \
@@ -1775,17 +1870,23 @@ jobs:
           }
           fail() { echo "::error::$1 Re-run this run."; exit 1; }
           # origin: the run whose event this item's hold names, for a hold that is tried again; tries: the screened
-          # reviews of the item that failed so far, which a rescreen carries from its hold to the next.
+          # reviews of the item that failed so far, which a rescreen carries from its hold to the next; account: the
+          # account whose limit the run counts on, which the screen job's name gives (the account that started the run,
+          # or the one that the inputs of the rescreen pass's run give, and the author of a CI run's pull request when
+          # neither the author nor the pusher has write access).
           task="" head="" comment="" of="" tries=0 origin=$RUN_ID account=$ACTOR
-          # route <route> <outsider>: the outputs, and the end of this step.
+          # route <route> <outsider>: the outputs, and the end of this step. Its notice names the item, so that the
+          # rescreen pass tells which pull request a CI run reviewed when more than one into main has its head
+          # (reviewed).
           route() {
-            echo "#$NUMBER: the task $task, the route $1."
+            echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
               echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"; echo "tries=$tries"
               echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
-          # stop <why>: no route, so no job after this one runs.
+          # stop <why>: no route, so no job after this one runs. Its notice names the item once the step knows it
+          # (reviewed).
           stop() {
             local what="#$NUMBER"
             [ -n "$NUMBER" ] || what="commit $HEAD"
@@ -1795,7 +1896,8 @@ jobs:
           # screened <author> <account>: the route of an item of <author> for an action of <account>: no screen when
           # both have write access; else the screen first, for the account without write access whose action it is
           # (<account>, or else <author>); or held at the limit with no screen, when <account> has no write access and
-          # its runs reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour. A writer's action on an outsider's
+          # the runs of account (the account whose limit the run counts on: <account>, or the author of a CI run's pull
+          # request) reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour. A writer's action on an outsider's
           # item has no limit. No <account> is the action of a person or an App that started a run by hand, which
           # GitHub lets only a writer do: the API is not asked.
           screened() {
@@ -1808,7 +1910,7 @@ jobs:
             [[ $outsider =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || stop "$outsider is not a GitHub login."
             echo "::notice::#$NUMBER is screened first: $outsider has no write access."
             if (( b != 0 )); then
-              earlier "$2"
+              earlier "$account"
               (( count < OUTSIDE_HOURLY_LIMIT )) || route limit "$outsider"
             fi
             route screen "$outsider"
@@ -1996,8 +2098,13 @@ jobs:
             # run of each such pull request, all alike: when more than one has the head, the run is none of theirs
             # alone, so it starts no review and counts toward no limit, and the rescreen pass reviews each one into
             # main in a run of its own, on its author's limit (due_unreviewed). The number comes from the CI run or
-            # from that lookup; the author, the head and the rest come from the API. The account is the CI run's actor
-            # (the pusher, also on a later attempt of that run), never the account that re-ran it.
+            # from that lookup; the author, the head and the rest come from the API. The account that the Review step's
+            # action admits is the CI run's actor (the pusher, also on a later attempt of that run), never the account
+            # that re-ran it. The account whose limit the run counts on is the author's when neither the author nor the
+            # pusher has write access: anyone can open a pull request whose head is another account's fork branch, and
+            # that account's pushes to its own branch then never use its own hour. Else it is the pusher's, as for each
+            # other event: a writer's push has no limit, and an outsider's push to a writer's pull request counts on
+            # the pusher.
             workflow_run)
               task=review
               [[ $HEAD =~ ^[0-9a-f]{40}$ && $HEAD_REPOSITORY =~ ^[1-9][0-9]*$ && -n $HEAD_BRANCH ]] \
@@ -2038,6 +2145,10 @@ jobs:
               fi
               [ "$is_draft" = false ] || stop "it is a draft."
               head=$HEAD
+              a=0 b=0
+              known "$AUTHOR" || a=$?
+              known "$ACTOR" || b=$?
+              (( a == 0 || b == 0 )) || account=$AUTHOR
               screened "$AUTHOR" "$ACTOR" ;;
             # A new issue, or one reopened: a writer's is reviewed, and an outsider's gets a draft of its reply.
             issues)
@@ -2152,7 +2263,7 @@ jobs:
                   origin=$held_run tries=$held_tries
                   [[ $tries =~ ^[0-9]+$ ]] || stop "its hold names no count of tries."
                   [ "$ACTOR" != 'github-actions[bot]' ] || again rescreen
-                  account=$(held_account "$origin") || fail "run $origin could not be read."
+                  account=$(held_account "$origin" "$AUTHOR") || fail "run $origin could not be read."
                   [ -n "$account" ] || stop "its hold names no run whose account this workflow can tell."
                   [ "$ACCOUNT" = "$account" ] || stop "the account its hold names is $account, not ${ACCOUNT:-none}."
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
@@ -2574,9 +2685,11 @@ jobs:
   # that a run by hand asked to screen (the top of this file, and .github/screen.py). In the environment review-screen,
   # whose jobs alone can exchange their identity token for the screen's three: so this job cannot get the review's
   # Claude token, and no other job, the review's included, can get the screen's. Its one output is the verdict, clean
-  # or held; the reason goes to the private bucket REASON_BUCKET.
+  # or held; the reason goes to the private bucket REASON_BUCKET. Its name gives the account whose limit the run counts
+  # on (the trust job's account), which the trust job (earlier) and the rescreen pass (held_account) read back: a CI
+  # run's name gives the account that pushed, and that account need not be it.
   screen:
-    name: screen ${{ needs.trust.outputs.outsider }}
+    name: screen ${{ needs.trust.outputs.account }}
     needs: [trust, gather]
     # A screen of what the gather job kept, or a measurement, which needs no gather job.
     if: >-
@@ -4403,8 +4516,9 @@ jobs:
     timeout-minutes: 5
     # actions: read for this run's jobs (did a sign-in fail? was the review stopped at the cap?) and this workflow's
     # runs (did a newer run of the item and task cancel it?); pull-requests: write reads the open pull requests too,
-    # which map a head to its pull request; contents: read for main's .github/, which holds .github/review/rules.py.
-    permissions: {contents: read, issues: write, pull-requests: write, actions: read}
+    # which map a head to its pull request; checks: read for the notices of a newer CI run's trust job, which name its
+    # pull request; contents: read for main's .github/, which holds .github/review/rules.py.
+    permissions: {contents: read, issues: write, pull-requests: write, actions: read, checks: read}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -4471,15 +4585,22 @@ jobs:
             # A newer run of the same item and task (its next push, its next comment, its rescreen, or a request by
             # hand) cancels this run's review: only such a run is in the review job's concurrency group. That run
             # decides, whoever asked for this one. Not a newer run whose trust job was skipped (a CI run that was
-            # cancelled, say), failed or was cancelled: it decides nothing, so this run holds the item. A trust job not
-            # listed yet, still running, or passed may still decide. A run's name gives its task and item: #<n> ends at
-            # a space or at the end of the name, and a workflow_run's head maps to its pull request through the open
-            # pull requests. GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count
-            # then says that more match: when it cut the list before it reached this run, a newer run can be one that it
-            # does not list, and nothing is held.
+            # cancelled, say), failed or was cancelled, nor one that its trust job stopped (every job after it was
+            # skipped: the CI run of a pull request into another branch, say): it decides nothing, so this run holds the
+            # item. A trust job not listed yet, still running, or passed with a job after it that was not skipped may
+            # still decide. A run's name gives its task and item: #<n> ends at a space or at the end of the name, and a
+            # workflow_run's head maps to its pull request through the open pull requests. When more than one pull
+            # request into main has that head (another fork can push the same commit), a CI run is this item's only
+            # when the notice of its trust job names this item or names none, as the rescreen pass reads it
+            # (reviewed): the trust job reviews each CI run as the run of one pull request alone. A run whose notices
+            # cannot be read is taken as this item's. GitHub gives at most 1,000 runs for a list with created, the
+            # newest first, and total_count then says that more match: when it cut the list before it reached this
+            # run, a newer run can be one that it does not list, and nothing is held.
             [[ $TASK =~ ^[a-z]+$ ]] || { echo "::error::not a task: $TASK"; exit 1; }
             same="^$TASK #$NUMBER( |\$)"
             pushed='^review ([0-9a-f]{40}) by '
+            routed='^#([1-9][0-9]*): the task [a-z]+, the route [a-z]+\.$'
+            halted='^No [a-z]+ of #([1-9][0-9]*): '
             heads=""
             # Before the runs of each page, "= <total_count> <runs on the page> <the oldest run on the page>".
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -4499,26 +4620,56 @@ jobs:
             while read -r id event name; do
               [ -n "$id" ] && [ "$id" != = ] || continue
               [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number"; exit 1; }
+              shared=""
               if [[ $name =~ $same ]]; then
                 :
               elif [[ $TASK == review && $event == workflow_run && $name =~ $pushed ]]; then
                 sha=${BASH_REMATCH[1]}
                 if [ -z "$heads" ]; then
-                  heads=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[] | "\(.head.sha) \(.number)"') \
+                  heads=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+                    --jq '.[] | "\(.head.sha) \(.number) \(.base.ref)"') \
                     || { echo "::error::the open pull requests could not be read"; exit 1; }
                   heads=${heads:--}
                 fi
-                grep -qxF "$sha $NUMBER" <<< "$heads" || continue
+                awk -v s="$sha" -v n="$NUMBER" '$1 == s && $2 == n { found = 1 } END { exit !found }' <<< "$heads" \
+                  || continue
+                (( $(awk -v s="$sha" '$1 == s && $3 == "main" { n++ } END { print n + 0 }' <<< "$heads") < 2 )) \
+                  || shared=1
               else
                 continue
               fi
-              trust=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
-                --jq '.jobs[] | select(.name == "trust") | .conclusion // "running"') \
-                || { echo "::error::the jobs of run $id could not be read"; exit 1; }
+              jobs=$(gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" -F per_page=100 \
+                --jq '.jobs[] | @json') || { echo "::error::the jobs of run $id could not be read"; exit 1; }
+              # "<the trust job's verdict> <its check run>": skipped, failure or cancelled, its conclusion; stopped when
+              # every job after it was skipped; else running, for a run that may still decide.
+              read -r trust check <<< "$(jq -rs '(map(select(.name == "trust")) | first) as $t
+                | map(select(.name != "trust" and .name != "rescreen")) as $rest
+                | (if $t == null then "running"
+                   elif ($t.conclusion // "") | IN("skipped", "failure", "cancelled") then $t.conclusion
+                   elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
+                   then "stopped" else "running" end)
+                  + " " + (($t // {}) | .check_run_url // "" | split("/") | last | if . == "" then "-" else . end)' \
+                <<< "$jobs")"
               case $trust in
-                skipped|failure|cancelled) ;;
-                *) echo "A newer run of #$NUMBER ($TASK) cancelled this run's review: that run decides."; exit 0 ;;
+                skipped|failure|cancelled|stopped) continue ;;
               esac
+              if [ -n "$shared" ] && [[ $check =~ ^[1-9][0-9]*$ ]]; then
+                told=""
+                notes=$(gh api --method GET --paginate "repos/$REPO/check-runs/$check/annotations" -F per_page=100 \
+                  --jq '.[] | select(.annotation_level == "notice") | .message // "" | gsub("[\r\n]"; " ")') || notes=""
+                while IFS= read -r note; do
+                  if [[ $note =~ $routed || $note =~ $halted ]]; then
+                    told=${BASH_REMATCH[1]}
+                    break
+                  fi
+                done <<< "$notes"
+                if [ -n "$told" ] && [ "$told" != "$NUMBER" ]; then
+                  echo "Run $id is the CI run of #$told, which has the same head: not a run of #$NUMBER."
+                  continue
+                fi
+              fi
+              echo "A newer run of #$NUMBER ($TASK) cancelled this run's review: that run decides."
+              exit 0
             done <<< "$newer"
           fi
           item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
