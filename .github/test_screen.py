@@ -933,6 +933,28 @@ class ScreenTest(unittest.TestCase):
                       "could not be stored.", printed)
         self.assertNotIn(MARK, printed)
 
+    def test_an_exchange_that_answers_no_http_status_line_logs_none_of_its_text(self):
+        """R10 (decision 8): the log of a failed sign-in gets the HTTP status and the error code alone, never the
+        service's text, also when the service answers with a line that is not an HTTP status line: that text goes to
+        the reason object in the private bucket, and the log says that it is there."""
+        class NotHttp(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.wfile.write(f"NOT-HTTP {MARK}\r\n\r\n".encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), NotHttp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.env["ANTHROPIC_URL"] = f"http://127.0.0.1:{server.server_port}"
+        rc, printed = self.call("--sign-in")
+        self.assertEqual(rc, 1, printed)
+        self.assertNotIn(MARK, printed)
+        self.assertIn("Its reason is in the private bucket, as acme/model/1-1.json.", printed)
+        self.assertIn(MARK, self.services.objects["acme/model/1-1.json"]["sign_in"])
+
     # --- what cannot be screened, and the services' limits ----------------------------------------------------
 
     def test_a_changed_file_that_is_not_text_is_held_unscreened(self):
