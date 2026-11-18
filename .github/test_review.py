@@ -9087,6 +9087,29 @@ class HeadScheduleTest(Scheduled):
         held = re.search(r"# held\n(.*?)# end of held\n", step("trust", TRUST)["run"], re.S).group(1)
         self.assertEqual(re.findall(r"^ *kept_days=([0-9]+)$", held, re.M), [str(upload["with"]["retention-days"])])
 
+    def test_a_stopped_ci_run_of_another_pull_request_of_the_head_leaves_the_re_run_as_it_is(self):
+        """Ruling 4: a passed screen counts once and is not screened again for a sign-in failure; only the failed jobs
+        re-run. The screen of run 10 of mallory's #7 passed and its review could not sign in. Eve pushes the same
+        commit to her fork and opens #9 of it into dev: the trust job stops its CI run (another branch), which starts
+        no review. That run, 20 or 65 minutes after it ended, does not hold back the re-run of run 10, and no new
+        review run of #7 starts."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        for ended in (20, 65):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.item(9, kind="pr", author="eve", base="dev", repository=999)
+                self.ci(ended=106)
+                self.serve(rerun, {})
+                self.ran(10, f"review {HEAD} by mallory", made=101, ended=61, event="workflow_run",
+                         jobs=[attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+                               attempt_job("review", "Sign in to Anthropic", name="review (screened)")])
+                self.ran(20, f"review {HEAD} by eve", made=ended + 1, ended=ended, event="workflow_run",
+                         jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs, writes(self.api)), (0, [], [["--method", "POST", rerun]]), out)
+
     def test_the_pull_requests_into_main_of_a_head_that_more_than_one_has_each_get_a_review_run(self):
         """Ruling 1: eve's #7 and mallory's #11 into main, and mallory's #8 into dev, all have the head of a branch of
         eve's fork. A push to that branch starts a CI run of each, in which GitHub names no pull request: the trust job
