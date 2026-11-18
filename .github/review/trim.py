@@ -30,9 +30,9 @@ service refused, and never the service's text: the log of a public repository is
 there for the text.
 
 review: <file> of --review is the comment of the model's review, and <file> of --items the list of its output
-(.github/review.md, "What the review gives"), as JSON. The review is made inert, then cut at CUT characters: that
-text is what the reader reads and what the collapsed block holds. The comment, on standard output, is these parts, in
-this order:
+(.github/review.md, "What the review gives"), as JSON. The review is made inert, cut at CUT characters and closed:
+that text is what the reader reads and what the collapsed block holds. The comment, on standard output, is these
+parts, in this order:
 
     <head>                             the caller's fixed text, with its markers
     the trimmed text
@@ -40,14 +40,17 @@ this order:
     LEFT_OUT                           each listed item that is not optional and that the trimmed text lacks
     OPTIONAL                           each listed optional item that the trimmed text lacks
     ---  <foot>                        the caller's fixed text
-    <details>                          the review, made inert and cut, collapsed
+    <details>                          the review, made inert, cut and closed, collapsed
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
 names no path and no line, is left to the reader, whose instruction says to keep each item. An item with no optional
-key is not optional. An item is added word for word. The trimmed text and the added items are made inert. The reader
-never sees the head, the section or the foot, and they are not made inert. A comment over MAX_COMMENT characters loses
-the end of the collapsed copy. --summary appends the review (made inert and cut) and its list to that file, the run's
+key is not optional. An item is added word for word. The trimmed text and each added item are made inert and closed.
+A closed text (closed) leaves nothing open that would take in the part after it: no fenced code block, no HTML block
+that a blank line does not end and no <details>, and it has no </details> that could close the collapsed block. So
+each fixed part keeps its place, and the whole review stays in its block. The reader never sees the head, the section
+or the foot, and they are neither made inert nor closed. A comment over MAX_COMMENT characters loses the end of the
+collapsed copy. --summary appends the review (made inert, cut and closed) and its list to that file, the run's
 summary, and --summary-extra appends that file's text after them.
 
 answer: the answer to a comment of the author of an outside item (.github/review-answer.md), on standard output:
@@ -57,13 +60,14 @@ suggestion), as JSON on standard output. <file> of --fix is the fix that code ke
 is <head>, the trimmed summary, and --- and <foot>. Each comment is the trimmed why of its suggestion and a suggestion
 block that holds the suggestion's replacement byte for byte. The reader reads the words of a fix, the summary and each
 why, in a request of its own each. It never reads a suggestion block. Each text is made inert and cut at CUT
-characters before the reader reads it, and the reader's text is made inert. The suggestion blocks are not made inert:
-GitHub shows no mention, reference or link in a code block.
+characters before the reader reads it, and the reader's text is made inert and closed. The suggestion blocks are not
+made inert: GitHub shows no mention, reference or link in a code block.
 
 A review, an answer or a fix whose text the reader refuses (for a fix, the summary or one why) ends the script with
 status REFUSED and nothing on standard output: nothing of the text posts (review.yml gives the item waits-on-theorem).
-The message says so without the reason. The reason, made inert, goes to the file of --summary (the run's summary)
-alone, for Sami, and never to the log or an output. The summary gets no other part of a text that the reader refused.
+The message says so without the reason. The reason, made inert and closed, goes to the file of --summary (the run's
+summary) alone, for Sami, and never to the log or an output. The summary gets no other part of a text that the reader
+refused.
 
 draft: the reader's answer, {refused, reason, text}, on standard output. The reader trims the draft of a reply to an
 outside issue, or refuses it, with its reason, by the rules files that its request holds (.github/review-answer.md
@@ -99,10 +103,10 @@ TOKEN_FILE = "reader-token"
 # The exit status of a review, an answer or a fix that the reader refused: nothing of it posts.
 REFUSED = 3
 
-LEFT_OUT = "Items that the shortened review omits:"
-OPTIONAL = "Optional items that the shortened review omits:"
-WHOLE = "The whole review, before the second Claude session shortened it"
-CUT_WHOLE = "(The rest of the whole review is in the summary of the run.)"
+LEFT_OUT = "This review also has these items:"
+OPTIONAL = "This review also has these optional items:"
+WHOLE = "The review before Claude shortened it"
+CUT_WHOLE = "(The rest of this review is in the summary of this workflow run.)"
 # A review, an answer, the summary of a fix and each why are cut at this many characters before the reader reads them.
 CUT = 20_000
 CUT_NOTE = "(The workflow cut the text here, at 20,000 characters.)"
@@ -486,7 +490,8 @@ def code(text):
 
 
 def added(items):
-    """The added items, under the two fixed lines: each item's kind, its ref, and its text word for word."""
+    """The added items, under the two fixed lines: each item's kind, its ref, and its text word for word, each item
+    made inert and closed."""
     out = []
     for line, optional in ((LEFT_OUT, False), (OPTIONAL, True)):
         these = [i for i in items if bool(i.get("optional")) is optional]
@@ -494,8 +499,21 @@ def added(items):
             out.append(line)
             for item in these:
                 where = f" at {code(item['ref'])}" if item.get("ref") else ""
-                out.append(f"**{item['kind'].capitalize()}{where}:** {item['text']}")
+                out.append(closed(inert(f"**{item['kind'].capitalize()}{where}:** {item['text']}")))
     return "\n\n".join(out)
+
+
+# The URL schemes that a link or an image can use. A gap: what a browser takes out of an address before it reads it,
+# a tab, a line feed or a carriage return, each as itself or as a character reference (&Tab;, &NewLine;, &#10;, &#x0A;
+# and the like, with or without the ;, as an HTML parser decodes them in an attribute).
+SCHEMES = ("https", "http", "ftps", "ftp", "mailto", "xmpp", "ircs", "irc", "news", "nntp", "wss", "ws", "data", "tel",
+           "sms", "javascript", "vbscript", "file")
+GAP = r"(?:[\t\n\r]|&(?:Tab|NewLine);|&#0*(?:9|1[03])(?![0-9]);?|&#[xX]0*[9aAdD](?![0-9a-fA-F]);?)*"
+# A scheme, with a gap between any two of its letters and before its :, unless it is http or https to github.com.
+SCHEME = re.compile(r"(?i)\b((?:" + "|".join(GAP.join(s) for s in SCHEMES) + ")" + GAP + r")(?=:)"
+                    r"(?!:[/\\]{2}(?:www\.)?github\.com(?:[\t\n\r]*(?:[/?#)\]>\x22\x27]|[^\S\t\n\r])|[\t\n\r]*$))")
+# A slash or a backslash with another one after it, and a gap between them, that no : comes before.
+SLASHES = re.compile(r"(?<!:)([/\\])(?=" + GAP + r"[/\\])")
 
 
 def inert(text):
@@ -504,13 +522,18 @@ def inert(text):
     without its ;) that stands for an ASCII letter or digit or one of @ # / \\ : . _ - is decoded, again until none is
     left, so that the rules after it see the text as GitHub renders it. Then a word joiner (U+2060) goes after every
     @, and between a digit and the #, the GH- or the github.com/<owner>/<repo>/issues/ (pull/, pulls/, discussions/)
-    before it. A word joiner also goes before the : of each URL scheme that a link or an image can use, unless it is
-    http or https to github.com itself, inside the two slashes of a link or image address with no scheme (//host), and
-    after the www of an address GitHub would link on its own: such an address is text, or at most a link within this
-    repository, and no image loads from outside. Links to github.com, this repository's files among them, still work.
-    Last, a word joiner goes after the < of each <!--: the text shows it, and holds no HTML comment, so no marker that
-    the workflows read (<!-- review-head <sha> -->, say) comes from the model or the reader. A text made inert is made
-    inert again with no change: a word joiner goes nowhere that has one already."""
+    before it. A word joiner also goes before the : of each URL scheme that a link or an image can use (SCHEME), unless
+    it is http or https to github.com itself, and after the www of an address GitHub would link on its own. A browser
+    takes each tab and line break out of an address, and an HTML parser first decodes a character reference of one in
+    an attribute, so the rule for a scheme reads the scheme with any of them between its letters, and github.com must
+    end where the address does. Last of the addresses, a word joiner goes after each slash or backslash that another one
+    follows, with or without such a gap between them, unless a : comes before it (the // of https://github.com): so an
+    address with no scheme (//host) has no host wherever it is, in a link, an image, a reference definition (also in a
+    block quote or a list item, and whatever its label holds) or an attribute. Such an address is text, or at most a
+    link within this repository, and no image loads from outside. Links to github.com, this repository's files among
+    them, still work. Last, a word joiner goes after the < of each <!--: the text shows it, and holds no HTML comment,
+    so no marker that the workflows read (<!-- review-head <sha> -->, say) comes from the model or the reader. A text
+    made inert is made inert again with no change: a word joiner goes nowhere that has one already."""
     ref = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
 
     def decode(m):
@@ -521,16 +544,95 @@ def inert(text):
     text = re.sub("@(?!\u2060)", "@\u2060", text)
     text = re.sub(r"(#|(?i:GH-)|(?i:github\.com/[^/\s]+/[^/\s]+/(?:issues|pulls?|discussions)/))(?=[0-9])",
                   "\\1\u2060", text)
-    text = re.sub(r"(?i)\b(https?|ftps?|mailto|xmpp|ircs?|news|nntp|wss?|data|tel|sms|javascript|vbscript|file)"
-                  r"(?=:)(?!:[/\\]{2}(?:www\.)?github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
-    text = re.sub(r"(?m)((?:[(=<\x22\x27]|^\s*\[[^\]\n]+\]:)\s*[/\\])(?=[/\\])", "\\1\u2060", text)
+    text = SCHEME.sub("\\1\u2060", text)
     text = re.sub(r"(?i)(?<![\w.\-/\\@])(www)(?=\.)(?!\.github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
+    text = SLASHES.sub("\\1\u2060", text)
     return text.replace("<!--", "<\u2060!--")
 
 
+# A line that opens a fenced code block, as CommonMark reads it: at most 3 spaces, then 3 or more backticks with no
+# backtick after them on the line, or 3 or more tildes.
+FENCE = re.compile(r" {0,3}(?:`{3,}(?=[^`]*$)|~{3,})")
+# A line that starts an HTML block that a blank line does not end, as CommonMark reads it: <pre>, <script>, <style> or
+# <textarea>, <?, <![CDATA[, or <! and a letter. ENDS: for each kind, what a line of the block holds when the block
+# ends, and the line that ends it (for the first kind, the end tag of the block's own name).
+LONG_HTML = re.compile(r"(?i) {0,3}<(?:(pre|script|style|textarea)(?=[ \t>]|$)|(\?)|(!\[CDATA\[)|(![A-Za-z]))")
+ENDS = ((re.compile(r"(?i)</(?:pre|script|style|textarea)>"), ""), (re.compile(r"\?>"), "?>"),
+        (re.compile(r"\]\]>"), "]]>"), (re.compile(r">"), ">"))
+# A line that starts an HTML block that a blank line ends: a tag with one of CommonMark's names of such blocks.
+BLOCK_HTML = re.compile(
+    r"(?i) {0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    r"dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|"
+    r"legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|"
+    r"td|tfoot|th|thead|title|tr|track|ul)(?=[ \t>]|/>|$)")
+# A <details> or </details> tag, and, in Markdown, a code span on one line, whose text holds no tag.
+DETAILS = re.compile(r"<(?P<close>/?)details\b", re.I)
+SPAN_OR_DETAILS = re.compile(r"(?P<span>(?<!`)(`+)(?!`).*?(?<!`)\2(?!`))|<(?P<close>/?)details\b", re.I)
+
+
+def closed(text):
+    """text, which the model or the reader wrote, with nothing left open that would take in the fixed part after it,
+    as CommonMark and HTML read it. A < that the end of text cuts from its > (the cut of a tag) gets a word joiner
+    after it, and shows as text. A fenced code block that text leaves open gets its closing fence, with the indent and
+    the fence of its first line. An HTML block that a blank line does not end (LONG_HTML) gets its end on a line of its
+    own. Each <details> that text leaves open gets a </details> after it, and a </details> with no <details> of text
+    before it gets a word joiner after its <: it shows as text, and cannot close the collapsed block that holds the
+    text. A tag in a fenced or an indented code block, or in a code span on one line, is text. So no fixed part after
+    text goes into a code block of text or into its collapsed block. text closed again does not change."""
+    text = re.sub(r"<(?=[A-Za-z/!?][^<>]*\Z)", "<\u2060", text)
+    lines = text.split("\n")
+    fence, end, block, para, depth = "", None, False, False, 0
+
+    def tag(m):
+        nonlocal depth
+        if m.groupdict().get("span"):
+            return m.group(0)
+        if not m.group("close"):
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return "<\u2060" + m.group(0)[1:]
+        return m.group(0)
+    for i, line in enumerate(lines):
+        if fence:
+            mark = fence.lstrip()
+            if re.fullmatch(" {0,3}%s{%d,}[ \t]*\r?" % (re.escape(mark[0]), len(mark)), line):
+                fence = ""
+            continue
+        if block and not line.strip():
+            block = False
+            continue
+        if not (end or block):
+            if not line.strip():
+                para = False
+                continue
+            if not para and line.expandtabs(4).startswith("    "):   # a line of an indented code block
+                continue
+            if m := FENCE.match(line):
+                fence, para = m.group(0), False
+                continue
+            if m := LONG_HTML.match(line):
+                found, last = ENDS[next(k for k in range(4) if m.group(k + 1))]
+                end, para = (found, last or f"</{m.group(1).lower()}>"), False
+            elif BLOCK_HTML.match(line):
+                block, para = True, False
+            else:
+                para = True
+        lines[i] = (DETAILS if end or block else SPAN_OR_DETAILS).sub(tag, line)
+        if end and end[0].search(line):
+            end = None
+    text = "\n".join(lines)
+    if fence or end:
+        text += ("" if text.endswith("\n") else "\n") + (fence or end[1])
+    if depth:
+        text += "\n\n" + "\n".join(["</details>"] * depth)
+    return text
+
+
 def cut(text):
-    """text, cut at CUT characters, with a line that says so."""
-    return text if len(text) <= CUT else text[:CUT] + "\n\n" + CUT_NOTE
+    """text, cut at CUT characters and closed, with a line that says so."""
+    return text if len(text) <= CUT else closed(text[:CUT]) + "\n\n" + CUT_NOTE
 
 
 def framed(parts, foot=""):
@@ -543,10 +645,10 @@ def framed(parts, foot=""):
 
 def comment(review, trimmed, items, head="", section="", foot=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
-    read, made inert and cut; the trimmed text and the added items are made inert here. The collapsed copy loses its
-    end when the comment would be over MAX_COMMENT characters."""
-    trimmed = inert(trimmed)
-    extra = inert(added(missing(items, trimmed)))
+    read, made inert, cut and closed; the trimmed text and the added items are made inert and closed here. The
+    collapsed copy loses its end when the comment would be over MAX_COMMENT characters."""
+    trimmed = closed(inert(trimmed))
+    extra = added(missing(items, trimmed))
 
     def build(whole):
         return (framed((head, trimmed, section, extra), foot)
@@ -554,7 +656,7 @@ def comment(review, trimmed, items, head="", section="", foot=""):
     text = build(review)
     if len(text) > MAX_COMMENT:
         keep = max(0, len(review) - (len(text) - MAX_COMMENT) - len(CUT_WHOLE) - 200)
-        text = build(review[:keep] + "\n\n" + CUT_WHOLE)
+        text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE)
     if len(text) > MAX_COMMENT:
         raise ReaderError(f"the comment is {len(text)} characters long even with no copy of the whole review")
     return text
@@ -569,16 +671,16 @@ def summary(review, items, extra=""):
 
 def refusal(kind, reason):
     """The run's summary of a review, an answer or a fix that the reader refused: that it refused it, and its reason,
-    made inert. No other part of the text."""
+    made inert and closed. No other part of the text."""
     return (f"### The fresh reader refused the {kind}\n\nNothing of the {kind} posts. Its reason:\n\n"
-            f"{inert(reason.strip())}\n")
+            f"{closed(inert(reason.strip()))}\n")
 
 
 # --- the answer and the fix ---------------------------------------------------------------------------------------
 
 def answer_comment(trimmed, head="", foot=""):
-    """The comment of an answer: head, the trimmed text made inert, and --- and foot."""
-    text = framed((head, inert(trimmed)), foot) + "\n"
+    """The comment of an answer: head, the trimmed text made inert and closed, and --- and foot."""
+    text = framed((head, closed(inert(trimmed))), foot) + "\n"
     if len(text) > MAX_COMMENT:
         raise ReaderError(f"the answer is {len(text)} characters long")
     return text
@@ -594,13 +696,13 @@ def suggestion(replacement):
 
 def fix_review(fix, summary_trimmed, whys, commit, head="", foot=""):
     """The request of the review of a fix: the body, and one comment for each suggestion of fix, on the right side of
-    the diff, with its trimmed why and its suggestion block. The trimmed words are made inert, never a suggestion
-    block."""
-    body = framed((head, inert(summary_trimmed)), foot)
+    the diff, with its trimmed why and its suggestion block. The trimmed words are made inert and closed, so that no
+    why takes in the suggestion block after it, and a suggestion block is neither."""
+    body = framed((head, closed(inert(summary_trimmed))), foot)
     comments = []
     for s, why in zip(fix["suggestions"], whys, strict=True):
         c = {"path": s["path"], "line": s["line"], "side": "RIGHT",
-             "body": "\n\n".join(p for p in (inert(why), suggestion(s["replacement"])) if p)}
+             "body": "\n\n".join(p for p in (closed(inert(why)), suggestion(s["replacement"])) if p)}
         if s["start_line"] < s["line"]:
             c.update(start_line=s["start_line"], start_side="RIGHT")
         comments.append(c)
@@ -692,7 +794,7 @@ def main(argv):
             out = json.dumps(read("draft", text_of(args.text), rules=[(p, text_of(p)) for p in args.rules]),
                              ensure_ascii=False) + "\n"
         else:
-            text = cut(inert(text_of(args.review).strip("\n")))
+            text = closed(cut(inert(text_of(args.review).strip("\n"))))
             if not re.search(r"\w", text):
                 raise ReaderError("the review has no word in it")
             try:

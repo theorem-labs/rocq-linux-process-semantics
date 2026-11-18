@@ -1431,7 +1431,7 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
         if scope["unread"]:
             lines = [f"- {code(path)}: " + ("the workflow read only its first 2 MiB." if how == "cut" else
                                             "the workflow did not read it.") for path, how in scope["unread"]]
-            parts.append("The search did not read all of the text of these `.v` files:\n\n" + listing(lines, files))
+            parts.append("The workflow did not read all of the text of these `.v` files:\n\n" + listing(lines, files))
     return "\n\n".join(parts)
 
 

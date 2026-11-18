@@ -3100,20 +3100,22 @@ jobs:
       # changed .v files at the head that use the VM, the native compiler or a primitive array, and each changed .v
       # file at the head that the gather job did not keep whole.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
-      # link or load anything outside github.com (trim.py's inert), and cuts it at 20,000 characters. Then it runs the
-      # fresh reader: one request to Claude, with no tools, that holds the reader's instruction, the list and that text
-      # alone, with the token of the step before. A reader that fails fails this job, so nothing posts untrimmed: a
-      # screened item is held as a review that did not finish, and is tried again. A reader that refuses the review
-      # (trim.py's status 3) gives the output refused=review and no comment or verdict: nothing of the review posts, no
-      # fix runs, no import check run is recorded, and the comment job gives the item waits-on-theorem with Sami's next
-      # step. The run's summary then gets the reader's reason alone, for Sami, and neither this log nor an output holds
-      # it. The comment: the header and its markers, the trimmed text, the section on soundness, each listed item that
-      # the trimmed text lacks, the footer, and the text that the reader read in a collapsed block. The model writes
-      # none of the fixed parts, and the reader never sees them. The trimmed text and the added items are made inert
-      # too. The header's marker <!-- review-read <time> --> gives the time when the trust job of this run decided it,
-      # before the gather job read the conversation: a comment of the author made after that time is one that this
-      # review did not read, and it still waits for its answer (the trust job's waiting). The run's summary gets the
-      # text that the reader read, the list, and the section on soundness with every line.
+      # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
+      # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
+      # the reader's instruction, the list and that text alone, with the token of the step before. A reader that fails
+      # fails this job, so nothing posts untrimmed: a screened item is held as a review that did not finish, and is
+      # tried again. A reader that refuses the review (trim.py's status 3) gives the output refused=review and no
+      # comment or verdict: nothing of the review posts, no fix runs, no import check run is recorded, and the comment
+      # job gives the item waits-on-theorem with Sami's next step. The run's summary then gets the reader's reason
+      # alone, for Sami, and neither this log nor an output holds it. The comment: the header and its markers, the
+      # trimmed text, the section on soundness, each listed item that the trimmed text lacks, the footer, and the text
+      # that the reader read in a collapsed block. The model writes none of the fixed parts, and the reader never sees
+      # them. The trimmed text and each added item are made inert and closed too: no text of the model or the reader
+      # leaves a fenced code block, an HTML block or a <details> open for the fixed part after it, and none closes the
+      # collapsed block. The header's marker <!-- review-read <time> --> gives the time when the trust job of this run
+      # decided it, before the gather job read the conversation: a comment of the author made after that time is one
+      # that this review did not read, and it still waits for its answer (the trust job's waiting). The run's summary
+      # gets the text that the reader read, the list, and the section on soundness with every line.
       - name: The comment, as it is posted
         id: result
         if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -3153,9 +3155,8 @@ jobs:
           fi
           markers+=$'\n'"<!-- review-read $STARTED -->"
           printf '%s%s\n%s\n' '<!-- review -->' "$markers" "**Automated review** of $what" > "$work/head.md"
-          foot="Claude wrote this review with [these rules]($RULES), in [this workflow run]($RUN)."
-          foot+=" A second Claude session shortened the review."
-          printf '%s\n' "$foot" > "$work/foot.md"
+          printf '%s\n' "Claude wrote this review with [these rules]($RULES), in [this workflow run]($RUN)." \
+            > "$work/foot.md"
           rc=0
           python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
             --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
@@ -3177,7 +3178,7 @@ jobs:
       # waits-on-theorem with Sami's next step. The run's summary gets the reader's reason alone, for Sami, and neither
       # this log nor an output holds it. The answer: its marker, which names the newest comment that it answers (and,
       # when the author said they will make the change, will-fix and the head), a fixed line, the trimmed text made
-      # inert, and the footer. An action of none posts nothing.
+      # inert and closed (trim.py's closed), and the footer. An action of none posts nothing.
       - name: The answer, as it is posted
         id: answered
         if: needs.trust.outputs.task == 'answer'
@@ -3232,14 +3233,16 @@ jobs:
 
       # The third of the three steps for the draft: one request to the fresh reader (trim.py draft), with the token of
       # the sign-in step, that holds the rules of the draft (.github/review-answer.md and the write-to-maintainer copy)
-      # beside the draft. The reader trims the draft, or refuses it and gives its reason. Then the file that the next
-      # step uploads as the artifact of this run: a header, the reason of a refused draft on one line, a line ---, and
-      # the draft as the reader trimmed it (draft.txt), or a refused draft as the model wrote it (refused-draft.txt).
-      # Sami reads it in a terminal, and the author of an issue can steer the model's text, so every control character
-      # but tab and newline, and every bidirectional-text control, is taken out of the file. No output, summary or log
-      # line of this job holds the draft, the refused draft or the reason: the summary names the artifact alone. A
-      # reader that fails fails this job, so nothing is uploaded: a screened issue is held as a review that did not
-      # finish, and tried again. The output draft, <run>-<attempt>, names the run of the artifact for the label comment.
+      # beside the draft. The reader trims the draft, or refuses it and gives its reason. Then the one file that the
+      # next step uploads as the artifact of this run, issue-draft.txt, in the one form that the OSSV controller reads
+      # on each repository that it watches: the lines issue: <issue> and run: <run id>, a line reason: <the reader's
+      # reason, on one line> for a refused draft alone, a line ---, and then the draft as the reader trimmed it, or a
+      # refused draft as the model wrote it. Sami reads it in a terminal, and the author of an issue can steer the
+      # model's text, so every control character but tab and newline, and every bidirectional-text control, is taken out
+      # of the file. No output, summary or log line of this job holds the draft, the refused draft or the reason: the
+      # summary names the artifact alone. A reader that fails fails this job, so nothing is uploaded: a screened issue
+      # is held as a review that did not finish, and tried again. The output draft, <run>-<attempt>, names the run of
+      # the artifact for the label comment.
       - name: The draft, as the fresh reader leaves it
         id: drafted
         if: needs.trust.outputs.task == 'draft'
@@ -3248,7 +3251,6 @@ jobs:
           NUMBER: ${{ needs.trust.outputs.number }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # trim.py deletes the token's file as it reads it. This deletes it too when trim.py does not run.
@@ -3266,22 +3268,20 @@ jobs:
             || { echo "::error::The fresh reader gave no answer for the draft. Nothing is uploaded."; exit 1; }
           refused=$(jq -r .refused "$work/read.json")
           if [ "$refused" = true ]; then
-            name=refused-draft.txt kind="refused issue draft"
             cp "$work/draft.md" "$work/text"
             told="The fresh reader refused the draft of the reply to issue #$NUMBER. The artifact issue-draft-$NUMBER of this run holds the draft and the reason of the reader. No job posts them."
           else
-            name=draft.txt kind="issue draft"
             jq -j .text "$work/read.json" > "$work/text"
             told="The artifact issue-draft-$NUMBER of this run holds the draft of the reply to issue #$NUMBER. No job posts it: Sami approves the text of a reply first."
           fi
           # Taken out of the file: the C0 controls but tab and newline, DEL, the C1 controls, and the bidirectional-text
           # controls U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
-          { printf 'rocq-linux-process-semantics %s v1\nissue: %s\nrun: %s\n' "$kind" "$NUMBER" "$RUN"
+          { printf 'issue: %s\nrun: %s\n' "$NUMBER" "$RUN_ID"
             if [ "$refused" = true ]; then jq -j '"reason: \(.reason | gsub("\\s+"; " "))\n"' "$work/read.json"; fi
             printf -- '---\n'
             cat "$work/text"; } \
             | python3 -c 'import re, sys; sys.stdout.buffer.write(re.sub("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", sys.stdin.buffer.read().decode()).encode())' \
-            > "$kept/$name"
+            > "$kept/issue-draft.txt"
           echo "The fresh reader read the draft. The next step uploads it as the artifact issue-draft-$NUMBER."
           printf '%s\n' "$told" >> "$GITHUB_STEP_SUMMARY"
           echo "draft=$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
@@ -3440,7 +3440,8 @@ jobs:
       # block, which holds the lines of the fix byte for byte (trim.py fix). The review: its marker (the head), its
       # marker <!-- review-read <time> --> (when the trust job of this run decided it, before the gather job read the
       # conversation, as in the review comment), a fixed line, the trimmed summary and the footer, and one comment for
-      # each suggestion, on the right side of the diff. With no suggestion on the diff, no fix posts. A reader that
+      # each suggestion, on the right side of the diff. The trimmed words are made inert and closed (trim.py's closed),
+      # so that no why takes in its suggestion block. With no suggestion on the diff, no fix posts. A reader that
       # fails fails this job, so nothing posts untrimmed. A reader that refuses the summary or a why (trim.py's status
       # 3) gives the output refused=fix and no review: nothing of the fix posts, and the comment job gives the item
       # waits-on-theorem with Sami's next step. The run's summary gets the reader's reason alone, for Sami, and neither
@@ -3475,7 +3476,7 @@ jobs:
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.review/commits.txt names no head commit."; exit 1; }
           printf '%s\n%s\n%s\n' "<!-- review-fix $head -->" "<!-- review-read $STARTED -->" \
             "**Automated fix** of commit ${head:0:12}, as suggested changes" > "$work/head.md"
-          printf '%s\n' "Claude wrote this fix with [these rules]($RULES), in [this workflow run]($RUN). A second Claude session shortened the words of this fix. It did not change the lines of any suggested change. A suggested change changes nothing until you apply it." \
+          printf '%s\n' "Claude wrote this fix with [these rules]($RULES), in [this workflow run]($RUN)." \
             > "$work/foot.md"
           rc=0
           python3 .github/review/trim.py fix --fix "$work/kept.json" --commit "$head" --head "$work/head.md" \

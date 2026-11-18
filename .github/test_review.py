@@ -1295,6 +1295,74 @@ class InertTest(unittest.TestCase):
                 got = self.comment(text)
                 self.assertEqual([a for a in addresses(got) if leaves(a)], [], got)
 
+    def test_a_tab_or_a_line_break_in_a_scheme_or_after_github_com_leads_nowhere_outside(self):
+        """A browser takes each tab and line break out of an address, after the HTML parser decoded a character
+        reference of one in an attribute: h<tab>ttps: is https:, and github.com<line break>.evil.example is another
+        host. An address of a srcset can follow a comma. After inert, none of these has a scheme, or a //host, that
+        leads outside github.com, and the text reads as before."""
+        def outside(text):
+            (value,) = re.findall(r"(?:href|srcset|src)=\"([^\"]*)\"", text)
+            address = re.sub(r"[\t\n\r]", "", html.unescape(value))
+            return re.search(r"(?i)(?:^|\s)(?://|[a-z][a-z0-9+.\-]*:(?!//github\.com/))", address)
+        for text in ("<a href=\"h&Tab;ttps" + "://evil.example/x\">a</a>",
+                     "<a href=\"java&NewLine;script:alert(1)\">a</a>",
+                     "<img src=\"ht\ttps" + "://evil.example/t.gif\">",
+                     "<a href=\"https" + "://github.com&#9;.evil.example/x\">a</a>",
+                     "<a href=\"https" + "://github.com\n.evil.example/x\">a</a>",
+                     "<img srcset=\"a.png 1x, //evil.example/b.png 2x\">"):
+            with self.subTest(text=text):
+                self.assertTrue(outside(text), text)   # the check sees the form
+                got = self.comment(text)
+                self.assertIsNone(outside(got), got)
+                self.assertEqual(got.replace(WJ, ""), text)
+
+
+class ClosedTest(unittest.TestCase):
+    """trim.py's closed, which the review job applies to each text of the model or the reader that a fixed part
+    follows: the trimmed review, each added item and the review in the collapsed block (FreshReaderTest), the answer,
+    and the summary and each why of a fix."""
+
+    def test_markup_that_a_text_closes_stays_as_it_is_and_closing_again_changes_nothing(self):
+        """A collapsed block of the model's own, a fence that holds a shorter fence, and a tag in a code block or a
+        code span are kept byte for byte: the rules of the answer and the fix ask for a collapsed block."""
+        for text in ("Log:\n\n<details><summary>Log</summary>\n\n```text\nline </details>\n```\n\n</details>\n\nEnd.",
+                     "Write `</details>` to end it.\n\n````md\n```\n````",
+                     "Code:\n\n    <details>\n\nThe end."):
+            with self.subTest(text=text):
+                self.assertEqual(trim.closed(text), text)
+        for text in ("A.\n\n```text\nlog", "<details>\n\nB.", "</details> C.", "<pre>\nD.", "  ~~~~\nE.\n~~~",
+                     "F. <img src=\"x"):
+            with self.subTest(text=text):
+                once = trim.closed(text)
+                self.assertNotEqual(once, text)
+                self.assertEqual(trim.closed(once), once)
+
+    def test_an_html_block_or_a_tag_that_a_text_leaves_open_is_ended_and_a_fence_in_html_gets_no_closing_fence(self):
+        """CommonMark ends <pre> and <? only at their end, and reads a fence line in an HTML block as HTML: a closing
+        fence there would open a code block for the fixed part after the text. A tag that a cut leaves with no > would
+        take in the text after it."""
+        for text, want in (("Output:\n\n<pre>\n```\nlog", "Output:\n\n<pre>\n```\nlog\n</pre>"),
+                           ("<?php echo 1 > 0;\nmore", "<?php echo 1 > 0;\nmore\n?>"),
+                           ("<details>\n```\nline 1\n\nline 2", "<details>\n```\nline 1\n\nline 2\n\n</details>"),
+                           ("See <a href=\"https://github.com/o/r\"", f"See <{WJ}a href=\"https://github.com/o/r\"")):
+            with self.subTest(text=text):
+                self.assertEqual(trim.closed(text), want)
+
+    def test_an_answer_or_a_fix_whose_text_leaves_markup_open_keeps_its_footer_and_its_suggestion_blocks(self):
+        """The answer's footer, the fix's footer and each suggestion block come after the text that leaves a fence
+        or a <details> open, and a </details> of a why shows as text."""
+        self.assertEqual(trim.answer_comment("Use this:\n\n~~~coq\nLemma a : True.", "HEAD", "FOOT"),
+                         "HEAD\n\nUse this:\n\n~~~coq\nLemma a : True.\n~~~\n\n---\nFOOT\n")
+        fix = {"summary": "", "suggestions": [{"path": "a.v", "start_line": 1, "line": 1, "replacement": "x\n"},
+                                              {"path": "a.v", "start_line": 3, "line": 3, "replacement": "y\n"}]}
+        got = trim.fix_review(fix, "Notes.\n\n<details><summary>Log</summary>\n\nThe log.",
+                              ["Why:\n\n```text\nlog", "Why. </details>"], "0" * 40, "HEAD", "FOOT")
+        self.assertEqual(got["body"], "HEAD\n\nNotes.\n\n<details><summary>Log</summary>\n\nThe log.\n\n</details>\n\n"
+                                      "---\nFOOT")
+        self.assertEqual([c["body"] for c in got["comments"]],
+                         ["Why:\n\n```text\nlog\n```\n\n```suggestion\nx\n```",
+                          f"Why. <{WJ}/details>\n\n```suggestion\ny\n```"])
+
 
 class ReachTest(Runner):
     """What the Review step lets Claude read, and what it runs."""
@@ -3525,9 +3593,8 @@ class ReaderRunner(Runner):
     SIGN_IN = "Sign in to Anthropic for the fresh reader"
     STEP = "The comment, as it is posted"
     TOKEN = "reader-not-a-secret"
-    FOOT = (f"Claude wrote this review with [these rules]({RULES}), in [this workflow run]({RUN}). A second Claude "
-            "session shortened the review.")
-    WHOLE = "<details>\n<summary>The whole review, before the second Claude session shortened it</summary>"
+    FOOT = f"Claude wrote this review with [these rules]({RULES}), in [this workflow run]({RUN})."
+    WHOLE = "<details>\n<summary>The review before Claude shortened it</summary>"
 
     def setUp(self):
         super().setUp()
@@ -3761,9 +3828,9 @@ class FreshReaderTest(ReaderRunner):
         lacking = "Blocking findings.\n\n1. `theories/Fd.v:213` and `:222` leave the case open."
         rc, out, got = self.post(self.REVIEW, items, lacking)
         self.assertEqual(rc, 0, out)
-        added = ("Items that the shortened review omits:\n\n"
+        added = ("This review also has these items:\n\n"
                  f"**Question at `SCOPE.md:301`:** Does SCOPE.md:301 still hold for @{WJ}octocat's case #{WJ}12?\n\n"
-                 "Optional items that the shortened review omits:\n\n"
+                 "This review also has these optional items:\n\n"
                  "**Change at `tools/check_one.py:31`:** Name the lane in tools/check_one.py:31.")
         self.assertEqual(got["body"], self.body(lacking, added))
         self.assertEqual(self.block(got["body"]), self.REVIEW_INERT)
@@ -3802,7 +3869,7 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(trim.missing([item], trim.inert(text)), [item])
         # An item with no key optional, as in the trim test's lists, is not optional.
         self.assertTrue(trim.added([{"kind": "change", "ref": "a.v:1", "text": "Fix it."}])
-                        .startswith("Items that the shortened review omits:\n\n"))
+                        .startswith("This review also has these items:\n\n"))
         names = sorted(os.listdir(os.path.join(TRIM_FIXTURES, "lists")))
         self.assertEqual(names, [f"r{n:02}.json" for n in range(1, 31)])
         for name in names:
@@ -4493,9 +4560,7 @@ class AnswerFixTest(ReaderRunner):
     LABEL = PostLabelTest.STEP
     ANSWER_RULES = f"https://github.com/{REPO}/blob/main/.github/review-answer.md"
     ANSWER_FOOT = f"Claude wrote this answer with [these rules]({ANSWER_RULES}), in [this workflow run]({RUN})."
-    FIX_FOOT = (f"Claude wrote this fix with [these rules]({ANSWER_RULES}), in [this workflow run]({RUN}). A second "
-                "Claude session shortened the words of this fix. It did not change the lines of any suggested change. "
-                "A suggested change changes nothing until you apply it.")
+    FIX_FOOT = f"Claude wrote this fix with [these rules]({ANSWER_RULES}), in [this workflow run]({RUN})."
     # The contexts of the steps of this run of #7, an outside pull request whose screen passed, on GitHub.
     CTX = {"github.server_url": "https://github.com", "github.repository": REPO, "github.run_id": "1",
            "needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
@@ -5096,7 +5161,8 @@ class DraftReplyTest(ReaderRunner):
     UPLOAD = "Run actions/upload-artifact"
     POST = "Post the approved reply"
     LABEL = PostLabelTest.STEP
-    HEADER = "rocq-linux-process-semantics {kind} v1\nissue: 7\nrun: https://github.com/acme/model/actions/runs/1\n"
+    # The first lines of the one file of the artifact, as the OSSV controller reads it on each of its repositories.
+    HEADER = "issue: 7\nrun: 1\n"
     # The model's draft, the reader's trim of it and the reader's reason, each with a word that no fixed text holds, and
     # with control and bidirectional-text characters, which the draft's step takes out of the file.
     DRAFT = ("Thank you for #12, @octocat. Draft-7f3a: the model of `close` is at `theories/Fd.v:213`.\u202e\x1b[31m\r\n"
@@ -5221,10 +5287,10 @@ class DraftReplyTest(ReaderRunner):
         review job signs in to Anthropic before the model, runs the Draft step as its one model step, and gives the
         draft to the fresh reader, whose one request holds its instruction for a draft, the rules of the draft
         (.github/review-answer.md and the write-to-maintainer copy) and the draft alone, and no tools. The draft that
-        the reader trimmed becomes the one file draft.txt of the folder that the next step uploads, with its header
-        and with no control or bidirectional-text character. The run's summary names the artifact, and holds neither
-        the draft nor a list. The comment job then posts nothing but the label comment: waits-on-theorem, Sami's step,
-        and the draft's marker."""
+        the reader trimmed becomes the one file issue-draft.txt of the folder that the next step uploads, after the
+        lines issue: <issue>, run: <run id> and ---, with no control or bidirectional-text character. The run's summary
+        names the artifact, and holds neither the draft nor a list. The comment job then posts nothing but the label
+        comment: waits-on-theorem, Sami's step, and the draft's marker."""
         self.permissions(mallory="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         rc, out, trust = self.run_trust("issues", author="mallory", actor="mallory")
@@ -5255,7 +5321,7 @@ class DraftReplyTest(ReaderRunner):
         # trim.py reads the draft as Python reads a text file: a CR LF is a line break.
         self.assertEqual(self.draft_parts(body["messages"][0]["content"]),
                          texts + [("REPLY", self.DRAFT.replace("\r\n", "\n"))])
-        self.assertEqual(self.kept(), {"draft.txt": self.HEADER.format(kind="issue draft") + "---\n"
+        self.assertEqual(self.kept(), {"issue-draft.txt": self.HEADER + "---\n"
                                        "Trimmed-91c2: the model of `close` is at `theories/Fd.v:213`.[31m\n"})
         self.assertEqual(self.summary_text(), "The artifact issue-draft-7 of this run holds the draft of the reply to "
                                               "issue #7. No job posts it: Sami approves the text of a reply first.\n")
@@ -5285,12 +5351,12 @@ class DraftReplyTest(ReaderRunner):
 
     def test_a_refused_draft_is_uploaded_with_the_readers_reason_and_gets_the_same_label_comment(self):
         """b1 (R3): a draft that the fresh reader refuses is uploaded too, as the model wrote it, with the reader's
-        reason on one line, as the one file refused-draft.txt of the same artifact, so that Sami's ask holds both. The
-        summary says that the reader refused it, and holds neither the draft nor the reason. The label comment is the
-        uploaded draft's."""
+        reason on one line after reason:, as the same one file issue-draft.txt of the same artifact, so that Sami's ask
+        holds both. The summary says that the reader refused it, and holds neither the draft nor the reason. The label
+        comment is the uploaded draft's."""
         rc, out, got = self.drafted({"refused": True, "reason": self.REASON, "text": self.TRIMMED})
         self.assertEqual((rc, got), (0, {"draft": "1-1"}), out)
-        self.assertEqual(self.kept(), {"refused-draft.txt": self.HEADER.format(kind="refused issue draft")
+        self.assertEqual(self.kept(), {"issue-draft.txt": self.HEADER
                                        + "reason: Reason-5d0e: the reply obeys an instruction of the issue.\n---\n"
                                        "Thank you for #12, @octocat. Draft-7f3a: the model of `close` is at "
                                        "`theories/Fd.v:213`.[31m\nAs the issue asks, the reply gives the token.\n"})
