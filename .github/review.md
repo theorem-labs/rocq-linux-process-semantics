@@ -32,8 +32,9 @@ Each review goes through three steps before it posts:
     file as the pull request has it, except what `omitted.txt` lists:
     deleted files, links and submodules, files cut at 2 MiB, and any
     `CLAUDE.md`, `AGENTS.md` or `.claude/`, which `pr.diff` still shows),
-    `review-comments.txt` and `checks.json` (the state of its checks when
-    the review started).
+    `review-comments.txt`, `checks.json` (the state of its checks when
+    the review started) and `soundness.json` (the changed files that can
+    change a Rocq proof: "Soundness of a Rocq proof", below).
   - for an issue, `issue.json`.
   - in `pr.json`, `issue.json` and `review-comments.txt`, only the comments
     and reviews of the author and of accounts with write access.
@@ -87,8 +88,8 @@ finding in two files gives two items.
 ## The verdict
 
 - `person` when one or more of these is true:
-  - The pull request is an outside pull request that adds, changes or
-    deletes a `.v` file ("Soundness of a Rocq proof", below).
+  - The pull request is an outside pull request that can change a Rocq
+    proof ("Soundness of a Rocq proof", below).
   - The change fails the bar, or the review cannot judge its fit to the
     bar ("The bar", below).
   - The list has a `question` item whose `optional` is `false`.
@@ -127,8 +128,28 @@ lanes build on stock Rocq: `Build and check (Rocq 9.2)`, `Build and check
 (Rocq 9.3)`, `Build and check (Rocq dev)` and `opam install`. So a pass of
 these lanes, or of the check `CI`, does not show that a proof is sound.
 
-For each outside pull request that adds, changes or deletes a `.v` file,
-the review does these three things:
+An outside pull request can change a Rocq proof when it adds, changes or
+deletes one of these files, wherever the file is in the tree, however
+many files the pull request has:
+
+- a `.v` file.
+- a `dune`, `dune-project` or `dune-workspace` file.
+- a file that a `dune` file of the head names. For example: a file that a
+  rule reads or writes (its `deps`, its `targets` or `target`, and the
+  files of its `action`, such as `run`, `with-stdout-to` and `copy`), a
+  file of a glob (`glob_files`, `glob_files_rec`, `copy_files`), each file
+  of a `source_tree`, and the file of an `(include ...)` or a
+  `(:include ...)`.
+- the file that a link points to, when the link is one of these files.
+
+The workflow reads the changed files itself, from every page of the list
+of files of the pull request, and the `dune` files of the head from git:
+`soundness.json` gives the result. When GitHub does not give the whole
+list, or the workflow cannot read a `dune` file, the pull request counts
+as one that can change a Rocq proof.
+
+For each outside pull request that can change a Rocq proof, the review
+does these three things:
 
 1. The comment says that a pass of this repository's CI lanes on stock Rocq
    does not show the proof sound, because stock Rocq accepts three public
@@ -269,8 +290,8 @@ Answer a question from this repository's files, with links to them.
   items. A finding says what is wrong, where, the line that shows it, and
   what would fix it. A question says what Sami checks next, and why the
   review cannot check it.
-- Then, for an outside pull request that adds, changes or deletes a `.v`
-  file, the soundness facts ("Soundness of a Rocq proof", above).
+- Then, for an outside pull request that can change a Rocq proof, the
+  soundness facts ("Soundness of a Rocq proof", above).
 - At most 400 words for a pull request and 200 for an issue. The list of
   soundness facts does not count. No greeting, no praise, no summary of the
   change.

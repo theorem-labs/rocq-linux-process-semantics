@@ -118,11 +118,13 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["verdict
 
 class CheckError(Exception):
     """A check that could not answer. Its message goes to the reason only. public is what the log of the sign-in may
-    show of it: for a request that a service refused, the HTTP status and the error code, never the service's text."""
+    show of it: for a request that a service refused, the HTTP status and the error code, never the service's text.
+    found is what the check found before it could not answer, which the reason keeps beside the error."""
 
-    def __init__(self, message, public=None):
+    def __init__(self, message, public=None, found=None):
         super().__init__(message)
         self.public = message if public is None else public
+        self.found = found or {}
 
 
 def env(name):
@@ -603,7 +605,9 @@ def claude_answer(answer):
 def claude(found):
     """The model, one request for each piece of the joined text, in order, each piece between markers of its own. It
     answers suspicious when the model does for any piece; a piece the model gives no word for is no answer. Each piece
-    it answers suspicious for is a match, with the model's quotes and why."""
+    it answers suspicious for is a match, with the model's quotes and why. When a piece gets no answer, the error
+    keeps the matches of the pieces before it: the check holds the item, and the reason still says why the model
+    found the item suspicious."""
     token = signed_in("claude")
     base = env("ANTHROPIC_URL")
     texts = pieces(joined(found), CLAUDE_PIECE, 0)
@@ -615,7 +619,7 @@ def claude(found):
                 "POST", f"{base}/v1/messages", claude_request(text, marker),
                 {"Authorization": "Bearer " + token, "anthropic-version": ANTHROPIC_VERSION}))
         except CheckError as e:
-            raise CheckError(f"{e} (piece {i} of {len(texts)})") from None
+            raise CheckError(f"{e} (piece {i} of {len(texts)})", found={"matches": matches, "requests": i}) from None
         if word == "suspicious":
             matches.append({"piece": i, "quotes": quotes, "why": why})
     return ("suspicious" if matches else "clean"), {"matches": matches, "requests": len(texts)}
@@ -690,7 +694,7 @@ def run_checks(found, ran):
         try:
             word, detail = CHECKS[name](found)
         except CheckError as e:
-            word, detail = "error", {"error": str(e)[:2000]}
+            word, detail = "error", dict(e.found, error=str(e)[:2000])
         except Exception as e:   # a fault of this file: no answer, and so held
             word, detail = "error", {"error": f"{type(e).__name__}: {str(e)[:2000]}"}
         results[name] = dict(detail, word=word, outcome=outcome(word, detail.get("error", "")))

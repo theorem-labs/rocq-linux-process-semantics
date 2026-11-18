@@ -444,18 +444,18 @@ class Runner(unittest.TestCase):
             self.serve(f"repos/{REPO}/collaborators/{login}/permission", {"permission": permission})
 
     def serve_item(self, number=7, author="mallory", kind="issue", state="open", head=HEAD, mergeable="clean",
-                   draft=False, base="main", merged=False, labels=(), branch=BRANCH, repository=FORK_ID):
+                   draft=False, base="main", merged=False, labels=(), branch=BRANCH, repository=FORK_ID, changed=None):
         """What the API says of an issue or a pull request: its issue, and for a pull request its pull, whose head is
-        head on branch of the head repository repository (None: gone)."""
+        head on branch of the head repository repository (None: gone), with changed changed files (None: no count)."""
         data = {"number": number, "state": state, "user": {"login": author}, "draft": draft,
                 "labels": [{"name": n} for n in labels]}
         if kind == "pr":
             data["pull_request"] = {"url": f"https://api.github.com/repos/{REPO}/pulls/{number}"}
-            self.serve(f"repos/{REPO}/pulls/{number}", {
+            self.serve(f"repos/{REPO}/pulls/{number}", dict({
                 "number": number, "state": state, "draft": draft, "merged": merged, "user": {"login": author},
                 "base": {"ref": base},
                 "head": {"sha": head, "ref": branch, "repo": None if repository is None else {"id": repository}},
-                "mergeable_state": mergeable})
+                "mergeable_state": mergeable}, **({} if changed is None else {"changed_files": changed})))
         self.serve(f"repos/{REPO}/issues/{number}", data)
 
     def serve_prs(self, *prs):
@@ -3578,8 +3578,10 @@ class ReaderRunner(Runner):
              outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED):
         """The sign-in, then the comment step on the model's output, with a reader that answers trimmed (or reader, the
         stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing).
-        The step's env is the one that the workflow gives it, for the gather job's outside and the trust job's
-        started, with SOUNDNESS_HOLD hold (None: not set). The step's exit status, output and outputs."""
+        When the test wrote no soundness.json, the step reads the one that the gather job writes for a whole list of
+        changed files of which none can change a proof. The step's env is the one that the workflow gives it, for the
+        gather job's outside and the trust job's started, with SOUNDNESS_HOLD hold (None: not set). The step's exit
+        status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
         with open(path, "w") as f:
@@ -3590,6 +3592,10 @@ class ReaderRunner(Runner):
         if not os.path.exists(commits):
             with open(commits, "w") as f:
                 f.write(f"base {OTHER_HEAD}\nhead {HEAD}\n")
+        facts = os.path.join(self.work, ".review", rules.SOUNDNESS_FILE)
+        if not os.path.exists(facts):
+            with open(facts, "w") as f:
+                json.dump({"whole": True, "files": [], "unparsed": []}, f)
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         s = step("review", self.STEP)
@@ -3943,12 +3949,14 @@ class FreshReaderTest(ReaderRunner):
 
 
 class SoundnessTest(ReaderRunner):
-    """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that adds, changes or deletes a
-    .v file gives the person verdict on soundness, whatever the model gave. Its comment gets the fixed section after
-    the trimmed text, where the reader never sees it: the three Rocq issues, and each line of the changed .v files at
-    the head that uses the VM, the native compiler or a primitive array, as a fact and never as a fail. The gather
-    job's own step reads the pull request from git, with a checks.json in which this repository's CI lanes on stock
-    Rocq passed (P7), and the comment job's label step sets the label of the review's verdict."""
+    """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that can change a Rocq proof (a
+    .v file, a dune or dune-project file, or a file that a dune file of the head names, wherever it is, however many
+    files the pull request has) gives the person verdict on soundness, whatever the model gave. Its comment gets the
+    fixed section after the trimmed text, where the reader never sees it: the three Rocq issues, the changed files of
+    the build, and each line of the changed .v files at the head that uses the VM, the native compiler or a primitive
+    array, as a fact and never as a fail. The gather job's own step reads the pull request from git and its files from
+    every page of the API's list, with a checks.json in which this repository's CI lanes on stock Rocq passed (P7), and
+    the comment job's label step sets the label of the review's verdict."""
 
     # This repository's CI lanes on stock Rocq, as ci.yml names them, and CI, the check that needs them all.
     LANES = [interpolate(CI["jobs"]["build"]["name"], {"matrix.rocq": lane["rocq"]})
@@ -3967,13 +3975,15 @@ class SoundnessTest(ReaderRunner):
     TRIMMED = "Questions for Sami: is the proof of `b` at `theories/B.v:3` sound?"
     VM_LINE = re.compile(r"^- `theories/B\.v:3`: `vm_cast_no_check`$", re.M)
 
-    def gather(self, changes, author="mallory"):
-        """Pull request #7 of author, whose head makes changes on MAIN, gathered into .review/ by the gather job's
-        step, with a checks.json in which each of LANES passed: the head, and the gather job's outside."""
+    def gather(self, changes, author="mallory", main=None, cut=None):
+        """Pull request #7 of author, whose head makes changes on main (MAIN when None), gathered into .review/ by the
+        gather job's step, with a checks.json in which each of LANES passed, and with the files that GitHub lists for it
+        (pulls/7/files), in the order of their paths on pages of 100: only the first cut of them when cut is given.
+        The head, and the gather job's outside."""
         origin, src = os.path.join(self.dir, "origin.git"), os.path.join(self.dir, "src")
         self.git("init", "-q", "--bare", origin)
         self.git("init", "-q", "-b", "main", src)
-        self.commit(src, self.MAIN, "main")
+        self.commit(src, self.MAIN if main is None else main, "main")
         self.git("push", "-q", origin, "main", cwd=src)
         head = self.commit(src, changes, "the pull request")
         self.git("push", "-q", origin, "HEAD:refs/pull/7/head", cwd=src)
@@ -3981,13 +3991,17 @@ class SoundnessTest(ReaderRunner):
         os.rmdir(self.work)
         self.git("clone", "-q", origin, self.work)
         self.checkout()
-        self.serve_item(7, author, kind="pr", head=head)
+        files = [{"filename": path, "previous_filename": None} for path in sorted(changes)]
+        self.serve_item(7, author, kind="pr", head=head, changed=len(files))
+        shown = files if cut is None else files[:cut]
+        for n in range(0, max(len(shown), 1), 100):
+            self.serve(f"repos/{REPO}/pulls/7/files" + (f".{n // 100 + 1}" if n else ""), shown[n:n + 100])
         for endpoint in ("issues/7/comments", "pulls/7/reviews", "pulls/7/comments"):
             self.serve(f"repos/{REPO}/{endpoint}", [])
         self.serve("pr_view_7", {
             "number": 7, "title": "t", "author": {"login": author}, "isDraft": False, "baseRefName": "main",
             "headRefOid": head, "body": "b", "commits": [],
-            "files": [{"path": path, "additions": 1, "deletions": 1} for path in changes],
+            "files": [{"path": path, "additions": 1, "deletions": 1} for path in sorted(changes)[:100]],
             "statusCheckRollup": [{"__typename": "CheckRun", "name": name, "status": "COMPLETED",
                                    "conclusion": "SUCCESS"} for name in self.LANES]})
         rc, out, got = self.run_script(step("gather", "Gather the pull request or issue")["run"], KIND="pr",
@@ -3999,11 +4013,11 @@ class SoundnessTest(ReaderRunner):
         return head, got["outside"]
 
     def review(self, changes, verdict="person", items=None, review=REVIEW, trimmed=TRIMMED, author="mallory",
-               **kwargs):
-        """The gather job's step, then the comment step on a stand-in model's review with verdict and items (ASKED
-        when None), which the reader trims to trimmed: the head, the step's outputs, the visible part of the comment,
-        the list that the run's summary holds, and the gather job's outside."""
-        head, outside = self.gather(changes, author)
+               main=None, cut=None, **kwargs):
+        """The gather job's step (gather, with main and cut), then the comment step on a stand-in model's review with
+        verdict and items (ASKED when None), which the reader trims to trimmed: the head, the step's outputs, the
+        visible part of the comment, the list that the run's summary holds, and the gather job's outside."""
+        head, outside = self.gather(changes, author, main, cut)
         rc, out, got = self.post(review, [self.ASKED] if items is None else items, trimmed, verdict, outside=outside,
                                  **kwargs)
         self.assertEqual(rc, 0, out)
@@ -4132,9 +4146,88 @@ class SoundnessTest(ReaderRunner):
                 with open(self.summary, encoding="utf-8") as f:
                     self.assertNotIn("rocq-prover", f.read())
 
+    # main with dune files whose rules read and write files other than .v files: a rule of theories/ that writes a .v
+    # file from a script and a table, a rule of tests/ whose deps take each .hex file below theories/
+    # (glob_files_rec), and the files that copy_files copies into tests/ from shared/.
+    BUILT = dict(MAIN, **{
+        "dune-project": "(lang dune 3.23)\n",
+        "theories/dune": "; A rule that writes a .v file.\n(rule\n (targets Gen.v)\n (deps gen.py data/table.txt)\n"
+                         " (action (with-stdout-to Gen.v (run python3 %{dep:gen.py} data/table.txt))))\n",
+        "theories/gen.py": "import sys\nprint('Lemma g : True. Proof. exact I. Qed.')\n",
+        "theories/data/table.txt": "1 2 3\n", "theories/Chunks/a.hex": "00\n", "shared/A.lemma": "x\n",
+        "tests/dune": "(rule\n (target Hex.v)\n (deps (glob_files_rec %{project_root}/theories/*.hex))\n"
+                      " (action (with-stdout-to %{target} (echo \"(* Generated. *)\\n\"))))\n\n"
+                      "(copy_files (files %{project_root}/shared/*.lemma))\n"})
+
+    def test_a_change_of_a_file_that_a_dune_rule_reads_or_writes_gets_the_person_verdict(self):
+        """R8 (v50): "any other file that a dune rule of the repository reads or writes, wherever it is in the tree".
+        With main's dune files of BUILT, which the gather job reads from git objects of the head: a pull request that
+        changes only the table or the script of the rule that writes Gen.v, only a .hex file in a directory below
+        theories/ (a deps glob), only a file that copy_files copies, only the dune-project file or only a dune file
+        gets the person verdict, whatever the model gave, and the section names the file and the dune file that names
+        it. So does the table after 100 Markdown files, on the second page of the files. A Markdown file that no dune
+        file names keeps the model's pass."""
+        docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(100)}
+        for changes, path, by in (
+                ({"theories/data/table.txt": "4 5 6\n"}, "theories/data/table.txt", "theories/dune"),
+                ({"theories/gen.py": "print('Lemma g : False. Admitted.')\n"}, "theories/gen.py", "theories/dune"),
+                ({"theories/Chunks/Deep/b.hex": "01\n"}, "theories/Chunks/Deep/b.hex", "tests/dune"),
+                ({"shared/A.lemma": "y\n"}, "shared/A.lemma", "tests/dune"),
+                ({"dune-project": "(lang dune 3.23)\n(name x)\n"}, "dune-project", None),
+                ({"tests/dune": "(rule (alias runtest) (action (echo \"ok\\n\")))\n"}, "tests/dune", None),
+                (dict(docs, **{"theories/data/table.txt": "4 5 6\n"}), "theories/data/table.txt", "theories/dune")):
+            with self.subTest(path=path, files=len(changes)):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
+                                                                 "No blocking finding.", main=self.BUILT)
+                self.assertSoundness(head, got, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+                self.assertIn("This pull request changes a file that the build of the Rocq proofs reads or writes.",
+                              shown)
+                named = re.escape(f"- `{path}`") + (re.escape(f": `{by}` names it.") if by else "")
+                self.assertRegex(shown, f"(?m)^{named}$")
+                self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
+        self.tearDown()
+        self.setUp()
+        head, got, _shown, listed, _outside = self.review({"theories/README.md": "# Theories\n"}, "pass", [],
+                                                          "No blocking finding.", "No blocking finding.",
+                                                          main=self.BUILT)
+        self.assertEqual((got["verdict"], listed), ("pass", []))
+        self.assertNotIn("rocq-prover", got["body"])
+
+    def test_a_list_that_is_not_whole_or_a_dune_file_that_the_job_cannot_read_gets_the_person_verdict(self):
+        """Fail-safe: when GitHub lists only 100 of the 101 files of a pull request, or main holds a dune file that
+        the job cannot read (a ( with no ), here), the job cannot show that no proof changed. A pull request of Markdown
+        files then gets the person verdict, and the section says why. The same 101 files listed whole, with their
+        second page, keep the model's pass."""
+        docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(101)}
+        for name, changes, main, cut, why in (
+                ("a list cut at 100", docs, None, 100,
+                 "GitHub did not give the full list of the files that this pull request changes"),
+                ("a dune file that does not parse", {"README.md": "# Model of Linux\n"},
+                 dict(self.MAIN, **{"theories/dune": "(rule\n (deps table.txt)\n"}), None,
+                 "The workflow could not read these files of the build:")):
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
+                                                                 "No blocking finding.", main=main, cut=cut)
+                self.assertSoundness(head, got, shown)
+                self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", shown)
+                self.assertIn(why, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+        self.assertRegex(shown, r"(?m)^- `theories/dune`$")
+        self.tearDown()
+        self.setUp()
+        _head, got, _shown, listed, _outside = self.review(docs, "pass", [], "No blocking finding.",
+                                                           "No blocking finding.")
+        self.assertEqual((got["verdict"], listed), ("pass", []))
+
 
 class SoundnessScanTest(unittest.TestCase):
-    """rules.py's scan of a pull request's .v files (changed_proofs, uses), its section and its rule."""
+    """rules.py's facts of the rule (proofs, dune_names, soundness.json), its scan of a pull request's .v files (uses),
+    its section and its rule."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="review-test-")
@@ -4178,23 +4271,140 @@ class SoundnessScanTest(unittest.TestCase):
             ("theories/S.v", 5, ["<:"]), ("theories/S.v", 6, ["<<:"]),
             ("theories/S.v", 9, ["[| |]"]), ("theories/S.v", 10, ["[| |]"])])
 
-    def test_a_deleted_proof_is_a_change_with_no_line_to_read(self):
-        """The .v files that the head holds, those that omitted.txt names as deleted or as not a regular file, and
-        those of pr.json's files; an issue has none."""
-        self.assertEqual(rules.changed_proofs(self.review), [])
+    def test_the_facts_of_the_gather_job_decide_and_a_proof_that_it_could_not_read_is_named(self):
+        """soundness.json, as the gather job writes it (proofs), decides the rule. An issue's .review/ has none, and
+        gets no rule. A pull request's .review/ with none, with one that is not JSON, or with one in another form,
+        counts as a list that is not whole. A whole list of no such path gets no rule. A deleted proof is a change with
+        no line to read. A .v file at the head that head/ does not hold (the gather job removed its directory, or the
+        head has a link there) is named as not read, and one cut at 2 MiB as read only in part."""
+        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
         self.write("issue.json", "{}")
-        self.assertEqual(rules.changed_proofs(self.review), [])
+        self.assertEqual(rules.soundness(self.review, output, "true", "true"), (output, "", ""))
+        self.write("commits.txt", f"base {OTHER_HEAD}\nhead {HEAD}\n")
+        for facts in (None, "{", json.dumps({"whole": True, "files": [{"path": "a.v"}], "unparsed": []})):
+            with self.subTest(facts=facts):
+                if facts is not None:
+                    self.write(rules.SOUNDNESS_FILE, facts)
+                got, section, _all = rules.soundness(self.review, output, "true", "true")
+                self.assertEqual(got["verdict"], "person")
+                self.assertIn("GitHub did not give the full list of the files that this pull request changes", section)
+
+        def whole(*files):
+            return json.dumps({"whole": True, "unparsed": [], "files": [
+                {"path": path, "why": "proof", "by": None, "at_head": at_head} for path, at_head in files]})
+        self.write(rules.SOUNDNESS_FILE, whole())
+        self.assertEqual(rules.soundness(self.review, output, "true", "true"), (output, "", ""))
         self.write("head/theories/A.v", "Lemma a : True.\nProof. vm_compute. exact I. Qed.\n")
         self.write("head/theories/Big.v", "Lemma big : True.\n")
-        self.write("omitted.txt", "theories/Old.v: deleted\ndocs/Old.md: deleted\n"
+        self.write("omitted.txt", "theories/Old.v: deleted\ntheories/agents.md: removed (instructions for Claude Code)\n"
                                   "theories/link.v: not a regular file (mode 120000)\n"
-                                  "theories/Big.v: cut at 2 MiB of its 3000000 bytes\n"
-                                  "2 comments by accounts without write access: not read\n")
-        self.write("pr.json", json.dumps({"files": [{"path": "theories/A.v"}, {"path": "theories/.claude/Hidden.v"},
-                                                    {"path": "README.md"}]}))
-        self.assertEqual(rules.changed_proofs(self.review), ["theories/.claude/Hidden.v", "theories/A.v",
-                                                             "theories/Big.v", "theories/Old.v", "theories/link.v"])
+                                  "theories/Big.v: cut at 2 MiB of its 3000000 bytes\n")
+        self.write(rules.SOUNDNESS_FILE, whole(("theories/A.v", True), ("theories/Big.v", True), ("theories/Old.v", False),
+                                               ("theories/agents.md/Evil.v", True), ("theories/link.v", True)))
+        got, section, _all = rules.soundness(self.review, output, "true", "true")
+        self.assertEqual(got["verdict"], "person")
+        self.assertNotIn("GitHub did not give", section)
+        self.assertEqual(re.findall(r"(?m)^- `(.+)`: the workflow (did not read it|read only its first 2 MiB)\.$", section),
+                         [("theories/Big.v", "read only its first 2 MiB"), ("theories/agents.md/Evil.v", "did not read it"),
+                          ("theories/link.v", "did not read it")])
         self.assertEqual(rules.uses(self.review), [("theories/A.v", 2, ["vm_compute"])])
+
+    def test_a_dune_file_names_each_file_that_its_rules_read_or_write(self):
+        """dune_names, from the S-expressions of a dune file of theories/ as dune 3 reads them: the deps and targets of
+        a rule that writes a .v file, the arguments of %{dep:...} and of run, a glob of glob_files_rec, which takes the
+        files of each directory below its own, a rule of a subdir, the files of copy_files, a source_tree, a file that
+        a shell action reads, a run in a chdir of the root, an (:include ...), and an included file with the files that
+        its own rules name. A name in a comment, a %{target} alone and a Markdown file that no rule names are none."""
+        dune = "\n".join((
+            "; (rule (deps commented.txt))",
+            "(rule",
+            " (targets Gen.v)",
+            " (deps gen.py (glob_files_rec %{project_root}/data/*.{tbl,csv}))",
+            ' (action (with-stdout-to %{target} (run python3 %{dep:tool/gen.py} --in "my table.txt"))))',
+            "(subdir sub (rule (target A.v) (action (copy %{project_root}/shared/A.v A.v))))",
+            "(copy_files (files ../vendor/*.ml))",
+            "(rule (alias runtest) (deps (source_tree %{project_root}/fixtures))",
+            " (action (chdir %{workspace_root} (run cat docs/input.txt))))",
+            '(rule (target b.v) (action (system "cat notes/a.txt > %{target}")))',
+            "(env (_ (rocq (flags (:include flags.sexp)))))",
+            "(include dune.inc)"))
+        texts = {"theories/dune.inc": "(rule (target Inc.v) (deps inc.txt) (action (echo \"x\\n\")))\n"}
+
+        def read(path):
+            if path not in texts:
+                raise ValueError(f"{path} is no file of the head")
+            return texts[path]
+        names = rules.Names()
+        for stanza in rules.dune_sexps(dune):
+            rules.dune_names(names, "theories/dune", stanza, "theories", ["theories"], read)
+        for path, by in (("theories/Gen.v", "theories/dune"), ("theories/gen.py", "theories/dune"),
+                         ("theories/tool/gen.py", "theories/dune"), ("theories/my table.txt", "theories/dune"),
+                         ("data/x.tbl", "theories/dune"), ("data/deep/y.csv", "theories/dune"),
+                         ("theories/sub/A.v", "theories/dune"), ("shared/A.v", "theories/dune"),
+                         ("vendor/m.ml", "theories/dune"), ("fixtures/a/b.txt", "theories/dune"),
+                         ("docs/input.txt", "theories/dune"), ("theories/notes/a.txt", "theories/dune"),
+                         ("theories/flags.sexp", "theories/dune"), ("theories/dune.inc", "theories/dune"),
+                         ("theories/inc.txt", "theories/dune.inc"), ("theories/Inc.v", "theories/dune.inc")):
+            with self.subTest(path=path):
+                self.assertEqual(names.of(path), by)
+        for path in ("theories/commented.txt", "data/x.md", "theories/README.md", "README.md", "docs/other.txt",
+                     "fixtures.md", "theories/x", "theories/%{target}"):
+            with self.subTest(path=path):
+                self.assertIsNone(names.of(path))
+        texts.clear()
+        with self.assertRaises(ValueError):
+            for stanza in rules.dune_sexps("(include dune.inc)"):
+                rules.dune_names(rules.Names(), "theories/dune", stanza, "theories", ["theories"], read)
+        for text in ("(rule (deps a)", "(rule) )", '(echo "no end)', '(echo "\\q")', '(echo\n "\\| block\n)'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                rules.dune_sexps(text)
+        # dune 3 reads #| and #; as atoms, a ; as a comment also inside an atom, and a string's escapes.
+        self.assertEqual(rules.dune_sexps('(a #| b;c\n "d\\065\\x41\\\n   e" #;f\n g)'),
+                         [["a", "#|", "b", "dAAe", "#", "g"]])
+
+    def test_the_file_that_a_link_of_a_proof_points_to_counts_and_a_linked_dune_file_is_not_read(self):
+        """The build reads a file through a link to it: a .v file of the head that is a link to docs/evil.md makes a
+        change of docs/evil.md a change of a proof, and so does a chain of two links. A dune file that is a link is a
+        file of the build that the job does not read, and the file that it points to counts. A Markdown file that no
+        link reaches does not count."""
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            for directory in ("theories", "docs", "tests"):
+                os.makedirs(os.path.join(d, directory))
+            for name in ("evil.md", "deep.md", "other.md", "plain.md"):
+                with open(os.path.join(d, "docs", name), "w") as f:
+                    f.write("Lemma x : False.\n")
+            for link, to in (("theories/Foo.v", "../docs/evil.md"), ("theories/Bar.v", "../docs/link.md"),
+                             ("docs/link.md", "deep.md"), ("tests/dune", "../docs/other.md")):
+                os.symlink(to, os.path.join(d, link))
+            for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "links")):
+                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
+                               capture_output=True)
+            files = [{"filename": p, "previous_filename": None}
+                     for p in ("docs/evil.md", "docs/deep.md", "docs/link.md", "docs/other.md", "docs/plain.md")]
+            facts = rules.proofs("HEAD", files, len(files), cwd=d)
+        self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
+                         {"docs/evil.md": ("target", "theories/Foo.v"), "docs/link.md": ("target", "theories/Bar.v"),
+                          "docs/deep.md": ("target", "docs/link.md"), "docs/other.md": ("target", "tests/dune")})
+        self.assertEqual(facts["unparsed"], ["tests/dune"])
+
+    def test_the_dune_files_of_this_repository_parse_and_name_the_inputs_of_its_proofs_and_no_markdown_file(self):
+        """proofs on this repository's own head: each of its dune files parses, so that no pull request gets the person
+        verdict because the job could not read one. The files that its rules read or write count, wherever they are:
+        the generators under tools/, the logs of the placement replays, the .hex chunks of an example and of the
+        bridge. Markdown files, the opam files and tools/check_one.py, which no dune file names, do not."""
+        counted = {"theories/A.v": "proof", "dune-project": "build", "theories/Examples/dune": "build",
+                   "tools/gen_checker.py": "named", "tools/gen_fd_lemmas.py": "named",
+                   "tools/placement_conformance/log_to_rocq.py": "named",
+                   "tests/placement/linux-6.18.46-defconfig.log": "named",
+                   "theories/LinuxProcessSem/Bridge/exit.hex": "named",
+                   "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "named"}
+        others = ["README.md", "SCOPE.md", "theories/README.md", "reports/a4-start-state.md", "tools/check_one.py",
+                  "rocq-linux-process-semantics-core.opam", "tools/placement_conformance/README.md"]
+        files = [{"filename": p, "previous_filename": None} for p in list(counted) + others]
+        facts = rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR))
+        self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
+        self.assertEqual({f["path"]: f["why"] for f in facts["files"]}, counted)
+        self.assertFalse(rules.proofs("HEAD", files, len(files) + 1, cwd=os.path.dirname(GITHUB_DIR))["whole"])
 
     def test_the_section_lists_at_most_listed_lines_and_says_how_many_more(self):
         line = re.compile(r"^- `theories/.+\.v:\d+`: `vm_compute`$", re.M)
@@ -5294,6 +5504,19 @@ class FixRuleTest(unittest.TestCase):
                                     os.path.join(d, "pr.diff")], capture_output=True, text=True)
                 self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
                                  (0, {"summary": "S.", "suggestions": [suggestion]}))
+
+    def test_a_path_that_git_ends_with_a_tab_is_read_without_it_and_a_deleted_one_has_no_lines(self):
+        """hunks reads the +++ line of a path that holds a space as git writes it, with a TAB after the path (and after
+        the quotes of a path that git quotes), and so does a path that ends with a space. A path that holds a TAB is
+        quoted with no TAB after it. A deleted file whose path holds a space has no right-side lines."""
+        diff = ("diff --git a/a b.v b/a b.v\n--- a/a b.v\t\n+++ b/a b.v\t\n@@ -1 +1,2 @@\n x\n+y\n"
+                "diff --git a/notes  b/notes \n--- a/notes \t\n+++ b/notes \t\n@@ -1 +1 @@\n-p\n+q\n"
+                'diff --git "a/\\303\\251 t.v" "b/\\303\\251 t.v"\n--- "a/\\303\\251 t.v"\t\n+++ "b/\\303\\251 t.v"\t\n'
+                "@@ -0,0 +1 @@\n+z\n"
+                'diff --git "a/t\\tu.v" "b/t\\tu.v"\n--- "a/t\\tu.v"\n+++ "b/t\\tu.v"\n@@ -0,0 +1 @@\n+w\n'
+                "diff --git a/gone file.v b/gone file.v\n--- a/gone file.v\t\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n")
+        self.assertEqual(rules.hunks(diff), {"a b.v": [(1, 2)], "notes ": [(1, 1)], "\u00e9 t.v": [(1, 1)],
+                                             "t\tu.v": [(1, 1)]})
 
 
 RESCREEN_JOB = "Start the runs that the open items are due"
@@ -8335,6 +8558,8 @@ class ArtifactTest(Runner):
         self.git("push", "-q", origin, "HEAD:refs/pull/99/head", cwd=src)
         os.rmdir(self.work)
         self.git("clone", "-q", origin, self.work)
+        # main's .github/, as the gather job's checkout gives it: its step runs .github/review/rules.py.
+        self.checkout()
         # The CI run's artifact, which names another pull request, another head and another diff.
         self.serve(f"repos/{REPO}/actions/runs/555/artifacts", {"total_count": 1, "artifacts": [{"id": 9, "name": "pr"}]})
         self.serve(f"repos/{REPO}/actions/artifacts/9", {"number": 99, "head": decoy, "diff": "b.v"})
@@ -9136,8 +9361,9 @@ class ImportCheckTest(ReaderRunner):
 
     def assertRecorded(self, got, value, head=HEAD):
         """One check run repo-pairs/import-approved, with conclusion success on head, recorded with token A as the
-        post job's only write, and one marker line of value in its output text: recorded is true, and the job caught
-        up no head (caught is empty), so the comment job records no catch-up."""
+        post job's only write, and one marker line of value in its output text: recorded is true, the output imports
+        gives the comment job value as JSON, and the job caught up no head (caught is empty), so the comment job
+        records no catch-up."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -9149,7 +9375,9 @@ class ImportCheckTest(ReaderRunner):
                           "conclusion": "success"})
         self.assertEqual(sorted(body["output"]), ["summary", "text", "title"])
         self.assertMarker(body["output"]["text"], value, head)
-        self.assertEqual(got["post"], {"recorded": "true", "decision": "record", "caught": ""})
+        self.assertEqual(json.loads(got["post"].get("imports", "")), value)
+        self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
+                         {"recorded": "true", "decision": "record", "caught": ""})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -9313,16 +9541,20 @@ class ImportCheckTest(ReaderRunner):
 
     def test_while_the_hold_lasts_a_change_that_is_not_markdown_alone_gets_no_check_run(self):
         """While SOUNDNESS_HOLD is "true", with a stand-in model that misses the soundness verdict (it passes each
-        one): a .v file (whose review the soundness rule gives the person verdict), only tools/gen_checker.py, only a
-        dune file with an echo rule, or only a .hex file under theories/. No check run, and waits-on-theorem with the
-        steps of R12 for the variable's state: with no variable, each step that can follow; with the pair's
-        import_paths, which take each of these paths, Sami's approval of the head for the import."""
+        one), and soundness.json as the gather job writes it from this repository's own dune files (proofs): a .v
+        file, only tools/gen_checker.py (which a rule of theories/Examples/dune runs), only a dune file with an echo
+        rule, and only a .hex file under theories/Examples/ (which a glob of that dune file takes) each get the person
+        verdict of the soundness rule (R8); only tools/check_one.py, which no dune file names, keeps the model's pass,
+        and the Markdown-only rule of R12 stops it. No check run, and waits-on-theorem with the steps of R12 for the
+        variable's state: with no variable, each step that can follow; with the pair's import_paths, which take each
+        of these paths, Sami's approval of the head for the import."""
         self.assertEqual(WF["env"]["SOUNDNESS_HOLD"], "true")
         for path, text, verdict, decision in (
                 ("theories/Fd.v", "Lemma fd : True.\nProof. exact I. Qed.\n", "person", "person"),
-                ("tools/gen_checker.py", "print('checker')\n", "pass", "markdown"),
-                ("dune", '(rule\n (alias runtest)\n (action (echo "checked\\n")))\n', "pass", "markdown"),
-                ("theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex", "7f454c46\n", "pass", "markdown")):
+                ("tools/gen_checker.py", "print('checker')\n", "person", "person"),
+                ("dune", '(rule\n (alias runtest)\n (action (echo "checked\\n")))\n', "person", "person"),
+                ("theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex", "7f454c46\n", "person", "person"),
+                ("tools/check_one.py", "print('one')\n", "pass", "markdown")):
             for value in (None, self.LPS):
                 with self.subTest(path=path, variable=value is not None):
                     self.tearDown()
@@ -9333,6 +9565,9 @@ class ImportCheckTest(ReaderRunner):
                         f.write(text)
                     with open(os.path.join(self.work, ".review", "pr.json"), "w") as f:
                         json.dump({"files": [{"path": path}]}, f)
+                    with open(os.path.join(self.work, ".review", rules.SOUNDNESS_FILE), "w") as f:
+                        json.dump(rules.proofs("HEAD", [{"filename": path, "previous_filename": None}], 1,
+                                               cwd=os.path.dirname(GITHUB_DIR)), f)
                     rc, out, reviewed = self.post("No blocking finding.", [], "No blocking finding.", "pass")
                     self.assertEqual((rc, reviewed["verdict"]), (0, verdict), out)
                     got = self.judge([path], reviewed["verdict"], value)
@@ -9555,6 +9790,70 @@ class ImportCheckTest(ReaderRunner):
         self.assertTrue(body.startswith(copy), body)
         self.assertIn(self.NOT_TAKEN, body)
         self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+
+    def test_the_label_follows_the_value_that_the_post_job_decided_with_and_the_next_run_sees_it_changed(self):
+        """b10 (R12): the post job hands the value of REPO_PAIRS_IMPORT_PATHS that its decision read to the comment job
+        (its output imports), which sets the label by that value and writes it in the marker line of the label comment,
+        whatever the variable is when the comment job starts. The post job of the review of mallory's pull request
+        read the pair's import_paths, which do not take reports/corpus-replay.md, and recorded no check run. Then the
+        variable is deleted, and the comment job starts: the item gets waits-on-theorem with the step of a copy by
+        hand and the marker line of that value, and not the steps of no variable. The next scheduled run, with no
+        variable, reads that the value of the label comment is not the value now, and relabels the head."""
+        paths = ["reports/corpus-replay.md"]
+        review = review_of(HEAD)
+        self.serve(f"repos/{REPO}/pulls/7/files", [{"filename": p, "previous_filename": None} for p in paths])
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": len(paths)})
+        self.serve(f"repos/{REPO}/issues/7/comments", [review])
+        self.serve(f"repos/{REPO}/pulls/7/reviews", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in self.REVIEWED.items()}
+        ctx.update({"github.event_name": "workflow_run", "github.ref": "refs/heads/main", "github.repository": REPO,
+                    "github.token": self.RUN_TOKEN, "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success",
+                    "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                    "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean",
+                    "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                    "needs.review.outputs.verdict": "pass", "needs.review.outputs.will_fix": "false",
+                    "needs.review.outputs.fix_stop": "false"})
+        self.forget()
+        steps = run_post(self, ctx, self.TOKENS)
+        self.assertNotIn("failure", steps.values(), self.logs)
+        self.assertEqual(gh_inputs(self.api), [])
+        post = filled(JOBS["post"]["outputs"], ctx)
+        self.assertEqual((post["decision"], json.loads(post["imports"])), ("outside", self.LPS))
+        ctx.update({"needs.post.result": "success", **{f"needs.post.outputs.{k}": v for k, v in post.items()},
+                    "vars.REPO_PAIRS_IMPORT_PATHS": ""})
+        s = step("comment", self.LABEL)
+        env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+        rc, out, _ = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+        ((_method, _endpoint, body),) = label_comments(self.api)
+        self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {self.COPY}\n"), body)
+        self.assertIn(self.NOT_TAKEN, body)
+        self.assertNotIn(self.MERGE, body)
+        self.assertMarker(body, self.LPS)
+        labelled = {"id": 40, "user": {"login": BOT}, "created_at": OLD, "updated_at": "2026-11-02T10:06:00Z",
+                    "body": body}
+        self.permissions(mallory="read")
+        self.serve_prs((7, "mallory", HEAD))
+        for endpoint, data in (
+                ("issues", [{"number": 7, "state": "open", "user": {"login": "mallory"}, "created_at": OLD,
+                             "labels": [{"name": THEOREM_LABEL}], "pull_request": {}}]),
+                ("actions/workflows/review.yml/runs", {"workflow_runs": []}), ("actions/runs", {"workflow_runs": []}),
+                ("actions/workflows/review.yml/dispatches", {}), ("issues/7/comments", [review, labelled]),
+                ("pulls/7/comments", []),
+                ("pulls/7", {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD, "repo": {"id": FORK_ID}},
+                             "base": {"ref": "main"}, "mergeable": True, "mergeable_state": "clean"}),
+                (f"commits/{HEAD}/check-runs", {"check_runs": []})):
+            self.serve(f"repos/{REPO}/{endpoint}", data)
+        self.serve("graphql", closed_pulls())
+        self.checkout()
+        for value, want in ((self.LPS, []), (None, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(variable=value is not None):
+                self.forget()
+                rc, out, runs = schedule(self, variable=value)
+                self.assertEqual((rc, runs), (0, want), out)
 
     def test_a_relabel_applies_the_decision_again_to_its_head_with_no_model(self):
         """A relabel by hand of mallory's pull request: the trust job gives the outsider, no job runs a model, and the

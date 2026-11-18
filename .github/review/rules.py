@@ -5,6 +5,7 @@ labels").
     python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line>
     python3 .github/review/rules.py make-label <name>
+    python3 .github/review/rules.py proofs <head> <files.jsonl> <changed files>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
@@ -39,20 +40,32 @@ make-label: makes the label <name> of LABELS with its colour and description, or
 is there with another one. It reads the label first, and writes only what differs. A failure only warns: adding a
 label that does not exist makes it, with no description.
 
+proofs: the facts of the soundness rule at the head <head> of a pull request, as JSON on standard output, which the
+gather job writes into .review/ as soundness.json (proofs): each changed path that can change a Rocq proof, with why,
+whether the list of the changed paths is whole, and each file of the build that it could not read. <files.jsonl> holds
+the files of the pull request as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename}
+on each line, and <changed files> is the pull request's changed_files, or empty when a read did not finish or read
+another head: then the list is not whole. A changed path counts when it is a .v file, a dune, dune-project or
+dune-workspace file anywhere in the tree, a file that a dune file of <head> names (dune_names), or the file that a link
+of <head> points to when the link's own path counts. The dune files come from git objects of <head>, in the
+repository of the working directory, never from a checkout.
+
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
 on stock Rocq, as the checks that the import's copy must pass do. So a pass of the checks does not show a proof sound.
 The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the gather job's outside,
-is not false) that adds, changes or deletes a .v file (changed_proofs). Then <output.json>, the review's output
-{comment, verdict, will_fix, items}, gets the verdict person whatever the model gave, and QUESTION when its list has
-no question on soundness (forced). <section> gets the fixed section on soundness, which trim.py puts after the trimmed
-text, where the reader never sees it: it lists, as facts for Sami, each line of the changed .v files at the head that
-uses one of USES, an array literal or make of the array module (uses). None of them is a fail: honest proofs use the
-same constructs. A proof with no such line gets the section too: a proof reaches the VM through a tactic such as lia,
-and a primitive array through make with no array literal, so a search of the text cannot rule a forgery out. The
-section lists at most LISTED lines in at most LISTED_CHARACTERS characters, and says how many more there are. <all>
-gets the section with every line, for the run's summary. When the rule does not hold, <output.json> stays as it is
-and the two files are empty.
+is not false) that changes a path that soundness.json counts or a .v file under head/, whose list of changed paths is
+not whole, or for which a file of the build could not be read: the job cannot show then that no proof changed. Then
+<output.json>, the review's output {comment, verdict, will_fix, items}, gets the verdict person whatever the model
+gave, and QUESTION when its list has no question on soundness (forced). <section> gets the fixed section on soundness,
+which trim.py puts after the trimmed text, where the reader never sees it: it says why the rule holds, and lists, as
+facts for Sami, each changed file of the build, each line of the changed .v files at the head that uses one of USES, an
+array literal or make of the array module (uses), and each changed .v file at the head that the gather job did not
+keep whole. None of them is a fail: honest proofs use the same constructs. A proof with no such line gets the section
+too: a proof reaches the VM through a tactic such as lia, and a primitive array through make with no array literal, so
+a search of the text cannot rule a forgery out. The section lists at most LISTED lines in at most LISTED_CHARACTERS
+characters, and says how many more there are. <all> gets the section with every line, for the run's summary. When the
+rule does not hold, <output.json> stays as it is and the two files are empty.
 
 fixes: the count of the fix reviews since the author's last own push (.github/review-answer.md, "The two stops"), on
 standard output. <commits.jsonl> is the history of <head> as the API gives it (repos/<repo>/commits?sha=<head>), and
@@ -102,6 +115,7 @@ The standard library of Python 3 alone.
 
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -903,11 +917,11 @@ def review_verdict(comments, head):
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
-# changed_proofs, uses, code, section and the constants from USES to LISTED are copied from
-# theorem-labs/oss-verify-proofs-internal .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its
-# checks are its CI lanes on stock Rocq, not oft check; .review/ is the one that this file's gather job writes, which
-# names a deleted file in omitted.txt and in pr.json; code keeps a path of any form in one code span, because trim.py
-# does not make the section inert; and the section names Sami. The rule itself (soundness, forced) is this file's own.
+# uses, code, section and the constants from USES to LISTED are copied from theorem-labs/oss-verify-proofs-internal
+# .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its checks are its CI lanes on stock Rocq,
+# not oft check; code keeps a path of any form in one code span, because trim.py does not make the section inert; and
+# the section names Sami and the files of the build. The files that the rule counts (proofs, dune_names) and the rule
+# itself (soundness, forced) are this file's own.
 
 # Each construct of "Soundness of a Rocq proof" that a line can use: its name in the section, and its pattern.
 USES = (
@@ -935,12 +949,37 @@ LISTED_CHARACTERS = 10_000
 # The issues of stock Rocq's three public proofs of False. The section gives each in a code span: GitHub links none of
 # them, and so adds no mention of each review to these issues of rocq-prover/rocq.
 ISSUES = ("rocq-prover/rocq#22651", "rocq-prover/rocq#22760", "rocq-prover/rocq#22772")
-# A line of omitted.txt, as the gather job writes it, for a changed file that .review/head/ does not hold.
-NOT_AT_HEAD = re.compile(r"(.+): (?:deleted|not a regular file \(mode [0-7]+\))")
+# The facts of the rule that the gather job writes into the .review/ of a pull request (proofs), and why a changed path
+# counts: a .v file, a file of the build (BUILD), a file that a dune file names, or the file that such a link points to.
+SOUNDNESS_FILE = "soundness.json"
+WHYS = ("proof", "build", "named", "target")
+# The files that tell dune how to build the proofs, by their name in any directory.
+BUILD = ("dune", "dune-project", "dune-workspace")
+# The modes of a regular file and of a link in a tree of git.
+REGULAR = ("100644", "100755")
+LINK = "120000"
+# The most bytes of a dune file, or of a file that it includes, that the rule reads, and the most includes in a chain:
+# a longer file or chain is a file of the build that the job could not read.
+DUNE_BYTES = 1 << 20
+INCLUDES = 20
+# The characters between the tokens of a dune file, an atom, and the escapes of a quoted string, as dune 3 reads them.
+BLANKS = " \t\n\r\f"
+ATOM = re.compile(r'[^ \t\n\r\f;()"]+')
+STRING_ESCAPES = {"n": "\n", "t": "\t", "b": "\b", "r": "\r", "\\": "\\", '"': '"', "'": "'", "%": "%"}
+# A variable of a dune file, %{<name>} or %{<name>:<argument>}, and the characters that make a name a glob.
+VARIABLE = re.compile(r"%\{([^}]*)\}")
+GLOB = re.compile(r"[*?\[{]")
+# The actions whose strings a shell reads, and the shells that (run <shell> ...) starts: the rule takes each word of
+# such a string as a name too.
+SHELL_ACTIONS = ("system", "bash")
+SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
+SHELL_WORD = re.compile(r"[^\s;|&<>()`'\"$=]+")
+# A line of omitted.txt, as the gather job writes it, for a changed file that .review/head/ holds only in part.
+CUT = re.compile(r"(.+): cut at 2 MiB of its [0-9]+ bytes")
 # A question on soundness in the review's list, and the question that the rule adds when the list has none.
 ON_SOUNDNESS = re.compile(r"(?i)sound")
 QUESTION = {"kind": "question", "ref": None, "optional": False,
-            "text": "Are the proofs sound after the changes to the `.v` files? A pass of the CI lanes on stock Rocq "
+            "text": "Are the proofs sound after the changes of this pull request? A pass of the CI lanes on stock Rocq "
                     "does not show it."}
 
 
@@ -956,25 +995,345 @@ def head_proofs(review):
     return sorted(found)
 
 
-def changed_proofs(review):
-    """The .v files that the pull request adds, changes or deletes, as its paths, in order: each one under
-    <review>/head/, each one that omitted.txt names as deleted or as not a regular file, and each one of pr.json's
-    files. An issue's .review/ has none."""
-    found = set(head_proofs(review))
-    path = os.path.join(review, "omitted.txt")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f.read().split("\n"):
-                m = NOT_AT_HEAD.fullmatch(line)
-                if m and m.group(1).endswith(".v"):
-                    found.add(m.group(1))
-    path = os.path.join(review, "pr.json")
-    if os.path.exists(path):
+def dune_sexps(text):
+    """The S-expressions of the text of a dune file, as dune 3 reads them: a list is a list, and an atom or a quoted
+    string is a str. A ; starts a comment to the end of its line, also inside an atom, and #| and #; are atoms. A
+    ValueError for a text that dune refuses or that this reader does not read: a ( or a ) with no pair, a string with
+    no end, or an escape that dune does not know (a block string, "\\| or "\\>, among them)."""
+    stack, i = [[]], 0
+    while i < len(text):
+        c = text[i]
+        if c in BLANKS:
+            i += 1
+        elif c == ";":
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end + 1
+        elif c == "(":
+            stack.append([])
+            i += 1
+        elif c == ")":
+            if len(stack) == 1:
+                raise ValueError("a ) with no (")
+            done = stack.pop()
+            stack[-1].append(done)
+            i += 1
+        elif c == '"':
+            value, i = dune_string(text, i + 1)
+            stack[-1].append(value)
+        else:
+            m = ATOM.match(text, i)
+            stack[-1].append(m.group())
+            i = m.end()
+    if len(stack) > 1:
+        raise ValueError("a ( with no )")
+    return stack[0]
+
+
+def dune_string(text, i):
+    """The value of the quoted string of a dune file whose first character is text[i], after its opening quote, and
+    the index after its closing quote."""
+    out = []
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            return "".join(out), i + 1
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        escape, digits = text[i + 1:i + 2], text[i + 1:i + 4]
+        if escape in STRING_ESCAPES:
+            out.append(STRING_ESCAPES[escape])
+            i += 2
+        elif escape == "\n":
+            i += 2
+            while i < len(text) and text[i] in " \t":
+                i += 1
+        elif re.fullmatch(r"[0-9]{3}", digits) and int(digits) < 256:
+            out.append(chr(int(digits)))
+            i += 4
+        elif escape == "x" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 2:i + 4]):
+            out.append(chr(int(text[i + 2:i + 4], 16)))
+            i += 4
+        else:
+            raise ValueError(f"an escape that dune does not know: \\{escape}")
+    raise ValueError("a string with no end")
+
+
+def from_root(base, name):
+    """The path from the root of the repository of name, a path of a dune file from the directory base: "" for the
+    root itself, and None for a path outside the repository."""
+    if name.startswith("/"):
+        return None
+    path = posixpath.normpath(posixpath.join(base, name))
+    if path == ".":
+        return ""
+    return None if path == ".." or path.startswith("../") else path
+
+
+def expand(name, base):
+    """name, an atom or a quoted string of a dune file in the directory base, after dune's variables, and the argument
+    of each variable %{<name>:<argument>} (dep, read, exe and the others name a file so), or None when name is one
+    variable with no argument alone (%{target}, %{deps}), which names no file of its own. %{project_root} and
+    %{workspace_root} are the root, and any other variable in a longer name can be any text (a * of a glob)."""
+    arguments = []
+    up = "/".join([".."] * (base.count("/") + 1)) if base else "."
+
+    def value(m):
+        inner = m.group(1)
+        if inner in ("project_root", "workspace_root"):
+            return up
+        if ":" in inner:
+            arguments.append(inner.split(":", 1)[1])
+            return arguments[-1]
+        return "*"
+    alone = VARIABLE.fullmatch(name)
+    text = VARIABLE.sub(value, name)
+    if alone and text == "*":
+        return None, arguments
+    return text, arguments
+
+
+def braces_close(glob, i):
+    """Whether the { at glob[i] has a } that closes it."""
+    depth = 0
+    while i < len(glob):
+        if glob[i] == "\\":
+            i += 2
+            continue
+        depth += {"{": 1, "}": -1}.get(glob[i], 0)
+        if depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def glob_pattern(glob):
+    """The regular expression of a dune glob from the root of the repository, wider than dune's, so that it misses no
+    path that dune's glob matches, nor one that glob_files_rec matches, which applies the glob in each directory below
+    its own: * and ? match any characters, / among them, a bracket expression matches any one character, {a,b} either
+    choice, and \\ makes the next character literal. A { or a [ with no pair is a character of the name."""
+    out, i, depth = [], 0, 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "\\" and i + 1 < len(glob):
+            out.append(re.escape(glob[i + 1]))
+            i += 2
+            continue
+        if c == "[" and (end := glob.find("]", i + 2)) > 0:
+            out.append(".")
+            i = end + 1
+            continue
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "{" and braces_close(glob, i):
+            out.append("(?:")
+            depth += 1
+        elif c == "," and depth:
+            out.append("|")
+        elif c == "}" and depth:
+            out.append(")")
+            depth -= 1
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("".join(out), re.S)
+
+
+class Names:
+    """The files that the dune files of a head name, each from the root of the repository, with the file that names
+    it: files by their path, trees (each file below a directory, for source_tree) and globs (glob_pattern)."""
+
+    def __init__(self):
+        self.files, self.trees, self.globs = {}, [], []
+
+    def add(self, by, name, base, tree=False):
+        """Takes name, an atom or a quoted string of the file by, as the name of a file (of each file below a directory
+        for tree) from the directory base, with the argument of each of its variables (expand)."""
+        text, arguments = expand(name, base)
+        for argument in arguments:
+            self.add(by, argument, base, tree)
+        path = None if text is None else from_root(base, text)
+        if path is None or (not path and not tree):
+            return
+        if GLOB.search(path):
+            self.globs.append((glob_pattern(path + "/*" if tree else path), by))
+        elif tree:
+            self.trees.append((path, by))
+        else:
+            self.files.setdefault(path, by)
+
+    def of(self, path):
+        """The file that names path, or None when no dune file names it."""
+        if path in self.files:
+            return self.files[path]
+        for tree, by in self.trees:
+            if not tree or path.startswith(tree + "/"):
+                return by
+        return next((by for pattern, by in self.globs if pattern.fullmatch(path)), None)
+
+
+def dune_names(names, by, node, here, bases, read, depth=0, shell=False):
+    """Adds to names each file that node, an S-expression of the file by (a dune file, or a file that one includes),
+    names: each atom and each quoted string, from the directory of its stanza (here) and from each directory of a
+    chdir around it (bases), and each word of a string that a shell reads. (subdir <dir> ...) moves here to <dir>,
+    (source_tree <dir>) names each file below <dir>, and (include <file>) names <file> and, from here, each file that
+    the stanzas of <file> name: read(path) gives the text of a file of the head. A ValueError for a subdir outside the
+    repository, and for an include that the job cannot read or that is deeper than INCLUDES."""
+    if isinstance(node, str):
+        for word in [node] + (SHELL_WORD.findall(node) if shell else []):
+            for base in bases:
+                names.add(by, word, base)
+        return
+    head = node[0] if node and isinstance(node[0], str) else None
+    if head == "subdir" and len(node) > 1 and isinstance(node[1], str):
+        sub = from_root(here, node[1])
+        if sub is None:
+            raise ValueError(f"(subdir {node[1]}) is outside the repository")
+        for child in node[2:]:
+            dune_names(names, by, child, sub, [sub], read, depth)
+        return
+    if head == "include" and len(node) == 2 and isinstance(node[1], str):
+        path = from_root(here, node[1])
+        if not path or depth >= INCLUDES:
+            raise ValueError(f"(include {node[1]}) cannot be read")
+        names.add(by, node[1], here)
+        for stanza in dune_sexps(read(path)):
+            dune_names(names, path, stanza, here, [here], read, depth + 1)
+        return
+    if head == "source_tree" and len(node) == 2 and isinstance(node[1], str):
+        for base in bases:
+            names.add(by, node[1], base, tree=True)
+    if head == "chdir" and len(node) > 2 and isinstance(node[1], str):
+        moved = [from_root(base, text) for base in bases for text in [expand(node[1], base)[0]] if text is not None]
+        bases = bases + [d for d in moved if d is not None]
+    shell = shell or head in SHELL_ACTIONS or (head == "run" and len(node) > 2 and isinstance(node[1], str)
+                                               and posixpath.basename(node[1]) in SHELLS)
+    for child in node:
+        dune_names(names, by, child, here, bases, read, depth, shell)
+
+
+def git(*args, cwd=None):
+    """The standard output of git with args, as bytes."""
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True).stdout
+
+
+def head_tree(head, cwd=None):
+    """{path: (mode, object)} of each file of the tree of the commit head, from git objects."""
+    tree = {}
+    for entry in git("ls-tree", "-r", "-z", "--full-tree", head, cwd=cwd).split(b"\0"):
+        if entry:
+            meta, path = entry.split(b"\t", 1)
+            mode, _kind, oid = meta.decode("ascii").split(" ")
+            tree[path.decode("utf-8", "surrogateescape")] = (mode, oid)
+    return tree
+
+
+def proofs(head, files, count, cwd=None):
+    """The facts of the soundness rule at the commit head of a pull request, as soundness.json holds them: {whole,
+    files, unparsed}. files are the files of the pull request at head as the API lists them on every page of
+    pulls/<n>/files, and count its changed_files, None when a read did not finish or read another head. whole: the
+    list holds each changed file. files: each changed path (of a file, and the path that it had before a rename) that
+    can change a proof, {path, why, by, at_head}: why is proof for a .v file, build for a file of BUILD, named for a
+    file that the dune file by names (dune_names), and target for the file that the link by points to, when the link's
+    own path counts; at_head says whether head has the path. unparsed: each dune file, or link that counts, that the
+    job could not read: not a regular file, over DUNE_BYTES, not UTF-8, or not read by dune_sexps. The dune files and
+    the links come from git objects of head, in the repository of cwd."""
+    tree = head_tree(head, cwd)
+
+    def read(path, kinds=REGULAR, limit=DUNE_BYTES):
+        mode, oid = tree.get(path, ("", ""))
+        if mode not in kinds:
+            raise ValueError(f"{path} has the mode {mode or 'of no file'} at {head}")
+        if int(git("cat-file", "-s", oid, cwd=cwd)) > limit:
+            raise ValueError(f"{path} holds over {limit} bytes")
+        try:
+            return git("cat-file", "blob", oid, cwd=cwd).decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{path} is not UTF-8 text") from None
+
+    names, unparsed, targets = Names(), [], {}
+    for path in sorted(tree):
+        if posixpath.basename(path) == "dune":
+            here = posixpath.dirname(path)
+            try:
+                for stanza in dune_sexps(read(path)):
+                    dune_names(names, path, stanza, here, [here], read)
+            except ValueError:
+                unparsed.append(path)
+
+    def counts(path):
+        if path.endswith(".v"):
+            return "proof", None
+        if posixpath.basename(path) in BUILD:
+            return "build", None
+        by = names.of(path)
+        if by:
+            return "named", by
+        to = next((t for t in targets if path == t or path.startswith(t + "/")), None)
+        return ("target", targets[to]) if to is not None else (None, None)
+    # The build reads a file through a link to it: so the file that a link that counts points to counts too (a link
+    # in the place of a dune file among them), and a chain of links reaches its end in at most as many rounds as there
+    # are links.
+    links = sorted(p for p, (mode, _oid) in tree.items() if mode == LINK)
+    failed = set()
+    for _ in links:
+        before = len(targets)
+        for link in links:
+            if link in failed or not counts(link)[0]:
+                continue
+            try:
+                to = from_root(posixpath.dirname(link), read(link, (LINK,), 4096))
+            except ValueError:
+                failed.add(link)
+                continue
+            if to:
+                targets.setdefault(to, link)
+        if len(targets) == before:
+            break
+    unparsed = sorted(set(unparsed) | failed)
+    paths = set()
+    for f in files:
+        try:
+            paths.update(changed_paths([f]))
+        except ValueError:
+            count = None
+    found = [{"path": p, "why": why, "by": by, "at_head": p in tree}
+             for p in sorted(paths) for why, by in [counts(p)] if why]
+    return {"whole": count is not None and count == len(files), "files": found, "unparsed": unparsed}
+
+
+def facts_of(review):
+    """The facts of soundness.json in review, a .review/ (proofs), or None for an issue's, which has none. A pull
+    request's .review/ (it holds commits.txt) with no such file, or with one in another form, gives a list that is not
+    whole."""
+    path = os.path.join(review, SOUNDNESS_FILE)
+    unread = {"whole": False, "files": [], "unparsed": []}
+    if not os.path.exists(path):
+        return unread if os.path.exists(os.path.join(review, "commits.txt")) else None
+    try:
         with open(path, encoding="utf-8") as f:
-            files = json.load(f).get("files") or []
-        found.update(f["path"] for f in files
-                     if isinstance(f, dict) and isinstance(f.get("path"), str) and f["path"].endswith(".v"))
-    return sorted(found)
+            facts = json.load(f)
+    except ValueError:
+        return unread
+    if not (isinstance(facts, dict) and isinstance(facts.get("whole"), bool)
+            and isinstance(facts.get("files"), list) and isinstance(facts.get("unparsed"), list)
+            and all(isinstance(f, dict) and isinstance(f.get("path"), str) and f.get("why") in WHYS
+                    for f in facts["files"])
+            and all(isinstance(p, str) for p in facts["unparsed"])):
+        return unread
+    return facts
+
+
+def cut_files(review):
+    """The changed files that omitted.txt of review names as cut at 2 MiB."""
+    path = os.path.join(review, "omitted.txt")
+    if not os.path.exists(path):
+        return set()
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return {m.group(1) for line in f.read().split("\n") if (m := CUT.fullmatch(line))}
 
 
 def uses(review):
@@ -1011,33 +1370,69 @@ def code(text):
     return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
-def section(found, listed=LISTED, characters=LISTED_CHARACTERS):
-    """The fixed section on soundness, with the lines that found holds (uses): at most listed lines, in at most
-    characters characters, and then a line that says how many more there are."""
+def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
+    """The fixed section on soundness: why the rule holds, from scope (soundness; None for a change of a .v file and
+    nothing else), and the facts for Sami: the changed files of the build, the files of the build that the job could
+    not read, the lines that found holds (uses), and the changed .v files at the head that the search did not read
+    whole. Its lists hold at most listed lines in at most characters characters in all, and a list that holds fewer
+    than it has ends with a line that says how many more there are."""
+    scope = scope or {"v": True, "others": [], "whole": True, "unparsed": [], "unread": []}
     issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
-    head = ("**Soundness of the proofs.** This pull request adds, changes or deletes a `.v` file, which holds Rocq "
-            "proofs. The CI lanes of this repository check the proofs on stock Rocq. Stock Rocq accepts three public "
-            f"proofs of `False`: {issues}. So when these lanes pass, that does not show that the proofs are sound. "
-            "Sami answers whether the proofs are sound. You do not need to do anything for this point.")
-    what = "the VM, the native compiler, a cast with no check or a primitive array"
-    searched = "The workflow searched the text of the `.v` files that this pull request adds or changes."
-    forgery = ("A text search cannot show that a proof is not forged. For example, a proof can use the VM through a "
-               "tactic such as `lia`, with no line that names the VM.")
-    if not found:
-        return f"{head}\n\n{searched} It found no use of {what}. {forgery}"
-    lines, size = [], 0
-    for path, n, names in found:
-        line = f"- {code(f'{path}:{n}')}: {', '.join(code(name) for name in names)}"
-        if len(lines) == listed or size + len(line) > characters:
-            break
-        lines.append(line)
-        size += len(line) + 1
-    more = len(found) - len(lines)
-    if more:
-        lines.append(f"- {more} more {'line uses' if more == 1 else 'lines use'} these constructs. The summary of the "
-                     "workflow run lists all lines.")
-    return (f"{head}\n\n{searched} It found these uses of {what}. The workflow lists these uses as facts, not as "
-            f"failures. Honest proofs use the same constructs. {forgery}\n\n" + "\n".join(lines))
+    if scope["v"]:
+        why = "This pull request adds, changes or deletes a `.v` file, which holds Rocq proofs."
+    elif scope["others"]:
+        why = "This pull request changes a file that the build of the Rocq proofs reads or writes."
+    else:
+        why = "The workflow cannot show that this pull request changes no Rocq proof."
+    parts = [f"**Soundness of the proofs.** {why} The CI lanes of this repository check the proofs on stock Rocq. "
+             f"Stock Rocq accepts three public proofs of `False`: {issues}. So when these lanes pass, that does not "
+             "show that the proofs are sound. Sami answers whether the proofs are sound. You do not need to do "
+             "anything for this point."]
+    room = [listed, characters]
+
+    def listing(lines, more):
+        kept = []
+        for line in lines:
+            if not room[0] or len(line) > room[1]:
+                break
+            kept.append(line)
+            room[0] -= 1
+            room[1] -= len(line) + 1
+        if len(kept) < len(lines):
+            kept.append(more(len(lines) - len(kept)))
+        return "\n".join(kept)
+
+    def files(n):
+        return f"- {n} more {'file' if n == 1 else 'files'}. The summary of the workflow run lists all files."
+    if scope["others"]:
+        lines = [f"- {code(path)}" + (f": {code(by)} names it." if kind == "named" else
+                                      f": the link {code(by)} points to it." if kind == "target" else "")
+                 for path, kind, by in scope["others"]]
+        parts.append("The build of the proofs reads or writes these changed files:\n\n" + listing(lines, files))
+    if not scope["whole"]:
+        parts.append("GitHub did not give the full list of the files that this pull request changes, so the workflow "
+                     "could not check each of them.")
+    if scope["unparsed"]:
+        parts.append("The workflow could not read these files of the build:\n\n"
+                     + listing([f"- {code(path)}" for path in scope["unparsed"]], files))
+    if scope["v"]:
+        what = "the VM, the native compiler, a cast with no check or a primitive array"
+        searched = "The workflow searched the text of the `.v` files that this pull request adds or changes."
+        forgery = ("A text search cannot show that a proof is not forged. For example, a proof can use the VM through "
+                   "a tactic such as `lia`, with no line that names the VM.")
+        if not found:
+            parts.append(f"{searched} It found no use of {what}. {forgery}")
+        else:
+            lines = [f"- {code(f'{path}:{n}')}: {', '.join(code(name) for name in names)}" for path, n, names in found]
+            parts.append(f"{searched} It found these uses of {what}. The workflow lists these uses as facts, not as "
+                         f"failures. Honest proofs use the same constructs. {forgery}\n\n" + listing(
+                             lines, lambda n: f"- {n} more {'line uses' if n == 1 else 'lines use'} these constructs. "
+                                              "The summary of the workflow run lists all lines."))
+        if scope["unread"]:
+            lines = [f"- {code(path)}: " + ("the workflow read only its first 2 MiB." if how == "cut" else
+                                            "the workflow did not read it.") for path, how in scope["unread"]]
+            parts.append("The search did not read all of the text of these `.v` files:\n\n" + listing(lines, files))
+    return "\n\n".join(parts)
 
 
 def forced(output):
@@ -1053,12 +1448,26 @@ def forced(output):
 def soundness(review, output, hold, outside):
     """(output, section, all): the review's output after the soundness rule, the section of the comment, and the
     section with every line for the run's summary. The rule holds while hold is true, for an outside pull request
-    (outside is not false) that adds, changes or deletes a .v file. When it does not hold: output as it is, and no
-    section."""
-    if hold != "true" or outside == "false" or not changed_proofs(review):
+    (outside is not false) that changes a path that the facts of review count (facts_of) or a .v file under head/,
+    whose list of changed paths is not whole, or for which a file of the build could not be read. When it does not
+    hold: output as it is, and no section."""
+    if hold != "true" or outside == "false":
         return output, "", ""
+    facts = facts_of(review) or {"whole": True, "files": [], "unparsed": []}
+    read = set(head_proofs(review))
+    changed = [f for f in facts["files"] if f["why"] == "proof"]
+    others = [(f["path"], f["why"], f.get("by")) for f in facts["files"] if f["why"] != "proof"]
+    if not (read or changed or others or not facts["whole"] or facts["unparsed"]):
+        return output, "", ""
+    # The .v files at the head that the search did not read whole: the gather job cut them, removed them with a
+    # directory of Claude Code's instructions, or found a link or a submodule in their place.
+    cut = cut_files(review)
+    at_head = read | {f["path"] for f in changed if f.get("at_head")}
+    unread = [(path, "cut" if path in cut else "unread") for path in sorted(at_head) if path in cut or path not in read]
+    scope = {"v": bool(read or changed), "others": others, "whole": facts["whole"], "unparsed": facts["unparsed"],
+             "unread": unread}
     found = uses(review)
-    return forced(output), section(found), section(found, len(found), sys.maxsize)
+    return forced(output), section(found, scope=scope), section(found, sys.maxsize, sys.maxsize, scope)
 
 
 # --- the fix (R2) -------------------------------------------------------------------------------------------------
@@ -1134,7 +1543,9 @@ def unquote(path):
 def hunks(diff):
     """{path: [(first, last)]}: the right-side lines of each hunk of a git diff, by the path of its right side. Each
     line of a hunk is counted against its header, so a line of a file that starts as a header does (+++, diff --git)
-    is read as the file's line."""
+    is read as the file's line. git ends the +++ line of a path that holds a space with a TAB, after the quotes of a
+    path that it quotes (diff.c), and quotes a path that holds a TAB: so a TAB at the end of the line is never part of
+    the path."""
     found, path, old, new = {}, None, 0, 0
     for line in diff.split("\n"):
         if old > 0 or new > 0:
@@ -1147,7 +1558,7 @@ def hunks(diff):
         if line.startswith("diff --git "):
             path = None
         elif line.startswith("+++ "):
-            right = unquote(line[4:])
+            right = unquote(line[4:].removesuffix("\t"))
             path = right[2:] if right.startswith("b/") else None
         elif path is not None and (m := HUNK.match(line)):
             old = int(m.group(1) or 1)
@@ -1293,6 +1704,14 @@ def main(argv):
         if len(argv) == 3 and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
             mark(argv[1], argv[2])
             return 0
+        if len(argv) == 4 and argv[0] == "proofs" and HEAD.fullmatch(argv[1]):
+            count = int(argv[3]) if re.fullmatch(r"0|[1-9][0-9]*", argv[3]) else None
+            try:
+                files = json_lines(argv[2])
+            except ValueError:
+                files, count = [], None
+            print(json.dumps(proofs(argv[1], files, count)))
+            return 0
         if len(argv) == 7 and argv[0] == "soundness":
             review, path, hold, outside, section_path, all_path = argv[1:]
             with open(path, encoding="utf-8") as f:
@@ -1367,6 +1786,9 @@ def main(argv):
         return 2
     except GhError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as e:
+        print(f"::error::rules.py: {e}: {e.stderr.decode('utf-8', 'replace').strip()}", file=sys.stderr)
         return 1
     print(__doc__.split("\n\n")[1], file=sys.stderr)
     return 2

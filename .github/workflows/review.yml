@@ -138,17 +138,19 @@
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
-#           to the review of an outside pull request that adds, changes or deletes a .v file, and adds the section on
-#           soundness after the shortened review (.github/review/rules.py soundness). For an answer, Claude answers the
-#           comments of the author that wait (.github/review-answer.md, "An answer"), and the fresh reader shortens
-#           the answer. For a blocking finding of an outside pull request, or an answer that asks for it, Claude then
-#           writes the fix as suggested changes on the lines of the diff (.github/review-answer.md, "The fix"). No fix
-#           runs when the author said they will make the change, or when 2 fix reviews since the author's last own
-#           push did not make the review pass. Code keeps only the suggestions on the diff (.github/review/rules.py
-#           suggestions). A step signs in again, and the fresh reader shortens the words of the fix, never the lines
-#           of a suggested change. The fresh reader can refuse a review, an answer or the words of a fix: then nothing
-#           of that text posts, no fix follows a refused review or answer, the run's summary holds the reader's reason
-#           and no log line or output does, and the comment job gives the item waits-on-theorem with Sami's next step.
+#           to the review of an outside pull request that changes a .v file, a dune, dune-project or dune-workspace
+#           file, or a file that a dune file names (the gather job reads the changed paths and the dune files itself),
+#           and adds the section on soundness after the shortened review (.github/review/rules.py soundness). For an
+#           answer, Claude answers the comments of the author that wait (.github/review-answer.md, "An answer"), and
+#           the fresh reader shortens the answer. For a blocking finding of an outside pull request, or an answer that
+#           asks for it, Claude then writes the fix as suggested changes on the lines of the diff
+#           (.github/review-answer.md, "The fix"). No fix runs when the author said they will make the change, or when
+#           2 fix reviews since the author's last own push did not make the review pass. Code keeps only the
+#           suggestions on the diff (.github/review/rules.py suggestions). A step signs in again, and the fresh reader
+#           shortens the words of the fix, never the lines of a suggested change. The fresh reader can refuse a review,
+#           an answer or the words of a fix: then nothing of that text posts, no fix follows a refused review or answer,
+#           the run's summary holds the reader's reason and no log line or output does, and the comment job gives the
+#           item waits-on-theorem with Sami's next step.
 #           The answer and the fix run in this job, so the hourly caps count them with the review. For a draft, Claude
 #           writes the reply to a new issue of an outside author (.github/review-answer.md, "An issue draft"), and the
 #           fresh reader trims it or refuses it, with the rules of the draft in its request. This job uploads the draft,
@@ -339,8 +341,9 @@ env:
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
   # in theorem-labs/rocq-linux-process-semantics-internal, run stock Rocq, as this repository's CI lanes do. While this
-  # is "true", code gives the review of an outside pull request that adds, changes or deletes a .v file the verdict
-  # person and a section on soundness, whatever the model wrote (.github/review/rules.py soundness). The hold lasts
+  # is "true", code gives the review of an outside pull request that can change a proof (a .v file, a dune,
+  # dune-project or dune-workspace file, or a file that a dune file names, wherever it is) the verdict person and a
+  # section on soundness, whatever the model wrote (.github/review/rules.py soundness). The hold lasts
   # until those checks run a Rocq with the fixes for the three issues: only then set another value. Another value also
   # ends R12's Markdown-only rule: while the hold lasts, the post job records the import's check run only for a pull
   # request whose changed files are all Markdown files.
@@ -2444,6 +2447,26 @@ jobs:
                     rm -rf -- "$p"
                   done
             fi
+            # The facts of the soundness rule (R8), which this job reads itself, never the model: the changed paths from
+            # every page of the files of the pull request (gh pr view gives at most 100), each file's path and the path
+            # that it had before a rename, read after a check of the head and before a second check of it. A list that
+            # a read did not finish, of another head, or shorter than changed_files (GitHub lists at most 3,000 files)
+            # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files of the
+            # head from git objects and writes soundness.json: each changed path that can change a proof (a .v file, a
+            # dune, dune-project or dune-workspace file, a file that a dune file names, or the file that such a link
+            # points to), whether the list is whole, and each dune file that it could not read.
+            count=""
+            : > "$RUNNER_TEMP/files.jsonl"
+            if pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
+                && [ "${pr%% *}" = "$head" ] \
+                && gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
+                  --jq '.[] | {filename, previous_filename} | @json' > "$RUNNER_TEMP/files.jsonl" \
+                && [ "$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha)" = "$head" ]; then
+              count=${pr#* }
+            else
+              echo "::warning::the files of #$NUMBER at $head could not be read whole: the soundness rule counts the pull request as a change of a proof."
+            fi
+            python3 .github/review/rules.py proofs "$head" "$RUNNER_TEMP/files.jsonl" "$count" > "$out/soundness.json"
           fi
           echo "Gathered $(find "$out" -type f | wc -l) files."
 
@@ -3069,9 +3092,13 @@ jobs:
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
       # comment, its verdict, will_fix and its list. First comes the soundness rule of R8, whatever the model wrote
       # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
-      # gather job's outside) that adds, changes or deletes a .v file gets the verdict person, a question on soundness
-      # in its list when the list has none, and the section on soundness. The section lists, as facts, the lines of
-      # the changed .v files at the head that use the VM, the native compiler or a primitive array.
+      # gather job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
+      # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths can
+      # change a proof (a .v file, a dune, dune-project or dune-workspace file, or a file that a dune file of the head
+      # names), from every page of the pull request's files: a list that is not whole, or a dune file that the job
+      # could not read, counts as such a change too. The section lists, as facts, those files, the lines of the
+      # changed .v files at the head that use the VM, the native compiler or a primitive array, and each changed .v
+      # file at the head that the gather job did not keep whole.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), and cuts it at 20,000 characters. Then it runs the
       # fresh reader: one request to Claude, with no tools, that holds the reader's instruction, the list and that text
@@ -3502,6 +3529,10 @@ jobs:
     outputs:
       recorded: ${{ steps.record.outputs.recorded == 'true' && 'true' || 'false' }}
       decision: ${{ steps.decide.outputs.decision }}
+      # The value of REPO_PAIRS_IMPORT_PATHS that the decision read, as JSON: its text as a string, or null when it read
+      # none. The variable can change between this job and the comment job, which sets the label with this value, so
+      # that the label comment records the value that the decision rested on.
+      imports: ${{ steps.decide.outputs.imports }}
       caught: ${{ steps.catchup.outputs.caught }}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
@@ -3543,10 +3574,12 @@ jobs:
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit to decide on: $HEAD"; exit 1; }
-          # decided <decision> <what>: the output decision, and the end of this step.
+          # decided <decision> <what>: the outputs decision and imports (the value of the variable that it read), and
+          # the end of this step.
           decided() {
             echo "#$NUMBER at $HEAD: the decision on the import check is $1 ($2)."
             echo "decision=$1" >> "$GITHUB_OUTPUT"
+            echo "imports=$(jq -acn --arg v "$IMPORT_PATHS" 'if $v == "" then null else $v end')" >> "$GITHUB_OUTPUT"
             exit 0
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -3800,9 +3833,11 @@ jobs:
       REPO: ${{ github.repository }}
       NUMBER: ${{ needs.trust.outputs.number }}
       BODY: ${{ needs.review.outputs.body }}
-      # What the post job did at the head: false, and no decision, when that job did not succeed.
+      # What the post job did at the head: false, and no decision, when that job did not succeed. IMPORTS is the value
+      # of REPO_PAIRS_IMPORT_PATHS that its decision read, as JSON, and empty when it gave no decision.
       RECORDED: ${{ needs.post.result == 'success' && needs.post.outputs.recorded || 'false' }}
       DECISION: ${{ needs.post.result == 'success' && needs.post.outputs.decision || '' }}
+      IMPORTS: ${{ needs.post.result == 'success' && needs.post.outputs.decision != '' && needs.post.outputs.imports || '' }}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -3950,8 +3985,9 @@ jobs:
       # only a merge conflict of the head in the label comment, which is gone now, it gives no state label and takes that
       # conflict's line out, so that the rescreen pass reviews the head; with nothing of the head, the labels stay. The
       # label comment of an outside pull request holds the marker line <!-- repo-pairs-import-paths <head>: <value> -->
-      # of R12, with the value of REPO_PAIRS_IMPORT_PATHS that this step read, and its text names the step for the
-      # import by that value.
+      # of R12, with the value of REPO_PAIRS_IMPORT_PATHS that the post job's decision at the head read (this step's own
+      # read when that job gave no decision), and its text names the step for the import by that value. So the rescreen
+      # pass reads the value that the state rested on, and relabels the head when the variable changed since.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
@@ -3970,8 +4006,9 @@ jobs:
           DRAFT: ${{ needs.review.outputs.draft }}
           REPLIED: ${{ steps.replied.outputs.id }}
           REFUSED: ${{ needs.review.outputs.refused }}
-          # The import's paths, one glob on each line, while the import is live (R12), as the post job reads them. An
-          # empty value is no variable: GitHub gives an empty value for a variable that is not set.
+          # The import's paths, one glob on each line, while the import is live (R12), as this step reads them, for a run
+          # whose post job gave no decision. An empty value is no variable: GitHub gives an empty value for a variable
+          # that is not set.
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
         run: |
           set -uo pipefail
@@ -4067,12 +4104,20 @@ jobs:
           fi
           outsider=false
           [ -z "$OUTSIDER" ] || outsider=true
-          # The variable's text, given only when it is set: an empty value is no variable.
+          # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
+          # the import check at the head, the state rests on the value that its decision read (IMPORTS), not on this
+          # step's read: the variable can change between the two jobs, and the label comment records that value.
+          paths=$IMPORT_PATHS
+          if [ -n "${IMPORTS:-}" ]; then
+            paths=$(jq -je 'if . == null then "" elif type == "string" then . else error("not a value") end' \
+              <<< "$IMPORTS" && printf .) || { echo "::error::the post job gave no value of the import's paths"; exit 1; }
+            paths=${paths%.}
+          fi
           imports=()
           facts=()
-          if [ -n "$IMPORT_PATHS" ]; then
-            imports=("$IMPORT_PATHS")
-            facts=("import_paths=$IMPORT_PATHS")
+          if [ -n "$paths" ]; then
+            imports=("$paths")
+            facts=("import_paths=$paths")
           fi
           if [ "$KIND" = pr ] && [ "$outsider" = true ] && [[ $HEAD =~ ^[0-9a-f]{40}$ ]]; then
             marker=$(python3 .github/review/rules.py import-marker "$HEAD" "${imports[@]}") \
