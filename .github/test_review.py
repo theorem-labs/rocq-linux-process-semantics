@@ -2039,6 +2039,23 @@ class LimitTest(Runner):
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
         self.assertEqual(route(), ("7", "limit", "mallory"))
 
+    def test_a_ci_run_of_a_pull_request_into_another_branch_counts_toward_no_limit(self):
+        """Decision 1: a CI run whose pull requests are all into another branch than main "starts no review and counts
+        toward no cap", and OUTSIDE_HOURLY_LIMIT is one of the caps (the spec's terms). The trust job stops the CI run
+        of mallory's pull request #9 into dev, so GitHub lists that run as one that succeeded, with every job after the
+        trust job skipped. Beside OUTSIDE_HOURLY_LIMIT - 1 runs of her own events, it leaves her next run screened."""
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        rc, out, got = self.run_trust("workflow_run", actor="mallory", number="", head=HEAD,
+                                      head_repository=str(REPO_ID), pulls=[named_pr(9, base="dev")])
+        self.assertEqual((rc, got.get("route")), (0, None), out)
+        stopped = [{"name": n, "status": "completed", "conclusion": "skipped"}
+                   for n in ("gather", "screen", "review", "post", "comment", "hold")]
+        self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT - 1)],
+                  (30, "mallory", "workflow_run", "success", f"review {HEAD} by mallory"), jobs={30: stopped})
+        self.serve(f"repos/{REPO}/actions/runs/30/jobs",
+                   {"jobs": [{"name": "trust", "status": "completed", "conclusion": "success"}] + stopped})
+        self.assertEqual(self.route("mallory", "mallory"), "screen")
+
     def test_a_maintainers_re_run_still_counts(self):
         """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
