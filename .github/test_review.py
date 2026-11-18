@@ -4454,6 +4454,31 @@ class SoundnessTest(ReaderRunner):
                                                            "No blocking finding.")
         self.assertEqual((got["verdict"], listed), ("pass", []))
 
+    def test_a_head_from_an_older_main_counts_the_files_that_the_dune_rules_of_main_read(self):
+        """R8: "any other file that a dune rule of the repository reads or writes". A pull request can start from an
+        older commit of main. Here main got a dune rule that reads tests/placement/run.log after the commit that the
+        pull request starts from, and the pull request changes only that log. GitHub merges it with no conflict, and
+        the rule of main then reads the changed log. So the review gives the person verdict on soundness, and the
+        section names the log and the dune file of main that names it."""
+        rule = ("(rule\n (target Run.v)\n (deps placement/run.log)\n"
+                " (action (with-stdout-to %{target} (echo \"(* Generated. *)\\n\"))))\n")
+        head, outside = self.gather({"tests/placement/run.log": "2\n"},
+                                    main=dict(self.MAIN, **{"tests/placement/run.log": "1\n"}))
+        # main moves on after the commit that the pull request starts from: it gets the rule.
+        src = os.path.join(self.dir, "src")
+        self.git("checkout", "-q", "-b", "later", "HEAD~1", cwd=src)
+        self.commit(src, {"tests/dune": rule}, "the rule")
+        self.git("push", "-q", os.path.join(self.dir, "origin.git"), "later:main", cwd=src)
+        self.git("fetch", "-q", "origin", cwd=self.work)
+        rc, out, _ = self.run_script(step("gather", "Gather the pull request or issue")["run"], KIND="pr", NUMBER="7",
+                                     EVENT_HEAD=head)
+        self.assertEqual(rc, 0, out)
+        rc, out, got = self.post("No blocking finding.", [], "No blocking finding.", "pass", outside=outside)
+        self.assertEqual(rc, 0, out)
+        shown = got["body"].split(self.WHOLE, 1)[0]
+        self.assertSoundness(head, got, shown)
+        self.assertRegex(shown, r"(?m)^- `tests/placement/run\.log`: `tests/dune` names it\.$")
+
 
 class SoundnessScanTest(unittest.TestCase):
     """rules.py's facts of the rule (proofs, dune_names, soundness.json), its scan of a pull request's .v files (uses),
