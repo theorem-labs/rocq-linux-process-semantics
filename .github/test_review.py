@@ -2209,6 +2209,24 @@ class LimitTest(Runner):
         rc, out, got = self.run_trust("issue_comment", "bob", "bob", comment="900")
         self.assertEqual((rc, got.get("route")), (0, "screen"), out)
 
+    def test_a_ci_run_of_a_pull_request_on_another_accounts_fork_branch_counts_on_its_author(self):
+        """Ruling 1: a limit counts against the reviewed pull request's author. Anyone can open a pull request whose
+        head is another account's fork branch. Eve's #20 into main is the one open pull request with the head of
+        bob's fork branch, so each push of bob's to that branch starts the review of eve's #20. Eve at her limit gets
+        no screen for it, and bob at his limit does not hold eve's review."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+
+        def route():
+            rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                          head_repository=str(FORK_ID), pulls=[])
+            self.assertEqual(rc, 0, out)
+            return got.get("number"), got.get("route")
+        self.runs(*[(10 + i, "eve", "issues", "success") for i in range(self.LIMIT)])
+        self.assertEqual(route(), ("20", "limit"))
+        self.runs(*[(10 + i, "bob", "issues", "success") for i in range(self.LIMIT)])
+        self.assertEqual(route(), ("20", "screen"))
+
     def test_runs_that_the_trust_job_stopped_are_read_within_the_budget(self):
         """Decision 1 and decision 3: a run of mallory's event that the trust job stopped (a CI run of a pull request
         into another branch) counts for nothing, and only its jobs show that: each costs a read, within the
