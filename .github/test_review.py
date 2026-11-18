@@ -2100,6 +2100,34 @@ class LimitTest(Runner):
                    {"jobs": [{"name": "trust", "status": "completed", "conclusion": "success"}] + stopped})
         self.assertEqual(self.route("mallory", "mallory"), "screen")
 
+    def test_pull_requests_of_another_account_from_a_forks_branch_use_none_of_its_limit(self):
+        """Decision 1: a CI run of a pull request into another branch starts no review and counts toward no cap. GitHub
+        names no pull request in a CI run of a fork's pull request, and anyone can open a pull request whose head is
+        another account's fork branch (head bob:<branch>). Mallory opens #8 and #10 into dev from the branch of bob's
+        fork whose pull request #7 is into main. One push of bob's to that branch starts a CI run of each of the three,
+        each run bob's (its actor). The trust job decides each one, and GitHub lists each as the trust job left it.
+        bob's own push uses no more of his limit than one run: his next comment is screened."""
+        self.permissions(bob="read")
+        self.serve_prs((7, "bob", HEAD), (8, "mallory", HEAD, FORK_ID, False, "dev"),
+                       (10, "mallory", HEAD, FORK_ID, False, "dev"))
+        listed = []
+        for run in (20, 21, 22):
+            self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+            rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                          head_repository=str(FORK_ID), pulls=[])
+            self.assertEqual(rc, 0, out)
+            after = ["gather", "screen", "review", "post", "comment", "hold"] if not got.get("route") else []
+            jobs = [{"name": "trust", "status": "completed", "conclusion": "success"}] + (
+                [{"name": n, "status": "completed", "conclusion": "skipped"} for n in after] if after
+                else [attempt_job("screen", name="screen bob"), attempt_job("review", name="review (screened)")])
+            listed.append(((run, "bob", "workflow_run", "success", f"review {HEAD} by bob"), jobs))
+        self.runs(*[r for r, _ in listed], jobs={r[0]: j[1:] for r, j in listed})
+        for r, jobs in listed:
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": jobs})
+        self.serve_item(7, "bob", kind="pr")
+        rc, out, got = self.run_trust("issue_comment", "bob", "bob", comment="900")
+        self.assertEqual((rc, got.get("route")), (0, "screen"), out)
+
     def test_a_maintainers_re_run_still_counts(self):
         """A re-run keeps the run's actor; its triggering actor is the maintainer who re-ran it (the fixture's alice)."""
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT)])
